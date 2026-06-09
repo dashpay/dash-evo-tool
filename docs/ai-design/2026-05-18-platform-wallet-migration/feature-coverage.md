@@ -22,7 +22,7 @@ Categories:
 | Mining / `generatetoaddress` | `MineBlocks`, `src/backend_task/core/mod.rs:346` | Block production (template, mempool assembly, PoW) is a full-node function. Always RPC; Regtest/Devnet-only feature. |
 | Arbitrary historical tx lookup by txid | `get_raw_transaction`, `src/backend_task/core/recover_asset_locks.rs:21` | BIP157/158 SPV only sees transactions matching a registered filter. DET sidesteps needed cases via DAPI, not Core. |
 | Retrospective UTXO scan over an arbitrary address set | `recover_asset_locks` RPC mechanism, `src/backend_task/core/recover_asset_locks.rs:20-24` | Needs node-side address index; SPV must have been watching as blocks arrived. |
-| `importaddress` into Core's own wallet | `src/model/wallet/mod.rs:1202`, used by `refresh_single_key_wallet_info.rs:40` | No server-side wallet exists under SPV. |
+| `importaddress` into Core's own wallet | `src/model/wallet/mod.rs:1202` (the former `refresh_single_key_wallet_info.rs` handler has since been deleted) | No server-side wallet exists under SPV. |
 | Named multi-wallet Core RPC | `core_client_for_wallet` `src/context/mod.rs:686`; `Wallet.core_wallet_name` `src/model/wallet/mod.rs:390` | Presupposes a Core node with `-rpcwallet` namespaces. |
 
 > NOTE on the "recover asset locks" entry: the **user-facing goal** (recover known asset locks) IS achieved under SPV via live InstantLock/ChainLock event reconciliation (`src/context/wallet_lifecycle.rs:619`). The SPV arm of `recover_asset_locks` returns zero-count success (`src/backend_task/core/recover_asset_locks.rs:30-39`). Only the RPC retrospective-scan *technique* is category 1 — not the feature itself.
@@ -31,7 +31,7 @@ Categories:
 
 Single-key / non-HD wallet **balance and UTXO refresh** hard-errors under SPV:
 
-`src/backend_task/core/refresh_single_key_wallet_info.rs:23` returns `Err(TaskError::OperationRequiresDashCore{...})`.
+Present state: the `refresh_single_key_wallet_info.rs` handler has been deleted; the `CoreTask::RefreshSingleKeyWalletInfo` dispatch arm now returns `Err(TaskError::SingleKeyWalletsUnsupported)` inline in `src/backend_task/core/mod.rs:216-217`.
 
 A single arbitrary P2PKH address is matchable by BIP158 compact block filters. The SPV path simply never registers these ad-hoc keys — it is a wiring gap, not a protocol impossibility. Fixable independently of this migration (it never touches `WalletManager<W>`).
 
@@ -40,7 +40,7 @@ A single arbitrary P2PKH address is matchable by BIP158 compact block filters. T
 | Feature | Evidence |
 |---|---|
 | HD wallet refresh / send | `src/backend_task/core/mod.rs:230`, `src/context/wallet_lifecycle.rs:353` |
-| Single-key *send* (broadcast is mode-aware) | `src/context/transaction_processing.rs:22-51`; `src/backend_task/core/send_single_key_wallet_payment.rs:176` |
+| Single-key *send* (broadcast is mode-aware) | `src/context/transaction_processing.rs:22-51`; the former `send_single_key_wallet_payment.rs` handler has since been deleted — `CoreTask::SendSingleKeyWalletPayment` now returns `SingleKeyWalletsUnsupported` inline in `src/backend_task/core/mod.rs:306-309` |
 | Raw broadcast | `src/backend_task/core/mod.rs:510-512` |
 | Asset-lock create + finality | `src/backend_task/core/create_asset_lock.rs:42,95` |
 | Generate receive address | `src/backend_task/wallet/generate_receive_address.rs:20` |
@@ -100,7 +100,7 @@ This means DashPay derivation functions (`derive_contact_xpub`, `derive_contact_
 | **Asset-lock funding-flow orchestration** | `AssetLockManager` upstream | (b) | Orchestration wiring in `src/backend_task/core/create_asset_lock.rs`, `src/context/transaction_processing.rs` | `AssetLockManager` |
 | **Token-balance display** | `TokenBalanceChangeSet`/`IdentityTokenSyncInfo` for sync | (b) | Display/UI layer, token balance DB | Balance sync types |
 | **DashPay ECDH encryption** | `derive_auto_accept_private_key` upstream; full ECDH pending Phase-0 parity confirmation | (b) | `src/backend_task/dashpay/encryption.rs` | `derive_auto_accept_private_key` |
-| **Single-key / non-HD wallets** | None — no non-HD wallet type at PR head; not excluded by any documented scope boundary | **(c)** | `src/model/wallet/single_key.rs`, `src/database/single_key_wallet.rs`, `src/backend_task/core/{send_single_key_wallet_payment,refresh_single_key_wallet_info}.rs` | — |
+| **Single-key / non-HD wallets** | None — no non-HD wallet type at PR head; not excluded by any documented scope boundary | **(c)** | `src/model/wallet/single_key.rs`, `src/database/single_key_wallet.rs`; the former `core/{send_single_key_wallet_payment,refresh_single_key_wallet_info}.rs` handlers have since been deleted — both `CoreTask` arms now return `SingleKeyWalletsUnsupported` inline in `src/backend_task/core/mod.rs` | — |
 
 ### Classes Defined
 
@@ -114,4 +114,4 @@ This means DashPay derivation functions (`derive_contact_xpub`, `derive_contact_
 
 **Treatment in the rewrite:** Single-key wallets are mocked — operations return a typed `TaskError::SingleKeyWalletsUnsupported`; existing data is preserved and surfaced read-only. The `SingleKeyBackend` trait boundary makes a future swap a one-file construction change. See [single-key-mock.md](single-key-mock.md) and [open-questions.md #7](open-questions.md).
 
-This also explains the category-2 SPV gap from Section 1: the single-key refresh gap (`refresh_single_key_wallet_info.rs:23`) is rendered moot by the stub — the code path no longer runs under the new backend.
+This also explains the category-2 SPV gap from Section 1: the single-key refresh gap is rendered moot by the stub — the former `refresh_single_key_wallet_info.rs` handler has since been deleted, and the `CoreTask::RefreshSingleKeyWalletInfo` arm now returns `SingleKeyWalletsUnsupported` inline in `src/backend_task/core/mod.rs:216-217`.

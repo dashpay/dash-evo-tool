@@ -40,10 +40,12 @@ These paths share no signer. The sign-time prompt belongs **exclusively** to the
 - Every non-test `sign_with` reference is a doc-comment (`mod.rs:198`, `mod.rs:669`). The only real
   callers are the unit tests inside `single_key.rs`.
 - The one operation whose unit of action *is* an imported single key —
-  `send_single_key_wallet_payment` (`send_single_key_wallet_payment.rs:14`) — currently returns
+  `CoreTask::SendSingleKeyWalletPayment` — currently returns
   `Err(TaskError::SingleKeyWalletsUnsupported)` unconditionally. It is a stub; it does not call
-  `sign_with` at all. Single-key sends are also rejected at `core/mod.rs:218` and `:304`, and
-  `refresh_single_key_wallet_info` (`:16`) is likewise stubbed.
+  `sign_with` at all. Present state: the standalone `send_single_key_wallet_payment.rs` /
+  `refresh_single_key_wallet_info.rs` handler files have since been deleted — both single-key
+  `CoreTask` arms now return `SingleKeyWalletsUnsupported` inline in
+  `src/backend_task/core/mod.rs` (`:306-309` for send, `:216-217` for refresh).
 
 **Verdict on G-1: the feature must INTRODUCE the single-key sign call site, not wire an existing
 one.** There is no production `sign_with` caller to "hook". The honest framing of PROJ-008 is two
@@ -96,8 +98,9 @@ assumed by this plan.
 
 ### 1.1 In scope (needs the prompt)
 
-**One call site: the single-key wallet send.** Concretely, `send_single_key_wallet_payment`
-(`send_single_key_wallet_payment.rs`) must be implemented to sign its funding input(s) with
+**One call site: the single-key wallet send.** Concretely, the `CoreTask::SendSingleKeyWalletPayment`
+handler (the standalone `send_single_key_wallet_payment.rs` file has since been deleted; the arm now
+lives inline in `src/backend_task/core/mod.rs:306-309`) must be implemented to sign its funding input(s) with
 `single_key().sign_with(addr, sighash)`. When that key is passphrase-protected and cold,
 `sign_with` returns `SingleKeyPassphraseRequired { addr }`, which propagates as a `TaskError`
 through `run_backend_task` → `TaskResult::Error` → `AppState` → the visible
@@ -137,7 +140,7 @@ The feature touches three layers; each has a crisp responsibility and API surfac
 
 | Layer | Module(s) | Responsibility | New/changed surface |
 |---|---|---|---|
-| **Domain / backend signing** | `src/wallet_backend/single_key.rs`, `src/backend_task/core/send_single_key_wallet_payment.rs` | Produce `SingleKeyPassphraseRequired { addr }` from a real sign attempt. Owns the unlock cache. | `sign_with` already exists; the send task must *call* it. |
+| **Domain / backend signing** | `src/wallet_backend/single_key.rs`; the `CoreTask::SendSingleKeyWalletPayment` arm in `src/backend_task/core/mod.rs:306-309` (the standalone `send_single_key_wallet_payment.rs` file has since been deleted) | Produce `SingleKeyPassphraseRequired { addr }` from a real sign attempt. Owns the unlock cache. | `sign_with` already exists; the send task must *call* it. |
 | **Error envelope (App Task System)** | `src/backend_task/error.rs` | Carry the typed gate error UI-ward. | **No new variant needed** — `SingleKeyPassphraseRequired { addr }` and `SingleKeyPassphraseIncorrect` already exist and are correctly typed (no String payload). |
 | **Presentation** | `src/ui/components/sign_unlock_prompt.rs` (new), `src/ui/wallets/single_key_send_screen.rs` | Catch the error, prompt, unlock the cache, re-dispatch the stashed task; drop on cancel. | New `SignUnlockPrompt` component + screen-local stash + `display_task_error` override. |
 
@@ -470,8 +473,9 @@ the gate contract). T5 is the **live wiring**, gated behind Open Question Q3.
 - **Size:** ~100–150 lines net (mostly moves).
 
 ### T5 — [GATED on Q3] Single-key send signs via `sign_with` (live wiring)
-- **Files:** `src/backend_task/core/send_single_key_wallet_payment.rs`, and the single-key send
-  rejections at `src/backend_task/core/mod.rs:218,304`.
+- **Files:** the single-key send/refresh handlers, now inline in `src/backend_task/core/mod.rs`
+  (the standalone `send_single_key_wallet_payment.rs` file has since been deleted); the single-key
+  send/refresh rejections live at `src/backend_task/core/mod.rs:306-309` and `:216-217`.
 - **Scope:** un-stub the send; build/sign the funding input(s) via `single_key().sign_with(addr,
   sighash)`; let `SingleKeyPassphraseRequired` propagate. **This is the larger send feature** (UTXO
   selection / tx build / fee / broadcast) — likely itself decomposed; out of scope unless the user

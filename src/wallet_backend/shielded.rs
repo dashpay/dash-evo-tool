@@ -246,6 +246,29 @@ impl ShieldedView {
         )
     }
 
+    /// Clear the nullifier-sync cursor for a wallet on `network`.
+    ///
+    /// Removes the wallet's `shielded_wallet_meta` row so a subsequent
+    /// [`Self::get_nullifier_sync_info`] returns the zero cursor. Used when a
+    /// wallet is forgotten: leaving the cursor behind would make a
+    /// same-seed-hash re-import skip already-spent scan windows. A missing
+    /// sidecar is a no-op.
+    pub fn delete_shielded_wallet_meta(
+        &self,
+        wallet_seed_hash: &WalletSeedHash,
+        network: &str,
+    ) -> rusqlite::Result<usize> {
+        if !self.open_existing()? {
+            return Ok(0);
+        }
+        let guard = self.conn.lock().expect("shielded sidecar mutex poisoned");
+        let conn = guard.as_ref().expect("opened above");
+        conn.execute(
+            "DELETE FROM shielded_wallet_meta WHERE wallet_seed_hash = ?1 AND network = ?2",
+            params![wallet_seed_hash.as_slice(), network],
+        )
+    }
+
     /// Last nullifier sync `(height, unix_timestamp)`. Zeroes when the
     /// sidecar or the row is absent — same contract as the legacy table.
     pub fn get_nullifier_sync_info(
@@ -686,6 +709,40 @@ mod tests {
             )
             .expect("count row");
         assert_eq!(cnt, 1, "row landed in the sidecar file");
+    }
+
+    /// F17/F20 — clearing the nullifier cursor resets the sync info to the
+    /// zero cursor so a same-seed-hash re-import does not skip scan windows.
+    #[test]
+    fn delete_shielded_wallet_meta_resets_nullifier_cursor() {
+        let tmp = tempdir().expect("tempdir");
+        let view = make_view(tmp.path());
+        let seed: WalletSeedHash = [0x77; 32];
+
+        view.set_nullifier_sync_info(&seed, "testnet", 4242, 9999)
+            .expect("set cursor");
+        assert_eq!(
+            view.get_nullifier_sync_info(&seed, "testnet").unwrap(),
+            (4242, 9999),
+            "precondition: cursor is set before deletion"
+        );
+
+        let deleted = view
+            .delete_shielded_wallet_meta(&seed, "testnet")
+            .expect("delete meta");
+        assert_eq!(deleted, 1, "the cursor row is removed");
+        assert_eq!(
+            view.get_nullifier_sync_info(&seed, "testnet").unwrap(),
+            (0, 0),
+            "the cursor resets to zero after deletion"
+        );
+
+        // Idempotent — a second delete removes nothing and still reads zero.
+        assert_eq!(
+            view.delete_shielded_wallet_meta(&seed, "testnet")
+                .expect("idempotent delete"),
+            0
+        );
     }
 
     /// TC-SH-005 — balance read via the adapter returns the sidecar

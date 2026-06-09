@@ -745,6 +745,156 @@ impl WalletBackend {
         Ok(())
     }
 
+    /// Wipe every piece of DET-local state for a forgotten wallet — the
+    /// encrypted seed-envelope vault, the session secret cache, the wallet-meta
+    /// sidecar, the plaintext shielded-note rows and nullifier cursor, and the
+    /// in-memory `id_map`/`wallets`/snapshot registration.
+    ///
+    /// This is the synchronous secret-bearing cleanup. The upstream
+    /// (watch-only, seedless) persistor removal is the sole async step and is
+    /// driven separately via [`Self::remove_upstream_wallet`]. Persisted secret
+    /// state is removed before the in-memory handle, so a mid-failure crash
+    /// never leaves a recoverable seed behind a forgotten in-memory entry.
+    /// Resilient to partial failure: each step is logged and the rest still
+    /// run. Idempotent — forgetting an unknown wallet is a no-op success.
+    pub(crate) fn forget_wallet_local_state(
+        &self,
+        seed_hash: &WalletSeedHash,
+        wallet_id: Option<WalletId>,
+    ) -> Result<(), TaskError> {
+        // Encrypted seed-envelope vault (the JIT decrypt source).
+        if let Err(e) = self.wallet_seeds().delete(seed_hash) {
+            tracing::warn!(
+                wallet = %hex::encode(seed_hash),
+                error = ?e,
+                "Failed to delete seed envelope from vault"
+            );
+        }
+
+        // Session secret cache (any remembered plaintext seed).
+        self.inner.secret_access.forget(&Self::hd_scope(seed_hash));
+
+        // DET wallet-meta sidecar.
+        if let Err(e) = self.wallet_meta().delete(self.inner.network, seed_hash) {
+            tracing::warn!(
+                wallet = %hex::encode(seed_hash),
+                error = ?e,
+                "Failed to delete wallet-meta sidecar"
+            );
+        }
+
+        // Shielded notes + nullifier cursor (plaintext Orchard state).
+        let network_str = self.inner.network.to_string();
+        if let Err(e) = self
+            .inner
+            .shielded
+            .delete_shielded_notes(seed_hash, &network_str)
+        {
+            tracing::warn!(
+                wallet = %hex::encode(seed_hash),
+                error = ?e,
+                "Failed to delete shielded notes"
+            );
+        }
+        if let Err(e) = self
+            .inner
+            .shielded
+            .delete_shielded_wallet_meta(seed_hash, &network_str)
+        {
+            tracing::warn!(
+                wallet = %hex::encode(seed_hash),
+                error = ?e,
+                "Failed to clear shielded nullifier cursor"
+            );
+        }
+
+        // In-memory maps + snapshot registration.
+        if let Some(wallet_id) = wallet_id {
+            self.inner.id_map.write()?.remove(seed_hash);
+            self.inner.wallets.write()?.remove(&wallet_id);
+            self.inner.snapshots.forget_wallet(seed_hash, &wallet_id);
+        }
+
+        Ok(())
+    }
+
+    /// The upstream `WalletId` DET has registered for `seed_hash`, if any.
+    /// Sync, lock-free-ish (one read lock). Used by the sync wallet-removal
+    /// path to drive the async upstream persistor removal off the main thread.
+    pub(crate) fn registered_wallet_id(&self, seed_hash: &WalletSeedHash) -> Option<WalletId> {
+        self.inner.id_map.read().ok()?.get(seed_hash).copied()
+    }
+
+    /// Remove a wallet from the upstream `platform-wallet.sqlite` persistor
+    /// (also detaches the shielded coordinator). The watch-only persistor row
+    /// carries no seed, so this is safe to drive asynchronously after the sync
+    /// secret-bearing cleanup has already run. A `WalletNotFound` race is
+    /// success.
+    pub(crate) async fn remove_upstream_wallet(
+        &self,
+        wallet_id: &WalletId,
+    ) -> Result<(), TaskError> {
+        use platform_wallet::error::PlatformWalletError;
+        match self.inner.pwm.remove_wallet(wallet_id).await {
+            Ok(_) | Err(PlatformWalletError::WalletNotFound(_)) => Ok(()),
+            Err(e) => Err(TaskError::WalletBackend {
+                source: Box::new(e),
+            }),
+        }
+    }
+
+    /// Permanently wipe the DET-local state of EVERY wallet on this network —
+    /// the "delete all local data" sweep (F60). Enumerates every persisted HD
+    /// wallet (the wallet-meta sidecar) and every imported single key (the
+    /// single-key sidecar), so it reaches wallets that were never loaded into
+    /// memory this session, not just the in-memory set.
+    ///
+    /// Synchronous: it wipes the secret-bearing state (seed-envelope vault,
+    /// single-key vault, sidecars, shielded notes, session cache, in-memory
+    /// maps) with no runtime. Returns the upstream `WalletId`s whose watch-only
+    /// persistor rows still need the async [`Self::remove_upstream_wallet`]
+    /// removal — the caller drives those off-thread. Resilient to partial
+    /// failure.
+    pub(crate) fn forget_all_wallets_local(&self) -> Vec<WalletId> {
+        let network = self.inner.network;
+
+        // HD wallets: enumerate from the persisted wallet-meta sidecar so a
+        // never-loaded wallet is still wiped.
+        let mut upstream_ids = Vec::new();
+        for (seed_hash, _meta) in self.wallet_meta().list(network) {
+            let wallet_id = self.registered_wallet_id(&seed_hash);
+            if let Some(id) = wallet_id {
+                upstream_ids.push(id);
+            }
+            if let Err(e) = self.forget_wallet_local_state(&seed_hash, wallet_id) {
+                tracing::warn!(
+                    wallet = %hex::encode(seed_hash),
+                    error = ?e,
+                    "Failed to wipe local HD wallet state during clear-all"
+                );
+            }
+        }
+
+        // Single-key wallets: enumerate from the persisted single-key sidecar
+        // and forget each (vault row + sidecar meta + index entry).
+        let single_key = self.single_key();
+        for key in single_key.list_persisted() {
+            if let Err(e) = single_key.forget(&key.address) {
+                tracing::warn!(
+                    address = %key.address,
+                    error = ?e,
+                    "Failed to forget single-key wallet during clear-all"
+                );
+            }
+        }
+
+        // Belt-and-suspenders: drop any remaining session-cached secrets
+        // (single-key forget does not clear the session cache).
+        self.forget_all_secrets();
+
+        upstream_ids
+    }
+
     /// Start chain sync and the periodic upstream coordinators.
     ///
     /// Upstream has no single `PlatformWalletManager::start()`; this

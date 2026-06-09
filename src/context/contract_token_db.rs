@@ -672,7 +672,7 @@ impl AppContext {
         Ok(self.wallet_backend()?.token_balances())
     }
 
-    pub fn remove_wallet(&self, seed_hash: &WalletSeedHash) -> Result<(), TaskError> {
+    pub fn remove_wallet(self: &Arc<Self>, seed_hash: &WalletSeedHash) -> Result<(), TaskError> {
         // Acquire write lock first to ensure atomicity — if the lock fails,
         // no changes have been made to the database.
         let mut wallets = self.wallets.write()?;
@@ -687,6 +687,35 @@ impl AppContext {
         drop(wallets);
 
         self.has_wallet.store(has_wallet, Ordering::Relaxed);
+
+        // Permanently wipe the wallet's secret-bearing state so removal is not
+        // recoverable: the encrypted seed-envelope vault, the session secret
+        // cache, the wallet-meta sidecar, and the plaintext shielded-note rows
+        // plus the nullifier cursor (F17/F20). Synchronous so the secrets are
+        // gone before the UI reports success. Best-effort when the backend is
+        // not wired yet — a pre-wire context has none of that state.
+        if let Ok(backend) = self.wallet_backend() {
+            let upstream_id = backend.registered_wallet_id(seed_hash);
+            if let Err(e) = backend.forget_wallet_local_state(seed_hash, upstream_id) {
+                tracing::warn!(
+                    wallet = %hex::encode(seed_hash),
+                    error = ?e,
+                    "Failed to wipe local wallet secret state on removal"
+                );
+            }
+
+            // The upstream (watch-only, seedless) persistor row removal is the
+            // sole async step; it carries no secret, so drive it off-thread.
+            if let Some(wallet_id) = upstream_id {
+                let backend = Arc::clone(&backend);
+                self.subtasks
+                    .spawn_sync("wallet_upstream_removal", async move {
+                        if let Err(error) = backend.remove_upstream_wallet(&wallet_id).await {
+                            tracing::warn!(%error, "Upstream wallet removal failed");
+                        }
+                    });
+            }
+        }
 
         Ok(())
     }

@@ -166,6 +166,24 @@ impl SnapshotStore {
         }
     }
 
+    /// Drop every trace of a forgotten wallet: its published snapshot, its
+    /// `WalletId`-keyed registration, and its event-sourced transaction log.
+    /// Without this a removed wallet's balance and history keep being read and
+    /// re-published on the next `EventBridge` recompute.
+    pub(super) fn forget_wallet(&self, seed_hash: &WalletSeedHash, wallet_id: &WalletId) {
+        self.snapshots.rcu(|current| {
+            let mut next = HashMap::clone(current);
+            next.remove(seed_hash);
+            next
+        });
+        if let Ok(mut map) = self.registered.lock() {
+            map.remove(wallet_id);
+        }
+        if let Ok(mut log) = self.tx_log.lock() {
+            log.remove(wallet_id);
+        }
+    }
+
     /// Read a wallet's published snapshot. Lock-free, infallible. An absent
     /// entry (pre-first-sync) yields the default empty snapshot, which the UI
     /// renders as "syncing".

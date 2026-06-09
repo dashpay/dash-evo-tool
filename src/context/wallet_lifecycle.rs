@@ -23,8 +23,30 @@ impl AppContext {
         Ok(())
     }
 
-    pub fn clear_network_database(&self) -> Result<(), TaskError> {
+    pub fn clear_network_database(self: &Arc<Self>) -> Result<(), TaskError> {
         self.db.clear_network_data(self.network)?;
+
+        // F60: permanently delete every wallet's secret-bearing state so the
+        // "delete all local data" promise holds — wallets must NOT rehydrate
+        // on next launch and encrypted seeds must NOT persist. Clear the
+        // persisted state (seed-envelope vault, wallet-meta + single-key
+        // sidecars, shielded notes, session cache) BEFORE the in-memory maps
+        // below, so a mid-failure crash cannot strand a recoverable seed. The
+        // upstream (watch-only) persistor rows have no seed and are removed
+        // asynchronously off the main thread. Best-effort when the backend is
+        // not wired yet — there is no such state in that case.
+        if let Ok(backend) = self.wallet_backend() {
+            let upstream_ids = backend.forget_all_wallets_local();
+            for wallet_id in upstream_ids {
+                let backend = Arc::clone(&backend);
+                self.subtasks
+                    .spawn_sync("wallet_upstream_removal", async move {
+                        if let Err(error) = backend.remove_upstream_wallet(&wallet_id).await {
+                            tracing::warn!(%error, "Upstream wallet removal failed during clear");
+                        }
+                    });
+            }
+        }
 
         // D4d: drain the DashPay k/v sidecar. The Global-scoped overlays
         // (blocked / rejected markers, timestamps, reverse address map)
@@ -1389,5 +1411,169 @@ mod tests {
             ctx.has_wallet.load(Ordering::Relaxed),
             "the has_wallet flag must flip true after a successful registration"
         );
+    }
+
+    /// F17/F20 — removing a wallet wipes its secret-bearing state: the
+    /// seed-envelope vault entry, the plaintext shielded notes, the shielded
+    /// balance, and the nullifier cursor. Before the fix, `remove_wallet` only
+    /// touched SQLite + the in-memory map, leaving the encrypted seed and the
+    /// plaintext Orchard notes (plus the nullifier cursor) on disk.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn remove_wallet_wipes_seed_envelope_and_shielded_state() {
+        let (ctx, sender, _tmp) = offline_testnet_context();
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("ensure_wallet_backend should succeed offline");
+
+        let seed = [0xA1u8; 64];
+        let wallet =
+            crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
+                .expect("build wallet");
+        let seed_hash = wallet.seed_hash();
+        ctx.register_wallet(wallet, &seed, WalletOrigin::Fresh)
+            .expect("register wallet");
+
+        let backend = ctx.wallet_backend().expect("backend wired");
+
+        // Seed the shielded sidecar: one note + a nullifier cursor.
+        let cmx = [0x01u8; 32];
+        let nullifier = [0x02u8; 32];
+        backend
+            .shielded()
+            .insert_shielded_note(
+                &seed_hash,
+                &crate::wallet_backend::InsertShieldedNote {
+                    note_data: &[0u8; 8],
+                    position: 0,
+                    cmx: &cmx,
+                    nullifier: &nullifier,
+                    block_height: 100,
+                    value: 50,
+                    network: "testnet",
+                },
+            )
+            .expect("insert shielded note");
+        backend
+            .shielded()
+            .set_nullifier_sync_info(&seed_hash, "testnet", 100, 200)
+            .expect("set nullifier cursor");
+
+        // Preconditions: the seed envelope and shielded state are present.
+        assert!(
+            WalletSeedView::new(&ctx.secret_store())
+                .get(&seed_hash)
+                .expect("vault read")
+                .is_some(),
+            "precondition: the seed envelope must exist before removal"
+        );
+        assert_eq!(
+            backend
+                .shielded()
+                .get_shielded_balance(&seed_hash, "testnet")
+                .unwrap(),
+            50
+        );
+
+        ctx.remove_wallet(&seed_hash).expect("remove wallet");
+
+        // The encrypted seed envelope (the JIT decrypt source) is gone.
+        assert!(
+            WalletSeedView::new(&ctx.secret_store())
+                .get(&seed_hash)
+                .expect("vault read after removal")
+                .is_none(),
+            "the seed envelope must be deleted from the vault on removal"
+        );
+        // Plaintext shielded notes, balance, and the nullifier cursor are gone.
+        assert!(
+            backend
+                .shielded()
+                .get_unspent_shielded_notes(&seed_hash, "testnet")
+                .unwrap()
+                .is_empty(),
+            "shielded notes must be deleted on removal"
+        );
+        assert_eq!(
+            backend
+                .shielded()
+                .get_shielded_balance(&seed_hash, "testnet")
+                .unwrap(),
+            0,
+            "shielded balance must be zero after removal"
+        );
+        assert_eq!(
+            backend
+                .shielded()
+                .get_nullifier_sync_info(&seed_hash, "testnet")
+                .unwrap(),
+            (0, 0),
+            "the nullifier cursor must reset to zero after removal"
+        );
+
+        backend.shutdown().await;
+    }
+
+    /// F60 — "delete all local data" must leave no wallet recoverable: the
+    /// wallet-meta sidecar (which the cold-boot picker reads) and the
+    /// seed-envelope vault (which holds the encrypted seed) must both be
+    /// empty. Before the fix, `clear_network_database` cleared only legacy
+    /// data.db + the in-memory maps, so wallets rehydrated on next launch and
+    /// encrypted seeds persisted.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn clear_network_database_wipes_wallet_meta_and_seed_envelope() {
+        let (ctx, sender, _tmp) = offline_testnet_context();
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("ensure_wallet_backend should succeed offline");
+
+        let seed = [0xB2u8; 64];
+        let wallet =
+            crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
+                .expect("build wallet");
+        let seed_hash = wallet.seed_hash();
+        ctx.register_wallet(wallet, &seed, WalletOrigin::Fresh)
+            .expect("register wallet");
+
+        // Preconditions: both the meta sidecar and the seed envelope exist.
+        assert!(
+            WalletMetaView::new(&ctx.app_kv())
+                .get(Network::Testnet, &seed_hash)
+                .is_some(),
+            "precondition: wallet-meta sidecar must exist before clear"
+        );
+        assert!(
+            WalletSeedView::new(&ctx.secret_store())
+                .get(&seed_hash)
+                .expect("vault read")
+                .is_some(),
+            "precondition: seed envelope must exist before clear"
+        );
+
+        ctx.clear_network_database()
+            .expect("clear_network_database should succeed");
+
+        // The wallet must not rehydrate: its meta and encrypted seed are gone.
+        assert!(
+            WalletMetaView::new(&ctx.app_kv())
+                .get(Network::Testnet, &seed_hash)
+                .is_none(),
+            "wallet-meta sidecar must be empty after clear (no rehydration)"
+        );
+        assert!(
+            WalletSeedView::new(&ctx.secret_store())
+                .get(&seed_hash)
+                .expect("vault read after clear")
+                .is_none(),
+            "seed envelope must be deleted from the vault after clear"
+        );
+        assert!(
+            ctx.wallets.read().unwrap().is_empty(),
+            "the in-memory wallet map must be empty after clear"
+        );
+
+        ctx.wallet_backend()
+            .expect("backend wired")
+            .shutdown()
+            .await;
     }
 }

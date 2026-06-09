@@ -1,8 +1,8 @@
 # rs-platform-wallet: own and expose the per-address platform nonce (advance-on-submit + local reader)
 
-> Draft for `dashpay/platform`. Citations are pinned to platform rev
-> `9e1248cb0ae46c6fbfc5bd9d92540bec8c6d00e8` and key-wallet (rust-dashcore)
-> rev `eb889af13f667ed39c35e8e8a0830eeedf523476`.
+> Filed upstream as [dashpay/platform#3825](https://github.com/dashpay/platform/issues/3825) (2026-06-09).
+>
+> Citations are pinned to platform rev `9e1248cb0ae46c6fbfc5bd9d92540bec8c6d00e8` and key-wallet (rust-dashcore) rev `eb889af13f667ed39c35e8e8a0830eeedf523476`.
 
 ### User Story
 
@@ -304,8 +304,7 @@ mechanism below is adjacent but fails one of those two requirements.
   the synced value … never lands in a broadcast transition." That is the current
   fetch-per-send stance this proposal asks to revisit: making the provider nonce
   *authoritative and locally readable* is precisely the change, so the "cosmetic"
-  framing is the status quo we want to upgrade — call this out explicitly when
-  posting.
+  framing is the status quo we want to upgrade.
 - **#3739** (open, rs-sdk) — `address_sync` persists `nonce=0` for addresses
   first surfaced via incremental RPC. Sync-layer *data quality*; complementary
   — a correct owned nonce depends on sync writing the right value in the first

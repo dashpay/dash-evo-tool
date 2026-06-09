@@ -232,6 +232,12 @@ impl ContactRequests {
         // Only fetch if we have a selected identity
         if let Some(identity) = &self.selected_identity {
             self.loading = true;
+            // Mark the attempt at dispatch time, not on success. A failed load
+            // resets `loading` in `display_message` / `display_task_error` but
+            // leaves this flag set, so the auto-fetch gate fires exactly once
+            // and a transient error can't drive a re-dispatch storm. A fresh
+            // attempt is opted into via `refresh()` or an identity change.
+            self.has_fetched_requests = true;
 
             let task = BackendTask::DashPayTask(Box::new(DashPayTask::LoadContactRequests {
                 identity: identity.clone(),

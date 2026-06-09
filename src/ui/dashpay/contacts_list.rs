@@ -113,6 +113,12 @@ impl ContactsList {
         if let Some(identity) = &self.selected_identity {
             self.loading = true;
             self.message = None; // Clear any existing message
+            // Mark the attempt at dispatch time, not on success. The error
+            // handlers reset `loading` but leave this flag set, so a failed
+            // load fires the auto-fetch gate exactly once instead of
+            // re-dispatching every frame. `refresh()` / an identity change
+            // opts back into a fresh attempt.
+            self.has_loaded = true;
 
             let task = BackendTask::DashPayTask(Box::new(DashPayTask::LoadContacts {
                 identity: identity.clone(),

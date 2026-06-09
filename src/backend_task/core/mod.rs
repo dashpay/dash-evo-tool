@@ -266,6 +266,11 @@ impl AppContext {
                 if request.subtract_fee_from_amount || request.override_fee.is_some() {
                     return Err(TaskError::WalletPaymentOptionUnsupported);
                 }
+                // Backend-authoritative input validation: reject an empty
+                // recipient list and any zero-amount recipient before building
+                // a transaction (model validator is the single source of truth).
+                let amounts: Vec<u64> = request.recipients.iter().map(|r| r.amount_duffs).collect();
+                crate::model::wallet::validate_payment_recipients(&amounts)?;
                 let backend = self.wallet_backend()?;
                 let seed_hash = {
                     let guard = wallet.read()?;

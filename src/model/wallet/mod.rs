@@ -54,6 +54,30 @@ pub const fn coin_type_for_network(network: Network) -> u32 {
     }
 }
 
+/// Stateless backend-authoritative validation for a wallet payment's
+/// recipient amounts.
+///
+/// Rejects a payment with no recipients and any recipient whose amount is
+/// zero — both would build a degenerate transaction that wastes the network
+/// fee without moving the intended funds. Takes raw duff amounts so it carries
+/// no dependency on the backend-task recipient type and stays trivially
+/// unit-testable; UI screens may call it for instant feedback, but the backend
+/// task is the authoritative caller (see CLAUDE.md validation-placement rule).
+///
+/// # Errors
+///
+/// - [`TaskError::PaymentNoRecipients`] when `amounts_duffs` is empty.
+/// - [`TaskError::PaymentZeroAmount`] when any amount is `0`.
+pub fn validate_payment_recipients(amounts_duffs: &[u64]) -> Result<(), TaskError> {
+    if amounts_duffs.is_empty() {
+        return Err(TaskError::PaymentNoRecipients);
+    }
+    if amounts_duffs.contains(&0) {
+        return Err(TaskError::PaymentZeroAmount);
+    }
+    Ok(())
+}
+
 /// BIP44 account 0 path for Dash mainnet: `m/44'/5'/0'`.
 pub const DASH_BIP44_ACCOUNT_0_PATH_MAINNET: [ChildNumber; 3] = [
     ChildNumber::Hardened {
@@ -3391,5 +3415,45 @@ mod tests {
                 );
             }
         }
+    }
+
+    // -------------------------------------------------------------------
+    // F34: backend-authoritative payment-recipient validation.
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn validate_payment_recipients_accepts_positive_amounts() {
+        assert!(validate_payment_recipients(&[1]).is_ok());
+        assert!(validate_payment_recipients(&[100_000, 250_000, 1]).is_ok());
+    }
+
+    #[test]
+    fn validate_payment_recipients_rejects_empty_list() {
+        assert!(matches!(
+            validate_payment_recipients(&[]),
+            Err(TaskError::PaymentNoRecipients)
+        ));
+    }
+
+    #[test]
+    fn validate_payment_recipients_rejects_zero_amount() {
+        assert!(matches!(
+            validate_payment_recipients(&[0]),
+            Err(TaskError::PaymentZeroAmount)
+        ));
+        // A zero anywhere in the list is rejected, not just the first slot.
+        assert!(matches!(
+            validate_payment_recipients(&[100_000, 0, 50_000]),
+            Err(TaskError::PaymentZeroAmount)
+        ));
+    }
+
+    #[test]
+    fn validate_payment_recipients_empty_takes_precedence_over_zero_check() {
+        // An empty list reports the no-recipients error, never the zero error.
+        assert!(matches!(
+            validate_payment_recipients(&[]),
+            Err(TaskError::PaymentNoRecipients)
+        ));
     }
 }

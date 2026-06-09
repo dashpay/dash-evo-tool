@@ -305,6 +305,7 @@ mechanism below is adjacent but fails one of those two requirements.
   fetch-per-send stance this proposal asks to revisit: making the provider nonce
   *authoritative and locally readable* is precisely the change, so the "cosmetic"
   framing is the status quo we want to upgrade.
+- **#3650** (open) — `fix(sdk): address-sync no longer silently discards balance changes for post-snapshot addresses (Found-025)`. The sync-layer (rs-sdk) fix that ensures freshly-derived addresses and their balance changes actually land in `provider.found` (previously a post-snapshot address was silently dropped, never reaching `result.found`/`on_address_found`). It is the **foundation this proposal builds on**: a locally-owned, advanced nonce is only correct if `found` is completely and correctly populated by sync. It is also the PR whose review introduced the "cosmetic nonce / fetch-per-send" rationale — clarified in its stacked follow-up #3784 — that this proposal revisits. (Comment context: the "callers own the nonce" delegation at `apply.rs:196` was authored by the same maintainer in `4809f802` on 2026-04-17.)
 - **#3739** (open, rs-sdk) — `address_sync` persists `nonce=0` for addresses
   first surfaced via incremental RPC. Sync-layer *data quality*; complementary
   — a correct owned nonce depends on sync writing the right value in the first

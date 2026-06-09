@@ -15,6 +15,7 @@
 use dash_sdk::dpp::dashcore::secp256k1::Secp256k1;
 use dash_sdk::dpp::dashcore::{Address, Network, PrivateKey, PublicKey};
 use eframe::egui::{self, Context, RichText, Ui};
+use zeroize::Zeroizing;
 
 use crate::backend_task::error::TaskError;
 use crate::ui::components::password_input::PasswordInput;
@@ -25,7 +26,10 @@ use crate::ui::theme::DashColors;
 const ALIAS_MAX_CHARS: usize = 64;
 
 /// Outcome of a single frame of [`ImportSingleKeyDialog::show`].
-#[derive(Debug, Default, Clone)]
+///
+/// `Debug` is hand-written so the embedded [`ImportSingleKeyRequest`]'s
+/// secret material never leaks through a derived `{:?}`.
+#[derive(Default, Clone)]
 pub struct ImportSingleKeyResponse {
     /// `Some` only on the frame the user clicks **Add to wallets** with a
     /// valid WIF. Carries the WIF and the user-supplied alias (trimmed)
@@ -40,9 +44,16 @@ pub struct ImportSingleKeyResponse {
 }
 
 /// Request emitted when the user confirms a valid WIF.
-#[derive(Debug, Clone)]
+///
+/// Holds raw secret material (`wif`, `passphrase`). The WIF is wrapped in
+/// [`Zeroizing`] so the copy wipes on drop; `Debug` is hand-written to redact
+/// both — deriving it would dump the private key and passphrase into logs or
+/// panic backtraces.
+#[derive(Clone)]
 pub struct ImportSingleKeyRequest {
-    pub wif: String,
+    /// WIF-encoded private key. Wrapped in [`Zeroizing`]; derefs to `&str`
+    /// for callers that need the raw text.
+    pub wif: Zeroizing<String>,
     pub alias: Option<String>,
     /// Address preview shown to the user — handed back so the parent can
     /// echo it in a success message without re-deriving.
@@ -54,6 +65,35 @@ pub struct ImportSingleKeyRequest {
     /// Optional hint shown next to the unlock prompt for protected
     /// imports.
     pub passphrase_hint: Option<String>,
+}
+
+impl std::fmt::Debug for ImportSingleKeyRequest {
+    /// Redacts `wif` and `passphrase` (presence + length only) so neither
+    /// the private key nor the passphrase can leak through `{:?}`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ImportSingleKeyRequest")
+            .field("wif", &format_args!("[redacted; len {}]", self.wif.len()))
+            .field("alias", &self.alias)
+            .field("address_preview", &self.address_preview)
+            .field(
+                "passphrase",
+                &self
+                    .passphrase
+                    .as_ref()
+                    .map(|p| format!("[redacted; len {}]", p.len())),
+            )
+            .field("passphrase_hint", &self.passphrase_hint)
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for ImportSingleKeyResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ImportSingleKeyResponse")
+            .field("confirmed", &self.confirmed)
+            .field("cancelled", &self.cancelled)
+            .finish()
+    }
 }
 
 /// Modal dialog state. Hold one per wallets screen; reset between
@@ -259,7 +299,7 @@ impl ImportSingleKeyDialog {
                 };
                 let alias = self.alias_input.trim().to_string();
                 response.confirmed = Some(ImportSingleKeyRequest {
-                    wif: self.wif_input.text().to_string(),
+                    wif: Zeroizing::new(self.wif_input.text().to_string()),
                     alias: (!alias.is_empty()).then_some(alias),
                     address_preview: addr,
                     passphrase,
@@ -349,6 +389,62 @@ mod tests {
     /// dialog test in sync with the backend avoids a third magic string.
     fn known_testnet_wif() -> &'static str {
         "cMahea7zqjxrtgAbB7LSGbcQUr1uX1ojuat9jZodMN8rFTv2sfUK"
+    }
+
+    /// F92 — the hand-written `Debug` must redact `wif` and `passphrase`,
+    /// in every representation. We assert the secret text is absent and that
+    /// neither its hex nor its decimal-byte-array form leaks.
+    #[test]
+    fn debug_redacts_wif_and_passphrase_no_leak() {
+        let wif = known_testnet_wif();
+        let passphrase = "correct-horse-battery-staple";
+        let request = ImportSingleKeyRequest {
+            wif: Zeroizing::new(wif.to_string()),
+            alias: Some("primary".into()),
+            address_preview: "yPreviewAddr".into(),
+            passphrase: Some(passphrase.to_string()),
+            passphrase_hint: Some("the usual".into()),
+        };
+
+        // Cover the request directly and nested in the response.
+        let response = ImportSingleKeyResponse {
+            confirmed: Some(request.clone()),
+            cancelled: false,
+        };
+        let dbgs = [format!("{request:?}"), format!("{response:?}")];
+
+        let wif_hex = hex::encode(wif.as_bytes());
+        let pp_hex = hex::encode(passphrase.as_bytes());
+        let wif_decimal = format!("{:?}", wif.as_bytes()); // decimal byte-array form
+        let pp_decimal = format!("{:?}", passphrase.as_bytes());
+
+        for dbg in &dbgs {
+            assert!(!dbg.contains(wif), "debug leaked the WIF text: {dbg}");
+            assert!(
+                !dbg.contains(passphrase),
+                "debug leaked the passphrase text: {dbg}"
+            );
+            assert!(!dbg.contains(&wif_hex), "debug leaked the WIF hex: {dbg}");
+            assert!(
+                !dbg.contains(&pp_hex),
+                "debug leaked the passphrase hex: {dbg}"
+            );
+            assert!(
+                !dbg.contains(&wif_decimal),
+                "debug leaked the WIF byte array: {dbg}"
+            );
+            assert!(
+                !dbg.contains(&pp_decimal),
+                "debug leaked the passphrase byte array: {dbg}"
+            );
+            assert!(
+                dbg.contains("[redacted"),
+                "debug must mark redaction: {dbg}"
+            );
+        }
+        // Non-secret fields are still visible for diagnostics.
+        assert!(dbgs[0].contains("yPreviewAddr"));
+        assert!(dbgs[0].contains("primary"));
     }
 
     /// TC-SK-005 (typed-error path): an invalid WIF surfaces the inline

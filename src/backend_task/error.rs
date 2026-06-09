@@ -198,6 +198,15 @@ pub enum TaskError {
         source: Box<dash_sdk::dpp::dashcore::key::Error>,
     },
 
+    /// The user supplied an uncompressed-format WIF. Imported keys are
+    /// rebuilt in compressed form on every launch, so storing an
+    /// uncompressed key would make its address change after a restart.
+    /// Rejected at import so the displayed address always stays stable.
+    #[error(
+        "This private key uses an older uncompressed format that is not supported. Re-export the key in compressed format and import it again."
+    )]
+    UncompressedWifUnsupported,
+
     /// The single-key metadata sidecar (alias / network / address index)
     /// could not be read or written. Backed by the cross-network
     /// `det-app.sqlite` k/v file the wallet-meta sidecar also uses;

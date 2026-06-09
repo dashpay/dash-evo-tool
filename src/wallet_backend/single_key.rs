@@ -2,10 +2,9 @@
 //!
 //! Each imported private key lives in the encrypted secret vault under the
 //! label `single_key_priv.<base58_addr>`, scoped to a fixed per-backend
-//! `WalletId` (`SINGLE_KEY_NAMESPACE_ID`). The dot separator replaces the
-//! original design's colon because the upstream label allowlist is
-//! `^[A-Za-z0-9._-]{1,64}$` and rejects colons (see CMT-006 in
-//! `platform-wallet-storage`).
+//! `WalletId` (built from [`SINGLE_KEY_NAMESPACE_BYTES`] via
+//! [`single_key_namespace_id`]). The separator is a dot because the upstream
+//! label allowlist is `^[A-Za-z0-9._-]{1,64}$` and rejects colons.
 //!
 //! `SingleKeyView` is the only doorway DET code uses to import, list,
 //! forget, or sign with imported keys. WIF parsing goes through
@@ -168,6 +167,13 @@ impl<'a> SingleKeyView<'a> {
         let priv_key = PrivateKey::from_wif(wif).map_err(|source| TaskError::InvalidWif {
             source: Box::new(source),
         })?;
+        // The cold-boot rebuild reconstructs the key in compressed form
+        // (`PrivateKey::from_byte_array` always sets `compressed = true`), so
+        // an uncompressed import would change its address after a restart.
+        // Reject it here to keep the displayed address stable.
+        if !priv_key.compressed {
+            return Err(TaskError::UncompressedWifUnsupported);
+        }
         let secp = Secp256k1::new();
         let pub_key = PublicKey {
             compressed: priv_key.compressed,
@@ -176,9 +182,13 @@ impl<'a> SingleKeyView<'a> {
         let address = Address::p2pkh(&pub_key, self.network);
         let address_str = address.to_string();
 
-        let raw: [u8; 32] = priv_key.inner[..]
-            .try_into()
-            .map_err(|_| TaskError::SingleKeyCryptoFailure)?;
+        // Extracted WIF bytes wrapped in `Zeroizing` so the stack copy wipes
+        // on drop instead of lingering after the entry is built (SEC-103).
+        let raw: Zeroizing<[u8; 32]> = Zeroizing::new(
+            priv_key.inner[..]
+                .try_into()
+                .map_err(|_| TaskError::SingleKeyCryptoFailure)?,
+        );
 
         let entry = match passphrase.passphrase.as_deref() {
             Some(p) if !p.is_empty() => {
@@ -190,7 +200,7 @@ impl<'a> SingleKeyView<'a> {
                 let pub_bytes = pub_key.inner.serialize().to_vec();
                 SingleKeyEntry::protected(&raw, p, passphrase.hint.clone(), pub_bytes)?
             }
-            _ => SingleKeyEntry::unprotected(raw),
+            _ => SingleKeyEntry::unprotected(*raw),
         };
         let payload = entry.encode()?;
 
@@ -788,6 +798,68 @@ mod tests {
             "expected InvalidWif, got {err:?}"
         );
         assert!(view.list().is_empty());
+    }
+
+    /// Build an uncompressed-format WIF for the same key bytes `known_wif`
+    /// encodes, so the reject test exercises the compression flag rather
+    /// than a different key.
+    fn uncompressed_wif() -> String {
+        let mut compressed = PrivateKey::from_wif(known_wif()).expect("parse known wif");
+        compressed.compressed = false;
+        compressed.to_wif()
+    }
+
+    /// F10 — an uncompressed-format WIF is rejected at import with the typed
+    /// `UncompressedWifUnsupported` variant; no vault or index write happens.
+    #[test]
+    fn f10_uncompressed_wif_rejected_at_import() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let (store, index, network) = fresh_view(dir.path(), Network::Testnet);
+        let view = SingleKeyView {
+            secret_store: &store,
+            index: &index,
+            network,
+            app_kv: None,
+        };
+        let err = view
+            .import_wif(&uncompressed_wif(), None)
+            .expect_err("uncompressed wif must be rejected");
+        assert!(
+            matches!(err, TaskError::UncompressedWifUnsupported),
+            "expected UncompressedWifUnsupported, got {err:?}"
+        );
+        assert!(view.list().is_empty(), "no entry should be created");
+    }
+
+    /// F10 — round-trip: a compressed WIF import → persist → cold-boot
+    /// rebuild yields the SAME address the import derived. Locks the
+    /// no-divergence guarantee the uncompressed reject protects.
+    #[test]
+    fn f10_compressed_import_rebuild_preserves_address() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ViewFixture {
+            store,
+            index,
+            kv,
+            network,
+        } = fresh_view_with_kv(dir.path(), Network::Testnet);
+        let view = SingleKeyView {
+            secret_store: &store,
+            index: &index,
+            network,
+            app_kv: Some(&kv),
+        };
+        let imported = view.import_wif(known_wif(), None).expect("import");
+
+        // Simulate a fresh process: drop the in-memory index, rebuild.
+        index.write().unwrap().clear();
+        let rebuilt = view.hydrate_wallets();
+        assert_eq!(rebuilt.len(), 1);
+        assert_eq!(
+            rebuilt[0].1.address.to_string(),
+            imported.address,
+            "rebuilt address must match the import-time address"
+        );
     }
 
     /// In-memory `KvStore` adapter shared by the sidecar tests below.

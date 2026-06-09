@@ -4,7 +4,7 @@ use crate::context::shielded::get_proving_key;
 use crate::model::fee_estimation::{format_credits_as_dash, shielded_fee_for_actions};
 use crate::model::wallet::WalletSeedHash;
 use crate::model::wallet::shielded::{ShieldedNote, ShieldedWalletState};
-use crate::wallet_backend::{DetPlatformSigner, PlatformPathIndex, SecretScope};
+use crate::wallet_backend::{DetPlatformSigner, PlatformPathIndex, RememberPolicy, SecretScope};
 use dash_sdk::dpp::address_funds::{
     AddressFundsFeeStrategy, AddressFundsFeeStrategyStep, OrchardAddress, PlatformAddress,
 };
@@ -83,10 +83,50 @@ impl ShieldStage {
     }
 }
 
+/// Resolve the wallet's HD seed once and keep it in the session cache for the
+/// rest of the app session, so a batch of [`build_shield_credit`] calls prompts
+/// for the passphrase at most once. Call [`forget_batch_seed`] when the batch
+/// finishes to drop the cached seed early.
+pub async fn warm_seed_for_batch(
+    app_context: &Arc<AppContext>,
+    seed_hash: &WalletSeedHash,
+) -> Result<(), TaskError> {
+    let backend = app_context.wallet_backend()?;
+    let scope = SecretScope::HdSeed {
+        seed_hash: *seed_hash,
+    };
+    backend
+        .secret_access()
+        .with_secret_session(&scope, async |session| {
+            session
+                .plaintext()
+                .expose_hd_seed()
+                .ok_or(TaskError::WalletLocked)?;
+            backend.secret_access().remember_session(
+                &scope,
+                session.plaintext(),
+                RememberPolicy::UntilAppClose,
+            );
+            Ok(())
+        })
+        .await
+}
+
+/// Drop the batch-cached HD seed promoted by [`warm_seed_for_batch`].
+pub fn forget_batch_seed(app_context: &Arc<AppContext>, seed_hash: &WalletSeedHash) {
+    if let Ok(backend) = app_context.wallet_backend() {
+        backend.secret_access().forget(&SecretScope::HdSeed {
+            seed_hash: *seed_hash,
+        });
+    }
+}
+
 /// Build a Shield transition without broadcasting (for batch parallel mode).
 ///
-/// Returns the built `StateTransition` so the caller can broadcast in nonce order.
-pub fn build_shield_credit(
+/// Returns the built `StateTransition` so the caller can broadcast in nonce
+/// order. The HD seed is fetched through the JIT chokepoint; warm the session
+/// cache once before a batch so the prompt fires at most once for all builds.
+pub async fn build_shield_credit(
     app_context: &Arc<AppContext>,
     seed_hash: &WalletSeedHash,
     recipient_payment_address: &PaymentAddress,
@@ -126,34 +166,29 @@ pub fn build_shield_credit(
     let backend = app_context.wallet_backend()?;
     let seed_hash = *seed_hash;
     // memo: 36-byte structured memo (4-byte type tag + 32-byte payload); all zeros = empty memo.
-    // `build_shield_transition` is async (the platform signer trait is async)
-    // and so is the JIT secret chokepoint. This fn is sync and only ever called
-    // from inside `spawn_blocking`, so bridge both with a local executor rather
-    // than propagating async up the call stack. The seed is borrowed for this
-    // one build via `DetPlatformSigner` and zeroizes when the scope returns.
-    futures::executor::block_on(async {
-        backend
-            .secret_access()
-            .with_secret_session(&SecretScope::HdSeed { seed_hash }, async |session| {
-                let plaintext = session.plaintext();
-                let seed = plaintext.expose_hd_seed().ok_or(TaskError::WalletLocked)?;
-                let signer = DetPlatformSigner::from_held(seed, network, &path_index);
-                build_shield_transition(
-                    &recipient_addr,
-                    amount,
-                    inputs,
-                    fee_strategy,
-                    &signer,
-                    0,
-                    &prover,
-                    [0u8; 36],
-                    sdk.version(),
-                )
-                .await
-                .map_err(|e| shielded_build_error(e.to_string()))
-            })
+    // The seed is borrowed for this one build via `DetPlatformSigner` and
+    // zeroizes when the scope returns.
+    backend
+        .secret_access()
+        .with_secret_session(&SecretScope::HdSeed { seed_hash }, async |session| {
+            let plaintext = session.plaintext();
+            let seed = plaintext.expose_hd_seed().ok_or(TaskError::WalletLocked)?;
+            let signer = DetPlatformSigner::from_held(seed, network, &path_index);
+            build_shield_transition(
+                &recipient_addr,
+                amount,
+                inputs,
+                fee_strategy,
+                &signer,
+                0,
+                &prover,
+                [0u8; 36],
+                sdk.version(),
+            )
             .await
-    })
+            .map_err(|e| shielded_build_error(e.to_string()))
+        })
+        .await
 }
 
 /// Build and broadcast a Shield transition (transparent -> shielded pool).

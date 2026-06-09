@@ -320,6 +320,22 @@ impl ShieldScreen {
             use crate::backend_task::shielded::bundle;
             use dash_sdk::platform::transition::broadcast::BroadcastStateTransition;
 
+            // Resolve the passphrase once for the whole batch: the seed lands in
+            // the session cache so the parallel builds below never re-prompt. If
+            // the prompt is cancelled, fail every stage instead of asking N times.
+            if let Err(e) = bundle::warm_seed_for_batch(&app_ctx, &seed_hash).await {
+                let message = e.to_string();
+                for stage in &stages {
+                    if let Ok(mut guard) = stage.lock() {
+                        *guard = ShieldStage::Failed {
+                            error: message.clone(),
+                            st_json: None,
+                        };
+                    }
+                }
+                return;
+            }
+
             let build_futures: Vec<_> = (0..repeat)
                 .map(|i| {
                     let app_ctx = app_ctx.clone();
@@ -331,19 +347,16 @@ impl ShieldScreen {
                             *guard = ShieldStage::BuildingProof { nonce };
                         }
 
-                        let result = tokio::task::spawn_blocking(move || {
-                            bundle::build_shield_credit(
-                                &app_ctx,
-                                &seed_hash,
-                                &default_address,
-                                amount,
-                                addr,
-                                nonce,
-                            )
-                        })
+                        let result = bundle::build_shield_credit(
+                            &app_ctx,
+                            &seed_hash,
+                            &default_address,
+                            amount,
+                            addr,
+                            nonce,
+                        )
                         .await
-                        .map_err(|e| e.to_string())
-                        .and_then(|r| r.map_err(|e| e.to_string()));
+                        .map_err(|e| e.to_string());
 
                         match &result {
                             Ok(_) => {
@@ -367,6 +380,9 @@ impl ShieldScreen {
                 .collect();
 
             let build_results = futures::future::join_all(build_futures).await;
+
+            // Builds are done; drop the batch-cached seed early.
+            bundle::forget_batch_seed(&app_ctx, &seed_hash);
 
             let sdk = { app_ctx.sdk.load().as_ref().clone() };
 
@@ -955,17 +971,15 @@ impl ScreenLike for ShieldScreen {
                             }
                             Some(AddressKind::Core) => {
                                 let amount_duffs = amount / CREDITS_PER_DUFF;
-                                let source_address = self
-                                    .validated_source
-                                    .as_ref()
-                                    .and_then(|v| v.as_core())
-                                    .cloned();
+                                // The upstream wallet selects spendable UTXOs from
+                                // its whole live set when building the asset lock,
+                                // so a per-address restriction cannot be honored.
                                 self.status = Status::WaitingForResult;
                                 action = AppAction::BackendTask(BackendTask::ShieldedTask(
                                     ShieldedTask::ShieldFromAssetLock {
                                         seed_hash: self.seed_hash,
                                         amount_duffs,
-                                        source_address,
+                                        source_address: None,
                                     },
                                 ));
                             }

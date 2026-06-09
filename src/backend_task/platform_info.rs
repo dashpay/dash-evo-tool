@@ -840,30 +840,33 @@ impl AppContext {
                 let page_limit = limit.unwrap_or(50).clamp(1, 100);
                 let start = start_after.map(|id| Start::StartAfter(id.to_buffer().to_vec()));
 
-                let (where_clauses, order_by_clauses) = if completed {
-                    (
-                        vec![WhereClause {
-                            field: "status".to_string(),
-                            operator: WhereOperator::In,
-                            value: Value::Array(vec![
-                                Value::U8(WithdrawalStatus::COMPLETE as u8),
-                                Value::U8(WithdrawalStatus::EXPIRED as u8),
-                            ]),
-                        }],
-                        vec![
-                            OrderClause {
-                                field: "status".to_string(),
-                                ascending: true,
-                            },
-                            OrderClause {
-                                field: "transactionIndex".to_string(),
-                                ascending: true,
-                            },
-                        ],
-                    )
+                let statuses = if completed {
+                    vec![
+                        Value::U8(WithdrawalStatus::COMPLETE as u8),
+                        Value::U8(WithdrawalStatus::EXPIRED as u8),
+                    ]
                 } else {
-                    (vec![], vec![])
+                    vec![
+                        Value::U8(WithdrawalStatus::QUEUED as u8),
+                        Value::U8(WithdrawalStatus::POOLED as u8),
+                        Value::U8(WithdrawalStatus::BROADCASTED as u8),
+                    ]
                 };
+                let where_clauses = vec![WhereClause {
+                    field: "status".to_string(),
+                    operator: WhereOperator::In,
+                    value: Value::Array(statuses),
+                }];
+                let order_by_clauses = vec![
+                    OrderClause {
+                        field: "status".to_string(),
+                        ascending: true,
+                    },
+                    OrderClause {
+                        field: "transactionIndex".to_string(),
+                        ascending: true,
+                    },
+                ];
 
                 let query = DocumentQuery {
                     select: SelectProjection::documents(),

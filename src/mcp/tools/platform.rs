@@ -108,7 +108,9 @@ impl ToolBase for QueryWithdrawals {
     fn description() -> Option<Cow<'static, str>> {
         Some(
             "Query withdrawal documents from Platform. \
-             Pass status=\"queued\" (default) or status=\"completed\". \
+             Pass status=\"queued\" (default) for in-queue withdrawals \
+             (queued, pooled, or broadcasted) or status=\"completed\" for \
+             finished ones (complete or expired). \
              Use limit and start_after for pagination."
                 .into(),
         )

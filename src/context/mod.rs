@@ -831,22 +831,6 @@ impl AppContext {
         }
     }
 
-    /// Does the wallet have at least one still-actionable tracked asset lock
-    /// (status below `Consumed`)? Reads through the upstream
-    /// `AssetLockManager` via the wallet backend's blocking snapshot, so it
-    /// is safe to call from the egui frame loop. Returns `false` if the
-    /// backend is not yet wired.
-    pub fn has_unused_asset_lock(&self, seed_hash: &WalletSeedHash) -> bool {
-        use platform_wallet::wallet::asset_lock::tracked::AssetLockStatus;
-        let Ok(backend) = self.wallet_backend() else {
-            return false;
-        };
-        backend
-            .list_tracked_asset_locks_blocking(seed_hash)
-            .iter()
-            .any(|l| !matches!(l.status, AssetLockStatus::Consumed))
-    }
-
     /// Confirmed / unconfirmed / total chain balance for an HD wallet, read
     /// from the display-only `WalletBackend` snapshot (P4a). Pre-first-sync
     /// (or backend not yet wired) yields a zeroed balance, which callers

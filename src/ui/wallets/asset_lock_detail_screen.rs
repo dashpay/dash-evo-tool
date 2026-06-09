@@ -1,4 +1,5 @@
 use crate::app::AppAction;
+use crate::backend_task::BackendTaskSuccessResult;
 use crate::context::AppContext;
 use crate::model::wallet::Wallet;
 use crate::ui::components::MessageBanner;
@@ -6,6 +7,7 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::password_input::PasswordInput;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::components::tracked_asset_lock_cache::TrackedAssetLockCache;
 use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
@@ -22,6 +24,7 @@ pub struct AssetLockDetailScreen {
     pub app_context: Arc<AppContext>,
     wallet: Option<Arc<RwLock<Wallet>>>,
     password_input: PasswordInput,
+    asset_lock_cache: TrackedAssetLockCache,
 }
 
 impl AssetLockDetailScreen {
@@ -44,28 +47,30 @@ impl AssetLockDetailScreen {
             app_context: app_context.clone(),
             wallet,
             password_input: PasswordInput::new().with_hint_text("Enter password"),
+            asset_lock_cache: TrackedAssetLockCache::default(),
         }
     }
 
     fn load_tracked_lock(&self) -> Option<TrackedAssetLock> {
-        let backend = self.app_context.wallet_backend().ok()?;
-        backend
-            .list_tracked_asset_locks_blocking(&self.wallet_seed_hash)
-            .into_iter()
+        self.asset_lock_cache
+            .get(&self.wallet_seed_hash)?
+            .iter()
             .find(|t| t.out_point == self.out_point)
+            .cloned()
     }
 
     fn render_asset_lock_info(&mut self, ui: &mut Ui) {
         let dark_mode = ui.ctx().style().visuals.dark_mode;
 
         let Some(lock) = self.load_tracked_lock() else {
+            let message = if self.asset_lock_cache.is_loading(&self.wallet_seed_hash) {
+                "Loading asset lock…"
+            } else {
+                "Asset lock not found"
+            };
             ui.vertical_centered(|ui| {
                 ui.add_space(50.0);
-                ui.label(
-                    RichText::new("Asset lock not found")
-                        .size(16.0)
-                        .color(Color32::GRAY),
-                );
+                ui.label(RichText::new(message).size(16.0).color(Color32::GRAY));
             });
             return;
         };
@@ -300,6 +305,15 @@ impl ScreenLike for AssetLockDetailScreen {
             RootScreenType::RootScreenWalletsBalances,
         );
 
+        // Fetch the wallet's tracked locks once (off the UI thread); the lock
+        // for this screen is found by out_point in the cached list.
+        if let Some(task) = self
+            .asset_lock_cache
+            .ensure_requested(self.wallet_seed_hash)
+        {
+            action |= AppAction::BackendTask(task);
+        }
+
         action |= island_central_panel(ctx, |ui| {
             let mut inner_action = AppAction::None;
             let dark_mode = ui.ctx().style().visuals.dark_mode;
@@ -332,6 +346,12 @@ impl ScreenLike for AssetLockDetailScreen {
     }
 
     fn display_message(&mut self, _message: &str, _message_type: MessageType) {}
+
+    fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
+        if let BackendTaskSuccessResult::TrackedAssetLocks { seed_hash, locks } = result {
+            self.asset_lock_cache.store(seed_hash, locks);
+        }
+    }
 
     fn refresh_on_arrival(&mut self) {}
 

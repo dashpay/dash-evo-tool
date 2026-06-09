@@ -237,6 +237,13 @@ pub enum BackendTaskSuccessResult {
         seed_hash: WalletSeedHash,
         address: String,
     },
+    /// The wallet's tracked asset locks, read off the UI thread through the
+    /// upstream `AssetLockManager`. Carries the `seed_hash` so screens cache
+    /// and match the result per wallet.
+    TrackedAssetLocks {
+        seed_hash: WalletSeedHash,
+        locks: Vec<platform_wallet::wallet::asset_lock::tracked::TrackedAssetLock>,
+    },
     /// Platform address balances fetched from Platform
     PlatformAddressBalances {
         seed_hash: WalletSeedHash,
@@ -671,6 +678,13 @@ impl AppContext {
             } => {
                 self.sign_message_with_key(seed_hash, derivation_path, message, key_type)
                     .await
+            }
+            WalletTask::ListTrackedAssetLocks { seed_hash } => {
+                let locks = self
+                    .wallet_backend()?
+                    .list_tracked_asset_locks(&seed_hash)
+                    .await?;
+                Ok(BackendTaskSuccessResult::TrackedAssetLocks { seed_hash, locks })
             }
             WalletTask::FetchPlatformAddressBalances { seed_hash } => {
                 self.fetch_platform_address_balances(seed_hash).await

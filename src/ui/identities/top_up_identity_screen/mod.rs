@@ -3,7 +3,7 @@ mod by_using_unused_asset_lock;
 mod by_using_unused_balance;
 mod success_screen;
 
-use crate::app::AppAction;
+use crate::app::{AppAction, BackendTasksExecutionMode};
 use crate::backend_task::core::CoreItem;
 use crate::backend_task::identity::{IdentityTask, IdentityTopUpInfo, TopUpIdentityFundingMethod};
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
@@ -19,6 +19,7 @@ use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::components::tracked_asset_lock_cache::TrackedAssetLockCache;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
@@ -64,6 +65,10 @@ pub struct TopUpIdentityScreen {
     platform_top_up_amount_input: Option<AmountInput>,
     /// Fee result from completed top-up
     completed_fee_result: Option<FeeResult>,
+    /// Tracked asset locks per wallet, fetched off the UI thread via the App
+    /// Task System. Backs the funding-method gate, the wallet selector, and the
+    /// asset-lock picker.
+    asset_lock_cache: TrackedAssetLockCache,
 }
 
 impl TopUpIdentityScreen {
@@ -87,6 +92,7 @@ impl TopUpIdentityScreen {
             platform_top_up_amount: None,
             platform_top_up_amount_input: None,
             completed_fee_result: None,
+            asset_lock_cache: TrackedAssetLockCache::default(),
         }
     }
 
@@ -125,9 +131,9 @@ impl TopUpIdentityScreen {
                                     FundingMethod::UseWalletBalance => self
                                         .app_context
                                         .snapshot_has_balance(&wallet_read.seed_hash()),
-                                    FundingMethod::UseUnusedAssetLock => self
-                                        .app_context
-                                        .has_unused_asset_lock(&wallet_read.seed_hash()),
+                                    FundingMethod::UseUnusedAssetLock => {
+                                        self.asset_lock_cache.has_unused(&wallet_read.seed_hash())
+                                    }
                                     _ => true,
                                 };
 
@@ -160,9 +166,9 @@ impl TopUpIdentityScreen {
                             FundingMethod::UseWalletBalance => self
                                 .app_context
                                 .snapshot_has_balance(&wallet_read.seed_hash()),
-                            FundingMethod::UseUnusedAssetLock => self
-                                .app_context
-                                .has_unused_asset_lock(&wallet_read.seed_hash()),
+                            FundingMethod::UseUnusedAssetLock => {
+                                self.asset_lock_cache.has_unused(&wallet_read.seed_hash())
+                            }
                             _ => true,
                         }
                     };
@@ -225,7 +231,7 @@ impl TopUpIdentityScreen {
             for wallet in wallets.values() {
                 let wallet = wallet.read().unwrap();
                 let seed_hash = wallet.seed_hash();
-                if self.app_context.has_unused_asset_lock(&seed_hash) {
+                if self.asset_lock_cache.has_unused(&seed_hash) {
                     has_unused_asset_lock = true;
                 }
                 if self.app_context.snapshot_has_balance(&seed_hash) {
@@ -442,6 +448,13 @@ impl ScreenLike for TopUpIdentityScreen {
         }
     }
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
+        if let BackendTaskSuccessResult::TrackedAssetLocks { seed_hash, locks } =
+            backend_task_success_result
+        {
+            self.asset_lock_cache.store(seed_hash, locks);
+            return;
+        }
+
         if let BackendTaskSuccessResult::ToppedUpIdentity(qualified_identity, fee_result) =
             backend_task_success_result
         {
@@ -664,6 +677,25 @@ impl ScreenLike for TopUpIdentityScreen {
                         self.show_pop_up_info = None;
                     }
                 });
+        }
+
+        // Fetch tracked asset locks once per wallet (off the UI thread). The
+        // funding-method gate and wallet selector check every wallet, so all
+        // are requested together as one concurrent batch.
+        let seed_hashes: Vec<_> = self
+            .app_context
+            .wallets
+            .read()
+            .map(|wallets| {
+                wallets
+                    .values()
+                    .filter_map(|w| w.read().ok().map(|g| g.seed_hash()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let tasks = self.asset_lock_cache.ensure_requested_many(seed_hashes);
+        if !tasks.is_empty() {
+            action |= AppAction::BackendTasks(tasks, BackendTasksExecutionMode::Concurrent);
         }
 
         action

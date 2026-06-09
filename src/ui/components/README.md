@@ -65,6 +65,7 @@ Concise catalog of all reusable UI components. Consult before creating new UI el
 |-----------|------|-------------|
 | `U256EntropyGrid` | `entropy_grid.rs` | 32x8 interactive grid for 256-bit entropy generation |
 | `ScreenWithWalletUnlock` | `wallet_unlock.rs` | Trait for screens needing wallet unlock |
+| `TrackedAssetLockCache` | `tracked_asset_lock_cache.rs` | Per-screen cache of wallets' tracked asset locks; fetches once per wallet via `WalletTask::ListTrackedAssetLocks` and renders off the UI thread |
 
 ## Usage Pattern
 

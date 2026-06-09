@@ -23,18 +23,15 @@ impl TopUpIdentityScreen {
             }
         };
 
-        let backend = match self.app_context.wallet_backend() {
-            Ok(b) => b,
-            Err(_) => {
-                ui.label("Wallet backend is not ready yet. Try again in a moment.");
-                return;
-            }
+        let Some(all_tracked) = self.asset_lock_cache.get(&seed_hash) else {
+            ui.label("Loading asset locks…");
+            return;
         };
 
-        let tracked: Vec<TrackedAssetLock> = backend
-            .list_tracked_asset_locks_blocking(&seed_hash)
-            .into_iter()
+        let tracked: Vec<TrackedAssetLock> = all_tracked
+            .iter()
             .filter(|t| !matches!(t.status, AssetLockStatus::Consumed))
+            .cloned()
             .collect();
 
         if tracked.is_empty() {

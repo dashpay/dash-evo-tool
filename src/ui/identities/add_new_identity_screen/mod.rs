@@ -3,7 +3,7 @@ mod by_using_unused_asset_lock;
 mod by_using_unused_balance;
 mod success_screen;
 
-use crate::app::AppAction;
+use crate::app::{AppAction, BackendTasksExecutionMode};
 use crate::backend_task::core::CoreItem;
 use crate::backend_task::identity::{
     IdentityKeyEntry, IdentityKeySpecs, IdentityRegistrationInfo, IdentityTask,
@@ -19,6 +19,7 @@ use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::components::tracked_asset_lock_cache::TrackedAssetLockCache;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
@@ -123,6 +124,10 @@ pub struct AddNewIdentityScreen {
     show_advanced_options: bool,
     /// Fee result from completed identity registration
     completed_fee_result: Option<FeeResult>,
+    /// Tracked asset locks for the selected wallet, fetched off the UI thread
+    /// via the App Task System. Backs both the funding-method gate and the
+    /// asset-lock picker.
+    asset_lock_cache: TrackedAssetLockCache,
 }
 
 impl AddNewIdentityScreen {
@@ -180,6 +185,7 @@ impl AddNewIdentityScreen {
             platform_funding_amount_input: None,
             show_advanced_options: false,
             completed_fee_result: None,
+            asset_lock_cache: TrackedAssetLockCache::default(),
         };
 
         if let Some(wallet) = selected_wallet {
@@ -488,7 +494,7 @@ impl AddNewIdentityScreen {
                     let wallet = selected_wallet.read().unwrap();
                     let seed_hash = wallet.seed_hash();
                     (
-                        self.app_context.has_unused_asset_lock(&seed_hash),
+                        self.asset_lock_cache.has_unused(&seed_hash),
                         self.app_context.snapshot_has_balance(&seed_hash),
                     )
                 };
@@ -1105,6 +1111,10 @@ impl ScreenLike for AddNewIdentityScreen {
                 }
                 return;
             }
+            BackendTaskSuccessResult::TrackedAssetLocks { seed_hash, locks } => {
+                self.asset_lock_cache.store(*seed_hash, locks.clone());
+                return;
+            }
             _ => {}
         }
 
@@ -1389,15 +1399,20 @@ impl ScreenLike for AddNewIdentityScreen {
             }
         }
 
-        // Drain a queued auth-pubkey cache warm (cold-cache cover for the
-        // chooser, RK-2). One in-flight at a time via `warming_identity_keys`.
+        // Drain the queued end-of-frame backend reads into one concurrent batch
+        // so none clobbers another (`AppAction`'s `|=` keeps only the last
+        // value).
+        let mut pending_tasks: Vec<BackendTask> = Vec::new();
+
+        // Auth-pubkey cache warm (cold-cache cover for the chooser, RK-2). One
+        // in-flight at a time via `warming_identity_keys`.
         if let Some((seed_hash, identity_index)) = self.pending_warm_request.take() {
             // Warm at least the default range, plus a margin for any
             // advanced-mode keys already added beyond it.
             let key_count = self
                 .default_key_count()
                 .max(self.identity_keys.others.len() as u32 + 2);
-            action |= AppAction::BackendTask(BackendTask::WalletTask(
+            pending_tasks.push(BackendTask::WalletTask(
                 WalletTask::WarmIdentityAuthPubkeys {
                     seed_hash,
                     identity_index,
@@ -1406,17 +1421,34 @@ impl ScreenLike for AddNewIdentityScreen {
             ));
         }
 
-        // Drain a queued "Show WIF" derivation (advanced mode); the seed is
-        // fetched just-in-time in the backend and only the WIF returns.
+        // "Show WIF" derivation (advanced mode); the seed is fetched
+        // just-in-time in the backend and only the WIF returns.
         if let Some((_key_id, derivation_path)) = self.pending_wif_request.take()
             && let Some(wallet) = &self.selected_wallet
         {
             let seed_hash = wallet.read().unwrap().seed_hash();
-            action |=
-                AppAction::BackendTask(BackendTask::WalletTask(WalletTask::DeriveKeyForDisplay {
-                    seed_hash,
-                    derivation_path,
-                }));
+            pending_tasks.push(BackendTask::WalletTask(WalletTask::DeriveKeyForDisplay {
+                seed_hash,
+                derivation_path,
+            }));
+        }
+
+        // Fetch the selected wallet's tracked asset locks once (off the UI
+        // thread) so the funding-method gate and the picker can read them.
+        if let Some(wallet) = &self.selected_wallet {
+            let seed_hash = wallet.read().unwrap().seed_hash();
+            if let Some(task) = self.asset_lock_cache.ensure_requested(seed_hash) {
+                pending_tasks.push(task);
+            }
+        }
+
+        match pending_tasks.len() {
+            0 => {}
+            1 => action |= AppAction::BackendTask(pending_tasks.pop().expect("len == 1")),
+            _ => {
+                action |=
+                    AppAction::BackendTasks(pending_tasks, BackendTasksExecutionMode::Concurrent)
+            }
         }
 
         action

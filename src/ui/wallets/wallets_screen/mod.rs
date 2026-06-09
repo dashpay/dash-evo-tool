@@ -22,6 +22,7 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::password_input::PasswordInput;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::components::tracked_asset_lock_cache::TrackedAssetLockCache;
 use crate::ui::components::wallet_unlock_popup::{WalletUnlockPopup, WalletUnlockResult};
 use crate::ui::helpers::clicked_outside_window;
 use crate::ui::helpers::copy_text_to_clipboard;
@@ -155,6 +156,9 @@ pub struct WalletsBalancesScreen {
     /// imports through [`crate::wallet_backend::SingleKeyView::import_wif`]
     /// instead of the legacy `single_key_wallets` DB path.
     import_single_key_dialog: ImportSingleKeyDialog,
+    /// Tracked asset locks for the selected wallet, fetched off the UI thread
+    /// via the App Task System and rendered by the Asset Locks tab.
+    asset_lock_cache: TrackedAssetLockCache,
 }
 
 impl WalletsBalancesScreen {
@@ -258,6 +262,7 @@ impl WalletsBalancesScreen {
             cached_tx_source_len: None,
             sk_spv_warning_banner: crate::ui::components::MessageBanner::new(),
             import_single_key_dialog: ImportSingleKeyDialog::new(app_context.network),
+            asset_lock_cache: TrackedAssetLockCache::default(),
         }
     }
 
@@ -2809,6 +2814,9 @@ impl ScreenLike for WalletsBalancesScreen {
                 };
                 MessageBanner::set_global(self.app_context.egui_ctx(), &msg, MessageType::Success);
             }
+            crate::ui::BackendTaskSuccessResult::TrackedAssetLocks { seed_hash, locks } => {
+                self.asset_lock_cache.store(seed_hash, locks);
+            }
             crate::ui::BackendTaskSuccessResult::GeneratedReceiveAddress { seed_hash, address } => {
                 let is_selected = self
                     .selected_wallet
@@ -2991,6 +2999,9 @@ impl ScreenLike for WalletsBalancesScreen {
 
     fn refresh(&mut self) {
         self.refreshing = false;
+        // Re-fetch tracked asset locks on an explicit refresh (e.g. after
+        // creating an asset lock) so the Asset Locks tab reflects new state.
+        self.asset_lock_cache.invalidate();
         self.refresh_on_arrival();
     }
 }

@@ -154,11 +154,9 @@ struct Inner {
     token_balances: Arc<TokenBalanceStore>,
     /// `WalletSeedHash` → upstream `WalletId`. See [`WalletId`].
     id_map: std::sync::RwLock<std::collections::BTreeMap<WalletSeedHash, WalletId>>,
-    /// Sync-accessible cache of `Arc<PlatformWallet>` keyed by `WalletId`,
-    /// populated at registration. Lets synchronous UI code (egui frame)
-    /// reach the upstream wallet without an async hop or a tokio
-    /// `block_on`. Tracked-asset-lock pickers use this path —
-    /// see [`Self::list_tracked_asset_locks_blocking`].
+    /// Cache of `Arc<PlatformWallet>` keyed by `WalletId`, populated at
+    /// registration. Lets sync code reach an upstream wallet handle without an
+    /// async hop (e.g. DashPay address-pool scanning).
     wallets: std::sync::RwLock<
         std::collections::BTreeMap<WalletId, Arc<platform_wallet::PlatformWallet>>,
     >,
@@ -1357,9 +1355,8 @@ impl WalletBackend {
     /// `AssetLockManager` is the single source of truth — the DET-side
     /// `Wallet.unused_asset_locks` mirror was removed.
     ///
-    /// Async variant: prefer this from backend tasks. For
-    /// synchronous UI code (egui frame loop), use
-    /// [`Self::list_tracked_asset_locks_blocking`].
+    /// Async only: UI screens fetch this off the frame loop via
+    /// [`WalletTask::ListTrackedAssetLocks`](crate::backend_task::wallet::WalletTask::ListTrackedAssetLocks).
     pub async fn list_tracked_asset_locks(
         &self,
         seed_hash: &WalletSeedHash,
@@ -1367,31 +1364,6 @@ impl WalletBackend {
     {
         let wallet = self.resolve_wallet(seed_hash).await?;
         Ok(wallet.asset_locks().list_tracked_locks().await)
-    }
-
-    /// Blocking variant of [`Self::list_tracked_asset_locks`] for synchronous
-    /// UI contexts. Reads from WalletBackend's sync wallet cache so it
-    /// does not enter the upstream tokio-async lock — safe to call from
-    /// the egui frame loop.
-    pub fn list_tracked_asset_locks_blocking(
-        &self,
-        seed_hash: &WalletSeedHash,
-    ) -> Vec<platform_wallet::wallet::asset_lock::tracked::TrackedAssetLock> {
-        let wallet_id = match self.inner.id_map.read() {
-            Ok(map) => match map.get(seed_hash) {
-                Some(id) => *id,
-                None => return Vec::new(),
-            },
-            Err(_) => return Vec::new(),
-        };
-        let wallet = match self.inner.wallets.read() {
-            Ok(map) => match map.get(&wallet_id) {
-                Some(w) => Arc::clone(w),
-                None => return Vec::new(),
-            },
-            Err(_) => return Vec::new(),
-        };
-        wallet.asset_locks().list_tracked_locks_blocking()
     }
 
     /// Register (or update) an identity's watched-token list with the upstream

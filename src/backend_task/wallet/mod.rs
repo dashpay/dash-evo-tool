@@ -79,6 +79,12 @@ pub enum WalletTask {
         /// Should be the input with the highest balance to ensure sufficient funds for fees.
         fee_payer_index: u16,
     },
+    /// List the wallet's tracked asset locks. Read through the upstream
+    /// `AssetLockManager` (the single source of truth) off the UI thread, so
+    /// screens never drive the async accessor from the egui frame loop.
+    ListTrackedAssetLocks {
+        seed_hash: WalletSeedHash,
+    },
     /// Fund Platform addresses from a tracked asset lock identified by its
     /// credit-output outpoint. The proof and credit-output key are recovered
     /// from the upstream `AssetLockManager` and the wallet's funding

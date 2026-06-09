@@ -1255,6 +1255,61 @@ mod tests {
         backend.shutdown().await;
     }
 
+    /// `WalletTask::ListTrackedAssetLocks` reads tracked locks off the UI thread
+    /// through the App Task System. This drives the production dispatch path
+    /// (`run_backend_task`) for a registered wallet and asserts it returns the
+    /// typed `TrackedAssetLocks` result — the route the egui frame loop now uses
+    /// instead of the deleted in-runtime blocking read. A freshly-registered
+    /// wallet has no locks, so an empty list is the expected, panic-free result.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn list_tracked_asset_locks_task_returns_typed_result() {
+        use crate::backend_task::BackendTask;
+        use crate::backend_task::BackendTaskSuccessResult;
+        use crate::backend_task::wallet::WalletTask;
+
+        let (ctx, sender, _tmp) = offline_testnet_context();
+
+        let seed = [0x9Eu8; 64];
+        let wallet =
+            crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
+                .expect("build wallet");
+        let seed_hash = wallet.seed_hash();
+        ctx.register_wallet(wallet, &seed, WalletOrigin::Fresh)
+            .expect("register wallet");
+
+        // `run_backend_task` wires the backend on first wallet task and
+        // registers the wallet with the upstream manager.
+        let result = ctx
+            .run_backend_task(
+                BackendTask::WalletTask(WalletTask::ListTrackedAssetLocks { seed_hash }),
+                sender,
+            )
+            .await
+            .expect("listing tracked asset locks must succeed");
+
+        match result {
+            BackendTaskSuccessResult::TrackedAssetLocks {
+                seed_hash: got_hash,
+                locks,
+            } => {
+                assert_eq!(
+                    got_hash, seed_hash,
+                    "result must carry the requested wallet"
+                );
+                assert!(
+                    locks.is_empty(),
+                    "a freshly-registered wallet has no tracked asset locks"
+                );
+            }
+            other => panic!("expected TrackedAssetLocks, got: {other:?}"),
+        }
+
+        ctx.wallet_backend()
+            .expect("backend wired")
+            .shutdown()
+            .await;
+    }
+
     /// PROJ-010 W2 reconciliation (idempotency across the two writers): once a
     /// wallet is registered, the W2 `ensure_upstream_registered` path is a
     /// no-op — it never re-registers or double-watches. This is the cold-boot

@@ -264,6 +264,31 @@ pub async fn run(app_context: &Arc<AppContext>) -> Result<(), TaskError> {
         step: MigrationStep::Finalize,
     });
     write_sentinel(&app_kv, network, 1)?;
+
+    // F140: the migration just populated the wallet-meta + seed-envelope
+    // sidecars, but `WalletBackend::new` already ran `hydrate_context_wallets`
+    // earlier this boot against the then-EMPTY sidecars — so `ctx.wallets` is
+    // still empty and migrated wallets would stay invisible until the second
+    // restart. Re-hydrate now that the sidecars are populated. Idempotent and
+    // gap-filling: it only inserts wallets missing from the in-memory map, so a
+    // wallet created earlier this session is never clobbered. Best-effort — a
+    // hydration failure must not fail the (already-committed) migration; the
+    // next cold boot hydrates from the same sidecars.
+    if let Ok(backend) = app_context.wallet_backend() {
+        if let Err(e) = backend.hydrate_context_wallets(app_context) {
+            tracing::warn!(
+                target = "migration::finish_unwire",
+                error = ?e,
+                "Post-migration wallet re-hydration failed; wallets will appear on next restart",
+            );
+        }
+    } else {
+        tracing::debug!(
+            target = "migration::finish_unwire",
+            "Wallet backend not wired; migrated wallets hydrate on next cold boot",
+        );
+    }
+
     tracing::info!(
         target = "migration::finish_unwire",
         network = ?network,

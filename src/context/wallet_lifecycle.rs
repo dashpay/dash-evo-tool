@@ -1703,4 +1703,89 @@ mod tests {
             "has_wallet must not flip true when registration fails closed"
         );
     }
+
+    /// Build a valid BIP44 account-0 master xpub for a legacy wallet row.
+    fn legacy_master_epk_bytes(seed: &[u8; 64]) -> Vec<u8> {
+        use dash_sdk::dpp::dashcore::secp256k1::Secp256k1;
+        use dash_sdk::dpp::key_wallet::bip32::{
+            ChildNumber, DerivationPath, ExtendedPrivKey, ExtendedPubKey,
+        };
+        let secp = Secp256k1::new();
+        let master = ExtendedPrivKey::new_master(Network::Testnet, seed).expect("master key");
+        let path = DerivationPath::from(vec![
+            ChildNumber::Hardened { index: 44 },
+            ChildNumber::Hardened { index: 1 },
+            ChildNumber::Hardened { index: 0 },
+        ]);
+        let account = master.derive_priv(&secp, &path).expect("derive account");
+        ExtendedPubKey::from_priv(&secp, &account).encode().to_vec()
+    }
+
+    /// F140 — a wallet migrated from legacy `data.db` must be visible right
+    /// after the migration completes, NOT only after a second restart. The bug:
+    /// `WalletBackend::new` runs `hydrate_context_wallets` against the still-
+    /// empty sidecars at first boot; migration then populates the sidecars but
+    /// never re-hydrates `ctx.wallets`, so the in-memory map stays empty until
+    /// the next launch reads the now-populated sidecars. The fix re-hydrates at
+    /// the end of a successful migration.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn migrated_wallet_is_visible_without_second_restart() {
+        let (ctx, sender, _tmp) = offline_testnet_context();
+
+        // Seed a legacy `wallet` row with a valid xpub so the migration's
+        // seed + meta passes produce a hydratable wallet.
+        let seed = [0xE5u8; 64];
+        let seed_hash: WalletSeedHash =
+            crate::model::wallet::ClosedKeyItem::compute_seed_hash(&seed);
+        let epk = legacy_master_epk_bytes(&seed);
+        ctx.db
+            .execute(
+                "INSERT INTO wallet (
+                    seed_hash, encrypted_seed, salt, nonce,
+                    master_ecdsa_bip44_account_0_epk, alias, is_main,
+                    uses_password, password_hint, network, core_wallet_name
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, 0, NULL, 'testnet', NULL)",
+                rusqlite::params![
+                    seed_hash.as_slice(),
+                    // Unprotected wallet: salt/nonce must be empty (SEC-007),
+                    // the encrypted_seed slot carries the verbatim 64-byte seed.
+                    seed.to_vec(),
+                    Vec::<u8>::new(),
+                    Vec::<u8>::new(),
+                    epk,
+                    "migrated-wallet",
+                ],
+            )
+            .expect("insert legacy wallet row");
+
+        // Wire the backend: hydration runs now, against the EMPTY sidecars
+        // (migration has not run yet), so ctx.wallets is empty.
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("ensure_wallet_backend should succeed offline");
+        assert!(
+            !ctx.wallets.read().unwrap().contains_key(&seed_hash),
+            "precondition: the migrated wallet is not yet hydrated (sidecars empty at wiring)"
+        );
+
+        // Run the migration. It populates the sidecars AND now re-hydrates.
+        crate::backend_task::migration::finish_unwire::run(&ctx)
+            .await
+            .expect("migration should succeed");
+
+        // The migrated wallet must be visible WITHOUT a second backend build.
+        assert!(
+            ctx.wallets.read().unwrap().contains_key(&seed_hash),
+            "the migrated wallet must be in ctx.wallets right after migration (no second restart)"
+        );
+        assert!(
+            ctx.has_wallet.load(Ordering::Relaxed),
+            "has_wallet must be true after a migrated wallet is hydrated"
+        );
+
+        ctx.wallet_backend()
+            .expect("backend wired")
+            .shutdown()
+            .await;
+    }
 }

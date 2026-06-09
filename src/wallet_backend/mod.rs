@@ -322,7 +322,13 @@ impl WalletBackend {
     /// during the current process before the backend was wired) are
     /// preserved — sidecar entries only fill gaps so freshly-created
     /// wallets are never clobbered.
-    fn hydrate_context_wallets(&self, ctx: &Arc<AppContext>) -> Result<(), TaskError> {
+    ///
+    /// Called once during [`Self::new`] (cold boot) and again by the
+    /// `finish_unwire` migration after it populates the sidecars on first boot
+    /// (F140) — at `new` time the sidecars are still empty, so without the
+    /// post-migration re-run migrated wallets stay invisible until the second
+    /// restart.
+    pub(crate) fn hydrate_context_wallets(&self, ctx: &Arc<AppContext>) -> Result<(), TaskError> {
         let view = self.single_key();
         view.rehydrate_index()?;
         let single_key_wallets = view.hydrate_wallets();

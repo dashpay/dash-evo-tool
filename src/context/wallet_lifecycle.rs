@@ -653,7 +653,31 @@ impl AppContext {
         }
     }
 
-    pub fn handle_wallet_locked(self: &Arc<Self>, _wallet: &Arc<RwLock<Wallet>>) {}
+    /// Wipe the session-cached seed when a wallet is locked.
+    ///
+    /// Unlock promotes the seed into the JIT session cache with
+    /// [`RememberPolicy::UntilAppClose`](crate::wallet_backend::RememberPolicy),
+    /// and signing resolves cache-first — so without this the wallet would keep
+    /// signing prompt-free after a "lock", leaving plaintext seed bytes
+    /// resident. Forgetting the seed's scope here restores the locked
+    /// guarantee: the next signing op re-prompts (or, for a no-password wallet,
+    /// resolves through the chokepoint's unprotected fast-path). Mirrors
+    /// [`Self::handle_wallet_unlocked`]'s promotion, in reverse.
+    pub fn handle_wallet_locked(self: &Arc<Self>, wallet: &Arc<RwLock<Wallet>>) {
+        let Ok(seed_hash) = wallet.read().map(|guard| guard.seed_hash()) else {
+            return;
+        };
+        let Ok(backend) = self.wallet_backend() else {
+            return;
+        };
+        backend
+            .secret_access()
+            .forget(&crate::wallet_backend::SecretScope::HdSeed { seed_hash });
+        tracing::trace!(
+            wallet = %hex::encode(seed_hash),
+            "Session-cached seed wiped on wallet lock"
+        );
+    }
 
     /// Initialize shielded state for unlocked wallets that were skipped
     /// because the protocol version wasn't known at unlock time. Called when
@@ -1575,5 +1599,51 @@ mod tests {
             .expect("backend wired")
             .shutdown()
             .await;
+    }
+
+    /// F131 — locking a wallet must wipe the session-cached seed. Before the
+    /// fix `handle_wallet_locked` was an empty no-op, so after an
+    /// `UntilAppClose` unlock the plaintext seed stayed resident and the wallet
+    /// kept signing with no prompt despite being "locked".
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn lock_wipes_session_cached_seed() {
+        let (ctx, sender, _tmp) = offline_testnet_context();
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("ensure_wallet_backend should succeed offline");
+
+        let seed = [0xC3u8; 64];
+        let wallet =
+            crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
+                .expect("build wallet");
+        let seed_hash = wallet.seed_hash();
+        let (_seed_hash, wallet_arc) = ctx
+            .register_wallet(wallet, &seed, WalletOrigin::Fresh)
+            .expect("register wallet");
+
+        let backend = ctx.wallet_backend().expect("backend wired");
+        let scope = crate::wallet_backend::SecretScope::HdSeed { seed_hash };
+
+        // Promote the seed into the session cache (what an UntilAppClose unlock
+        // leaves behind).
+        let held = zeroize::Zeroizing::new(seed);
+        backend.secret_access().remember_session(
+            &scope,
+            crate::wallet_backend::SecretPlaintext::HdSeed(&held),
+            crate::wallet_backend::RememberPolicy::UntilAppClose,
+        );
+        assert!(
+            backend.secret_access().is_session_cached(&scope),
+            "precondition: the seed is session-cached before the lock"
+        );
+
+        ctx.handle_wallet_locked(&wallet_arc);
+
+        assert!(
+            !backend.secret_access().is_session_cached(&scope),
+            "locking must wipe the session-cached seed"
+        );
+
+        backend.shutdown().await;
     }
 }

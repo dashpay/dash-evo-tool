@@ -499,6 +499,12 @@ impl PaymentHistory {
     pub fn trigger_fetch_payment_history(&mut self) -> AppAction {
         if let Some(identity) = &self.selected_identity {
             self.loading = true;
+            // Mark the attempt at dispatch time, not on success. A failed load
+            // resets `loading` in `display_message` but leaves this flag set, so
+            // the auto-fetch gate fires exactly once and a transient error can't
+            // drive a re-dispatch storm. A fresh attempt is opted into via
+            // `refresh()` or an identity change.
+            self.has_searched = true;
 
             let task = BackendTask::DashPayTask(Box::new(DashPayTask::LoadPaymentHistory {
                 identity: identity.clone(),
@@ -715,7 +721,11 @@ impl PaymentHistory {
     }
 
     pub fn display_message(&mut self, _message: &str, _message_type: MessageType) {
-        // Banner display is handled globally by AppState; this is only for side-effects.
+        // Banner display is handled globally by AppState; this is only for
+        // side-effects. Settle the spinner so a failed `LoadPaymentHistory`
+        // doesn't strand the widget on the loading state (`has_searched` was
+        // already set at dispatch, so this won't re-trigger the auto-fetch).
+        self.loading = false;
     }
 
     pub fn display_task_result(&mut self, result: BackendTaskSuccessResult) {

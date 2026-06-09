@@ -179,6 +179,35 @@ impl ConnectionStatus {
         }
     }
 
+    /// Atomically claim a disconnect: transition the SPV indicator to
+    /// [`SpvStatus::Stopping`] iff it is currently in a stoppable state
+    /// (`Starting`/`Syncing`/`Running`), returning `true` for the single caller
+    /// that won the transition.
+    ///
+    /// Returns `false` when no stop is needed or one is already in flight (the
+    /// status is already `Stopping`, or it is `Idle`/`Stopped`/`Error`). This is
+    /// the synchronous dedupe guard the Disconnect button relies on: the winning
+    /// dispatch flips the indicator to `Stopping` on the same frame as the
+    /// click — so the button disables immediately — and a fast second click
+    /// loses the race and spawns no second teardown.
+    pub fn begin_spv_stop(&self) -> bool {
+        for current in [SpvStatus::Starting, SpvStatus::Syncing, SpvStatus::Running] {
+            if self
+                .spv_status
+                .compare_exchange(
+                    current as u8,
+                    SpvStatus::Stopping as u8,
+                    Ordering::AcqRel,
+                    Ordering::Relaxed,
+                )
+                .is_ok()
+            {
+                return true;
+            }
+        }
+        false
+    }
+
     /// Set the last SPV error message (push-based from SpvManager event handlers).
     pub fn set_spv_last_error(&self, error: Option<String>) {
         let mut err = self
@@ -653,6 +682,55 @@ mod tests {
             OverallConnectionState::Error,
             "SPV error must not be masked by the DAPI gate"
         );
+    }
+
+    /// `begin_spv_stop` is the single-winner dedupe guard behind the Disconnect
+    /// button: from an active state it claims the stop (flips to `Stopping`,
+    /// returns `true`) exactly once; an immediate second call loses (returns
+    /// `false`) so a fast double-click spawns no second teardown.
+    #[test]
+    fn begin_spv_stop_claims_once_from_active() {
+        for active in [SpvStatus::Starting, SpvStatus::Syncing, SpvStatus::Running] {
+            let status = ConnectionStatus::new();
+            status.set_spv_status(active);
+
+            assert!(
+                status.begin_spv_stop(),
+                "first stop from {active:?} must win the claim"
+            );
+            assert_eq!(
+                status.spv_status(),
+                SpvStatus::Stopping,
+                "winning claim must flip the indicator to Stopping synchronously"
+            );
+            assert!(
+                !status.begin_spv_stop(),
+                "second stop from {active:?} must lose while one is in flight"
+            );
+        }
+    }
+
+    /// `begin_spv_stop` is a no-op (returns `false`, leaves status untouched)
+    /// when there is nothing to stop: already inactive or already stopping.
+    #[test]
+    fn begin_spv_stop_noop_when_not_stoppable() {
+        for inactive in [SpvStatus::Idle, SpvStatus::Stopped, SpvStatus::Error] {
+            let status = ConnectionStatus::new();
+            status.set_spv_status(inactive);
+            assert!(
+                !status.begin_spv_stop(),
+                "no stop to claim from {inactive:?}"
+            );
+            assert_eq!(status.spv_status(), inactive, "status must be untouched");
+        }
+
+        let status = ConnectionStatus::new();
+        status.set_spv_status(SpvStatus::Stopping);
+        assert!(
+            !status.begin_spv_stop(),
+            "a stop already in flight must not be re-claimed"
+        );
+        assert_eq!(status.spv_status(), SpvStatus::Stopping);
     }
 
     /// Without an SPV error, an unavailable DAPI still reads as `Disconnected`

@@ -1712,12 +1712,16 @@ impl App for AppState {
                 }
                 AppAction::StopSpv => {
                     let app_ctx = self.current_app_context().clone();
-                    // stop_spv flips the indicator to Stopping immediately and
-                    // settles it on Disconnected once the async teardown
-                    // completes; no banner is needed for a user-initiated stop.
-                    self.subtasks.spawn_sync("spv_manual_stop", async move {
-                        app_ctx.stop_spv().await;
-                    });
+                    // Claim the disconnect synchronously: this flips the
+                    // indicator to Stopping on this frame (so the button
+                    // disables immediately) and dedupes a fast second click —
+                    // only the winner spawns the async teardown. No banner is
+                    // needed for a user-initiated stop.
+                    if app_ctx.connection_status().begin_spv_stop() {
+                        self.subtasks.spawn_sync("spv_manual_stop", async move {
+                            app_ctx.stop_spv().await;
+                        });
+                    }
                 }
                 AppAction::Custom(_) => {}
                 AppAction::OnboardingComplete {

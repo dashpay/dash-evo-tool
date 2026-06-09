@@ -289,7 +289,10 @@ impl AppContext {
     /// Idempotent: a call with no wired backend still settles the indicator on
     /// `Stopped`/`Disconnected`. The teardown is async (upstream `shutdown` is
     /// async), so GUI callers dispatch this via `AppAction::StopSpv` rather than
-    /// blocking the frame loop.
+    /// blocking the frame loop. That dispatch claims the stop synchronously with
+    /// [`ConnectionStatus::begin_spv_stop`](crate::context::connection_status::ConnectionStatus::begin_spv_stop)
+    /// (button disables on the click frame, second click deduped); the redundant
+    /// `Stopping` flip here keeps direct callers self-contained.
     pub async fn stop_spv(self: &Arc<Self>) {
         self.connection_status.set_spv_status(SpvStatus::Stopping);
         self.connection_status.refresh_state();
@@ -1207,6 +1210,57 @@ mod tests {
             ctx.connection_status().overall_state(),
             OverallConnectionState::Disconnected
         );
+    }
+
+    /// Reconnect round trip: start → `stop_spv` → restart must rebuild a *fresh*
+    /// backend and restart chain sync, proving the disconnect leaves the system
+    /// in a reconnectable state (the one-shot start latch does not strand it).
+    ///
+    /// Offline scope: this asserts the deterministic rebuild + rewire + restart
+    /// — a new backend instance, wired again, with `is_started()` set on the new
+    /// instance (its fresh latch fired). The indicator's onward transition to
+    /// `Syncing`/`Running` is network-driven (pushed by the `EventBridge` from
+    /// live SPV events) and so is exercised by the backend-e2e suite, not here.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn reconnect_after_stop_rebuilds_fresh_backend_and_restarts() {
+        use crate::context::connection_status::OverallConnectionState;
+
+        let (ctx, sender, _tmp) = offline_testnet_context();
+
+        ctx.ensure_wallet_backend_and_start_spv(sender.clone())
+            .await
+            .expect("initial start should wire then start offline");
+        let first = ctx.wallet_backend().expect("backend wired after start");
+        assert!(first.is_started(), "initial start must latch the backend");
+
+        ctx.stop_spv().await;
+        assert!(
+            ctx.wallet_backend().is_err(),
+            "precondition: stop_spv unwired the backend"
+        );
+        assert_eq!(
+            ctx.connection_status().overall_state(),
+            OverallConnectionState::Disconnected,
+            "precondition: disconnected before reconnect"
+        );
+
+        ctx.ensure_wallet_backend_and_start_spv(sender)
+            .await
+            .expect("reconnect should wire then start a fresh backend offline");
+
+        let second = ctx
+            .wallet_backend()
+            .expect("backend must be wired again after reconnect");
+        assert!(
+            !Arc::ptr_eq(&first, &second),
+            "reconnect must rebuild a fresh backend, not revive the dropped one"
+        );
+        assert!(
+            second.is_started(),
+            "reconnect must restart chain sync on the fresh backend's latch"
+        );
+
+        second.shutdown().await;
     }
 
     /// QA-007: a failure at the (fallible) wiring step must surface — the

@@ -12,19 +12,29 @@ use crate::backend_task::BackendTask;
 use crate::backend_task::wallet::WalletTask;
 use crate::model::wallet::WalletSeedHash;
 use platform_wallet::wallet::asset_lock::tracked::{AssetLockStatus, TrackedAssetLock};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
+
+/// Per-wallet fetch state. The absence of an entry is the implicit
+/// `NotRequested` state — only `NotRequested` dispatches a fetch.
+enum FetchState {
+    /// A fetch has been dispatched and no result has arrived yet.
+    Loading,
+    /// The fetch completed; holds the wallet's tracked asset locks.
+    Loaded(Vec<TrackedAssetLock>),
+    /// The fetch failed. Does not auto-redispatch; the user retries explicitly.
+    Failed,
+}
 
 /// Cached tracked asset locks keyed by wallet, fetched via backend tasks.
 ///
-/// Each wallet fetches at most once: a `seed_hash` is recorded in `requested`
-/// at dispatch time, so a slow, empty, or failed fetch never re-dispatches every
-/// frame. [`Self::invalidate`] clears both guards to allow a fresh fetch.
+/// Each wallet moves through `NotRequested → Loading → Loaded | Failed`. A fetch
+/// is dispatched only from `NotRequested`, so neither an empty result, a slow
+/// fetch, nor a failure re-dispatches every frame (the F94 retry-storm guard).
+/// [`Self::invalidate`] / [`Self::invalidate_one`] return a wallet to
+/// `NotRequested` to re-arm a fetch (refresh and the Retry affordance).
 #[derive(Default)]
 pub struct TrackedAssetLockCache {
-    /// Wallets a fetch was dispatched for. A wallet present here is never
-    /// re-requested until [`Self::invalidate`] runs.
-    requested: BTreeSet<WalletSeedHash>,
-    cached: BTreeMap<WalletSeedHash, Vec<TrackedAssetLock>>,
+    states: BTreeMap<WalletSeedHash, FetchState>,
 }
 
 impl TrackedAssetLockCache {
@@ -32,20 +42,21 @@ impl TrackedAssetLockCache {
         Self::default()
     }
 
-    /// Returns the backend task to dispatch when this wallet has not yet been
-    /// fetched, or `None` when a fetch for it was already dispatched. The caller
+    /// Returns the backend task to dispatch when this wallet is `NotRequested`,
+    /// or `None` once it is `Loading`, `Loaded`, or `Failed`. The caller
     /// dispatches the returned task as an
     /// [`AppAction::BackendTask`](crate::app::AppAction::BackendTask).
     pub fn ensure_requested(&mut self, seed_hash: WalletSeedHash) -> Option<BackendTask> {
-        if !self.requested.insert(seed_hash) {
+        if self.states.contains_key(&seed_hash) {
             return None;
         }
+        self.states.insert(seed_hash, FetchState::Loading);
         Some(BackendTask::WalletTask(WalletTask::ListTrackedAssetLocks {
             seed_hash,
         }))
     }
 
-    /// Marks every not-yet-requested wallet in `seed_hashes` as requested and
+    /// Marks every `NotRequested` wallet in `seed_hashes` as `Loading` and
     /// returns one fetch task per newly-requested wallet. Use this when a screen
     /// reads several wallets at once (e.g. a funding-method gate) so all fetches
     /// dispatch together as a single
@@ -62,33 +73,60 @@ impl TrackedAssetLockCache {
             .collect()
     }
 
-    /// Store a completed fetch for one wallet.
+    /// Record a completed fetch for one wallet (`→ Loaded`).
     pub fn store(&mut self, seed_hash: WalletSeedHash, locks: Vec<TrackedAssetLock>) {
-        self.requested.insert(seed_hash);
-        self.cached.insert(seed_hash, locks);
+        self.states.insert(seed_hash, FetchState::Loaded(locks));
     }
 
-    /// Drop all cached locks and dispatch guards so the next render re-fetches
-    /// every wallet (explicit refresh).
+    /// Move every wallet currently `Loading` to `Failed`. The error
+    /// `TaskResult` carries no `seed_hash`, so the screen's error handler routes
+    /// here; a single lock fetch is normally in flight, so attribution is
+    /// correct. Worst case an unrelated error flips a concurrent fetch to a
+    /// retryable "couldn't load" state — graceful, no data loss.
+    pub fn mark_loading_failed(&mut self) {
+        for state in self.states.values_mut() {
+            if matches!(state, FetchState::Loading) {
+                *state = FetchState::Failed;
+            }
+        }
+    }
+
+    /// Return one wallet to `NotRequested` so the next render re-dispatches its
+    /// fetch (the Retry affordance).
+    pub fn invalidate_one(&mut self, seed_hash: &WalletSeedHash) {
+        self.states.remove(seed_hash);
+    }
+
+    /// Return all wallets to `NotRequested` so the next render re-fetches every
+    /// wallet (explicit refresh).
     pub fn invalidate(&mut self) {
-        self.requested.clear();
-        self.cached.clear();
+        self.states.clear();
     }
 
-    /// Whether the locks for `seed_hash` have not arrived yet (a fetch is
-    /// pending or in flight). Drives the "Loading asset locks…" state.
+    /// Whether the wallet's fetch is in flight (`Loading`). Drives the
+    /// "Loading asset locks…" state.
     pub fn is_loading(&self, seed_hash: &WalletSeedHash) -> bool {
-        !self.cached.contains_key(seed_hash)
+        matches!(self.states.get(seed_hash), Some(FetchState::Loading))
     }
 
-    /// The cached locks for `seed_hash`, or `None` until the fetch arrives.
+    /// Whether the wallet's fetch failed (`Failed`). Drives the retryable
+    /// "couldn't load" state.
+    pub fn is_failed(&self, seed_hash: &WalletSeedHash) -> bool {
+        matches!(self.states.get(seed_hash), Some(FetchState::Failed))
+    }
+
+    /// The cached locks for `seed_hash` once `Loaded`, or `None` in every other
+    /// state.
     pub fn get(&self, seed_hash: &WalletSeedHash) -> Option<&[TrackedAssetLock]> {
-        self.cached.get(seed_hash).map(Vec::as_slice)
+        match self.states.get(seed_hash) {
+            Some(FetchState::Loaded(locks)) => Some(locks),
+            _ => None,
+        }
     }
 
     /// Whether the wallet has at least one still-actionable tracked asset lock
-    /// (any status other than `Consumed`). Returns `false` until the fetch
-    /// arrives.
+    /// (any status other than `Consumed`). Returns `false` in every state but
+    /// `Loaded`.
     pub fn has_unused(&self, seed_hash: &WalletSeedHash) -> bool {
         self.get(seed_hash).is_some_and(|locks| {
             locks
@@ -179,8 +217,7 @@ mod tests {
         );
     }
 
-    /// `invalidate` clears both the dispatch guards and the cache so an explicit
-    /// refresh re-fetches.
+    /// `invalidate` clears every wallet's state so an explicit refresh re-fetches.
     #[test]
     fn invalidate_allows_refetch() {
         let mut cache = TrackedAssetLockCache::new();
@@ -192,6 +229,70 @@ mod tests {
         assert!(
             cache.ensure_requested(SEED_A).is_some(),
             "invalidate must allow the same wallet to re-fetch"
+        );
+    }
+
+    /// QA-001: a failed fetch must not strand the screen on an infinite spinner.
+    /// From `Loading`, `mark_loading_failed` moves to `Failed`; the wallet then
+    /// reports failed (not loading) and does NOT re-dispatch — so the screen can
+    /// render a retryable "couldn't load" state instead of a stuck spinner.
+    #[test]
+    fn failed_fetch_is_terminal_until_retry() {
+        let mut cache = TrackedAssetLockCache::new();
+        cache.ensure_requested(SEED_A);
+        assert!(
+            cache.is_loading(&SEED_A),
+            "precondition: the fetch is loading"
+        );
+
+        cache.mark_loading_failed();
+        assert!(
+            cache.is_failed(&SEED_A),
+            "a failed fetch must report failed"
+        );
+        assert!(
+            !cache.is_loading(&SEED_A),
+            "a failed fetch must NOT still report loading (no stuck spinner)"
+        );
+        assert!(
+            cache.ensure_requested(SEED_A).is_none(),
+            "a failed fetch must not auto-redispatch (no retry storm)"
+        );
+
+        // The explicit Retry affordance re-arms the fetch.
+        cache.invalidate_one(&SEED_A);
+        assert!(
+            cache.ensure_requested(SEED_A).is_some(),
+            "invalidate_one must re-arm a failed wallet so Retry re-fetches"
+        );
+        assert!(
+            cache.is_loading(&SEED_A),
+            "the retry puts the wallet back to loading"
+        );
+    }
+
+    /// `mark_loading_failed` only touches in-flight fetches: an already-`Loaded`
+    /// wallet keeps its data when an unrelated error fires.
+    #[test]
+    fn mark_loading_failed_spares_loaded_wallets() {
+        let mut cache = TrackedAssetLockCache::new();
+        cache.ensure_requested(SEED_A);
+        cache.store(SEED_A, Vec::new()); // SEED_A is Loaded
+        cache.ensure_requested(SEED_B); // SEED_B is Loading
+
+        cache.mark_loading_failed();
+
+        assert!(
+            cache.get(&SEED_A).is_some(),
+            "a Loaded wallet must keep its data when an unrelated fetch fails"
+        );
+        assert!(
+            !cache.is_failed(&SEED_A),
+            "a Loaded wallet must not flip to failed"
+        );
+        assert!(
+            cache.is_failed(&SEED_B),
+            "the in-flight fetch flips to failed"
         );
     }
 }

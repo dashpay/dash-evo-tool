@@ -5,6 +5,7 @@ mod success_screen;
 
 use crate::app::{AppAction, BackendTasksExecutionMode};
 use crate::backend_task::core::CoreItem;
+use crate::backend_task::error::TaskError;
 use crate::backend_task::identity::{IdentityTask, IdentityTopUpInfo, TopUpIdentityFundingMethod};
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
@@ -231,7 +232,11 @@ impl TopUpIdentityScreen {
             for wallet in wallets.values() {
                 let wallet = wallet.read().unwrap();
                 let seed_hash = wallet.seed_hash();
-                if self.asset_lock_cache.has_unused(&seed_hash) {
+                // Offer the option on a failed fetch too, so the user can reach
+                // the picker's Retry rather than the option vanishing.
+                if self.asset_lock_cache.has_unused(&seed_hash)
+                    || self.asset_lock_cache.is_failed(&seed_hash)
+                {
                     has_unused_asset_lock = true;
                 }
                 if self.app_context.snapshot_has_balance(&seed_hash) {
@@ -505,6 +510,14 @@ impl ScreenLike for TopUpIdentityScreen {
             WalletFundedScreenStep::Success => {}
         }
     }
+
+    fn display_task_error(&mut self, _error: &TaskError) -> bool {
+        // Flip an in-flight asset-lock fetch to a retryable state so the picker
+        // shows a Retry button instead of a permanent "Loading…".
+        self.asset_lock_cache.mark_loading_failed();
+        false
+    }
+
     fn ui(&mut self, ctx: &Context) -> AppAction {
         let mut action = add_top_panel(
             ctx,

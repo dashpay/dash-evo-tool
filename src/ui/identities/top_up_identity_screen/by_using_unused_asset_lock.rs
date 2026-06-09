@@ -23,6 +23,14 @@ impl TopUpIdentityScreen {
             }
         };
 
+        if self.asset_lock_cache.is_failed(&seed_hash) {
+            ui.label("Couldn't load asset locks.");
+            if ui.button("Retry").clicked() {
+                self.asset_lock_cache.invalidate_one(&seed_hash);
+            }
+            return;
+        }
+
         let Some(all_tracked) = self.asset_lock_cache.get(&seed_hash) else {
             ui.label("Loading asset locks…");
             return;

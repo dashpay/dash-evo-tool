@@ -44,12 +44,14 @@ impl WalletsBalancesScreen {
         };
 
         // Fetch the locks off the UI thread via the App Task System; render
-        // from the cache. `None` ⇒ the fetch has not arrived yet.
+        // from the cache. `None` ⇒ the fetch is loading or failed.
         if let Some(task) = self.asset_lock_cache.ensure_requested(seed_hash) {
             app_action = AppAction::BackendTask(task);
         }
         let tracked: Option<Vec<TrackedAssetLock>> =
             self.asset_lock_cache.get(&seed_hash).map(<[_]>::to_vec);
+        let load_failed = self.asset_lock_cache.is_failed(&seed_hash);
+        let mut retry_clicked = false;
 
         let dark_mode = ui.ctx().style().visuals.dark_mode;
         Frame::new()
@@ -77,11 +79,23 @@ impl WalletsBalancesScreen {
                 let Some(tracked) = tracked.as_deref() else {
                     ui.vertical_centered(|ui| {
                         ui.add_space(20.0);
-                        ui.label(
-                            RichText::new("Loading asset locks…")
-                                .color(Color32::GRAY)
-                                .size(14.0),
-                        );
+                        if load_failed {
+                            ui.label(
+                                RichText::new("Couldn't load asset locks.")
+                                    .color(Color32::GRAY)
+                                    .size(14.0),
+                            );
+                            ui.add_space(8.0);
+                            if ui.button("Retry").clicked() {
+                                retry_clicked = true;
+                            }
+                        } else {
+                            ui.label(
+                                RichText::new("Loading asset locks…")
+                                    .color(Color32::GRAY)
+                                    .size(14.0),
+                            );
+                        }
                         ui.add_space(20.0);
                     });
                     return;
@@ -171,6 +185,10 @@ impl WalletsBalancesScreen {
                         });
                 }
             });
+
+        if retry_clicked {
+            self.asset_lock_cache.invalidate_one(&seed_hash);
+        }
 
         if let Some((out_point, platform_addresses)) = open_fund_dialog_for_op {
             self.fund_platform_dialog.selected_asset_lock_out_point = Some(out_point);

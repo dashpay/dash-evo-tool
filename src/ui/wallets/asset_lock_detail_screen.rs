@@ -1,5 +1,6 @@
 use crate::app::AppAction;
 use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::wallet::Wallet;
 use crate::ui::components::MessageBanner;
@@ -63,6 +64,24 @@ impl AssetLockDetailScreen {
         let dark_mode = ui.ctx().style().visuals.dark_mode;
 
         let Some(lock) = self.load_tracked_lock() else {
+            if self.asset_lock_cache.is_failed(&self.wallet_seed_hash) {
+                let mut retry = false;
+                ui.vertical_centered(|ui| {
+                    ui.add_space(50.0);
+                    ui.label(
+                        RichText::new("Couldn't load asset lock.")
+                            .size(16.0)
+                            .color(Color32::GRAY),
+                    );
+                    ui.add_space(8.0);
+                    retry = ui.button("Retry").clicked();
+                });
+                if retry {
+                    self.asset_lock_cache.invalidate_one(&self.wallet_seed_hash);
+                }
+                return;
+            }
+
             let message = if self.asset_lock_cache.is_loading(&self.wallet_seed_hash) {
                 "Loading asset lock…"
             } else {
@@ -351,6 +370,13 @@ impl ScreenLike for AssetLockDetailScreen {
         if let BackendTaskSuccessResult::TrackedAssetLocks { seed_hash, locks } = result {
             self.asset_lock_cache.store(seed_hash, locks);
         }
+    }
+
+    fn display_task_error(&mut self, _error: &TaskError) -> bool {
+        // Flip the in-flight lock fetch to a retryable state so the screen shows
+        // a Retry button instead of a permanent "Loading…".
+        self.asset_lock_cache.mark_loading_failed();
+        false
     }
 
     fn refresh_on_arrival(&mut self) {}

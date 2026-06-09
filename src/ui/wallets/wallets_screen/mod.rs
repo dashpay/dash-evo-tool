@@ -8,6 +8,7 @@ pub(crate) use single_key_view::SINGLE_KEY_REQUIRES_CORE;
 use crate::app::{AppAction, BackendTasksExecutionMode, DesiredAppAction};
 use crate::backend_task::BackendTask;
 use crate::backend_task::core::CoreTask;
+use crate::backend_task::error::TaskError;
 use crate::backend_task::shielded::ShieldedTask;
 use crate::context::AppContext;
 use crate::context::connection_status::spv_phase_summary;
@@ -2947,6 +2948,14 @@ impl ScreenLike for WalletsBalancesScreen {
             }
             _ => {}
         }
+    }
+
+    fn display_task_error(&mut self, _error: &TaskError) -> bool {
+        // A failed asset-lock fetch would otherwise strand the tab on a spinner;
+        // flip the in-flight fetch to a retryable state. The error carries no
+        // seed_hash, so this routes any in-flight lock fetch to Failed.
+        self.asset_lock_cache.mark_loading_failed();
+        false
     }
 
     fn refresh_on_arrival(&mut self) {

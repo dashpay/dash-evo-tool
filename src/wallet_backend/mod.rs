@@ -665,6 +665,11 @@ impl WalletBackend {
 
         self.resolve_registered_wallet(*seed_hash, wallet_id, &expected_account_xpub)
             .await?;
+        // TODO(platform-wallet): seed the persister's `core_derived_addresses` from this
+        // wallet's registered account pools here, before SPV sync begins. Upstream
+        // `apply_pools` never mirrors pools into that table, so a genesis-rescan boot rejects
+        // historical UTXOs (utxo_address_not_derived), drops the whole changeset, and
+        // under-reports funded balances until the live derive-event lands.
         tracing::info!(
             wallet = %hex::encode(seed_hash),
             birth_height = ?birth_height_override,

@@ -103,11 +103,15 @@ The decisive cost of fetch-per-send is privacy, on the hot path, every time the
 user spends:
 
 - Every address spend re-fetches the nonce from the network
-  (`fetch_inputs_with_nonce` → `AddressInfo::fetch_many`). Because the SDK
-  resolves a *proved* query by querying for quorum agreement, a single nonce
-  fetch contacts **two DAPI nodes**. So each spend exposes the user's IP to two
-  DAPI nodes solely to obtain a nonce — doubling the network-metadata exposure
-  versus a design that does not fetch per spend.
+  (`fetch_inputs_with_nonce` → `AddressInfo::fetch_many`). That nonce read is a
+  **separate DAPI request, on top of the unavoidable broadcast**: a spend today
+  makes three proved requests — nonce read, broadcast, and wait-for-result —
+  each independently routed to a single DAPI node (the proof is verified locally
+  against the quorum public key, so no node is polled twice for agreement). The
+  nonce read exposes the user's IP to a DAPI node purely to obtain a value the
+  wallet could already own — the one request of the three that is entirely
+  avoidable. Owning the nonce locally drops a spend from three DAPI requests to
+  two, removing that exposure on every transaction.
 - This is an inherent, repeated leak: the more a user transacts, the more DAPI
   operators can correlate their IP with their platform addresses and spending
   activity. The exposure scales linearly with spend count and is unavoidable as

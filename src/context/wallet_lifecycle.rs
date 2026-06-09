@@ -245,16 +245,24 @@ impl AppContext {
             return Err(TaskError::WalletAlreadyImported);
         }
 
-        // 2. Persist to sidecars (T-W-01). The wallet-meta sidecar
-        // carries alias/is_main/core_wallet_name plus the pre-computed
-        // master xpub the cold-boot picker reads without unlocking the
-        // vault; the seed-envelope sidecar carries the encrypted seed
-        // bytes plus the matching xpub copy.
-        if let Err(e) = self.write_wallet_sidecars(&wallet) {
+        // 2. Persist the seed-envelope vault entry — FAIL-CLOSED (F62). This is
+        // the encrypted seed the W2 cold-boot bridge re-registers from; without
+        // it the wallet works in-session but VANISHES with its funds on the next
+        // launch. If it cannot be saved, the registration is aborted here (the
+        // wallet is NOT inserted in-memory) so the UI tells the user the wallet
+        // was not saved and to retry — never a silent loss. The vault is
+        // AppContext-owned, so this succeeds even before the backend is wired.
+        self.write_seed_envelope(&wallet)?;
+
+        // The wallet-meta sidecar (alias / is_main / xpub the cold-boot picker
+        // reads without unlocking the vault) is best-effort: a failure degrades
+        // the picker label but never loses funds, and the meta is rebuilt from
+        // the upstream persistor on the next cold boot.
+        if let Err(e) = self.write_wallet_meta(&wallet) {
             tracing::warn!(
                 wallet = %hex::encode(seed_hash),
                 error = ?e,
-                "Failed to persist wallet sidecars",
+                "Failed to persist wallet-meta sidecar (non-fatal)",
             );
         }
 
@@ -324,42 +332,49 @@ impl AppContext {
             });
     }
 
-    /// Mirror a newly-registered wallet into the wallet-meta +
-    /// seed-envelope sidecars.
+    /// Persist a newly-registered wallet's encrypted seed envelope to the
+    /// vault. **Fail-closed** (F62): this is the must-succeed write — the
+    /// envelope is the encrypted seed the W2 cold-boot bridge re-registers the
+    /// wallet from, so a failure here means the wallet would silently disappear
+    /// with its funds at the next launch. The caller propagates the error so
+    /// the wallet is not kept.
     ///
-    /// Writes through the shared `app_kv` k/v store and the shared
-    /// `secret_store` vault that `AppContext` opens at boot, so this succeeds
-    /// even before the wallet backend is wired (PROJ-010): the seed envelope
-    /// the W2 cold-boot bridge needs is persisted at create/import time
-    /// regardless of wiring order. The wallet backend, once built, reuses the
-    /// very same vault handle, so the entry written here is the same one it
-    /// reads.
-    fn write_wallet_sidecars(&self, wallet: &Wallet) -> Result<(), TaskError> {
+    /// Writes through the shared `secret_store` vault that `AppContext` opens at
+    /// boot, so it succeeds even before the wallet backend is wired (PROJ-010):
+    /// the backend, once built, reuses the very same vault handle.
+    fn write_seed_envelope(&self, wallet: &Wallet) -> Result<(), TaskError> {
         let seed_hash = wallet.seed_hash();
-        let xpub_encoded = wallet
-            .master_bip44_ecdsa_extended_public_key
-            .encode()
-            .to_vec();
-
         let envelope = StoredSeedEnvelope {
             encrypted_seed: wallet.encrypted_seed_slice().to_vec(),
             salt: wallet.salt().to_vec(),
             nonce: wallet.nonce().to_vec(),
             password_hint: wallet.password_hint().clone(),
             uses_password: wallet.uses_password,
-            xpub_encoded: xpub_encoded.clone(),
+            xpub_encoded: wallet
+                .master_bip44_ecdsa_extended_public_key
+                .encode()
+                .to_vec(),
         };
-        WalletSeedView::new(&self.secret_store).set(&seed_hash, &envelope)?;
+        WalletSeedView::new(&self.secret_store).set(&seed_hash, &envelope)
+    }
 
+    /// Persist a newly-registered wallet's metadata (alias / is_main /
+    /// core_wallet_name + master xpub) to the wallet-meta sidecar.
+    /// **Best-effort** (F62): a failure degrades only the cold-boot picker
+    /// label, never loses funds — the caller logs and continues, and the meta
+    /// is rebuilt from the upstream persistor on the next cold boot.
+    fn write_wallet_meta(&self, wallet: &Wallet) -> Result<(), TaskError> {
+        let seed_hash = wallet.seed_hash();
         let meta = WalletMeta {
             alias: wallet.alias.clone().unwrap_or_default(),
             is_main: wallet.is_main,
             core_wallet_name: wallet.core_wallet_name.clone(),
-            xpub_encoded,
+            xpub_encoded: wallet
+                .master_bip44_ecdsa_extended_public_key
+                .encode()
+                .to_vec(),
         };
-        WalletMetaView::new(&self.app_kv).set(self.network, &seed_hash, &meta)?;
-
-        Ok(())
+        WalletMetaView::new(&self.app_kv).set(self.network, &seed_hash, &meta)
     }
 
     /// Whether `wallet` still needs its bootstrap address set derived.
@@ -1645,5 +1660,47 @@ mod tests {
         );
 
         backend.shutdown().await;
+    }
+
+    /// F62 — when the seed-envelope vault write fails, `register_wallet` must
+    /// FAIL CLOSED: return `Err` and NOT keep the wallet. The envelope is the
+    /// encrypted seed the W2 cold-boot bridge re-registers from, so silently
+    /// keeping an in-session wallet whose seed was never saved would lose the
+    /// wallet and its funds at the next launch. Before the fix the envelope
+    /// write was best-effort (warn + Ok), so the wallet was kept regardless.
+    ///
+    /// Induces the write failure permission-free by replacing the vault file
+    /// with a directory: the store's atomic `persist` rename onto a directory
+    /// path fails deterministically (root cannot bypass this).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn register_wallet_fails_closed_when_seed_envelope_write_fails() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let (ctx, _sender) = offline_testnet_context_at(temp_dir.path());
+
+        // Replace the resident vault file with a directory so the next vault
+        // write (the atomic persist rename) fails.
+        let vault_path = temp_dir.path().join("secrets").join("det-secrets.pwsvault");
+        std::fs::remove_file(&vault_path).expect("remove vault file");
+        std::fs::create_dir(&vault_path).expect("plant directory at vault path");
+
+        let seed = [0xD4u8; 64];
+        let wallet =
+            crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
+                .expect("build wallet");
+        let seed_hash = wallet.seed_hash();
+
+        let result = ctx.register_wallet(wallet, &seed, WalletOrigin::Fresh);
+        assert!(
+            result.is_err(),
+            "register_wallet must fail closed when the seed envelope cannot be saved"
+        );
+        assert!(
+            !ctx.wallets.read().unwrap().contains_key(&seed_hash),
+            "a wallet whose seed was not saved must not be kept in memory"
+        );
+        assert!(
+            !ctx.has_wallet.load(Ordering::Relaxed),
+            "has_wallet must not flip true when registration fails closed"
+        );
     }
 }

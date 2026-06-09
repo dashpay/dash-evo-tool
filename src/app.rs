@@ -283,6 +283,10 @@ pub enum AppAction {
     /// during the brief not-yet-wired window lazily wires-then-starts instead
     /// of silently fast-failing.
     StartSpv,
+    /// Stop chain sync and unwire the wallet backend for the active context.
+    /// Handled by the update loop because the teardown is async. Used by the
+    /// manual Disconnect button; the next Connect rebuilds the backend.
+    StopSpv,
     Custom(String),
     /// Mark onboarding as complete, hide welcome screen, and optionally navigate
     OnboardingComplete {
@@ -1704,6 +1708,15 @@ impl App for AppState {
                             )
                             .with_details(&e);
                         }
+                    });
+                }
+                AppAction::StopSpv => {
+                    let app_ctx = self.current_app_context().clone();
+                    // stop_spv flips the indicator to Stopping immediately and
+                    // settles it on Disconnected once the async teardown
+                    // completes; no banner is needed for a user-initiated stop.
+                    self.subtasks.spawn_sync("spv_manual_stop", async move {
+                        app_ctx.stop_spv().await;
                     });
                 }
                 AppAction::Custom(_) => {}

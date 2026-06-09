@@ -327,7 +327,11 @@ impl NetworkChooserScreen {
                     .min_size(egui::vec2(120.0, 36.0));
 
                     if ui.add_enabled(!is_stopping, disconnect_button).clicked() {
-                        self.current_app_context().stop_spv();
+                        // The update loop owns the async teardown (upstream
+                        // shutdown is async), so dispatch it as an action rather
+                        // than blocking the frame loop. The indicator flips to
+                        // Stopping → Disconnected as the teardown progresses.
+                        app_action = AppAction::StopSpv;
                     }
 
                     // Show sync status next to button

@@ -267,9 +267,42 @@ impl AppContext {
         }
     }
 
-    /// Stop chain sync. Inert; see [`Self::start_spv`].
-    pub fn stop_spv(&self) {
-        self.connection_status.reset_timer();
+    /// Stop chain sync and drop the wired wallet backend so the next Connect
+    /// rebuilds it from a clean slate.
+    ///
+    /// This is the disconnect counterpart to
+    /// [`Self::ensure_wallet_backend_and_start_spv`] and the single chokepoint
+    /// for "stop SPV". The sequence is:
+    ///
+    /// 1. Flip the SPV indicator to [`SpvStatus::Stopping`] so the UI shows
+    ///    "Disconnecting…" immediately, before the async teardown runs.
+    /// 2. Shut the wallet backend down ([`WalletBackend::shutdown`]), stopping
+    ///    the upstream chain-sync run loop and the periodic coordinators.
+    /// 3. Unwire the backend. Its start latch is one-shot, so the dropped
+    ///    instance could never restart sync — the next Connect calls
+    ///    [`Self::ensure_wallet_backend_and_start_spv`], which rebuilds a fresh
+    ///    backend with a fresh latch.
+    /// 4. Flip the indicator to [`SpvStatus::Stopped`] and clear the live peer
+    ///    count, sync progress, and last error, then recompute the overall
+    ///    state — which lands on `Disconnected` now that SPV is inactive.
+    ///
+    /// Idempotent: a call with no wired backend still settles the indicator on
+    /// `Stopped`/`Disconnected`. The teardown is async (upstream `shutdown` is
+    /// async), so GUI callers dispatch this via `AppAction::StopSpv` rather than
+    /// blocking the frame loop.
+    pub async fn stop_spv(self: &Arc<Self>) {
+        self.connection_status.set_spv_status(SpvStatus::Stopping);
+        self.connection_status.refresh_state();
+
+        if let Some(backend) = self.take_wallet_backend() {
+            backend.shutdown().await;
+        }
+
+        self.connection_status.set_spv_status(SpvStatus::Stopped);
+        self.connection_status.set_spv_connected_peers(0);
+        self.connection_status.set_spv_sync_progress(None);
+        self.connection_status.set_spv_last_error(None);
+        self.connection_status.refresh_state();
     }
 
     /// Persist a wallet to the database and register it in the in-memory map.
@@ -1112,6 +1145,68 @@ mod tests {
         );
 
         backend.shutdown().await;
+    }
+
+    /// The Disconnect chokepoint must produce a *visible* state change: after a
+    /// successful start, `stop_spv` unwires the backend and settles the
+    /// indicator on `Stopped` / `Disconnected`. Regression guard ensuring the
+    /// Disconnect button drives the overall state out of its active value.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stop_spv_unwires_backend_and_disconnects_indicator() {
+        use crate::context::connection_status::OverallConnectionState;
+
+        let (ctx, sender, _tmp) = offline_testnet_context();
+
+        ctx.ensure_wallet_backend_and_start_spv(sender)
+            .await
+            .expect("chokepoint should wire then start offline");
+        assert!(
+            ctx.wallet_backend().is_ok(),
+            "precondition: backend wired after start"
+        );
+
+        ctx.stop_spv().await;
+
+        assert!(
+            ctx.wallet_backend().is_err(),
+            "stop_spv must unwire the backend so the next Connect rebuilds it"
+        );
+        assert_eq!(
+            ctx.connection_status().spv_status(),
+            SpvStatus::Stopped,
+            "stop_spv must leave the SPV indicator Stopped"
+        );
+        assert_eq!(
+            ctx.connection_status().overall_state(),
+            OverallConnectionState::Disconnected,
+            "stop_spv must leave the overall state Disconnected"
+        );
+        assert_eq!(
+            ctx.connection_status().spv_connected_peers(),
+            0,
+            "stop_spv must clear the live peer count"
+        );
+    }
+
+    /// `stop_spv` is idempotent: calling it with no wired backend must not panic
+    /// and must still settle the indicator on `Stopped` / `Disconnected`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stop_spv_is_idempotent_without_a_wired_backend() {
+        use crate::context::connection_status::OverallConnectionState;
+
+        let (ctx, _sender, _tmp) = offline_testnet_context();
+        assert!(
+            ctx.wallet_backend().is_err(),
+            "precondition: backend unwired"
+        );
+
+        ctx.stop_spv().await;
+
+        assert_eq!(ctx.connection_status().spv_status(), SpvStatus::Stopped);
+        assert_eq!(
+            ctx.connection_status().overall_state(),
+            OverallConnectionState::Disconnected
+        );
     }
 
     /// QA-007: a failure at the (fallible) wiring step must surface — the

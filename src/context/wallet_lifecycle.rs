@@ -6,6 +6,8 @@ use crate::model::wallet::meta::WalletMeta;
 use crate::model::wallet::seed_envelope::StoredSeedEnvelope;
 use crate::model::wallet::{Wallet, WalletSeedHash};
 use crate::wallet_backend::{DetScope, WalletBackend, WalletMetaView, WalletSeedView};
+use dash_sdk::dpp::dashcore::Network;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 
@@ -14,13 +16,78 @@ use std::sync::{Arc, RwLock};
 /// window so the common identity-load path serves entirely from cache.
 const AUTH_PUBKEY_WARM_KEY_COUNT: u32 = 12;
 
+/// The upstream `dash-spv` `DiskStorageManager` chain-cache entries under the
+/// per-network SPV directory. Each is a subfolder except `peers.dat`. The
+/// wallet/shielded SQLite sidecars in the same directory are deliberately
+/// excluded — clearing the chain cache must not touch funds or secrets.
+const SPV_CHAIN_STORAGE_ENTRIES: [&str; 7] = [
+    "block_headers",
+    "filter_headers",
+    "filters",
+    "blocks",
+    "metadata",
+    "masternodestate",
+    "peers.dat",
+];
+
+/// Per-network SPV storage directory: `<data_dir>/spv/<network>/`. Mirrors
+/// `WalletBackend::resolve_spv_storage_dir` so the path resolves identically
+/// whether or not the wallet backend is wired yet.
+fn spv_storage_dir(data_dir: &Path, network: Network) -> PathBuf {
+    let segment = match network {
+        Network::Mainnet => "mainnet",
+        Network::Testnet => "testnet",
+        Network::Devnet => "devnet",
+        Network::Regtest => "regtest",
+    };
+    data_dir.join("spv").join(segment)
+}
+
+/// Remove the upstream chain-sync cache files under `spv_dir`, leaving the
+/// wallet (`platform-wallet.sqlite`) and shielded sidecars untouched. The
+/// `DiskStorageManager` lock lives at `<spv_dir>.lock` (a sibling of the
+/// directory); it is removed too so a stale lock cannot block the next sync.
+/// A missing entry is the expected fresh/never-synced state and is tolerated.
+fn clear_spv_chain_storage(spv_dir: &Path) -> Result<(), TaskError> {
+    for entry in SPV_CHAIN_STORAGE_ENTRIES {
+        let path = spv_dir.join(entry);
+        let result = if path.is_dir() {
+            std::fs::remove_dir_all(&path)
+        } else {
+            std::fs::remove_file(&path)
+        };
+        if let Err(e) = result
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            return Err(TaskError::FileSystem { source: e });
+        }
+    }
+
+    let lock_path = spv_dir.with_extension("lock");
+    if let Err(e) = std::fs::remove_file(&lock_path)
+        && e.kind() != std::io::ErrorKind::NotFound
+    {
+        return Err(TaskError::FileSystem { source: e });
+    }
+
+    Ok(())
+}
+
 impl AppContext {
-    /// Clear the SPV data directory.
+    /// Delete the cached chain-sync data (headers, filters, blocks, masternode
+    /// state, peers) for this network so the next connection re-syncs from
+    /// scratch.
     ///
-    /// No-op: chain sync is owned by upstream `platform-wallet`; DET no longer
-    /// maintains an SPV data directory. P2 wires this to the upstream runtime.
+    /// Only the upstream `dash-spv` `DiskStorageManager` files under the
+    /// per-network SPV directory are removed; the wallet state
+    /// (`platform-wallet.sqlite`) and the shielded commitment tree are left
+    /// intact — clearing the chain cache must never touch funds or secrets. The
+    /// "Clear SPV Data" control is enabled only while sync is stopped, so the
+    /// `DiskStorageManager` has released its file lock and the deletes do not
+    /// race a live writer. A missing directory (never synced) is success.
     pub fn clear_spv_data(&self) -> Result<(), TaskError> {
-        Ok(())
+        let spv_dir = spv_storage_dir(&self.data_dir, self.network);
+        clear_spv_chain_storage(&spv_dir)
     }
 
     pub fn clear_network_database(self: &Arc<Self>) -> Result<(), TaskError> {
@@ -896,7 +963,6 @@ mod tests {
     use crate::database::test_helpers::create_database_at_path;
     use crate::utils::egui_mpsc::SenderAsync;
     use crate::utils::tasks::TaskManager;
-    use dash_sdk::dpp::dashcore::Network;
 
     /// Build an offline `AppContext` for testnet in an isolated temp dir. No
     /// network I/O happens at construction: the SDK and Core client are built
@@ -1993,5 +2059,74 @@ mod tests {
             .expect("backend wired")
             .shutdown()
             .await;
+    }
+
+    /// F61 — clearing the SPV chain cache removes every `dash-spv` storage
+    /// folder/file (and the storage lock) under the per-network directory while
+    /// leaving the wallet (`platform-wallet.sqlite`) and shielded sidecars
+    /// intact. The pre-fix `clear_spv_data` was a no-op that still reported
+    /// success.
+    #[test]
+    fn clear_spv_chain_storage_removes_chain_cache_but_keeps_wallet_sidecars() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let spv_dir = spv_storage_dir(tmp.path(), Network::Testnet);
+        std::fs::create_dir_all(&spv_dir).expect("create spv dir");
+
+        // Plant one file inside each chain-storage folder, plus the loose
+        // peers.dat and the sibling storage lock.
+        for entry in [
+            "block_headers",
+            "filter_headers",
+            "filters",
+            "blocks",
+            "metadata",
+            "masternodestate",
+        ] {
+            let folder = spv_dir.join(entry);
+            std::fs::create_dir_all(&folder).expect("create chain folder");
+            std::fs::write(folder.join("segment.dat"), b"x").expect("write chain segment");
+        }
+        std::fs::write(spv_dir.join("peers.dat"), b"peers").expect("write peers");
+        std::fs::write(spv_dir.with_extension("lock"), b"lock").expect("write lock");
+
+        // Plant the wallet + shielded sidecars that must survive the clear.
+        let wallet_sqlite = spv_dir.join("platform-wallet.sqlite");
+        let shielded_tree = spv_dir.join("shielded-commitment-tree.sqlite");
+        std::fs::write(&wallet_sqlite, b"wallet").expect("write wallet sqlite");
+        std::fs::write(&shielded_tree, b"tree").expect("write shielded tree");
+
+        clear_spv_chain_storage(&spv_dir).expect("clear must succeed");
+
+        for entry in SPV_CHAIN_STORAGE_ENTRIES {
+            assert!(
+                !spv_dir.join(entry).exists(),
+                "chain-storage entry {entry} must be deleted"
+            );
+        }
+        assert!(
+            !spv_dir.with_extension("lock").exists(),
+            "the storage lock must be deleted"
+        );
+        assert!(
+            wallet_sqlite.exists(),
+            "platform-wallet.sqlite must survive an SPV-cache clear"
+        );
+        assert!(
+            shielded_tree.exists(),
+            "the shielded commitment tree must survive an SPV-cache clear"
+        );
+    }
+
+    /// F61 — a never-synced network has no SPV directory at all; clearing it is
+    /// a success, not an error.
+    #[test]
+    fn clear_spv_chain_storage_is_ok_when_directory_absent() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let spv_dir = spv_storage_dir(tmp.path(), Network::Testnet);
+        assert!(
+            !spv_dir.exists(),
+            "precondition: no spv dir on a fresh install"
+        );
+        clear_spv_chain_storage(&spv_dir).expect("clearing an absent cache must succeed");
     }
 }

@@ -114,8 +114,14 @@ impl ContextProvider for SpvProvider {
         let backend = app_ctx.wallet_backend().map_err(|_| {
             ContextProviderError::Config("chain backend not initialized (pre-unlock)".to_string())
         })?;
+        // `try_current` instead of `current`: the trait method is sync and may
+        // be invoked outside a tokio runtime (e.g. a non-async test harness).
+        // Return a typed Config error rather than panicking.
+        let handle = tokio::runtime::Handle::try_current().map_err(|_| {
+            ContextProviderError::Config("no async runtime available for quorum lookup".to_string())
+        })?;
         tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(backend.get_quorum_public_key(
+            handle.block_on(backend.get_quorum_public_key(
                 quorum_type,
                 quorum_hash,
                 core_chain_locked_height,

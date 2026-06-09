@@ -435,10 +435,14 @@ impl SecretAccess {
     /// Insert into the session cache iff `policy` requests it. Boxed value;
     /// expiry stamped for `For(duration)`.
     fn maybe_remember(&self, scope: &SecretScope, plaintext: &Plaintext, policy: RememberPolicy) {
+        let now = Instant::now();
         let expires_at = match policy {
             RememberPolicy::None => return,
             RememberPolicy::UntilAppClose => None,
-            RememberPolicy::For(duration) => Some(Instant::now() + duration),
+            // On the (unreachable today) overflow of `now + duration`, expire
+            // immediately rather than risk over-retaining the secret — `None`
+            // here would mean "never expires".
+            RememberPolicy::For(duration) => Some(now.checked_add(duration).unwrap_or(now)),
         };
         let boxed = match plaintext {
             Plaintext::HdSeed(s) => Box::new(Plaintext::HdSeed(Zeroizing::new(**s))),

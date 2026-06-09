@@ -1,4 +1,3 @@
-// EDIT-PROBE-MARKER
 #[cfg(not(feature = "testing"))]
 use crate::app_dir::data_file_path;
 use crate::app_dir::{app_user_data_dir_path, ensure_data_dir_exists, ensure_env_file};
@@ -1459,6 +1458,12 @@ impl App for AppState {
                     self.network_switch_pending = None;
                     self.network_switch_banner.take_and_clear();
                     MessageBanner::set_global(ctx, err.to_string(), MessageType::Error);
+                }
+                TaskResult::Error(TaskError::MigrationFailed { .. }) => {
+                    // The migration task already published `MigrationState::Failed`,
+                    // which `update_migration_banner` surfaces with the typed
+                    // details and a "Retry now" action. Suppress the generic
+                    // error banner here so the user sees one banner, not two.
                 }
                 TaskResult::Error(err) => {
                     // Let the screen handle specific error types first.

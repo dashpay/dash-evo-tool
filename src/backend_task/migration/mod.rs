@@ -44,7 +44,10 @@ impl AppContext {
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         match task {
             MigrationTask::FinishUnwire => match finish_unwire::run(self).await {
-                Ok(()) => Ok(BackendTaskSuccessResult::Refresh),
+                // `finish_unwire::run` already publishes the terminal state
+                // (`Success` only when it moved data, `Idle` for a no-op
+                // launch), so the banner is correct without anything here.
+                Ok(_did_work) => Ok(BackendTaskSuccessResult::Refresh),
                 Err(task_error) => {
                     // Publish a `Failed` state carrying the typed
                     // `MigrationError` chain so the UI banner can call

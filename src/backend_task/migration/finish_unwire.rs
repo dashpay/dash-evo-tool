@@ -180,12 +180,18 @@ pub enum MigrationError {
 /// Run the FinishUnwire migration. Idempotent — completes a no-op when
 /// the sentinel is already present.
 ///
+/// Returns `true` when this launch actually moved legacy data (rows were
+/// detected and drained), and `false` for the two no-op paths: the
+/// sentinel already existed, or no legacy rows were present. Callers use
+/// the flag to decide whether to surface a "storage update complete"
+/// banner — a no-op launch must not show one.
+///
 /// This is the orchestration skeleton. T-SK-02 plugs in the
 /// single-key row-copy step; T-SH-02 plugs in the shielded mirror
 /// step. Both hook in by adding their bodies to the `SingleKey` /
 /// `Shielded` branches below and (if needed) extending
 /// [`MigrationError`].
-pub async fn run(app_context: &Arc<AppContext>) -> Result<(), TaskError> {
+pub async fn run(app_context: &Arc<AppContext>) -> Result<bool, TaskError> {
     let status = app_context.migration_status();
     let app_kv = app_context.app_kv();
     let network = app_context.network;
@@ -204,8 +210,11 @@ pub async fn run(app_context: &Arc<AppContext>) -> Result<(), TaskError> {
             network_count = completion.network_count,
             "FinishUnwire already completed for this network — skipping",
         );
-        status.set_state(MigrationState::Success);
-        return Ok(());
+        // No-op launch: the sentinel was already written by a prior run, so
+        // nothing moved this time. Stay `Idle` so the per-frame banner
+        // reconciler never surfaces a spurious "storage update complete".
+        status.set_state(MigrationState::Idle);
+        return Ok(false);
     }
 
     status.set_state(MigrationState::Running {
@@ -220,8 +229,11 @@ pub async fn run(app_context: &Arc<AppContext>) -> Result<(), TaskError> {
             "No legacy data.db rows detected — writing sentinel without migration",
         );
         write_sentinel(&app_kv, network, 0)?;
-        status.set_state(MigrationState::Success);
-        return Ok(());
+        // No legacy rows to move (e.g. a fresh install): record the sentinel
+        // but stay `Idle` so no completion banner appears for a launch that
+        // did no work.
+        status.set_state(MigrationState::Idle);
+        return Ok(false);
     }
 
     tracing::info!(
@@ -295,7 +307,7 @@ pub async fn run(app_context: &Arc<AppContext>) -> Result<(), TaskError> {
         "FinishUnwire migration complete",
     );
     status.set_state(MigrationState::Success);
-    Ok(())
+    Ok(true)
 }
 
 /// Returns `true` when any of the [`LEGACY_TABLES`] holds at least one
@@ -935,7 +947,7 @@ where
             let alias: Option<String> = row.get(1)?;
             let is_main: Option<bool> = row.get(2)?;
             let core_wallet_name: Option<String> = row.get(3)?;
-            let xpub_encoded: Vec<u8> = row.get(4).unwrap_or_default();
+            let xpub_encoded: Vec<u8> = row.get(4)?;
             Ok((seed_hash, alias, is_main, core_wallet_name, xpub_encoded))
         })
         .map_err(|e| MigrationError::LegacyDbRead {
@@ -1118,7 +1130,7 @@ where
             let nonce: Vec<u8> = row.get(3)?;
             let password_hint: Option<String> = row.get(4)?;
             let uses_password: bool = row.get(5)?;
-            let xpub_encoded: Vec<u8> = row.get(6).unwrap_or_default();
+            let xpub_encoded: Vec<u8> = row.get(6)?;
             Ok((
                 seed_hash,
                 encrypted_seed,
@@ -2791,5 +2803,69 @@ mod tests {
 
         assert_eq!(outcome.imported, 0);
         assert_eq!(outcome.failed, 0);
+    }
+
+    /// Build a minimal, backend-unwired `AppContext` over a fresh `data.db`
+    /// (legacy wallet-family tables present but empty). Enough to drive the
+    /// two `run()` no-op paths, which return before touching the wallet
+    /// backend.
+    fn fresh_app_context(dir: &std::path::Path) -> Arc<AppContext> {
+        use dash_sdk::dpp::dashcore::Network;
+
+        crate::app_dir::ensure_env_file(dir);
+        let db_file = dir.join("data.db");
+        let db = Arc::new(crate::database::Database::new(&db_file).expect("db"));
+        db.create_tables(true).expect("create tables");
+        db.set_default_version().expect("set version");
+
+        let app_kv = AppContext::open_app_kv(dir).expect("open app k/v");
+        let secret_store = AppContext::open_secret_store(dir).expect("open secret store");
+        AppContext::new(
+            dir.to_path_buf(),
+            Network::Testnet,
+            db,
+            Default::default(),
+            Default::default(),
+            egui::Context::default(),
+            app_kv,
+            secret_store,
+        )
+        .expect("AppContext")
+    }
+
+    /// F113 — a launch with no legacy rows must report `did_work = false`
+    /// and leave the migration state `Idle`, so the per-frame banner
+    /// reconciler never shows a spurious "storage update complete".
+    #[tokio::test]
+    async fn run_with_no_legacy_rows_is_a_silent_noop() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = fresh_app_context(tmp.path());
+
+        let did_work = run(&ctx).await.expect("run");
+
+        assert!(!did_work, "fresh install moved no data");
+        assert!(
+            matches!(*ctx.migration_status().state(), MigrationState::Idle),
+            "no-op launch must stay Idle, not publish Success",
+        );
+    }
+
+    /// F113 — once the per-network sentinel exists, a subsequent launch is
+    /// a no-op: `did_work = false` and the state stays `Idle` (no banner).
+    #[tokio::test]
+    async fn run_with_sentinel_present_is_a_silent_noop() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = fresh_app_context(tmp.path());
+
+        // First launch writes the sentinel.
+        run(&ctx).await.expect("first run");
+        // Second launch short-circuits on the sentinel.
+        let did_work = run(&ctx).await.expect("second run");
+
+        assert!(!did_work, "sentinel-present launch moved no data");
+        assert!(
+            matches!(*ctx.migration_status().state(), MigrationState::Idle),
+            "sentinel short-circuit must stay Idle",
+        );
     }
 }

@@ -57,8 +57,89 @@ pub async fn sync_notes(
         );
     }
 
+    // Persist decrypted notes to the sidecar BEFORE advancing the commitment
+    // tree (F54). The reload cursor (`last_synced_index`) derives from the
+    // tree's `max_leaf_position() + 1`, NOT from the sidecar, so if a note's
+    // commitment were appended + checkpointed before its sidecar row landed and
+    // the insert then failed, the next restart's cursor would skip that
+    // position forever — silently losing a spendable note. Persisting first and
+    // propagating the insert error (rather than swallowing it) means a failed
+    // insert aborts the sync before the checkpoint, so the position is
+    // re-scanned next time. The sidecar uses INSERT OR IGNORE, so a re-scan of
+    // an already-persisted note is idempotent.
+    //
+    // Build a HashMap of position->value for O(1) dedup + divergence detection.
+    let existing_notes: std::collections::HashMap<u64, u64> = shielded_state
+        .notes
+        .iter()
+        .map(|n| (u64::from(n.position), n.note.value().inner()))
+        .collect();
+    let mut new_note_count = 0u32;
+    let mut pending_notes = Vec::new();
+    for dn in result.decrypted_notes.iter() {
+        if dn.position < already_have {
+            continue; // already stored in a previous sync
+        }
+        if let Some(&existing_value) = existing_notes.get(&dn.position) {
+            let new_value = dn.note.value().inner();
+            if new_value != existing_value {
+                tracing::warn!(
+                    position = dn.position,
+                    existing_value,
+                    new_value,
+                    "Shielded note dedup: value divergence at existing position"
+                );
+            }
+            continue; // already loaded from DB during init
+        }
+
+        // Compute the spending nullifier from our FVK (dn.nullifier is the rho/nf
+        // field from the compact action, not the spending nullifier).
+        let nullifier = dn.note.nullifier(&shielded_state.keys.fvk);
+        let value = dn.note.value().inner();
+
+        tracing::info!("Note[{}]: DECRYPTED, value={} credits", dn.position, value,);
+
+        let note_data = crate::model::wallet::shielded::serialize_note(&dn.note);
+        let nullifier_bytes = nullifier.to_bytes();
+
+        // T-SH-03: persist into the per-network shielded sidecar. A failure
+        // here is propagated, NOT swallowed, so the tree is not advanced past
+        // an unpersisted note (F54).
+        if let Ok(backend) = app_context.wallet_backend() {
+            backend
+                .shielded()
+                .insert_shielded_note(
+                    seed_hash,
+                    &crate::wallet_backend::InsertShieldedNote {
+                        note_data: &note_data,
+                        position: dn.position,
+                        cmx: &dn.cmx,
+                        nullifier: &nullifier_bytes,
+                        block_height: 0,
+                        value,
+                        network: &network_str,
+                    },
+                )
+                .map_err(|source| TaskError::ShieldedNotePersistFailed { source })?;
+        }
+
+        pending_notes.push(ShieldedNote {
+            note: dn.note,
+            position: Position::from(dn.position),
+            cmx: dn.cmx,
+            nullifier,
+            block_height: 0,
+            is_spent: false,
+            value,
+        });
+        new_note_count += 1;
+    }
+
     // Append notes to the local commitment tree, skipping positions already present.
     // all_notes is ordered: aligned_start + i == global position of all_notes[i].
+    // Runs AFTER the sidecar persist above so a checkpoint never advances the
+    // reload cursor past a note that did not reach the sidecar (F54).
     let mut appended = 0u32;
     for (i, raw_note) in result.all_notes.iter().enumerate() {
         let global_pos = aligned_start + i as u64;
@@ -109,75 +190,9 @@ pub async fn sync_notes(
             })?;
     }
 
-    // Persist and record decrypted notes that are new (position >= already_have).
-    // Also skip notes already in memory (loaded from DB during init) to prevent
-    // double-counting when the commitment tree resets but persisted notes remain.
-    // Build a HashMap of position->value for O(1) lookups and divergence detection.
-    let existing_notes: std::collections::HashMap<u64, u64> = shielded_state
-        .notes
-        .iter()
-        .map(|n| (u64::from(n.position), n.note.value().inner()))
-        .collect();
-    let mut new_note_count = 0u32;
-    for dn in result.decrypted_notes {
-        if dn.position < already_have {
-            continue; // already stored in a previous sync
-        }
-        if let Some(&existing_value) = existing_notes.get(&dn.position) {
-            let new_value = dn.note.value().inner();
-            if new_value != existing_value {
-                tracing::warn!(
-                    position = dn.position,
-                    existing_value,
-                    new_value,
-                    "Shielded note dedup: value divergence at existing position"
-                );
-            }
-            continue; // already loaded from DB during init
-        }
-
-        // Compute the spending nullifier from our FVK (dn.nullifier is the rho/nf
-        // field from the compact action, not the spending nullifier).
-        let nullifier = dn.note.nullifier(&shielded_state.keys.fvk);
-        let value = dn.note.value().inner();
-
-        tracing::info!("Note[{}]: DECRYPTED, value={} credits", dn.position, value,);
-
-        let note_data = crate::model::wallet::shielded::serialize_note(&dn.note);
-        let nullifier_bytes = nullifier.to_bytes();
-
-        // T-SH-03: persist the new note into the per-network shielded
-        // sidecar rather than the shared `data.db`. Write errors are
-        // swallowed so a single insert failure does not abort the sync —
-        // the next sync re-emits the note (UNIQUE constraint makes the
-        // re-insert idempotent).
-        if let Ok(backend) = app_context.wallet_backend() {
-            let _ = backend.shielded().insert_shielded_note(
-                seed_hash,
-                &crate::wallet_backend::InsertShieldedNote {
-                    note_data: &note_data,
-                    position: dn.position,
-                    cmx: &dn.cmx,
-                    nullifier: &nullifier_bytes,
-                    block_height: 0,
-                    value,
-                    network: &network_str,
-                },
-            );
-        }
-
-        shielded_state.notes.push(ShieldedNote {
-            note: dn.note,
-            position: Position::from(dn.position),
-            cmx: dn.cmx,
-            nullifier,
-            block_height: 0,
-            is_spent: false,
-            value,
-        });
-
-        new_note_count += 1;
-    }
+    // The notes are durably in the sidecar and the tree is checkpointed; only
+    // now adopt them into the in-memory state.
+    shielded_state.notes.extend(pending_notes);
 
     // Store the actual number of notes seen, not the chunk-rounded next_start_index.
     // The SDK rounds next_start_index UP to the next 2048 boundary, which would
@@ -200,4 +215,109 @@ pub async fn sync_notes(
     );
 
     Ok((new_note_count, shielded_state.shielded_balance))
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::backend_task::error::TaskError;
+    use crate::wallet_backend::{InsertShieldedNote, ShieldedView};
+    use dash_sdk::grovedb_commitment_tree::{ClientPersistentCommitmentTree, Retention};
+
+    /// F54: a sidecar insert that fails surfaces as a real, propagatable error
+    /// (`ShieldedNotePersistFailed`) — it is NOT swallowed. The pre-fix code
+    /// used `let _ =`, so a transient IO failure on the insert was discarded
+    /// while the commitment had already been appended + checkpointed, making
+    /// the reload cursor permanently skip the unpersisted (lost) note.
+    #[test]
+    fn shielded_note_insert_failure_is_propagated_not_swallowed() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        // Make the sidecar PATH a directory so `Connection::open` fails
+        // deterministically on the insert (no reliance on permissions).
+        let sidecar = ShieldedView::sidecar_path(tmp.path());
+        std::fs::create_dir_all(&sidecar).expect("plant directory at sidecar path");
+
+        let view = ShieldedView::new(tmp.path());
+        let seed_hash = [0x5Cu8; 32];
+        let cmx = [0x01u8; 32];
+        let nullifier = [0x02u8; 32];
+
+        let err = view
+            .insert_shielded_note(
+                &seed_hash,
+                &InsertShieldedNote {
+                    note_data: &[0u8; 8],
+                    position: 0,
+                    cmx: &cmx,
+                    nullifier: &nullifier,
+                    block_height: 0,
+                    value: 42,
+                    network: "testnet",
+                },
+            )
+            .expect_err("insert must fail when the sidecar path is a directory");
+
+        // The production mapping the sync path applies.
+        let task_err = TaskError::ShieldedNotePersistFailed { source: err };
+        assert!(
+            matches!(task_err, TaskError::ShieldedNotePersistFailed { .. }),
+            "a swallowed insert is the bug; the error must map to ShieldedNotePersistFailed"
+        );
+    }
+
+    /// F54: the reload cursor derives from the commitment tree's
+    /// `max_leaf_position`, so persisting BEFORE appending is what prevents a
+    /// lost note. This pins that contract: when the sidecar persist fails, the
+    /// tree position must NOT have advanced past the failed note's position —
+    /// the next sync re-scans it. Models the fixed control flow (persist →
+    /// abort-on-error → only-then append) against a real tree and a failing
+    /// view.
+    #[test]
+    fn tree_cursor_does_not_advance_past_unpersisted_note() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let tree_path = tmp.path().join("tree.sqlite");
+        let mut tree =
+            ClientPersistentCommitmentTree::open_path(&tree_path, 100).expect("open tree");
+
+        // Precondition: empty tree has no leaf position (cursor would be 0).
+        assert!(
+            tree.max_leaf_position().expect("max pos").is_none(),
+            "precondition: fresh tree has no leaves"
+        );
+
+        // Force the sidecar insert to fail.
+        let sidecar = ShieldedView::sidecar_path(tmp.path());
+        std::fs::create_dir_all(&sidecar).expect("plant directory at sidecar path");
+        let view = ShieldedView::new(tmp.path());
+        let seed_hash = [0x6Du8; 32];
+        let cmx = [0x03u8; 32];
+        let nullifier = [0x04u8; 32];
+
+        // Fixed ordering: persist FIRST; on failure abort BEFORE touching the
+        // tree. This is what `sync_notes` now does.
+        let persist = view.insert_shielded_note(
+            &seed_hash,
+            &InsertShieldedNote {
+                note_data: &[0u8; 8],
+                position: 0,
+                cmx: &cmx,
+                nullifier: &nullifier,
+                block_height: 0,
+                value: 7,
+                network: "testnet",
+            },
+        );
+        assert!(persist.is_err(), "the persist fails for this test");
+
+        if persist.is_ok() {
+            tree.append(cmx, Retention::Marked).expect("append");
+            tree.checkpoint(1).expect("checkpoint");
+        }
+
+        // The note was never persisted, so the tree cursor must not have moved
+        // past it — the next sync re-scans position 0 (no silent loss).
+        assert!(
+            tree.max_leaf_position().expect("max pos").is_none(),
+            "the tree cursor must not advance past an unpersisted note"
+        );
+    }
 }

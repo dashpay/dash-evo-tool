@@ -1368,6 +1368,19 @@ pub enum TaskError {
     )]
     ShieldedTreeUpdateFailed { detail: String },
 
+    /// Failed to persist a decrypted shielded note to the local sidecar.
+    ///
+    /// Surfaced before the commitment tree is advanced past the note's
+    /// position, so the next sync re-scans and re-persists it rather than
+    /// permanently skipping a spendable note.
+    #[error(
+        "Could not save a received shielded note. Please check available disk space and retry."
+    )]
+    ShieldedNotePersistFailed {
+        #[source]
+        source: rusqlite::Error,
+    },
+
     /// Nullifier sync failed.
     #[error("Could not check for spent shielded notes. Please check your connection and retry.")]
     ShieldedNullifierSyncFailed { detail: String },

@@ -1,5 +1,3 @@
-mod refresh_single_key_wallet_info;
-mod send_single_key_wallet_payment;
 mod start_dash_qt;
 
 use crate::app_dir::core_cookie_path;

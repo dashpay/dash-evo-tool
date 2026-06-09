@@ -10,8 +10,8 @@ use std::sync::{Arc, Mutex};
 /// SPV-based ContextProvider for the Dash SDK.
 ///
 /// - DataContract and TokenConfiguration are served from the local DB.
-/// - Quorum public keys are resolved by upstream `platform-wallet` chain sync
-///   (wired in P2).
+/// - Quorum public keys are resolved by the upstream `platform-wallet`
+///   chain sync via [`WalletBackend`](crate::wallet_backend::WalletBackend).
 #[derive(Debug)]
 pub(crate) struct SpvProvider {
     db: Arc<Database>,
@@ -30,9 +30,8 @@ impl SpvProvider {
 
     /// Attach the `AppContext` and register this provider with the SDK.
     ///
-    /// Mirrors [`Provider::bind_app_context`](crate::context_provider::Provider::bind_app_context)
-    /// — after this call, the SDK
-    /// uses this provider for proof verification and quorum key resolution.
+    /// After this call the SDK uses this provider for proof verification and
+    /// quorum key resolution.
     ///
     /// Returns an error if the lock is poisoned (indicates a prior panic).
     ///

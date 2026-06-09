@@ -221,10 +221,14 @@ pub(crate) fn derive_contact_info_encryption_keys(
 // when the owner identity row is deleted.
 
 /// Mark a contact as blocked. Value: empty (`()`). Presence is the signal.
-/// Scope: [`DetScope::Global`].
+/// Scope: [`DetScope::Identity(&owner)`] — blocking is the acting identity's
+/// own decision, so the marker must not bleed across identities that share a
+/// wallet. Key shape: `det:dashpay:blocked:<counterparty_b58>`.
 const KV_PREFIX_BLOCKED: &str = "det:dashpay:blocked:";
-/// Mark a contact request as rejected. Value: empty (`()`). Presence is the signal.
-/// Scope: [`DetScope::Global`].
+/// Mark a contact request as rejected. Value: empty (`()`). Presence is the
+/// signal. Scope: [`DetScope::Identity(&owner)`] — rejection is the acting
+/// identity's own decision and must not bleed across identities. Key shape:
+/// `det:dashpay:rejected:<counterparty_b58>`.
 const KV_PREFIX_REJECTED: &str = "det:dashpay:rejected:";
 /// DET-local `(created_at, updated_at)` timestamps for an entity (contact, request).
 /// Value: `(i64, i64)` encoded by the [`DetKv`] schema. Scope: [`DetScope::Global`].
@@ -288,7 +292,7 @@ impl<'a> DashpayView<'a> {
         // 1. Established (`accepted`) contacts.
         for contact in managed.established_contacts.values() {
             let contact_id = &contact.contact_identity_id;
-            let blocked = kv_contains(&kv, KV_PREFIX_BLOCKED, contact_id);
+            let blocked = kv_contains(&kv, owner, KV_PREFIX_BLOCKED, contact_id);
             let status = if blocked { "blocked" } else { "accepted" };
             let (created_at, updated_at) = kv_timestamps(&kv, contact_id);
             out.push(established_to_det(
@@ -302,7 +306,7 @@ impl<'a> DashpayView<'a> {
             if managed.established_contacts.contains_key(recipient_id) {
                 continue;
             }
-            let blocked = kv_contains(&kv, KV_PREFIX_BLOCKED, recipient_id);
+            let blocked = kv_contains(&kv, owner, KV_PREFIX_BLOCKED, recipient_id);
             let status = if blocked { "blocked" } else { "pending" };
             let (created_at, updated_at) = kv_timestamps(&kv, recipient_id);
             out.push(request_to_det_contact(
@@ -341,6 +345,7 @@ impl<'a> DashpayView<'a> {
         // Outgoing requests (`request_type = "sent"`).
         for (recipient_id, request) in managed.sent_contact_requests.iter() {
             let status = derive_request_status(
+                owner,
                 /* request_id_for_sidecar = */ recipient_id,
                 /* has_matching_established = */
                 managed.established_contacts.contains_key(recipient_id),
@@ -360,6 +365,7 @@ impl<'a> DashpayView<'a> {
         // Incoming requests (`request_type = "received"`).
         for (sender_id, request) in managed.incoming_contact_requests.iter() {
             let status = derive_request_status(
+                owner,
                 sender_id,
                 managed.established_contacts.contains_key(sender_id),
                 request.created_at,
@@ -561,8 +567,11 @@ fn profile_to_det(
 ///
 /// Precedence: `accepted` > `rejected` > `expired` > `pending`. A
 /// pending request older than [`DASHPAY_REQUEST_EXPIRY_DAYS`] (per
-/// `created_at_ms` vs `now_ms`) reports as `"expired"`.
+/// `created_at_ms` vs `now_ms`) reports as `"expired"`. The `rejected`
+/// marker is read under `owner`'s Identity scope so one identity's rejection
+/// never colours another identity's view of the same counterparty.
 fn derive_request_status(
+    owner: &Identifier,
     counterparty: &Identifier,
     has_matching_established: bool,
     created_at_ms: u64,
@@ -572,7 +581,7 @@ fn derive_request_status(
     if has_matching_established {
         return "accepted".to_string();
     }
-    if kv_contains(kv, KV_PREFIX_REJECTED, counterparty) {
+    if kv_contains(kv, owner, KV_PREFIX_REJECTED, counterparty) {
         return "rejected".to_string();
     }
     let age_ms = now_ms.saturating_sub(created_at_ms);
@@ -671,10 +680,17 @@ fn addr_map_sidecar_key(owner: &Identifier, address: &str) -> String {
     )
 }
 
-fn kv_contains(kv: &DetKv, prefix: &str, id: &Identifier) -> bool {
+/// Test the presence of an owner-scoped marker (blocked / rejected) for a
+/// counterparty. The marker lives under `owner`'s [`DetScope::Identity`] so it
+/// never bleeds across identities that share a wallet.
+fn kv_contains(kv: &DetKv, owner: &Identifier, prefix: &str, counterparty: &Identifier) -> bool {
     // Presence-only entries: value is `()`. `Ok(Some(_))` ⇒ present.
+    let owner_buf = owner.to_buffer();
     matches!(
-        kv.get::<()>(DetScope::Global, &sidecar_key(prefix, id)),
+        kv.get::<()>(
+            DetScope::Identity(&owner_buf),
+            &contact_sidecar_key(prefix, counterparty)
+        ),
         Ok(Some(()))
     )
 }
@@ -807,34 +823,51 @@ impl WalletBackend {
         Ok(())
     }
 
-    /// Toggle the DET-local "blocked" marker for a contact identity in the
-    /// k/v sidecar. The marker has no upstream counterpart — DashPay does
-    /// not block on-chain — so it lives entirely in the per-network
-    /// sidecar that [`DashpayView`] reads at view time.
-    pub fn dashpay_mark_blocked(&self, contact_id: &Identifier) -> Result<(), TaskError> {
-        let key = sidecar_key(KV_PREFIX_BLOCKED, contact_id);
+    /// Toggle the DET-local "blocked" marker for `contact_id`, scoped to the
+    /// acting `owner` identity. The marker has no upstream counterpart —
+    /// DashPay does not block on-chain — so it lives entirely in the per-owner
+    /// sidecar that [`DashpayView`] reads at view time. Owner-scoping keeps one
+    /// identity's block list from colouring another's view of the same contact.
+    pub fn dashpay_mark_blocked(
+        &self,
+        owner: &Identifier,
+        contact_id: &Identifier,
+    ) -> Result<(), TaskError> {
+        let owner_buf = owner.to_buffer();
+        let key = contact_sidecar_key(KV_PREFIX_BLOCKED, contact_id);
         self.kv()
-            .put::<()>(DetScope::Global, &key, &())
+            .put::<()>(DetScope::Identity(&owner_buf), &key, &())
             .map_err(|e| TaskError::DashpaySidecarStorage { source: e })
     }
 
-    /// Clear the DET-local "blocked" marker for a contact identity.
-    /// Idempotent — clearing an absent marker is `Ok(())`.
-    pub fn dashpay_unmark_blocked(&self, contact_id: &Identifier) -> Result<(), TaskError> {
-        let key = sidecar_key(KV_PREFIX_BLOCKED, contact_id);
+    /// Clear the DET-local "blocked" marker for `contact_id` under `owner`'s
+    /// scope. Idempotent — clearing an absent marker is `Ok(())`.
+    pub fn dashpay_unmark_blocked(
+        &self,
+        owner: &Identifier,
+        contact_id: &Identifier,
+    ) -> Result<(), TaskError> {
+        let owner_buf = owner.to_buffer();
+        let key = contact_sidecar_key(KV_PREFIX_BLOCKED, contact_id);
         self.kv()
-            .delete(DetScope::Global, &key)
+            .delete(DetScope::Identity(&owner_buf), &key)
             .map_err(|e| TaskError::DashpaySidecarStorage { source: e })
     }
 
-    /// Record that the user has rejected an incoming contact request from
-    /// `counterparty_id` (or, equivalently, the sent request to them was
-    /// withdrawn from the user's point of view). The sidecar key matches
-    /// what [`DashpayView`] consults when deriving request status.
-    pub fn dashpay_mark_rejected(&self, counterparty_id: &Identifier) -> Result<(), TaskError> {
-        let key = sidecar_key(KV_PREFIX_REJECTED, counterparty_id);
+    /// Record that `owner` has rejected an incoming contact request from
+    /// `counterparty_id` (or, equivalently, withdrew the sent request from
+    /// their point of view). Scoped to `owner`'s Identity so the rejection is
+    /// private to that identity. The sidecar key matches what [`DashpayView`]
+    /// consults when deriving request status.
+    pub fn dashpay_mark_rejected(
+        &self,
+        owner: &Identifier,
+        counterparty_id: &Identifier,
+    ) -> Result<(), TaskError> {
+        let owner_buf = owner.to_buffer();
+        let key = contact_sidecar_key(KV_PREFIX_REJECTED, counterparty_id);
         self.kv()
-            .put::<()>(DetScope::Global, &key, &())
+            .put::<()>(DetScope::Identity(&owner_buf), &key, &())
             .map_err(|e| TaskError::DashpaySidecarStorage { source: e })
     }
 
@@ -998,19 +1031,24 @@ impl WalletBackend {
     }
 
     /// Drop every Identity-scoped DashPay overlay for `owner` — the
-    /// per-contact private memos and address-index cursors.
+    /// per-contact private memos, address-index cursors, and the blocked /
+    /// rejected markers.
     ///
-    /// The Global-scoped overlays (blocked / rejected markers, timestamps,
-    /// reverse address map) are not owner-scoped and are swept by the
-    /// `det:dashpay:` Global prefix in
+    /// The remaining Global-scoped overlays (timestamps, reverse address map)
+    /// are not owner-scoped and are swept by the `det:dashpay:` Global prefix in
     /// [`crate::context::AppContext::clear_network_database`]; this method
-    /// covers the two overlays that moved to [`DetScope::Identity`] of the
-    /// owner, which that Global sweep can no longer reach.
+    /// covers the overlays that live under [`DetScope::Identity`] of the owner,
+    /// which that Global sweep can no longer reach.
     pub fn dashpay_clear_owner_overlays(&self, owner: &Identifier) -> Result<(), TaskError> {
         let owner_buf = owner.to_buffer();
         let scope = DetScope::Identity(&owner_buf);
         let kv = self.kv();
-        for prefix in [KV_PREFIX_PRIVATE, KV_PREFIX_ADDRESS_INDEX] {
+        for prefix in [
+            KV_PREFIX_PRIVATE,
+            KV_PREFIX_ADDRESS_INDEX,
+            KV_PREFIX_BLOCKED,
+            KV_PREFIX_REJECTED,
+        ] {
             let keys = kv
                 .list(scope, Some(prefix))
                 .map_err(|e| TaskError::DashpaySidecarStorage { source: e })?;
@@ -1203,17 +1241,18 @@ mod tests {
     #[test]
     fn request_status_derivation_uses_established_then_sidecar() {
         let kv = empty_kv();
+        let owner = id_from_byte(1);
         let counterparty = id_from_byte(2);
         // Fresh request, no expiry yet.
         let now_ms: u64 = 1_000_000_000_000;
         let created_at_ms: u64 = now_ms - 60_000;
         assert_eq!(
-            derive_request_status(&counterparty, true, created_at_ms, now_ms, &kv),
+            derive_request_status(&owner, &counterparty, true, created_at_ms, now_ms, &kv),
             "accepted",
             "matching established contact wins"
         );
         assert_eq!(
-            derive_request_status(&counterparty, false, created_at_ms, now_ms, &kv),
+            derive_request_status(&owner, &counterparty, false, created_at_ms, now_ms, &kv),
             "pending",
             "no established + no rejection sidecar + fresh = pending"
         );
@@ -1222,17 +1261,19 @@ mod tests {
     #[test]
     fn rejected_request_status_reads_sidecar_when_present() {
         let kv = empty_kv();
+        let owner = id_from_byte(1);
         let counterparty = id_from_byte(2);
+        let owner_buf = owner.to_buffer();
         kv.put::<()>(
-            DetScope::Global,
-            &sidecar_key(KV_PREFIX_REJECTED, &counterparty),
+            DetScope::Identity(&owner_buf),
+            &contact_sidecar_key(KV_PREFIX_REJECTED, &counterparty),
             &(),
         )
         .unwrap();
         let now_ms: u64 = 1_000_000_000_000;
         let created_at_ms: u64 = now_ms - 60_000;
         assert_eq!(
-            derive_request_status(&counterparty, false, created_at_ms, now_ms, &kv),
+            derive_request_status(&owner, &counterparty, false, created_at_ms, now_ms, &kv),
             "rejected"
         );
     }
@@ -1240,13 +1281,14 @@ mod tests {
     #[test]
     fn expired_request_status_when_older_than_threshold() {
         let kv = empty_kv();
+        let owner = id_from_byte(1);
         let counterparty = id_from_byte(2);
         let now_ms: u64 = 10_000_000_000_000;
         // Older than the 7-day threshold by one minute.
         let threshold_ms = (DASHPAY_REQUEST_EXPIRY_DAYS as u64) * 86_400_000;
         let created_at_ms: u64 = now_ms - threshold_ms - 60_000;
         assert_eq!(
-            derive_request_status(&counterparty, false, created_at_ms, now_ms, &kv),
+            derive_request_status(&owner, &counterparty, false, created_at_ms, now_ms, &kv),
             "expired",
             "older-than-threshold pending request reports as expired"
         );
@@ -1255,13 +1297,14 @@ mod tests {
     #[test]
     fn fresh_request_just_under_threshold_stays_pending() {
         let kv = empty_kv();
+        let owner = id_from_byte(1);
         let counterparty = id_from_byte(2);
         let now_ms: u64 = 10_000_000_000_000;
         let threshold_ms = (DASHPAY_REQUEST_EXPIRY_DAYS as u64) * 86_400_000;
         // One minute younger than the threshold.
         let created_at_ms: u64 = now_ms - threshold_ms + 60_000;
         assert_eq!(
-            derive_request_status(&counterparty, false, created_at_ms, now_ms, &kv),
+            derive_request_status(&owner, &counterparty, false, created_at_ms, now_ms, &kv),
             "pending"
         );
     }
@@ -1291,9 +1334,10 @@ mod tests {
         let kv = empty_kv();
         let owner = id_from_byte(1);
         let contact_id = id_from_byte(2);
+        let owner_buf = owner.to_buffer();
         kv.put::<()>(
-            DetScope::Global,
-            &sidecar_key(KV_PREFIX_BLOCKED, &contact_id),
+            DetScope::Identity(&owner_buf),
+            &contact_sidecar_key(KV_PREFIX_BLOCKED, &contact_id),
             &(),
         )
         .unwrap();
@@ -1302,7 +1346,7 @@ mod tests {
             EstablishedContact::new(contact_id, mk_request(1, 2, 100), mk_request(2, 1, 200));
         contact.set_alias("Friend".into());
 
-        let status = if kv_contains(&kv, KV_PREFIX_BLOCKED, &contact_id) {
+        let status = if kv_contains(&kv, &owner, KV_PREFIX_BLOCKED, &contact_id) {
             "blocked"
         } else {
             "accepted"
@@ -1352,47 +1396,47 @@ mod tests {
     /// `kv_timestamps`, `kv_payment_timestamps`) consult — otherwise
     /// every write is invisible to the view.
     ///
-    /// These tests use the same `sidecar_key` builder + the read helpers
-    /// directly, simulating a write-then-read round-trip without
-    /// constructing a full `WalletBackend`.
+    /// The blocked / rejected markers are owner-scoped (Wave 2 / F40): the
+    /// write lands under the owner's `DetScope::Identity` keyed only on the
+    /// counterparty, and `kv_contains` reads from the same place.
     #[test]
     fn d3_blocked_marker_round_trips_through_sidecar_key() {
         let kv = empty_kv();
+        let owner = id_from_byte(1);
+        let owner_buf = owner.to_buffer();
         let contact = id_from_byte(7);
+        let key = contact_sidecar_key(KV_PREFIX_BLOCKED, &contact);
         // What `dashpay_mark_blocked` writes:
-        kv.put::<()>(
-            DetScope::Global,
-            &sidecar_key(KV_PREFIX_BLOCKED, &contact),
-            &(),
-        )
-        .unwrap();
+        kv.put::<()>(DetScope::Identity(&owner_buf), &key, &())
+            .unwrap();
         // What `DashpayView::contacts` reads:
-        assert!(kv_contains(&kv, KV_PREFIX_BLOCKED, &contact));
+        assert!(kv_contains(&kv, &owner, KV_PREFIX_BLOCKED, &contact));
 
         // And `dashpay_unmark_blocked` (delete) clears it.
-        kv.delete(DetScope::Global, &sidecar_key(KV_PREFIX_BLOCKED, &contact))
-            .unwrap();
-        assert!(!kv_contains(&kv, KV_PREFIX_BLOCKED, &contact));
+        kv.delete(DetScope::Identity(&owner_buf), &key).unwrap();
+        assert!(!kv_contains(&kv, &owner, KV_PREFIX_BLOCKED, &contact));
     }
 
     #[test]
     fn d3_rejected_marker_round_trips_through_sidecar_key() {
         let kv = empty_kv();
+        let owner = id_from_byte(1);
+        let owner_buf = owner.to_buffer();
         let counterparty = id_from_byte(8);
         // What `dashpay_mark_rejected` writes:
         kv.put::<()>(
-            DetScope::Global,
-            &sidecar_key(KV_PREFIX_REJECTED, &counterparty),
+            DetScope::Identity(&owner_buf),
+            &contact_sidecar_key(KV_PREFIX_REJECTED, &counterparty),
             &(),
         )
         .unwrap();
         // What `derive_request_status` reads:
-        assert!(kv_contains(&kv, KV_PREFIX_REJECTED, &counterparty));
+        assert!(kv_contains(&kv, &owner, KV_PREFIX_REJECTED, &counterparty));
 
         let now_ms: u64 = 1_000_000_000_000;
         let created_at_ms: u64 = now_ms - 60_000;
         assert_eq!(
-            derive_request_status(&counterparty, false, created_at_ms, now_ms, &kv),
+            derive_request_status(&owner, &counterparty, false, created_at_ms, now_ms, &kv),
             "rejected"
         );
     }
@@ -1436,6 +1480,7 @@ mod tests {
         // source of truth).
         let kv = empty_kv();
         let owner = id_from_byte(1);
+        let owner_buf = owner.to_buffer();
         let contact_id = id_from_byte(2);
 
         // Pre-state: a single established contact exists upstream.
@@ -1443,17 +1488,17 @@ mod tests {
             EstablishedContact::new(contact_id, mk_request(1, 2, 100), mk_request(2, 1, 200));
         contact.set_alias("Pal".into());
 
-        // What `dashpay_mark_blocked(&contact_id)` writes:
+        // What `dashpay_mark_blocked(&owner, &contact_id)` writes:
         kv.put::<()>(
-            DetScope::Global,
-            &sidecar_key(KV_PREFIX_BLOCKED, &contact_id),
+            DetScope::Identity(&owner_buf),
+            &contact_sidecar_key(KV_PREFIX_BLOCKED, &contact_id),
             &(),
         )
         .unwrap();
 
         // What the view derivation produces — same precedence as
         // `DashpayView::contacts`: blocked wins over accepted.
-        let status = if kv_contains(&kv, KV_PREFIX_BLOCKED, &contact_id) {
+        let status = if kv_contains(&kv, &owner, KV_PREFIX_BLOCKED, &contact_id) {
             "blocked"
         } else {
             "accepted"
@@ -1470,24 +1515,28 @@ mod tests {
         // to "rejected" without touching upstream presence (rejected
         // requests are not removed from `sent_contact_requests`).
         let kv = empty_kv();
+        let owner = id_from_byte(1);
+        let owner_buf = owner.to_buffer();
         let counterparty = id_from_byte(2);
         kv.put::<()>(
-            DetScope::Global,
-            &sidecar_key(KV_PREFIX_REJECTED, &counterparty),
+            DetScope::Identity(&owner_buf),
+            &contact_sidecar_key(KV_PREFIX_REJECTED, &counterparty),
             &(),
         )
         .unwrap();
 
         let now_ms: u64 = 2_000_000_000_000;
         let created_at_ms: u64 = now_ms - 1_000;
-        let derived = derive_request_status(&counterparty, false, created_at_ms, now_ms, &kv);
+        let derived =
+            derive_request_status(&owner, &counterparty, false, created_at_ms, now_ms, &kv);
         assert_eq!(derived, "rejected");
 
         // And the threshold-expiry override does not fire for rejected
         // requests — `rejected` precedence is higher than `expired`.
         let threshold_ms = (DASHPAY_REQUEST_EXPIRY_DAYS as u64) * 86_400_000;
         let old_created = now_ms - threshold_ms - 60_000;
-        let derived_old = derive_request_status(&counterparty, false, old_created, now_ms, &kv);
+        let derived_old =
+            derive_request_status(&owner, &counterparty, false, old_created, now_ms, &kv);
         assert_eq!(derived_old, "rejected");
     }
 
@@ -1497,14 +1546,73 @@ mod tests {
         // expiry threshold lives in `DASHPAY_REQUEST_EXPIRY_DAYS` and
         // is a UX gate; upstream stores no protocol-level expiry.
         let kv = empty_kv();
+        let owner = id_from_byte(1);
         let counterparty = id_from_byte(2);
         let now_ms: u64 = 50_000_000_000_000;
         let threshold_ms = (DASHPAY_REQUEST_EXPIRY_DAYS as u64) * 86_400_000;
         // 7 days + a margin of safety.
         let created_at_ms: u64 = now_ms - threshold_ms - 86_400_000;
         assert_eq!(
-            derive_request_status(&counterparty, false, created_at_ms, now_ms, &kv),
+            derive_request_status(&owner, &counterparty, false, created_at_ms, now_ms, &kv),
             "expired"
+        );
+    }
+
+    /// F40: two identities that share a wallet must not see each other's
+    /// blocked / rejected markers. Identity A blocks/rejects a counterparty;
+    /// identity B's view of that same counterparty stays clean.
+    #[test]
+    fn markers_are_isolated_per_owner_identity() {
+        let kv = empty_kv();
+        let owner_a = id_from_byte(1);
+        let owner_b = id_from_byte(2);
+        let counterparty = id_from_byte(3);
+        let a_buf = owner_a.to_buffer();
+
+        // Owner A blocks and rejects the counterparty.
+        kv.put::<()>(
+            DetScope::Identity(&a_buf),
+            &contact_sidecar_key(KV_PREFIX_BLOCKED, &counterparty),
+            &(),
+        )
+        .unwrap();
+        kv.put::<()>(
+            DetScope::Identity(&a_buf),
+            &contact_sidecar_key(KV_PREFIX_REJECTED, &counterparty),
+            &(),
+        )
+        .unwrap();
+
+        // Owner A sees them...
+        assert!(kv_contains(&kv, &owner_a, KV_PREFIX_BLOCKED, &counterparty));
+        assert!(kv_contains(
+            &kv,
+            &owner_a,
+            KV_PREFIX_REJECTED,
+            &counterparty
+        ));
+
+        // ...owner B does not.
+        assert!(
+            !kv_contains(&kv, &owner_b, KV_PREFIX_BLOCKED, &counterparty),
+            "owner B must not see owner A's blocked marker"
+        );
+        assert!(
+            !kv_contains(&kv, &owner_b, KV_PREFIX_REJECTED, &counterparty),
+            "owner B must not see owner A's rejected marker"
+        );
+
+        let now_ms: u64 = 1_000_000_000_000;
+        let created_at_ms: u64 = now_ms - 60_000;
+        assert_eq!(
+            derive_request_status(&owner_a, &counterparty, false, created_at_ms, now_ms, &kv),
+            "rejected",
+            "A's own rejection colours A's view"
+        );
+        assert_eq!(
+            derive_request_status(&owner_b, &counterparty, false, created_at_ms, now_ms, &kv),
+            "pending",
+            "B's view of the same counterparty is unaffected"
         );
     }
 
@@ -1727,9 +1835,11 @@ mod tests {
     // across a "Clear network data" action.
     // -------------------------------------------------------------------
 
-    /// D4d-Sweep1: the five Global overlays share the `det:dashpay:`
-    /// prefix and come out of one Global sweep; the two Wave-2
-    /// Identity-scoped overlays do NOT (they live under the owner scope).
+    /// D4d-Sweep1: the three Global overlays share the `det:dashpay:`
+    /// prefix and come out of one Global sweep; the four Identity-scoped
+    /// overlays do NOT (they live under the owner scope). Wave 2 + F40 moved
+    /// the blocked / rejected markers into the owner scope alongside the
+    /// private memo and address-index cursors.
     #[test]
     fn d4d_global_overlays_share_prefix_identity_overlays_do_not() {
         let kv = empty_kv();
@@ -1738,19 +1848,7 @@ mod tests {
         let contact = id_from_byte(2);
         let addr = "yXyqJv6gP2c8RXAhYQ7v6XwxSqUf7vXKfA";
 
-        // Five Global overlays.
-        kv.put::<()>(
-            DetScope::Global,
-            &sidecar_key(KV_PREFIX_BLOCKED, &contact),
-            &(),
-        )
-        .unwrap();
-        kv.put::<()>(
-            DetScope::Global,
-            &sidecar_key(KV_PREFIX_REJECTED, &contact),
-            &(),
-        )
-        .unwrap();
+        // Three Global overlays (timestamps, payment timestamps, addr map).
         kv.put::<(i64, i64)>(
             DetScope::Global,
             &sidecar_key(KV_PREFIX_TIMESTAMPS, &contact),
@@ -1770,7 +1868,7 @@ mod tests {
         )
         .unwrap();
 
-        // Two Identity-scoped overlays under the owner.
+        // Four Identity-scoped overlays under the owner.
         kv.put::<ContactPrivateInfo>(
             DetScope::Identity(&owner),
             &contact_sidecar_key(KV_PREFIX_PRIVATE, &contact),
@@ -1789,14 +1887,26 @@ mod tests {
             },
         )
         .unwrap();
+        kv.put::<()>(
+            DetScope::Identity(&owner),
+            &contact_sidecar_key(KV_PREFIX_BLOCKED, &contact),
+            &(),
+        )
+        .unwrap();
+        kv.put::<()>(
+            DetScope::Identity(&owner),
+            &contact_sidecar_key(KV_PREFIX_REJECTED, &contact),
+            &(),
+        )
+        .unwrap();
 
         let global = kv
             .list(DetScope::Global, Some("det:dashpay:"))
             .expect("global sidecar listing must succeed");
         assert_eq!(
             global.len(),
-            5,
-            "five Global overlays enumerated: {global:?}"
+            3,
+            "three Global overlays enumerated: {global:?}"
         );
         for k in &global {
             assert!(k.starts_with("det:dashpay:"), "non-DashPay key: {k}");
@@ -1807,7 +1917,7 @@ mod tests {
         let owned = kv
             .list(DetScope::Identity(&owner), Some("det:dashpay:"))
             .expect("owner sidecar listing must succeed");
-        assert_eq!(owned.len(), 2, "two owner-scoped overlays: {owned:?}");
+        assert_eq!(owned.len(), 4, "four owner-scoped overlays: {owned:?}");
     }
 
     /// D4d-Sweep2: the combined clear (Global prefix sweep + per-owner
@@ -1819,9 +1929,22 @@ mod tests {
         let owner = id_from_byte(1).to_buffer();
         let contact = id_from_byte(2);
 
-        kv.put::<()>(
+        // A Global overlay (timestamps) plus the four owner-scoped overlays.
+        kv.put::<(i64, i64)>(
             DetScope::Global,
-            &sidecar_key(KV_PREFIX_BLOCKED, &contact),
+            &sidecar_key(KV_PREFIX_TIMESTAMPS, &contact),
+            &(1, 2),
+        )
+        .unwrap();
+        kv.put::<()>(
+            DetScope::Identity(&owner),
+            &contact_sidecar_key(KV_PREFIX_BLOCKED, &contact),
+            &(),
+        )
+        .unwrap();
+        kv.put::<()>(
+            DetScope::Identity(&owner),
+            &contact_sidecar_key(KV_PREFIX_REJECTED, &contact),
             &(),
         )
         .unwrap();
@@ -1855,8 +1978,13 @@ mod tests {
         for k in kv.list(DetScope::Global, Some("det:dashpay:")).unwrap() {
             kv.delete(DetScope::Global, &k).unwrap();
         }
-        // Per-owner Identity-scope clear (private + address_index prefixes).
-        for prefix in [KV_PREFIX_PRIVATE, KV_PREFIX_ADDRESS_INDEX] {
+        // Per-owner Identity-scope clear — mirrors `dashpay_clear_owner_overlays`.
+        for prefix in [
+            KV_PREFIX_PRIVATE,
+            KV_PREFIX_ADDRESS_INDEX,
+            KV_PREFIX_BLOCKED,
+            KV_PREFIX_REJECTED,
+        ] {
             for k in kv.list(DetScope::Identity(&owner), Some(prefix)).unwrap() {
                 kv.delete(DetScope::Identity(&owner), &k).unwrap();
             }

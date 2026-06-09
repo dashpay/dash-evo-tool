@@ -286,10 +286,7 @@ pub async fn send_contact_request_with_proof(
             crate::model::qualified_identity::PrivateKeyTarget::PrivateKeyOnMainIdentity,
             sender_encryption_key.id(),
         )
-        .await
-        .map_err(|e| TaskError::EncryptionError {
-            detail: format!("Error resolving ENCRYPTION private key: {}", e),
-        })?
+        .await?
         .map(|(_, private_key)| private_key)
         .ok_or_else(|| {
             TaskError::DashPay(DashPayError::PrivateKeyResolution {
@@ -711,6 +708,9 @@ pub async fn reject_contact_request(
         .ok_or(TaskError::DocumentNotFound)?;
 
     let from_identity_id = doc.owner_id();
+    // Captured before `identity` is moved into `create_or_update_contact_info`;
+    // the rejection marker is scoped to this acting identity.
+    let owner_id = identity.identity.id();
 
     // Create or update contactInfo to mark this contact as hidden
     use super::contact_info::create_or_update_contact_info;
@@ -732,11 +732,12 @@ pub async fn reject_contact_request(
     // pair establishes a contact. DashPay has no on-chain "rejected" flag,
     // so the sidecar is the source of truth here.
     //
-    // The reader keys on the counterparty's identity id (see
-    // `DashpayView::contact_requests`), so we use the original sender
-    // identity, not the request document id.
+    // The reader keys on the counterparty's identity id under the acting
+    // identity's own scope (see `DashpayView::contact_requests`), so we pass
+    // both `owner_id` and the original sender identity, not the request
+    // document id.
     if let Ok(backend) = app_context.wallet_backend()
-        && let Err(e) = backend.dashpay_mark_rejected(&from_identity_id)
+        && let Err(e) = backend.dashpay_mark_rejected(&owner_id, &from_identity_id)
     {
         tracing::debug!(
             from = %from_identity_id.to_string(Encoding::Base58),

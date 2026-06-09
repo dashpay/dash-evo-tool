@@ -17,8 +17,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   demand and wiped as soon as the operation finishes.
 
 - **Wallet storage backend**: HD wallet seeds and single-key private keys are now
-  stored in an upstream `platform-wallet-storage` encrypted vault (`secrets.pwsvault`)
-  rather than in the legacy `data.db` SQLite database. Wallet metadata (alias, main flag,
+  stored in an upstream `platform-wallet-storage` encrypted vault
+  (`secrets/det-secrets.pwsvault` in the app data directory) rather than in the legacy
+  `data.db` SQLite database. Wallet metadata (alias, main flag,
   Core wallet name) moves to a new `det-app.sqlite` key-value sidecar. The legacy
   `data.db` file is left intact for safety; it is no longer read at runtime.
 

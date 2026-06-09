@@ -7,10 +7,19 @@ PR #3692.
 
 > Source-of-truth correction: the task brief cited head `9e2d2b0d` and an API
 > with a `SeedProvider` port. The PR was **rebuilt 2026-05-25** (rebuild note in
-> the PR body); the live head is **`ddfa66ed373beaebdae9a5d919f896af43cbcd33`**
-> and the API is now **purely seedless** — the `SeedProvider` trait was deleted
-> and `load_from_persistor()` takes **no resolver**. This document targets the
-> live head. All upstream `file:line` citations are at `ddfa66ed`.
+> the PR body); the live head at design time was
+> **`ddfa66ed373beaebdae9a5d919f896af43cbcd33`** and the API is **purely
+> seedless** — the `SeedProvider` trait was deleted and `load_from_persistor()`
+> takes **no resolver**. All upstream `file:line` citations in this document are
+> at `ddfa66ed`.
+>
+> **⚠ Pin moved past `ddfa66ed` (read before chasing line numbers):** the
+> shipped `Cargo.toml` pin is now `rev = 9e1248cb` (`platform 4.0.0-beta.2`,
+> PR #3692 head). The seedless API *shape* this document targets is unchanged
+> at `9e1248cb`, but the exact `file:line` citations below are at `ddfa66ed` and
+> may have drifted. Re-pinning to a tagged release is the open release gate
+> (PROJ-005 / F121 in the gap audit). Resolve symbols by name, not by line, when
+> reading against the shipped pin.
 
 > **⚠ Regression correction (2026-06-08):** this re-wire deleted DET's *only*
 > persistor **writer** along with `SeedReregistrationLoader`. `load_from_persistor`

@@ -203,7 +203,7 @@ to a written decision in `docs/ai-design/2026-05-18-platform-wallet-migration/`.
 
 | ID | Title | Location | Sev | Status | Decision ref |
 |----|-------|----------|-----|--------|--------------|
-| PROJ-007 | Single-key refresh + SPV-send return `SingleKeyWalletsUnsupported` | `src/backend_task/core/refresh_single_key_wallet_info.rs:16`; `src/backend_task/core/send_single_key_wallet_payment.rs:19`; `src/backend_task/core/mod.rs:218,303` | LOW | Open by design | Decision #7 (`single-key-mock.md`) |
+| PROJ-007 | Single-key refresh + SPV-send return `SingleKeyWalletsUnsupported` | `src/backend_task/core/mod.rs` (`CoreTask::RefreshSingleKeyWalletInfo` / `CoreTask::SendSingleKeyWalletPayment` arms — the two standalone stub files were dead and removed) | LOW | Open by design | Decision #7 (`single-key-mock.md`) |
 | PROJ-008 | SEC-002 sign-time passphrase prompt UX | `src/wallet_backend/secret_prompt.rs`; `src/ui/components/secret_prompt_host.rs`; `src/ui/components/passphrase_modal.rs` | MEDIUM | **RESOLVED (`2272bae0..43f412cf`)** | issue #90 — per-secret JIT prompt now shipped |
 | PROJ-009 | DIP-14 back-compat dropped (non-mainnet / non-account-0 legacy contact addresses not reproduced) | `src/wallet_backend/mod.rs:722-724` (`register_dashpay_contact`, "Decision #6, back-compat dropped") | MEDIUM | Open by design | Decision #6 (`open-questions.md`) |
 | PROJ-010 | Seedless loader is READ-ONLY; nothing populated the upstream persistor after `SeedReregistrationLoader` was deleted (`e6c6c017`) → empty watch set → received funds invisible. **Regression, now fixed.** | `src/wallet_backend/loader.rs`; `src/wallet_backend/mod.rs::{load_from_persistor_seedless, register_wallet_from_seed, ensure_upstream_registered}`; `src/context/wallet_lifecycle.rs::{register_wallet, bootstrap_wallet_addresses_jit}` | HIGH | **REGRESSION — FIXED** (W1/W2 persistor writers re-introduced) | `docs/ai-design/2026-06-08-wallet-reregistration-fix/design.md` |
@@ -366,11 +366,19 @@ Recorded for completeness; **not** counted in the open-gap tally.
 
 1. **Seed #3 — eager wallet-backend init hard failure.** **Resolved.** `src/app.rs` eager init
    warns + degrades to lazy fallback — no hard "Could not access wallet data" abort.
-2. **Seed #7 — TC-019 inverted error precedence.** **Resolved / moot.**
-   `refresh_single_key_wallet_info.rs:16` returns `SingleKeyWalletsUnsupported`
-   unconditionally — no seed-lookup branch left to invert.
-3. **Seed #11 — QA-004 `core_backend_mode` inert plumbing.** **Resolved.** `rg
-   core_backend_mode src` = 0 hits.
+2. **Seed #7 — TC-019 inverted error precedence.** **Resolved / moot.** The
+   `CoreTask::RefreshSingleKeyWalletInfo` dispatch arm in
+   `src/backend_task/core/mod.rs` returns `SingleKeyWalletsUnsupported`
+   unconditionally — no seed-lookup branch left to invert. (The standalone
+   stub file cited in earlier revisions was dead and has been removed.)
+3. **Seed #11 — QA-004 `core_backend_mode` inert plumbing.** **Field RETAINED,
+   not removed.** Correcting an earlier false claim of `rg core_backend_mode
+   src` = 0 hits: the field is still live in `src/model/settings.rs` (struct
+   field, default `1` = SPV, serde round-trip, tests) and is read at DB-init
+   in `src/database/initialization.rs`. It is **inert/reserved** now that RPC
+   backend mode is gone — the *behavioural* plumbing is dead, but the persisted
+   field itself was deliberately kept (dropping it is a settings-schema change
+   deferred to a later cleanup), so it is NOT "resolved by removal".
 4. **Seed #19 — SPV readiness gate "all 5 managers Synced".** **Not present.**
    `EventBridge::on_progress` keys off the single upstream `progress.is_synced()` predicate.
 5. **Mock finding #1 — "Stop Tracking Balance" only pruned local ordering.** **Resolved**

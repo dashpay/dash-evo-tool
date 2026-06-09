@@ -14,6 +14,34 @@ The `08b0ed9` `platform-wallet-storage` bump changed the on-disk storage schema 
 
 ## D. Data Model and Conversions
 
+> **⚠ SUPERSEDED (migration mechanism only).** The "One-Time Migration",
+> "Conversion Surface", and "Migration execution model — two stage,
+> marker-gated" subsections below describe a **seed-driven** re-registration
+> design that **never shipped**. They reference machinery that does not exist
+> in the codebase: `create_wallet_from_seed_bytes` re-registration, the
+> `SeedReregistrationLoader`, the `platform_wallet_migration_pending` SQL
+> marker, the Stage-A v35 SQL migration, and `src/database/migration_pw.rs`.
+>
+> The **live** mechanism is the cold-start `FinishUnwire` task
+> (`src/backend_task/migration/finish_unwire.rs`), driven once per network at
+> launch by `AppState`:
+> - Idempotency is a **per-network k/v sentinel** in `det-app.sqlite`
+>   (`det:migration:finish_unwire:<net>:v1`), **not** a SQL marker, and **not**
+>   a destructive legacy-table DROP — the legacy `data.db` is left intact.
+> - Wallets are **not** re-registered from seed. They come back **seedless /
+>   watch-only** via the upstream `load_from_persistor` rehydration path; see
+>   [`docs/ai-design/2026-06-02-rehydration-rewire/design.md`](../../2026-06-02-rehydration-rewire/design.md)
+>   and the W1/W2 persistor-writer fix in
+>   [`docs/ai-design/2026-06-08-wallet-reregistration-fix/design.md`](../../2026-06-08-wallet-reregistration-fix/design.md).
+> - `FinishUnwire` copies seed envelopes + single-key rows into the encrypted
+>   vault and mirrors wallet metadata / shielded sidecars; the k/v layout it
+>   targets is documented in [`docs/kv-keys.md`](../../kv-keys.md).
+>
+> The data-flow intent of the tables below (what stays DET-side vs. what
+> upstream re-derives) is still broadly accurate; only the **mechanism** is
+> superseded. Read the sections below as historical design, not as a guide to
+> the shipped code.
+
 ### One-Time Migration
 
 Runs on first launch post-upgrade. Idempotent and fail-safe (A04). See procedure below.

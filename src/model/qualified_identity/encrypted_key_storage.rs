@@ -132,7 +132,7 @@ impl<'de, C> BorrowDecode<'de, C> for WalletDerivationPath {
     }
 }
 
-#[derive(Debug, Clone, Encode, Decode, PartialEq)]
+#[derive(Clone, Encode, Decode, PartialEq)]
 pub enum PrivateKeyData {
     AlwaysClear([u8; 32]), // This is for keys that are MEDIUM security level
     Clear([u8; 32]),
@@ -140,17 +140,58 @@ pub enum PrivateKeyData {
     AtWalletDerivationPath(WalletDerivationPath),
 }
 
+impl fmt::Debug for PrivateKeyData {
+    /// Redacting `Debug`: never prints raw plaintext private-key bytes.
+    ///
+    /// The `Clear`/`AlwaysClear` variants hold raw identity private keys, so
+    /// each is rendered as the variant name plus a SHA-256 fingerprint (for
+    /// distinguishing keys in logs) and the byte length — never the key
+    /// itself. `Encrypted` prints its length only. `KeyStorage`,
+    /// `QualifiedIdentity`, and everything else that derives `Debug` delegate
+    /// here, so redacting once protects the whole chain.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            PrivateKeyData::Clear(data) => f
+                .debug_tuple("Clear")
+                .field(&format_args!("fingerprint={}", fingerprint(data)))
+                .finish(),
+            PrivateKeyData::AlwaysClear(data) => f
+                .debug_tuple("AlwaysClear")
+                .field(&format_args!("fingerprint={}", fingerprint(data)))
+                .finish(),
+            PrivateKeyData::Encrypted(data) => f
+                .debug_tuple("Encrypted")
+                .field(&format_args!("{} bytes", data.len()))
+                .finish(),
+            PrivateKeyData::AtWalletDerivationPath(path) => {
+                f.debug_tuple("AtWalletDerivationPath").field(path).finish()
+            }
+        }
+    }
+}
+
+/// Non-reversible fingerprint of secret key bytes for redacted `Debug`:
+/// the first 8 bytes of their SHA-256, hex-encoded. Lets two distinct keys
+/// be told apart in logs without exposing either.
+fn fingerprint(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(bytes);
+    hex::encode(&digest[..8])
+}
+
 impl fmt::Display for PrivateKeyData {
+    /// Redacting `Display`: mirrors the `Debug` impl and never prints raw
+    /// plaintext private-key bytes for the `Clear`/`AlwaysClear` variants.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             PrivateKeyData::Clear(data) => {
-                write!(f, "Clear({})", hex::encode(data))
+                write!(f, "Clear(fingerprint={})", fingerprint(data))
             }
             PrivateKeyData::Encrypted(data) => {
                 write!(f, "Encrypted({} bytes)", data.len())
             }
             PrivateKeyData::AlwaysClear(data) => {
-                write!(f, "Clear({})", hex::encode(data))
+                write!(f, "AlwaysClear(fingerprint={})", fingerprint(data))
             }
             PrivateKeyData::AtWalletDerivationPath(WalletDerivationPath {
                 wallet_seed_hash: wallet_seed,
@@ -458,5 +499,107 @@ impl KeyStorage {
                     .insert(key, (value.0, PrivateKeyData::Clear(value.1)));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
+    use dash_sdk::dpp::identity::Identity;
+    use dash_sdk::dpp::version::PlatformVersion;
+    use dash_sdk::platform::{Identifier, IdentityPublicKey};
+    use std::collections::BTreeMap;
+
+    /// A recognizable 32-byte secret. A full 32-byte collision with random
+    /// public-key bytes is astronomically improbable, so finding it anywhere
+    /// in a rendering means the raw key bytes leaked.
+    fn distinctive_secret() -> [u8; 32] {
+        let mut bytes = [0u8; 32];
+        for (i, b) in bytes.iter_mut().enumerate() {
+            *b = 0xA0 ^ (i as u8).wrapping_mul(7);
+        }
+        bytes
+    }
+
+    /// Assert `rendered` exposes the secret in none of the forms a sink could
+    /// leak it: lowercase hex (a hex-printing sink) and the `[160, 167, …]`
+    /// decimal-array form a `#[derive(Debug)]` on `[u8; 32]` would emit. The
+    /// decimal form is the shape the pre-fix derived `Debug` actually leaked,
+    /// so checking only hex would falsely pass against the original bug.
+    fn assert_no_leak(rendered: &str, secret: &[u8; 32], context: &str) {
+        let hex = hex::encode(secret);
+        let decimal_array = format!(
+            "[{}]",
+            secret
+                .iter()
+                .map(|b| b.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        assert!(
+            !rendered.contains(&hex),
+            "{context} leaked the raw private key (hex): {rendered}"
+        );
+        assert!(
+            !rendered.contains(&decimal_array),
+            "{context} leaked the raw private key (byte array): {rendered}"
+        );
+    }
+
+    /// QA-001 — the redacting `Debug` (and `Display`) on `PrivateKeyData` must
+    /// never emit raw plaintext private-key bytes, and that guarantee must hold
+    /// transitively through the derived-`Debug` chain
+    /// `QualifiedIdentity -> KeyStorage -> PrivateKeyData`.
+    #[test]
+    fn debug_output_never_leaks_plaintext_private_key() {
+        let secret = distinctive_secret();
+
+        // 1. The two raw-byte variants directly.
+        for variant in [
+            PrivateKeyData::Clear(secret),
+            PrivateKeyData::AlwaysClear(secret),
+        ] {
+            assert_no_leak(&format!("{variant:?}"), &secret, "PrivateKeyData Debug");
+            assert_no_leak(&format!("{variant}"), &secret, "PrivateKeyData Display");
+        }
+
+        // 2. Through KeyStorage, which derives Debug and holds the variant.
+        let platform_version = PlatformVersion::latest();
+        let public_key = IdentityPublicKey::random_key(0, Some(42), platform_version);
+        let mut key_storage = KeyStorage::default();
+        key_storage.private_keys.insert(
+            (PrivateKeyTarget::PrivateKeyOnMainIdentity, public_key.id()),
+            (
+                QualifiedIdentityPublicKey::from(public_key),
+                PrivateKeyData::Clear(secret),
+            ),
+        );
+        assert_no_leak(&format!("{key_storage:?}"), &secret, "KeyStorage Debug");
+
+        // 3. Through QualifiedIdentity, which derives Debug and holds KeyStorage.
+        let identity = Identity::create_basic_identity(Identifier::default(), platform_version)
+            .expect("basic identity");
+        let qualified = QualifiedIdentity {
+            identity,
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::User,
+            alias: None,
+            private_keys: key_storage,
+            dpns_names: vec![],
+            associated_wallets: BTreeMap::new(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: BTreeMap::new(),
+            status: IdentityStatus::PendingCreation,
+            network: Network::Testnet,
+        };
+        assert_no_leak(
+            &format!("{qualified:?}"),
+            &secret,
+            "QualifiedIdentity Debug",
+        );
     }
 }

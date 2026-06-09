@@ -8,6 +8,7 @@ use crate::context::connection_status::{ConnectionStatus, OverallConnectionState
 use crate::model::feature_gate::FeatureGate;
 use crate::model::spv_status::{SpvStatus, SpvStatusSnapshot};
 use crate::model::wallet::DerivationPathHelpers;
+use crate::ui::components::MessageBanner;
 use crate::ui::components::component_trait::Component;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::password_input::PasswordInput;
@@ -15,7 +16,6 @@ use crate::ui::components::styled::{
     ConfirmationDialog, ConfirmationStatus, StyledCard, StyledCheckbox, island_central_panel,
 };
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::theme::{DashColors, ResponseExt, Shape, ThemeMode};
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use crate::utils::path::format_path_for_display;
@@ -86,11 +86,6 @@ pub struct NetworkChooserScreen {
     db_clear_message: Option<DatabaseClearMessage>,
     auto_start_spv: bool,
     close_dash_qt_on_exit: bool,
-    /// Tracks whether the last config save to disk failed (needed to show the
-    /// correct banner when the async reinit completes).
-    config_save_failed: bool,
-    /// Progress banner shown while reinit runs in the background.
-    reinit_banner: Option<BannerHandle>,
     discovery_in_progress: bool,
     fetch_confirmation_dialog: Option<ConfirmationDialog>,
     /// Set when DAPI discovery completes and an SDK reinit is needed.
@@ -156,8 +151,6 @@ impl NetworkChooserScreen {
             db_clear_message: None,
             auto_start_spv,
             close_dash_qt_on_exit,
-            config_save_failed: false,
-            reinit_banner: None,
             discovery_in_progress: false,
             fetch_confirmation_dialog: None,
             pending_reinit_after_discovery: false,
@@ -417,15 +410,20 @@ impl NetworkChooserScreen {
                         } else {
                             DashColors::ERROR
                         };
-                        let label = if spv_status == SpvStatus::Error {
-                            spv_error_detail
-                                .as_ref()
-                                .map(|e| format!("Error: {e}"))
-                                .unwrap_or_else(|| "Error".to_string())
+                        if spv_status == SpvStatus::Error {
+                            // Fixed, jargon-free label. The raw upstream sync
+                            // error is offered only as a hover tooltip so the
+                            // status line never renders internal error text.
+                            let response = ui.colored_label(
+                                color,
+                                "Sync error — open Settings for details",
+                            );
+                            if let Some(detail) = spv_error_detail.as_ref() {
+                                response.on_hover_text(detail);
+                            }
                         } else {
-                            spv_status.to_string()
-                        };
-                        ui.colored_label(color, label);
+                            ui.colored_label(color, spv_status.to_string());
+                        }
                     });
                 }
 
@@ -846,6 +844,23 @@ impl NetworkChooserScreen {
                                     );
                                 }
                             }
+                            // Clear the in-memory wallet maps regardless of the
+                            // DB result so the UI never stays inconsistent with
+                            // a half-completed clear.
+                            if let Ok(wallets) = current_context.wallets.read() {
+                                for wallet_arc in wallets.values() {
+                                    if let Ok(mut wallet) = wallet_arc.write() {
+                                        wallet.platform_address_info.clear();
+                                        wallet.known_addresses.retain(|_, path| {
+                                            !path.is_platform_payment(current_context.network)
+                                        });
+                                        wallet.watched_addresses.retain(|path, _| {
+                                            !path.is_platform_payment(current_context.network)
+                                        });
+                                    }
+                                }
+                            }
+
                             match current_context
                                 .db
                                 .clear_all_platform_addresses(&current_context.network)
@@ -855,28 +870,14 @@ impl NetworkChooserScreen {
                                         "Cleared {} platform addresses from database",
                                         count
                                     );
-                                    // Also clear from in-memory wallets
-                                    if let Ok(wallets) = current_context.wallets.read() {
-                                        for wallet_arc in wallets.values() {
-                                            if let Ok(mut wallet) = wallet_arc.write() {
-                                                // Clear platform address info
-                                                wallet.platform_address_info.clear();
-
-                                                // Remove platform addresses from known_addresses
-                                                wallet.known_addresses.retain(|_, path| {
-                                                    !path.is_platform_payment(current_context.network)
-                                                });
-
-                                                // Remove platform addresses from watched_addresses
-                                                wallet.watched_addresses.retain(|path, _| {
-                                                    !path.is_platform_payment(current_context.network)
-                                                });
-                                            }
-                                        }
-                                    }
                                 }
                                 Err(e) => {
-                                    tracing::error!("Failed to clear platform addresses: {}", e);
+                                    MessageBanner::set_global(
+                                        ui.ctx(),
+                                        "Could not clear the saved Platform addresses. Restart the application and try again.",
+                                        MessageType::Error,
+                                    )
+                                    .with_details(e);
                                 }
                             }
                         }
@@ -1376,10 +1377,9 @@ impl NetworkChooserScreen {
                                 )));
                             }
                             Err(err) => {
-                                self.spv_clear_message = Some(SpvClearMessage::Error(format!(
-                                    "Failed to clear SPV data: {}",
-                                    err
-                                )));
+                                tracing::error!(error = ?err, "Failed to clear SPV data");
+                                self.spv_clear_message =
+                                    Some(SpvClearMessage::Error(err.to_string()));
                             }
                         }
                     }
@@ -1746,28 +1746,9 @@ impl ScreenLike for NetworkChooserScreen {
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
-        // Handle CoreClientReinitialized (from RPC password save)
-        if matches!(
-            &backend_task_success_result,
-            BackendTaskSuccessResult::CoreClientReinitialized
-        ) {
-            self.reinit_banner.take_and_clear();
-            let save_failed = std::mem::take(&mut self.config_save_failed);
-
-            if save_failed {
-                MessageBanner::set_global(
-                    self.current_app_context().egui_ctx(),
-                    "Could not save the configuration file. Your changes will apply for this session only.",
-                    MessageType::Warning,
-                );
-            } else {
-                MessageBanner::set_global(
-                    self.current_app_context().egui_ctx(),
-                    "Core RPC password saved successfully.",
-                    MessageType::Success,
-                );
-            }
-        }
+        // The post-DAPI-discovery SDK reinit (`CoreClientReinitialized`) needs
+        // no banner of its own — the discovery result already confirmed the
+        // refresh ("Updated to N node addresses.").
 
         // Handle DapiNodesDiscovered (from "Refresh DAPI endpoints" button)
         if let BackendTaskSuccessResult::DapiNodesDiscovered {
@@ -1810,8 +1791,6 @@ impl ScreenLike for NetworkChooserScreen {
     }
 
     fn display_message(&mut self, _msg: &str, msg_type: MessageType) {
-        self.reinit_banner.take_and_clear();
-        self.config_save_failed = false;
         // Only reset discovery state on errors — other message types may be unrelated
         if matches!(msg_type, MessageType::Error) && self.discovery_in_progress {
             self.discovery_in_progress = false;

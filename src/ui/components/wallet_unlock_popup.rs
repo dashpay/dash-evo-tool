@@ -6,6 +6,7 @@ use crate::ui::components::passphrase_modal::{
 use crate::ui::components::password_input::PasswordInput;
 use egui;
 use std::sync::{Arc, RwLock};
+use zeroize::Zeroizing;
 
 /// Result of showing the wallet unlock popup
 #[derive(Debug, Clone, PartialEq)]
@@ -127,21 +128,27 @@ impl WalletUnlockPopup {
                         // Mark the wallet open for display. Promote the
                         // just-verified seed into the session cache only when
                         // the user opted in; otherwise the next operation
-                        // re-prompts (secure default).
+                        // re-prompts (secure default). The remembered passphrase
+                        // copy is zeroized on drop.
                         let passphrase = self
                             .remember
-                            .then(|| self.password_input.text().to_string());
-                        app_context.handle_wallet_unlocked(wallet, passphrase.as_deref());
+                            .then(|| Zeroizing::new(self.password_input.text().to_string()));
+                        app_context.handle_wallet_unlocked(
+                            wallet,
+                            passphrase.as_deref().map(|s| s.as_str()),
+                        );
                         self.close();
                         WalletUnlockResult::Unlocked
                     }
                     Err(_) => {
-                        if let Some(hint) = wallet_guard.password_hint() {
-                            self.error_message =
-                                Some(format!("Incorrect password. Hint: {}", hint));
-                        } else {
-                            self.error_message = Some("Incorrect password".to_string());
-                        }
+                        self.error_message = Some(match wallet_guard.password_hint() {
+                            Some(hint) => format!(
+                                "That password did not match. Check it and try again. Hint: {hint}"
+                            ),
+                            None => {
+                                "That password did not match. Check it and try again.".to_string()
+                            }
+                        });
                         self.password_input.clear();
                         self.focus_requested = false;
                         WalletUnlockResult::Pending
@@ -177,7 +184,16 @@ pub fn try_open_wallet_no_password(
         if wallet_guard.uses_password {
             return Ok(());
         }
-        wallet_guard.wallet_seed.open_no_password()?;
+        if let Err(detail) = wallet_guard.wallet_seed.open_no_password() {
+            // The raw error is a length-mismatch diagnostic (jargon). Log it
+            // and return a calm, jargon-free message the callsite can show.
+            tracing::error!(error = %detail, "Failed to open no-password wallet");
+            return Err(
+                "This wallet's saved data looks damaged and could not be opened. \
+                 Re-add it from its recovery phrase to restore it."
+                    .to_string(),
+            );
+        }
     }
     // The write guard is dropped above; notify only after releasing it.
     app_context.handle_wallet_unlocked(wallet, None);

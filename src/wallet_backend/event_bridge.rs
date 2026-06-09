@@ -85,12 +85,14 @@ impl EventHandler for EventBridge {
                 self.nudge_refresh();
             }
             SyncEvent::ManagerError { manager, error } => {
+                // The manager id is a useful log dimension but internal jargon —
+                // keep it out of the stored error text the UI surfaces. The raw
+                // upstream message is stored verbatim (truncated) and shown only
+                // as a tooltip behind a fixed user-facing label.
                 tracing::error!(%manager, error, "SPV manager error");
                 let limit = error.floor_char_boundary(100);
-                self.connection_status.set_spv_last_error(Some(format!(
-                    "Sync manager {manager}: {}",
-                    &error[..limit]
-                )));
+                self.connection_status
+                    .set_spv_last_error(Some(error[..limit].to_string()));
                 self.apply_status(SpvStatus::Error);
                 self.nudge_refresh();
             }

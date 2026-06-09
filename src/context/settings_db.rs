@@ -103,7 +103,18 @@ impl AppContext {
     /// stored value fails to decode (e.g. a future schema). Cached
     /// in-memory between updates.
     pub fn get_app_settings(&self) -> AppSettings {
+        // Fast path: cache hit under a read lock.
         if let Some(cached) = self.cached_settings.read().unwrap().clone() {
+            return cached;
+        }
+
+        // Cache miss: hold the write lock across the load+populate so a
+        // concurrent `set_app_settings` (which also holds this write lock for
+        // its whole duration) cannot slip a fresh value in between our read and
+        // write and then be clobbered by our stale load.
+        let mut guard = self.cached_settings.write().unwrap();
+        // Double-check: a racer may have populated the cache while we waited.
+        if let Some(cached) = guard.clone() {
             return cached;
         }
 
@@ -122,7 +133,7 @@ impl AppContext {
             }
         };
 
-        *self.cached_settings.write().unwrap() = Some(loaded.clone());
+        *guard = Some(loaded.clone());
         loaded
     }
 
@@ -141,5 +152,109 @@ impl AppContext {
     /// only to ease the migration of existing callers.
     pub fn get_settings(&self) -> Result<Option<AppSettings>, KvAdapterError> {
         Ok(Some(self.get_app_settings()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::wallet_backend::DetKv;
+    use dash_sdk::dpp::dashcore::Network;
+    use platform_wallet_storage::{KvError, KvStore, ObjectId};
+    use std::sync::{Arc, Mutex};
+
+    /// FK-free in-memory `KvStore` modelling every scope as independent slots.
+    /// Mirrors the `InMemoryKv` pattern in `identity_db.rs` tests.
+    #[derive(Default)]
+    struct InMemoryKv {
+        slots: Mutex<Vec<(ObjectId, String, Vec<u8>)>>,
+    }
+
+    impl KvStore for InMemoryKv {
+        fn get(&self, scope: &ObjectId, key: &str) -> Result<Option<Vec<u8>>, KvError> {
+            Ok(self
+                .slots
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|(s, k, _)| s == scope && k == key)
+                .map(|(_, _, v)| v.clone()))
+        }
+        fn put(&self, scope: &ObjectId, key: &str, value: &[u8]) -> Result<(), KvError> {
+            let mut slots = self.slots.lock().unwrap();
+            if let Some(slot) = slots.iter_mut().find(|(s, k, _)| s == scope && k == key) {
+                slot.2 = value.to_vec();
+            } else {
+                slots.push((scope.clone(), key.to_string(), value.to_vec()));
+            }
+            Ok(())
+        }
+        fn delete(&self, scope: &ObjectId, key: &str) -> Result<(), KvError> {
+            self.slots
+                .lock()
+                .unwrap()
+                .retain(|(s, k, _)| !(s == scope && k == key));
+            Ok(())
+        }
+        fn list_keys(
+            &self,
+            scope: &ObjectId,
+            prefix: Option<&str>,
+        ) -> Result<Vec<String>, KvError> {
+            let pred = |k: &str| -> bool { prefix.is_none_or(|p| k.starts_with(p)) };
+            let mut keys: Vec<String> = self
+                .slots
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(s, k, _)| s == scope && pred(k))
+                .map(|(_, k, _)| k.clone())
+                .collect();
+            keys.sort();
+            Ok(keys)
+        }
+    }
+
+    fn empty_kv() -> DetKv {
+        DetKv::from_store(Arc::new(InMemoryKv::default()))
+    }
+
+    /// F69 — the `AppSettings` blob survives a put/get round-trip through the
+    /// k/v store with every field intact, and an absent blob reads as `None`
+    /// (the path `get_app_settings` maps to its `Default`).
+    #[test]
+    fn app_settings_round_trips_through_kv() {
+        let kv = empty_kv();
+
+        // Absent blob reads as None.
+        assert!(
+            kv.get::<AppSettings>(DetScope::Global, AppSettings::KV_KEY)
+                .unwrap()
+                .is_none(),
+            "a fresh k/v store has no settings blob"
+        );
+
+        // A non-default value must round-trip field-for-field.
+        let mut settings = AppSettings::default();
+        settings.network = Network::Testnet;
+        settings.theme_mode = ThemeMode::Dark;
+        settings.user_mode = crate::model::settings::UserMode::Beginner;
+        settings.auto_start_spv = true;
+        settings.disable_zmq = true;
+        settings.onboarding_completed = true;
+
+        kv.put(DetScope::Global, AppSettings::KV_KEY, &settings)
+            .unwrap();
+        let got: AppSettings = kv
+            .get(DetScope::Global, AppSettings::KV_KEY)
+            .unwrap()
+            .expect("settings blob present after put");
+
+        assert_eq!(got.network, Network::Testnet);
+        assert_eq!(got.theme_mode, ThemeMode::Dark);
+        assert_eq!(got.user_mode, crate::model::settings::UserMode::Beginner);
+        assert!(got.auto_start_spv);
+        assert!(got.disable_zmq);
+        assert!(got.onboarding_completed);
     }
 }

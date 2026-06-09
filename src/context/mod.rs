@@ -147,6 +147,12 @@ pub struct AppContext {
     /// wallet/identity task arms degrade to `WalletBackendNotYetWired`
     /// while unset.
     wallet_backend: ArcSwapOption<WalletBackend>,
+    /// Serializes the lazy wallet-backend construction so two concurrent
+    /// first-tasks cannot both run the expensive `WalletBackend::new` (which
+    /// takes an exclusive advisory lock on the persistor file). The
+    /// double-checked `ArcSwapOption` read still serves the steady state
+    /// lock-free; this `Mutex` is held only across the one-time build.
+    wallet_backend_build: tokio::sync::Mutex<()>,
     /// The just-in-time secret prompt host (UI seam). Defaults to
     /// [`NullSecretPrompt`] (headless: no interactive unlock); the GUI installs
     /// an `EguiSecretPromptHost` before the wallet backend is built via
@@ -367,6 +373,7 @@ impl AppContext {
             shielded_states: Mutex::new(std::collections::HashMap::new()),
             egui_ctx,
             wallet_backend: ArcSwapOption::const_empty(),
+            wallet_backend_build: tokio::sync::Mutex::new(()),
             secret_prompt: SecretPromptSlot(Mutex::new(
                 Arc::new(NullSecretPrompt) as Arc<dyn SecretPrompt>
             )),
@@ -713,6 +720,15 @@ impl AppContext {
         self: &Arc<Self>,
         task_result_sender: crate::utils::egui_mpsc::SenderAsync<crate::app::TaskResult>,
     ) -> Result<(), TaskError> {
+        // Fast path: already wired, no lock needed.
+        if self.wallet_backend.load().is_some() {
+            return Ok(());
+        }
+        // Serialize construction so concurrent first-tasks do not both run the
+        // expensive build (which takes an exclusive advisory lock on the
+        // persistor file). Re-check under the guard — a racer may have wired it
+        // while we waited.
+        let _build_guard = self.wallet_backend_build.lock().await;
         if self.wallet_backend.load().is_some() {
             return Ok(());
         }
@@ -727,10 +743,8 @@ impl AppContext {
             self.secret_prompt(),
         )
         .await?;
-        // Idempotent: if a racing call already installed one, keep it.
-        if self.wallet_backend.load().is_none() {
-            self.wallet_backend.store(Some(Arc::new(backend)));
-        }
+        self.wallet_backend.store(Some(Arc::new(backend)));
+        drop(_build_guard);
         self.restore_selected_wallet_from_kv();
         self.restore_platform_address_info_from_kv();
 

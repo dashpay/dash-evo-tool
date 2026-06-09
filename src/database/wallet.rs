@@ -17,39 +17,59 @@ use std::str::FromStr;
 impl Database {
     /// Remove a wallet and all associated records from the database.
     ///
-    /// This clears dependent records (addresses, utxos, asset locks, identity links)
-    /// to keep the database consistent before deleting the wallet itself.
+    /// This clears dependent records (addresses, utxos, identity links) to keep
+    /// the database consistent before deleting the wallet itself.
+    ///
+    /// The legacy wallet-family tables (`wallet`, `wallet_addresses`, `utxos`)
+    /// are gated out of the fresh-install schema — they live in the upstream
+    /// persistor now — so every statement is existence-guarded, mirroring
+    /// [`Self::clear_network_data`]. On a fresh install each guard is a clean
+    /// no-op and the caller proceeds to wipe the wallet's secret-bearing state;
+    /// an unguarded statement would error on the first missing table and abort
+    /// removal before that wipe (the F17/F20 leak).
     pub fn remove_wallet(&self, seed_hash: &[u8; 32], network: &Network) -> rusqlite::Result<()> {
         let network_str = network.to_string();
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
 
-        let mut address_stmt =
-            tx.prepare("SELECT address FROM wallet_addresses WHERE seed_hash = ?")?;
-        let address_rows =
-            address_stmt.query_map(params![seed_hash], |row| row.get::<_, String>(0))?;
-        let mut addresses = Vec::new();
-        for address in address_rows {
-            addresses.push(address?);
-        }
-        drop(address_stmt);
+        if self.table_exists(&tx, "wallet_addresses")? && self.table_exists(&tx, "utxos")? {
+            let mut address_stmt =
+                tx.prepare("SELECT address FROM wallet_addresses WHERE seed_hash = ?")?;
+            let address_rows =
+                address_stmt.query_map(params![seed_hash], |row| row.get::<_, String>(0))?;
+            let mut addresses = Vec::new();
+            for address in address_rows {
+                addresses.push(address?);
+            }
+            drop(address_stmt);
 
-        for address in addresses {
+            for address in addresses {
+                tx.execute(
+                    "DELETE FROM utxos WHERE address = ? AND network = ?",
+                    params![address, &network_str],
+                )?;
+            }
+        }
+
+        // The `identity` table survives in the fresh schema but carries a
+        // `FOREIGN KEY (wallet) REFERENCES wallet(seed_hash)`. With foreign
+        // keys enforced, writing the `wallet` column resolves that reference,
+        // so the UPDATE errors with "no such table: wallet" when the legacy
+        // `wallet` table is absent. There is nothing to unlink without a
+        // `wallet` table anyway, so gate the UPDATE on both tables existing.
+        if self.table_exists(&tx, "identity")? && self.table_exists(&tx, "wallet")? {
             tx.execute(
-                "DELETE FROM utxos WHERE address = ? AND network = ?",
-                params![address, &network_str],
+                "UPDATE identity SET wallet = NULL, wallet_index = NULL WHERE wallet = ? AND network = ?",
+                params![seed_hash, &network_str],
             )?;
         }
 
-        tx.execute(
-            "UPDATE identity SET wallet = NULL, wallet_index = NULL WHERE wallet = ? AND network = ?",
-            params![seed_hash, &network_str],
-        )?;
-
-        tx.execute(
-            "DELETE FROM wallet WHERE seed_hash = ? AND network = ?",
-            params![seed_hash, &network_str],
-        )?;
+        if self.table_exists(&tx, "wallet")? {
+            tx.execute(
+                "DELETE FROM wallet WHERE seed_hash = ? AND network = ?",
+                params![seed_hash, &network_str],
+            )?;
+        }
 
         tx.commit()
     }

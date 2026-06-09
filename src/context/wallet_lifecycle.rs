@@ -1552,6 +1552,105 @@ mod tests {
         backend.shutdown().await;
     }
 
+    /// F17/F20 (fresh-install regression): removing a wallet must still wipe
+    /// its secret-bearing state on a truly-fresh install where the legacy
+    /// `wallet`/`wallet_addresses`/`utxos` tables are gated OUT of the schema.
+    ///
+    /// The sibling `remove_wallet_wipes_seed_envelope_and_shielded_state`
+    /// builds its context with `create_tables(true)`, which force-creates
+    /// those legacy tables and therefore masks this path. Here the real
+    /// `Database::initialize` fresh path runs, so the unguarded
+    /// `SELECT address FROM wallet_addresses` in `Database::remove_wallet`
+    /// errored with `no such table` and propagated through
+    /// `AppContext::remove_wallet` BEFORE the secret wipe — leaving the seed
+    /// envelope and plaintext shielded notes on disk. The existence-guarded
+    /// statements now no-op cleanly so the caller reaches the wipe.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn remove_wallet_wipes_secrets_on_fresh_install_without_legacy_tables() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let (ctx, sender) = offline_testnet_context_fresh_init(temp_dir.path());
+
+        // Precondition: the fresh-install schema must NOT carry the legacy
+        // `wallet_addresses` table — querying it surfaces sqlite's
+        // "no such table: wallet" error from `get_wallets`. This is the state
+        // under which the unguarded `remove_wallet` aborted before the wipe.
+        assert!(
+            ctx.db.get_wallets(&Network::Testnet).is_err(),
+            "precondition: fresh install must not create the legacy wallet tables"
+        );
+
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("ensure_wallet_backend should succeed offline");
+
+        let seed = [0xF6u8; 64];
+        let wallet =
+            crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
+                .expect("build wallet");
+        let seed_hash = wallet.seed_hash();
+        ctx.register_wallet(wallet, &seed, WalletOrigin::Fresh)
+            .expect("register wallet");
+
+        let backend = ctx.wallet_backend().expect("backend wired");
+
+        // Seed the shielded sidecar so the wipe has plaintext to remove.
+        backend
+            .shielded()
+            .insert_shielded_note(
+                &seed_hash,
+                &crate::wallet_backend::InsertShieldedNote {
+                    note_data: &[0u8; 8],
+                    position: 0,
+                    cmx: &[0x01u8; 32],
+                    nullifier: &[0x02u8; 32],
+                    block_height: 100,
+                    value: 50,
+                    network: "testnet",
+                },
+            )
+            .expect("insert shielded note");
+
+        // Preconditions: the seed envelope and a shielded note exist.
+        assert!(
+            WalletSeedView::new(&ctx.secret_store())
+                .get(&seed_hash)
+                .expect("vault read")
+                .is_some(),
+            "precondition: the seed envelope must exist before removal"
+        );
+        assert_eq!(
+            backend
+                .shielded()
+                .get_shielded_balance(&seed_hash, "testnet")
+                .unwrap(),
+            50,
+            "precondition: the shielded note must exist before removal"
+        );
+
+        // Pre-fix this returned `Err(no such table: wallet_addresses)` and the
+        // wipe below never ran.
+        ctx.remove_wallet(&seed_hash)
+            .expect("remove_wallet must succeed on a fresh install");
+
+        assert!(
+            WalletSeedView::new(&ctx.secret_store())
+                .get(&seed_hash)
+                .expect("vault read after removal")
+                .is_none(),
+            "the seed envelope must be deleted from the vault on a fresh install"
+        );
+        assert_eq!(
+            backend
+                .shielded()
+                .get_shielded_balance(&seed_hash, "testnet")
+                .unwrap(),
+            0,
+            "shielded balance must be zero after removal on a fresh install"
+        );
+
+        backend.shutdown().await;
+    }
+
     /// F60 — "delete all local data" must leave no wallet recoverable: the
     /// wallet-meta sidecar (which the cold-boot picker reads) and the
     /// seed-envelope vault (which holds the encrypted seed) must both be

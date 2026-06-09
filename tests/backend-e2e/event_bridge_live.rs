@@ -11,7 +11,7 @@ use crate::framework::harness::ctx;
 use dash_evo_tool::model::spv_status::SpvStatus;
 use std::time::Duration;
 
-#[tokio::test]
+#[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
 #[ignore = "network-dependent; drives a real WalletBackend sync via the shared harness"]
 async fn event_bridge_drives_connection_status_on_live_sync() {
     let app_ctx = ctx().await.app_context.clone();

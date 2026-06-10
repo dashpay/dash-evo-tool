@@ -34,7 +34,6 @@ pub(super) struct SendDialogState {
     pub address_error: Option<String>,
     pub amount: Option<Amount>,
     pub amount_input: Option<AmountInput>,
-    pub subtract_fee: bool,
     pub error: Option<String>,
 }
 
@@ -214,11 +213,6 @@ impl WalletsBalancesScreen {
 
                 let response = amount_input.show(ui);
                 response.inner.update(&mut self.send_dialog.amount);
-
-                ui.checkbox(
-                    &mut self.send_dialog.subtract_fee,
-                    "Subtract fee from amount",
-                );
 
                 if let Some(error) = self.send_dialog.error.clone() {
                     let error_color = DashColors::ERROR;
@@ -1108,7 +1102,6 @@ impl WalletsBalancesScreen {
                 address: self.send_dialog.address.trim().to_string(),
                 amount_duffs,
             }],
-            subtract_fee_from_amount: self.send_dialog.subtract_fee,
             override_fee: None,
         };
 

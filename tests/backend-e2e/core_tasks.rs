@@ -247,7 +247,6 @@ async fn test_tc009_send_single_key_wallet_payment() {
                     address: skw_address.clone(),
                     amount_duffs: 500_000,
                 }],
-                subtract_fee_from_amount: false,
                 override_fee: None,
             },
         }),
@@ -335,7 +334,6 @@ async fn test_tc009_send_single_key_wallet_payment() {
     //                 address: recipient_address,
     //                 amount_duffs: 1_000,
     //             }],
-    //             subtract_fee_from_amount: true,
     //             override_fee: None,
     //         },
     //     }),
@@ -383,7 +381,6 @@ async fn test_tc011_send_wallet_payment_invalid_address() {
                 address: "not-a-valid-address!!!".to_string(),
                 amount_duffs: 1_000,
             }],
-            subtract_fee_from_amount: false,
             override_fee: None,
         },
     });

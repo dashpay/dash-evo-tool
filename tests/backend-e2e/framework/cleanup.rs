@@ -97,13 +97,22 @@ pub async fn cleanup_test_wallets(
             continue;
         }
 
-        // Attempt to sweep spendable funds back to framework wallet
+        // Attempt to sweep spendable funds back to framework wallet. The
+        // wallet engine cannot subtract the fee from the amount, so reserve
+        // the estimated L1 fee here and send the remainder.
+        let utxo_count = app_context.snapshot_utxo_count(&hash);
+        let Some(sweep_amount) = dash_evo_tool::model::fee_estimation::core_max_send_amount_duffs(
+            spendable, utxo_count, 1,
+        ) else {
+            // Spendable funds do not cover the network fee — skip this run.
+            continue;
+        };
+
         let request = WalletPaymentRequest {
             recipients: vec![PaymentRecipient {
                 address: framework_address.clone(),
-                amount_duffs: spendable,
+                amount_duffs: sweep_amount,
             }],
-            subtract_fee_from_amount: true,
             override_fee: None,
         };
 
@@ -117,7 +126,7 @@ pub async fn cleanup_test_wallets(
                 swept += 1;
                 tracing::info!(
                     "Cleanup: returned {} duffs from orphaned wallet {:?}",
-                    spendable,
+                    sweep_amount,
                     &hash[..4]
                 );
             }

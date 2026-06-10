@@ -57,9 +57,6 @@ pub struct SingleKeyWalletSendScreen {
     recipients: Vec<SendRecipient>,
     next_recipient_id: usize,
 
-    // Common options
-    subtract_fee: bool,
-
     // State
     sending: bool,
 
@@ -86,7 +83,6 @@ impl SingleKeyWalletSendScreen {
             selected_wallet: Some(wallet),
             recipients: vec![SendRecipient::new(0)],
             next_recipient_id: 1,
-            subtract_fee: false,
             sending: false,
             password_input: PasswordInput::new().with_hint_text("Enter password"),
             fee_dialog: FeeConfirmationDialog::default(),
@@ -263,7 +259,6 @@ impl SingleKeyWalletSendScreen {
 
         let request = WalletPaymentRequest {
             recipients: payment_recipients,
-            subtract_fee_from_amount: self.subtract_fee,
             override_fee: None,
         };
 
@@ -404,13 +399,6 @@ impl SingleKeyWalletSendScreen {
             .inner_margin(Margin::symmetric(12, 10))
             .corner_radius(5.0)
             .show(ui, |ui| {
-                // Subtract fee checkbox
-                ui.checkbox(
-                    &mut self.subtract_fee,
-                    RichText::new("Subtract fee from amount")
-                        .color(DashColors::text_primary(dark_mode)),
-                );
-
                 // Fee estimation display
                 if let Some((estimated_fee, utxo_count, tx_size)) = self.estimate_fee() {
                     ui.add_space(10.0);
@@ -990,7 +978,6 @@ impl ScreenLike for SingleKeyWalletSendScreen {
                 // Clear the form after successful send
                 self.recipients = vec![SendRecipient::new(0)];
                 self.next_recipient_id = 1;
-                self.subtract_fee = false;
             }
             _ => {
                 // Ignore other results

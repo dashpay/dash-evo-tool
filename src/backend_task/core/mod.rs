@@ -86,7 +86,6 @@ pub struct PaymentRecipient {
 #[derive(Debug, Clone)]
 pub struct WalletPaymentRequest {
     pub recipients: Vec<PaymentRecipient>,
-    pub subtract_fee_from_amount: bool,
     /// Override fee to use instead of calculated fee (for retry after min relay fee error)
     pub override_fee: Option<u64>,
 }
@@ -243,14 +242,12 @@ impl AppContext {
                 // Upstream `WalletBackend::send_payment` →
                 // `core().send_to_addresses` builds via the upstream
                 // `TransactionBuilder` with an internally-computed fee and a
-                // fixed coin-selection strategy. It exposes no way to deduct
-                // the network fee from a recipient output, and no absolute
-                // fee override (only a fee *rate*, not the absolute
-                // `override_fee` DET passes for min-relay retry). Rather than
-                // silently ignore these options — which would send a
-                // different amount than the user asked for — reject
-                // explicitly with a typed error.
-                if request.subtract_fee_from_amount || request.override_fee.is_some() {
+                // fixed coin-selection strategy. It exposes only a fee *rate*,
+                // not the absolute `override_fee` DET passes for a min-relay
+                // retry. Rather than silently ignore that option — which would
+                // send at a different fee than requested — reject it with a
+                // typed error.
+                if request.override_fee.is_some() {
                     return Err(TaskError::WalletPaymentOptionUnsupported);
                 }
                 // Backend-authoritative input validation: reject an empty
@@ -393,13 +390,11 @@ impl AppContext {
     }
 }
 
-/// SEC-002 — `subtract_fee_from_amount` / `override_fee` must NOT be
-/// silently ignored on `SendWalletPayment`. Upstream
-/// `WalletBackend::send_payment` cannot express either (no
-/// deduct-fee-from-output, no absolute fee override — only a fee rate), so
-/// the handler rejects them with a typed error rather than sending a
-/// different amount than the user asked for. This lane proves the
-/// rejection happens (no silent ignore).
+/// `override_fee` must NOT be silently ignored on `SendWalletPayment`.
+/// Upstream `WalletBackend::send_payment` cannot express an absolute fee
+/// override (only a fee rate), so the handler rejects it with a typed error
+/// rather than sending at a different fee than requested. This lane proves
+/// the rejection happens (no silent ignore).
 #[cfg(test)]
 mod send_payment_unsupported_options {
     use super::*;
@@ -431,37 +426,19 @@ mod send_payment_unsupported_options {
     }
 
     fn wallet_arc() -> Arc<RwLock<Wallet>> {
-        let w = Wallet::new_from_seed([5u8; 64], Network::Testnet, Some("sec002".into()), None)
+        let w = Wallet::new_from_seed([5u8; 64], Network::Testnet, Some("send-opts".into()), None)
             .expect("wallet");
         Arc::new(RwLock::new(w))
     }
 
-    fn req(subtract: bool, override_fee: Option<u64>) -> WalletPaymentRequest {
+    fn req(override_fee: Option<u64>) -> WalletPaymentRequest {
         WalletPaymentRequest {
             recipients: vec![PaymentRecipient {
                 address: "yMLhEsf1bbDqM5p9LyrPHgM7g4Pvqp1Fbb".to_string(),
                 amount_duffs: 10_000,
             }],
-            subtract_fee_from_amount: subtract,
             override_fee,
         }
-    }
-
-    #[tokio::test(flavor = "multi_thread")]
-    async fn subtract_fee_from_amount_is_rejected_not_ignored() {
-        let tmp = tempfile::tempdir().unwrap();
-        let ctx = network_free_ctx(tmp.path());
-        let err = ctx
-            .run_core_task(CoreTask::SendWalletPayment {
-                wallet: wallet_arc(),
-                request: req(true, None),
-            })
-            .await
-            .expect_err("subtract_fee_from_amount must be rejected");
-        assert!(
-            matches!(err, TaskError::WalletPaymentOptionUnsupported),
-            "expected WalletPaymentOptionUnsupported, got {err:?}"
-        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -471,7 +448,7 @@ mod send_payment_unsupported_options {
         let err = ctx
             .run_core_task(CoreTask::SendWalletPayment {
                 wallet: wallet_arc(),
-                request: req(false, Some(5_000)),
+                request: req(Some(5_000)),
             })
             .await
             .expect_err("override_fee must be rejected");

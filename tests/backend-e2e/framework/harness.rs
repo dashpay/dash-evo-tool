@@ -521,7 +521,6 @@ impl BackendTestContext {
                 address: test_address.clone(),
                 amount_duffs,
             }],
-            subtract_fee_from_amount: false,
             override_fee: None,
         };
 

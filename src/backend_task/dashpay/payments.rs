@@ -273,7 +273,6 @@ pub async fn send_payment_to_contact_impl(
             address: to_address.to_string(),
             amount_duffs,
         }],
-        subtract_fee_from_amount: false,
         override_fee: None,
     };
 

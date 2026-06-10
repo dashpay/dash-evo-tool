@@ -667,6 +667,61 @@ pub fn format_credits(credits: u64) -> String {
     }
 }
 
+/// Estimate the Core (L1) network fee, in duffs, for a simple wallet send.
+///
+/// Mirrors the upstream key-wallet `TransactionBuilder` used by
+/// `WalletBackend::send_payment`: it builds at the default `FeeRate::normal()`
+/// (1 duff per byte) and sizes a non-SegWit P2PKH transaction as
+/// `10 + inputs × 148 + outputs × 34` bytes. A "Max" send spends every UTXO
+/// into a single recipient output with no change, so pass the wallet's full
+/// UTXO count as `num_inputs` and the recipient count as `num_outputs`.
+///
+/// A 15% safety margin is added on top of the raw size-based fee so the
+/// reserved amount comfortably covers the fee the builder actually charges
+/// (which rounds up, and may vary slightly with real script sizes). Reserving
+/// marginally more than needed leaves a few dust duffs in the wallet — always
+/// safe — whereas under-reserving would make the send fail.
+///
+/// `num_inputs` and `num_outputs` are clamped to a minimum of 1.
+pub fn estimate_core_l1_send_fee_duffs(num_inputs: usize, num_outputs: usize) -> u64 {
+    const TX_BASE_BYTES: u64 = 10;
+    const BYTES_PER_INPUT: u64 = 148;
+    const BYTES_PER_OUTPUT: u64 = 34;
+    /// Default `FeeRate::normal()` in the upstream builder: 1 duff per byte.
+    const DUFFS_PER_BYTE: u64 = 1;
+    /// Extra headroom over the raw size estimate, in percent.
+    const SAFETY_MARGIN_PERCENT: u64 = 15;
+
+    let inputs = num_inputs.max(1) as u64;
+    let outputs = num_outputs.max(1) as u64;
+
+    let size_bytes = TX_BASE_BYTES
+        .saturating_add(inputs.saturating_mul(BYTES_PER_INPUT))
+        .saturating_add(outputs.saturating_mul(BYTES_PER_OUTPUT));
+
+    let raw_fee = size_bytes.saturating_mul(DUFFS_PER_BYTE);
+    raw_fee.saturating_add(raw_fee.saturating_mul(SAFETY_MARGIN_PERCENT) / 100)
+}
+
+/// Compute the maximum spendable amount, in duffs, for a Core "Max" send:
+/// the whole balance minus the estimated L1 network fee.
+///
+/// Returns `None` when the balance does not cover the estimated fee (i.e.
+/// nothing is left to send). Callers should disable "Max" and show a calm
+/// message in that case rather than producing an amount that would fail.
+///
+/// `num_inputs` is the wallet's UTXO count and `num_outputs` the recipient
+/// count; both are passed through to [`estimate_core_l1_send_fee_duffs`].
+pub fn core_max_send_amount_duffs(
+    balance_duffs: u64,
+    num_inputs: usize,
+    num_outputs: usize,
+) -> Option<u64> {
+    let fee = estimate_core_l1_send_fee_duffs(num_inputs, num_outputs);
+    let spendable = balance_duffs.checked_sub(fee)?;
+    (spendable > 0).then_some(spendable)
+}
+
 /// Compute the exact shielded fee for a given number of Orchard actions.
 ///
 /// Wraps `compute_minimum_shielded_fee` from `dpp`. Use this to calculate
@@ -767,6 +822,69 @@ mod tests {
         assert_eq!(format_credits_as_dash(100_000_000_000), "1 DASH");
         assert_eq!(format_credits_as_dash(100_000_000), "0.001 DASH");
         assert_eq!(format_credits_as_dash(100_000), "0.000001 DASH");
+    }
+
+    #[test]
+    fn test_core_l1_send_fee_matches_builder_size_model() {
+        // 1 input, 1 output (Max send: all funds to one recipient, no change).
+        // Upstream size = 10 + 148 + 34 = 192 bytes at 1 duff/byte = 192 duffs.
+        // With the 15% margin: 192 + floor(192 * 15 / 100) = 192 + 28 = 220.
+        assert_eq!(estimate_core_l1_send_fee_duffs(1, 1), 220);
+
+        // 2 inputs, 1 output: 10 + 296 + 34 = 340 bytes → 340 + 51 = 391.
+        assert_eq!(estimate_core_l1_send_fee_duffs(2, 1), 391);
+
+        // Fee grows with input count.
+        assert!(estimate_core_l1_send_fee_duffs(5, 1) > estimate_core_l1_send_fee_duffs(1, 1));
+    }
+
+    #[test]
+    fn test_core_l1_send_fee_clamps_to_minimum_one() {
+        // Zero inputs/outputs are clamped to 1 each — never a zero-byte tx.
+        assert_eq!(
+            estimate_core_l1_send_fee_duffs(0, 0),
+            estimate_core_l1_send_fee_duffs(1, 1)
+        );
+    }
+
+    #[test]
+    fn test_core_l1_send_fee_covers_actual_builder_fee() {
+        // The estimate must be >= the raw size-based fee the builder charges,
+        // so reserving it always leaves enough for the real fee.
+        for inputs in 1..=10 {
+            let raw_size = 10 + inputs as u64 * 148 + 34; // 1 output, no change
+            let estimate = estimate_core_l1_send_fee_duffs(inputs, 1);
+            assert!(
+                estimate >= raw_size,
+                "estimate {estimate} must cover raw fee {raw_size} for {inputs} inputs"
+            );
+        }
+    }
+
+    #[test]
+    fn test_core_max_send_amount_subtracts_fee() {
+        // Balance well above the fee: spendable = balance - fee.
+        let balance = 1_000_000_u64;
+        let fee = estimate_core_l1_send_fee_duffs(1, 1);
+        assert_eq!(
+            core_max_send_amount_duffs(balance, 1, 1),
+            Some(balance - fee)
+        );
+    }
+
+    #[test]
+    fn test_core_max_send_amount_edge_balance_at_or_below_fee() {
+        let fee = estimate_core_l1_send_fee_duffs(1, 1);
+
+        // Balance exactly equal to the fee: nothing left to send.
+        assert_eq!(core_max_send_amount_duffs(fee, 1, 1), None);
+        // Balance below the fee: nothing left to send.
+        assert_eq!(core_max_send_amount_duffs(fee - 1, 1, 1), None);
+        // Zero balance: nothing left to send.
+        assert_eq!(core_max_send_amount_duffs(0, 1, 1), None);
+
+        // One duff above the fee: exactly one spendable duff.
+        assert_eq!(core_max_send_amount_duffs(fee + 1, 1, 1), Some(1));
     }
 
     #[test]

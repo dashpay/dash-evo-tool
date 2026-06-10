@@ -39,7 +39,6 @@ async fn test_send_and_receive_funds() {
             address: b_address.clone(),
             amount_duffs: send_amount,
         }],
-        subtract_fee_from_amount: false,
         override_fee: None,
     };
 
@@ -90,12 +89,13 @@ async fn test_send_and_receive_funds() {
     // Send funds back from B to A
     let a_address = get_receive_address(app_context, &wallet_a);
 
+    // B holds initial_b_balance + send_amount, so it can send back the full
+    // send_amount and still cover the network fee from its surplus.
     let request = WalletPaymentRequest {
         recipients: vec![PaymentRecipient {
             address: a_address.clone(),
             amount_duffs: send_amount,
         }],
-        subtract_fee_from_amount: true,
         override_fee: None,
     };
 

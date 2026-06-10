@@ -58,7 +58,6 @@ async fn test_spv_transactions_is_ours_flag() {
             address: b_address.clone(),
             amount_duffs: send_amount,
         }],
-        subtract_fee_from_amount: false,
         override_fee: None,
     };
 

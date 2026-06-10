@@ -854,6 +854,17 @@ impl AppContext {
             .unwrap_or_default()
     }
 
+    /// Number of UTXOs in the wallet's display snapshot. Used to estimate the
+    /// Core (L1) transaction fee for a "Max" send, which spends every UTXO.
+    ///
+    /// DISPLAY-ONLY: like the other snapshot reads, this never drives coin
+    /// selection — it only sizes the fee reserved off the displayed balance.
+    pub fn snapshot_utxo_count(&self, seed_hash: &WalletSeedHash) -> usize {
+        self.wallet_backend()
+            .map(|wb| wb.utxos(seed_hash).len())
+            .unwrap_or(0)
+    }
+
     /// Whether the wallet's snapshot shows any confirmed or unconfirmed
     /// funds. Replaces the legacy `Wallet::has_balance` predicate.
     pub fn snapshot_has_balance(&self, seed_hash: &WalletSeedHash) -> bool {

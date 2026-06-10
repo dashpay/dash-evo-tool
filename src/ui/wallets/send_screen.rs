@@ -6,7 +6,7 @@ use crate::backend_task::wallet::WalletTask;
 use crate::context::AppContext;
 use crate::model::address::{AddressKind, ValidatedAddress};
 use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
-use crate::model::fee_estimation::format_credits_as_dash;
+use crate::model::fee_estimation::{core_max_send_amount_duffs, format_credits_as_dash};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::{Wallet, WalletSeedHash};
 use crate::ui::components::address_input::AddressInput;
@@ -389,9 +389,6 @@ pub struct WalletSendScreen {
     // Identity source fields
     selected_identity: Option<QualifiedIdentity>,
 
-    // Common options
-    subtract_fee: bool,
-
     // State
     send_status: SendStatus,
     send_banner: Option<BannerHandle>,
@@ -426,7 +423,6 @@ impl WalletSendScreen {
             }],
             fee_strategy: PlatformFeeStrategy::default(),
             selected_identity: None,
-            subtract_fee: false,
             send_status: SendStatus::NotStarted,
             send_banner: None,
             wallet_unlock_popup: WalletUnlockPopup::new(),
@@ -910,7 +906,6 @@ impl WalletSendScreen {
                 wallet,
                 request: WalletPaymentRequest {
                     recipients: vec![recipient],
-                    subtract_fee_from_amount: self.subtract_fee,
                     override_fee: None,
                 },
             },
@@ -2281,11 +2276,40 @@ impl WalletSendScreen {
                         ))
                     }
                     Some(AddressKind::Core) => {
-                        let (_, l1_tx_fee_duffs) =
-                            fee_estimator.estimate_shield_from_core_fees_duffs();
-                        let l1_fee_credits = l1_tx_fee_duffs * CREDITS_PER_DUFF;
-                        max = max.map(|amount| amount.saturating_sub(l1_fee_credits));
-                        None
+                        // Core-to-Core "Max": reserve the L1 network fee so the
+                        // send leaves enough to cover it. The fee scales with
+                        // the wallet's UTXO count (a Max send spends them all)
+                        // into a single recipient output with no change.
+                        let seed_hash = self
+                            .selected_wallet
+                            .as_ref()
+                            .and_then(|w| w.read().ok().map(|wallet| wallet.seed_hash()));
+                        if let Some(seed_hash) = seed_hash {
+                            let balance_duffs = self.app_context.snapshot_balance(&seed_hash).total;
+                            let utxo_count = self.app_context.snapshot_utxo_count(&seed_hash);
+                            match core_max_send_amount_duffs(balance_duffs, utxo_count, 1) {
+                                Some(spendable_duffs) => {
+                                    max = Some(spendable_duffs * CREDITS_PER_DUFF);
+                                    let fee_duffs = balance_duffs - spendable_duffs;
+                                    Some(format!(
+                                        "~{} reserved for the network fee",
+                                        Self::format_credits(fee_duffs * CREDITS_PER_DUFF)
+                                    ))
+                                }
+                                None => {
+                                    // Balance does not cover the network fee.
+                                    // Leave no Max value so the button cannot
+                                    // produce an amount that would fail.
+                                    max = None;
+                                    Some(
+                                        "Your balance is too low to cover the network fee."
+                                            .to_string(),
+                                    )
+                                }
+                            }
+                        } else {
+                            None
+                        }
                     }
                     _ => None,
                 };
@@ -2378,14 +2402,6 @@ impl WalletSendScreen {
 
                 let response = amount_input.show(ui);
                 response.inner.update(&mut self.amount);
-
-                // When Max is clicked for Core wallet, automatically enable subtract_fee
-                // so the transaction fee is deducted from the amount instead of failing
-                if response.inner.max_clicked
-                    && matches!(self.selected_source, Some(SourceSelection::CoreWallet))
-                {
-                    self.subtract_fee = true;
-                }
             });
 
         // Show transaction type hint
@@ -2398,25 +2414,6 @@ impl WalletSendScreen {
                     .italics()
                     .size(12.0),
             );
-        }
-
-        // Show subtract fee checkbox for Core wallet to Core address transactions
-        let dest_kind = self.destination_kind();
-        if matches!(self.selected_source, Some(SourceSelection::CoreWallet))
-            && dest_kind == Some(AddressKind::Core)
-        {
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                ui.checkbox(&mut self.subtract_fee, "Subtract fee from amount");
-                if self.subtract_fee {
-                    ui.label(
-                        RichText::new("(recipient receives amount minus fee)")
-                            .color(DashColors::text_secondary(dark_mode))
-                            .size(12.0)
-                            .italics(),
-                    );
-                }
-            });
         }
     }
 
@@ -3287,7 +3284,6 @@ impl WalletSendScreen {
                 wallet,
                 request: WalletPaymentRequest {
                     recipients,
-                    subtract_fee_from_amount: self.subtract_fee,
                     override_fee: None,
                 },
             },

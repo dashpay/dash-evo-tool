@@ -342,6 +342,15 @@ As a user, I want to transfer identity credits to a Platform address from the Se
 - Select Identity as source and enter a Platform address (bech32m) as destination.
 - Credits arrive at the Platform address.
 
+### SND-014: Send maximum from a Core wallet [Implemented]
+**Persona:** Alex, Priya
+
+As a user, I want a "Max" button on a Core-to-Core send that fills in the largest amount I can actually send so that I can empty a wallet in one go without the transaction failing on fees.
+
+- "Max" sets the amount to the wallet balance minus the estimated network fee, so the send leaves enough to pay the fee and succeeds.
+- The fee reserved is shown next to the amount.
+- When the balance is too low to cover the fee, "Max" produces no amount and a calm message explains why — never an error path.
+
 ---
 
 ## Asset Locks (ALK)

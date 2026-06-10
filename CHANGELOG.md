@@ -64,6 +64,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - The "Core Only" wallet refresh option. Core wallet balances and UTXOs now stay
   current automatically, so a manual Core-only refresh had nothing to do; refresh
   now covers Core plus Platform, or Platform only.
+- The unused ZMQ Core-event listener subsystem and the non-functional "Disable ZMQ"
+  setting. The listener was already gated off and never delivered events, so the
+  toggle did nothing; both have been removed (the `zmq`, `zeromq`, and
+  `crossbeam-channel` dependencies are no longer needed).
+- The unreachable Dash-Qt launcher and its settings — the executable path, the
+  overwrite-config option, and the close-on-exit option. There was no way to launch
+  Dash-Qt from the app, so the controls had no effect and have been removed.
 
 ### Fixed
 

@@ -34,8 +34,10 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use arc_swap::ArcSwap;
-use dash_sdk::dpp::dashcore::{Address, OutPoint, ScriptBuf, Txid};
-use dash_sdk::dpp::key_wallet::managed_account::transaction_record::TransactionRecord;
+use dash_sdk::dpp::dashcore::{Address, OutPoint, ScriptBuf, Transaction, TxOut, Txid};
+use dash_sdk::dpp::key_wallet::managed_account::transaction_record::{
+    OutputRole, TransactionRecord,
+};
 use dash_sdk::dpp::key_wallet::transaction_checking::TransactionContext;
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
 use platform_wallet::PlatformWallet;
@@ -106,6 +108,52 @@ pub(super) fn map_transaction_record(record: &TransactionRecord) -> WalletTransa
         // Per-wallet history — every record involves our addresses.
         is_ours: true,
         status: status_from_context(&record.context),
+    }
+}
+
+/// The `(transaction, [(outpoint, txout, address)])` payload the asset-lock and
+/// identity-funding screens wait on, matching the
+/// `CoreItem::ReceivedAvailableUTXOTransaction` contract.
+pub(super) type ReceivedUtxoTransaction = (Transaction, Vec<(OutPoint, TxOut, Address)>);
+
+/// Extract the wallet-owned outputs of a freshly-seen transaction as the
+/// payload the asset-lock and identity-funding screens wait on
+/// (`CoreItem::ReceivedAvailableUTXOTransaction`).
+///
+/// Only outputs that pay into this wallet (`OutputRole::Received` or
+/// `OutputRole::Change`) with a decodable address are included — these are the
+/// funding UTXOs a waiting screen matches against its QR funding address.
+/// `Sent`/`Unspendable` outputs and address-less scripts are skipped.
+///
+/// Returns `None` when the transaction has no wallet-owned outputs (e.g. a
+/// pure outgoing payment), so the bridge emits the event only when there is a
+/// received UTXO for a screen to advance on.
+pub(super) fn received_outputs_for_record(
+    record: &TransactionRecord,
+) -> Option<ReceivedUtxoTransaction> {
+    let tx = &record.transaction;
+    let mut owned = Vec::new();
+    for out in &record.output_details {
+        if !matches!(out.role, OutputRole::Received | OutputRole::Change) {
+            continue;
+        }
+        let Some(address) = out.address.clone() else {
+            continue;
+        };
+        let Some(txout) = tx.output.get(out.index as usize) else {
+            continue;
+        };
+        let outpoint = OutPoint {
+            txid: record.txid,
+            vout: out.index,
+        };
+        owned.push((outpoint, txout.clone(), address));
+    }
+
+    if owned.is_empty() {
+        None
+    } else {
+        Some((tx.clone(), owned))
     }
 }
 
@@ -312,10 +360,11 @@ impl SnapshotStore {
 mod tests {
     use super::*;
     use dash_sdk::dpp::dashcore::hashes::Hash;
-    use dash_sdk::dpp::dashcore::{BlockHash, Transaction};
+    use dash_sdk::dpp::dashcore::secp256k1::{Secp256k1, SecretKey};
+    use dash_sdk::dpp::dashcore::{BlockHash, Network, PublicKey, Transaction, TxOut};
     use dash_sdk::dpp::key_wallet::account::{AccountType, StandardAccountType};
     use dash_sdk::dpp::key_wallet::managed_account::transaction_record::{
-        TransactionDirection, TransactionRecord,
+        OutputDetail, OutputRole, TransactionDirection, TransactionRecord,
     };
     use dash_sdk::dpp::key_wallet::transaction_checking::BlockInfo;
     use dash_sdk::dpp::key_wallet::transaction_checking::transaction_router::TransactionType;
@@ -411,6 +460,95 @@ mod tests {
         // No registered handle → recompute returns early, nothing published.
         store.recompute(&wid(9));
         assert!(store.snapshot(&seed(9)).transactions.is_empty());
+    }
+
+    /// A distinct testnet p2pkh address keyed off `n` (derived from a valid
+    /// secret key so the pubkey is a real curve point).
+    fn addr(n: u8) -> Address {
+        let mut sk_bytes = [1u8; 32];
+        sk_bytes[31] = n.max(1);
+        let secp = Secp256k1::new();
+        let sk = SecretKey::from_slice(&sk_bytes).unwrap();
+        let pubkey = PublicKey::new(sk.public_key(&secp));
+        Address::p2pkh(&pubkey, Network::Testnet)
+    }
+
+    /// Build a record whose transaction carries `outputs` (value, owning
+    /// address) and matching `OutputDetail`s with the given roles. Each
+    /// output's `script_pubkey` is the address's own script so the converter's
+    /// outpoint→address mapping is faithful.
+    fn record_with_outputs(n: u8, outputs: &[(u64, Address, OutputRole)]) -> TransactionRecord {
+        let mut tx = tx_with(n);
+        let mut details = Vec::new();
+        for (index, (value, address, role)) in outputs.iter().enumerate() {
+            tx.output.push(TxOut {
+                value: *value,
+                script_pubkey: address.script_pubkey(),
+            });
+            details.push(OutputDetail {
+                index: index as u32,
+                role: *role,
+                address: Some(address.clone()),
+                value: *value,
+            });
+        }
+        TransactionRecord::new(
+            tx,
+            AccountType::Standard {
+                index: 0,
+                standard_account_type: StandardAccountType::BIP44Account,
+            },
+            TransactionContext::Mempool,
+            TransactionType::Standard,
+            TransactionDirection::Incoming,
+            Vec::new(),
+            details,
+            0,
+        )
+    }
+
+    #[test]
+    fn received_output_surfaces_as_funding_utxo() {
+        let funding = addr(1);
+        let rec = record_with_outputs(1, &[(100_000, funding.clone(), OutputRole::Received)]);
+
+        let (tx, owned) =
+            received_outputs_for_record(&rec).expect("a received output yields a payload");
+
+        assert_eq!(tx.txid(), rec.txid);
+        assert_eq!(owned.len(), 1);
+        let (outpoint, txout, address) = &owned[0];
+        assert_eq!(*address, funding);
+        assert_eq!(outpoint.txid, rec.txid);
+        assert_eq!(outpoint.vout, 0);
+        assert_eq!(txout.value, 100_000);
+        assert_eq!(txout.script_pubkey, funding.script_pubkey());
+    }
+
+    #[test]
+    fn change_outputs_are_included_sent_outputs_are_not() {
+        let change = addr(2);
+        let counterparty = addr(3);
+        let rec = record_with_outputs(
+            2,
+            &[
+                (5_000, change.clone(), OutputRole::Change),
+                (9_000, counterparty, OutputRole::Sent),
+            ],
+        );
+
+        let (_, owned) =
+            received_outputs_for_record(&rec).expect("a change output yields a payload");
+
+        assert_eq!(owned.len(), 1);
+        assert_eq!(owned[0].2, change);
+    }
+
+    #[test]
+    fn pure_outgoing_transaction_yields_no_payload() {
+        let counterparty = addr(4);
+        let rec = record_with_outputs(3, &[(7_000, counterparty, OutputRole::Sent)]);
+        assert!(received_outputs_for_record(&rec).is_none());
     }
 
     #[test]

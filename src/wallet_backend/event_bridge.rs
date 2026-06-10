@@ -15,11 +15,14 @@ use dash_sdk::dash_spv::sync::{SyncEvent, SyncProgress, SyncState};
 use platform_wallet::events::{EventHandler, PlatformEventHandler, WalletEvent};
 use platform_wallet::manager::platform_address_sync::PlatformAddressSyncSummary;
 
-use super::snapshot::SnapshotStore;
+use super::snapshot::{SnapshotStore, received_outputs_for_record};
 use crate::app::TaskResult;
+use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::core::CoreItem;
 use crate::context::connection_status::ConnectionStatus;
 use crate::model::spv_status::SpvStatus;
 use crate::utils::egui_mpsc::SenderAsync;
+use dash_sdk::dpp::key_wallet::managed_account::transaction_record::TransactionRecord;
 
 /// DET-authored handler registered with `PlatformWalletManager` at
 /// construction. Holds only cheap shared handles so it stays `Send + Sync`
@@ -47,6 +50,30 @@ impl EventBridge {
     /// `Refresh` is idempotent and the next event coalesces.
     fn nudge_refresh(&self) {
         let _ = self.task_result_sender.try_send(TaskResult::Refresh);
+    }
+
+    /// Emit a `ReceivedAvailableUTXOTransaction` for any freshly-seen records
+    /// that pay into one of our wallet addresses.
+    ///
+    /// This is the producer side of the event the Create-Asset-Lock and
+    /// identity-funding screens wait on: a generic `Refresh` only re-reads
+    /// balances, but those screens advance out of "Waiting for funds…" only
+    /// when they receive this typed event matching their QR funding address.
+    /// Non-blocking; records with no wallet-owned outputs are skipped.
+    fn emit_received_utxos<'a, I>(&self, records: I)
+    where
+        I: IntoIterator<Item = &'a TransactionRecord>,
+    {
+        for record in records {
+            if let Some((tx, outpoints_with_addresses)) = received_outputs_for_record(record) {
+                let result = BackendTaskSuccessResult::CoreItem(
+                    CoreItem::ReceivedAvailableUTXOTransaction(tx, outpoints_with_addresses),
+                );
+                let _ = self
+                    .task_result_sender
+                    .try_send(TaskResult::Success(Box::new(result)));
+            }
+        }
     }
 
     fn apply_status(&self, status: SpvStatus) {
@@ -130,6 +157,10 @@ impl EventHandler for EventBridge {
             } => {
                 self.snapshots
                     .accumulate_transactions(wallet_id, std::iter::once(record.as_ref()));
+                // A wallet-relevant transaction just appeared off-chain (mempool
+                // or direct InstantSend) — surface its received UTXOs so a
+                // waiting funding screen advances.
+                self.emit_received_utxos(std::iter::once(record.as_ref()));
                 *wallet_id
             }
             WalletEvent::BlockProcessed {
@@ -143,6 +174,10 @@ impl EventHandler for EventBridge {
                     wallet_id,
                     inserted.iter().chain(updated.iter()).chain(matured.iter()),
                 );
+                // `inserted` records are first-seen-in-block — a funding tx DET
+                // missed during the mempool window. Surface those too so the
+                // funding screen still advances on a confirmed-first transaction.
+                self.emit_received_utxos(inserted.iter());
                 *wallet_id
             }
             WalletEvent::TransactionInstantLocked { wallet_id, .. }
@@ -200,6 +235,15 @@ impl PlatformEventHandler for EventBridge {
 mod tests {
     use super::*;
     use crate::utils::egui_mpsc::EguiMpscAsync;
+    use dash_sdk::dpp::dashcore::{Address, Network, PublicKey, Transaction, TxOut};
+    use dash_sdk::dpp::key_wallet::WalletCoreBalance;
+    use dash_sdk::dpp::key_wallet::account::{AccountType, StandardAccountType};
+    use dash_sdk::dpp::key_wallet::managed_account::transaction_record::{
+        OutputDetail, OutputRole, TransactionDirection,
+    };
+    use dash_sdk::dpp::key_wallet::transaction_checking::TransactionContext;
+    use dash_sdk::dpp::key_wallet::transaction_checking::transaction_router::TransactionType;
+    use std::collections::BTreeMap;
     use std::sync::Arc;
 
     fn make_bridge() -> (
@@ -222,6 +266,77 @@ mod tests {
             }
         }
         saw_refresh
+    }
+
+    /// A funding address paying into our wallet.
+    fn funding_address() -> Address {
+        let pubkey = PublicKey::from_slice(&[0x02; 33]).unwrap();
+        Address::p2pkh(&pubkey, Network::Testnet)
+    }
+
+    /// A `TransactionDetected` record whose single output pays `value` into
+    /// `address` (role `Received`) — the funding-payment shape SPV reports.
+    fn received_record(address: &Address, value: u64) -> TransactionRecord {
+        let tx = Transaction {
+            version: 1,
+            lock_time: 0,
+            input: vec![],
+            output: vec![TxOut {
+                value,
+                script_pubkey: address.script_pubkey(),
+            }],
+            special_transaction_payload: None,
+        };
+        TransactionRecord::new(
+            tx,
+            AccountType::Standard {
+                index: 0,
+                standard_account_type: StandardAccountType::BIP44Account,
+            },
+            TransactionContext::Mempool,
+            TransactionType::Standard,
+            TransactionDirection::Incoming,
+            Vec::new(),
+            vec![OutputDetail {
+                index: 0,
+                role: OutputRole::Received,
+                address: Some(address.clone()),
+                value,
+            }],
+            value as i64,
+        )
+    }
+
+    fn transaction_detected(record: TransactionRecord) -> WalletEvent {
+        WalletEvent::TransactionDetected {
+            wallet_id: [9u8; 32],
+            record: Box::new(record),
+            balance: WalletCoreBalance::default(),
+            account_balances: BTreeMap::new(),
+            addresses_derived: Vec::new(),
+        }
+    }
+
+    /// Drain the channel and return the addresses of the first
+    /// `ReceivedAvailableUTXOTransaction` produced, if any.
+    fn drained_received_utxo_addresses(
+        rx: &mut tokio::sync::mpsc::Receiver<TaskResult>,
+    ) -> Option<Vec<Address>> {
+        while let Ok(r) = rx.try_recv() {
+            if let TaskResult::Success(result) = r
+                && let BackendTaskSuccessResult::CoreItem(
+                    CoreItem::ReceivedAvailableUTXOTransaction(_, outpoints_with_addresses),
+                ) = *result
+            {
+                return Some(
+                    outpoints_with_addresses
+                        .into_iter()
+                        .map(|(_, _, address)| address)
+                        .collect(),
+                );
+            }
+        }
+        None
     }
 
     #[test]
@@ -301,5 +416,42 @@ mod tests {
                 .is_some_and(|e| e.contains("network down"))
         );
         assert!(drained_refresh(&mut rx));
+    }
+
+    #[test]
+    fn transaction_detected_emits_received_utxo_for_funding_address() {
+        let (bridge, _cs, mut rx) = make_bridge();
+        let funding = funding_address();
+
+        bridge.on_wallet_event(&transaction_detected(received_record(&funding, 100_000)));
+
+        let addresses =
+            drained_received_utxo_addresses(&mut rx).expect("a received UTXO event is produced");
+        assert!(
+            addresses.contains(&funding),
+            "the funding address must surface so the waiting screen advances"
+        );
+    }
+
+    #[test]
+    fn block_processed_inserted_emits_received_utxo() {
+        let (bridge, _cs, mut rx) = make_bridge();
+        let funding = funding_address();
+
+        bridge.on_wallet_event(&WalletEvent::BlockProcessed {
+            wallet_id: [9u8; 32],
+            height: 1_000,
+            chain_lock: None,
+            inserted: vec![received_record(&funding, 50_000)],
+            updated: Vec::new(),
+            matured: Vec::new(),
+            balance: WalletCoreBalance::default(),
+            account_balances: BTreeMap::new(),
+            addresses_derived: Vec::new(),
+        });
+
+        let addresses = drained_received_utxo_addresses(&mut rx)
+            .expect("a confirmed-first funding tx still produces the event");
+        assert!(addresses.contains(&funding));
     }
 }

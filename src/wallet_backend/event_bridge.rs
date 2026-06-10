@@ -55,11 +55,11 @@ impl EventBridge {
     /// Emit a `ReceivedAvailableUTXOTransaction` for any freshly-seen records
     /// that pay into one of our wallet addresses.
     ///
-    /// This is the producer side of the event the Create-Asset-Lock and
-    /// identity-funding screens wait on: a generic `Refresh` only re-reads
-    /// balances, but those screens advance out of "Waiting for funds…" only
-    /// when they receive this typed event matching their QR funding address.
-    /// Non-blocking; records with no wallet-owned outputs are skipped.
+    /// Best-effort nudge for the Create-Asset-Lock and identity-funding screens:
+    /// it fires only for records with a wallet-owned output, so for an asset-lock
+    /// tx only when that tx carries a wallet change output. Terminal
+    /// `RegisteredIdentity` drives final success regardless. Non-blocking;
+    /// records with no wallet-owned outputs are skipped.
     fn emit_received_utxos<'a, I>(&self, records: I)
     where
         I: IntoIterator<Item = &'a TransactionRecord>,

@@ -6,7 +6,9 @@ use crate::backend_task::wallet::WalletTask;
 use crate::context::AppContext;
 use crate::model::address::{AddressKind, ValidatedAddress};
 use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
-use crate::model::fee_estimation::{core_max_send_amount_duffs, format_credits_as_dash};
+use crate::model::fee_estimation::{
+    core_max_send_amount_duffs, core_max_send_reserve_duffs, format_credits_as_dash,
+};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::{Wallet, WalletSeedHash};
 use crate::ui::components::address_input::AddressInput;
@@ -2238,7 +2240,13 @@ impl WalletSendScreen {
             Some(SourceSelection::CoreWallet) => {
                 let mut max = self.selected_wallet.as_ref().and_then(|w| {
                     w.read().ok().map(|wallet| {
-                        self.app_context.snapshot_balance(&wallet.seed_hash()).total
+                        // Reserve against the spendable set (confirmed +
+                        // unconfirmed), not `total` — `total` counts immature
+                        // and locked funds coin selection can't spend, so a
+                        // total-based Max over-shoots and the send fails.
+                        self.app_context
+                            .snapshot_balance(&wallet.seed_hash())
+                            .spendable()
                             * CREDITS_PER_DUFF // duffs to credits
                     })
                 });
@@ -2284,12 +2292,19 @@ impl WalletSendScreen {
                             .as_ref()
                             .and_then(|w| w.read().ok().map(|wallet| wallet.seed_hash()));
                         if let Some(seed_hash) = seed_hash {
-                            let balance_duffs = self.app_context.snapshot_balance(&seed_hash).total;
+                            let spendable_balance_duffs =
+                                self.app_context.snapshot_balance(&seed_hash).spendable();
                             let utxo_count = self.app_context.snapshot_utxo_count(&seed_hash);
-                            match core_max_send_amount_duffs(balance_duffs, utxo_count, 1) {
-                                Some(spendable_duffs) => {
-                                    max = Some(spendable_duffs * CREDITS_PER_DUFF);
-                                    let fee_duffs = balance_duffs - spendable_duffs;
+                            match core_max_send_amount_duffs(spendable_balance_duffs, utxo_count, 1)
+                            {
+                                Some(send_amount_duffs) => {
+                                    max = Some(send_amount_duffs * CREDITS_PER_DUFF);
+                                    let fee_duffs = core_max_send_reserve_duffs(
+                                        spendable_balance_duffs,
+                                        utxo_count,
+                                        1,
+                                    )
+                                    .unwrap_or(0);
                                     Some(format!(
                                         "~{} reserved for the network fee",
                                         Self::format_credits(fee_duffs * CREDITS_PER_DUFF)

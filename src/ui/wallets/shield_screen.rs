@@ -65,10 +65,29 @@ enum Status {
     Complete,
 }
 
+/// Which kind of source funds the shield, and how the funds are selected.
+///
+/// This is a routing choice, not coin control: `Core` shields the whole wallet
+/// (the asset lock spends the full live UTXO set — no per-address selection
+/// exists), while `Platform` shields one chosen platform address.
+#[derive(PartialEq, Clone, Copy)]
+enum ShieldSourceKind {
+    /// Type 18 asset-lock shield of the whole Core wallet.
+    Core,
+    /// Type 15 shield of a single chosen platform address.
+    Platform,
+}
+
 pub struct ShieldScreen {
     pub app_context: Arc<AppContext>,
     pub seed_hash: WalletSeedHash,
+    /// Whether the shield draws from the whole Core wallet or a platform address.
+    source_kind: ShieldSourceKind,
+    /// Platform-address picker — only shown (and only meaningful) when
+    /// `source_kind` is `Platform`. The Core path has no per-address selection.
     address_input: Option<AddressInput>,
+    /// The chosen platform address, set by `address_input`. `None` for the Core
+    /// path, which always shields the whole wallet.
     validated_source: Option<ValidatedAddress>,
     amount_input: Option<AmountInput>,
     amount: Option<Amount>,
@@ -103,6 +122,7 @@ impl ShieldScreen {
         let mut screen = Self {
             app_context: app_context.clone(),
             seed_hash,
+            source_kind: ShieldSourceKind::Core,
             address_input: None,
             validated_source: None,
             amount_input: None,
@@ -128,8 +148,9 @@ impl ShieldScreen {
         screen
     }
 
-    /// Reset the address and amount inputs — called when AppContext switches network.
+    /// Reset the source and amount inputs — called when AppContext switches network.
     pub(crate) fn invalidate_address_input(&mut self) {
+        self.source_kind = ShieldSourceKind::Core;
         self.address_input = None;
         self.validated_source = None;
         self.amount_input = None;
@@ -152,6 +173,40 @@ impl ShieldScreen {
         self.validated_source
             .as_ref()
             .and_then(|v| v.as_platform().copied())
+    }
+
+    /// The selected source kind as an [`AddressKind`], for the downstream
+    /// per-kind rendering and dispatch matches.
+    fn source_kind(&self) -> AddressKind {
+        match self.source_kind {
+            ShieldSourceKind::Core => AddressKind::Core,
+            ShieldSourceKind::Platform => AddressKind::Platform,
+        }
+    }
+
+    /// Whether the source is fully specified and the amount/confirm controls may
+    /// show. Core shields the whole wallet so it is always ready; Platform needs
+    /// a chosen address.
+    fn source_is_ready(&self) -> bool {
+        match self.source_kind {
+            ShieldSourceKind::Core => true,
+            ShieldSourceKind::Platform => self.validated_source.is_some(),
+        }
+    }
+
+    /// Whether this wallet has any funded platform address to shield from. Gates
+    /// the Platform source option — without one there is nothing to pick.
+    fn has_platform_addresses(&self) -> bool {
+        self.app_context
+            .wallets
+            .read()
+            .ok()
+            .and_then(|wallets| {
+                let wallet = wallets.get(&self.seed_hash)?;
+                let guard = wallet.read().ok()?;
+                Some(guard.platform_address_info.values().any(|i| i.balance > 0))
+            })
+            .unwrap_or(false)
     }
 
     /// Refresh cached wallet data (balance, nonce) from the RwLock-protected wallet.
@@ -714,44 +769,81 @@ impl ScreenLike for ShieldScreen {
             let is_busy =
                 self.status == Status::WaitingForResult || self.status == Status::BatchInProgress;
 
-            // Source address and amount inputs (disabled during batch)
+            // Source selection and amount inputs (disabled during batch)
             let source_kind = ui
                 .add_enabled_ui(!is_busy, |ui| {
-                    let addr_input = self.address_input.get_or_insert_with(|| {
-                        let mut builder = AddressInput::new(self.app_context.network)
-                            .with_address_kinds(&[AddressKind::Core, AddressKind::Platform])
-                            .with_label("From address")
-                            .with_hint_text("Select a platform or core wallet address")
-                            .with_selection_only(true)
-                            .with_balance_range(1..)
-                            .with_exclude_change(true);
-
-                        if let Ok(wallets) = self.app_context.wallets.read()
-                            && let Some(wallet) = wallets.get(&self.seed_hash)
+                    // Source kind: whole Core wallet (Type 18 asset lock) vs a
+                    // single platform address (Type 15). This routes the shield;
+                    // it is not coin control. The Core path has no per-address
+                    // selection — the asset lock always spends the whole wallet.
+                    let has_platform = self.has_platform_addresses();
+                    ui.label("Shield from:");
+                    ui.horizontal(|ui| {
+                        if ui
+                            .radio_value(
+                                &mut self.source_kind,
+                                ShieldSourceKind::Core,
+                                "Core wallet (whole balance)",
+                            )
+                            .changed()
                         {
-                            let balances =
-                                self.app_context.snapshot_address_balances(&self.seed_hash);
-                            builder = builder.with_wallets(&[(wallet.clone(), balances)]);
+                            self.address_input = None;
+                            self.validated_source = None;
+                            self.amount_input = None;
+                            self.amount = None;
+                            self.refresh_cached_balances();
                         }
-
-                        builder
+                        ui.add_enabled_ui(has_platform, |ui| {
+                            if ui
+                                .radio_value(
+                                    &mut self.source_kind,
+                                    ShieldSourceKind::Platform,
+                                    "Platform address",
+                                )
+                                .changed()
+                            {
+                                self.address_input = None;
+                                self.validated_source = None;
+                                self.amount_input = None;
+                                self.amount = None;
+                                self.refresh_cached_balances();
+                            }
+                        });
                     });
-                    let resp = addr_input.show(ui);
-                    if resp.inner.has_changed() {
-                        resp.inner.update(&mut self.validated_source);
-                        // Reset amount input when source changes (different balance constraints)
-                        self.amount_input = None;
-                        self.amount = None;
-                        self.refresh_cached_balances();
-                    }
                     ui.add_space(5.0);
 
-                    // Show source-specific info based on selected address type
-                    let source_kind = self.validated_source.as_ref().map(|v| v.kind());
+                    match self.source_kind {
+                        ShieldSourceKind::Platform => {
+                            // Genuine coin control: the chosen platform address is
+                            // the spend source for the Type 15 shield.
+                            let addr_input = self.address_input.get_or_insert_with(|| {
+                                let mut builder = AddressInput::new(self.app_context.network)
+                                    .with_address_kinds(&[AddressKind::Platform])
+                                    .with_label("Platform address")
+                                    .with_hint_text("Select a platform address to shield from")
+                                    .with_selection_only(true)
+                                    .with_balance_range(1..)
+                                    .with_exclude_change(true);
 
-                    match source_kind {
-                        Some(AddressKind::Platform) => {
-                            // Platform flow: show balance and nonce
+                                if let Ok(wallets) = self.app_context.wallets.read()
+                                    && let Some(wallet) = wallets.get(&self.seed_hash)
+                                {
+                                    let balances =
+                                        self.app_context.snapshot_address_balances(&self.seed_hash);
+                                    builder = builder.with_wallets(&[(wallet.clone(), balances)]);
+                                }
+
+                                builder
+                            });
+                            let resp = addr_input.show(ui);
+                            if resp.inner.has_changed() {
+                                resp.inner.update(&mut self.validated_source);
+                                self.amount_input = None;
+                                self.amount = None;
+                                self.refresh_cached_balances();
+                            }
+                            ui.add_space(5.0);
+
                             if let Some(balance_credits) = self.read_platform_balance() {
                                 let balance_dash =
                                     balance_credits as f64 / CREDITS_PER_DUFF as f64 / 1e8;
@@ -776,9 +868,9 @@ impl ScreenLike for ShieldScreen {
                                 ui.add_space(5.0);
                             }
                         }
-                        Some(AddressKind::Core) => {
-                            // Core flow shields the whole wallet balance: the asset
-                            // lock spends from the wallet's full live UTXO set.
+                        ShieldSourceKind::Core => {
+                            // The asset lock spends the whole wallet's live UTXO
+                            // set, so there is nothing per-address to pick.
                             let balance_duffs = self.read_core_balance_duffs();
                             let dash_balance = balance_duffs as f64 / 1e8;
                             ui.label(
@@ -790,11 +882,14 @@ impl ScreenLike for ShieldScreen {
                             );
                             ui.add_space(5.0);
                         }
-                        _ => {}
                     }
 
-                    // Amount input (only when a source address is selected)
-                    if self.validated_source.is_some() {
+                    // `Some` only when the source is fully specified, so the
+                    // downstream amount/confirm controls gate on readiness.
+                    let source_kind = self.source_is_ready().then(|| self.source_kind());
+
+                    // Amount input (only when the source is ready)
+                    if self.source_is_ready() {
                         let max_credits = match source_kind {
                             Some(AddressKind::Platform) => {
                                 let base_fee =
@@ -877,8 +972,8 @@ impl ScreenLike for ShieldScreen {
                 });
             }
 
-            // Buttons (only when not busy and source is selected)
-            if !is_busy && self.status == Status::NotStarted && self.validated_source.is_some() {
+            // Buttons (only when not busy and the source is ready)
+            if !is_busy && self.status == Status::NotStarted && self.source_is_ready() {
                 let can_confirm = self
                     .amount
                     .as_ref()

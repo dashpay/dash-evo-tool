@@ -51,11 +51,26 @@ type WalletId = [u8; 32];
 /// Confirmed / unconfirmed / total balance in duffs. DET-shaped — no upstream
 /// `WalletBalance` / `WalletCoreBalance` crosses the seam
 /// (rust-best-practices M-DONT-LEAK-TYPES).
+///
+/// `total` is the headline figure and counts immature coinbase and locked
+/// (CoinJoin) funds that coin selection cannot touch. `spendable()` is the
+/// subset the upstream `CoinSelector` actually draws from.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DetWalletBalance {
     pub confirmed: u64,
     pub unconfirmed: u64,
     pub total: u64,
+}
+
+impl DetWalletBalance {
+    /// Funds coin selection can spend right now: confirmed plus unconfirmed.
+    /// Excludes the immature and locked duffs that `total` counts but the
+    /// upstream `CoinSelector` rejects. Reserve a "Max" send against this, not
+    /// `total`, or the send over-shoots the selectable set and fails with
+    /// insufficient funds.
+    pub fn spendable(&self) -> u64 {
+        self.confirmed.saturating_add(self.unconfirmed)
+    }
 }
 
 /// One unspent output. DET-shaped — no upstream `Utxo` crosses the seam.
@@ -424,6 +439,56 @@ mod tests {
         assert_eq!(snap.balance, DetWalletBalance::default());
         assert!(snap.transactions.is_empty());
         assert!(snap.utxos.is_empty());
+    }
+
+    #[test]
+    fn spendable_excludes_immature_and_locked_held_in_total() {
+        // `total` carries immature coinbase + locked CoinJoin funds (here the
+        // 700 gap above confirmed+unconfirmed) that the CoinSelector rejects.
+        // `spendable()` must report only confirmed + unconfirmed.
+        let balance = DetWalletBalance {
+            confirmed: 500,
+            unconfirmed: 300,
+            total: 1_500,
+        };
+        assert_eq!(balance.spendable(), 800);
+        assert!(balance.spendable() < balance.total);
+    }
+
+    /// Crosses the `send_screen` "Max" seam: the Max a Core send reserves must
+    /// come from the *spendable* set, never `total`. When the wallet holds
+    /// immature/locked funds (total > spendable), feeding `total` to the Max
+    /// math over-shoots what coin selection can spend, so the broadcast fails
+    /// with insufficient funds.
+    #[test]
+    fn core_max_reserves_against_spendable_not_total() {
+        use crate::model::fee_estimation::core_max_send_amount_duffs;
+
+        // 800 spendable, 700 immature/locked riding in `total`.
+        let balance = DetWalletBalance {
+            confirmed: 500,
+            unconfirmed: 300,
+            total: 1_500,
+        };
+
+        let max = core_max_send_amount_duffs(balance.spendable(), 1, 1)
+            .expect("spendable covers the fee");
+
+        // Max may never exceed what coin selection can actually spend.
+        assert!(
+            max <= balance.spendable(),
+            "Max {max} over-reserves against spendable {}",
+            balance.spendable()
+        );
+
+        // Reserving against `total` would let Max exceed the spendable set —
+        // the exact over-shoot this fix kills.
+        let buggy_max = core_max_send_amount_duffs(balance.total, 1, 1)
+            .expect("total trivially covers the fee");
+        assert!(
+            buggy_max > balance.spendable(),
+            "the total-based Max should over-reserve, proving the seam matters"
+        );
     }
 
     #[test]

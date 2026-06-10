@@ -1232,6 +1232,13 @@ mod tests {
             .expect("initial start should wire then start offline");
         let first = ctx.wallet_backend().expect("backend wired after start");
         assert!(first.is_started(), "initial start must latch the backend");
+        // Capture the old backend's identity, then release the strong ref before
+        // reconnecting. The upstream persister enforces a single open per path
+        // (WalletStorageError::AlreadyOpen); a lingering `first` would keep the
+        // old handle alive and the reconnect's open of the same path would be
+        // refused. The fresh-backend identity check below uses the raw pointer.
+        let first_ptr = Arc::as_ptr(&first);
+        drop(first);
 
         ctx.stop_spv().await;
         assert!(
@@ -1244,12 +1251,6 @@ mod tests {
             "precondition: disconnected before reconnect"
         );
 
-        // TODO(platform-wallet): beta.4 added a single-open guard to the upstream
-        // SQLite persister (WalletStorageError::AlreadyOpen). This test keeps the
-        // pre-stop backend `first` alive across the reconnect, so the dropped
-        // backend's persister handle is not yet released and the reconnect's open
-        // of the same path is refused. Release the prior handle on stop_spv (or
-        // drop `first` before reconnecting) so the fresh open succeeds.
         ctx.ensure_wallet_backend_and_start_spv(sender)
             .await
             .expect("reconnect should wire then start a fresh backend offline");
@@ -1258,7 +1259,7 @@ mod tests {
             .wallet_backend()
             .expect("backend must be wired again after reconnect");
         assert!(
-            !Arc::ptr_eq(&first, &second),
+            first_ptr != Arc::as_ptr(&second),
             "reconnect must rebuild a fresh backend, not revive the dropped one"
         );
         assert!(

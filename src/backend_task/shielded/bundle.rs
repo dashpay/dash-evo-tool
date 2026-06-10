@@ -35,6 +35,35 @@ impl OrchardProver for CachedProver {
     }
 }
 
+/// Reconcile DET's selection-time fee estimate against the consensus-pinned fee
+/// the builder actually carved, so the authoritative value is never silently
+/// discarded. Note selection uses the base-fee floor (`compute_minimum_shielded_fee`);
+/// unshield and withdrawal additionally carry a flat storage cost the builder
+/// prices in, so a higher `applied_fee` is expected for those. A LOWER applied
+/// fee, or a mismatch on a transfer (same fee formula), would signal a drift.
+fn log_fee_divergence(op: &str, estimated_fee: u64, applied_fee: u64) {
+    if applied_fee == estimated_fee {
+        return;
+    }
+    if applied_fee > estimated_fee {
+        tracing::info!(
+            "{op}: consensus fee {} ({} credits) exceeds the base-fee estimate {} ({} credits) by the transition's flat storage cost",
+            format_credits_as_dash(applied_fee),
+            applied_fee,
+            format_credits_as_dash(estimated_fee),
+            estimated_fee,
+        );
+    } else {
+        tracing::warn!(
+            "{op}: consensus fee {} ({} credits) is below the base-fee estimate {} ({} credits) — fee formula drift",
+            format_credits_as_dash(applied_fee),
+            applied_fee,
+            format_credits_as_dash(estimated_fee),
+            estimated_fee,
+        );
+    }
+}
+
 /// Progress stage for a shield credits operation (used by batch UI).
 #[derive(Clone, Debug)]
 pub enum ShieldStage {
@@ -370,8 +399,10 @@ pub async fn shielded_transfer(
     // memo: 36-byte structured memo (4-byte type tag + 32-byte payload); all zeros = empty memo.
     // The fee is no longer a caller argument: consensus pins a transfer's
     // `value_balance` to exactly `compute_minimum_shielded_fee`, so the builder
-    // computes it internally and returns the applied fee alongside the transition.
-    let (state_transition, _applied_fee) = build_shielded_transfer_transition(
+    // computes it internally and returns the authoritative fee it carved. Note
+    // selection above uses the same base-fee floor, so `applied_fee` equals
+    // `exact_fee` for a transfer; the builder errs if inputs are insufficient.
+    let (state_transition, applied_fee) = build_shielded_transfer_transition(
         spends,
         &recipient_addr,
         amount,
@@ -384,6 +415,8 @@ pub async fn shielded_transfer(
         sdk.version(),
     )
     .map_err(|e| shielded_build_error(e.to_string()))?;
+
+    log_fee_divergence("Shielded transfer", exact_fee, applied_fee);
 
     tracing::trace!("Shielded transfer: state transition built, broadcasting...");
 
@@ -456,9 +489,11 @@ pub async fn unshield_credits(
     let change_addr = payment_address_to_orchard(&shielded_state.keys.default_address)?;
 
     // memo: 36-byte structured memo (4-byte type tag + 32-byte payload); all zeros = empty memo.
-    // The builder now computes the consensus-pinned fee internally and returns
-    // it alongside the transition, so the fee is no longer passed in.
-    let (state_transition, _applied_fee) = build_unshield_transition(
+    // The builder computes the consensus-pinned fee internally and returns the
+    // authoritative value it carved. An unshield's fee is the base minimum PLUS
+    // a flat `AddBalanceToAddress` storage cost, so `applied_fee` exceeds the
+    // base-fee floor note selection used; the builder errs if inputs are short.
+    let (state_transition, applied_fee) = build_unshield_transition(
         spends,
         to_platform_address,
         amount,
@@ -471,6 +506,8 @@ pub async fn unshield_credits(
         sdk.version(),
     )
     .map_err(|e| shielded_build_error(e.to_string()))?;
+
+    log_fee_divergence("Unshield credits", exact_fee, applied_fee);
 
     tracing::trace!("Unshield credits: state transition built, broadcasting...");
 
@@ -646,9 +683,11 @@ pub async fn shielded_withdrawal(
     let change_addr = payment_address_to_orchard(&shielded_state.keys.default_address)?;
 
     // memo: 36-byte structured memo (4-byte type tag + 32-byte payload); all zeros = empty memo.
-    // The builder now computes the consensus-pinned fee internally and returns
-    // it alongside the transition, so the fee is no longer passed in.
-    let (state_transition, _applied_fee) = build_shielded_withdrawal_transition(
+    // The builder computes the consensus-pinned fee internally and returns the
+    // authoritative value it carved. A withdrawal's fee is the base minimum PLUS
+    // a flat Core-withdrawal-document storage cost, so `applied_fee` exceeds the
+    // base-fee floor note selection used; the builder errs if inputs are short.
+    let (state_transition, applied_fee) = build_shielded_withdrawal_transition(
         spends,
         amount,
         output_script,
@@ -663,6 +702,8 @@ pub async fn shielded_withdrawal(
         sdk.version(),
     )
     .map_err(|e| shielded_build_error(e.to_string()))?;
+
+    log_fee_divergence("Shielded withdrawal", exact_fee, applied_fee);
 
     tracing::trace!("Shielded withdrawal: state transition built, broadcasting...");
 

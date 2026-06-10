@@ -3,12 +3,14 @@ use crate::context::AppContext;
 use crate::model::wallet::WalletSeedHash;
 use crate::model::wallet::shielded::ShieldedWalletState;
 use dash_sdk::dpp::dashcore::Network;
+use dash_sdk::drive::drive::shielded::paths::SHIELDED_NOTES_CHUNK_POWER;
 use dash_sdk::platform::shielded::sync_shielded_notes;
 use std::collections::HashSet;
 use std::sync::Arc;
 
 /// Server-enforced chunk size — the scan start must be a multiple of this.
-const CHUNK_SIZE: u64 = 2048;
+/// Derived from the upstream consensus constant so the value can never drift.
+const CHUNK_SIZE: u64 = 1u64 << SHIELDED_NOTES_CHUNK_POWER;
 
 /// Detect which of our unspent notes have been spent on-chain via scan-based
 /// nullifier matching.

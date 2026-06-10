@@ -644,6 +644,15 @@ pub(crate) fn sign_message_with_raw_key(
 pub fn open_secret_store(path: &std::path::Path) -> Result<SecretStore, SecretStoreError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|_| SecretStoreError::MalformedVault)?;
+        // The upstream file backend refuses to open a vault whose parent dir is
+        // group/other-writable (a rename-swap threat). Lock the secrets dir to
+        // owner-only so the seed vault is never created under loose perms.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
+                .map_err(|_| SecretStoreError::MalformedVault)?;
+        }
     }
     SecretStore::file(
         path,

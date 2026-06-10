@@ -1317,6 +1317,13 @@ impl WalletBackend {
     /// upstream persister. Called before the one-time migration's
     /// strictly-last legacy-table DROP so the new persister is durable
     /// before any legacy data is destroyed.
+    //
+    // TODO(PROJ-007 T7): when this DROP is wired, it MUST gate the legacy
+    // `single_key_wallet` removal through
+    // `crate::backend_task::migration::finish_unwire::ensure_legacy_single_key_table_droppable`
+    // and abort on error. A password-protected legacy single-key row is
+    // encrypted under the user's OLD password and has no other copy until
+    // T-SK-03 restores it — dropping the table early is permanent key loss.
     pub async fn flush_persister(&self) -> Result<(), TaskError> {
         let ids = self.inner.pwm.wallet_ids().await;
         for id in ids {

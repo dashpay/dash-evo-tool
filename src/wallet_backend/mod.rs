@@ -1244,11 +1244,26 @@ impl WalletBackend {
 
     /// Re-establish a DashPay contact on UPSTREAM derivation only.
     ///
-    /// Derives the `DashpayReceivingFunds` account via the upstream engine
-    /// and registers it so the SPV adapter monitors incoming payments. No DET
-    /// re-derivation, no comparison — upstream is authoritative
-    /// (Decision #6, back-compat dropped). Idempotent: upstream no-ops if the
-    /// contact account already exists.
+    /// Derives the `DashpayReceivingFunds` account via the upstream engine and
+    /// registers it so the SPV adapter monitors incoming payments. Upstream is
+    /// authoritative — no DET re-derivation, no comparison. Idempotent:
+    /// upstream no-ops if the contact account already exists.
+    ///
+    /// Legacy DET derived contact addresses at the same path upstream uses
+    /// now — `m/9'/coin'/15'/0'/(owner)/(contact)`, account index fixed at 0,
+    /// coin type per network (5' mainnet, 1' otherwise) — so existing on-chain
+    /// contact addresses re-register byte-identically here; nothing is lost.
+    //
+    // TODO: A separate watch-only re-derivation of a non-zero contact account
+    // index is deliberately NOT wired. Upstream
+    // `AccountType::DashpayReceivingFunds::derivation_path` hardcodes account
+    // 0', and DET never persisted a per-contact HD account index (the legacy
+    // `dashpay_contacts` schema keys only on owner/contact/network, and every
+    // historical and current call site passes account 0). No non-zero-account
+    // legacy address ever held funds, so re-deriving one would only invent
+    // addresses that were never used — the exact wrong-address hazard to
+    // avoid. Wire it only if a future upstream change parameterises the
+    // account index AND a real index source exists to re-derive from.
     pub async fn register_dashpay_contact(
         &self,
         seed_hash: &WalletSeedHash,

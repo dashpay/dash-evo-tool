@@ -17,6 +17,7 @@ use crate::context::AppContext;
 use crate::context::migration_status::MigrationState;
 
 pub mod finish_unwire;
+pub mod single_key_restore;
 
 pub use finish_unwire::MigrationError;
 

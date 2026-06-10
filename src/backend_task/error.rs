@@ -1542,6 +1542,16 @@ pub enum TaskError {
     )]
     SingleKeyCryptoFailure,
 
+    /// A protected single-key restore (T-SK-03) was requested for an
+    /// address that is not present as an un-restored `uses_password=1`
+    /// row in the legacy table — it was already restored, never existed,
+    /// or belongs to another network. Fieldless: no upstream error and,
+    /// by design, never any secret.
+    #[error(
+        "This imported key is no longer waiting to be restored. It may already be available — check your imported keys."
+    )]
+    ProtectedSingleKeyRestoreTargetMissing,
+
     /// The user dismissed the just-in-time passphrase prompt (Cancel / X /
     /// Escape / click-outside), or no interactive prompt was available
     /// (headless / MCP). The operation aborts cleanly — nothing was

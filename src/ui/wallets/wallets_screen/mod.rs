@@ -40,8 +40,10 @@ use egui::{Color32, Frame, Margin, RichText};
 use egui_extras::{Column, TableBuilder};
 use std::sync::{Arc, RwLock};
 
+use crate::backend_task::migration::single_key_restore::PendingProtectedRestore;
 use crate::model::wallet::single_key::SingleKeyWallet;
 use crate::ui::wallets::import_single_key::ImportSingleKeyDialog;
+use crate::ui::wallets::restore_single_key::RestoreSingleKeyDialog;
 use crate::ui::wallets::shielded_tab::ShieldedTabView;
 use address_table::{SortColumn, SortOrder};
 use dialogs::{
@@ -159,6 +161,19 @@ pub struct WalletsBalancesScreen {
     /// imports through [`crate::wallet_backend::SingleKeyView::import_wif`]
     /// instead of the legacy `single_key_wallets` DB path.
     import_single_key_dialog: ImportSingleKeyDialog,
+    /// T-SK-03 "Restore a protected imported key" modal dialog. Opened from
+    /// the post-migration restore banner; routes the legacy password through
+    /// [`crate::backend_task::migration::single_key_restore::restore_protected_single_key`].
+    restore_single_key_dialog: RestoreSingleKeyDialog,
+    /// Protected single-key rows preserved by the migration that still need
+    /// the user's old password to restore. Recomputed lazily (see
+    /// [`Self::refresh_pending_protected_restores`]); drives the restore
+    /// banner and is emptied as keys are restored.
+    pending_protected_restores: Vec<PendingProtectedRestore>,
+    /// Whether [`Self::pending_protected_restores`] has been computed at
+    /// least once this session, so the (DB-touching) scan runs lazily on
+    /// first paint rather than in the constructor.
+    pending_restores_scanned: bool,
     /// Tracked asset locks for the selected wallet, fetched off the UI thread
     /// via the App Task System and rendered by the Asset Locks tab.
     asset_lock_cache: TrackedAssetLockCache,
@@ -265,6 +280,9 @@ impl WalletsBalancesScreen {
             cached_tx_source_len: None,
             sk_spv_warning_banner: crate::ui::components::MessageBanner::new(),
             import_single_key_dialog: ImportSingleKeyDialog::new(app_context.network),
+            restore_single_key_dialog: RestoreSingleKeyDialog::new(),
+            pending_protected_restores: Vec::new(),
+            pending_restores_scanned: false,
             asset_lock_cache: TrackedAssetLockCache::default(),
         }
     }
@@ -2239,6 +2257,101 @@ impl WalletsBalancesScreen {
             }
         }
     }
+
+    /// Recompute the set of protected single-key rows still awaiting
+    /// restore. Cheap DB scan; runs lazily on first paint and after each
+    /// successful restore. A scan failure leaves the list empty (the
+    /// banner simply does not appear) and is logged — it must never block
+    /// the wallets screen.
+    fn refresh_pending_protected_restores(&mut self) {
+        self.pending_restores_scanned = true;
+        match crate::backend_task::migration::single_key_restore::list_pending_protected_restores(
+            &self.app_context,
+        ) {
+            Ok(list) => self.pending_protected_restores = list,
+            Err(e) => {
+                tracing::warn!(
+                    error = ?e,
+                    "Failed to scan for protected single-key restores; banner suppressed",
+                );
+                self.pending_protected_restores.clear();
+            }
+        }
+    }
+
+    /// Render the post-migration "protected imported keys need your
+    /// password" banner. Offers to open the per-key restore dialog for the
+    /// first outstanding key. No-op when nothing is pending.
+    fn render_protected_restore_banner(&mut self, ui: &mut Ui) {
+        if !self.pending_restores_scanned {
+            self.refresh_pending_protected_restores();
+        }
+        let Some(next) = self.pending_protected_restores.first().cloned() else {
+            return;
+        };
+        let count = self.pending_protected_restores.len();
+        let dark_mode = ui.ctx().style().visuals.dark_mode;
+
+        egui::Frame::group(ui.style())
+            .fill(DashColors::input_background(dark_mode))
+            .show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    let message = if count == 1 {
+                        "One imported key needs your old password to restore it.".to_string()
+                    } else {
+                        format!("{count} imported keys need your old password to restore them.")
+                    };
+                    ui.label(RichText::new(message).color(DashColors::text_primary(dark_mode)));
+                    if ui.button("Restore now").clicked() {
+                        self.restore_single_key_dialog.set_target(next);
+                    }
+                });
+            });
+        ui.add_space(8.0);
+    }
+
+    /// Render the per-key restore dialog and route a confirmed request
+    /// through the restore bridge. On success the key becomes visible and
+    /// the banner shrinks; on failure a generic, actionable banner appears
+    /// (no oracle distinguishing a wrong password from a corrupt blob).
+    fn render_restore_single_key_dialog(&mut self, ctx: &Context) {
+        let response = self.restore_single_key_dialog.show(ctx);
+        if response.cancelled {
+            self.restore_single_key_dialog.open = false;
+            self.restore_single_key_dialog.reset();
+        }
+        if let Some(request) = response.confirmed {
+            let new_passphrase = crate::wallet_backend::single_key::ImportPassphrase {
+                passphrase: request.new_passphrase.as_ref().map(|p| p.to_string()),
+                hint: request.new_hint.clone(),
+            };
+            match crate::backend_task::migration::single_key_restore::restore_protected_single_key(
+                &self.app_context,
+                &request.address,
+                &request.legacy_password,
+                new_passphrase,
+            ) {
+                Ok(address) => {
+                    MessageBanner::set_global(
+                        ctx,
+                        format!(
+                            "Restored your imported key for {address}. \
+                             Balance and sending for single-key wallets are coming in a future update."
+                        ),
+                        MessageType::Success,
+                    );
+                    self.restore_single_key_dialog.open = false;
+                    self.restore_single_key_dialog.reset();
+                    // Re-scan so the restored key drops off the banner.
+                    self.refresh_pending_protected_restores();
+                }
+                Err(e) => {
+                    MessageBanner::set_global(ctx, e.to_string(), MessageType::Error)
+                        .with_details(&e);
+                }
+            }
+        }
+    }
 }
 
 impl ScreenLike for WalletsBalancesScreen {
@@ -2338,6 +2451,11 @@ impl ScreenLike for WalletsBalancesScreen {
             egui::ScrollArea::vertical()
                 .auto_shrink([true; 2])
                 .show(ui, |ui| {
+                    // Post-migration restore banner — shown even on an
+                    // otherwise-empty wallets screen, since protected
+                    // single keys may be all the user has left to restore.
+                    self.render_protected_restore_banner(ui);
+
                     let has_hd_wallets = !self.app_context.wallets.read().unwrap().is_empty();
                     let has_single_key_wallets = !self
                         .app_context
@@ -2378,6 +2496,7 @@ impl ScreenLike for WalletsBalancesScreen {
         action |= self.render_mine_dialog(ctx);
         self.render_private_key_dialog(ctx);
         self.render_import_single_key_dialog(ctx);
+        self.render_restore_single_key_dialog(ctx);
 
         // Drain a queued "view private key" request into a backend task that
         // fetches the seed just-in-time and derives the key off the UI thread.
@@ -2985,6 +3104,9 @@ impl ScreenLike for WalletsBalancesScreen {
         // Re-fetch tracked asset locks on an explicit refresh (e.g. after
         // creating an asset lock) so the Asset Locks tab reflects new state.
         self.asset_lock_cache.invalidate();
+        // Re-scan for protected single-key rows still awaiting restore so a
+        // post-migration refresh surfaces (or clears) the restore banner.
+        self.pending_restores_scanned = false;
         self.refresh_on_arrival();
     }
 }

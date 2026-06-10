@@ -226,6 +226,16 @@ As a power user, I want the balance breakdown and address table to be collapsibl
 - Asset locks section has a collapsible header.
 - Sections are expanded by default for quick access.
 
+### WAL-025: Restore a password-protected imported key after an update [Implemented]
+**Persona:** Priya, Jordan
+
+As a power user who imported a private key under an old per-key password, I want to restore that key after the storage update so that I do not lose access to the address.
+
+- A banner on the wallets screen counts the imported keys still waiting to be restored and offers to restore them.
+- A per-key dialog takes the old password, decrypts the preserved key, and re-saves it in the modern encrypted vault (optionally under a new passphrase the user chooses).
+- A wrong password fails with a calm, generic message and leaves the key restorable — the old data is never corrupted.
+- After restore the key appears in the wallet list at the same address; a note explains that balance and sending for single-key wallets arrive in a future update.
+
 ---
 
 ## Send and Receive (SND)

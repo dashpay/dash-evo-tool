@@ -2330,4 +2330,128 @@ mod tests {
         );
         clear_spv_chain_storage(&spv_dir).expect("clearing an absent cache must succeed");
     }
+
+    /// Seed a legacy password-protected `single_key_wallet` row into the
+    /// context's `data.db`, encrypted under `password`. Returns the
+    /// derived address. The default test DB created `single_key_wallet`
+    /// via `create_tables(true)`, so we only INSERT.
+    fn seed_legacy_protected_single_key(
+        ctx: &Arc<AppContext>,
+        raw_key: &[u8; 32],
+        password: &str,
+        alias: Option<&str>,
+    ) -> String {
+        use crate::model::wallet::single_key::ClosedSingleKey;
+        use dash_sdk::dpp::dashcore::secp256k1::Secp256k1;
+        use dash_sdk::dpp::dashcore::{Address, PrivateKey, PublicKey};
+
+        let path = ctx.db.db_file_path().expect("data.db path");
+        let conn = rusqlite::Connection::open(&path).expect("open data.db");
+
+        let (ciphertext, salt, nonce) =
+            ClosedSingleKey::encrypt_private_key(raw_key, password).expect("encrypt");
+        let priv_key = PrivateKey::from_byte_array(raw_key, Network::Testnet).expect("priv");
+        let secp = Secp256k1::new();
+        let pub_key = PublicKey {
+            compressed: priv_key.compressed,
+            inner: priv_key.inner.public_key(&secp),
+        };
+        let address = Address::p2pkh(&pub_key, Network::Testnet).to_string();
+        let key_hash = ClosedSingleKey::compute_key_hash(raw_key);
+        conn.execute(
+            "INSERT INTO single_key_wallet
+                (key_hash, encrypted_private_key, salt, nonce, public_key,
+                 address, alias, uses_password, network)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, ?8)",
+            rusqlite::params![
+                key_hash.as_slice(),
+                ciphertext,
+                salt,
+                nonce,
+                pub_key.inner.serialize().to_vec(),
+                address,
+                alias,
+                Network::Testnet.to_string(),
+            ],
+        )
+        .expect("insert legacy protected row");
+        address
+    }
+
+    /// T-SK-03 end-to-end — a legacy password-protected single-key row is
+    /// restored with the correct old password: the key lands in the modern
+    /// vault, becomes listable, and drops off the pending list. A wrong
+    /// password leaves the legacy row intact and surfaces the generic
+    /// failure (no oracle, no corruption).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn restore_protected_single_key_round_trip_and_wrong_password() {
+        use crate::backend_task::migration::single_key_restore::{
+            list_pending_protected_restores, restore_protected_single_key,
+        };
+        use crate::wallet_backend::single_key::ImportPassphrase;
+
+        let (ctx, sender, _tmp) = offline_testnet_context();
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("ensure_wallet_backend should succeed offline");
+
+        let mut raw = [0u8; 32];
+        raw[31] = 0x2A;
+        let address =
+            seed_legacy_protected_single_key(&ctx, &raw, "old-legacy-password", Some("savings"));
+
+        // The protected row shows up as pending (still encrypted under the
+        // old password; not in the modern vault yet).
+        let pending = list_pending_protected_restores(&ctx).expect("list pending");
+        assert_eq!(pending.len(), 1, "exactly one protected row awaits restore");
+        assert_eq!(pending[0].address, address);
+
+        // Wrong password: generic failure, nothing restored, row intact.
+        let err = restore_protected_single_key(
+            &ctx,
+            &address,
+            "WRONG-password",
+            ImportPassphrase::default(),
+        )
+        .expect_err("wrong password must fail");
+        assert!(
+            matches!(err, TaskError::SingleKeyPassphraseIncorrect),
+            "wrong password must surface the generic incorrect error, got {err:?}"
+        );
+        let still_pending = list_pending_protected_restores(&ctx).expect("re-list pending");
+        assert_eq!(
+            still_pending.len(),
+            1,
+            "a failed restore must leave the protected row pending and uncorrupted"
+        );
+
+        // Correct password: the key is restored into the modern vault under
+        // a fresh passphrase and becomes listable at the same address (S5).
+        let restored_addr = restore_protected_single_key(
+            &ctx,
+            &address,
+            "old-legacy-password",
+            ImportPassphrase {
+                passphrase: Some("a-fresh-strong-passphrase".into()),
+                hint: Some("the new one".into()),
+            },
+        )
+        .expect("correct password must restore the key");
+        assert_eq!(restored_addr, address, "restored address must be stable");
+
+        // It is now in the modern single-key index and no longer pending.
+        let backend = ctx.wallet_backend().expect("backend wired");
+        let listed = backend.single_key().list();
+        assert!(
+            listed
+                .iter()
+                .any(|k| k.address == address && k.has_passphrase),
+            "restored key must be listable and passphrase-protected"
+        );
+        let after = list_pending_protected_restores(&ctx).expect("final pending");
+        assert!(
+            after.is_empty(),
+            "the restored key must drop off the pending list"
+        );
+    }
 }

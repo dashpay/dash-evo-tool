@@ -1,8 +1,7 @@
 //! Database operations for single key wallets
 
 use crate::database::Database;
-use crate::model::wallet::single_key::SingleKeyHash;
-use rusqlite::{Connection, params};
+use rusqlite::Connection;
 
 impl Database {
     /// Initialize the single key wallet table
@@ -32,20 +31,6 @@ impl Database {
             [],
         )?;
 
-        Ok(())
-    }
-
-    /// Update alias for a single key wallet
-    pub fn update_single_key_wallet_alias(
-        &self,
-        key_hash: &SingleKeyHash,
-        alias: Option<&str>,
-    ) -> rusqlite::Result<()> {
-        let conn = self.conn.lock().unwrap();
-        conn.execute(
-            "UPDATE single_key_wallet SET alias = ?1 WHERE key_hash = ?2",
-            params![alias, key_hash.as_slice()],
-        )?;
         Ok(())
     }
 }

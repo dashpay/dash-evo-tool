@@ -4,6 +4,7 @@ use crate::model::spv_status::SpvStatus;
 use crate::model::wallet::birth_height::{WalletOrigin, registration_birth_height};
 use crate::model::wallet::meta::WalletMeta;
 use crate::model::wallet::seed_envelope::StoredSeedEnvelope;
+use crate::model::wallet::single_key::SingleKeyWallet;
 use crate::model::wallet::{Wallet, WalletSeedHash};
 use crate::wallet_backend::{DetScope, WalletBackend, WalletMetaView, WalletSeedView};
 use dash_sdk::dpp::dashcore::Network;
@@ -178,6 +179,50 @@ impl AppContext {
         self.has_wallet.store(false, Ordering::Relaxed);
 
         Ok(())
+    }
+
+    /// Single import path for an imported private key (#192). Parses the
+    /// WIF, writes the encrypted vault entry + enumerable sidecar through
+    /// [`SingleKeyView::import_wif_with_passphrase`], then mirrors the
+    /// result into the in-memory `single_key_wallets` map the wallet
+    /// screens render from (without which the key stays invisible until
+    /// the next cold-boot hydration).
+    ///
+    /// Every UI entry point — the import dialog, the import-wallet screen,
+    /// and the test seam — routes through here so vault write and
+    /// in-memory mirror can never diverge. Returns the rebuilt display
+    /// wallet so the caller can select it.
+    pub fn import_single_key_wif(
+        &self,
+        wif: &str,
+        alias: Option<String>,
+        passphrase: crate::wallet_backend::single_key::ImportPassphrase,
+    ) -> Result<
+        (
+            crate::model::single_key::ImportedKey,
+            Arc<RwLock<SingleKeyWallet>>,
+        ),
+        TaskError,
+    > {
+        let backend = self.wallet_backend()?;
+        let imported = backend
+            .single_key()
+            .import_wif_with_passphrase(wif, alias, passphrase)?;
+
+        // Rebuild the in-memory display wallet from the same WIF so the
+        // map matches the shape `hydrate_context_wallets` produces on the
+        // next cold boot (alias preserved; the optional import passphrase
+        // guards the vaulted bytes, not this in-memory copy).
+        let wallet = SingleKeyWallet::from_wif(wif, None, imported.alias.clone())
+            .map_err(|_| TaskError::SingleKeyCryptoFailure)?;
+        let key_hash = wallet.key_hash();
+        let wallet_arc = Arc::new(RwLock::new(wallet));
+
+        if let Ok(mut single_key_wallets) = self.single_key_wallets.write() {
+            single_key_wallets.insert(key_hash, wallet_arc.clone());
+            self.has_wallet.store(true, Ordering::Relaxed);
+        }
+        Ok((imported, wallet_arc))
     }
 
     /// Start chain sync against an already-wired wallet backend.

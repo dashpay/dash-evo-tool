@@ -15,8 +15,6 @@ use crate::ui::theme::{ComponentStyles, DashColors};
 use bip39::Mnemonic;
 use egui::{ComboBox, Grid, RichText, Ui, Vec2};
 use std::sync::Arc;
-use std::sync::RwLock;
-use std::sync::atomic::Ordering;
 use zeroize::Zeroize;
 use zxcvbn::zxcvbn;
 
@@ -138,9 +136,9 @@ impl ImportMnemonicScreen {
             Some(self.alias_input.clone())
         };
 
-        // The view's `import_wif` takes WIF only — normalise hex input to
-        // WIF first so users can paste either shape and we keep the
-        // import path single-track.
+        // The single import path takes WIF only — normalise hex input to
+        // WIF first so users can paste either shape while every import
+        // still funnels through `AppContext::import_single_key_wif`.
         let wif = match PrivateKey::from_wif(input) {
             Ok(_) => input.to_string(),
             Err(_) => {
@@ -162,27 +160,16 @@ impl ImportMnemonicScreen {
             }
         };
 
-        let backend = self
-            .app_context
-            .wallet_backend()
+        // Consolidated import: vault write + sidecar + in-memory mirror,
+        // shared with the advanced import dialog (#192). Per-key passwords
+        // are rejected above, so this screen always imports unprotected.
+        self.app_context
+            .import_single_key_wif(
+                &wif,
+                alias,
+                crate::wallet_backend::single_key::ImportPassphrase::default(),
+            )
             .map_err(|e| e.to_string())?;
-        let view = backend.single_key();
-        let imported = view
-            .import_wif(&wif, alias.clone())
-            .map_err(|e| e.to_string())?;
-
-        // Rebuild the in-memory `SingleKeyWallet` from the same WIF so the
-        // map matches the shape `hydrate_context_wallets` produces on the
-        // next cold boot (alias preserved, no per-wallet password).
-        let wallet = SingleKeyWallet::from_wif(&wif, None, imported.alias.clone())
-            .map_err(|e| format!("Could not load imported key: {e}"))?;
-        let key_hash = wallet.key_hash();
-
-        let wallet_arc = Arc::new(RwLock::new(wallet));
-        if let Ok(mut single_key_wallets) = self.app_context.single_key_wallets.write() {
-            single_key_wallets.insert(key_hash, wallet_arc);
-            self.app_context.has_wallet.store(true, Ordering::Relaxed);
-        }
 
         self.wallet_imported = true;
         Ok(AppAction::None)

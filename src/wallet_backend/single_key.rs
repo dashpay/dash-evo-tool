@@ -235,6 +235,37 @@ impl<'a> SingleKeyView<'a> {
         Ok(imported)
     }
 
+    /// Persist a new alias for the imported key at `address` to the
+    /// modern sidecar and refresh the in-memory index. This is the
+    /// single source of truth for single-key renames — it mirrors the
+    /// HD-wallet rename path through `WalletMetaView::set`, so the new
+    /// name survives a cold boot without touching the legacy
+    /// `single_key_wallet` table. An empty `alias` clears the nickname.
+    ///
+    /// No-op success when the view has no sidecar wired (transient
+    /// construction path) — the in-memory index is still updated so the
+    /// rename is visible in-session.
+    pub fn set_alias(&self, address: &str, alias: Option<String>) -> Result<(), TaskError> {
+        let mut idx = self
+            .index
+            .write()
+            .map_err(|_| TaskError::ImportedKeyNotFound)?;
+        let entry = idx.get_mut(address).ok_or(TaskError::ImportedKeyNotFound)?;
+        entry.alias = alias;
+        let updated = entry.clone();
+        drop(idx);
+
+        if let Some(kv) = self.app_kv {
+            let key = meta_key_for(self.network, address);
+            kv.put(DetScope::Global, &key, &updated).map_err(|source| {
+                TaskError::SingleKeyMetaStorage {
+                    source: Box::new(source),
+                }
+            })?;
+        }
+        Ok(())
+    }
+
     /// Returns `true` when the imported key at `address` was stored
     /// with a per-key passphrase. The UI uses this to decide whether to
     /// prompt before signing.
@@ -1292,6 +1323,73 @@ mod tests {
             other => panic!("expected SingleKeyPassphraseTooShort, got {other:?}"),
         }
         assert!(view.list().is_empty(), "no entry should be created");
+    }
+
+    /// #192 — renaming an imported single key persists the new alias to
+    /// the modern sidecar (not the legacy DB), so the rename survives a
+    /// cold-boot rehydration. Mirrors the HD-wallet rename path.
+    #[test]
+    fn set_alias_persists_to_sidecar_and_survives_rehydrate() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ViewFixture {
+            store,
+            index,
+            kv,
+            network,
+        } = fresh_view_with_kv(dir.path(), Network::Testnet);
+        let view = SingleKeyView {
+            secret_store: &store,
+            index: &index,
+            network,
+            app_kv: Some(&kv),
+        };
+
+        let imported = view
+            .import_wif(known_wif(), Some("old name".into()))
+            .expect("import");
+
+        view.set_alias(&imported.address, Some("new name".into()))
+            .expect("rename");
+
+        // In-memory index reflects the new alias immediately.
+        assert_eq!(
+            view.list()[0].alias.as_deref(),
+            Some("new name"),
+            "rename must update the in-memory index"
+        );
+
+        // Cold-boot analogue: drop the index and rehydrate from the
+        // sidecar — the persisted alias must be the new one.
+        index.write().unwrap().clear();
+        view.rehydrate_index().expect("rehydrate");
+        assert_eq!(
+            view.list()[0].alias.as_deref(),
+            Some("new name"),
+            "renamed alias must survive a cold-boot rehydration"
+        );
+    }
+
+    /// Renaming an address that was never imported surfaces the typed
+    /// `ImportedKeyNotFound` rather than silently creating a ghost entry.
+    #[test]
+    fn set_alias_unknown_address_is_typed_not_found() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ViewFixture {
+            store,
+            index,
+            kv,
+            network,
+        } = fresh_view_with_kv(dir.path(), Network::Testnet);
+        let view = SingleKeyView {
+            secret_store: &store,
+            index: &index,
+            network,
+            app_kv: Some(&kv),
+        };
+        let err = view
+            .set_alias("yNeverImported", Some("x".into()))
+            .expect_err("unknown address must fail");
+        assert!(matches!(err, TaskError::ImportedKeyNotFound), "got {err:?}");
     }
 
     /// SEC-002 — legacy 32-byte raw vault payloads (pre-Option C)

@@ -2169,40 +2169,26 @@ impl WalletsBalancesScreen {
         }
     }
 
-    /// Mirror a freshly imported single key into the in-memory state the
-    /// screen renders from, then select it. Returns the inserted wallet.
-    ///
-    /// `import_wif_with_passphrase` persists to the vault, sidecar, and
-    /// index, but the screen reads `app_context.single_key_wallets`; without
-    /// this the imported key stays invisible until the next cold-boot
-    /// hydration. The rebuilt wallet carries no per-wallet password — the
-    /// optional import passphrase guards the vaulted key bytes, not this
-    /// in-memory copy — matching the shape `hydrate_context_wallets`
-    /// produces. Mirrors the mnemonic-screen import path.
+    /// Run the single import path
+    /// ([`AppContext::import_single_key_wif`]) for `wif`, then select the
+    /// resulting wallet so it is immediately visible in the picker.
+    /// Returns the inserted in-memory wallet.
     fn register_imported_single_key(
         &mut self,
         wif: &str,
-        imported: &crate::model::single_key::ImportedKey,
-    ) -> Result<Arc<RwLock<SingleKeyWallet>>, String> {
-        let wallet = SingleKeyWallet::from_wif(wif, None, imported.alias.clone())
-            .map_err(|e| format!("Could not load imported key: {e}"))?;
-        let key_hash = wallet.key_hash();
-        let wallet_arc = Arc::new(RwLock::new(wallet));
-
-        if let Ok(mut single_key_wallets) = self.app_context.single_key_wallets.write() {
-            single_key_wallets.insert(key_hash, wallet_arc.clone());
-            self.app_context
-                .has_wallet
-                .store(true, std::sync::atomic::Ordering::Relaxed);
-        }
-
+        passphrase: crate::wallet_backend::single_key::ImportPassphrase,
+        alias: Option<String>,
+    ) -> Result<Arc<RwLock<SingleKeyWallet>>, TaskError> {
+        let (_imported, wallet_arc) = self
+            .app_context
+            .import_single_key_wif(wif, alias, passphrase)?;
         self.select_single_key_wallet(wallet_arc.clone());
         Ok(wallet_arc)
     }
 
-    /// Test-only seam: run the advanced single-key import end to end (vault
-    /// write + in-memory sync) the way the confirmed dialog does, then return
-    /// the in-memory wallet that became selectable, so an integration test can
+    /// Test-only seam: run the single-key import end to end (vault write +
+    /// in-memory sync) the way the confirmed dialog does, then return the
+    /// in-memory wallet that became selectable, so an integration test can
     /// assert the imported key becomes visible in the same session. Not
     /// exposed for production callers.
     #[doc(hidden)]
@@ -2211,15 +2197,12 @@ impl WalletsBalancesScreen {
         wif: &str,
         alias: Option<String>,
     ) -> Result<Arc<RwLock<SingleKeyWallet>>, String> {
-        let backend = self
-            .app_context
-            .wallet_backend()
-            .map_err(|e| e.to_string())?;
-        let imported = backend
-            .single_key()
-            .import_wif(wif, alias)
-            .map_err(|e| e.to_string())?;
-        self.register_imported_single_key(wif, &imported)
+        self.register_imported_single_key(
+            wif,
+            crate::wallet_backend::single_key::ImportPassphrase::default(),
+            alias,
+        )
+        .map_err(|e| e.to_string())
     }
 
     /// Render the J-6 "Import private key (advanced)" modal and route a
@@ -2234,38 +2217,21 @@ impl WalletsBalancesScreen {
             self.import_single_key_dialog.reset();
         }
         if let Some(request) = response.confirmed {
-            match self.app_context.wallet_backend() {
-                Ok(backend) => match backend.single_key().import_wif_with_passphrase(
-                    &request.wif,
-                    request.alias.clone(),
-                    crate::wallet_backend::single_key::ImportPassphrase {
-                        passphrase: request.passphrase.clone(),
-                        hint: request.passphrase_hint.clone(),
-                    },
-                ) {
-                    Ok(imported) => {
-                        // Mirror the imported key into the in-memory map the
-                        // screen reads, otherwise the new key stays invisible
-                        // until the next cold-boot hydration. Matches the
-                        // mnemonic-screen import path.
-                        if let Err(e) = self.register_imported_single_key(&request.wif, &imported) {
-                            MessageBanner::set_global(ctx, e.to_string(), MessageType::Error)
-                                .with_details(&e);
-                        } else {
-                            MessageBanner::set_global(
-                                ctx,
-                                format!("Imported key added for {}.", request.address_preview),
-                                MessageType::Success,
-                            );
-                            self.import_single_key_dialog.open = false;
-                            self.import_single_key_dialog.reset();
-                        }
-                    }
-                    Err(e) => {
-                        MessageBanner::set_global(ctx, e.to_string(), MessageType::Error)
-                            .with_details(&e);
-                    }
-                },
+            let passphrase = crate::wallet_backend::single_key::ImportPassphrase {
+                passphrase: request.passphrase.clone(),
+                hint: request.passphrase_hint.clone(),
+            };
+            match self.register_imported_single_key(&request.wif, passphrase, request.alias.clone())
+            {
+                Ok(_) => {
+                    MessageBanner::set_global(
+                        ctx,
+                        format!("Imported key added for {}.", request.address_preview),
+                        MessageType::Success,
+                    );
+                    self.import_single_key_dialog.open = false;
+                    self.import_single_key_dialog.reset();
+                }
                 Err(e) => {
                     MessageBanner::set_global(ctx, e.to_string(), MessageType::Error)
                         .with_details(&e);
@@ -2522,15 +2488,25 @@ impl ScreenLike for WalletsBalancesScreen {
                                     let mut wallet = selected_sk_wallet.write().unwrap();
                                     wallet.alias = Some(self.rename_input.clone());
 
-                                    // Update the alias in the database
-                                    let key_hash = wallet.key_hash;
-                                    self.app_context
-                                        .db
-                                        .update_single_key_wallet_alias(
-                                            &key_hash,
-                                            Some(&self.rename_input),
-                                        )
-                                        .ok();
+                                    // Alias persistence goes through the
+                                    // modern single-key sidecar, matching
+                                    // the HD-wallet rename path above. The
+                                    // cold-boot picker reads the same
+                                    // sidecar, so the new name survives a
+                                    // restart without touching the legacy
+                                    // `single_key_wallet` table.
+                                    let address = wallet.address.to_string();
+                                    if let Ok(backend) = self.app_context.wallet_backend()
+                                        && let Err(e) = backend
+                                            .single_key()
+                                            .set_alias(&address, Some(self.rename_input.clone()))
+                                    {
+                                        tracing::warn!(
+                                            address = %address,
+                                            error = ?e,
+                                            "Failed to persist single-key alias to sidecar",
+                                        );
+                                    }
                                 }
 
                                 self.show_rename_dialog = false;

@@ -522,7 +522,6 @@ impl BackendTestContext {
                 amount_duffs,
             }],
             subtract_fee_from_amount: false,
-            memo: Some("E2E test funding".to_string()),
             override_fee: None,
         };
 

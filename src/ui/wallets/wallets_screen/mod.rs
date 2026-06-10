@@ -3,7 +3,7 @@ mod asset_locks;
 mod dialogs;
 mod single_key_view;
 
-pub(crate) use single_key_view::SINGLE_KEY_REQUIRES_CORE;
+pub(crate) use single_key_view::SINGLE_KEY_SEND_UNAVAILABLE;
 
 use crate::app::{AppAction, BackendTasksExecutionMode, DesiredAppAction};
 use crate::backend_task::BackendTask;
@@ -72,14 +72,18 @@ impl Default for AccountTab {
     }
 }
 
-/// Refresh mode for dev mode dropdown - controls what gets refreshed
+/// Refresh mode for dev mode dropdown - controls what gets refreshed.
+///
+/// There is no "Core only" mode: Core wallet state (balances/UTXOs) is kept
+/// current continuously by the upstream runtime and pushed via the EventBridge,
+/// so there is nothing to reconcile on demand. Refresh only re-fetches the
+/// DAPI-sourced Platform-address balances, optionally alongside the always-live
+/// Core view.
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 enum RefreshMode {
     /// Core wallet + Platform address sync
     #[default]
     All,
-    /// Only refresh Core wallet balances
-    CoreOnly,
     /// Only Platform address sync
     PlatformOnly,
 }
@@ -88,15 +92,13 @@ impl RefreshMode {
     fn label(&self) -> &'static str {
         match self {
             RefreshMode::All => "Core + Platform",
-            RefreshMode::CoreOnly => "Core Only",
             RefreshMode::PlatformOnly => "Platform Only",
         }
     }
 
     fn next(self) -> Self {
         match self {
-            RefreshMode::All => RefreshMode::CoreOnly,
-            RefreshMode::CoreOnly => RefreshMode::PlatformOnly,
+            RefreshMode::All => RefreshMode::PlatformOnly,
             RefreshMode::PlatformOnly => RefreshMode::All,
         }
     }
@@ -2145,10 +2147,6 @@ impl WalletsBalancesScreen {
             RefreshMode::All => {
                 // Core + Platform
                 BackendTask::CoreTask(CoreTask::RefreshWalletInfo(wallet_arc.clone(), true))
-            }
-            RefreshMode::CoreOnly => {
-                // Core only, no Platform sync
-                BackendTask::CoreTask(CoreTask::RefreshWalletInfo(wallet_arc.clone(), false))
             }
             RefreshMode::PlatformOnly => {
                 // Platform only

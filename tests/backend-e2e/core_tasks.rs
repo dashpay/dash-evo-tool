@@ -248,7 +248,6 @@ async fn test_tc009_send_single_key_wallet_payment() {
                     amount_duffs: 500_000,
                 }],
                 subtract_fee_from_amount: false,
-                memo: Some("TC-009 single key funding".to_string()),
                 override_fee: None,
             },
         }),
@@ -337,7 +336,6 @@ async fn test_tc009_send_single_key_wallet_payment() {
     //                 amount_duffs: 1_000,
     //             }],
     //             subtract_fee_from_amount: true,
-    //             memo: Some("TC-009 send back".to_string()),
     //             override_fee: None,
     //         },
     //     }),
@@ -386,7 +384,6 @@ async fn test_tc011_send_wallet_payment_invalid_address() {
                 amount_duffs: 1_000,
             }],
             subtract_fee_from_amount: false,
-            memo: None,
             override_fee: None,
         },
     });

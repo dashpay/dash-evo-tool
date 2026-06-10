@@ -875,12 +875,12 @@ As a developer, I want to paste and decode raw state transitions so that I can d
 
 - Transition visualizer parses and displays state transition contents.
 
-### DEV-002: View proof request log [Implemented]
+### DEV-002: View proof request log [Gap]
 **Persona:** Jordan
 
 As a developer, I want to review the history of proof requests made by the app so that I can debug query behavior and performance.
 
-- Proof log lists all requests with timestamps and results.
+- Not available in this version: the proof log screen was removed. Proof requests are no longer recorded or listed in the app.
 
 ### DEV-003: Inspect ZK proofs [Implemented]
 **Persona:** Jordan

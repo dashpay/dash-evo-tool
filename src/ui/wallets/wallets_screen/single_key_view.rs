@@ -8,9 +8,10 @@ use egui::{Frame, Margin, RichText, Ui};
 use super::WalletsBalancesScreen;
 
 /// Shown as a disabled-button tooltip and in the in-screen warning banner for
-/// any single-key-wallet action that depends on Dash Core RPC. Exported so the
-/// dedicated send screen can reuse the same copy.
-pub(crate) const SINGLE_KEY_REQUIRES_CORE: &str = "Sending from a single-key wallet requires a local Dash Core node. You can still receive funds at this address. To send, open Settings, switch to Expert mode, and select Local Dash Core node.";
+/// single-key-wallet send actions. Exported so the dedicated send screen can
+/// reuse the same copy. Sending from a single-key wallet is not available in
+/// this version; receiving still works.
+pub(crate) const SINGLE_KEY_SEND_UNAVAILABLE: &str = "Sending from a single-key wallet is not available in this version. You can still receive funds at this address. To send these funds, import them into a recovery-phrase wallet.";
 
 impl WalletsBalancesScreen {
     /// Render the detail view for a selected single key wallet
@@ -54,22 +55,20 @@ impl WalletsBalancesScreen {
                     ui.label(RichText::new(format!("Balance: {:.8} DASH", balance_dash)));
                     ui.add_space(10.0);
 
-                    // When the app is on its built-in SPV backend, surface a
-                    // warning banner explaining that single-key wallet actions
-                    // are unavailable. The actions themselves are greyed out
-                    // below; this banner is the "why" users otherwise wouldn't
-                    // see from a silent disable.
+                    // Single-key sending is unavailable this release. The Send
+                    // button below is greyed out; this banner is the "why" the
+                    // user would otherwise miss from a silent disable.
                     //
                     // The banner lives on the screen struct so its state is
                     // constructed once and then re-rendered each frame. Setting
                     // the message via the struct field (instead of a fresh
                     // local) means `BannerState::logged` is preserved, so the
-                    // underlying tracing log fires once on mode entry — not 60
-                    // times a second while the screen is visible.
+                    // underlying tracing log fires once — not 60 times a second
+                    // while the screen is visible.
                     if !is_rpc_mode {
                         if !self.sk_spv_warning_banner.has_message() {
                             self.sk_spv_warning_banner
-                                .set_message(SINGLE_KEY_REQUIRES_CORE, MessageType::Warning)
+                                .set_message(SINGLE_KEY_SEND_UNAVAILABLE, MessageType::Warning)
                                 .disable_auto_dismiss();
                         }
                         self.sk_spv_warning_banner.show(ui);
@@ -94,7 +93,7 @@ impl WalletsBalancesScreen {
                         let send_response = if is_rpc_mode {
                             send_response
                         } else {
-                            send_response.on_disabled_hover_text(SINGLE_KEY_REQUIRES_CORE)
+                            send_response.on_disabled_hover_text(SINGLE_KEY_SEND_UNAVAILABLE)
                         };
                         if send_response.clicked() {
                             action = AppAction::AddScreen(
@@ -125,7 +124,7 @@ impl WalletsBalancesScreen {
                     ui.add_space(10.0);
 
                     if utxos.is_empty() {
-                        ui.label("No UTXOs available. Click 'Refresh' to load UTXOs from Core.");
+                        ui.label("No funds at this address yet.");
                     } else {
                         const UTXOS_PER_PAGE: usize = 50;
                         let total_pages = utxo_count.div_ceil(UTXOS_PER_PAGE);

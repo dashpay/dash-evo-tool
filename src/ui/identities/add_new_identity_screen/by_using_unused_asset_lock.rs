@@ -5,6 +5,7 @@ use crate::ui::components::message_banner::MessageBanner;
 use crate::ui::identities::add_new_identity_screen::{
     AddNewIdentityScreen, FundingMethod, WalletFundedScreenStep,
 };
+use crate::ui::identities::funding_common::{asset_lock_address, asset_lock_status_label};
 use crate::ui::theme::DashColors;
 use egui::{RichText, Ui};
 use platform_wallet::wallet::asset_lock::tracked::{AssetLockStatus, TrackedAssetLock};
@@ -68,11 +69,16 @@ impl AddNewIdentityScreen {
 
                             ui.label(format!("TxID: {}", lock.out_point.txid));
                             ui.label(format!("Vout: {}", lock.out_point.vout));
+                            if let Some(address) =
+                                asset_lock_address(lock, self.app_context.network)
+                            {
+                                ui.label(format!("Address: {address}"));
+                            }
                             ui.label(format!(
                                 "Amount: {:.8} DASH",
                                 lock.amount as f64 * 1e-8
                             ));
-                            ui.label(format!("Status: {:?}", lock.status));
+                            ui.label(format!("Status: {}", asset_lock_status_label(&lock.status)));
 
                             ui.add_space(6.0);
 

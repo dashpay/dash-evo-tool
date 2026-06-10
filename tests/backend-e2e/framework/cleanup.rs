@@ -104,7 +104,6 @@ pub async fn cleanup_test_wallets(
                 amount_duffs: spendable,
             }],
             subtract_fee_from_amount: true,
-            memo: Some("E2E cleanup: sweep orphaned wallet".to_string()),
             override_fee: None,
         };
 

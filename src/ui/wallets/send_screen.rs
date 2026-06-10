@@ -911,7 +911,6 @@ impl WalletSendScreen {
                 request: WalletPaymentRequest {
                     recipients: vec![recipient],
                     subtract_fee_from_amount: self.subtract_fee,
-                    memo: None,
                     override_fee: None,
                 },
             },
@@ -3289,7 +3288,6 @@ impl WalletSendScreen {
                 request: WalletPaymentRequest {
                     recipients,
                     subtract_fee_from_amount: self.subtract_fee,
-                    memo: None,
                     override_fee: None,
                 },
             },

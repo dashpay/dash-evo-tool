@@ -91,7 +91,7 @@ pub enum TaskError {
     /// conflict, version mismatch, etc.) and asset-lock broadcast rejections
     /// surfaced during `register_identity_with_funding`.
     #[error(
-        "Identity registration was rejected by the network. Please try again — if this keeps happening, your funding may need to be confirmed first."
+        "Identity registration was rejected by the network. Your funds are safe and saved as a funding lock. To finish, start a new identity and choose to fund it from your existing asset lock."
     )]
     IdentityCreateRejected {
         #[source]
@@ -113,7 +113,7 @@ pub enum TaskError {
     /// The asset-lock proof finalization (InstantSend → ChainLock fallback)
     /// timed out without producing a usable proof for Platform.
     #[error(
-        "The funding lock could not be confirmed in time. Please wait a minute and try again — the network may be syncing slowly."
+        "The funding lock could not be confirmed in time. Your funds are safe and saved as a funding lock. Wait a minute, then start a new identity and choose to fund it from your existing asset lock."
     )]
     AssetLockFinalityTimeout {
         #[source]
@@ -3480,8 +3480,8 @@ mod tests {
             "Expected rejection wording, got: {msg}"
         );
         assert!(
-            msg.contains("try again"),
-            "Expected actionable guidance, got: {msg}"
+            msg.contains("Your funds are safe") && msg.contains("existing asset lock"),
+            "Expected recoverable-funds guidance, got: {msg}"
         );
         assert!(
             std::error::Error::source(&err).is_some(),
@@ -3530,8 +3530,8 @@ mod tests {
             "Expected timeout wording, got: {msg}"
         );
         assert!(
-            msg.contains("wait") && msg.contains("try again"),
-            "Expected actionable guidance, got: {msg}"
+            msg.contains("Wait a minute") && msg.contains("existing asset lock"),
+            "Expected actionable recovery guidance, got: {msg}"
         );
         assert!(
             std::error::Error::source(&err).is_some(),

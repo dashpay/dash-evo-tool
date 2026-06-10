@@ -87,7 +87,6 @@ pub struct PaymentRecipient {
 pub struct WalletPaymentRequest {
     pub recipients: Vec<PaymentRecipient>,
     pub subtract_fee_from_amount: bool,
-    pub memo: Option<String>,
     /// Override fee to use instead of calculated fee (for retry after min relay fee error)
     pub override_fee: Option<u64>,
 }
@@ -444,7 +443,6 @@ mod send_payment_unsupported_options {
                 amount_duffs: 10_000,
             }],
             subtract_fee_from_amount: subtract,
-            memo: None,
             override_fee,
         }
     }

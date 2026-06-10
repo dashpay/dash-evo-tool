@@ -40,7 +40,6 @@ async fn test_send_and_receive_funds() {
             amount_duffs: send_amount,
         }],
         subtract_fee_from_amount: false,
-        memo: Some("E2E test A->B".to_string()),
         override_fee: None,
     };
 
@@ -97,7 +96,6 @@ async fn test_send_and_receive_funds() {
             amount_duffs: send_amount,
         }],
         subtract_fee_from_amount: true,
-        memo: Some("E2E test B->A return".to_string()),
         override_fee: None,
     };
 

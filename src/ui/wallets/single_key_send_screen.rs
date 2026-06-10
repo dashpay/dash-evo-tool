@@ -13,7 +13,7 @@ use crate::ui::components::password_input::PasswordInput;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::theme::{ComponentStyles, DashColors};
-use crate::ui::wallets::wallets_screen::SINGLE_KEY_REQUIRES_CORE;
+use crate::ui::wallets::wallets_screen::SINGLE_KEY_SEND_UNAVAILABLE;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::fee::FeeRate;
 use eframe::egui::{self, Context, RichText, Ui};
@@ -59,7 +59,6 @@ pub struct SingleKeyWalletSendScreen {
 
     // Common options
     subtract_fee: bool,
-    memo: String,
 
     // State
     sending: bool,
@@ -88,7 +87,6 @@ impl SingleKeyWalletSendScreen {
             recipients: vec![SendRecipient::new(0)],
             next_recipient_id: 1,
             subtract_fee: false,
-            memo: String::new(),
             sending: false,
             password_input: PasswordInput::new().with_hint_text("Enter password"),
             fee_dialog: FeeConfirmationDialog::default(),
@@ -263,15 +261,9 @@ impl SingleKeyWalletSendScreen {
             }
         }
 
-        let memo = self.memo.trim();
         let request = WalletPaymentRequest {
             recipients: payment_recipients,
             subtract_fee_from_amount: self.subtract_fee,
-            memo: if memo.is_empty() {
-                None
-            } else {
-                Some(memo.to_string())
-            },
             override_fee: None,
         };
 
@@ -412,23 +404,6 @@ impl SingleKeyWalletSendScreen {
             .inner_margin(Margin::symmetric(12, 10))
             .corner_radius(5.0)
             .show(ui, |ui| {
-                // Memo field
-                ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new("Memo (optional):")
-                            .color(DashColors::text_secondary(dark_mode))
-                            .size(14.0),
-                    );
-                    ui.add_space(5.0);
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.memo)
-                            .hint_text("Add a note...")
-                            .desired_width(300.0),
-                    );
-                });
-
-                ui.add_space(10.0);
-
                 // Subtract fee checkbox
                 ui.checkbox(
                     &mut self.subtract_fee,
@@ -841,7 +816,7 @@ impl SingleKeyWalletSendScreen {
 
             let mut response = ui.add_enabled(button_enabled, send_button);
             if !is_rpc_mode {
-                response = response.on_disabled_hover_text(SINGLE_KEY_REQUIRES_CORE);
+                response = response.on_disabled_hover_text(SINGLE_KEY_SEND_UNAVAILABLE);
             }
             if response.clicked() {
                 match self.validate_and_send() {
@@ -893,7 +868,7 @@ impl ScreenLike for SingleKeyWalletSendScreen {
                     if !is_rpc_mode {
                         if !self.spv_warning_banner.has_message() {
                             self.spv_warning_banner
-                                .set_message(SINGLE_KEY_REQUIRES_CORE, MessageType::Warning)
+                                .set_message(SINGLE_KEY_SEND_UNAVAILABLE, MessageType::Warning)
                                 .disable_auto_dismiss();
                         }
                         self.spv_warning_banner.show(ui);
@@ -933,7 +908,7 @@ impl ScreenLike for SingleKeyWalletSendScreen {
                     }
 
                     if self.show_advanced_options {
-                        // Advanced mode: multiple recipients, memo, subtract fee, detailed info
+                        // Advanced mode: multiple recipients, subtract fee, detailed info
                         self.render_recipients(ui);
                         self.render_options(ui);
                     } else {
@@ -1015,7 +990,6 @@ impl ScreenLike for SingleKeyWalletSendScreen {
                 // Clear the form after successful send
                 self.recipients = vec![SendRecipient::new(0)];
                 self.next_recipient_id = 1;
-                self.memo.clear();
                 self.subtract_fee = false;
             }
             _ => {

@@ -3,6 +3,7 @@ use crate::model::fee_estimation::format_credits_as_dash;
 use crate::ui::MessageType;
 use crate::ui::components::message_banner::MessageBanner;
 use crate::ui::identities::add_new_identity_screen::FundingMethod;
+use crate::ui::identities::funding_common::{asset_lock_address, asset_lock_status_label};
 use crate::ui::identities::top_up_identity_screen::{TopUpIdentityScreen, WalletFundedScreenStep};
 use crate::ui::theme::DashColors;
 use egui::{Color32, Frame, Margin, RichText, Ui};
@@ -57,12 +58,17 @@ impl TopUpIdentityScreen {
                     } else {
                         ""
                     };
+                    let address_text = match asset_lock_address(lock, self.app_context.network) {
+                        Some(address) => format!(", Address: {address}"),
+                        None => String::new(),
+                    };
                     ui.label(format!(
-                        "TxID: {}, Vout: {}, Amount: {:.8} DASH, Status: {:?}{}",
+                        "TxID: {}, Vout: {}{}, Amount: {:.8} DASH, Status: {}{}",
                         lock.out_point.txid,
                         lock.out_point.vout,
+                        address_text,
                         lock.amount as f64 * 1e-8,
-                        lock.status,
+                        asset_lock_status_label(&lock.status),
                         selected_text,
                     ));
                     if lock.proof.is_some() {

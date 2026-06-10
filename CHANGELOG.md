@@ -29,6 +29,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   under one second on local storage). The migration is idempotent — subsequent
   launches skip it via a completion sentinel in `det-app.sqlite`.
 
+- **Identity funding now goes through one spend engine**: registering or topping up
+  an identity always funds from your wallet balance through the upstream
+  asset-lock engine, which selects coins and tracks the lock to confirmation. The
+  separate "fund directly from a specific transaction output" path was removed so
+  there is a single, double-spend-safe funding flow.
+
 ### Known Limitations
 
 - **Single-key wallets — send and balance refresh not available**: importing a
@@ -49,6 +55,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Proof log screen (internal developer tool, not part of the public feature set).
 - QR-code wallet import flow for identity funding and top-up screens.
+- The "fund identity directly from a transaction output" option on the identity
+  registration and top-up screens (replaced by the single asset-lock funding flow
+  described under Changed).
+- The unused "Memo (optional)" field on the wallet send dialog and the single-key
+  send screen — the note was never attached to the transaction, so it has been
+  removed to avoid implying a memo would be saved.
+- The "Core Only" wallet refresh option. Core wallet balances and UTXOs now stay
+  current automatically, so a manual Core-only refresh had nothing to do; refresh
+  now covers Core plus Platform, or Platform only.
 
 ### Fixed
 
@@ -56,3 +71,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   retry-loop spam on the SDK connection during cold boot.
 - Wallet store is rehydrated on cold start, resolving a regression where wallets
   were not visible after the storage migration.
+- The Disconnect button on the network settings screen now actually disconnects:
+  it stops the wallet backend and updates the connection indicator instead of
+  silently doing nothing. A fast double-click can no longer start two disconnects
+  at once.
+- Shielded balances no longer overstate after upgrading or after using
+  "Resync Notes": the spent-note scan cursor is reset so previously spent notes
+  are detected again. Previously a migrated or resynced wallet could show notes as
+  available that had already been spent, causing later spends to fail.
+- The unused-asset-lock picker on the identity registration and top-up screens now
+  shows a plain-language status and the funding address for each lock, instead of
+  an internal status name, so you can tell which lock is which.
+- A failed wallet-funded identity registration now tells you that your funds are
+  safe as a funding lock and how to finish: start a new identity and fund it from
+  your existing asset lock.

@@ -35,7 +35,6 @@ pub(super) struct SendDialogState {
     pub amount: Option<Amount>,
     pub amount_input: Option<AmountInput>,
     pub subtract_fee: bool,
-    pub memo: String,
     pub error: Option<String>,
 }
 
@@ -220,9 +219,6 @@ impl WalletsBalancesScreen {
                     &mut self.send_dialog.subtract_fee,
                     "Subtract fee from amount",
                 );
-
-                ui.label("Memo (optional)");
-                ui.add(egui::TextEdit::singleline(&mut self.send_dialog.memo));
 
                 if let Some(error) = self.send_dialog.error.clone() {
                     let error_color = DashColors::ERROR;
@@ -1107,18 +1103,12 @@ impl WalletsBalancesScreen {
             return Err("Enter a recipient address".to_string());
         }
 
-        let memo = self.send_dialog.memo.trim();
         let request = WalletPaymentRequest {
             recipients: vec![PaymentRecipient {
                 address: self.send_dialog.address.trim().to_string(),
                 amount_duffs,
             }],
             subtract_fee_from_amount: self.send_dialog.subtract_fee,
-            memo: if memo.is_empty() {
-                None
-            } else {
-                Some(memo.to_string())
-            },
             override_fee: None,
         };
 

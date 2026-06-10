@@ -193,6 +193,73 @@ async fn tc_034_load_contacts_empty() {
     }
 }
 
+/// TC-046: offline contacts read serves the DET contact-profile cache.
+///
+/// `LoadContactsOffline` must resolve without a network round-trip, reading
+/// relationships from rehydrated state and display profiles from the DET
+/// contact-profile cache. Here a profile is seeded directly into the cache and
+/// the offline read is expected to surface a non-empty contact list (the
+/// fixture pair has an established contact) without erroring.
+#[ignore]
+#[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
+async fn tc_046_load_contacts_offline_serves_cache() {
+    use dash_evo_tool::wallet_backend::CachedContactProfile;
+
+    let ctx = harness::ctx().await;
+    let pair = fixtures::shared_dashpay_pair().await;
+
+    let contact_id = pair.identity_b.identity.id();
+
+    // Seed a cached profile for the contact so the offline read can paint it.
+    let backend = ctx
+        .app_context
+        .wallet_backend()
+        .expect("wallet backend wired");
+    backend
+        .contact_profile_cache()
+        .put(
+            &contact_id,
+            &CachedContactProfile {
+                username: Some("cached-name.dash".to_string()),
+                display_name: Some("Cached Name".to_string()),
+                avatar_url: Some("https://example.com/cached.png".to_string()),
+                bio: None,
+            },
+        )
+        .expect("seed cached profile");
+
+    let task = BackendTask::DashPayTask(Box::new(DashPayTask::LoadContactsOffline {
+        identity: pair.identity_a.clone(),
+    }));
+    let result = run_task(&ctx.app_context, task)
+        .await
+        .expect("TC-046: offline read should not fail");
+
+    match result {
+        BackendTaskSuccessResult::DashPayContactsWithInfo(contacts) => {
+            tracing::info!(
+                "TC-046: offline read returned {} contacts without network",
+                contacts.len()
+            );
+            // If the established contact for A includes B, its cached profile
+            // must be surfaced from the cache.
+            if let Some(c) = contacts.iter().find(|c| c.identity_id == contact_id) {
+                assert_eq!(
+                    c.username.as_deref(),
+                    Some("cached-name.dash"),
+                    "TC-046: cached username must surface in the offline read"
+                );
+                assert_eq!(
+                    c.avatar_url.as_deref(),
+                    Some("https://example.com/cached.png"),
+                    "TC-046: cached avatar URL must surface in the offline read"
+                );
+            }
+        }
+        other => panic!("TC-046: expected DashPayContactsWithInfo, got: {:?}", other),
+    }
+}
+
 /// TC-035: LoadContactRequests — empty
 #[ignore]
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]

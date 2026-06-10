@@ -108,6 +108,10 @@ impl ContactsList {
         new_self
     }
 
+    /// Auto-fetch on view: reads contacts from offline rehydrated state plus
+    /// the DET contact-profile cache, so the list paints without a network
+    /// round-trip (PROJ-040). An explicit refresh uses
+    /// [`Self::trigger_refresh_contacts`] to re-fetch from the network.
     pub fn trigger_fetch_contacts(&mut self) -> AppAction {
         // Only fetch if we have a selected identity
         if let Some(identity) = &self.selected_identity {
@@ -118,6 +122,25 @@ impl ContactsList {
             // load fires the auto-fetch gate exactly once instead of
             // re-dispatching every frame. `refresh()` / an identity change
             // opts back into a fresh attempt.
+            self.has_loaded = true;
+
+            let task = BackendTask::DashPayTask(Box::new(DashPayTask::LoadContactsOffline {
+                identity: identity.clone(),
+            }));
+
+            return AppAction::BackendTask(task);
+        }
+
+        AppAction::None
+    }
+
+    /// Re-fetch contacts and their profiles from the network, refreshing the
+    /// DET caches. Triggered by an explicit user refresh, not by entering the
+    /// view — the view itself serves the offline cache.
+    pub fn trigger_refresh_contacts(&mut self) -> AppAction {
+        if let Some(identity) = &self.selected_identity {
+            self.loading = true;
+            self.message = None;
             self.has_loaded = true;
 
             let task = BackendTask::DashPayTask(Box::new(DashPayTask::LoadContacts {
@@ -172,63 +195,83 @@ impl ContactsList {
         action
     }
 
-    /// Load an avatar image from a URL asynchronously
+    /// Load an avatar image for a URL, serving from the DET avatar cache when
+    /// possible so an already-seen avatar renders offline and is not re-fetched
+    /// every view. On a cache miss the image is fetched once, cached, and
+    /// decoded; the decoded `ColorImage` is stashed in egui temp data for the
+    /// UI thread to upload as a texture.
     fn load_avatar_texture(&mut self, ctx: &egui::Context, url: &str) {
         // Mark as loading
         self.avatars_loading.insert(url.to_string());
 
         let ctx_clone = ctx.clone();
         let url_clone = url.to_string();
+        let app_context = self.app_context.clone();
 
-        // Spawn async task to fetch and load the image
+        // Cache hit: decode the stored bytes directly — no network round-trip.
+        if let Ok(backend) = app_context.wallet_backend()
+            && let Some(cached) = backend.avatar_cache().get(url)
+        {
+            Self::stash_decoded_avatar(&ctx_clone, &url_clone, &cached.bytes);
+            return;
+        }
+
+        // Cache miss: fetch once, cache the validated bytes, then decode.
         tokio::spawn(async move {
             match crate::backend_task::dashpay::avatar_processing::fetch_image_bytes(&url_clone)
                 .await
             {
                 Ok(image_bytes) => {
-                    // Try to load the image
-                    if let Ok(image) = image::load_from_memory(&image_bytes) {
-                        // Convert to RGBA
-                        let rgba_image = image.to_rgba8();
-                        let width = rgba_image.width();
-                        let height = rgba_image.height();
-
-                        // Center-crop to square if not already square
-                        let cropped_image = if width != height {
-                            let size = width.min(height);
-                            let x_offset = (width - size) / 2;
-                            let y_offset = (height - size) / 2;
-                            image::imageops::crop_imm(&rgba_image, x_offset, y_offset, size, size)
-                                .to_image()
-                        } else {
-                            rgba_image
-                        };
-
-                        let size = [
-                            cropped_image.width() as usize,
-                            cropped_image.height() as usize,
-                        ];
-                        let pixels = cropped_image.into_raw();
-
-                        // Create ColorImage
-                        let color_image = ColorImage::from_rgba_unmultiplied(size, &pixels);
-
-                        // Request repaint to load texture in UI thread
-                        ctx_clone.request_repaint();
-
-                        // Store the image data temporarily for the UI thread to pick up
-                        ctx_clone.data_mut(|data| {
-                            data.insert_temp(
-                                egui::Id::new(format!("contact_avatar_data_{}", url_clone)),
-                                color_image,
-                            );
-                        });
+                    // Populate the DET cache so the next view serves offline.
+                    if let Ok(backend) = app_context.wallet_backend()
+                        && let Err(e) = backend.avatar_cache().put(&url_clone, image_bytes.clone())
+                    {
+                        tracing::debug!(error = ?e, "Failed to cache contact avatar; will re-fetch next view");
                     }
+                    Self::stash_decoded_avatar(&ctx_clone, &url_clone, &image_bytes);
                 }
                 Err(e) => {
                     tracing::warn!("Failed to fetch contact avatar image: {}", e);
                 }
             }
+        });
+    }
+
+    /// Decode `image_bytes`, center-crop to square, and stash the resulting
+    /// `ColorImage` in egui temp data keyed by `url` for the UI thread to
+    /// upload. Shared by the cache-hit and post-fetch paths so both render
+    /// identically.
+    fn stash_decoded_avatar(ctx: &egui::Context, url: &str, image_bytes: &[u8]) {
+        let Ok(image) = image::load_from_memory(image_bytes) else {
+            return;
+        };
+        let rgba_image = image.to_rgba8();
+        let width = rgba_image.width();
+        let height = rgba_image.height();
+
+        // Center-crop to square if not already square.
+        let cropped_image = if width != height {
+            let size = width.min(height);
+            let x_offset = (width - size) / 2;
+            let y_offset = (height - size) / 2;
+            image::imageops::crop_imm(&rgba_image, x_offset, y_offset, size, size).to_image()
+        } else {
+            rgba_image
+        };
+
+        let size = [
+            cropped_image.width() as usize,
+            cropped_image.height() as usize,
+        ];
+        let pixels = cropped_image.into_raw();
+        let color_image = ColorImage::from_rgba_unmultiplied(size, &pixels);
+
+        ctx.request_repaint();
+        ctx.data_mut(|data| {
+            data.insert_temp(
+                egui::Id::new(format!("contact_avatar_data_{}", url)),
+                color_image,
+            );
         });
     }
 
@@ -248,6 +291,7 @@ impl ContactsList {
             .unwrap_or_default();
 
         // Header section with identity selector on the right
+        let mut refresh_action = AppAction::None;
         ui.horizontal(|ui| {
             ui.heading("Contacts");
 
@@ -267,7 +311,8 @@ impl ContactsList {
 
                     if response.changed() {
                         // Clear contacts and avatar caches when identity changes.
-                        // The next render dispatches `LoadContacts` via `has_loaded == false`.
+                        // The next render dispatches the offline read via
+                        // `has_loaded == false`.
                         self.contacts.clear();
                         self.avatar_textures.clear();
                         self.avatars_loading.clear();
@@ -279,9 +324,23 @@ impl ContactsList {
                         self.contact_requests
                             .set_selected_identity(self.selected_identity.clone());
                     }
+
+                    // Explicit refresh: re-fetch contacts and profiles from the
+                    // network (the view itself serves the offline cache).
+                    if ui
+                        .add_enabled(!self.loading, egui::Button::new("Refresh"))
+                        .on_hover_text("Fetch the latest contacts and profiles from the network.")
+                        .clicked()
+                    {
+                        refresh_action = self.trigger_refresh_contacts();
+                    }
                 });
             }
         });
+
+        if !matches!(refresh_action, AppAction::None) {
+            action = refresh_action;
+        }
 
         ui.separator();
 

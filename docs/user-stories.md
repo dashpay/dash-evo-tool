@@ -650,6 +650,24 @@ As a power user, I want to generate an auto-accept proof so that incoming contac
 - HD derivation and proof signing for automatic acceptance.
 - QR code generation for sharing auto-accept proof.
 
+### DPY-012: Detect payments received from contacts [Implemented]
+**Persona:** Alex, Priya
+
+As a user, I want payments sent to me by a DashPay contact to be detected and recorded automatically so that they appear in my payment history without any manual action.
+
+- Incoming on-chain transactions are matched against my contacts' receiving addresses.
+- Matched payments are recorded and surfaced in payment history.
+- Re-scanning the same transaction does not duplicate or double-count it.
+
+### DPY-013: View contacts and avatars offline [Implemented]
+**Persona:** Alex, Priya
+
+As a user, I want my contact list, their profiles, and their avatars to show instantly without a network round-trip so that I can view my contacts even when offline or on a slow connection.
+
+- Contacts and private notes are read from already-synced local state.
+- Contact profiles and avatar images are cached locally and served on subsequent views.
+- An explicit "Refresh" action re-fetches the latest profiles and avatars from the network.
+
 ---
 
 ## Token Operations (TOK)

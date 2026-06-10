@@ -104,6 +104,23 @@ pub struct DetectedIncomingOutput {
     pub amount_duffs: u64,
 }
 
+/// A cached avatar image, stored DET-side so avatars survive offline and are
+/// not re-fetched from the network on every contact view.
+///
+/// Keyed by the avatar URL. The raw image `bytes` are validated before
+/// caching, so a cache hit can be decoded directly. `sha256` is the content
+/// hash used to detect a changed image at the same URL (cache invalidation),
+/// and `fetched_at_ms` is the wall-clock fetch time for age-based eviction.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CachedAvatar {
+    /// Raw, already-validated image bytes.
+    pub bytes: Vec<u8>,
+    /// SHA-256 of `bytes` — detects a content change at the same URL.
+    pub sha256: Vec<u8>,
+    /// Unix milliseconds at fetch time, for age-based invalidation.
+    pub fetched_at_ms: i64,
+}
+
 /// DET-local private contact memo (nickname / notes / hidden flag).
 ///
 /// Mirrors the legacy `contact_private_info` SQLite row shape but lives

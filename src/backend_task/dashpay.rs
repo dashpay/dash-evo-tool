@@ -41,6 +41,12 @@ pub enum DashPayTask {
     LoadContacts {
         identity: QualifiedIdentity,
     },
+    /// Read the contact list from offline state only — rehydrated
+    /// relationships + private memos plus the DET contact-profile cache. No
+    /// network round-trip, so a view renders without connectivity (PROJ-040).
+    LoadContactsOffline {
+        identity: QualifiedIdentity,
+    },
     LoadContactRequests {
         identity: QualifiedIdentity,
     },
@@ -131,6 +137,9 @@ impl AppContext {
             ),
             DashPayTask::LoadContacts { identity } => {
                 Ok(contacts::load_contacts(self, sdk, identity).await?)
+            }
+            DashPayTask::LoadContactsOffline { identity } => {
+                Ok(contacts::load_contacts_offline(self, identity).await?)
             }
             DashPayTask::LoadContactRequests { identity } => {
                 Ok(contact_requests::load_contact_requests(self, sdk, identity).await?)

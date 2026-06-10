@@ -457,7 +457,103 @@ pub async fn load_contacts(
         }
     }
 
+    // Mirror the freshly-fetched contact profiles into the DET-side cache so
+    // the next view can paint names and avatars offline (PROJ-040). Best-
+    // effort: a cache write miss only costs the offline optimisation.
+    cache_contact_profiles(app_context, &contact_list);
+
     Ok(BackendTaskSuccessResult::DashPayContactsWithInfo(
         contact_list,
     ))
+}
+
+/// Read the contact list for `identity` entirely from offline state: contact
+/// relationships and private memos come from the upstream-rehydrated
+/// `ManagedIdentity` (via [`crate::wallet_backend::DashpayView`]), and each
+/// contact's display profile is served from the DET contact-profile cache.
+///
+/// No network round-trip — a view rendered from this result does not require
+/// connectivity. Profiles a contact has not yet been fetched for are returned
+/// without display fields; an explicit refresh (network `load_contacts`) fills
+/// and re-caches them.
+pub async fn load_contacts_offline(
+    app_context: &Arc<AppContext>,
+    identity: QualifiedIdentity,
+) -> Result<BackendTaskSuccessResult, TaskError> {
+    let owner_id = identity.identity.id();
+    let backend = app_context.wallet_backend()?;
+
+    let stored = backend.dashpay_view().contacts(&owner_id).await;
+
+    let mut contact_list = Vec::with_capacity(stored.len());
+    for sc in stored {
+        // Skip the owner's own row defensively (contacts() does not emit it,
+        // but the network path filters it, so mirror that here).
+        let Ok(contact_id) = Identifier::from_bytes(&sc.contact_identity_id) else {
+            continue;
+        };
+        if contact_id == owner_id {
+            continue;
+        }
+
+        let cached = backend.contact_profile_cache().get(&contact_id);
+        let memo = backend
+            .dashpay_get_private_info(&owner_id, &contact_id)
+            .unwrap_or(None);
+
+        contact_list.push(ContactData {
+            identity_id: contact_id,
+            nickname: memo
+                .as_ref()
+                .map(|m| m.nickname.clone())
+                .filter(|s| !s.is_empty()),
+            note: memo
+                .as_ref()
+                .map(|m| m.notes.clone())
+                .filter(|s| !s.is_empty()),
+            is_hidden: memo.as_ref().map(|m| m.is_hidden).unwrap_or(false),
+            account_reference: 0,
+            username: cached.as_ref().and_then(|c| c.username.clone()),
+            display_name: cached
+                .as_ref()
+                .and_then(|c| c.display_name.clone())
+                .or_else(|| sc.display_name.clone()),
+            avatar_url: cached.as_ref().and_then(|c| c.avatar_url.clone()),
+            bio: cached.as_ref().and_then(|c| c.bio.clone()),
+        });
+    }
+
+    Ok(BackendTaskSuccessResult::DashPayContactsWithInfo(
+        contact_list,
+    ))
+}
+
+/// Write each contact's fetched display profile into the DET contact-profile
+/// cache so later offline reads can serve it. Skips contacts with no
+/// displayable field. Best-effort: write misses are logged and ignored.
+fn cache_contact_profiles(app_context: &Arc<AppContext>, contacts: &[ContactData]) {
+    use crate::wallet_backend::CachedContactProfile;
+
+    let Ok(backend) = app_context.wallet_backend() else {
+        return;
+    };
+    let cache = backend.contact_profile_cache();
+    for contact in contacts {
+        let profile = CachedContactProfile {
+            username: contact.username.clone(),
+            display_name: contact.display_name.clone(),
+            avatar_url: contact.avatar_url.clone(),
+            bio: contact.bio.clone(),
+        };
+        if profile.is_empty() {
+            continue;
+        }
+        if let Err(e) = cache.put(&contact.identity_id, &profile) {
+            tracing::debug!(
+                contact = %contact.identity_id.to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58),
+                error = ?e,
+                "Failed to cache contact profile for offline use"
+            );
+        }
+    }
 }

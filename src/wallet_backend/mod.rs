@@ -23,6 +23,8 @@
 pub mod auth_pubkey_cache;
 #[cfg(not(any(test, feature = "bench")))]
 pub(crate) mod auth_pubkey_cache;
+mod avatar_cache;
+mod contact_profile_cache;
 mod dashpay;
 mod det_platform_signer;
 mod det_signer;
@@ -66,6 +68,8 @@ pub use secret_prompt::{
 };
 
 pub use auth_pubkey_cache::AuthPubkeyCacheView;
+pub use avatar_cache::AvatarCacheView;
+pub use contact_profile_cache::{CachedContactProfile, ContactProfileCacheView};
 pub use event_bridge::EventBridge;
 pub use kv::{DetKv, DetScope, KvAdapterError, SCHEMA_VERSION as KV_SCHEMA_VERSION};
 pub use loader::{LoadedWallets, PersistedLoadSkip, PersistedWalletLoader, UpstreamFromPersisted};
@@ -1108,6 +1112,23 @@ impl WalletBackend {
     /// pubkeys so the steady-state read is seed-free.
     pub fn auth_pubkey_cache(&self) -> AuthPubkeyCacheView<'_> {
         AuthPubkeyCacheView::new(&self.inner.app_kv)
+    }
+
+    /// View over the DET-owned avatar image cache (PROJ-040). Backed by the
+    /// same cross-network app-level k/v store as [`Self::wallet_meta`], keyed
+    /// by avatar URL under [`DetScope::Global`]. Upstream persists only the
+    /// avatar hash and fingerprint, never the bytes, so this is the only place
+    /// a contact's avatar image survives offline / between views.
+    pub fn avatar_cache(&self) -> AvatarCacheView<'_> {
+        AvatarCacheView::new(&self.inner.app_kv)
+    }
+
+    /// View over the DET-owned contact-profile cache (PROJ-040). A contact's
+    /// profile belongs to an out-of-wallet identity and is never rehydrated
+    /// upstream, so this cache is the only offline source of a contact's
+    /// display name, avatar URL, bio, and DPNS username between network reads.
+    pub fn contact_profile_cache(&self) -> ContactProfileCacheView<'_> {
+        ContactProfileCacheView::new(&self.inner.app_kv)
     }
 
     /// View over the encrypted HD wallet seed vault (T-W-00.5-v2).

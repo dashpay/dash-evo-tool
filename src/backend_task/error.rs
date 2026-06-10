@@ -212,6 +212,19 @@ pub enum TaskError {
         source: Box<crate::wallet_backend::KvAdapterError>,
     },
 
+    /// The DET avatar image cache (PROJ-040) could not be read or written.
+    /// Lives in the same cross-network `det-app.sqlite` k/v file as
+    /// [`Self::WalletMetaStorage`]; a failure here only costs the offline
+    /// avatar cache (the image re-fetches from the network), so the user hint
+    /// is the same calm disk-space prompt.
+    #[error(
+        "Could not save the contact picture for offline use. Check available disk space and try again."
+    )]
+    AvatarCacheStorage {
+        #[source]
+        source: Box<crate::wallet_backend::KvAdapterError>,
+    },
+
     /// A WIF-encoded private key supplied by the user could not be parsed.
     /// Wrapped distinctly from [`Self::SecretStore`] so the user sees an
     /// input-shape hint rather than a storage diagnostic.

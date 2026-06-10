@@ -747,6 +747,13 @@ impl ShieldedTabView {
                             let _ = backend
                                 .shielded()
                                 .delete_shielded_notes(&self.seed_hash, &network_str);
+                            // Reset the nullifier-spend cursor too. Without
+                            // this, a resync re-derives notes from position 0
+                            // but resumes spend detection from the old cursor,
+                            // resurrecting previously-spent notes.
+                            let _ = backend
+                                .shielded()
+                                .delete_shielded_wallet_meta(&self.seed_hash, &network_str);
                         }
                         if let Ok(tree_path) = self.app_context.shielded_commitment_tree_path()
                             && let Err(e) = std::fs::remove_file(&tree_path)

@@ -766,6 +766,49 @@ mod tests {
         );
     }
 
+    /// The "Resync Notes" sequence (drop notes + drop the nullifier
+    /// cursor) leaves the cursor at zero so a resync truly re-derives the
+    /// spent set from scratch. Without the cursor reset, a resync would
+    /// re-scan notes but resume spend detection from the old position,
+    /// resurrecting previously-spent notes.
+    #[test]
+    fn resync_sequence_resets_nullifier_cursor() {
+        let tmp = tempdir().expect("tempdir");
+        let view = make_view(tmp.path());
+        let seed: WalletSeedHash = [0x30; 32];
+
+        // Pre-resync state: one note plus an advanced nullifier cursor.
+        view.insert_shielded_note(&seed, &sample_note(100, 5, 0xCA).as_param("testnet"))
+            .expect("insert note");
+        view.set_nullifier_sync_info(&seed, "testnet", 9001, 1_700_000_000)
+            .expect("set cursor");
+        assert_ne!(
+            view.get_nullifier_sync_info(&seed, "testnet").unwrap(),
+            (0, 0),
+            "precondition: cursor is advanced before resync",
+        );
+
+        // The exact two-call sequence the resync handler performs.
+        view.delete_shielded_notes(&seed, "testnet")
+            .expect("drop notes");
+        view.delete_shielded_wallet_meta(&seed, "testnet")
+            .expect("drop cursor");
+
+        // Both notes and the cursor are cleared — a resync re-derives the
+        // spent set from position 0, so a once-spent note cannot resurrect.
+        assert!(
+            view.get_all_shielded_notes(&seed, "testnet")
+                .expect("read notes")
+                .is_empty(),
+            "resync clears the notes",
+        );
+        assert_eq!(
+            view.get_nullifier_sync_info(&seed, "testnet").unwrap(),
+            (0, 0),
+            "resync resets the nullifier cursor to zero",
+        );
+    }
+
     /// TC-SH-005 — balance read via the adapter returns the sidecar
     /// sum. This is the read path `send_screen.rs` uses to surface a
     /// last-known shielded balance when the in-memory state was

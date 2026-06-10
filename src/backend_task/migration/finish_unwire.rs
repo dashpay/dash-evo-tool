@@ -718,15 +718,20 @@ fn migrate_shielded_step(
                 })? as u32;
         }
         if legacy_meta_present {
-            // `INSERT OR REPLACE` upserts on the
-            // PRIMARY KEY(wallet_seed_hash, network) so re-runs with a
-            // newer sync cursor monotonically advance the sidecar.
+            // The legacy `last_nullifier_sync_height` was a platform BLOCK
+            // HEIGHT, but the post-#3828 scan path reads this cursor as a
+            // note-tree POSITION. Carrying the legacy value verbatim would
+            // start the scan past the tree tip, so spends would never be
+            // observed and balances would silently overstate. Register the
+            // wallet/network row with a zero cursor instead: the next scan
+            // re-walks the tree from position 0 and re-derives the spent set
+            // idempotently. `INSERT OR REPLACE` upserts on the
+            // PRIMARY KEY(wallet_seed_hash, network), so a re-run is a no-op.
             dest.execute(
                 "INSERT OR REPLACE INTO main.shielded_wallet_meta
                      (wallet_seed_hash, network,
                       last_nullifier_sync_height, last_nullifier_sync_timestamp)
-                     SELECT wallet_seed_hash, network,
-                            last_nullifier_sync_height, last_nullifier_sync_timestamp
+                     SELECT wallet_seed_hash, network, 0, 0
                      FROM legacy.shielded_wallet_meta
                      WHERE network = ?1",
                 rusqlite::params![network],
@@ -1981,17 +1986,22 @@ mod tests {
         );
     }
 
-    /// TC-SH-002 — the legacy `shielded_wallet_meta` cursor (sync
-    /// height + timestamp) is preserved verbatim in the sidecar so the
-    /// rewired sync path (T-SH-03) does not re-scan from zero.
+    /// TC-SH-002 — the legacy `shielded_wallet_meta` cursor is a platform
+    /// BLOCK HEIGHT, but the post-#3828 scan path reads the migrated cursor
+    /// as a note-tree POSITION. Carrying the legacy height verbatim would
+    /// start the scan past the tree tip (spends never observed, balance
+    /// overstated). The mirror therefore registers the wallet/network row
+    /// with a ZERO cursor so the next scan re-walks the tree from position 0.
     #[test]
-    fn tc_sh_002_sync_cursor_preserved() {
+    fn tc_sh_002_sync_cursor_reset_to_zero() {
         let dir = tempfile::tempdir().expect("tempdir");
         let legacy_path = dir.path().join("data.db");
         let conn = Connection::open(&legacy_path).expect("open legacy db");
         create_legacy_shielded_tables(&conn);
 
         let seed: WalletSeedHash = [0x55; 32];
+        // A legacy BLOCK HEIGHT — the exact value the new scan path would
+        // misread as a tree position if carried verbatim.
         seed_legacy_meta(&conn, &seed, "testnet", 1_234_567, 1_700_000_000);
         // Foreign-network cursor — must not bleed into the testnet
         // mirror.
@@ -2001,13 +2011,19 @@ mod tests {
         let sidecar = shielded_view(&dir.path().join("spv").join("testnet"));
         let outcome =
             migrate_shielded_step(&sidecar, &legacy_path, "testnet").expect("mirror runs");
+        // The wallet/network row is registered (so the wallet is known)…
         assert_eq!(outcome.cursors_in_sidecar, 1);
 
+        // …but the cursor is RESET to zero, NOT carried verbatim — a full
+        // rescan from position 0 re-derives the spent set on the next pass.
         let (h, ts) = sidecar
             .get_nullifier_sync_info(&seed, "testnet")
             .expect("read cursor");
-        assert_eq!(h, 1_234_567);
-        assert_eq!(ts, 1_700_000_000);
+        assert_eq!(
+            (h, ts),
+            (0, 0),
+            "the legacy block-height cursor must reset to zero, not carry verbatim",
+        );
 
         // The mainnet cursor MUST be invisible from the testnet sidecar.
         let (mh, mt) = sidecar
@@ -2020,13 +2036,104 @@ mod tests {
         );
 
         // Re-running the mirror is a no-op (idempotency) — the cursor
-        // stays at the same value.
+        // stays at zero.
         let again = migrate_shielded_step(&sidecar, &legacy_path, "testnet").expect("re-run");
         assert_eq!(again.cursors_in_sidecar, 1);
         let (h2, ts2) = sidecar
             .get_nullifier_sync_info(&seed, "testnet")
             .expect("read cursor post re-run");
-        assert_eq!((h2, ts2), (h, ts));
+        assert_eq!((h2, ts2), (0, 0));
+    }
+
+    /// End-to-end: a migrated wallet whose legacy cursor was a block
+    /// height must, after migration, scan the note tree from position 0
+    /// and flip its on-chain-spent note. This pins both halves: (1) the
+    /// migration resets the cursor to 0, and (2) the post-#3828 scan-window
+    /// arithmetic (`aligned_start`) over that reset cursor actually covers
+    /// the spent note's position — whereas the legacy block height, misread
+    /// as a position, would start the scan PAST the tree tip and silently
+    /// miss the spend.
+    #[test]
+    fn migrated_cursor_reset_lets_scan_flip_spent_note() {
+        // Mirror the post-#3828 scan-window start: the cursor (a note-tree
+        // position) is rounded down to the server chunk boundary. Kept in
+        // sync with `backend_task::shielded::nullifiers::CHUNK_SIZE`.
+        const CHUNK_SIZE: u64 = 2048;
+        let aligned_start = |cursor: u64| (cursor / CHUNK_SIZE) * CHUNK_SIZE;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let legacy_path = dir.path().join("data.db");
+        let conn = Connection::open(&legacy_path).expect("open legacy db");
+        create_legacy_shielded_tables(&conn);
+
+        let seed: WalletSeedHash = [0x29; 32];
+        // One unspent note that lives near the start of a small tree
+        // (position 5). On-chain it has actually been spent.
+        seed_legacy_note(&conn, &seed, 5, 0xCA, 100, false, "testnet");
+        // Legacy cursor is a BLOCK HEIGHT, far larger than any tree
+        // position on this tiny tree.
+        let legacy_block_height = 1_234_567u64;
+        seed_legacy_meta(&conn, &seed, "testnet", legacy_block_height, 1_700_000_000);
+        drop(conn);
+
+        let sidecar = shielded_view(&dir.path().join("spv").join("testnet"));
+        migrate_shielded_step(&sidecar, &legacy_path, "testnet").expect("mirror runs");
+
+        // The note position the on-chain scan must reach to observe the spend.
+        let spent_note_position = 5u64;
+        let tree_tip = 6u64; // total notes scanned in this tiny tree
+
+        // Counterfactual: had the migration carried the block height
+        // verbatim, the scan window would start past the tree tip and the
+        // spend would never be observed.
+        let bad_start = aligned_start(legacy_block_height);
+        assert!(
+            bad_start > tree_tip,
+            "the legacy block-height cursor, read as a position, starts the scan past the tip"
+        );
+        assert!(
+            spent_note_position < bad_start,
+            "so the spent note's position would fall outside the scan window — spend missed"
+        );
+
+        // Actual: the migrated cursor is 0, so the scan starts at position 0
+        // and covers the spent note's position.
+        let (migrated_cursor, _) = sidecar
+            .get_nullifier_sync_info(&seed, "testnet")
+            .expect("read cursor");
+        assert_eq!(migrated_cursor, 0, "migration reset the cursor to zero");
+        let good_start = aligned_start(migrated_cursor);
+        assert!(
+            good_start <= spent_note_position && spent_note_position < tree_tip,
+            "the reset cursor's scan window covers the spent note's position"
+        );
+
+        // Drive the spend-detection flip the scan performs: the matching
+        // nullifier is found in-window, so the note is marked spent.
+        let nullifier = [0xCAu8; 32];
+        let flipped = sidecar
+            .mark_shielded_note_spent(&seed, &nullifier, "testnet")
+            .expect("mark spent");
+        assert_eq!(
+            flipped, 1,
+            "the in-window scan flips exactly the spent note"
+        );
+
+        // Balance now correctly excludes the spent note (no overstatement).
+        assert_eq!(
+            sidecar
+                .get_shielded_balance(&seed, "testnet")
+                .expect("balance"),
+            0,
+            "after the spend flips, the balance is no longer overstated",
+        );
+        assert!(
+            sidecar
+                .get_unspent_shielded_notes(&seed, "testnet")
+                .expect("read unspent")
+                .is_empty(),
+            "the spent note no longer counts as unspent",
+        );
     }
 
     /// TC-SH-008 — NFR-4 pre-flight: when the legacy `data.db` holds

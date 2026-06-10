@@ -340,5 +340,136 @@
         }
       ]
     }
-  ]
+  ],
+  "triage": {
+    "triaged_by": "user",
+    "triaged_at": "2026-06-10T12:55:18.797953+00:00",
+    "decisions": [
+      {
+        "finding_id": "PROJ-027",
+        "action": "fix",
+        "rationale": "delegate fully upstream, we don't store local history other than trough platform-wallet"
+      },
+      {
+        "finding_id": "PROJ-026",
+        "action": "fix",
+        "rationale": ""
+      },
+      {
+        "finding_id": "PROJ-005",
+        "action": "false_positive",
+        "rationale": "keep it as it is for now, we'll do it before merge"
+      },
+      {
+        "finding_id": "PROJ-031",
+        "action": "fix",
+        "rationale": "wire with upstream or ask for decision if wiring is not possible"
+      },
+      {
+        "finding_id": "PROJ-029",
+        "action": "fix",
+        "rationale": "This should be implemented, check also https://github.com/dashpay/platform/pull/3554 , if not - let me know."
+      },
+      {
+        "finding_id": "PROJ-007",
+        "action": "fix",
+        "rationale": "We want to add support for single keys."
+      },
+      {
+        "finding_id": "PROJ-012",
+        "action": "fix",
+        "rationale": "remove zmq"
+      },
+      {
+        "finding_id": "PROJ-009",
+        "action": "fix",
+        "rationale": "if platform-wallet supports it, wire it up, otherwise document add TODO."
+      },
+      {
+        "finding_id": "DOC-001",
+        "action": "fix",
+        "rationale": ""
+      },
+      {
+        "finding_id": "PROJ-033",
+        "action": "fix",
+        "rationale": "remove"
+      },
+      {
+        "finding_id": "PROJ-038",
+        "action": "fix",
+        "rationale": ""
+      },
+      {
+        "finding_id": "PROJ-035",
+        "action": "fix",
+        "rationale": ""
+      },
+      {
+        "finding_id": "PROJ-040",
+        "action": "fix",
+        "rationale": ""
+      },
+      {
+        "finding_id": "PROJ-017",
+        "action": "fix",
+        "rationale": "use upstream"
+      },
+      {
+        "finding_id": "PROJ-036",
+        "action": "fix",
+        "rationale": "prefer forced reconcile, if not possible - hide"
+      },
+      {
+        "finding_id": "PROJ-039",
+        "action": "fix",
+        "rationale": "Map AssetLockStatus to user-facing copy"
+      },
+      {
+        "finding_id": "DOC-002",
+        "action": "fix",
+        "rationale": ""
+      },
+      {
+        "finding_id": "PROJ-011",
+        "action": "fix",
+        "rationale": "Drop legacy database code, we'll handle migrations separately"
+      },
+      {
+        "finding_id": "PROJ-037",
+        "action": "fix",
+        "rationale": ""
+      },
+      {
+        "finding_id": "PROJ-032",
+        "action": "defer",
+        "rationale": "We'll handle data migration separately."
+      },
+      {
+        "finding_id": "PROJ-034",
+        "action": "defer",
+        "rationale": "migration will be handled separately"
+      },
+      {
+        "finding_id": "PROJ-018",
+        "action": "defer",
+        "rationale": ""
+      },
+      {
+        "finding_id": "PROJ-015",
+        "action": "defer",
+        "rationale": "See if https://github.com/dashpay/platform/pull/3770 addresses the issue; if not - escalate"
+      },
+      {
+        "finding_id": "PROJ-041",
+        "action": "defer",
+        "rationale": "File a feature request in dashpay/platform "
+      },
+      {
+        "finding_id": "DOC-003",
+        "action": "defer",
+        "rationale": ""
+      }
+    ]
+  }
 }

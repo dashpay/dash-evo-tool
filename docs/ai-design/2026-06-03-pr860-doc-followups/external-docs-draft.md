@@ -1,3 +1,4 @@
+<!-- TODO(PROJ-018): External user docs (dashpay/docs) not yet filed -->
 # External Docs Draft — PR #860 (platform-wallet migration)
 
 **Target repo:** `dashpay/docs`

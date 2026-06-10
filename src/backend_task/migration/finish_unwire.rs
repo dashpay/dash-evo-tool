@@ -53,6 +53,10 @@ fn network_token(network: Network) -> &'static str {
     }
 }
 
+// TODO(PROJ-032): Legacy DashPay user data not migrated (payment history, nicknames/notes/hidden
+//   flags, send addresses) — handled in a separate migration effort.
+// TODO(PROJ-034): App settings, top-up history, scheduled DPNS votes reset/empty on upgrade (no
+//   migration) — migration handled separately.
 /// Tables sniffed during detection. Any non-empty row count flips the
 /// migration into the `Running` state. Ordered so the cheapest check
 /// (the single-row `wallet` table) runs first.

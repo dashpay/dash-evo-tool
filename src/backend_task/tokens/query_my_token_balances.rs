@@ -26,6 +26,10 @@ impl AppContext {
             return Err(TaskError::NoIdentitiesFound);
         }
 
+        // TODO(PROJ-041): 'Stop tracking balance' undone by 'Refresh My Tokens' (re-registers full
+        //   known-token registry × every identity). File an upstream feature request in
+        //   dashpay/platform; fix is DET-side (persist dismissed pairs) since platform-wallet's
+        //   token watch set is in-memory only.
         let token_ids = self.known_token_ids()?;
         let identity_ids: Vec<Identifier> = identities.iter().map(|qi| qi.identity.id()).collect();
 

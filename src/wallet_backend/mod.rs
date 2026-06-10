@@ -582,6 +582,8 @@ impl WalletBackend {
         Ok((wallet.wallet_id, account_xpub))
     }
 
+    // TODO(PROJ-015): TC-012 receive-address reuse unverified — see if dashpay/platform#3770
+    //   addresses it; if not, escalate.
     /// Register a wallet with the upstream SPV backend from its seed, so the
     /// upstream persistor is populated and the wallet's addresses are watched
     /// (W1 — create/import write path; PROJ-010 regression fix).

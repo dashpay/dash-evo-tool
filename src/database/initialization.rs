@@ -841,14 +841,15 @@ impl Database {
         // no longer create the table. Legacy installs keep the dormant
         // rows; the migration tool drains them via git history.
 
-        // The local identity registry was moved to the per-network wallet
-        // k/v store in C7. The `identity` table is still created (empty)
-        // so legacy reads in `database/wallet.rs` (which still consult the
-        // legacy `identity` rows on cold start) compile against a real
-        // schema, matching the C6 pattern used for `contract`. The table
-        // is otherwise unused.
-        conn.execute(
-                    "CREATE TABLE IF NOT EXISTS identity (
+        if include_legacy {
+            // The local identity registry lives in the per-network wallet
+            // k/v store. The legacy `identity` table is created only for
+            // legacy installs and tests. Its sole live reader, `get_wallets`
+            // in `database/wallet.rs`, is a legacy-only path that errors on
+            // the missing `wallet` table before reaching `identity` on a
+            // fresh install, so omitting the table here is safe.
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS identity (
                         id BLOB PRIMARY KEY,
                         data BLOB,
                         status INTEGER NOT NULL DEFAULT 0,
@@ -862,8 +863,9 @@ impl Database {
                         CHECK ((wallet IS NOT NULL AND wallet_index IS NOT NULL) OR (wallet IS NULL AND wallet_index IS NULL)),
                         FOREIGN KEY (wallet) REFERENCES wallet(seed_hash) ON DELETE CASCADE
                     )",
-                    [],
-                )?;
+                [],
+            )?;
+        }
 
         // contested_name / contestant tables removed in C6 — DPNS contest
         // cache now lives in the per-network wallet k/v store. Legacy
@@ -2979,8 +2981,9 @@ mod test {
     ///
     /// The gated targets (`wallet`, `wallet_addresses`, `utxos`,
     /// `single_key_wallet`, `wallet_transactions`, `shielded_notes`,
-    /// `shielded_wallet_meta`) live in `platform-wallet.sqlite` now.
-    /// `settings` and `identity` are always created.
+    /// `shielded_wallet_meta`, `identity`) are legacy schema that lives in
+    /// `platform-wallet.sqlite` or the per-network k/v store now. Only
+    /// `settings` (the migration version counter) is always created.
     #[test]
     fn tc_dev_006_fresh_install_omits_legacy_tables() {
         let tmp = tempfile::tempdir().unwrap();
@@ -2992,7 +2995,6 @@ mod test {
 
         // Always-present
         assert_table_exists(&conn, "settings");
-        assert_table_exists(&conn, "identity");
 
         // Gated targets must be absent
         for t in [
@@ -3003,6 +3005,7 @@ mod test {
             "wallet_transactions",
             "shielded_notes",
             "shielded_wallet_meta",
+            "identity",
         ] {
             assert_table_absent(&conn, t);
         }

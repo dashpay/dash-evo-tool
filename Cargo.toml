@@ -80,7 +80,6 @@ zxcvbn = "3.1.0"
 argon2 = "0.5.3" # For Argon2 key derivation
 aes-gcm = "0.10.3" # For AES-256-GCM encryption
 cbc = "0.1.2" # For CBC mode encryption
-crossbeam-channel = "0.5.15"
 regex = "1.11.1"
 humantime = "2.2.0"
 which = { version = "8.0.0" }
@@ -94,12 +93,6 @@ axum = { version = "0.8", default-features = false, features = ["http1", "tokio"
 subtle = { version = "2.6", optional = true }
 clap = { version = "4", features = ["derive"], optional = true }
 clap_complete = { version = "4", optional = true }
-
-[target.'cfg(not(target_os = "windows"))'.dependencies]
-zmq = "0.10.0"
-
-[target.'cfg(target_os = "windows")'.dependencies]
-zeromq = "0.4.1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"

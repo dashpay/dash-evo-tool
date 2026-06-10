@@ -6,12 +6,10 @@ pub mod migration_status;
 mod platform_address_db;
 mod settings_db;
 pub mod shielded;
-mod transaction_processing;
 mod wallet_lifecycle;
 
 use crate::app_dir::core_cookie_path;
 use crate::backend_task::error::{TaskError, is_rpc_connection_error};
-use crate::components::core_zmq_listener::ZMQConnectionEvent;
 use crate::config::{Config, NetworkConfig};
 use crate::context_provider_spv::SpvProvider;
 use crate::database::Database;
@@ -27,14 +25,12 @@ use crate::wallet_backend::{
 };
 use arc_swap::{ArcSwap, ArcSwapOption};
 use connection_status::ConnectionStatus;
-use crossbeam_channel::{Receiver, Sender};
 use dash_sdk::Sdk;
 use dash_sdk::dapi_client::AddressList;
 use dash_sdk::dashcore_rpc::{Auth, Client};
-use dash_sdk::dpp::dashcore::{Address, Network, Txid};
+use dash_sdk::dpp::dashcore::{Address, Network};
 #[cfg(any(test, feature = "testing"))]
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
-use dash_sdk::dpp::prelude::AssetLockProof;
 use dash_sdk::dpp::state_transition::StateTransitionSigningOptions;
 use dash_sdk::dpp::state_transition::batch_transition::methods::StateTransitionCreationOptions;
 use dash_sdk::dpp::system_data_contracts::{SystemDataContract, load_system_data_contract};
@@ -73,11 +69,6 @@ pub struct AppContext {
     // owned by upstream platform-wallet.
     spv_context_provider: RwLock<SpvProvider>,
     pub(crate) config: Arc<RwLock<NetworkConfig>>,
-    // TODO(P0.5): ZMQ listener usage is audited in P4 (Decision #3); the
-    // receiver is retained until that audit decides its fate.
-    #[allow(dead_code)]
-    pub(crate) rx_zmq_status: Receiver<ZMQConnectionEvent>,
-    pub(crate) sx_zmq_status: Sender<ZMQConnectionEvent>,
     pub(crate) dpns_contract: Arc<DataContract>,
     pub(crate) withdraws_contract: Arc<DataContract>,
     pub(crate) dashpay_contract: Arc<DataContract>,
@@ -87,7 +78,6 @@ pub struct AppContext {
     pub(crate) has_wallet: AtomicBool,
     pub(crate) wallets: RwLock<BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>>>,
     pub(crate) single_key_wallets: RwLock<BTreeMap<SingleKeyHash, Arc<RwLock<SingleKeyWallet>>>>,
-    pub(crate) transactions_waiting_for_finality: Mutex<BTreeMap<Txid, Option<AssetLockProof>>>,
     /// Whether to animate the UI elements.
     ///
     /// This is used to control animations in the UI, such as loading spinners or transitions.
@@ -201,7 +191,6 @@ impl AppContext {
 
         let network_config = config.config_for_network(network).clone()?;
         let config_lock = Arc::new(RwLock::new(network_config.clone()));
-        let (sx_zmq_status, rx_zmq_status) = crossbeam_channel::unbounded();
 
         // Create the SDK context provider; bind to app context later
         // (post construction) due to circularity.
@@ -344,8 +333,6 @@ impl AppContext {
             sdk: ArcSwap::from_pointee(sdk),
             spv_context_provider: spv_provider.into(),
             config: config_lock,
-            sx_zmq_status,
-            rx_zmq_status,
             dpns_contract: Arc::new(dpns_contract),
             withdraws_contract: Arc::new(withdrawal_contract),
             dashpay_contract: Arc::new(dashpay_contract),
@@ -355,7 +342,6 @@ impl AppContext {
             has_wallet: (!wallets.is_empty() || !single_key_wallets.is_empty()).into(),
             wallets: RwLock::new(wallets),
             single_key_wallets: RwLock::new(single_key_wallets),
-            transactions_waiting_for_finality: Mutex::new(BTreeMap::new()),
             animate,
             cached_settings: RwLock::new(None),
             app_kv,

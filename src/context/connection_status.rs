@@ -2,7 +2,6 @@ use crate::app::AppAction;
 use crate::app::TaskResult;
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::core::CoreItem;
-use crate::components::core_zmq_listener::ZMQConnectionEvent;
 use crate::model::spv_status::{SpvStatus, SpvStatusSnapshot};
 use dash_sdk::dash_spv::sync::{ProgressPercentage, SyncProgress as SpvSyncProgress, SyncState};
 use dash_sdk::dpp::dashcore::{ChainLock, Network};
@@ -50,9 +49,7 @@ impl From<u8> for OverallConnectionState {
 #[derive(Debug)]
 pub struct ConnectionStatus {
     rpc_online: AtomicBool,
-    zmq_status: Mutex<ZMQConnectionEvent>,
     spv_status: AtomicU8,
-    disable_zmq: AtomicBool,
     overall_state: AtomicU8,
     // NOTE: Mutex (not RwLock) is intentional — single reader (tooltip hover),
     // single writer (poll cycle), minimal contention. RwLock overhead not justified.
@@ -75,9 +72,7 @@ impl ConnectionStatus {
     pub fn new() -> Self {
         Self {
             rpc_online: AtomicBool::new(false),
-            zmq_status: Mutex::new(ZMQConnectionEvent::Disconnected),
             spv_status: AtomicU8::new(SpvStatus::Idle as u8),
-            disable_zmq: AtomicBool::new(false),
             overall_state: AtomicU8::new(OverallConnectionState::Disconnected as u8),
             spv_last_error: Mutex::new(None),
             spv_sync_progress: Mutex::new(None),
@@ -94,12 +89,8 @@ impl ConnectionStatus {
     /// so the status reflects the new network from a clean slate.
     pub fn reset(&self) {
         self.rpc_online.store(false, Ordering::Relaxed);
-        if let Ok(mut status) = self.zmq_status.lock() {
-            *status = ZMQConnectionEvent::Disconnected;
-        }
         self.spv_status
             .store(SpvStatus::Idle as u8, Ordering::Relaxed);
-        self.disable_zmq.store(false, Ordering::Relaxed);
         self.spv_connected_peers.store(0, Ordering::Relaxed);
         *self
             .spv_no_peers_since
@@ -147,19 +138,6 @@ impl ConnectionStatus {
     /// Get the last RPC error message, if any.
     pub fn rpc_last_error(&self) -> Option<String> {
         self.rpc_last_error.lock().ok().and_then(|g| g.clone())
-    }
-
-    pub fn zmq_connected(&self) -> bool {
-        self.zmq_status
-            .lock()
-            .map(|status| matches!(*status, ZMQConnectionEvent::Connected))
-            .unwrap_or(false)
-    }
-
-    pub fn set_zmq_status(&self, event: ZMQConnectionEvent) {
-        if let Ok(mut status) = self.zmq_status.lock() {
-            *status = event;
-        }
     }
 
     pub fn spv_status(&self) -> SpvStatus {
@@ -273,14 +251,6 @@ impl ConnectionStatus {
     /// `EventBridge` `on_network_event` callback).
     pub fn spv_connected_peers(&self) -> u16 {
         self.spv_connected_peers.load(Ordering::Relaxed)
-    }
-
-    pub fn disable_zmq(&self) -> bool {
-        self.disable_zmq.load(Ordering::Relaxed)
-    }
-
-    pub fn set_disable_zmq(&self, disable: bool) {
-        self.disable_zmq.store(disable, Ordering::Relaxed);
     }
 
     /// Reset the throttle timer so the next `trigger_refresh()` fires immediately.

@@ -1,5 +1,3 @@
-mod start_dash_qt;
-
 use crate::app_dir::core_cookie_path;
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::{TaskError, is_rpc_auth_error, is_rpc_connection_error};
@@ -15,7 +13,6 @@ use dash_sdk::dpp::dashcore::{
     Address, Block, ChainLock, InstantLock, Network, OutPoint, Transaction, TxOut,
 };
 use dash_sdk::dpp::fee::Credits;
-use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::{Arc, RwLock};
 
@@ -28,7 +25,6 @@ pub enum CoreTask {
     /// Platform address balances (true = sync Platform, false = Core only).
     RefreshWalletInfo(Arc<RwLock<Wallet>>, bool),
     RefreshSingleKeyWalletInfo(Arc<RwLock<SingleKeyWallet>>),
-    StartDashQT(Network, PathBuf, bool),
     CreateRegistrationAssetLock(Arc<RwLock<Wallet>>, Credits, u32), // wallet, amount in credits, identity index
     CreateTopUpAssetLock(Arc<RwLock<Wallet>>, Credits, u32, u32), // wallet, amount in credits, identity index, top up index
     SendWalletPayment {
@@ -58,10 +54,6 @@ impl PartialEq for CoreTask {
                 | (
                     CoreTask::RefreshSingleKeyWalletInfo(_),
                     CoreTask::RefreshSingleKeyWalletInfo(_)
-                )
-                | (
-                    CoreTask::StartDashQT(_, _, _),
-                    CoreTask::StartDashQT(_, _, _)
                 )
                 | (
                     CoreTask::CreateRegistrationAssetLock(_, _, _),
@@ -216,10 +208,6 @@ impl AppContext {
             CoreTask::RefreshSingleKeyWalletInfo(_wallet) => {
                 Err(TaskError::SingleKeyWalletsUnsupported)
             }
-            CoreTask::StartDashQT(network, custom_dash_qt, overwrite_dash_conf) => self
-                .start_dash_qt(network, custom_dash_qt, overwrite_dash_conf)
-                .map_err(|e| TaskError::DashCoreStartError { source: e })
-                .map(|_| BackendTaskSuccessResult::None),
             CoreTask::CreateRegistrationAssetLock(wallet, amount, identity_index) => {
                 let backend = self.wallet_backend()?;
                 let seed_hash = wallet.read()?.seed_hash();

@@ -18,7 +18,6 @@ use crate::ui::components::styled::{
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::theme::{DashColors, ResponseExt, Shape, ThemeMode};
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
-use crate::utils::path::format_path_for_display;
 use dash_sdk::dash_spv::sync::{ProgressPercentage, SyncProgress as SpvSyncProgress, SyncState};
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::TimestampMillis;
@@ -68,9 +67,6 @@ pub struct NetworkChooserScreen {
     dashmate_password_input: PasswordInput,
     pub current_network: Network,
     pub recheck_time: Option<TimestampMillis>,
-    custom_dash_qt_path: Option<PathBuf>,
-    overwrite_dash_conf: bool,
-    disable_zmq: bool,
     developer_mode: bool,
     theme_preference: ThemeMode,
     should_reset_collapsing_states: bool,
@@ -85,7 +81,6 @@ pub struct NetworkChooserScreen {
     db_clear_dialog: Option<ConfirmationDialog>,
     db_clear_message: Option<DatabaseClearMessage>,
     auto_start_spv: bool,
-    close_dash_qt_on_exit: bool,
     discovery_in_progress: bool,
     fetch_confirmation_dialog: Option<ConfirmationDialog>,
     /// Set when DAPI discovery completes and an SDK reinit is needed.
@@ -94,11 +89,7 @@ pub struct NetworkChooserScreen {
 }
 
 impl NetworkChooserScreen {
-    pub fn new(
-        contexts: &BTreeMap<Network, Arc<AppContext>>,
-        current_network: Network,
-        overwrite_dash_conf: bool,
-    ) -> Self {
+    pub fn new(contexts: &BTreeMap<Network, Arc<AppContext>>, current_network: Network) -> Self {
         let any_context = contexts
             .values()
             .next()
@@ -122,10 +113,7 @@ impl NetworkChooserScreen {
 
         let settings = current_context.get_app_settings();
         let theme_preference = settings.theme_mode;
-        let disable_zmq = settings.disable_zmq;
-        let custom_dash_qt_path = settings.dash_qt_path;
         let auto_start_spv = settings.auto_start_spv;
-        let close_dash_qt_on_exit = settings.close_dash_qt_on_exit;
 
         Self {
             network_contexts: contexts.clone(),
@@ -133,9 +121,6 @@ impl NetworkChooserScreen {
             dashmate_password_input,
             current_network,
             recheck_time: None,
-            custom_dash_qt_path,
-            overwrite_dash_conf,
-            disable_zmq,
             developer_mode,
             theme_preference,
             should_reset_collapsing_states: true, // Start with collapsed state
@@ -150,7 +135,6 @@ impl NetworkChooserScreen {
             db_clear_dialog: None,
             db_clear_message: None,
             auto_start_spv,
-            close_dash_qt_on_exit,
             discovery_in_progress: false,
             fetch_confirmation_dialog: None,
             pending_reinit_after_discovery: false,
@@ -169,17 +153,6 @@ impl NetworkChooserScreen {
             .expect("BUG: no AppContext available for any network")
     }
 
-    /// Save the current settings to the database
-    ///
-    /// TODO: doesn't save local network settings like password yet.
-    fn save(&self) -> Result<(), String> {
-        self.current_app_context()
-            .update_dash_core_execution_settings(
-                self.custom_dash_qt_path.clone(),
-                self.overwrite_dash_conf,
-            )
-            .map_err(|e| e.to_string())
-    }
     /// Render the simplified settings interface
     fn render_network_table(&mut self, ui: &mut Ui) -> AppAction {
         let mut app_action = AppAction::None;
@@ -630,151 +603,6 @@ impl NetworkChooserScreen {
                     });
                 });
 
-                // Dash-QT Path
-                ui.add_space(10.0);
-                ui.separator();
-                ui.add_space(10.0);
-
-                ui.label(
-                    egui::RichText::new("Dash Core Executable Path")
-                        .strong()
-                        .color(DashColors::text_primary(dark_mode)),
-                );
-                ui.add_space(8.0);
-
-                ui.horizontal(|ui| {
-                    if ui.button("Select File").clicked()
-                        && let Some(path) = rfd::FileDialog::new().pick_file()
-                    {
-                        let previous_custom_dash_qt_path = self.custom_dash_qt_path.clone();
-                        let file_name = path.file_name().and_then(|f| f.to_str());
-                        if let Some(file_name) = file_name {
-                            // Handle macOS .app bundles
-                            let resolved_path = if cfg!(target_os = "macos")
-                                && path.extension().and_then(|s| s.to_str()) == Some("app")
-                            {
-                                path.join("Contents").join("MacOS").join("Dash-Qt")
-                            } else {
-                                path.clone()
-                            };
-
-                            // Check if the resolved path exists and is valid
-                            let is_valid = if cfg!(target_os = "windows") {
-                                file_name.to_ascii_lowercase().ends_with("dash-qt.exe")
-                            } else if cfg!(target_os = "macos") {
-                                file_name.eq_ignore_ascii_case("dash-qt")
-                                    || (file_name.to_ascii_lowercase().ends_with(".app")
-                                        && resolved_path.exists())
-                            } else {
-                                file_name.eq_ignore_ascii_case("dash-qt")
-                            };
-
-                            if is_valid {
-                                self.custom_dash_qt_path = Some(resolved_path);
-                                if let Err(e) = self.save() {
-                                    tracing::warn!("Failed to save Dash-Qt path setting: {}", e);
-                                    MessageBanner::set_global(
-                                        ui.ctx(),
-                                        "Failed to save Dash-Qt path setting. Please try again.",
-                                        MessageType::Error,
-                                    );
-                                    self.custom_dash_qt_path = previous_custom_dash_qt_path;
-                                }
-                            } else {
-                                let required_file_name = if cfg!(target_os = "windows") {
-                                    "dash-qt.exe"
-                                } else if cfg!(target_os = "macos") {
-                                    "Dash-Qt or Dash-Qt.app"
-                                } else {
-                                    "dash-qt"
-                                };
-                                MessageBanner::set_global(
-                                    ui.ctx(),
-                                    format!(
-                                        "Invalid file: Please select a valid '{}'.",
-                                        required_file_name
-                                    ),
-                                    MessageType::Error,
-                                );
-                            }
-                        }
-                    }
-
-                    if self.custom_dash_qt_path.is_some() && ui.button("Clear").clicked() {
-                        let previous_custom_dash_qt_path = self.custom_dash_qt_path.clone();
-                        self.custom_dash_qt_path = Some(PathBuf::new());
-                        if let Err(e) = self.save() {
-                            tracing::warn!("Failed to save cleared Dash-Qt path setting: {}", e);
-                            MessageBanner::set_global(
-                                ui.ctx(),
-                                "Failed to clear Dash-Qt path setting. Please try again.",
-                                MessageType::Error,
-                            );
-                            self.custom_dash_qt_path = previous_custom_dash_qt_path;
-                        }
-                    }
-                });
-
-                if let Some(ref file) = self.custom_dash_qt_path
-                    && !file.as_os_str().is_empty()
-                {
-                    ui.horizontal(|ui| {
-                        ui.label("Path:");
-                        ui.label(
-                            egui::RichText::new(format_path_for_display(file))
-                                .color(DashColors::SUCCESS)
-                                .italics(),
-                        );
-                    });
-                }
-
-                // Configuration Options
-                ui.add_space(10.0);
-                ui.separator();
-                ui.add_space(10.0);
-                ui.label(
-                    egui::RichText::new("Configuration Options")
-                        .strong()
-                        .color(DashColors::text_primary(dark_mode)),
-                );
-                ui.add_space(8.0);
-
-                ui.horizontal(|ui| {
-                    let previous_overwrite_dash_conf = self.overwrite_dash_conf;
-                    if StyledCheckbox::new(&mut self.overwrite_dash_conf, "Overwrite dash.conf")
-                        .show(ui)
-                        .clicked()
-                        && let Err(e) = self.save()
-                    {
-                        tracing::warn!("Failed to save overwrite_dash_conf setting: {}", e);
-                        MessageBanner::set_global(
-                            ui.ctx(),
-                            "Failed to save overwrite dash.conf setting. Please try again.",
-                            MessageType::Error,
-                        );
-                        self.overwrite_dash_conf = previous_overwrite_dash_conf;
-                    }
-                    ui.label(
-                        egui::RichText::new("Auto-configure required settings")
-                            .color(DashColors::TEXT_SECONDARY)
-                            .italics(),
-                    );
-                });
-
-                // Disable ZMQ toggle (requires restart)
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    if StyledCheckbox::new(&mut self.disable_zmq, "Disable ZMQ (requires restart)")
-                        .show(ui)
-                        .clicked()
-                    {
-                        // Persist immediately via context
-                        let _ = self
-                            .current_app_context()
-                            .update_disable_zmq(self.disable_zmq);
-                    }
-                });
-
                 ui.add_space(8.0);
 
                 ui.horizontal(|ui| {
@@ -892,46 +720,6 @@ impl NetworkChooserScreen {
                         );
                     });
                 }
-
-                ui.add_space(8.0);
-
-                ui.horizontal(|ui| {
-                    if StyledCheckbox::new(
-                        &mut self.close_dash_qt_on_exit,
-                        "Close Dash-Qt when DET exits",
-                    )
-                    .show(ui)
-                    .clicked()
-                    {
-                        // Save to the shared app k/v store
-                        match self
-                            .current_app_context()
-                            .update_close_dash_qt_on_exit(self.close_dash_qt_on_exit)
-                        {
-                            Ok(_) => {
-                                tracing::debug!(
-                                    "close_dash_qt_on_exit setting saved: {}",
-                                    self.close_dash_qt_on_exit
-                                );
-                            }
-                            Err(e) => {
-                                tracing::error!(
-                                    "Failed to save close_dash_qt_on_exit setting: {:?}",
-                                    e
-                                );
-                            }
-                        }
-                    }
-                    ui.label(
-                        egui::RichText::new(if self.close_dash_qt_on_exit {
-                            "Dash-Qt will close automatically"
-                        } else {
-                            "Dash-Qt will keep running"
-                        })
-                        .color(DashColors::TEXT_SECONDARY)
-                        .italics(),
-                    );
-                });
 
                 // Advanced SPV peer source configuration is Expert-only —
                 // fresh-install users get auto-discovery, which is the correct default.
@@ -1692,8 +1480,6 @@ impl ScreenLike for NetworkChooserScreen {
 
         // Reload settings from the shared app k/v store to ensure we have the latest values
         let settings = self.current_app_context().get_app_settings();
-        self.custom_dash_qt_path = settings.dash_qt_path;
-        self.overwrite_dash_conf = settings.overwrite_dash_conf;
         self.theme_preference = settings.theme_mode;
     }
 

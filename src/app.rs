@@ -2,11 +2,9 @@
 use crate::app_dir::data_file_path;
 use crate::app_dir::{app_user_data_dir_path, ensure_data_dir_exists, ensure_env_file};
 use crate::backend_task::contested_names::ContestedResourceTask;
-use crate::backend_task::core::CoreItem;
 use crate::backend_task::error::TaskError;
 use crate::backend_task::migration::MigrationTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
-use crate::components::core_zmq_listener::{CoreZMQListener, ZMQMessage};
 use crate::context::AppContext;
 use crate::context::connection_status::{ConnectionStatus, OverallConnectionState};
 use crate::context::migration_status::{MigrationState, MigrationStep};
@@ -37,7 +35,7 @@ use crate::ui::tools::transition_visualizer_screen::TransitionVisualizerScreen;
 use crate::ui::wallets::wallets_screen::WalletsBalancesScreen;
 use crate::ui::welcome_screen::WelcomeScreen;
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike, ScreenType};
-use crate::utils::egui_mpsc::{self, EguiMpscAsync, EguiMpscSync};
+use crate::utils::egui_mpsc::{self, EguiMpscAsync};
 use crate::utils::tasks::TaskManager;
 use crate::wallet_backend::DetScope;
 use dash_sdk::dpp::dashcore::Network;
@@ -47,7 +45,7 @@ use eframe::{App, egui};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::BitOrAssign;
 use std::path::PathBuf;
-use std::sync::{Arc, mpsc};
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 use std::vec;
 use tokio::sync::mpsc as tokiompsc;
@@ -163,10 +161,6 @@ pub struct AppState {
     network_switch_pending: Option<Network>,
     /// Progress banner displayed while a network switch is in progress.
     network_switch_banner: Option<BannerHandle>,
-    #[allow(dead_code)] // Kept alive for the lifetime of the app
-    zmq_listeners: BTreeMap<Network, CoreZMQListener>,
-    core_message_sender: egui_mpsc::SenderSync<(ZMQMessage, Network)>,
-    pub core_message_receiver: mpsc::Receiver<(ZMQMessage, Network)>,
     pub task_result_sender: egui_mpsc::SenderAsync<TaskResult>, // Channel sender for sending task results
     pub task_result_receiver: tokiompsc::Receiver<TaskResult>, // Channel receiver for receiving task results
     theme: ThemeState,
@@ -366,7 +360,6 @@ impl AppState {
             }
         };
         let theme_preference = settings.theme_mode;
-        let overwrite_dash_conf = settings.overwrite_dash_conf;
         let onboarding_completed = settings.onboarding_completed;
 
         let subtasks = Arc::new(TaskManager::new());
@@ -474,8 +467,7 @@ impl AppState {
             DashPayScreen::new(&active_context, DashPaySubscreen::Payments);
         let dashpay_profile_search_screen = ProfileSearchScreen::new(active_context.clone());
 
-        let network_chooser_screen =
-            NetworkChooserScreen::new(&network_contexts, chosen_network, overwrite_dash_conf);
+        let network_chooser_screen = NetworkChooserScreen::new(&network_contexts, chosen_network);
 
         let masternode_list_diff_screen = MasternodeListDiffScreen::new(&active_context);
 
@@ -531,18 +523,6 @@ impl AppState {
                 }
             });
         }
-
-        // Create a channel for communication with the InstantSendListener
-        let (core_message_sender, core_message_receiver) =
-            mpsc::channel().with_egui_ctx(ctx.clone());
-
-        let zmq_listeners: BTreeMap<Network, CoreZMQListener> = network_contexts
-            .iter()
-            .filter_map(|(&network, ctx)| {
-                Self::spawn_zmq_listener(ctx, network, &core_message_sender)
-                    .map(|listener| (network, listener))
-            })
-            .collect();
 
         // MCP server (feature-gated, opt-in via MCP_API_KEY env var)
         #[cfg(feature = "mcp")]
@@ -678,9 +658,6 @@ impl AppState {
             network_contexts,
             network_switch_pending: None,
             network_switch_banner: None,
-            zmq_listeners,
-            core_message_sender,
-            core_message_receiver,
             task_result_sender,
             task_result_receiver,
             theme: ThemeState::new(theme_preference),
@@ -817,44 +794,6 @@ impl AppState {
         });
     }
 
-    fn spawn_zmq_listener(
-        ctx: &Arc<AppContext>,
-        network: Network,
-        sender: &egui_mpsc::SenderSync<(ZMQMessage, Network)>,
-    ) -> Option<CoreZMQListener> {
-        let default_endpoint = match network {
-            Network::Mainnet => "tcp://127.0.0.1:23708",
-            Network::Testnet => "tcp://127.0.0.1:23709",
-            Network::Devnet => "tcp://127.0.0.1:23710",
-            Network::Regtest => "tcp://127.0.0.1:20302",
-        };
-        let endpoint = ctx
-            .config
-            .read()
-            .unwrap()
-            .core_zmq_endpoint
-            .clone()
-            .unwrap_or_else(|| default_endpoint.to_string());
-        let disable = ctx.get_app_settings().disable_zmq;
-        if disable {
-            return None;
-        }
-        // SPV mode has no local Dash Core node to talk to over ZMQ. Gate the
-        // listener spawn through FeatureGate so the common (SPV) path doesn't
-        // burn a socket + retry loop waiting for a node that isn't there.
-        if !FeatureGate::RpcBackend.is_available(ctx) {
-            return None;
-        }
-        CoreZMQListener::spawn_listener(
-            network,
-            &endpoint,
-            sender.clone(),
-            Some(ctx.sx_zmq_status.clone()),
-        )
-        .inspect_err(|e| tracing::error!("Failed to create {network:?} ZMQ listener: {e}"))
-        .ok()
-    }
-
     pub fn active_root_screen_mut(&mut self) -> &mut Screen {
         self.main_screens
             .get_mut(&self.selected_main_screen)
@@ -975,14 +914,6 @@ impl AppState {
             handle.clear();
         }
         self.last_migration_state = None;
-
-        // Spawn a ZMQ listener for the newly created network context.
-        if !self.zmq_listeners.contains_key(&network)
-            && let Some(listener) =
-                Self::spawn_zmq_listener(&app_context, network, &self.core_message_sender)
-        {
-            self.zmq_listeners.insert(network, listener);
-        }
 
         // Persist the network choice.
         app_context
@@ -1496,48 +1427,6 @@ impl App for AppState {
         if self.last_repaint_request.elapsed() >= Duration::from_secs(1) {
             ctx.request_repaint_after(Duration::from_secs(1));
             self.last_repaint_request = Instant::now();
-        }
-
-        // **Poll the instant_send_receiver for any new InstantSend messages**
-        while let Ok((message, network)) = self.core_message_receiver.try_recv() {
-            let Some(app_context) = self.network_contexts.get(&network) else {
-                tracing::error!("No app context available for {:?}", network);
-                continue;
-            };
-            match message {
-                ZMQMessage::ISLockedTransaction(tx, is_lock) => {
-                    // Store the asset lock transaction in the database
-                    match app_context.received_transaction_finality(
-                        &tx,
-                        Some(is_lock.clone()),
-                        None,
-                    ) {
-                        Ok(utxos) => {
-                            let core_item =
-                                CoreItem::InstantLockedTransaction(tx.clone(), utxos, is_lock);
-                            self.visible_screen_mut()
-                                .display_task_result(BackendTaskSuccessResult::CoreItem(core_item));
-                        }
-                        Err(e) => {
-                            tracing::error!("Failed to store asset lock: {}", e);
-                        }
-                    }
-                }
-                ZMQMessage::ChainLockedLockedTransaction(tx, height) => {
-                    if let Err(e) =
-                        app_context.received_transaction_finality(&tx, None, Some(height))
-                    {
-                        tracing::error!("Failed to store asset lock: {}", e);
-                    }
-                }
-                ZMQMessage::ChainLockedBlock(block, chain_lock) => {
-                    self.visible_screen_mut().display_task_result(
-                        BackendTaskSuccessResult::CoreItem(CoreItem::ChainLockedBlock(
-                            block, chain_lock,
-                        )),
-                    );
-                }
-            }
         }
 
         // Check if there are scheduled masternode votes to cast and if so, cast them

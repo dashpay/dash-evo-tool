@@ -56,11 +56,6 @@ impl Database {
         self.path.clone()
     }
 
-    #[cfg(test)]
-    pub(crate) fn shared_connection(&self) -> Arc<Mutex<Connection>> {
-        self.conn.clone()
-    }
-
     pub fn execute<P: Params>(&self, sql: &str, params: P) -> rusqlite::Result<usize> {
         let conn = self.conn.lock().unwrap();
         conn.execute(sql, params)

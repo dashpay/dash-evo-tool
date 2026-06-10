@@ -689,7 +689,7 @@ impl ScreenLike for CreateAssetLockScreen {
                     BackendTaskSuccessResult::CoreItem(
                         CoreItem::ReceivedAvailableUTXOTransaction(tx, _),
                     ) => {
-                        // This is the asset lock transaction from ZMQ
+                        // The asset-lock transaction surfaced as a received UTXO.
                         if tx.special_transaction_payload.is_some() {
                             self.asset_lock_tx_id = Some(tx.txid().to_string());
                             let mut step = self.step.write().unwrap();
@@ -728,7 +728,7 @@ impl ScreenLike for CreateAssetLockScreen {
                     BackendTaskSuccessResult::CoreItem(
                         CoreItem::ReceivedAvailableUTXOTransaction(tx, _),
                     ) => {
-                        // This is the asset lock transaction from ZMQ
+                        // The asset-lock transaction surfaced as a received UTXO.
                         if tx.special_transaction_payload.is_some() {
                             self.asset_lock_tx_id = Some(tx.txid().to_string());
                             let mut step = self.step.write().unwrap();

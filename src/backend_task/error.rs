@@ -930,16 +930,6 @@ pub enum TaskError {
     },
 
     // ──────────────────────────────────────────────────────────────────────────
-    // Dash Core lifecycle errors
-    // ──────────────────────────────────────────────────────────────────────────
-    /// Dash Core could not be started (binary missing, config error, I/O failure).
-    #[error("Could not start Dash Core. Verify the installation and try again.")]
-    DashCoreStartError {
-        #[source]
-        source: std::io::Error,
-    },
-
-    // ──────────────────────────────────────────────────────────────────────────
     // Network restriction errors
     // ──────────────────────────────────────────────────────────────────────────
     /// The requested operation is not available on the current network.

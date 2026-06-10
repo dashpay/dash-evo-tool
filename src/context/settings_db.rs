@@ -22,25 +22,6 @@ impl AppContext {
         self.set_app_settings(&settings)
     }
 
-    /// Persist the Dash-Qt execution toggles.
-    pub fn update_dash_core_execution_settings(
-        &self,
-        custom_dash_qt_path: Option<std::path::PathBuf>,
-        overwrite_dash_conf: bool,
-    ) -> Result<(), KvAdapterError> {
-        let mut settings = self.get_app_settings();
-        settings.dash_qt_path = custom_dash_qt_path;
-        settings.overwrite_dash_conf = overwrite_dash_conf;
-        self.set_app_settings(&settings)
-    }
-
-    /// Persist the ZMQ-disabled flag.
-    pub fn update_disable_zmq(&self, disable: bool) -> Result<(), KvAdapterError> {
-        let mut settings = self.get_app_settings();
-        settings.disable_zmq = disable;
-        self.set_app_settings(&settings)
-    }
-
     /// Persist the theme preference.
     pub fn update_theme_preference(&self, theme_mode: ThemeMode) -> Result<(), KvAdapterError> {
         let mut settings = self.get_app_settings();
@@ -52,13 +33,6 @@ impl AppContext {
     pub fn update_auto_start_spv(&self, auto_start: bool) -> Result<(), KvAdapterError> {
         let mut settings = self.get_app_settings();
         settings.auto_start_spv = auto_start;
-        self.set_app_settings(&settings)
-    }
-
-    /// Persist the `close_dash_qt_on_exit` flag.
-    pub fn update_close_dash_qt_on_exit(&self, close_on_exit: bool) -> Result<(), KvAdapterError> {
-        let mut settings = self.get_app_settings();
-        settings.close_dash_qt_on_exit = close_on_exit;
         self.set_app_settings(&settings)
     }
 

@@ -190,7 +190,7 @@ struct SelectionState {
     selected_qr_item: Option<SelectedQRItem>,
 }
 
-/// Incoming core items received via ZMQ or backend tasks.
+/// Incoming core items received via backend tasks.
 #[derive(Default)]
 struct IncomingState {
     chain_locked_blocks: BTreeMap<CoreBlockHeight, (Block, ChainLock, bool)>,

@@ -2236,7 +2236,7 @@ impl WalletsBalancesScreen {
         }
         if let Some(request) = response.confirmed {
             let passphrase = crate::wallet_backend::single_key::ImportPassphrase {
-                passphrase: request.passphrase.clone(),
+                passphrase: request.passphrase.clone().map(zeroize::Zeroizing::new),
                 hint: request.passphrase_hint.clone(),
             };
             match self.register_imported_single_key(&request.wif, passphrase, request.alias.clone())
@@ -2322,7 +2322,7 @@ impl WalletsBalancesScreen {
         }
         if let Some(request) = response.confirmed {
             let new_passphrase = crate::wallet_backend::single_key::ImportPassphrase {
-                passphrase: request.new_passphrase.as_ref().map(|p| p.to_string()),
+                passphrase: request.new_passphrase.clone(),
                 hint: request.new_hint.clone(),
             };
             match crate::backend_task::migration::single_key_restore::restore_protected_single_key(
@@ -2599,37 +2599,52 @@ impl ScreenLike for WalletsBalancesScreen {
                                             );
                                         }
                                     }
+                                    self.show_rename_dialog = false;
+                                    self.rename_input.clear();
                                 }
                                 // Handle single key wallet rename
                                 else if let Some(selected_sk_wallet) =
                                     &self.selected_single_key_wallet
                                 {
-                                    let mut wallet = selected_sk_wallet.write().unwrap();
-                                    wallet.alias = Some(self.rename_input.clone());
-
-                                    // Alias persistence goes through the
-                                    // modern single-key sidecar, matching
-                                    // the HD-wallet rename path above. The
-                                    // cold-boot picker reads the same
-                                    // sidecar, so the new name survives a
-                                    // restart without touching the legacy
-                                    // `single_key_wallet` table.
-                                    let address = wallet.address.to_string();
-                                    if let Ok(backend) = self.app_context.wallet_backend()
-                                        && let Err(e) = backend
+                                    // Persist FIRST so the in-memory display
+                                    // alias and the "renamed" outcome only
+                                    // reflect a durable change. Alias
+                                    // persistence goes through the modern
+                                    // single-key sidecar (matching the
+                                    // HD-wallet rename path above), so the
+                                    // new name survives a restart without
+                                    // touching the legacy `single_key_wallet`
+                                    // table.
+                                    let address =
+                                        selected_sk_wallet.read().unwrap().address.to_string();
+                                    let new_alias = self.rename_input.clone();
+                                    let persisted = match self.app_context.wallet_backend() {
+                                        Ok(backend) => backend
                                             .single_key()
-                                            .set_alias(&address, Some(self.rename_input.clone()))
-                                    {
-                                        tracing::warn!(
-                                            address = %address,
-                                            error = ?e,
-                                            "Failed to persist single-key alias to sidecar",
-                                        );
+                                            .set_alias(&address, Some(new_alias.clone())),
+                                        Err(e) => Err(e),
+                                    };
+                                    match persisted {
+                                        Ok(()) => {
+                                            selected_sk_wallet.write().unwrap().alias =
+                                                Some(new_alias);
+                                            self.show_rename_dialog = false;
+                                            self.rename_input.clear();
+                                        }
+                                        Err(e) => {
+                                            MessageBanner::set_global(
+                                                ctx,
+                                                "Could not rename the imported key. Check available disk space and try again."
+                                                    .to_string(),
+                                                MessageType::Error,
+                                            )
+                                            .with_details(&e);
+                                        }
                                     }
+                                } else {
+                                    self.show_rename_dialog = false;
+                                    self.rename_input.clear();
                                 }
-
-                                self.show_rename_dialog = false;
-                                self.rename_input.clear();
                             }
                         });
                     });

@@ -43,6 +43,12 @@ const ALLOW_LIST: &[&str] = &[
     // copy it forward to the new sidecars and then never touch the
     // legacy tables again.
     "src/backend_task/migration/finish_unwire.rs",
+    // T-SK-03 protected single-key restore — reads the legacy
+    // `single_key_wallet` row's password-encrypted blob to decrypt it
+    // with the user's old password and re-import it into the modern
+    // vault. A migration read inside the legacy → new boundary, the
+    // sibling of finish_unwire.rs; never a cold-boot read.
+    "src/backend_task/migration/single_key_restore.rs",
     // Wallet-task entry points handing off to migration orchestrator
     // for retry / state transitions. The READS here are inside the
     // migration boundary (legacy → new), not cold-boot reads.

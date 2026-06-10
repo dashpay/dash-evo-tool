@@ -2432,7 +2432,7 @@ mod tests {
             &address,
             "old-legacy-password",
             ImportPassphrase {
-                passphrase: Some("a-fresh-strong-passphrase".into()),
+                passphrase: Some(zeroize::Zeroizing::new("a-fresh-strong-passphrase".into())),
                 hint: Some("the new one".into()),
             },
         )
@@ -2453,5 +2453,62 @@ mod tests {
             after.is_empty(),
             "the restored key must drop off the pending list"
         );
+    }
+
+    /// A protected key restored WITHOUT choosing a new passphrase
+    /// (`has_passphrase == false`) is still fully recovered, so the
+    /// data-loss gate must recognize it as restored and permit the future
+    /// T7 drop. Before the fix the gate keyed on `has_passphrase` and
+    /// would have blocked the drop forever.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn gate_recognizes_restore_without_new_passphrase() {
+        use crate::backend_task::migration::finish_unwire::{
+            drop_legacy_single_key_table_when_safe, ensure_legacy_single_key_table_droppable,
+        };
+        use crate::backend_task::migration::single_key_restore::restore_protected_single_key;
+        use crate::wallet_backend::single_key::ImportPassphrase;
+
+        let (ctx, sender, _tmp) = offline_testnet_context();
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("ensure_wallet_backend should succeed offline");
+
+        let mut raw = [0u8; 32];
+        raw[31] = 0x5B;
+        let address =
+            seed_legacy_protected_single_key(&ctx, &raw, "old-legacy-password", Some("plain"));
+
+        // While the protected row is un-restored, the gate must block.
+        let blocked = ensure_legacy_single_key_table_droppable(&ctx)
+            .expect_err("gate must block while a protected row is un-restored");
+        assert!(
+            matches!(blocked, TaskError::MigrationFailed { .. }),
+            "blocked drop must wrap the migration error, got {blocked:?}"
+        );
+
+        // Restore WITHOUT a new passphrase → has_passphrase == false.
+        restore_protected_single_key(
+            &ctx,
+            &address,
+            "old-legacy-password",
+            ImportPassphrase::default(),
+        )
+        .expect("restore without a new passphrase must succeed");
+        let backend = ctx.wallet_backend().expect("backend wired");
+        assert!(
+            backend
+                .single_key()
+                .list()
+                .iter()
+                .any(|k| k.address == address && !k.has_passphrase),
+            "the key must be restored unprotected (has_passphrase == false)"
+        );
+
+        // The gate must now recognize the address as restored and permit
+        // the drop — keyed on presence, not the passphrase flag.
+        ensure_legacy_single_key_table_droppable(&ctx)
+            .expect("gate must recognize an unprotected restore as restored");
+        drop_legacy_single_key_table_when_safe(&ctx)
+            .expect("the sanctioned drop must succeed once every key is restored");
     }
 }

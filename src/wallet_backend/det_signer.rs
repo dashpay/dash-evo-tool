@@ -355,7 +355,7 @@ mod tests {
                 &wif,
                 None,
                 crate::wallet_backend::single_key::ImportPassphrase {
-                    passphrase: Some(SENTINEL_PASSPHRASE.to_string()),
+                    passphrase: Some(zeroize::Zeroizing::new(SENTINEL_PASSPHRASE.to_string())),
                     hint: None,
                 },
             )

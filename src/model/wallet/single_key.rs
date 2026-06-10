@@ -9,7 +9,7 @@ use dash_sdk::dpp::dashcore::secp256k1::Secp256k1;
 use dash_sdk::dpp::dashcore::{Address, Network, OutPoint, PrivateKey, PublicKey, TxOut};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
-use zeroize::Zeroize;
+use zeroize::{Zeroize, Zeroizing};
 
 use super::encryption::derive_password_key;
 
@@ -175,19 +175,26 @@ impl ClosedSingleKey {
     /// Decrypt the private key using a password
     #[allow(deprecated)]
     pub fn decrypt_private_key(&self, password: &str) -> Result<[u8; 32], String> {
-        let key = derive_password_key(password, &self.salt)?;
+        // Both the derived AES key and the decrypted plaintext are
+        // secret-bearing; wrap them in `Zeroizing` so the intermediate
+        // buffers wipe on drop instead of lingering after the bytes are
+        // copied into the returned array.
+        let key = Zeroizing::new(derive_password_key(password, &self.salt)?);
         let cipher = Aes256Gcm::new_from_slice(&key).map_err(|e| e.to_string())?;
         let nonce_arr = Nonce::from_slice(&self.nonce);
-        let decrypted = cipher
-            .decrypt(nonce_arr, self.encrypted_private_key.as_slice())
-            .map_err(|e| e.to_string())?;
+        let decrypted = Zeroizing::new(
+            cipher
+                .decrypt(nonce_arr, self.encrypted_private_key.as_slice())
+                .map_err(|e| e.to_string())?,
+        );
 
-        decrypted.try_into().map_err(|e: Vec<u8>| {
+        let bytes: [u8; 32] = decrypted.as_slice().try_into().map_err(|_| {
             format!(
                 "invalid private key length, expected 32 bytes, got {} bytes",
-                e.len()
+                decrypted.len()
             )
-        })
+        })?;
+        Ok(bytes)
     }
 }
 

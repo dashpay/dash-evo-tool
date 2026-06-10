@@ -536,7 +536,7 @@ mod tests {
                 &wif,
                 blob.alias.clone(),
                 ImportPassphrase {
-                    passphrase: Some("new-strong-passphrase".into()),
+                    passphrase: Some(Zeroizing::new("new-strong-passphrase".into())),
                     hint: None,
                 },
             )

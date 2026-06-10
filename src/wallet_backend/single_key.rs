@@ -113,12 +113,31 @@ pub struct SingleKeyView<'a> {
 /// Optional passphrase choice supplied by the import dialog. Kept as a
 /// small struct so the import API has one parameter for "no passphrase
 /// / passphrase + hint" rather than two parallel `Option`s.
-#[derive(Debug, Clone, Default)]
+///
+/// `Debug` is hand-written to redact the passphrase: deriving it would
+/// dump the plaintext into logs or panic backtraces.
+#[derive(Clone, Default)]
 pub struct ImportPassphrase {
-    /// User-supplied passphrase. Empty / `None` ⇒ no passphrase.
-    pub passphrase: Option<String>,
+    /// User-supplied passphrase, kept in [`Zeroizing`] so it wipes on
+    /// drop. Empty / `None` ⇒ no passphrase.
+    pub passphrase: Option<Zeroizing<String>>,
     /// Optional hint shown next to the unlock prompt.
     pub hint: Option<String>,
+}
+
+impl std::fmt::Debug for ImportPassphrase {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ImportPassphrase")
+            .field(
+                "passphrase",
+                &self
+                    .passphrase
+                    .as_ref()
+                    .map(|p| format!("[redacted; len {}]", p.len())),
+            )
+            .field("hint", &self.hint)
+            .finish()
+    }
 }
 
 impl<'a> SingleKeyView<'a> {
@@ -190,7 +209,7 @@ impl<'a> SingleKeyView<'a> {
                 .map_err(|_| TaskError::SingleKeyCryptoFailure)?,
         );
 
-        let entry = match passphrase.passphrase.as_deref() {
+        let entry = match passphrase.passphrase.as_ref().map(|p| p.as_str()) {
             Some(p) if !p.is_empty() => {
                 if p.chars().count() < MIN_SINGLE_KEY_PASSPHRASE_LEN {
                     return Err(TaskError::SingleKeyPassphraseTooShort {
@@ -695,6 +714,26 @@ pub fn open_secret_store(path: &std::path::Path) -> Result<SecretStore, SecretSt
 mod tests {
     use super::*;
 
+    /// The hand-written `ImportPassphrase` `Debug` must redact the
+    /// passphrase so it can never leak through `{:?}` into logs or panic
+    /// backtraces.
+    #[test]
+    fn import_passphrase_debug_redacts_secret() {
+        let pp = "correct-horse-battery-staple";
+        let imp = ImportPassphrase {
+            passphrase: Some(Zeroizing::new(pp.to_string())),
+            hint: Some("the usual".into()),
+        };
+        let dbg = format!("{imp:?}");
+        assert!(!dbg.contains(pp), "debug leaked the passphrase: {dbg}");
+        assert!(
+            dbg.contains("[redacted"),
+            "debug must mark redaction: {dbg}"
+        );
+        // Non-secret hint stays visible for diagnostics.
+        assert!(dbg.contains("the usual"));
+    }
+
     fn fresh_view(
         dir: &std::path::Path,
         network: Network,
@@ -1178,7 +1217,7 @@ mod tests {
                 known_wif(),
                 Some("secure".into()),
                 crate::wallet_backend::single_key::ImportPassphrase {
-                    passphrase: Some("correcthorsebattery".into()),
+                    passphrase: Some(Zeroizing::new("correcthorsebattery".into())),
                     hint: Some("xkcd 936".into()),
                 },
             )
@@ -1238,7 +1277,7 @@ mod tests {
                 known_wif(),
                 None,
                 crate::wallet_backend::single_key::ImportPassphrase {
-                    passphrase: Some("opensesame".into()),
+                    passphrase: Some(Zeroizing::new("opensesame".into())),
                     hint: None,
                 },
             )
@@ -1311,7 +1350,7 @@ mod tests {
                 known_wif(),
                 None,
                 crate::wallet_backend::single_key::ImportPassphrase {
-                    passphrase: Some("short".into()),
+                    passphrase: Some(Zeroizing::new("short".into())),
                     hint: None,
                 },
             )

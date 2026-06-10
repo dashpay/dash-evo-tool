@@ -705,7 +705,6 @@ where
 /// checks the modern single-key sidecar for a matching restored entry.
 /// The table is dropped with `DROP TABLE IF EXISTS` so a re-run after a
 /// successful drop is a no-op.
-#[cfg_attr(not(test), allow(dead_code))]
 fn drop_legacy_single_key_table<F>(
     conn: &Connection,
     is_restored: F,
@@ -1402,8 +1401,11 @@ where
 /// this first and abort on error** (Smythe S3). The production
 /// `is_restored` predicate consults the modern single-key index: a
 /// legacy protected address counts as restored once an
-/// [`ImportedKey`](crate::model::single_key::ImportedKey) with
-/// `has_passphrase = true` exists at the same address.
+/// [`ImportedKey`](crate::model::single_key::ImportedKey) exists at the
+/// same address — regardless of whether the user re-protected it with a
+/// new passphrase. A key restored without a new passphrase is just as
+/// recovered as one with, so keying on address presence (not
+/// `has_passphrase`) is what makes the gate eventually release.
 pub fn ensure_legacy_single_key_table_droppable(
     app_context: &Arc<AppContext>,
 ) -> Result<(), TaskError> {
@@ -1422,17 +1424,56 @@ pub fn ensure_legacy_single_key_table_droppable(
         source: e,
     })?;
 
-    // Snapshot the restored protected addresses once so the per-row
-    // predicate is a cheap set lookup rather than a vault round-trip.
+    // Snapshot every restored address once so the per-row predicate is a
+    // cheap set lookup. Presence in the modern index — not the passphrase
+    // flag — is the restored signal: the import path always mirrors the
+    // recovered key into the index whether or not the user chose a new
+    // passphrase.
     let restored: std::collections::BTreeSet<String> = backend
         .single_key()
         .list()
         .into_iter()
-        .filter(|k| k.has_passphrase)
         .map(|k| k.address)
         .collect();
 
     guard_single_key_table_droppable(&conn, |addr| restored.contains(addr), app_context.network)?;
+    Ok(())
+}
+
+/// The ONE sanctioned production path to remove the legacy
+/// `single_key_wallet` table (future T7 cleanup). It drops the table ONLY
+/// after the data-loss gate confirms every protected row is restored; the
+/// gate is run inside this function, so a future cleanup caller cannot
+/// forget it (Smythe S3 / S5). On a blocked drop it returns
+/// [`TaskError::MigrationFailed`] wrapping
+/// [`MigrationError::ProtectedSingleKeysNotRestored`] and leaves the
+/// table — and every key — intact.
+///
+/// A re-run after a successful drop is a no-op (`DROP TABLE IF EXISTS`),
+/// and an in-memory / absent legacy file is a no-op success.
+pub fn drop_legacy_single_key_table_when_safe(
+    app_context: &Arc<AppContext>,
+) -> Result<(), TaskError> {
+    let backend = app_context
+        .wallet_backend()
+        .map_err(|_| MigrationError::WalletBackendUnavailable)?;
+    let Some(path) = app_context.db.db_file_path() else {
+        return Ok(());
+    };
+    if !path.exists() {
+        return Ok(());
+    }
+    let conn = Connection::open(&path).map_err(|e| MigrationError::LegacyDbOpen {
+        path: path.to_string_lossy().to_string(),
+        source: e,
+    })?;
+    let restored: std::collections::BTreeSet<String> = backend
+        .single_key()
+        .list()
+        .into_iter()
+        .map(|k| k.address)
+        .collect();
+    drop_legacy_single_key_table(&conn, |addr| restored.contains(addr), app_context.network)?;
     Ok(())
 }
 

@@ -157,6 +157,15 @@ impl RestoreSingleKeyDialog {
         response
     }
 
+    /// Body of the dialog without the window wrapper, so the kittest
+    /// harness can drive the layout directly. Returns the per-frame
+    /// response.
+    pub fn show_in_ui(&mut self, ui: &mut Ui) -> RestoreSingleKeyResponse {
+        let mut response = RestoreSingleKeyResponse::default();
+        self.body(ui, &mut response);
+        response
+    }
+
     fn body(&mut self, ui: &mut Ui, response: &mut RestoreSingleKeyResponse) {
         let dark_mode = ui.ctx().style().visuals.dark_mode;
         let text_color = DashColors::text_primary(dark_mode);

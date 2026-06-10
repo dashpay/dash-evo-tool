@@ -1007,7 +1007,7 @@ mod tests {
                 &known_testnet_wif(),
                 Some("My Key".into()),
                 crate::wallet_backend::single_key::ImportPassphrase {
-                    passphrase: Some(passphrase.to_string()),
+                    passphrase: Some(zeroize::Zeroizing::new(passphrase.to_string())),
                     hint: Some("the usual".into()),
                 },
             )

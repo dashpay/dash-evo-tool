@@ -196,6 +196,7 @@ pub(super) fn incoming_payment_candidates(
         .filter_map(|out| {
             out.address.as_ref().map(|address| DetectedIncomingOutput {
                 txid: txid.clone(),
+                vout: out.index,
                 address: address.to_string(),
                 amount_duffs: out.value,
             })
@@ -658,6 +659,31 @@ mod tests {
         assert_eq!(candidates[0].address, recv.to_string());
         assert_eq!(candidates[0].amount_duffs, 42_000);
         assert_eq!(candidates[0].txid, rec.txid.to_string());
+        assert_eq!(candidates[0].vout, 0);
+    }
+
+    #[test]
+    fn two_received_outputs_carry_distinct_vouts() {
+        // One transaction paying two different contact addresses must yield two
+        // candidates whose vouts differ — otherwise downstream keying by
+        // (txid, vout) collapses them and one payment is lost.
+        let recv_a = addr(5);
+        let recv_b = addr(6);
+        let rec = record_with_outputs(
+            7,
+            &[
+                (11_000, recv_a.clone(), OutputRole::Received),
+                (22_000, recv_b.clone(), OutputRole::Received),
+            ],
+        );
+
+        let candidates = incoming_payment_candidates(&rec);
+        assert_eq!(candidates.len(), 2);
+        assert_eq!(candidates[0].vout, 0);
+        assert_eq!(candidates[1].vout, 1);
+        assert_ne!(candidates[0].vout, candidates[1].vout);
+        assert_eq!(candidates[0].amount_duffs, 11_000);
+        assert_eq!(candidates[1].amount_duffs, 22_000);
     }
 
     #[test]

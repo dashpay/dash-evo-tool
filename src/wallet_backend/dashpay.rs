@@ -396,12 +396,13 @@ impl<'a> DashpayView<'a> {
         let mut out: Vec<StoredPayment> = managed
             .dashpay_payments
             .iter()
-            .map(|(tx_id, entry)| payment_to_det(owner, tx_id, entry, &kv))
+            .map(|(storage_key, entry)| payment_to_det(owner, storage_key, entry, &kv))
             .collect();
-        // Upstream stores payments keyed by tx_id in a BTreeMap (lexicographic
-        // order). DET's UI sorts by `created_at DESC`; since sidecar timestamps
-        // default to 0 when unset, fall back to that ordering — newest first
-        // when timestamps exist, otherwise stable on tx_id.
+        // Upstream stores payments keyed by the storage key in a BTreeMap
+        // (lexicographic order). DET's UI sorts by `created_at DESC`; since
+        // sidecar timestamps default to 0 when unset, fall back to that
+        // ordering — newest first when timestamps exist, otherwise stable on
+        // the storage key.
         out.sort_by(|a, b| b.created_at.cmp(&a.created_at));
         out
     }
@@ -511,10 +512,12 @@ fn request_to_det_request(
 
 fn payment_to_det(
     owner: &Identifier,
-    tx_id: &str,
+    storage_key: &str,
     entry: &PaymentEntry,
     kv: &DetKv,
 ) -> StoredPayment {
+    use crate::model::dashpay::payment_txid_from_storage_key;
+
     let (from_id, to_id, payment_type) = match entry.direction {
         PaymentDirection::Sent => (owner, &entry.counterparty_id, "sent"),
         PaymentDirection::Received => (&entry.counterparty_id, owner, "received"),
@@ -524,11 +527,14 @@ fn payment_to_det(
         PaymentStatus::Confirmed => "confirmed",
         PaymentStatus::Failed => "failed",
     };
-    // Use the tx_id string as the sidecar key (no Identifier conversion).
-    let (created_at, confirmed_at) = kv_payment_timestamps(kv, tx_id);
+    // The upstream map key is `(txid, vout)` for incoming payments (a single
+    // tx can pay two contact outputs). Timestamps are keyed by the same
+    // composite key so each output keeps its own; the surfaced `tx_id` is the
+    // bare transaction id, which is what the UI displays and copies.
+    let (created_at, confirmed_at) = kv_payment_timestamps(kv, storage_key);
     StoredPayment {
         id: 0,
-        tx_id: tx_id.to_string(),
+        tx_id: payment_txid_from_storage_key(storage_key).to_string(),
         from_identity_id: from_id.to_buffer().to_vec(),
         to_identity_id: to_id.to_buffer().to_vec(),
         amount: entry.amount_duffs as i64,
@@ -1209,6 +1215,26 @@ mod tests {
         assert_eq!(det.to_identity_id, owner.to_buffer().to_vec());
         assert_eq!(det.payment_type, "received");
         assert_eq!(det.status, "confirmed");
+    }
+
+    #[test]
+    fn composite_storage_key_surfaces_bare_txid() {
+        let owner = id_from_byte(1);
+        let c0 = id_from_byte(2);
+        let c1 = id_from_byte(3);
+        // Two outputs of ONE transaction to two different contacts: distinct
+        // storage keys, both surface the same bare txid but their own
+        // counterparty + amount (no last-write-wins clobber).
+        let e0 = PaymentEntry::new_received(c0, 1_000, None);
+        let e1 = PaymentEntry::new_received(c1, 2_000, None);
+        let d0 = payment_to_det(&owner, "txhash:0", &e0, &empty_kv());
+        let d1 = payment_to_det(&owner, "txhash:1", &e1, &empty_kv());
+        assert_eq!(d0.tx_id, "txhash");
+        assert_eq!(d1.tx_id, "txhash");
+        assert_eq!(d0.from_identity_id, c0.to_buffer().to_vec());
+        assert_eq!(d1.from_identity_id, c1.to_buffer().to_vec());
+        assert_eq!(d0.amount, 1_000);
+        assert_eq!(d1.amount, 2_000);
     }
 
     #[test]

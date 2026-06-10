@@ -512,7 +512,13 @@ pub async fn load_contacts_offline(
                 .map(|m| m.notes.clone())
                 .filter(|s| !s.is_empty()),
             is_hidden: memo.as_ref().map(|m| m.is_hidden).unwrap_or(false),
-            account_reference: 0,
+            // Carry the cached account reference so the "Account #N" badge shows
+            // and offline ordering matches the post-refresh view. Falls back to
+            // 0 ("default account") when no network read has cached one yet.
+            account_reference: cached
+                .as_ref()
+                .and_then(|c| c.account_reference)
+                .unwrap_or(0),
             username: cached.as_ref().and_then(|c| c.username.clone()),
             display_name: cached
                 .as_ref()
@@ -544,6 +550,11 @@ fn cache_contact_profiles(app_context: &Arc<AppContext>, contacts: &[ContactData
             display_name: contact.display_name.clone(),
             avatar_url: contact.avatar_url.clone(),
             bio: contact.bio.clone(),
+            // Carry the account reference so the offline read can show the
+            // "Account #N" badge and sort consistently. 0 means "default
+            // account / not set", so it is not worth caching on its own.
+            account_reference: (contact.account_reference != 0)
+                .then_some(contact.account_reference),
         };
         if profile.is_empty() {
             continue;

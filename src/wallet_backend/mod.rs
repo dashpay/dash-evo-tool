@@ -816,6 +816,19 @@ impl WalletBackend {
             );
         }
 
+        // DET-side avatar cache (PROJ-040). Avatars live in the cross-network
+        // Global scope keyed by URL, not partitioned per wallet, so a forgotten
+        // wallet's contact avatars would otherwise survive deletion forever.
+        // It is a rebuild-on-view cache, so clearing the whole thing on any
+        // wallet removal is correct and cheap.
+        if let Err(e) = self.avatar_cache().clear() {
+            tracing::warn!(
+                wallet = %hex::encode(seed_hash),
+                error = ?e,
+                "Failed to clear avatar cache during wallet removal"
+            );
+        }
+
         // In-memory maps + snapshot registration.
         if let Some(wallet_id) = wallet_id {
             self.inner.id_map.write()?.remove(seed_hash);

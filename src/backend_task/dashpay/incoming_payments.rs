@@ -351,12 +351,16 @@ pub fn match_transaction_to_contact(
 /// owner (the common case — most received outputs are plain wallet funds).
 ///
 /// Idempotent: the receive cursor only ever advances, and the recording is
-/// keyed by `tx_id` with last-write-wins upstream, so a re-scan of the same
-/// transaction neither double-credits nor double-counts.
+/// keyed by `(tx_id, vout)` with last-write-wins upstream, so a re-scan of the
+/// same output neither double-credits nor double-counts. Keying by the output
+/// index — not the bare `tx_id` — keeps a transaction that pays two different
+/// contact addresses recording both, rather than the second clobbering the
+/// first.
 pub async fn process_incoming_payment(
     app_context: &Arc<AppContext>,
     owner_id: &Identifier,
     tx_id: &str,
+    vout: u32,
     address: &str,
     amount_duffs: u64,
 ) -> Result<Option<IncomingPaymentInfo>, TaskError> {
@@ -384,12 +388,14 @@ pub async fn process_incoming_payment(
     }
 
     // Mirror the incoming payment through the WalletBackend adapter so the
-    // upstream `ManagedIdentity` records it and the timestamp sidecar
-    // reflects when DET observed it.
+    // upstream `ManagedIdentity` records it and the timestamp sidecar reflects
+    // when DET observed it. Keyed per output so two contact outputs in one
+    // transaction are both recorded.
     super::payments::mirror_incoming_payment_to_backend(
         app_context,
         owner_id,
         tx_id,
+        vout,
         contact_id,
         amount_duffs,
     )
@@ -397,6 +403,7 @@ pub async fn process_incoming_payment(
 
     Ok(Some(IncomingPaymentInfo {
         tx_id: tx_id.to_string(),
+        vout,
         from_contact_id: contact_id,
         to_identity_id: *owner_id,
         address: address.to_string(),
@@ -411,12 +418,15 @@ pub async fn process_incoming_payment(
 ///
 /// This is the detection driver wired to the [`EventBridge`]: it owns the
 /// owner-scoped match the sync event callback cannot perform. The address map
-/// is partitioned per owner, so each candidate output is tried against every
-/// local identity; the vast majority miss (a regular receiving address is not
-/// a contact address) and are skipped via the `None` arm of
-/// [`process_incoming_payment`]. A per-output match error is logged and the
-/// scan continues — one unreadable sidecar entry must not drop the rest of a
-/// block's payments.
+/// is partitioned per owner, so each candidate output is tried against the
+/// local identities until one claims it. A receiving address belongs to exactly
+/// one owning identity, so the scan stops at the first match — trying every
+/// identity afterwards would double-record an output if the same address ever
+/// appeared under two owners' maps. The vast majority of outputs miss every
+/// owner (a regular receiving address is not a contact address) and are skipped
+/// via the `None` arm of [`process_incoming_payment`]. A per-output match error
+/// is logged and the scan continues — one unreadable sidecar entry must not
+/// drop the rest of a block's payments.
 ///
 /// [`EventBridge`]: crate::wallet_backend::EventBridge
 pub async fn detect_incoming_contact_payments(
@@ -441,29 +451,26 @@ pub async fn detect_incoming_contact_payments(
                 app_context,
                 owner_id,
                 &output.txid,
+                output.vout,
                 &output.address,
                 output.amount_duffs,
             )
             .await
             {
-                Ok(Some(info)) => {
-                    tracing::info!(
-                        owner = %owner_id.to_string(Encoding::Base58),
-                        contact = %info.from_contact_id.to_string(Encoding::Base58),
-                        tx_id = %output.txid,
-                        amount_duffs = output.amount_duffs,
-                        "Recorded incoming DashPay contact payment"
-                    );
+                // An output's address belongs to one owner only — record it
+                // and stop, so a cross-owner address collision can't
+                // double-record the same output.
+                Ok(Some(_info)) => {
                     recorded += 1;
+                    break;
                 }
                 Ok(None) => {}
                 Err(e) => {
                     // A single owner/output failure must not abort the batch;
                     // log and move on so other identities still get their
-                    // matching payments recorded.
+                    // matching payments recorded. No financial PII at this
+                    // level — only the non-sensitive error detail.
                     tracing::debug!(
-                        owner = %owner_id.to_string(Encoding::Base58),
-                        tx_id = %output.txid,
                         error = ?e,
                         "Incoming DashPay payment detection skipped one output"
                     );
@@ -472,6 +479,13 @@ pub async fn detect_incoming_contact_payments(
         }
     }
 
+    // Business event, no PII: counts only.
+    tracing::debug!(
+        candidate_outputs = outputs.len(),
+        recorded,
+        "Incoming DashPay contact-payment detection finished"
+    );
+
     Ok(recorded)
 }
 
@@ -479,6 +493,8 @@ pub async fn detect_incoming_contact_payments(
 #[derive(Debug, Clone)]
 pub struct IncomingPaymentInfo {
     pub tx_id: String,
+    /// Output index within the transaction this payment was recorded under.
+    pub vout: u32,
     pub from_contact_id: Identifier,
     pub to_identity_id: Identifier,
     /// Base58 receiving address the payment landed on.

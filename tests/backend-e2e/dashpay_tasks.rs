@@ -15,6 +15,7 @@ use dash_evo_tool::model::qualified_identity::qualified_identity_public_key::Qua
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
+use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
 
 /// TC-031: LoadProfile — identity with no profile
@@ -224,9 +225,17 @@ async fn tc_046_load_contacts_offline_serves_cache() {
                 display_name: Some("Cached Name".to_string()),
                 avatar_url: Some("https://example.com/cached.png".to_string()),
                 bio: None,
+                account_reference: Some(3),
             },
         )
         .expect("seed cached profile");
+
+    // Ensure A has a contact relationship with B so the offline read has a row
+    // to serve — without this the assertions below could pass vacuously on an
+    // empty list. A sent contact request surfaces as a `pending` contact, which
+    // is enough for the cache-merge path under test; the step is idempotent
+    // (it tolerates an already-established relationship from a prior run).
+    step_send_contact_request(ctx, pair).await;
 
     let task = BackendTask::DashPayTask(Box::new(DashPayTask::LoadContactsOffline {
         identity: pair.identity_a.clone(),
@@ -235,29 +244,46 @@ async fn tc_046_load_contacts_offline_serves_cache() {
         .await
         .expect("TC-046: offline read should not fail");
 
-    match result {
-        BackendTaskSuccessResult::DashPayContactsWithInfo(contacts) => {
-            tracing::info!(
-                "TC-046: offline read returned {} contacts without network",
-                contacts.len()
-            );
-            // If the established contact for A includes B, its cached profile
-            // must be surfaced from the cache.
-            if let Some(c) = contacts.iter().find(|c| c.identity_id == contact_id) {
-                assert_eq!(
-                    c.username.as_deref(),
-                    Some("cached-name.dash"),
-                    "TC-046: cached username must surface in the offline read"
-                );
-                assert_eq!(
-                    c.avatar_url.as_deref(),
-                    Some("https://example.com/cached.png"),
-                    "TC-046: cached avatar URL must surface in the offline read"
-                );
-            }
-        }
+    let contacts = match result {
+        BackendTaskSuccessResult::DashPayContactsWithInfo(contacts) => contacts,
         other => panic!("TC-046: expected DashPayContactsWithInfo, got: {:?}", other),
-    }
+    };
+    tracing::info!(
+        "TC-046: offline read returned {} contacts without network",
+        contacts.len()
+    );
+
+    // The offline read MUST serve a non-empty list — an empty result means the
+    // cache was not consulted (or the relationship was not rehydrated), which
+    // is the bug this test guards against.
+    assert!(
+        !contacts.is_empty(),
+        "TC-046: offline read must return the established contact, got an empty list"
+    );
+
+    // The seeded contact must be present and carry the cached display fields —
+    // proof the offline read served the DET contact-profile cache, not the
+    // network (no SDK round-trip happens in `LoadContactsOffline`).
+    let c = contacts
+        .iter()
+        .find(|c| c.identity_id == contact_id)
+        .unwrap_or_else(|| {
+            panic!("TC-046: the established contact B must appear in the offline read")
+        });
+    assert_eq!(
+        c.username.as_deref(),
+        Some("cached-name.dash"),
+        "TC-046: cached username must surface in the offline read (served from cache, not network)"
+    );
+    assert_eq!(
+        c.avatar_url.as_deref(),
+        Some("https://example.com/cached.png"),
+        "TC-046: cached avatar URL must surface in the offline read"
+    );
+    assert_eq!(
+        c.account_reference, 3,
+        "TC-046: cached account reference must surface in the offline read (the \"Account #N\" badge)"
+    );
 }
 
 /// TC-035: LoadContactRequests — empty
@@ -693,15 +719,19 @@ async fn tc_041_load_payment_history_empty() {
     }
 }
 
-/// TC-045: incoming contact-payment detection records a matched output.
+/// TC-045: incoming contact-payment detection records each matched output.
 ///
 /// Drives the [`DashPayTask::DetectIncomingContactPayments`] path the
-/// `EventBridge` fires for freshly-seen wallet transactions. A known
-/// `(owner, address) -> (contact, index)` mapping is persisted directly via
+/// `EventBridge` fires for freshly-seen wallet transactions. Known
+/// `(owner, address) -> (contact, index)` mappings are persisted directly via
 /// the wallet-backend sidecar (the same write `RegisterDashPayAddresses`
-/// performs), then a synthetic received output for that address is fed to the
-/// detector. The payment must surface in `LoadPaymentHistory` afterwards, and
-/// a second identical run must not double-count.
+/// performs), then synthetic received outputs are fed to the detector.
+///
+/// The single transaction here pays TWO different contacts in two outputs
+/// (distinct `vout`s) to prove per-output keying: keying by `tx_id` alone would
+/// let the second output overwrite the first and lose a payment. Both must
+/// surface in `LoadPaymentHistory` with the correct amount and counterparty,
+/// and a re-scan must not double-count either.
 #[ignore]
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
 async fn tc_045_detect_incoming_contact_payment() {
@@ -711,17 +741,21 @@ async fn tc_045_detect_incoming_contact_payment() {
     let pair = fixtures::shared_dashpay_pair().await;
 
     let owner = pair.identity_a.identity.id();
-    let contact = pair.identity_b.identity.id();
+    let contact_0 = pair.identity_b.identity.id();
+    // A second distinct counterparty for the second output. Its identity need
+    // not exist on-platform — the detector keys purely off the sidecar address
+    // map, and `LoadPaymentHistory` surfaces an unknown counterparty by id.
+    let contact_1 = Identifier::from([0x5a; 32]);
 
-    // A deterministic, network-valid receiving address to stand in for a
-    // freshly-derived contact address. The detector keys purely off the
-    // sidecar mapping, so any valid address works as long as it matches the
-    // mapping we persist below.
-    let pubkey = dash_sdk::dpp::dashcore::PublicKey::from_slice(&[0x02; 33]).unwrap();
-    let address =
-        dash_sdk::dpp::dashcore::Address::p2pkh(&pubkey, ctx.app_context.network()).to_string();
-    // A txid unique to this fixture pair so re-runs upsert in place rather
-    // than colliding with another test's recorded payment.
+    // Two deterministic, network-valid receiving addresses (distinct pubkeys)
+    // standing in for two freshly-derived contact addresses.
+    let pubkey_0 = dash_sdk::dpp::dashcore::PublicKey::from_slice(&[0x02; 33]).unwrap();
+    let pubkey_1 = dash_sdk::dpp::dashcore::PublicKey::from_slice(&[0x03; 33]).unwrap();
+    let address_0 =
+        dash_sdk::dpp::dashcore::Address::p2pkh(&pubkey_0, ctx.app_context.network()).to_string();
+    let address_1 =
+        dash_sdk::dpp::dashcore::Address::p2pkh(&pubkey_1, ctx.app_context.network()).to_string();
+    // One txid, two outputs — re-runs upsert in place per (txid, vout).
     let tx_id = format!("detincoming{}", hex::encode(&owner.to_buffer()[..8]));
 
     let backend = ctx
@@ -729,14 +763,26 @@ async fn tc_045_detect_incoming_contact_payment() {
         .wallet_backend()
         .expect("wallet backend wired");
     backend
-        .dashpay_set_address_mapping(&owner, &address, &contact, 0)
-        .expect("persist address mapping");
+        .dashpay_set_address_mapping(&owner, &address_0, &contact_0, 0)
+        .expect("persist address mapping 0");
+    backend
+        .dashpay_set_address_mapping(&owner, &address_1, &contact_1, 0)
+        .expect("persist address mapping 1");
 
-    let outputs = vec![DetectedIncomingOutput {
-        txid: tx_id.clone(),
-        address: address.clone(),
-        amount_duffs: 12_345,
-    }];
+    let outputs = vec![
+        DetectedIncomingOutput {
+            txid: tx_id.clone(),
+            vout: 0,
+            address: address_0.clone(),
+            amount_duffs: 12_345,
+        },
+        DetectedIncomingOutput {
+            txid: tx_id.clone(),
+            vout: 1,
+            address: address_1.clone(),
+            amount_duffs: 67_890,
+        },
+    ];
 
     let task = BackendTask::DashPayTask(Box::new(DashPayTask::DetectIncomingContactPayments {
         outputs: outputs.clone(),
@@ -753,48 +799,70 @@ async fn tc_045_detect_incoming_contact_payment() {
         result
     );
 
-    // The recorded payment must appear in A's history, keyed by our tx_id.
-    let history_task = BackendTask::DashPayTask(Box::new(DashPayTask::LoadPaymentHistory {
-        identity: pair.identity_a.clone(),
-    }));
-    let history = run_task(&ctx.app_context, history_task)
+    // Both recorded payments must appear in A's history under the same bare
+    // tx_id — one per contact output, with the right amount + counterparty.
+    let load_history = || async {
+        let history = run_task(
+            &ctx.app_context,
+            BackendTask::DashPayTask(Box::new(DashPayTask::LoadPaymentHistory {
+                identity: pair.identity_a.clone(),
+            })),
+        )
         .await
         .expect("TC-045: LoadPaymentHistory should not fail");
-    let count_for_tx = match &history {
-        BackendTaskSuccessResult::DashPayPaymentHistory(entries) => {
-            entries.iter().filter(|(id, ..)| id == &tx_id).count()
+        match history {
+            BackendTaskSuccessResult::DashPayPaymentHistory(entries) => entries,
+            other => panic!("TC-045: expected DashPayPaymentHistory, got: {:?}", other),
         }
-        other => panic!("TC-045: expected DashPayPaymentHistory, got: {:?}", other),
     };
+
+    let c0_short = contact_0.to_string(Encoding::Base58);
+    let c0_short = &c0_short[..c0_short.len().min(8)];
+    let c1_short = contact_1.to_string(Encoding::Base58);
+    let c1_short = &c1_short[..c1_short.len().min(8)];
+
+    let entries = load_history().await;
+    let for_tx: Vec<_> = entries.iter().filter(|(id, ..)| id == &tx_id).collect();
     assert_eq!(
-        count_for_tx, 1,
-        "TC-045: the detected contact payment must be recorded exactly once"
+        for_tx.len(),
+        2,
+        "TC-045: both contact outputs of one tx must be recorded, got {:?}",
+        for_tx
+    );
+    // First output: 12_345 to contact_0.
+    assert!(
+        for_tx
+            .iter()
+            .any(|(_, name, amount, incoming, _)| *amount == 12_345
+                && *incoming
+                && name.contains(c0_short)),
+        "TC-045: the first output (12345 from contact_0) must be recorded, got {:?}",
+        for_tx
+    );
+    // Second output: 67_890 to contact_1 — proof the second did not clobber
+    // the first under a shared tx_id.
+    assert!(
+        for_tx
+            .iter()
+            .any(|(_, name, amount, incoming, _)| *amount == 67_890
+                && *incoming
+                && name.contains(c1_short)),
+        "TC-045: the second output (67890 from contact_1) must be recorded distinctly, got {:?}",
+        for_tx
     );
 
-    // Idempotency: a re-scan of the same output must not add a duplicate.
+    // Idempotency: a re-scan of the same outputs must not add duplicates.
     let rescan = BackendTask::DashPayTask(Box::new(DashPayTask::DetectIncomingContactPayments {
         outputs,
     }));
     run_task(&ctx.app_context, rescan)
         .await
         .expect("TC-045: re-scan should not fail");
-    let history_after = run_task(
-        &ctx.app_context,
-        BackendTask::DashPayTask(Box::new(DashPayTask::LoadPaymentHistory {
-            identity: pair.identity_a.clone(),
-        })),
-    )
-    .await
-    .expect("TC-045: LoadPaymentHistory (after re-scan) should not fail");
-    let count_after = match &history_after {
-        BackendTaskSuccessResult::DashPayPaymentHistory(entries) => {
-            entries.iter().filter(|(id, ..)| id == &tx_id).count()
-        }
-        other => panic!("TC-045: expected DashPayPaymentHistory, got: {:?}", other),
-    };
+    let after = load_history().await;
+    let count_after = after.iter().filter(|(id, ..)| id == &tx_id).count();
     assert_eq!(
-        count_after, 1,
-        "TC-045: a re-scan of the same transaction must not double-count"
+        count_after, 2,
+        "TC-045: a re-scan of the same transaction must not double-count per (txid, vout)"
     );
 }
 

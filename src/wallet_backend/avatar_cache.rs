@@ -20,6 +20,19 @@
 //! path is infallible-by-degradation: a missing or corrupt entry returns
 //! `None` (logged) so the UI falls back to a network fetch rather than
 //! blocking.
+//!
+//! ## Invalidation and bounds
+//!
+//! A cached avatar carries the wall-clock fetch time (`fetched_at_ms`). The
+//! read path treats an entry older than [`AVATAR_TTL_MS`] as stale: [`get`]
+//! drops it and returns `None`, so a changed avatar served at the same URL is
+//! re-fetched rather than pinned forever. The cache is also size-bounded —
+//! [`put`] evicts the oldest entries once the entry count exceeds
+//! [`MAX_AVATAR_ENTRIES`], so the cross-network Global scope cannot grow
+//! without limit, and the whole cache is cleared when a wallet is forgotten.
+//!
+//! [`get`]: AvatarCacheView::get
+//! [`put`]: AvatarCacheView::put
 
 use std::sync::Arc;
 
@@ -32,6 +45,17 @@ use crate::wallet_backend::{DetKv, DetScope};
 
 /// Key prefix for every cached avatar entry.
 const KEY_PREFIX: &str = "det:avatar:";
+
+/// Maximum age of a cached avatar before [`AvatarCacheView::get`] treats it as
+/// stale and re-fetches. Seven days balances offline survival against picking
+/// up a changed avatar at a stable URL within a reasonable window.
+pub const AVATAR_TTL_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+
+/// Maximum number of cached avatar entries kept in the Global scope. Once a
+/// [`AvatarCacheView::put`] would exceed this, the oldest entries are evicted
+/// so the cache stays bounded regardless of how many distinct contacts are
+/// viewed over a wallet's lifetime.
+pub const MAX_AVATAR_ENTRIES: usize = 256;
 
 /// Build the canonical k/v key for an avatar URL. The URL is SHA-256 hashed
 /// so the key is fixed-length and carries no URL metacharacters.
@@ -52,38 +76,69 @@ impl<'a> AvatarCacheView<'a> {
         Self { kv }
     }
 
-    /// Fetch the cached avatar for `url`. Returns `None` when the URL is not
-    /// cached or its blob fails to decode (logged and treated as absent so
-    /// the caller falls back to a network fetch).
+    /// Fetch the cached avatar for `url`, honouring the [`AVATAR_TTL_MS`]
+    /// freshness window. Returns `None` when the URL is not cached, its blob
+    /// fails to decode (logged and treated as absent), or the entry is older
+    /// than the TTL — in which case the stale entry is dropped so the next read
+    /// re-fetches. The caller falls back to a network fetch on any `None`.
     pub fn get(&self, url: &str) -> Option<CachedAvatar> {
+        self.get_at(url, chrono::Utc::now().timestamp_millis())
+    }
+
+    /// TTL-aware read with an injected `now_ms` clock — the testable core of
+    /// [`Self::get`]. An entry whose `fetched_at_ms` precedes `now_ms` by more
+    /// than [`AVATAR_TTL_MS`] is invalidated and reported absent.
+    fn get_at(&self, url: &str, now_ms: i64) -> Option<CachedAvatar> {
         let key = key_for(url);
-        match self.kv.get::<CachedAvatar>(DetScope::Global, &key) {
-            Ok(v) => v,
+        let cached = match self.kv.get::<CachedAvatar>(DetScope::Global, &key) {
+            Ok(v) => v?,
             Err(e) => {
                 tracing::warn!(
                     target = "wallet_backend::avatar_cache",
                     error = ?e,
                     "Failed to read cached avatar; treating as absent",
                 );
-                None
+                return None;
             }
+        };
+
+        if now_ms.saturating_sub(cached.fetched_at_ms) > AVATAR_TTL_MS {
+            // Stale: drop so a changed avatar at the same URL is re-fetched.
+            if let Err(e) = self.invalidate(url) {
+                tracing::debug!(
+                    target = "wallet_backend::avatar_cache",
+                    error = ?e,
+                    "Failed to evict stale cached avatar",
+                );
+            }
+            return None;
         }
+
+        Some(cached)
     }
 
     /// Cache `bytes` for `url`, computing and storing the content hash and
     /// fetch timestamp. Overwrites any prior entry for the same URL (so a
-    /// changed avatar at a stable URL is refreshed in place).
+    /// changed avatar at a stable URL is refreshed in place) and evicts the
+    /// oldest entries when the cache exceeds [`MAX_AVATAR_ENTRIES`].
     pub fn put(&self, url: &str, bytes: Vec<u8>) -> Result<(), TaskError> {
+        self.put_at(url, bytes, chrono::Utc::now().timestamp_millis())
+    }
+
+    /// [`Self::put`] with an injected `now_ms` clock — the testable core.
+    fn put_at(&self, url: &str, bytes: Vec<u8>, now_ms: i64) -> Result<(), TaskError> {
         let sha256 = sha256::Hash::hash(&bytes).to_byte_array().to_vec();
         let entry = CachedAvatar {
             bytes,
             sha256,
-            fetched_at_ms: chrono::Utc::now().timestamp_millis(),
+            fetched_at_ms: now_ms,
         };
         let key = key_for(url);
         self.kv
             .put(DetScope::Global, &key, &entry)
-            .map_err(map_kv_error_to_task_error)
+            .map_err(map_kv_error_to_task_error)?;
+        self.evict_to_bound()?;
+        Ok(())
     }
 
     /// Drop the cached avatar for `url`. Idempotent — a missing entry returns
@@ -94,6 +149,68 @@ impl<'a> AvatarCacheView<'a> {
         self.kv
             .delete(DetScope::Global, &key)
             .map_err(map_kv_error_to_task_error)
+    }
+
+    /// Drop every cached avatar. Called on wallet deletion so the cache cannot
+    /// outlive the wallets whose contacts populated it. Best-effort per entry —
+    /// a single delete failure is logged and the sweep continues.
+    pub fn clear(&self) -> Result<(), TaskError> {
+        let keys = self
+            .kv
+            .list(DetScope::Global, Some(KEY_PREFIX))
+            .map_err(map_kv_error_to_task_error)?;
+        for key in keys {
+            if let Err(e) = self.kv.delete(DetScope::Global, &key) {
+                tracing::debug!(
+                    target = "wallet_backend::avatar_cache",
+                    error = ?e,
+                    "Failed to delete cached avatar during clear",
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Evict the oldest entries until the cache holds at most
+    /// [`MAX_AVATAR_ENTRIES`]. A best-effort housekeeping pass run after each
+    /// `put`; a read or delete failure on any single entry is non-fatal.
+    fn evict_to_bound(&self) -> Result<(), TaskError> {
+        let keys = self
+            .kv
+            .list(DetScope::Global, Some(KEY_PREFIX))
+            .map_err(map_kv_error_to_task_error)?;
+        if keys.len() <= MAX_AVATAR_ENTRIES {
+            return Ok(());
+        }
+
+        // Order by fetch time so the oldest are dropped first. Unreadable
+        // entries sort to the front (treated as age 0) and are evicted first.
+        let mut aged: Vec<(i64, String)> = keys
+            .into_iter()
+            .map(|key| {
+                let age = self
+                    .kv
+                    .get::<CachedAvatar>(DetScope::Global, &key)
+                    .ok()
+                    .flatten()
+                    .map(|c| c.fetched_at_ms)
+                    .unwrap_or(0);
+                (age, key)
+            })
+            .collect();
+        aged.sort_by_key(|(age, _)| *age);
+
+        let evict = aged.len().saturating_sub(MAX_AVATAR_ENTRIES);
+        for (_, key) in aged.into_iter().take(evict) {
+            if let Err(e) = self.kv.delete(DetScope::Global, &key) {
+                tracing::debug!(
+                    target = "wallet_backend::avatar_cache",
+                    error = ?e,
+                    "Failed to evict cached avatar over bound",
+                );
+            }
+        }
+        Ok(())
     }
 }
 
@@ -230,6 +347,92 @@ mod tests {
         view.invalidate(URL_A).expect("invalidate a");
         assert_eq!(view.get(URL_A), None);
         assert_eq!(view.get(URL_B).unwrap().bytes, b"b".to_vec());
+    }
+
+    #[test]
+    fn stale_entry_is_not_served_and_is_invalidated() {
+        let kv = kv();
+        let view = AvatarCacheView::new(&kv);
+        // Seed at t=0.
+        view.put_at(URL_A, b"old".to_vec(), 0).expect("put");
+
+        // A read within the TTL still serves the cached bytes.
+        let fresh = view
+            .get_at(URL_A, AVATAR_TTL_MS)
+            .expect("entry within TTL is served");
+        assert_eq!(fresh.bytes, b"old".to_vec());
+
+        // One millisecond past the TTL: the entry is stale, must not be served,
+        // and must be evicted so the next read re-fetches.
+        assert_eq!(
+            view.get_at(URL_A, AVATAR_TTL_MS + 1),
+            None,
+            "an entry older than the TTL must not be served"
+        );
+        // A fresh read (even at t=0) sees nothing — the stale read dropped it.
+        assert_eq!(
+            view.get_at(URL_A, 0),
+            None,
+            "the stale entry must have been invalidated, not just hidden"
+        );
+    }
+
+    #[test]
+    fn changed_avatar_at_same_url_is_refetched_after_ttl() {
+        let kv = kv();
+        let view = AvatarCacheView::new(&kv);
+        view.put_at(URL_A, b"v1".to_vec(), 0).expect("seed v1");
+        // After the TTL the old bytes are not served; a re-fetch caches v2.
+        assert_eq!(view.get_at(URL_A, AVATAR_TTL_MS + 1), None);
+        view.put_at(URL_A, b"v2".to_vec(), AVATAR_TTL_MS + 1)
+            .expect("re-cache v2");
+        let now = view.get_at(URL_A, AVATAR_TTL_MS + 1).expect("v2 served");
+        assert_eq!(now.bytes, b"v2".to_vec());
+    }
+
+    #[test]
+    fn put_evicts_oldest_when_over_bound() {
+        let kv = kv();
+        let view = AvatarCacheView::new(&kv);
+        // Fill exactly to the bound, oldest first (monotonic timestamps).
+        for i in 0..MAX_AVATAR_ENTRIES {
+            let url = format!("https://example.com/a{i}.png");
+            view.put_at(&url, vec![i as u8], i as i64).expect("put");
+        }
+        // The oldest entry (i=0) is still present at the bound.
+        assert!(view.get_at("https://example.com/a0.png", 0).is_some());
+
+        // One more entry pushes past the bound; the oldest must be evicted.
+        view.put_at(
+            "https://example.com/overflow.png",
+            vec![0xff],
+            MAX_AVATAR_ENTRIES as i64,
+        )
+        .expect("put overflow");
+        assert_eq!(
+            view.get_at("https://example.com/a0.png", 0),
+            None,
+            "the oldest entry must be evicted once the cache exceeds the bound"
+        );
+        // The newest entry survives.
+        assert!(
+            view.get_at(
+                "https://example.com/overflow.png",
+                MAX_AVATAR_ENTRIES as i64
+            )
+            .is_some()
+        );
+    }
+
+    #[test]
+    fn clear_drops_every_entry() {
+        let kv = kv();
+        let view = AvatarCacheView::new(&kv);
+        view.put(URL_A, b"a".to_vec()).expect("put a");
+        view.put(URL_B, b"b".to_vec()).expect("put b");
+        view.clear().expect("clear");
+        assert_eq!(view.get(URL_A), None);
+        assert_eq!(view.get(URL_B), None);
     }
 
     #[test]

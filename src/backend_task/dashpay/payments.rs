@@ -587,22 +587,31 @@ pub(super) async fn mirror_sent_payment_to_backend(
 /// k/v timestamp sidecar. Incoming payments are recorded as
 /// [`PaymentStatus::Confirmed`] because SPV only delivers them after
 /// the transaction is observed on-chain.
+///
+/// The upstream payment map keys by an opaque `String`, so the record is keyed
+/// by `(tx_id, vout)` via [`payment_storage_key`] — a transaction paying two
+/// different contact outputs records both, instead of the second overwriting
+/// the first. The same composite key keys the timestamp sidecar, keeping each
+/// output's timestamps independent.
 pub(super) async fn mirror_incoming_payment_to_backend(
     app_context: &Arc<AppContext>,
     owner: &Identifier,
     tx_id: &str,
+    vout: u32,
     counterparty: Identifier,
     amount_duffs: u64,
 ) {
+    use crate::model::dashpay::payment_storage_key;
     use platform_wallet::wallet::identity::types::dashpay::payment::PaymentEntry;
 
     let Ok(backend) = app_context.wallet_backend() else {
         return;
     };
 
+    let storage_key = payment_storage_key(tx_id, vout);
     let entry = PaymentEntry::new_received(counterparty, amount_duffs, None);
     if let Err(e) = backend
-        .dashpay_record_payment(owner, tx_id.to_string(), entry)
+        .dashpay_record_payment(owner, storage_key.clone(), entry)
         .await
     {
         tracing::debug!(
@@ -616,7 +625,7 @@ pub(super) async fn mirror_incoming_payment_to_backend(
 
     let now_ms = chrono::Utc::now().timestamp_millis().max(0);
     // Incoming arrives confirmed — same ts for `created_at` and `confirmed_at`.
-    if let Err(e) = backend.dashpay_set_payment_timestamps(tx_id, now_ms, Some(now_ms)) {
+    if let Err(e) = backend.dashpay_set_payment_timestamps(&storage_key, now_ms, Some(now_ms)) {
         tracing::debug!(
             tx_id = %tx_id,
             error = ?e,

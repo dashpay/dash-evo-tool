@@ -98,10 +98,39 @@ pub struct ContactAddressIndex {
 pub struct DetectedIncomingOutput {
     /// Hex transaction id of the observed transaction.
     pub txid: String,
+    /// Index of this output within the transaction (the `vout`). A single
+    /// transaction can pay two different contact addresses, so the payment is
+    /// keyed by `(txid, vout)` — `txid` alone would let the second output
+    /// overwrite the first.
+    pub vout: u32,
     /// Base58 receiving address the output paid into.
     pub address: String,
     /// Output value in duffs.
     pub amount_duffs: u64,
+}
+
+/// Build the storage key that distinguishes each output of one transaction.
+///
+/// Upstream `record_dashpay_payment` keys its payment map by an opaque `tx_id`
+/// `String` with last-write-wins semantics, so two contact outputs in the same
+/// transaction would collide on the bare txid. Keying by `"{txid}:{vout}"`
+/// keeps every output a distinct record while remaining an idempotent upsert
+/// per `(txid, vout)` on re-scan.
+pub fn payment_storage_key(txid: &str, vout: u32) -> String {
+    format!("{txid}:{vout}")
+}
+
+/// Recover the bare transaction id from a [`payment_storage_key`].
+///
+/// Splits on the last `:` and validates that the suffix is a `vout` integer;
+/// returns the input unchanged when it carries no `:vout` suffix (a plain txid,
+/// e.g. a legacy or sent-payment record keyed by txid alone). The transaction
+/// id itself never contains a `:`, so the last-colon split is unambiguous.
+pub fn payment_txid_from_storage_key(key: &str) -> &str {
+    match key.rsplit_once(':') {
+        Some((txid, vout)) if !vout.is_empty() && vout.bytes().all(|b| b.is_ascii_digit()) => txid,
+        _ => key,
+    }
 }
 
 /// A cached avatar image, stored DET-side so avatars survive offline and are
@@ -132,4 +161,38 @@ pub struct ContactPrivateInfo {
     pub nickname: String,
     pub notes: String,
     pub is_hidden: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn storage_key_distinguishes_outputs_of_one_tx() {
+        let a = payment_storage_key("abc123", 0);
+        let b = payment_storage_key("abc123", 1);
+        assert_ne!(a, b, "two outputs of one tx must produce distinct keys");
+        assert_eq!(a, "abc123:0");
+        assert_eq!(b, "abc123:1");
+    }
+
+    #[test]
+    fn storage_key_round_trips_to_bare_txid() {
+        let key = payment_storage_key("deadbeef", 7);
+        assert_eq!(payment_txid_from_storage_key(&key), "deadbeef");
+    }
+
+    #[test]
+    fn bare_txid_without_vout_suffix_is_returned_unchanged() {
+        // A sent-payment / legacy record keyed by txid alone has no ":vout".
+        assert_eq!(payment_txid_from_storage_key("plainTxid"), "plainTxid");
+    }
+
+    #[test]
+    fn non_numeric_suffix_is_not_treated_as_vout() {
+        // Defensive: a colon followed by non-digits is not a vout suffix, so the
+        // whole string is the txid (txids themselves never contain a colon).
+        assert_eq!(payment_txid_from_storage_key("tx:abc"), "tx:abc");
+        assert_eq!(payment_txid_from_storage_key("tx:"), "tx:");
+    }
 }

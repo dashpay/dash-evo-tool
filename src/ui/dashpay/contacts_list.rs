@@ -137,20 +137,44 @@ impl ContactsList {
     /// Re-fetch contacts and their profiles from the network, refreshing the
     /// DET caches. Triggered by an explicit user refresh, not by entering the
     /// view — the view itself serves the offline cache.
+    ///
+    /// Clears the in-memory rendered-texture cache so a contact whose avatar
+    /// changed at the same URL repaints in-session: the textures are keyed by
+    /// URL and never expire on their own, so without this an already-rendered
+    /// avatar would keep showing the stale image even after the network read
+    /// re-fetches and re-caches the new bytes.
     pub fn trigger_refresh_contacts(&mut self) -> AppAction {
-        if let Some(identity) = &self.selected_identity {
-            self.loading = true;
-            self.message = None;
-            self.has_loaded = true;
+        let Some(identity) = self.selected_identity.clone() else {
+            return AppAction::None;
+        };
 
-            let task = BackendTask::DashPayTask(Box::new(DashPayTask::LoadContacts {
-                identity: identity.clone(),
-            }));
+        self.loading = true;
+        self.message = None;
+        self.has_loaded = true;
+        self.clear_avatar_render_state();
 
-            return AppAction::BackendTask(task);
+        // An explicit refresh means "give me the latest", so drop the DET
+        // avatar disk cache too: otherwise a within-TTL hit would short-circuit
+        // the re-fetch and keep serving the old bytes for an unchanged URL.
+        // Best-effort — a clear miss only costs one re-fetch.
+        if let Ok(backend) = self.app_context.wallet_backend()
+            && let Err(e) = backend.avatar_cache().clear()
+        {
+            tracing::debug!(error = ?e, "Failed to clear avatar cache on refresh");
         }
 
-        AppAction::None
+        AppAction::BackendTask(BackendTask::DashPayTask(Box::new(
+            DashPayTask::LoadContacts { identity },
+        )))
+    }
+
+    /// Drop the in-memory avatar render state — the uploaded textures and the
+    /// per-URL loading flags — so the next render re-derives each avatar from
+    /// the (re-fetched) DET cache. Shared by the explicit Refresh path and the
+    /// identity-change reset.
+    fn clear_avatar_render_state(&mut self) {
+        self.avatar_textures.clear();
+        self.avatars_loading.clear();
     }
 
     pub fn fetch_contacts(&mut self) -> AppAction {
@@ -314,8 +338,7 @@ impl ContactsList {
                         // The next render dispatches the offline read via
                         // `has_loaded == false`.
                         self.contacts.clear();
-                        self.avatar_textures.clear();
-                        self.avatars_loading.clear();
+                        self.clear_avatar_render_state();
                         self.message = None;
                         self.loading = false;
                         self.has_loaded = false;

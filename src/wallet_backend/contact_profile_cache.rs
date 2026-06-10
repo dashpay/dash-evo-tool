@@ -39,11 +39,19 @@ pub struct CachedContactProfile {
     pub display_name: Option<String>,
     pub avatar_url: Option<String>,
     pub bio: Option<String>,
+    /// The contact's account reference (the "Account #N" badge), decoded from
+    /// the network contact's private data. Cached so the offline read can show
+    /// the badge and sort consistently with the post-refresh view. `None` when
+    /// the network read had no account reference to cache.
+    #[serde(default)]
+    pub account_reference: Option<u32>,
 }
 
 impl CachedContactProfile {
     /// Whether the cached profile carries any displayable field. An all-`None`
-    /// profile is not worth writing or serving.
+    /// profile is not worth writing or serving. The account reference is
+    /// metadata, not a displayable field, so it alone does not make a profile
+    /// worth caching.
     pub fn is_empty(&self) -> bool {
         self.username.is_none()
             && self.display_name.is_none()
@@ -190,6 +198,7 @@ mod tests {
             display_name: Some(name.to_string()),
             avatar_url: Some(format!("https://example.com/{name}.png")),
             bio: None,
+            account_reference: None,
         }
     }
 

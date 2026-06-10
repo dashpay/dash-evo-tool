@@ -242,11 +242,7 @@ impl AppContext {
             ShieldedTask::ShieldFromAssetLock {
                 seed_hash,
                 amount_duffs,
-                source_address: _,
             } => {
-                // `source_address` is ignored: coin selection is delegated to
-                // the upstream wallet's authoritative live UTXO set at asset-
-                // lock construction time. DET never selects spendable inputs.
                 self.shield_from_asset_lock_task(seed_hash, amount_duffs)
                     .await
             }

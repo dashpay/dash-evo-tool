@@ -188,19 +188,11 @@ impl ShieldScreen {
                 self.cached_platform_balance = None;
             }
 
-            // Core balance — from the display-only WalletBackend snapshot.
-            if let Some(addr) = self.validated_source.as_ref().and_then(|v| v.as_core()) {
-                self.cached_core_balance = Some(
-                    self.app_context
-                        .snapshot_address_balances(&self.seed_hash)
-                        .get(addr)
-                        .copied()
-                        .unwrap_or(0),
-                );
-            } else {
-                self.cached_core_balance =
-                    Some(self.app_context.snapshot_balance(&self.seed_hash).total);
-            }
+            // Core balance — whole-wallet total from the display-only
+            // WalletBackend snapshot. The asset lock spends from the wallet's
+            // full live UTXO set, so the shieldable amount is the wallet total.
+            self.cached_core_balance =
+                Some(self.app_context.snapshot_balance(&self.seed_hash).total);
         } else {
             self.cached_base_nonce = None;
             self.cached_platform_balance = None;
@@ -785,21 +777,16 @@ impl ScreenLike for ShieldScreen {
                             }
                         }
                         Some(AddressKind::Core) => {
-                            // Core flow: show balance (per-address or whole wallet)
+                            // Core flow shields the whole wallet balance: the asset
+                            // lock spends from the wallet's full live UTXO set.
                             let balance_duffs = self.read_core_balance_duffs();
                             let dash_balance = balance_duffs as f64 / 1e8;
-                            let label = if self
-                                .validated_source
-                                .as_ref()
-                                .and_then(|v| v.as_core())
-                                .is_some()
-                            {
-                                format!("Available address balance: {:.8} DASH", dash_balance)
-                            } else {
-                                format!("Available core wallet balance: {:.8} DASH", dash_balance)
-                            };
                             ui.label(
-                                RichText::new(label).color(DashColors::success_color(dark_mode)),
+                                RichText::new(format!(
+                                    "Available core wallet balance: {:.8} DASH",
+                                    dash_balance
+                                ))
+                                .color(DashColors::success_color(dark_mode)),
                             );
                             ui.add_space(5.0);
                         }
@@ -972,15 +959,11 @@ impl ScreenLike for ShieldScreen {
                             }
                             Some(AddressKind::Core) => {
                                 let amount_duffs = amount / CREDITS_PER_DUFF;
-                                // The upstream wallet selects spendable UTXOs from
-                                // its whole live set when building the asset lock,
-                                // so a per-address restriction cannot be honored.
                                 self.status = Status::WaitingForResult;
                                 action = AppAction::BackendTask(BackendTask::ShieldedTask(
                                     ShieldedTask::ShieldFromAssetLock {
                                         seed_hash: self.seed_hash,
                                         amount_duffs,
-                                        source_address: None,
                                     },
                                 ));
                             }

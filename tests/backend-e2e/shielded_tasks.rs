@@ -191,7 +191,6 @@ async fn step_shield_from_asset_lock(
     let task = BackendTask::ShieldedTask(ShieldedTask::ShieldFromAssetLock {
         seed_hash,
         amount_duffs,
-        source_address: None,
     });
     let result = run_task_with_nonce_retry(app_context, task).await;
 

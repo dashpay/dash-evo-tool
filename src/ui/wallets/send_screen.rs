@@ -1453,7 +1453,6 @@ impl WalletSendScreen {
             crate::backend_task::shielded::ShieldedTask::ShieldFromAssetLock {
                 seed_hash,
                 amount_duffs,
-                source_address: None,
             },
         )))
     }

@@ -29,8 +29,6 @@ pub struct ShieldFromCoreParams {
     pub amount_duffs: u64,
     /// Expected network (required for destructive operations)
     pub network: String,
-    /// Optional Core address to fund from (restricts UTXO selection to this address)
-    pub source_address: Option<String>,
 }
 
 #[derive(Serialize, schemars::JsonSchema)]
@@ -83,29 +81,9 @@ impl AsyncTool<DashMcpService> for ShieldedShieldFromCore {
         let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
         resolve::ensure_spv_synced(&ctx).await?;
 
-        let source_address = param
-            .source_address
-            .map(|addr_str| {
-                resolve::validate_address(&addr_str)?;
-                addr_str
-                    .parse::<dash_sdk::dashcore_rpc::dashcore::Address<
-                        dash_sdk::dashcore_rpc::dashcore::address::NetworkUnchecked,
-                    >>()
-                    .map_err(|_| McpToolError::InvalidParam {
-                        message: "The source Core address is invalid.".to_owned(),
-                    })?
-                    .require_network(ctx.network())
-                    .map_err(|_| McpToolError::InvalidParam {
-                        message: "The source Core address does not match the active network."
-                            .to_owned(),
-                    })
-            })
-            .transpose()?;
-
         let task = BackendTask::ShieldedTask(ShieldedTask::ShieldFromAssetLock {
             seed_hash,
             amount_duffs: param.amount_duffs,
-            source_address,
         });
 
         let result = dispatch_task(&ctx, task)

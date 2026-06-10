@@ -671,9 +671,18 @@ pub fn format_credits(credits: u64) -> String {
 ///
 /// Wraps `compute_minimum_shielded_fee` from `dpp`. Use this to calculate
 /// the fee after note selection, when the action count is known.
-pub fn shielded_fee_for_actions(num_actions: usize, platform_version: &PlatformVersion) -> u64 {
+///
+/// Returns the fee in credits, or a boxed [`ProtocolError`] when the active
+/// protocol version has no known shielded-fee formula. The error is boxed
+/// because `ProtocolError` is large and this sits on a hot `Ok` path.
+///
+/// [`ProtocolError`]: dash_sdk::dpp::ProtocolError
+pub fn shielded_fee_for_actions(
+    num_actions: usize,
+    platform_version: &PlatformVersion,
+) -> Result<u64, Box<dash_sdk::dpp::ProtocolError>> {
     use dash_sdk::dpp::shielded::compute_minimum_shielded_fee;
-    compute_minimum_shielded_fee(num_actions, platform_version)
+    compute_minimum_shielded_fee(num_actions, platform_version).map_err(Box::new)
 }
 
 #[cfg(test)]
@@ -764,10 +773,10 @@ mod tests {
     fn test_shielded_fee_for_actions() {
         let platform_version = PlatformVersion::latest();
 
-        let fee_2 = shielded_fee_for_actions(2, platform_version);
-        let fee_3 = shielded_fee_for_actions(3, platform_version);
-        let fee_5 = shielded_fee_for_actions(5, platform_version);
-        let fee_10 = shielded_fee_for_actions(10, platform_version);
+        let fee_2 = shielded_fee_for_actions(2, platform_version).expect("known version");
+        let fee_3 = shielded_fee_for_actions(3, platform_version).expect("known version");
+        let fee_5 = shielded_fee_for_actions(5, platform_version).expect("known version");
+        let fee_10 = shielded_fee_for_actions(10, platform_version).expect("known version");
 
         // Fees should be positive and increase with action count
         assert!(fee_2 > 0, "fee for 2 actions should be positive");

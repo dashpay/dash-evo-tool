@@ -338,6 +338,7 @@ dependencies = [
  "blake2",
  "cpufeatures 0.2.17",
  "password-hash",
+ "zeroize",
 ]
 
 [[package]]
@@ -1915,8 +1916,8 @@ dependencies = [
 
 [[package]]
 name = "dapi-grpc"
-version = "4.0.0-beta.2"
-source = "git+https://github.com/dashpay/platform?rev=9e1248cb0ae46c6fbfc5bd9d92540bec8c6d00e8#9e1248cb0ae46c6fbfc5bd9d92540bec8c6d00e8"
+version = "4.0.0-beta.4"
+source = "git+https://github.com/dashpay/platform?rev=4f432c9baf10eeb051e70bc0370b1b7505b7d9c5#4f432c9baf10eeb051e70bc0370b1b7505b7d9c5"
 dependencies = [
  "dash-platform-macros",
  "futures-core",
@@ -2017,8 +2018,8 @@ dependencies = [
 
 [[package]]
 name = "dash-async"
-version = "4.0.0-beta.2"
-source = "git+https://github.com/dashpay/platform?rev=9e1248cb0ae46c6fbfc5bd9d92540bec8c6d00e8#9e1248cb0ae46c6fbfc5bd9d92540bec8c6d00e8"
+version = "4.0.0-beta.4"
+source = "git+https://github.com/dashpay/platform?rev=4f432c9baf10eeb051e70bc0370b1b7505b7d9c5#4f432c9baf10eeb051e70bc0370b1b7505b7d9c5"
 dependencies = [
  "thiserror 2.0.18",
  "tokio",
@@ -2027,8 +2028,8 @@ dependencies = [
 
 [[package]]
 name = "dash-context-provider"
-version = "4.0.0-beta.2"
-source = "git+https://github.com/dashpay/platform?rev=9e1248cb0ae46c6fbfc5bd9d92540bec8c6d00e8#9e1248cb0ae46c6fbfc5bd9d92540bec8c6d00e8"
+version = "4.0.0-beta.4"
+source = "git+https://github.com/dashpay/platform?rev=4f432c9baf10eeb051e70bc0370b1b7505b7d9c5#4f432c9baf10eeb051e70bc0370b1b7505b7d9c5"
 dependencies = [
  "dash-async",
  "dpp",
@@ -2141,8 +2142,8 @@ dependencies = [
 
 [[package]]
 name = "dash-platform-macros"
-version = "4.0.0-beta.2"
-source = "git+https://github.com/dashpay/platform?rev=9e1248cb0ae46c6fbfc5bd9d92540bec8c6d00e8#9e1248cb0ae46c6fbfc5bd9d92540bec8c6d00e8"
+version = "4.0.0-beta.4"
+source = "git+https://github.com/dashpay/platform?rev=4f432c9baf10eeb051e70bc0370b1b7505b7d9c5#4f432c9baf10eeb051e70bc0370b1b7505b7d9c5"
 dependencies = [
  "heck",
  "quote",
@@ -2151,8 +2152,8 @@ dependencies = [
 
 [[package]]
 name = "dash-sdk"
-version = "4.0.0-beta.2"
-source = "git+https://github.com/dashpay/platform?rev=9e1248cb0ae46c6fbfc5bd9d92540bec8c6d00e8#9e1248cb0ae46c6fbfc5bd9d92540bec8c6d00e8"
+version = "4.0.0-beta.4"
+source = "git+https://github.com/dashpay/platform?rev=4f432c9baf10eeb051e70bc0370b1b7505b7d9c5#4f432c9baf10eeb051e70bc0370b1b7505b7d9c5"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -2301,8 +2302,8 @@ dependencies = [
 
 [[package]]
 name = "dashpay-contract"
-version = "4.0.0-beta.2"
-source = "git+https://github.com/dashpay/platform?rev=9e1248cb0ae46c6fbfc5bd9d92540bec8c6d00e8#9e1248cb0ae46c6fbfc5bd9d92540bec8c6d00e8"
+version = "4.0.0-beta.4"
+source = "git+https://github.com/dashpay/platform?rev=4f432c9baf10eeb051e70bc0370b1b7505b7d9c5#4f432c9baf10eeb051e70bc0370b1b7505b7d9c5"
 dependencies = [
  "platform-value",
  "platform-version",
@@ -2312,8 +2313,8 @@ dependencies = [
 
 [[package]]
 name = "data-contracts"
-version = "4.0.0-beta.2"
-source = "git+https://github.com/dashpay/platform?rev=9e1248cb0ae46c6fbfc5bd9d92540bec8c6d00e8#9e1248cb0ae46c6fbfc5bd9d92540bec8c6d00e8"
+version = "4.0.0-beta.4"
+source = "git+https://github.com/dashpay/platform?rev=4f432c9baf10eeb051e70bc0370b1b7505b7d9c5#4f432c9baf10eeb051e70bc0370b1b7505b7d9c5"
 dependencies = [
  "dashpay-contract",
  "dpns-contract",
@@ -2609,8 +2610,8 @@ checksum = "d8b14ccef22fc6f5a8f4d7d768562a182c04ce9a3b3157b91390b52ddfdf1a76"
 
 [[package]]
 name = "dpns-contract"
-version = "4.0.0-beta.2"
-source = "git+https://github.com/dashpay/platform?rev=9e1248cb0ae46c6fbfc5bd9d92540bec8c6d00e8#9e1248cb0ae46c6fbfc5bd9d92540bec8c6d00e8"
+version = "4.0.0-beta.4"
+source = "git+https://github.com/dashpay/platform?rev=4f432c9baf10eeb051e70bc0370b1b7505b7d9c5#4f432c9baf10eeb051e70bc0370b1b7505b7d9c5"
 dependencies = [
  "platform-value",
  "platform-version",
@@ -2620,8 +2621,8 @@ dependencies = [
 
 [[package]]
 name = "dpp"
-version = "4.0.0-beta.2"
-source = "git+https://github.com/dashpay/platform?rev=9e1248cb0ae46c6fbfc5bd9d92540bec8c6d00e8#9e1248cb0ae46c6fbfc5bd9d92540bec8c6d00e8"
+version = "4.0.0-beta.4"
+source = "git+https://github.com/dashpay/platform?rev=4f432c9baf10eeb051e70bc0370b1b7505b7d9c5#4f432c9baf10eeb051e70bc0370b1b7505b7d9c5"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2670,8 +2671,8 @@ dependencies = [
 
 [[package]]
 name = "dpp-json-convertible-derive"
-version = "4.0.0-beta.2"
-source = "git+https://github.com/dashpay/platform?rev=9e1248cb0ae46c6fbfc5bd9d92540bec8c6d00e8#9e1248cb0ae46c6fbfc5bd9d92540bec8c6d00e8"
+version = "4.0.0-beta.4"
+source = "git+https://github.com/dashpay/platform?rev=4f432c9baf10eeb051e70bc0370b1b7505b7d9c5#4f432c9baf10eeb051e70bc0370b1b7505b7d9c5"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2680,18 +2681,18 @@ dependencies = [
 
 [[package]]
 name = "drive"
-version = "4.0.0-beta.2"
-source = "git+https://github.com/dashpay/platform?rev=9e1248cb0ae46c6fbfc5bd9d92540bec8c6d00e8#9e1248cb0ae46c6fbfc5bd9d92540bec8c6d00e8"
+version = "4.0.0-beta.4"
+source = "git+https://github.com/dashpay/platform?rev=4f432c9baf10eeb051e70bc0370b1b7505b7d9c5#4f432c9baf10eeb051e70bc0370b1b7505b7d9c5"
 dependencies = [
  "bincode 2.0.1",
  "byteorder",
  "derive_more 1.0.0",
  "dpp",
- "grovedb 4.0.0 (git+https://github.com/dashpay/grovedb?rev=a18f7929460ef9c5d814f61ff84d8805b2a1761b)",
- "grovedb-costs 4.0.0 (git+https://github.com/dashpay/grovedb?rev=a18f7929460ef9c5d814f61ff84d8805b2a1761b)",
+ "grovedb 4.0.0 (git+https://github.com/dashpay/grovedb?rev=fc814983d4d36c6ea049642556b9a31ab8d4dfaa)",
+ "grovedb-costs 4.0.0 (git+https://github.com/dashpay/grovedb?rev=fc814983d4d36c6ea049642556b9a31ab8d4dfaa)",
  "grovedb-epoch-based-storage-flags",
- "grovedb-path 4.0.0 (git+https://github.com/dashpay/grovedb?rev=a18f7929460ef9c5d814f61ff84d8805b2a1761b)",
- "grovedb-version 4.0.0 (git+https://github.com/dashpay/grovedb?rev=a18f7929460ef9c5d814f61ff84d8805b2a1761b)",
+ "grovedb-path 4.0.0 (git+https://github.com/dashpay/grovedb?rev=fc814983d4d36c6ea049642556b9a31ab8d4dfaa)",
+ "grovedb-version 4.0.0 (git+https://github.com/dashpay/grovedb?rev=fc814983d4d36c6ea049642556b9a31ab8d4dfaa)",
  "hex",
  "indexmap 2.14.0",
  "integer-encoding",
@@ -2705,8 +2706,8 @@ dependencies = [
 
 [[package]]
 name = "drive-proof-verifier"
-version = "4.0.0-beta.2"
-source = "git+https://github.com/dashpay/platform?rev=9e1248cb0ae46c6fbfc5bd9d92540bec8c6d00e8#9e1248cb0ae46c6fbfc5bd9d92540bec8c6d00e8"
+version = "4.0.0-beta.4"
+source = "git+https://github.com/dashpay/platform?rev=4f432c9baf10eeb051e70bc0370b1b7505b7d9c5#4f432c9baf10eeb051e70bc0370b1b7505b7d9c5"
 dependencies = [
  "bincode 2.0.1",
  "dapi-grpc",
@@ -3903,20 +3904,20 @@ dependencies = [
 [[package]]
 name = "grovedb"
 version = "4.0.0"
-source = "git+https://github.com/dashpay/grovedb?rev=a18f7929460ef9c5d814f61ff84d8805b2a1761b#a18f7929460ef9c5d814f61ff84d8805b2a1761b"
+source = "git+https://github.com/dashpay/grovedb?rev=fc814983d4d36c6ea049642556b9a31ab8d4dfaa#fc814983d4d36c6ea049642556b9a31ab8d4dfaa"
 dependencies = [
  "bincode 2.0.1",
  "bincode_derive",
  "blake3",
  "grovedb-bulk-append-tree",
- "grovedb-costs 4.0.0 (git+https://github.com/dashpay/grovedb?rev=a18f7929460ef9c5d814f61ff84d8805b2a1761b)",
+ "grovedb-costs 4.0.0 (git+https://github.com/dashpay/grovedb?rev=fc814983d4d36c6ea049642556b9a31ab8d4dfaa)",
  "grovedb-dense-fixed-sized-merkle-tree",
- "grovedb-element 4.0.0 (git+https://github.com/dashpay/grovedb?rev=a18f7929460ef9c5d814f61ff84d8805b2a1761b)",
- "grovedb-merk 4.0.0 (git+https://github.com/dashpay/grovedb?rev=a18f7929460ef9c5d814f61ff84d8805b2a1761b)",
+ "grovedb-element 4.0.0 (git+https://github.com/dashpay/grovedb?rev=fc814983d4d36c6ea049642556b9a31ab8d4dfaa)",
+ "grovedb-merk 4.0.0 (git+https://github.com/dashpay/grovedb?rev=fc814983d4d36c6ea049642556b9a31ab8d4dfaa)",
  "grovedb-merkle-mountain-range",
- "grovedb-path 4.0.0 (git+https://github.com/dashpay/grovedb?rev=a18f7929460ef9c5d814f61ff84d8805b2a1761b)",
+ "grovedb-path 4.0.0 (git+https://github.com/dashpay/grovedb?rev=fc814983d4d36c6ea049642556b9a31ab8d4dfaa)",
  "grovedb-query",
- "grovedb-version 4.0.0 (git+https://github.com/dashpay/grovedb?rev=a18f7929460ef9c5d814f61ff84d8805b2a1761b)",
+ "grovedb-version 4.0.0 (git+https://github.com/dashpay/grovedb?rev=fc814983d4d36c6ea049642556b9a31ab8d4dfaa)",
  "hex",
  "hex-literal",
  "indexmap 2.14.0",
@@ -3929,11 +3930,11 @@ dependencies = [
 [[package]]
 name = "grovedb-bulk-append-tree"
 version = "4.0.0"
-source = "git+https://github.com/dashpay/grovedb?rev=a18f7929460ef9c5d814f61ff84d8805b2a1761b#a18f7929460ef9c5d814f61ff84d8805b2a1761b"
+source = "git+https://github.com/dashpay/grovedb?rev=fc814983d4d36c6ea049642556b9a31ab8d4dfaa#fc814983d4d36c6ea049642556b9a31ab8d4dfaa"
 dependencies = [
  "bincode 2.0.1",
  "blake3",
- "grovedb-costs 4.0.0 (git+https://github.com/dashpay/grovedb?rev=a18f7929460ef9c5d814f61ff84d8805b2a1761b)",
+ "grovedb-costs 4.0.0 (git+https://github.com/dashpay/grovedb?rev=fc814983d4d36c6ea049642556b9a31ab8d4dfaa)",
  "grovedb-dense-fixed-sized-merkle-tree",
  "grovedb-merkle-mountain-range",
  "grovedb-query",
@@ -3944,11 +3945,11 @@ dependencies = [
 [[package]]
 name = "grovedb-commitment-tree"
 version = "4.0.0"
-source = "git+https://github.com/dashpay/grovedb?rev=a18f7929460ef9c5d814f61ff84d8805b2a1761b#a18f7929460ef9c5d814f61ff84d8805b2a1761b"
+source = "git+https://github.com/dashpay/grovedb?rev=fc814983d4d36c6ea049642556b9a31ab8d4dfaa#fc814983d4d36c6ea049642556b9a31ab8d4dfaa"
 dependencies = [
  "blake3",
  "grovedb-bulk-append-tree",
- "grovedb-costs 4.0.0 (git+https://github.com/dashpay/grovedb?rev=a18f7929460ef9c5d814f61ff84d8805b2a1761b)",
+ "grovedb-costs 4.0.0 (git+https://github.com/dashpay/grovedb?rev=fc814983d4d36c6ea049642556b9a31ab8d4dfaa)",
  "incrementalmerkletree",
  "orchard",
  "rusqlite",
@@ -3969,7 +3970,7 @@ dependencies = [
 [[package]]
 name = "grovedb-costs"
 version = "4.0.0"
-source = "git+https://github.com/dashpay/grovedb?rev=a18f7929460ef9c5d814f61ff84d8805b2a1761b#a18f7929460ef9c5d814f61ff84d8805b2a1761b"
+source = "git+https://github.com/dashpay/grovedb?rev=fc814983d4d36c6ea049642556b9a31ab8d4dfaa#fc814983d4d36c6ea049642556b9a31ab8d4dfaa"
 dependencies = [
  "integer-encoding",
  "intmap",
@@ -3979,11 +3980,11 @@ dependencies = [
 [[package]]
 name = "grovedb-dense-fixed-sized-merkle-tree"
 version = "4.0.0"
-source = "git+https://github.com/dashpay/grovedb?rev=a18f7929460ef9c5d814f61ff84d8805b2a1761b#a18f7929460ef9c5d814f61ff84d8805b2a1761b"
+source = "git+https://github.com/dashpay/grovedb?rev=fc814983d4d36c6ea049642556b9a31ab8d4dfaa#fc814983d4d36c6ea049642556b9a31ab8d4dfaa"
 dependencies = [
  "bincode 2.0.1",
  "blake3",
- "grovedb-costs 4.0.0 (git+https://github.com/dashpay/grovedb?rev=a18f7929460ef9c5d814f61ff84d8805b2a1761b)",
+ "grovedb-costs 4.0.0 (git+https://github.com/dashpay/grovedb?rev=fc814983d4d36c6ea049642556b9a31ab8d4dfaa)",
  "grovedb-query",
  "thiserror 2.0.18",
 ]
@@ -4005,12 +4006,12 @@ dependencies = [
 [[package]]
 name = "grovedb-element"
 version = "4.0.0"
-source = "git+https://github.com/dashpay/grovedb?rev=a18f7929460ef9c5d814f61ff84d8805b2a1761b#a18f7929460ef9c5d814f61ff84d8805b2a1761b"
+source = "git+https://github.com/dashpay/grovedb?rev=fc814983d4d36c6ea049642556b9a31ab8d4dfaa#fc814983d4d36c6ea049642556b9a31ab8d4dfaa"
 dependencies = [
  "bincode 2.0.1",
  "bincode_derive",
- "grovedb-path 4.0.0 (git+https://github.com/dashpay/grovedb?rev=a18f7929460ef9c5d814f61ff84d8805b2a1761b)",
- "grovedb-version 4.0.0 (git+https://github.com/dashpay/grovedb?rev=a18f7929460ef9c5d814f61ff84d8805b2a1761b)",
+ "grovedb-path 4.0.0 (git+https://github.com/dashpay/grovedb?rev=fc814983d4d36c6ea049642556b9a31ab8d4dfaa)",
+ "grovedb-version 4.0.0 (git+https://github.com/dashpay/grovedb?rev=fc814983d4d36c6ea049642556b9a31ab8d4dfaa)",
  "hex",
  "integer-encoding",
  "thiserror 2.0.18",
@@ -4019,9 +4020,9 @@ dependencies = [
 [[package]]
 name = "grovedb-epoch-based-storage-flags"
 version = "4.0.0"
-source = "git+https://github.com/dashpay/grovedb?rev=a18f7929460ef9c5d814f61ff84d8805b2a1761b#a18f7929460ef9c5d814f61ff84d8805b2a1761b"
+source = "git+https://github.com/dashpay/grovedb?rev=fc814983d4d36c6ea049642556b9a31ab8d4dfaa#fc814983d4d36c6ea049642556b9a31ab8d4dfaa"
 dependencies = [
- "grovedb-costs 4.0.0 (git+https://github.com/dashpay/grovedb?rev=a18f7929460ef9c5d814f61ff84d8805b2a1761b)",
+ "grovedb-costs 4.0.0 (git+https://github.com/dashpay/grovedb?rev=fc814983d4d36c6ea049642556b9a31ab8d4dfaa)",
  "hex",
  "integer-encoding",
  "intmap",
@@ -4052,19 +4053,19 @@ dependencies = [
 [[package]]
 name = "grovedb-merk"
 version = "4.0.0"
-source = "git+https://github.com/dashpay/grovedb?rev=a18f7929460ef9c5d814f61ff84d8805b2a1761b#a18f7929460ef9c5d814f61ff84d8805b2a1761b"
+source = "git+https://github.com/dashpay/grovedb?rev=fc814983d4d36c6ea049642556b9a31ab8d4dfaa#fc814983d4d36c6ea049642556b9a31ab8d4dfaa"
 dependencies = [
  "bincode 2.0.1",
  "bincode_derive",
  "blake3",
  "byteorder",
  "ed",
- "grovedb-costs 4.0.0 (git+https://github.com/dashpay/grovedb?rev=a18f7929460ef9c5d814f61ff84d8805b2a1761b)",
- "grovedb-element 4.0.0 (git+https://github.com/dashpay/grovedb?rev=a18f7929460ef9c5d814f61ff84d8805b2a1761b)",
- "grovedb-path 4.0.0 (git+https://github.com/dashpay/grovedb?rev=a18f7929460ef9c5d814f61ff84d8805b2a1761b)",
+ "grovedb-costs 4.0.0 (git+https://github.com/dashpay/grovedb?rev=fc814983d4d36c6ea049642556b9a31ab8d4dfaa)",
+ "grovedb-element 4.0.0 (git+https://github.com/dashpay/grovedb?rev=fc814983d4d36c6ea049642556b9a31ab8d4dfaa)",
+ "grovedb-path 4.0.0 (git+https://github.com/dashpay/grovedb?rev=fc814983d4d36c6ea049642556b9a31ab8d4dfaa)",
  "grovedb-query",
- "grovedb-version 4.0.0 (git+https://github.com/dashpay/grovedb?rev=a18f7929460ef9c5d814f61ff84d8805b2a1761b)",
- "grovedb-visualize 4.0.0 (git+https://github.com/dashpay/grovedb?rev=a18f7929460ef9c5d814f61ff84d8805b2a1761b)",
+ "grovedb-version 4.0.0 (git+https://github.com/dashpay/grovedb?rev=fc814983d4d36c6ea049642556b9a31ab8d4dfaa)",
+ "grovedb-visualize 4.0.0 (git+https://github.com/dashpay/grovedb?rev=fc814983d4d36c6ea049642556b9a31ab8d4dfaa)",
  "hex",
  "indexmap 2.14.0",
  "integer-encoding",
@@ -4074,11 +4075,11 @@ dependencies = [
 [[package]]
 name = "grovedb-merkle-mountain-range"
 version = "4.0.0"
-source = "git+https://github.com/dashpay/grovedb?rev=a18f7929460ef9c5d814f61ff84d8805b2a1761b#a18f7929460ef9c5d814f61ff84d8805b2a1761b"
+source = "git+https://github.com/dashpay/grovedb?rev=fc814983d4d36c6ea049642556b9a31ab8d4dfaa#fc814983d4d36c6ea049642556b9a31ab8d4dfaa"
 dependencies = [
  "bincode 2.0.1",
  "blake3",
- "grovedb-costs 4.0.0 (git+https://github.com/dashpay/grovedb?rev=a18f7929460ef9c5d814f61ff84d8805b2a1761b)",
+ "grovedb-costs 4.0.0 (git+https://github.com/dashpay/grovedb?rev=fc814983d4d36c6ea049642556b9a31ab8d4dfaa)",
 ]
 
 [[package]]
@@ -4092,7 +4093,7 @@ dependencies = [
 [[package]]
 name = "grovedb-path"
 version = "4.0.0"
-source = "git+https://github.com/dashpay/grovedb?rev=a18f7929460ef9c5d814f61ff84d8805b2a1761b#a18f7929460ef9c5d814f61ff84d8805b2a1761b"
+source = "git+https://github.com/dashpay/grovedb?rev=fc814983d4d36c6ea049642556b9a31ab8d4dfaa#fc814983d4d36c6ea049642556b9a31ab8d4dfaa"
 dependencies = [
  "hex",
 ]
@@ -4100,7 +4101,7 @@ dependencies = [
 [[package]]
 name = "grovedb-query"
 version = "4.0.0"
-source = "git+https://github.com/dashpay/grovedb?rev=a18f7929460ef9c5d814f61ff84d8805b2a1761b#a18f7929460ef9c5d814f61ff84d8805b2a1761b"
+source = "git+https://github.com/dashpay/grovedb?rev=fc814983d4d36c6ea049642556b9a31ab8d4dfaa#fc814983d4d36c6ea049642556b9a31ab8d4dfaa"
 dependencies = [
  "bincode 2.0.1",
  "byteorder",
@@ -4123,7 +4124,7 @@ dependencies = [
 [[package]]
 name = "grovedb-version"
 version = "4.0.0"
-source = "git+https://github.com/dashpay/grovedb?rev=a18f7929460ef9c5d814f61ff84d8805b2a1761b#a18f7929460ef9c5d814f61ff84d8805b2a1761b"
+source = "git+https://github.com/dashpay/grovedb?rev=fc814983d4d36c6ea049642556b9a31ab8d4dfaa#fc814983d4d36c6ea049642556b9a31ab8d4dfaa"
 dependencies = [
  "thiserror 2.0.18",
  "versioned-feature-core 1.0.0 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -4141,7 +4142,7 @@ dependencies = [
 [[package]]
 name = "grovedb-visualize"
 version = "4.0.0"
-source = "git+https://github.com/dashpay/grovedb?rev=a18f7929460ef9c5d814f61ff84d8805b2a1761b#a18f7929460ef9c5d814f61ff84d8805b2a1761b"
+source = "git+https://github.com/dashpay/grovedb?rev=fc814983d4d36c6ea049642556b9a31ab8d4dfaa#fc814983d4d36c6ea049642556b9a31ab8d4dfaa"
 dependencies = [
  "hex",
  "itertools 0.14.0",
@@ -4217,9 +4218,9 @@ dependencies = [
 
 [[package]]
 name = "halo2_gadgets"
-version = "0.4.0"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "45824ce0dd12e91ec0c68ebae2a7ed8ae19b70946624c849add59f1d1a62a143"
+checksum = "fb2a697cad929f706b7987fe804ad57d43622cd37463ba7e4d662a926fdcfea3"
 dependencies = [
  "arrayvec",
  "bitvec",
@@ -4599,7 +4600,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.61.2",
+ "windows-core 0.58.0",
 ]
 
 [[package]]
@@ -5069,8 +5070,8 @@ dependencies = [
 
 [[package]]
 name = "keyword-search-contract"
-version = "4.0.0-beta.2"
-source = "git+https://github.com/dashpay/platform?rev=9e1248cb0ae46c6fbfc5bd9d92540bec8c6d00e8#9e1248cb0ae46c6fbfc5bd9d92540bec8c6d00e8"
+version = "4.0.0-beta.4"
+source = "git+https://github.com/dashpay/platform?rev=4f432c9baf10eeb051e70bc0370b1b7505b7d9c5#4f432c9baf10eeb051e70bc0370b1b7505b7d9c5"
 dependencies = [
  "platform-value",
  "platform-version",
@@ -5286,8 +5287,8 @@ dependencies = [
 
 [[package]]
 name = "masternode-reward-shares-contract"
-version = "4.0.0-beta.2"
-source = "git+https://github.com/dashpay/platform?rev=9e1248cb0ae46c6fbfc5bd9d92540bec8c6d00e8#9e1248cb0ae46c6fbfc5bd9d92540bec8c6d00e8"
+version = "4.0.0-beta.4"
+source = "git+https://github.com/dashpay/platform?rev=4f432c9baf10eeb051e70bc0370b1b7505b7d9c5#4f432c9baf10eeb051e70bc0370b1b7505b7d9c5"
 dependencies = [
  "platform-value",
  "platform-version",
@@ -6132,8 +6133,8 @@ dependencies = [
 
 [[package]]
 name = "orchard"
-version = "0.13.1"
-source = "git+https://github.com/dashpay/orchard.git?rev=898258d76aab2822249492aede59a02d49278fff#898258d76aab2822249492aede59a02d49278fff"
+version = "0.14.0"
+source = "git+https://github.com/dashpay/orchard.git?tag=dashified-0.14.0#f05557390a5843bc4eb04c66d8140bc9ef0fe9b7"
 dependencies = [
  "aes",
  "bitvec",
@@ -6428,8 +6429,8 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
 name = "platform-encryption"
-version = "4.0.0-beta.2"
-source = "git+https://github.com/dashpay/platform?rev=9e1248cb0ae46c6fbfc5bd9d92540bec8c6d00e8#9e1248cb0ae46c6fbfc5bd9d92540bec8c6d00e8"
+version = "4.0.0-beta.4"
+source = "git+https://github.com/dashpay/platform?rev=4f432c9baf10eeb051e70bc0370b1b7505b7d9c5#4f432c9baf10eeb051e70bc0370b1b7505b7d9c5"
 dependencies = [
  "aes",
  "cbc",
@@ -6439,8 +6440,8 @@ dependencies = [
 
 [[package]]
 name = "platform-serialization"
-version = "4.0.0-beta.2"
-source = "git+https://github.com/dashpay/platform?rev=9e1248cb0ae46c6fbfc5bd9d92540bec8c6d00e8#9e1248cb0ae46c6fbfc5bd9d92540bec8c6d00e8"
+version = "4.0.0-beta.4"
+source = "git+https://github.com/dashpay/platform?rev=4f432c9baf10eeb051e70bc0370b1b7505b7d9c5#4f432c9baf10eeb051e70bc0370b1b7505b7d9c5"
 dependencies = [
  "bincode 2.0.1",
  "platform-version",
@@ -6448,8 +6449,8 @@ dependencies = [
 
 [[package]]
 name = "platform-serialization-derive"
-version = "4.0.0-beta.2"
-source = "git+https://github.com/dashpay/platform?rev=9e1248cb0ae46c6fbfc5bd9d92540bec8c6d00e8#9e1248cb0ae46c6fbfc5bd9d92540bec8c6d00e8"
+version = "4.0.0-beta.4"
+source = "git+https://github.com/dashpay/platform?rev=4f432c9baf10eeb051e70bc0370b1b7505b7d9c5#4f432c9baf10eeb051e70bc0370b1b7505b7d9c5"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -6459,8 +6460,8 @@ dependencies = [
 
 [[package]]
 name = "platform-value"
-version = "4.0.0-beta.2"
-source = "git+https://github.com/dashpay/platform?rev=9e1248cb0ae46c6fbfc5bd9d92540bec8c6d00e8#9e1248cb0ae46c6fbfc5bd9d92540bec8c6d00e8"
+version = "4.0.0-beta.4"
+source = "git+https://github.com/dashpay/platform?rev=4f432c9baf10eeb051e70bc0370b1b7505b7d9c5#4f432c9baf10eeb051e70bc0370b1b7505b7d9c5"
 dependencies = [
  "base64 0.22.1",
  "bincode 2.0.1",
@@ -6479,19 +6480,19 @@ dependencies = [
 
 [[package]]
 name = "platform-version"
-version = "4.0.0-beta.2"
-source = "git+https://github.com/dashpay/platform?rev=9e1248cb0ae46c6fbfc5bd9d92540bec8c6d00e8#9e1248cb0ae46c6fbfc5bd9d92540bec8c6d00e8"
+version = "4.0.0-beta.4"
+source = "git+https://github.com/dashpay/platform?rev=4f432c9baf10eeb051e70bc0370b1b7505b7d9c5#4f432c9baf10eeb051e70bc0370b1b7505b7d9c5"
 dependencies = [
  "bincode 2.0.1",
- "grovedb-version 4.0.0 (git+https://github.com/dashpay/grovedb?rev=a18f7929460ef9c5d814f61ff84d8805b2a1761b)",
+ "grovedb-version 4.0.0 (git+https://github.com/dashpay/grovedb?rev=fc814983d4d36c6ea049642556b9a31ab8d4dfaa)",
  "thiserror 2.0.18",
  "versioned-feature-core 1.0.0 (git+https://github.com/dashpay/versioned-feature-core)",
 ]
 
 [[package]]
 name = "platform-versioning"
-version = "4.0.0-beta.2"
-source = "git+https://github.com/dashpay/platform?rev=9e1248cb0ae46c6fbfc5bd9d92540bec8c6d00e8#9e1248cb0ae46c6fbfc5bd9d92540bec8c6d00e8"
+version = "4.0.0-beta.4"
+source = "git+https://github.com/dashpay/platform?rev=4f432c9baf10eeb051e70bc0370b1b7505b7d9c5#4f432c9baf10eeb051e70bc0370b1b7505b7d9c5"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -6500,8 +6501,8 @@ dependencies = [
 
 [[package]]
 name = "platform-wallet"
-version = "4.0.0-beta.2"
-source = "git+https://github.com/dashpay/platform?rev=9e1248cb0ae46c6fbfc5bd9d92540bec8c6d00e8#9e1248cb0ae46c6fbfc5bd9d92540bec8c6d00e8"
+version = "4.0.0-beta.4"
+source = "git+https://github.com/dashpay/platform?rev=4f432c9baf10eeb051e70bc0370b1b7505b7d9c5#4f432c9baf10eeb051e70bc0370b1b7505b7d9c5"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -6528,8 +6529,8 @@ dependencies = [
 
 [[package]]
 name = "platform-wallet-storage"
-version = "4.0.0-beta.2"
-source = "git+https://github.com/dashpay/platform?rev=9e1248cb0ae46c6fbfc5bd9d92540bec8c6d00e8#9e1248cb0ae46c6fbfc5bd9d92540bec8c6d00e8"
+version = "4.0.0-beta.4"
+source = "git+https://github.com/dashpay/platform?rev=4f432c9baf10eeb051e70bc0370b1b7505b7d9c5#4f432c9baf10eeb051e70bc0370b1b7505b7d9c5"
 dependencies = [
  "apple-native-keyring-store",
  "argon2",
@@ -6811,7 +6812,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "343d3bd7056eda839b03204e68deff7d1b13aba7af2b2fd16890697274262ee7"
 dependencies = [
  "heck",
- "itertools 0.14.0",
+ "itertools 0.10.5",
  "log",
  "multimap",
  "petgraph",
@@ -6832,7 +6833,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "27c6023962132f4b30eb4c172c91ce92d933da334c59c23cddee82358ddafb0b"
 dependencies = [
  "anyhow",
- "itertools 0.14.0",
+ "itertools 0.10.5",
  "proc-macro2",
  "quote",
  "syn 2.0.117",
@@ -7503,8 +7504,8 @@ dependencies = [
 
 [[package]]
 name = "rs-dapi-client"
-version = "4.0.0-beta.2"
-source = "git+https://github.com/dashpay/platform?rev=9e1248cb0ae46c6fbfc5bd9d92540bec8c6d00e8#9e1248cb0ae46c6fbfc5bd9d92540bec8c6d00e8"
+version = "4.0.0-beta.4"
+source = "git+https://github.com/dashpay/platform?rev=4f432c9baf10eeb051e70bc0370b1b7505b7d9c5#4f432c9baf10eeb051e70bc0370b1b7505b7d9c5"
 dependencies = [
  "backon",
  "chrono",
@@ -7529,8 +7530,8 @@ dependencies = [
 
 [[package]]
 name = "rs-sdk-trusted-context-provider"
-version = "4.0.0-beta.2"
-source = "git+https://github.com/dashpay/platform?rev=9e1248cb0ae46c6fbfc5bd9d92540bec8c6d00e8#9e1248cb0ae46c6fbfc5bd9d92540bec8c6d00e8"
+version = "4.0.0-beta.4"
+source = "git+https://github.com/dashpay/platform?rev=4f432c9baf10eeb051e70bc0370b1b7505b7d9c5#4f432c9baf10eeb051e70bc0370b1b7505b7d9c5"
 dependencies = [
  "arc-swap",
  "dash-async",
@@ -8780,8 +8781,8 @@ checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 
 [[package]]
 name = "token-history-contract"
-version = "4.0.0-beta.2"
-source = "git+https://github.com/dashpay/platform?rev=9e1248cb0ae46c6fbfc5bd9d92540bec8c6d00e8#9e1248cb0ae46c6fbfc5bd9d92540bec8c6d00e8"
+version = "4.0.0-beta.4"
+source = "git+https://github.com/dashpay/platform?rev=4f432c9baf10eeb051e70bc0370b1b7505b7d9c5#4f432c9baf10eeb051e70bc0370b1b7505b7d9c5"
 dependencies = [
  "platform-value",
  "platform-version",
@@ -9607,8 +9608,8 @@ dependencies = [
 
 [[package]]
 name = "wallet-utils-contract"
-version = "4.0.0-beta.2"
-source = "git+https://github.com/dashpay/platform?rev=9e1248cb0ae46c6fbfc5bd9d92540bec8c6d00e8#9e1248cb0ae46c6fbfc5bd9d92540bec8c6d00e8"
+version = "4.0.0-beta.4"
+source = "git+https://github.com/dashpay/platform?rev=4f432c9baf10eeb051e70bc0370b1b7505b7d9c5#4f432c9baf10eeb051e70bc0370b1b7505b7d9c5"
 dependencies = [
  "platform-value",
  "platform-version",
@@ -10162,7 +10163,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
@@ -10928,8 +10929,8 @@ dependencies = [
 
 [[package]]
 name = "withdrawals-contract"
-version = "4.0.0-beta.2"
-source = "git+https://github.com/dashpay/platform?rev=9e1248cb0ae46c6fbfc5bd9d92540bec8c6d00e8#9e1248cb0ae46c6fbfc5bd9d92540bec8c6d00e8"
+version = "4.0.0-beta.4"
+source = "git+https://github.com/dashpay/platform?rev=4f432c9baf10eeb051e70bc0370b1b7505b7d9c5#4f432c9baf10eeb051e70bc0370b1b7505b7d9c5"
 dependencies = [
  "num_enum 0.5.11",
  "platform-value",

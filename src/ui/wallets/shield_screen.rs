@@ -811,7 +811,8 @@ impl ScreenLike for ShieldScreen {
                         let max_credits = match source_kind {
                             Some(AddressKind::Platform) => {
                                 let base_fee =
-                                    shielded_fee_for_actions(2, PlatformVersion::latest());
+                                    shielded_fee_for_actions(2, PlatformVersion::latest())
+                                        .unwrap_or(0);
                                 let multiplier =
                                     self.app_context.fee_multiplier_permille().max(1000);
                                 let fee_headroom = base_fee.saturating_mul(multiplier) / 1000;

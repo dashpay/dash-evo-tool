@@ -1438,6 +1438,16 @@ pub enum TaskError {
     #[error("Could not check for spent shielded notes. Please check your connection and retry.")]
     ShieldedNullifierSyncFailed { detail: String },
 
+    /// The shielded transition fee could not be computed for the active
+    /// protocol version.
+    #[error(
+        "Could not calculate the shielded transaction fee. Update to the latest version and retry."
+    )]
+    ShieldedFeeComputationFailed {
+        #[source]
+        source: Box<dash_sdk::dpp::ProtocolError>,
+    },
+
     // ──────────────────────────────────────────────────────────────────────────
     // Network context errors
     // ──────────────────────────────────────────────────────────────────────────

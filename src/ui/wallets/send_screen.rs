@@ -1567,7 +1567,8 @@ impl WalletSendScreen {
         let base_fee = crate::model::fee_estimation::shielded_fee_for_actions(
             2,
             dash_sdk::dpp::version::PlatformVersion::latest(),
-        );
+        )
+        .unwrap_or(0);
         let multiplier = self.app_context.fee_multiplier_permille().max(1000);
         let per_op_fee = base_fee.saturating_mul(multiplier) / 1000;
         let mut remaining = amount_credits;

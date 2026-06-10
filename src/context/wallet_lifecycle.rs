@@ -1244,6 +1244,12 @@ mod tests {
             "precondition: disconnected before reconnect"
         );
 
+        // TODO(platform-wallet): beta.4 added a single-open guard to the upstream
+        // SQLite persister (WalletStorageError::AlreadyOpen). This test keeps the
+        // pre-stop backend `first` alive across the reconnect, so the dropped
+        // backend's persister handle is not yet released and the reconnect's open
+        // of the same path is refused. Release the prior handle on stop_spv (or
+        // drop `first` before reconnecting) so the fresh open succeeds.
         ctx.ensure_wallet_backend_and_start_spv(sender)
             .await
             .expect("reconnect should wire then start a fresh backend offline");

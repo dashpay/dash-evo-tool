@@ -367,8 +367,11 @@ pub async fn shielded_transfer(
 
     let change_addr = payment_address_to_orchard(&shielded_state.keys.default_address)?;
 
-    // memo: 36-byte structured memo (4-byte type tag + 32-byte payload); all zeros = empty memo
-    let state_transition = build_shielded_transfer_transition(
+    // memo: 36-byte structured memo (4-byte type tag + 32-byte payload); all zeros = empty memo.
+    // The fee is no longer a caller argument: consensus pins a transfer's
+    // `value_balance` to exactly `compute_minimum_shielded_fee`, so the builder
+    // computes it internally and returns the applied fee alongside the transition.
+    let (state_transition, _applied_fee) = build_shielded_transfer_transition(
         spends,
         &recipient_addr,
         amount,
@@ -378,7 +381,6 @@ pub async fn shielded_transfer(
         anchor,
         &prover,
         [0u8; 36],
-        Some(exact_fee),
         sdk.version(),
     )
     .map_err(|e| shielded_build_error(e.to_string()))?;
@@ -453,8 +455,10 @@ pub async fn unshield_credits(
 
     let change_addr = payment_address_to_orchard(&shielded_state.keys.default_address)?;
 
-    // memo: 36-byte structured memo (4-byte type tag + 32-byte payload); all zeros = empty memo
-    let state_transition = build_unshield_transition(
+    // memo: 36-byte structured memo (4-byte type tag + 32-byte payload); all zeros = empty memo.
+    // The builder now computes the consensus-pinned fee internally and returns
+    // it alongside the transition, so the fee is no longer passed in.
+    let (state_transition, _applied_fee) = build_unshield_transition(
         spends,
         to_platform_address,
         amount,
@@ -464,7 +468,6 @@ pub async fn unshield_credits(
         anchor,
         &prover,
         [0u8; 36],
-        Some(exact_fee),
         sdk.version(),
     )
     .map_err(|e| shielded_build_error(e.to_string()))?;
@@ -556,7 +559,9 @@ pub async fn shield_from_asset_lock(
         shield_amount_credits,
     );
 
-    // memo: 36-byte structured memo (4-byte type tag + 32-byte payload); all zeros = empty memo
+    // memo: 36-byte structured memo (4-byte type tag + 32-byte payload); all zeros = empty memo.
+    // `surplus_output = None`: the asset-lock surplus (lock value − shield amount
+    // − fee) folds into the fee pools rather than going to a separate address.
     let state_transition = build_shield_from_asset_lock_transition(
         &recipient,
         shield_amount_credits,
@@ -564,6 +569,7 @@ pub async fn shield_from_asset_lock(
         asset_lock_private_key.inner.as_ref(),
         &prover,
         [0u8; 36],
+        None,
         sdk.version(),
     )
     .map_err(|e| shielded_build_error(e.to_string()))?;
@@ -639,8 +645,10 @@ pub async fn shielded_withdrawal(
 
     let change_addr = payment_address_to_orchard(&shielded_state.keys.default_address)?;
 
-    // memo: 36-byte structured memo (4-byte type tag + 32-byte payload); all zeros = empty memo
-    let state_transition = build_shielded_withdrawal_transition(
+    // memo: 36-byte structured memo (4-byte type tag + 32-byte payload); all zeros = empty memo.
+    // The builder now computes the consensus-pinned fee internally and returns
+    // it alongside the transition, so the fee is no longer passed in.
+    let (state_transition, _applied_fee) = build_shielded_withdrawal_transition(
         spends,
         amount,
         output_script,
@@ -652,7 +660,6 @@ pub async fn shielded_withdrawal(
         anchor,
         &prover,
         [0u8; 36],
-        Some(exact_fee),
         sdk.version(),
     )
     .map_err(|e| shielded_build_error(e.to_string()))?;
@@ -705,12 +712,14 @@ fn select_notes_with_fee<'a>(
     ),
     TaskError,
 > {
-    let mut fee_estimate = shielded_fee_for_actions(min_actions, platform_version);
+    let mut fee_estimate = shielded_fee_for_actions(min_actions, platform_version)
+        .map_err(|source| TaskError::ShieldedFeeComputationFailed { source })?;
 
     for _ in 0..5 {
         let (notes, total) = select_notes_for_amount(shielded_state, amount, fee_estimate)?;
         let num_actions = notes.len().max(min_actions);
-        let exact_fee = shielded_fee_for_actions(num_actions, platform_version);
+        let exact_fee = shielded_fee_for_actions(num_actions, platform_version)
+            .map_err(|source| TaskError::ShieldedFeeComputationFailed { source })?;
 
         if total >= amount.saturating_add(exact_fee) {
             return Ok((notes, total, exact_fee));
@@ -722,7 +731,8 @@ fn select_notes_with_fee<'a>(
     // Final attempt with last computed fee
     let (notes, total) = select_notes_for_amount(shielded_state, amount, fee_estimate)?;
     let num_actions = notes.len().max(min_actions);
-    let exact_fee = shielded_fee_for_actions(num_actions, platform_version);
+    let exact_fee = shielded_fee_for_actions(num_actions, platform_version)
+        .map_err(|source| TaskError::ShieldedFeeComputationFailed { source })?;
     if total < amount.saturating_add(exact_fee) {
         return Err(TaskError::ShieldedInsufficientBalance {
             available: total,

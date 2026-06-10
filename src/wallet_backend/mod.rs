@@ -386,14 +386,12 @@ impl WalletBackend {
             );
         }
 
-        // Recurrence trap (a5538dc8): the upstream persister `load()` does
-        // NOT reconstruct identity funding HD accounts. Provisioning derives
-        // the funding account from the wallet seed, which the seedless
-        // watch-only load never holds and which — after the JIT migration —
-        // is never parked in a long-lived cache. Every identity asset lock
-        // therefore re-provisions at the `create_asset_lock_proof`
-        // chokepoint, which obtains the seed just-in-time inside its
-        // `with_secret_session` scope. Nothing to do at load time.
+        // `load()` rebuilds `IdentityRegistration` from the manifest, but
+        // per-index `IdentityTopUp{registration_index}` enters the manifest
+        // only after a register/top-up, so a reloaded already-registered
+        // identity lacks it. Re-deriving needs the seed (absent under seedless
+        // load), so every identity asset lock re-provisions at the
+        // `create_asset_lock_proof` chokepoint. Nothing to do at load time.
         for seed_hash in &outcome.loaded {
             tracing::debug!(
                 wallet = %hex::encode(seed_hash),
@@ -1764,10 +1762,12 @@ impl WalletBackend {
     //
     // `peek_next_funding_address` reads BOTH `wallet.accounts.*` (xpub
     // source) AND `wallet_info.accounts.*` (mutable managed account), so the
-    // account must exist in both collections. The upstream persister
-    // `load()` reconstructs neither, hence the reload re-provision.
-    // Idempotent: probes both collections and no-ops if present (no error-
-    // string parsing — direct membership checks).
+    // account must exist in both collections. `load()` rebuilds
+    // `IdentityRegistration` from the manifest; per-index
+    // `IdentityTopUp{registration_index}` enters the manifest only after a
+    // register/top-up, so a reloaded already-registered identity needs this
+    // re-provision. Idempotent: probes both collections and no-ops if present
+    // (no error-string parsing — direct membership checks).
     async fn provision_identity_funding_account(
         &self,
         seed_hash: &WalletSeedHash,

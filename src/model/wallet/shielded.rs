@@ -95,9 +95,16 @@ pub struct ShieldedWalletState {
     pub commitment_tree: Mutex<ClientPersistentCommitmentTree>,
     /// Last note global position synced from platform
     pub last_synced_index: u64,
-    /// Block height up to which nullifier sync has been completed
+    /// Note-tree POSITION up to which spend (nullifier) detection has scanned.
+    ///
+    /// NOT a block height, despite the `_height` field name. The scan resumes
+    /// from this position and walks `[position, tip]` of the append-only note
+    /// tree, so any non-zero value must be a real tree position — never a
+    /// block height (a legacy block-height value here is the migration hazard
+    /// reset in `finish_unwire.rs`).
     pub last_nullifier_sync_height: u64,
-    /// Timestamp of last nullifier sync
+    /// Block height observed at the last spend-detection scan — diagnostic
+    /// only, not a scan-cursor input.
     pub last_nullifier_sync_timestamp: u64,
     /// Sum of unspent note values (cached)
     pub shielded_balance: u64,

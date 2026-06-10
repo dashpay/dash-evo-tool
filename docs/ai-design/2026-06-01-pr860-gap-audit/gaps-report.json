@@ -1,0 +1,344 @@
+{
+  "schema_version": "3.0.0",
+  "metadata": {
+    "project": "dash-evo-tool",
+    "date": "2026-06-10",
+    "commit": "a0d5034a0b573847b0786e3d538a335ef57e1281"
+  },
+  "executive_summary": {
+    "overall_assessment": "PR #860 platform-wallet rewrite holds broad feature parity with v0.10-dev, but the 2026-06-10 full-surface parity pass surfaced 3 HIGH functional regressions (asset-lock QR funding soft-lock, incoming DashPay payment detection gone, and a shielded nullifier-cursor unit-mismatch regression introduced by the same-day #3828 re-pin; the last is RESOLVED 2026-06-10 in 39433dac), 7 new MEDIUM gaps, and 9 new LOW gaps on top of the 11 previously-open audit items. No funds-loss path was found: every broken path fails closed. PROJ-005 (unreleased platform pin) remains the sole release-gate merge-blocker; PROJ-026/027 are should-fix-before-ship; PROJ-028 (HIGH) and its sibling PROJ-030 (MEDIUM) are RESOLVED 2026-06-10 (39433dac, Smythe QA: SHIP)."
+  },
+  "summary_statistics": {
+    "total_findings": 28,
+    "severity_counts": {
+      "CRITICAL": 0,
+      "HIGH": 3,
+      "MEDIUM": 10,
+      "LOW": 15,
+      "INFO": 0
+    }
+  },
+  "findings": [
+    {
+      "title": "Merge-blocking and upstream release gates",
+      "category": "project",
+      "findings": [
+        {
+          "id": "PROJ-005",
+          "risk": 0.6,
+          "impact": 0.7,
+          "scope": 1.0,
+          "title": "Platform pin tracks unreleased dev rev (release gate G1)",
+          "location": "Cargo.toml:21-35",
+          "description": "The `dash-sdk` / `platform-wallet` / `platform-wallet-storage` git pins track an **unreleased** dashpay/platform dev rev — currently `4f432c9baf10eeb051e70bc0370b1b7505b7d9c5`, the 2026-06-10 re-pin to dashpay/platform#3828 (commit `4247c360`; previously `9e1248cb…`, `ddfa66ed…`, `35e4a2f6…`, originally `17653ba8…`). Project policy (Decision #1) classifies this as a release-hardening blocker that gates merge-to-ship. The #3828 re-pin also introduced the PROJ-028 nullifier-cursor regression.",
+          "recommendation": "Bump the pin to a released platform rev (tagged release) before shipping. Track upstream #3828 stabilization; re-run the shielded/nullifier QA suite on each pin move."
+        },
+        {
+          "id": "PROJ-017",
+          "risk": 0.25,
+          "impact": 0.3,
+          "scope": 1.0,
+          "title": "register_identity_funding_account absent upstream — DET carries contained exception",
+          "location": "src/wallet_backend/mod.rs:1407",
+          "description": "`rs-platform-wallet` has no funding-account registrar sibling to `register_contact_account`, so DET carries `provision_identity_funding_account` (`src/wallet_backend/mod.rs:1407`) / `ensure_identity_funding_accounts` (`:1489`) as a contained exception, called live from register/topup paths (`:1261,1325,1371`). Upstream-contribution tracked (`9cdcfb25`); persister-load recurrence (`a5538dc8`).",
+          "recommendation": "Land the upstream registrar contribution and delete the DET-side exception once available. Keep the call sites funneled through the two helpers so the swap stays mechanical."
+        }
+      ]
+    },
+    {
+      "title": "Functional parity gaps (v0.10-dev → PR #860)",
+      "category": "project",
+      "findings": [
+        {
+          "id": "PROJ-026",
+          "risk": 0.65,
+          "impact": 0.75,
+          "scope": 1.0,
+          "title": "Create-Asset-Lock QR funding flow soft-locks at 'Waiting for funds…'",
+          "location": "src/ui/wallets/create_asset_lock_screen.rs:650-666",
+          "description": "v0.10-dev polled `funding_common::capture_qr_funding_utxo_if_available` every frame (OLD `create_asset_lock_screen.rs:519`, helper OLD `src/ui/identities/funding_common.rs:56-94`) to flip `WaitingOnFunds → FundsReceived`. In PR #860 the poll is deleted and the **only** remaining transition is the `display_task_result` arm matching `CoreItem::ReceivedAvailableUTXOTransaction` (flip at `create_asset_lock_screen.rs:659`) — a CoreItem with **zero producers**: `src/backend_task/core/mod.rs:106` is definition-only, `received_transaction_finality` always returns `Ok(Vec::new())` (`src/context/transaction_processing.rs:17-30`), and the ZMQ listener never spawns (PROJ-012). The screen is reachable (Asset Locks tab → 'Create Asset Lock', `src/ui/wallets/wallets_screen/asset_locks.rs:69`). The user is shown a QR and 'Waiting for funds...' **forever**, even after sending real DASH — funds land in normal SPV balance, but the flow dead-ends after a real payment was solicited. Not covered by the CHANGELOG 'QR-code wallet import flow' removal line.",
+          "impact_description": "A payment flow instructs the user to move real funds and then cannot complete. Funds recoverable, but the entire create-asset-lock screen is inoperable.",
+          "recommendation": "Detect the arriving UTXO from the `WalletBackend` snapshot at the funding address (the `snapshot_balance` pattern `add_new_wallet_screen.rs` already uses), or emit the event from `EventBridge`. Also remove the dead sibling match arms in `add_new_identity_screen/mod.rs:1144` and `top_up_identity_screen/mod.rs:488`."
+        },
+        {
+          "id": "PROJ-027",
+          "risk": 0.7,
+          "impact": 0.8,
+          "scope": 1.0,
+          "title": "Incoming DashPay contact payments are never detected, recorded, or credited",
+          "location": "src/backend_task/dashpay/incoming_payments.rs:349",
+          "description": "v0.10-dev's ZMQ tx-finality path auto-detected payments to DashPay contact receive addresses, credited the UTXO, advanced the receive index, and recorded a 'received' payment-history row (OLD `transaction_processing.rs:183-227`). In PR #860 the detection chain is dead code with **zero callers**: `process_incoming_payment` (`incoming_payments.rs:349`) and `mirror_incoming_payment_to_backend` (`payments.rs:592`) are never invoked; the new `received_transaction_finality` handles asset-lock waiters only; `EventBridge` has no DashPay hook (`src/wallet_backend/event_bridge.rs:121-160`); `RegisterDashPayAddresses` writes contact receive addresses only into DET's in-memory model (`incoming_payments.rs:298-314`), feeding nothing into the upstream SPV watch set; and `WalletBackend::register_dashpay_contact` (`src/wallet_backend/mod.rs:1250`) has zero callers. Strictly wider than the disclosed PROJ-009 DIP-14 carve-out (non-mainnet/non-account-0 only). Contradicts design docs stating incoming-payment detection is retained DET-side (`backendtask-contract.md:46`, `open-questions.md:56`).",
+          "impact_description": "Funds a contact sends arrive at addresses DET no longer watches — invisible in wallet balance and absent from payment history, on all networks and accounts. Not destroyed (derivable from seed) but invisible/unspendable in this version.",
+          "recommendation": "Call `register_dashpay_contact` when contacts are established so upstream watches the DIP-15 account, and wire a finality/EventBridge hook to `process_incoming_payment` — or delegate detection fully upstream and mirror results into payment history."
+        },
+        {
+          "id": "PROJ-012",
+          "risk": 0.45,
+          "impact": 0.5,
+          "scope": 1.0,
+          "title": "Entire ZMQ subsystem is dead code; 'Disable ZMQ' checkbox is a placebo",
+          "location": "src/app.rs:845-847",
+          "description": "Re-scoped 2026-06-10: the whole producer→consumer chain is dead, not just health events. `spawn_zmq_listener` returns `None` before spawning because `FeatureGate::RpcBackend.is_available()` is hardcoded `false` (`src/app.rs:845-847`; `src/model/feature_gate.rs:78`), so the `sx_zmq_status` clone at `src/app.rs:852` is unreachable. `rx_zmq_status` (`src/context/mod.rs:79`) is never drained; `ConnectionStatus::set_zmq_status` (`src/context/connection_status.rs:159`) has zero callers; the CoreItem consumption loop (`src/app.rs:1502-1540`) can never receive events. The 'Disable ZMQ (requires restart)' checkbox is still rendered and persisted (`src/ui/network_chooser_screen.rs:764-775`; `src/model/settings.rs:72`) but controls nothing.",
+          "recommendation": "Either wire the chain when/if an RPC backend returns, or remove the whole producer → channel → setter chain plus the placebo checkbox and the dead consumption loop (channel pair constructed as a unit at `src/context/mod.rs:204`). Note this also removes the only conceivable producer for PROJ-026's CoreItem."
+        },
+        {
+          "id": "PROJ-029",
+          "risk": 0.5,
+          "impact": 0.5,
+          "scope": 1.0,
+          "title": "'Subtract fee from amount' and the Max button are guaranteed-error paths for Core sends",
+          "location": "src/ui/wallets/send_screen.rs:2383-2411",
+          "description": "Backend hard-rejects `subtract_fee_from_amount || override_fee.is_some()` with typed `TaskError::WalletPaymentOptionUnsupported` (`src/backend_task/core/mod.rs:266-268`, deliberate 'no silent ignore'). But the UI still offers the option: checkbox at `send_screen.rs:2405-2411` and `wallets_screen/dialogs.rs:220` (sent at `:1116`), and the **Max button auto-enables it** (`send_screen.rs:2383-2389`). So 'Send Max' from a Core wallet and any ticked-checkbox send always fail. v0.10-dev implemented subtract-fee in both RPC and SPV send backends. No funds at risk (rejected before broadcast). Not in CHANGELOG Known Limitations.",
+          "recommendation": "Remove/disable the checkbox and the Max auto-enable for Core sends until upstream `send_to_addresses` supports fee deduction; disclose the lost send-max capability in CHANGELOG Known Limitations (DOC-001)."
+        },
+        {
+          "id": "PROJ-031",
+          "risk": 0.55,
+          "impact": 0.55,
+          "scope": 1.0,
+          "title": "Shield-from-Core silently ignores the selected source address (coin control lost; UI and MCP misleading)",
+          "location": "src/context/shielded.rs:242-252",
+          "description": "Dispatch discards the parameter (`source_address: _` — 'coin selection is delegated to the upstream wallet's live UTXO set'). v0.10-dev threaded it into asset-lock UTXO selection (OLD `shielded.rs:613-625`). Yet the UI still lets the user pick a specific Core address, shows 'Available address balance' for it and validates the amount against that address (`src/ui/wallets/shield_screen.rs:786-812`), then sends `source_address: None` (`:974-985`); the MCP tool `shielded_shield_from_core` still accepts and silently drops the param (`src/mcp/tools/shielded.rs:33,86-108`). Not in CHANGELOG Known Limitations.",
+          "impact_description": "Privacy-expectation violation in a privacy feature: the asset lock may link UTXOs from addresses the user explicitly tried to exclude; amount caps are computed against the wrong balance.",
+          "recommendation": "If per-address selection cannot be honored upstream, remove the address selector / per-address balance display and the MCP param and disclose the limitation; otherwise thread the parameter through to upstream coin selection."
+        },
+        {
+          "id": "PROJ-032",
+          "risk": 0.55,
+          "impact": 0.45,
+          "scope": 1.0,
+          "title": "Legacy DashPay user data not migrated: payment history, nicknames/notes/hidden flags, send-address indices",
+          "location": "src/backend_task/migration/finish_unwire.rs:60",
+          "description": "v0.10-dev's `src/database/dashpay.rs` (934 lines, deleted) persisted payment history, contact private info (nickname/note/is_hidden), per-contact send/receive address indices, and address mappings in `data.db`. New homes exist (upstream `ManagedIdentity` payments + `det-app.sqlite` sidecar, `src/wallet_backend/dashpay.rs`), but the cold-start migration copies **no DashPay tables**: `LEGACY_TABLES = [\"wallet\",\"single_key_wallet\",\"shielded_notes\",\"utxos\"]`; zero `dashpay` references in `src/backend_task/migration/`. Old 'received' rows can never be regenerated (PROJ-027); 'sent' rows are lost; send-index reset to 0 causes payment-address reuse with pre-existing contacts. Partially contradicts `data-model-and-migration.md:58` ('DET payment-history / avatar cache retained DET-side').",
+          "impact_description": "Upgrade silently wipes DashPay payment history and per-contact nicknames/notes/hidden flags; first payments to existing contacts reuse address index 0 (privacy degradation, no fund loss — DIP-15 addresses remain valid).",
+          "recommendation": "Extend the cold-start migration to carry payment history, contact private info, and send indices into their new homes — or disclose the wipe in CHANGELOG Known Limitations (DOC-001) and fix the design-doc contradiction."
+        },
+        {
+          "id": "PROJ-033",
+          "risk": 0.4,
+          "impact": 0.45,
+          "scope": 1.0,
+          "title": "Dash-Qt launcher unreachable while its settings cluster survives",
+          "location": "src/ui/network_chooser_screen.rs:646-736",
+          "description": "`CoreTask::StartDashQT` still exists (`src/backend_task/core/start_dash_qt.rs`) but has **zero UI callers** — both v0.10-dev launch paths (RPC-mode Connect button, connection-indicator click) were removed with RPC mode. Meanwhile Settings still renders the full Dash-Qt cluster: 'Dash Core Executable Path' Select File/Clear (`:646-736`), 'Overwrite dash.conf' (`:744`), 'Close Dash-Qt when DET exits' (`:899-933`) — three live settings configuring a feature that can never fire (path autodetect was even improved in `837fc6bd`).",
+          "recommendation": "Either re-wire a launch affordance (useful for regtest/devnet workflows) or remove the settings cluster and the orphaned task."
+        },
+        {
+          "id": "PROJ-034",
+          "risk": 0.5,
+          "impact": 0.45,
+          "scope": 1.0,
+          "title": "App settings, top-up history, and scheduled DPNS votes all reset/empty on upgrade (no non-wallet data migration)",
+          "location": "src/backend_task/migration/finish_unwire.rs:60",
+          "description": "Settings moved from the legacy `data.db` `settings` table to k/v `det:settings:v1` in `det-app.sqlite` (`src/model/settings.rs:63-88`; `src/context/settings_db.rs`) with **no importer** — `db.get_settings` has zero callers and the migration drains only `LEGACY_TABLES` (wallets/secrets). Commit `e4ff9621` disclosed 'migration tool will import in a later PR' — that PR never landed. Top-up history and scheduled DPNS votes likewise start empty (commit `7778eb64`). Disclosed in commit messages only — not in CHANGELOG.",
+          "impact_description": "At upgrade: selected network resets to Mainnet (a testnet user relaunches into mainnet), theme/paths/onboarding/user-mode reset, and silently dropped scheduled DPNS votes can mean **missed votes** for masternode voters. One-time, no fund loss.",
+          "recommendation": "Add a legacy-settings/k-v importer to the cold-start migration (at minimum: network, theme, onboarding flag, scheduled votes), or disclose prominently in CHANGELOG (DOC-001) and show a first-launch reminder for scheduled-vote users."
+        },
+        {
+          "id": "PROJ-035",
+          "risk": 0.3,
+          "impact": 0.3,
+          "scope": 1.0,
+          "title": "In-app copy directs users to the removed 'Local Dash Core node' setting; phantom 'Refresh' button referenced",
+          "location": "src/ui/wallets/wallets_screen/single_key_view.rs:13",
+          "description": "Two strings still instruct: 'open Settings, switch to Expert mode, and select Local Dash Core node' (`single_key_view.rs:13` `SINGLE_KEY_REQUIRES_CORE`, shown as banner + disabled-Send tooltip; `src/ui/components/tools_subscreen_chooser_panel.rs:141`) — but no such setting exists in `network_chooser_screen.rs` (RPC mode removed). `single_key_view.rs:128` says \"Click 'Refresh' to load UTXOs from Core\" while refresh is stubbed (PROJ-007) and no such button is rendered.",
+          "recommendation": "Rewrite the three strings to reflect the current capability (single-key send/refresh unsupported this release; receive works), per the i18n-ready-strings and error-message conventions."
+        },
+        {
+          "id": "PROJ-036",
+          "risk": 0.25,
+          "impact": 0.2,
+          "scope": 1.0,
+          "title": "Wallet 'Refresh' in Core-Only mode is a silent no-op",
+          "location": "src/backend_task/core/mod.rs:191-213",
+          "description": "v0.10-dev `RefreshWalletInfo` ran `reconcile_spv_wallets()` (SPV) or a full RPC re-poll. In PR #860 Core state is push-based via EventBridge; the arm only ensures the backend exists and optionally refreshes Platform balances. The UI still offers the 3-state refresh-mode toggle ('Core + Platform' / 'Core Only' / 'Platform Only', `src/ui/wallets/wallets_screen/mod.rs:77-100`); a 'Core Only' refresh reports success with no observable effect.",
+          "recommendation": "Hide the 'Core Only' refresh mode, or repurpose the click as a forced reconcile when upstream exposes one."
+        },
+        {
+          "id": "PROJ-037",
+          "risk": 0.25,
+          "impact": 0.2,
+          "scope": 0.5,
+          "title": "Send-dialog 'Memo (optional)' field goes nowhere (pre-existing, now provably dead)",
+          "location": "src/ui/wallets/wallets_screen/dialogs.rs:224-225",
+          "description": "The memo travels in `WalletPaymentRequest.memo` but was never consumed by the HD core-send path in v0.10-dev either (verified: no `memo` reads in OLD send paths). PR #860 still renders the field and still drops it (`src/backend_task/core/mod.rs:255-303` never reads it). Now provably dead — upstream `send_payment` has no memo parameter.",
+          "recommendation": "Remove the field, or wire it to local transaction annotation."
+        },
+        {
+          "id": "PROJ-038",
+          "risk": 0.3,
+          "impact": 0.35,
+          "scope": 1.0,
+          "title": "Failed wallet-funded identity registration leaves no visible local record; retry-adoption semantics changed",
+          "location": "src/backend_task/identity/register_identity.rs:209-231",
+          "description": "v0.10-dev derived the real identity id from the asset-lock proof up front, persisted `PendingCreation` before submit, and flipped to `FailedCreation` (red row) on every failure path (OLD `register_identity.rs:258-295,382-423`); on retry it fetched the identity and silently adopted it if a previous attempt had actually succeeded. PR #860's wallet-funded paths run through upstream `register_identity_with_funding`: the real id is only known on success, the local mirror holds an all-zeros placeholder, and on error the insert is deliberately skipped (`:23` `is_placeholder_identity`, `:209-231`); only the Platform-addresses path still persists `FailedCreation` (`:394`). `PlatformWalletError::IdentityAlreadyExists` maps to the generic `TaskError::WalletBackend` bucket (`src/wallet_backend/mod.rs:1910-1922`), so retry-after-partial-success likely shows an error instead of adopting (needs live verification — PROJ-015/016 family). Funds are safe: the asset lock stays tracked and resumable via the 'Unused Asset Lock (recommended)' picker.",
+          "recommendation": "Surface failed attempts (persist a failed-attempt marker or point the error banner at the unused-asset-lock resume path), and map `IdentityAlreadyExists` to an adopt-or-instruct flow. Re-test retry-after-crash on a live network."
+        },
+        {
+          "id": "PROJ-040",
+          "risk": 0.35,
+          "impact": 0.25,
+          "scope": 1.0,
+          "title": "DashPay offline caches dropped — contacts/requests/profiles/avatars need network on every open",
+          "location": "src/ui/dashpay/contacts_list.rs:111-134",
+          "description": "v0.10-dev rendered instantly from `data.db` (`load_contacts_from_database`, `load_requests_from_database`, avatar-bytes cache, negative-profile caching). PR #860 screens auto-dispatch Platform fetches on first render (`contacts_list.rs:67,111-134`, `contact_requests.rs:295-297`); avatar bytes are re-downloaded each open; negative-profile caching is gone. Contacts/payments do persist upstream (`DashpayView`), so this is a cache-locality change, not data loss — but the offline-UX consequence and the contradiction with `data-model-and-migration.md:58` (avatar cache 'retained DET-side') are undocumented.",
+          "recommendation": "Render last-known upstream state before dispatching the network refresh; restore an avatar byte cache (or document the trade-off and fix the design-doc claim)."
+        },
+        {
+          "id": "PROJ-041",
+          "risk": 0.35,
+          "impact": 0.2,
+          "scope": 1.0,
+          "title": "'Stop tracking balance' undone by 'Refresh My Tokens'; watch set became identities × all-known-tokens",
+          "location": "src/backend_task/tokens/query_my_token_balances.rs:39-44",
+          "description": "`stop_tracking_token_balance` (`:62-83`) unwatches upstream and prunes the order — but `query_my_token_balances` / `query_token_balance` register the full local token registry for **every** identity (`known_token_ids`, `:39-44,100-105`), deliberately re-watching stopped pairs ('Refresh all my tokens … deliberately re-tracks everything known') and creating rows for identity×token pairs the user never tracked. v0.10-dev refreshed only pairs already present in `identity_token_balances`, so a removed row stayed gone. Disclosed in code comments only.",
+          "recommendation": "Persist the user's dismissed pairs and exclude them from the refresh re-watch, or scope refresh to currently-watched pairs (the v0.10-dev semantics)."
+        }
+      ]
+    },
+    {
+      "title": "Deferred-by-design (open)",
+      "category": "project",
+      "findings": [
+        {
+          "id": "PROJ-007",
+          "risk": 0.45,
+          "impact": 0.55,
+          "scope": 1.0,
+          "title": "Single-key refresh/send stubbed; password-protected single-key wallets silently vanish post-upgrade",
+          "location": "src/backend_task/migration/finish_unwire.rs:120-134",
+          "description": "Core deferral (Decision #7): `CoreTask::RefreshSingleKeyWalletInfo` / `SendSingleKeyWalletPayment` return `SingleKeyWalletsUnsupported` (`src/backend_task/core/mod.rs:218,303`); import/sign/list/hydrate are real. **Extended + bumped LOW→MEDIUM 2026-06-10:** (a) import now rejects any non-empty per-key password (`src/ui/wallets/import_mnemonic_screen.rs:118-126`; v0.10-dev `SingleKeyWallet::from_wif` supported them); (b) the cold-start migration **skips** `uses_password=1` single-key rows (`finish_unwire.rs:120-134,377-389`, `skipped_password_protected`) and hydration lists only vault-persisted keys (`src/wallet_backend/single_key.rs:363`), so a skipped wallet **disappears from the wallet list entirely** post-upgrade with no in-app access or explanation. Key material is preserved in the untouched legacy `data.db` (no data loss). Neither caveat is in CHANGELOG Known Limitations (DOC-001).",
+          "recommendation": "Use the now-shipped PROJ-008 JIT prompt seam to unlock and migrate `uses_password=1` rows inline (T-SK-03), or at minimum list the skipped wallets with an explanatory state and document both caveats in CHANGELOG."
+        },
+        {
+          "id": "PROJ-009",
+          "risk": 0.4,
+          "impact": 0.5,
+          "scope": 1.0,
+          "title": "DIP-14 back-compat dropped (non-mainnet / non-account-0 legacy contact addresses) — description incomplete; subject function has zero callers",
+          "location": "src/wallet_backend/mod.rs:1250",
+          "description": "Decision #6 deliberately drops reproduction of legacy contact addresses derived outside mainnet account 0 (disclosed in CHANGELOG Known Limitations). **Flagged 2026-06-10:** the entry as written understates the situation — its subject `register_dashpay_contact` (`src/wallet_backend/mod.rs:1250`) has **zero callers**, and the general incoming-payment loss is far wider than the carve-out: see PROJ-027 (HIGH, all networks/accounts).",
+          "recommendation": "Keep the Decision #6 deferral for the back-compat slice, but resolve PROJ-027 first — wiring `register_dashpay_contact` is a prerequisite for both."
+        },
+        {
+          "id": "PROJ-011",
+          "risk": 0.2,
+          "impact": 0.2,
+          "scope": 1.0,
+          "title": "identity CREATE TABLE still on fresh installs — tombstone ADR pending",
+          "location": "src/database/initialization.rs:845-866",
+          "description": "`legacy_detected()` gates legacy wallet tables behind `include_legacy`, but the `identity` empty placeholder (`:851`) is still created unconditionally for legacy cold-start reads. Documented 'separate ADR' carve-out (T-DEV-02b, `finish-unwire/notes.md` §4).",
+          "recommendation": "Write the tombstone ADR and gate/drop the placeholder table on fresh installs."
+        },
+        {
+          "id": "PROJ-022",
+          "risk": 0.2,
+          "impact": 0.25,
+          "scope": 1.0,
+          "title": "UpstreamPlatformAddresses reserved swap-target — read methods unimplemented!()",
+          "location": "src/wallet_backend/platform_address.rs:245-307",
+          "description": "Reserved swap target for reading per-address Platform funds straight from upstream; NOT selected (active impl is `KvCachedPlatformAddresses`, `src/wallet_backend/mod.rs:593`). Read methods are `unimplemented!()` pending upstream `e817b66a` (public per-address balance+nonce reader). Cannot panic in any live path while the cached impl is active.",
+          "recommendation": "Swap in once upstream lands the reader; until then keep the cached impl selected and the seam documented."
+        }
+      ]
+    },
+    {
+      "title": "Project conventions",
+      "category": "project",
+      "findings": [
+        {
+          "id": "PROJ-039",
+          "risk": 0.25,
+          "impact": 0.2,
+          "scope": 1.0,
+          "title": "Rust Debug ({:?}) rendered in user-facing unused-asset-lock picker; address column dropped",
+          "location": "src/ui/identities/add_new_identity_screen/by_using_unused_asset_lock.rs:75",
+          "description": "The picker now lists upstream `TrackedAssetLock`s showing `Status: {:?}` of `AssetLockStatus` — a Rust Debug repr in a user-facing label (also `top_up_identity_screen/by_using_unused_asset_lock.rs:61-65`), violating the i18n-ready-strings convention (CLAUDE.md). v0.10-dev showed TxID / Address / Amount / 'InstantLock: Yes-No'; the address is no longer shown.",
+          "recommendation": "Map `AssetLockStatus` to user-facing copy (complete sentences/labels, no Debug), and consider restoring the address column."
+        }
+      ]
+    },
+    {
+      "title": "Documentation gaps",
+      "category": "documentation",
+      "findings": [
+        {
+          "id": "PROJ-018",
+          "risk": 0.4,
+          "impact": 0.4,
+          "scope": 1.0,
+          "title": "External user docs (dashpay/docs) not yet filed",
+          "location": "docs/ai-design/2026-06-03-pr860-doc-followups/external-docs-draft.md:1",
+          "description": "A full external-docs draft exists targeting `dashpay/docs` → `docs/user/network/dash-evo-tool/`, with a Tracking section and an explicit TODO to file the issue post-merge. The gap stays OPEN until the PR/issue is actually filed against `dashpay/docs` after #860 merges.",
+          "recommendation": "File the dashpay/docs PR/issue linking to PR #860 immediately after merge; fold in the new disclosure items from DOC-001."
+        },
+        {
+          "id": "PROJ-019",
+          "risk": 0.2,
+          "impact": 0.2,
+          "scope": 1.0,
+          "title": "ADR floor SHA placeholder unfilled (merge-time action)",
+          "location": "docs/ai-design/2026-05-29-finish-unwire/notes.md:92",
+          "description": "`[PLACEHOLDER — fill at merge time]` — the wallet-state floor must record this PR's squash-merge SHA; cannot close pre-merge.",
+          "recommendation": "Fill the placeholder with the squash-merge SHA at merge time."
+        },
+        {
+          "id": "DOC-001",
+          "risk": 0.4,
+          "impact": 0.5,
+          "scope": 1.0,
+          "title": "CHANGELOG disclosure sweep — Removed / Known Limitations / Fixed sections incomplete",
+          "location": "CHANGELOG.md:33-56",
+          "description": "(a) **Removed** lists only Proof Log + QR import flow — missing: the RPC Core-backend connection mode (a whole connection mode users could previously choose; `removal-inventory.md:95-111`), the 'Total Received (DASH)' address-table column, and `RecoverAssetLocks` / `ListCoreWallets`. (b) **Known Limitations** omits: single-key per-key-password import rejection + post-upgrade invisibility of password-protected single-key wallets (PROJ-007), subtract-fee/send-max unsupported (PROJ-029), shield-from-Core source-address ignored (PROJ-031), DashPay history / settings / scheduled-votes not migrated (PROJ-032/PROJ-034). (c) **Fixed** omits the signed-message envelope change — Key Info now emits the standard recoverable Dash signed-message format instead of the old non-standard `0x20`-prefixed compact signature (`src/backend_task/wallet/sign_message_with_key.rs:13-21`); external tooling consuming the OLD format breaks.",
+          "recommendation": "Add the missing Removed lines, extend Known Limitations with the five undisclosed limitations, and add a Fixed line for the signing-envelope change. Mirror into the external-docs draft (PROJ-018)."
+        },
+        {
+          "id": "DOC-002",
+          "risk": 0.2,
+          "impact": 0.25,
+          "scope": 1.0,
+          "title": "Proof-log removal: stale DEV-002 [Implemented] user story and persona references",
+          "location": "docs/user-stories.md:878",
+          "description": "The Proof Log screen + persistence removal is disclosed (`CHANGELOG.md:50`) but `docs/user-stories.md:878` still tags DEV-002 'View proof request log' as `[Implemented]` — violating the repo's own user-stories maintenance rule — and `docs/personas/platform-developer.md:27,75` still lists the proof log as an available tool. Proof errors now go to tracing target `\"proof_log\"` only (no restart-surviving history, not viewable in-app).",
+          "recommendation": "Flip DEV-002 to a removed/gap tag, fix the two persona references, and note the tracing-only replacement."
+        },
+        {
+          "id": "DOC-003",
+          "risk": 0.2,
+          "impact": 0.2,
+          "scope": 1.0,
+          "title": "Promised one-time post-migration notice (invariant I3) never shipped",
+          "location": "docs/ai-design/2026-05-18-platform-wallet-migration/phasing.md:194",
+          "description": "Three doc sites commit to in-app disclosure of the `FundWithUtxo` / QR-direct-fund removal via a one-time post-migration notice (`backendtask-contract.md:43,65`; `phasing.md:194` invariant I3 'The one-time post-migration notice text ships in the release build'; `docs/user-stories.md` IDN-014 rationale). The only post-migration banner is the generic 'Storage update complete — your wallet is ready.' (`src/app.rs:1130-1137`); no notice text about QR/scanned-outpoint funding exists in `src/`. CHANGELOG.md:51 does disclose it, but the I3 invariant as written is unmet.",
+          "recommendation": "Either ship the notice text in the post-migration banner, or amend I3 and the three doc sites to say 'disclosed via CHANGELOG'."
+        }
+      ]
+    },
+    {
+      "title": "Test gaps",
+      "category": "code_quality",
+      "findings": [
+        {
+          "id": "PROJ-015",
+          "risk": 0.3,
+          "impact": 0.3,
+          "scope": 1.0,
+          "title": "TC-012 receive-address reuse — unverified from DET source",
+          "location": "src/wallet_backend/mod.rs:593",
+          "description": "`next_receive_address` delegates to upstream; whether used-marking prevents address reuse cannot be proven from this tree. Now testable since PROJ-001 is resolved; needs a live-network re-test.",
+          "recommendation": "Add a backend-e2e live test for receive-address advancement after funds arrive."
+        },
+        {
+          "id": "PROJ-016",
+          "risk": 0.25,
+          "impact": 0.3,
+          "scope": 1.0,
+          "title": "TC-066 key-not-visible-after-broadcast (flake-vs-bug) — no deterministic repro",
+          "location": "tests/backend-e2e/README.md:1",
+          "description": "Tracked-only; no isolated code surface or deterministic repro in tree. Re-classify after a live run.",
+          "recommendation": "Reproduce on live network post-merge; either file as a bug with a repro or close as flake."
+        }
+      ]
+    }
+  ]
+}

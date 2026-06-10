@@ -626,6 +626,111 @@ async fn tc_041_load_payment_history_empty() {
     }
 }
 
+/// TC-045: incoming contact-payment detection records a matched output.
+///
+/// Drives the [`DashPayTask::DetectIncomingContactPayments`] path the
+/// `EventBridge` fires for freshly-seen wallet transactions. A known
+/// `(owner, address) -> (contact, index)` mapping is persisted directly via
+/// the wallet-backend sidecar (the same write `RegisterDashPayAddresses`
+/// performs), then a synthetic received output for that address is fed to the
+/// detector. The payment must surface in `LoadPaymentHistory` afterwards, and
+/// a second identical run must not double-count.
+#[ignore]
+#[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
+async fn tc_045_detect_incoming_contact_payment() {
+    use dash_evo_tool::model::dashpay::DetectedIncomingOutput;
+
+    let ctx = harness::ctx().await;
+    let pair = fixtures::shared_dashpay_pair().await;
+
+    let owner = pair.identity_a.identity.id();
+    let contact = pair.identity_b.identity.id();
+
+    // A deterministic, network-valid receiving address to stand in for a
+    // freshly-derived contact address. The detector keys purely off the
+    // sidecar mapping, so any valid address works as long as it matches the
+    // mapping we persist below.
+    let pubkey = dash_sdk::dpp::dashcore::PublicKey::from_slice(&[0x02; 33]).unwrap();
+    let address =
+        dash_sdk::dpp::dashcore::Address::p2pkh(&pubkey, ctx.app_context.network()).to_string();
+    // A txid unique to this fixture pair so re-runs upsert in place rather
+    // than colliding with another test's recorded payment.
+    let tx_id = format!("detincoming{}", hex::encode(&owner.to_buffer()[..8]));
+
+    let backend = ctx
+        .app_context
+        .wallet_backend()
+        .expect("wallet backend wired");
+    backend
+        .dashpay_set_address_mapping(&owner, &address, &contact, 0)
+        .expect("persist address mapping");
+
+    let outputs = vec![DetectedIncomingOutput {
+        txid: tx_id.clone(),
+        address: address.clone(),
+        amount_duffs: 12_345,
+    }];
+
+    let task = BackendTask::DashPayTask(Box::new(DashPayTask::DetectIncomingContactPayments {
+        outputs: outputs.clone(),
+    }));
+    let result = run_task(&ctx.app_context, task)
+        .await
+        .expect("TC-045: detection should not fail");
+    assert!(
+        matches!(
+            result,
+            BackendTaskSuccessResult::Refresh | BackendTaskSuccessResult::None
+        ),
+        "TC-045: detection returns Refresh on a match or None on a miss, got: {:?}",
+        result
+    );
+
+    // The recorded payment must appear in A's history, keyed by our tx_id.
+    let history_task = BackendTask::DashPayTask(Box::new(DashPayTask::LoadPaymentHistory {
+        identity: pair.identity_a.clone(),
+    }));
+    let history = run_task(&ctx.app_context, history_task)
+        .await
+        .expect("TC-045: LoadPaymentHistory should not fail");
+    let count_for_tx = match &history {
+        BackendTaskSuccessResult::DashPayPaymentHistory(entries) => {
+            entries.iter().filter(|(id, ..)| id == &tx_id).count()
+        }
+        other => panic!("TC-045: expected DashPayPaymentHistory, got: {:?}", other),
+    };
+    assert_eq!(
+        count_for_tx, 1,
+        "TC-045: the detected contact payment must be recorded exactly once"
+    );
+
+    // Idempotency: a re-scan of the same output must not add a duplicate.
+    let rescan = BackendTask::DashPayTask(Box::new(DashPayTask::DetectIncomingContactPayments {
+        outputs,
+    }));
+    run_task(&ctx.app_context, rescan)
+        .await
+        .expect("TC-045: re-scan should not fail");
+    let history_after = run_task(
+        &ctx.app_context,
+        BackendTask::DashPayTask(Box::new(DashPayTask::LoadPaymentHistory {
+            identity: pair.identity_a.clone(),
+        })),
+    )
+    .await
+    .expect("TC-045: LoadPaymentHistory (after re-scan) should not fail");
+    let count_after = match &history_after {
+        BackendTaskSuccessResult::DashPayPaymentHistory(entries) => {
+            entries.iter().filter(|(id, ..)| id == &tx_id).count()
+        }
+        other => panic!("TC-045: expected DashPayPaymentHistory, got: {:?}", other),
+    };
+    assert_eq!(
+        count_after, 1,
+        "TC-045: a re-scan of the same transaction must not double-count"
+    );
+}
+
 /// TC-043: RejectContactRequest (requires third DashPay identity)
 #[ignore]
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]

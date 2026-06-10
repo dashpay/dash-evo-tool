@@ -15,7 +15,7 @@ use dash_sdk::dash_spv::sync::{SyncEvent, SyncProgress, SyncState};
 use platform_wallet::events::{EventHandler, PlatformEventHandler, WalletEvent};
 use platform_wallet::manager::platform_address_sync::PlatformAddressSyncSummary;
 
-use super::snapshot::{SnapshotStore, received_outputs_for_record};
+use super::snapshot::{SnapshotStore, incoming_payment_candidates, received_outputs_for_record};
 use crate::app::TaskResult;
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::core::CoreItem;
@@ -74,6 +74,32 @@ impl EventBridge {
                     .try_send(TaskResult::Success(Box::new(result)));
             }
         }
+    }
+
+    /// Emit a `DashPayIncomingDetected` for the received outputs of freshly-
+    /// seen records, so the app can run the detect-match-record path for any
+    /// that pay into a DashPay contact-receiving address.
+    ///
+    /// The matching (and recording) is async and KV-backed, so it cannot run
+    /// on this sync event callback — the candidates are forwarded as a typed
+    /// `TaskResult` and the backend task does the owner-scoped match. A record
+    /// with no received outputs is skipped, so non-incoming transactions never
+    /// produce an event.
+    fn emit_incoming_payment_candidates<'a, I>(&self, records: I)
+    where
+        I: IntoIterator<Item = &'a TransactionRecord>,
+    {
+        let mut candidates = Vec::new();
+        for record in records {
+            candidates.extend(incoming_payment_candidates(record));
+        }
+        if candidates.is_empty() {
+            return;
+        }
+        let result = BackendTaskSuccessResult::DashPayIncomingDetected(candidates);
+        let _ = self
+            .task_result_sender
+            .try_send(TaskResult::Success(Box::new(result)));
     }
 
     fn apply_status(&self, status: SpvStatus) {
@@ -161,6 +187,9 @@ impl EventHandler for EventBridge {
                 // or direct InstantSend) — surface its received UTXOs so a
                 // waiting funding screen advances.
                 self.emit_received_utxos(std::iter::once(record.as_ref()));
+                // Same first-seen record drives incoming DashPay contact-
+                // payment detection.
+                self.emit_incoming_payment_candidates(std::iter::once(record.as_ref()));
                 *wallet_id
             }
             WalletEvent::BlockProcessed {
@@ -178,6 +207,9 @@ impl EventHandler for EventBridge {
                 // missed during the mempool window. Surface those too so the
                 // funding screen still advances on a confirmed-first transaction.
                 self.emit_received_utxos(inserted.iter());
+                // Detect contact payments first observed at block time (DET
+                // was offline during the mempool window).
+                self.emit_incoming_payment_candidates(inserted.iter());
                 *wallet_id
             }
             WalletEvent::TransactionInstantLocked { wallet_id, .. }
@@ -416,6 +448,58 @@ mod tests {
                 .is_some_and(|e| e.contains("network down"))
         );
         assert!(drained_refresh(&mut rx));
+    }
+
+    /// Drain the channel and return the first batch of incoming-payment
+    /// candidates the bridge produced, if any.
+    fn drained_incoming_candidates(
+        rx: &mut tokio::sync::mpsc::Receiver<TaskResult>,
+    ) -> Option<Vec<crate::model::dashpay::DetectedIncomingOutput>> {
+        while let Ok(r) = rx.try_recv() {
+            if let TaskResult::Success(result) = r
+                && let BackendTaskSuccessResult::DashPayIncomingDetected(candidates) = *result
+            {
+                return Some(candidates);
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn transaction_detected_emits_incoming_candidate() {
+        let (bridge, _cs, mut rx) = make_bridge();
+        let funding = funding_address();
+
+        bridge.on_wallet_event(&transaction_detected(received_record(&funding, 77_000)));
+
+        let candidates =
+            drained_incoming_candidates(&mut rx).expect("a received output yields a candidate");
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].address, funding.to_string());
+        assert_eq!(candidates[0].amount_duffs, 77_000);
+    }
+
+    #[test]
+    fn block_processed_inserted_emits_incoming_candidate() {
+        let (bridge, _cs, mut rx) = make_bridge();
+        let funding = funding_address();
+
+        bridge.on_wallet_event(&WalletEvent::BlockProcessed {
+            wallet_id: [9u8; 32],
+            height: 2_000,
+            chain_lock: None,
+            inserted: vec![received_record(&funding, 33_000)],
+            updated: Vec::new(),
+            matured: Vec::new(),
+            balance: WalletCoreBalance::default(),
+            account_balances: BTreeMap::new(),
+            addresses_derived: Vec::new(),
+        });
+
+        let candidates = drained_incoming_candidates(&mut rx)
+            .expect("a confirmed-first received output yields a candidate");
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].amount_duffs, 33_000);
     }
 
     #[test]

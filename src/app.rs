@@ -2,6 +2,7 @@
 use crate::app_dir::data_file_path;
 use crate::app_dir::{app_user_data_dir_path, ensure_data_dir_exists, ensure_env_file};
 use crate::backend_task::contested_names::ContestedResourceTask;
+use crate::backend_task::dashpay::DashPayTask;
 use crate::backend_task::error::TaskError;
 use crate::backend_task::migration::MigrationTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
@@ -1303,6 +1304,16 @@ impl App for AppState {
                         BackendTaskSuccessResult::None => {}
                         BackendTaskSuccessResult::Refresh => {
                             self.visible_screen_mut().refresh();
+                        }
+                        BackendTaskSuccessResult::DashPayIncomingDetected(outputs) => {
+                            // The EventBridge surfaced received outputs on a
+                            // freshly-seen wallet transaction. Run the owner-
+                            // scoped detect-match-record off the frame thread;
+                            // matches come back as a `Refresh` to repaint the
+                            // payment history, misses as `None`.
+                            self.handle_backend_task(BackendTask::DashPayTask(Box::new(
+                                DashPayTask::DetectIncomingContactPayments { outputs },
+                            )));
                         }
                         BackendTaskSuccessResult::Message(ref msg) => {
                             // TODO(RUST-002): Some screens inspect Message text for error

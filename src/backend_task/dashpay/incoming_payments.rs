@@ -331,28 +331,35 @@ fn hash_identifier_to_u32(id: &Identifier) -> u32 {
 /// The k/v sidecar partitions the address map by owner, so the caller is
 /// responsible for narrowing the search to the identity that observed the
 /// transaction (typically the identity whose SPV bloom filter matched).
+/// `address` is the Base58 receiving address — the same form the sidecar
+/// is keyed by.
 pub fn match_transaction_to_contact(
     app_context: &AppContext,
     owner_id: &Identifier,
-    address: &Address,
-) -> Result<Option<(Identifier, u32)>, String> {
-    let backend = app_context
-        .wallet_backend()
-        .map_err(|e| format!("Wallet backend not yet available: {}", e))?;
-    backend
-        .dashpay_get_address_mapping(owner_id, &address.to_string())
-        .map_err(|e| format!("Failed to lookup address: {}", e))
+    address: &str,
+) -> Result<Option<(Identifier, u32)>, TaskError> {
+    let backend = app_context.wallet_backend()?;
+    backend.dashpay_get_address_mapping(owner_id, address)
 }
 
-/// Process an incoming transaction that was detected by SPV
-/// This should be called when WalletEvent::TransactionReceived is received
+/// Process a received output for one identity: if its address is a DashPay
+/// contact-receiving address for `owner_id`, advance the receive cursor and
+/// record the incoming payment through the upstream persist path.
+///
+/// `address` is the Base58 receiving address the output paid into. Returns
+/// `Ok(None)` when the address is not a DashPay contact address for this
+/// owner (the common case — most received outputs are plain wallet funds).
+///
+/// Idempotent: the receive cursor only ever advances, and the recording is
+/// keyed by `tx_id` with last-write-wins upstream, so a re-scan of the same
+/// transaction neither double-credits nor double-counts.
 pub async fn process_incoming_payment(
     app_context: &Arc<AppContext>,
     owner_id: &Identifier,
     tx_id: &str,
-    address: &Address,
+    address: &str,
     amount_duffs: u64,
-) -> Result<Option<IncomingPaymentInfo>, String> {
+) -> Result<Option<IncomingPaymentInfo>, TaskError> {
     // Check if this address belongs to a DashPay contact relationship.
     let (contact_id, address_index) =
         match match_transaction_to_contact(app_context, owner_id, address)? {
@@ -361,12 +368,9 @@ pub async fn process_incoming_payment(
         };
 
     // Bump the highest receive index if this address pushed past the cursor.
-    let backend = app_context
-        .wallet_backend()
-        .map_err(|e| format!("Wallet backend not yet available: {}", e))?;
+    let backend = app_context.wallet_backend()?;
     let mut state = backend
-        .dashpay_get_address_index(owner_id, &contact_id)
-        .map_err(|e| format!("Failed to get address indices: {}", e))?
+        .dashpay_get_address_index(owner_id, &contact_id)?
         .unwrap_or_else(|| ContactAddressIndex {
             owner_identity_id: owner_id.to_buffer().to_vec(),
             contact_identity_id: contact_id.to_buffer().to_vec(),
@@ -376,9 +380,7 @@ pub async fn process_incoming_payment(
         });
     if address_index >= state.highest_receive_index {
         state.highest_receive_index = address_index + 1;
-        backend
-            .dashpay_set_address_index(owner_id, &contact_id, &state)
-            .map_err(|e| format!("Failed to update receive index: {}", e))?;
+        backend.dashpay_set_address_index(owner_id, &contact_id, &state)?;
     }
 
     // Mirror the incoming payment through the WalletBackend adapter so the
@@ -397,10 +399,80 @@ pub async fn process_incoming_payment(
         tx_id: tx_id.to_string(),
         from_contact_id: contact_id,
         to_identity_id: *owner_id,
-        address: address.clone(),
+        address: address.to_string(),
         amount_duffs,
         address_index,
     }))
+}
+
+/// Resolve a batch of received outputs against every local identity's DashPay
+/// address map, recording the ones that pay a known contact. Returns the
+/// number of payments recorded.
+///
+/// This is the detection driver wired to the [`EventBridge`]: it owns the
+/// owner-scoped match the sync event callback cannot perform. The address map
+/// is partitioned per owner, so each candidate output is tried against every
+/// local identity; the vast majority miss (a regular receiving address is not
+/// a contact address) and are skipped via the `None` arm of
+/// [`process_incoming_payment`]. A per-output match error is logged and the
+/// scan continues — one unreadable sidecar entry must not drop the rest of a
+/// block's payments.
+///
+/// [`EventBridge`]: crate::wallet_backend::EventBridge
+pub async fn detect_incoming_contact_payments(
+    app_context: &Arc<AppContext>,
+    outputs: &[crate::model::dashpay::DetectedIncomingOutput],
+) -> Result<usize, TaskError> {
+    if outputs.is_empty() {
+        return Ok(0);
+    }
+
+    let identities = app_context.load_local_qualified_identities()?;
+    if identities.is_empty() {
+        return Ok(0);
+    }
+
+    let owner_ids: Vec<Identifier> = identities.iter().map(|i| i.identity.id()).collect();
+
+    let mut recorded = 0usize;
+    for output in outputs {
+        for owner_id in &owner_ids {
+            match process_incoming_payment(
+                app_context,
+                owner_id,
+                &output.txid,
+                &output.address,
+                output.amount_duffs,
+            )
+            .await
+            {
+                Ok(Some(info)) => {
+                    tracing::info!(
+                        owner = %owner_id.to_string(Encoding::Base58),
+                        contact = %info.from_contact_id.to_string(Encoding::Base58),
+                        tx_id = %output.txid,
+                        amount_duffs = output.amount_duffs,
+                        "Recorded incoming DashPay contact payment"
+                    );
+                    recorded += 1;
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    // A single owner/output failure must not abort the batch;
+                    // log and move on so other identities still get their
+                    // matching payments recorded.
+                    tracing::debug!(
+                        owner = %owner_id.to_string(Encoding::Base58),
+                        tx_id = %output.txid,
+                        error = ?e,
+                        "Incoming DashPay payment detection skipped one output"
+                    );
+                }
+            }
+        }
+    }
+
+    Ok(recorded)
 }
 
 /// Information about an incoming DashPay payment
@@ -409,7 +481,8 @@ pub struct IncomingPaymentInfo {
     pub tx_id: String,
     pub from_contact_id: Identifier,
     pub to_identity_id: Identifier,
-    pub address: Address,
+    /// Base58 receiving address the payment landed on.
+    pub address: String,
     pub amount_duffs: u64,
     pub address_index: u32,
 }

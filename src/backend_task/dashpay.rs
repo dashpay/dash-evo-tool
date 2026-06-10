@@ -93,6 +93,14 @@ pub enum DashPayTask {
     RegisterDashPayAddresses {
         identity: QualifiedIdentity,
     },
+    /// Resolve received outputs (surfaced by the `EventBridge` when a wallet
+    /// transaction is first seen) against every local identity's DashPay
+    /// address map, recording the ones that pay a known contact. Idempotent
+    /// on re-scan — recording is keyed by `tx_id` with last-write-wins, and
+    /// the receive cursor only advances.
+    DetectIncomingContactPayments {
+        outputs: Vec<crate::model::dashpay::DetectedIncomingOutput>,
+    },
     /// Build an auto-accept contact QR payload. Resolves the ENCRYPTION key and
     /// derives the auto-accept key through the JIT chokepoint in the backend, so
     /// the UI never reads a seed.
@@ -297,6 +305,15 @@ impl AppContext {
                         format!(" ({} errors)", result.errors.len())
                     }
                 )))
+            }
+            DashPayTask::DetectIncomingContactPayments { outputs } => {
+                let recorded =
+                    incoming_payments::detect_incoming_contact_payments(self, &outputs).await?;
+                if recorded == 0 {
+                    Ok(BackendTaskSuccessResult::None)
+                } else {
+                    Ok(BackendTaskSuccessResult::Refresh)
+                }
             }
             DashPayTask::GenerateAutoAcceptQrCode {
                 identity,

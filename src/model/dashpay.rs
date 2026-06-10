@@ -84,6 +84,26 @@ pub struct ContactAddressIndex {
     pub bloom_registered_count: u32,
 }
 
+/// A received output observed on-chain that may be an incoming DashPay
+/// contact payment.
+///
+/// The [`EventBridge`](crate::wallet_backend::EventBridge) extracts these
+/// from freshly-seen wallet transactions and hands them to the
+/// detect-match-record path, which resolves each `address` against the
+/// per-identity DashPay address map. Outputs whose address is not a
+/// registered contact-receiving address are ignored — this carries every
+/// received output, not only the DashPay ones, so the detector owns the
+/// matching decision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DetectedIncomingOutput {
+    /// Hex transaction id of the observed transaction.
+    pub txid: String,
+    /// Base58 receiving address the output paid into.
+    pub address: String,
+    /// Output value in duffs.
+    pub amount_duffs: u64,
+}
+
 /// DET-local private contact memo (nickname / notes / hidden flag).
 ///
 /// Mirrors the legacy `contact_private_info` SQLite row shape but lives

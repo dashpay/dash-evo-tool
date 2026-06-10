@@ -247,6 +247,12 @@ pub enum BackendTaskSuccessResult {
     DashPayContactAlreadyEstablished(Identifier), // Contact ID that already exists
     DashPayContactInfoUpdated(Identifier), // Contact ID whose info was updated
     DashPayPaymentSent(String, String, f64), // (recipient, address, amount)
+    /// Received outputs the `EventBridge` saw on a freshly-detected wallet
+    /// transaction. The app dispatches `DetectIncomingContactPayments` for
+    /// these — the backend resolves each against the per-identity DashPay
+    /// address map and records the ones that match a contact. Non-DashPay
+    /// outputs are silently ignored, so this carries every received output.
+    DashPayIncomingDetected(Vec<crate::model::dashpay::DetectedIncomingOutput>),
     /// Auto-accept contact QR payload, ready to render. The proof is built
     /// through the JIT chokepoint in the backend so the UI never touches a seed.
     DashPayAutoAcceptQrCode(String),

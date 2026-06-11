@@ -13,6 +13,7 @@ use dash_sdk::platform::{Document, DocumentQuery, Fetch, FetchMany, Identifier};
 use futures::future::join_all;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use zeroize::Zeroizing;
 
 // DashPay contract ID from the platform repo
 pub const DASHPAY_CONTRACT_ID: [u8; 32] = [
@@ -38,11 +39,12 @@ pub async fn get_dashpay_contract(sdk: &Sdk) -> Result<Arc<DataContract>, String
 /// derivation runs inside the closure through the shared
 /// [`derive_contact_info_encryption_keys`](crate::wallet_backend::derive_contact_info_encryption_keys)
 /// helper — the raw seed never enters this layer.
+#[allow(clippy::type_complexity)]
 async fn derive_contact_info_keys(
     app_context: &Arc<AppContext>,
     identity: &QualifiedIdentity,
     derivation_index: u32,
-) -> Result<([u8; 32], [u8; 32]), TaskError> {
+) -> Result<(Zeroizing<[u8; 32]>, Zeroizing<[u8; 32]>), TaskError> {
     let seed_hash = identity
         .dashpay_wallet_seed_hash()
         .ok_or(TaskError::ContactWalletSeedUnavailable)?;

@@ -6,13 +6,18 @@ use dash_sdk::dpp::identity::IdentityPublicKey;
 use dash_sdk::dpp::identity::KeyType;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use sha2::{Digest, Sha256};
+use zeroize::Zeroizing;
 
 /// Generate ECDH shared key according to DashPay DIP-15
 /// Uses libsecp256k1_ecdh method: SHA256((y[31]&0x1|0x2) || x)
+///
+/// The returned key is symmetric DashPay encryption material, so it is wrapped
+/// in [`Zeroizing`] and the 64-byte ECDH point it is derived from is wiped on
+/// drop. The byte value is unchanged from the DIP-15 derivation.
 pub fn generate_ecdh_shared_key(
     private_key: &[u8],
     public_key: &IdentityPublicKey,
-) -> Result<[u8; 32], String> {
+) -> Result<Zeroizing<[u8; 32]>, String> {
     let _secp = Secp256k1::new();
 
     // Parse the private key
@@ -26,8 +31,14 @@ pub fn generate_ecdh_shared_key(
             let public_key = PublicKey::from_slice(public_key_data.as_slice())
                 .map_err(|e| format!("Invalid public key: {}", e))?;
 
-            // Perform ECDH to get shared secret
-            let shared_secret = dash_sdk::dpp::dashcore::secp256k1::ecdh::shared_secret_point(&public_key, &secret_key);
+            // Perform ECDH to get shared secret. The 64-byte point is secret;
+            // hold it in `Zeroizing` so it is wiped once the key is hashed out.
+            let shared_secret = Zeroizing::new(
+                dash_sdk::dpp::dashcore::secp256k1::ecdh::shared_secret_point(
+                    &public_key,
+                    &secret_key,
+                ),
+            );
 
             // Extract x and y coordinates (64 bytes total: 32 + 32)
             let x = &shared_secret[..32];
@@ -42,7 +53,7 @@ pub fn generate_ecdh_shared_key(
             hasher.update(x);
 
             let result = hasher.finalize();
-            let mut shared_key = [0u8; 32];
+            let mut shared_key = Zeroizing::new([0u8; 32]);
             shared_key.copy_from_slice(&result);
 
             Ok(shared_key)
@@ -446,6 +457,29 @@ mod tests {
         // Try to decrypt with wrong key - should fail
         let result = decrypt_extended_public_key(&encrypted, &wrong_key);
         assert!(result.is_err(), "Decryption with wrong key should fail");
+    }
+
+    #[test]
+    fn zeroizing_shared_key_works_through_deref_coercion() {
+        // The DashPay callers hold the ECDH shared key as `Zeroizing<[u8; 32]>`
+        // and pass it by reference to the `encrypt_*` / `decrypt_*` helpers,
+        // which take `&[u8; 32]`. This pins the deref-coercion contract those
+        // callers rely on: a borrow of the zeroizing key keys the cipher
+        // identically to a borrow of a plain array.
+        let raw = generate_test_shared_key();
+        let zeroizing_key = zeroize::Zeroizing::new(raw);
+
+        let encrypted =
+            encrypt_account_label("Personal", &zeroizing_key).expect("encrypt with zeroizing key");
+        let decrypted =
+            decrypt_account_label(&encrypted, &zeroizing_key).expect("decrypt with zeroizing key");
+        assert_eq!(decrypted, "Personal");
+
+        // Same bytes via a plain array must decrypt the zeroizing-keyed
+        // ciphertext, proving the wrapper does not alter the key material.
+        let plain_decrypted =
+            decrypt_account_label(&encrypted, &raw).expect("decrypt with plain key");
+        assert_eq!(plain_decrypted, "Personal");
     }
 
     #[test]

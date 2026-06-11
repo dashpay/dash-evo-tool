@@ -21,6 +21,7 @@ use dash_sdk::platform::documents::transitions::DocumentCreateTransitionBuilder;
 use dash_sdk::platform::{Document, DocumentQuery, FetchMany, Identifier};
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
+use zeroize::Zeroizing;
 
 // ContactInfo private data structure
 #[derive(Debug, Clone, Default)]
@@ -125,11 +126,12 @@ impl ContactInfoPrivateData {
 /// derivation runs inside the closure through the shared
 /// [`derive_contact_info_encryption_keys`](crate::wallet_backend::derive_contact_info_encryption_keys)
 /// helper — the raw seed never enters this layer.
+#[allow(clippy::type_complexity)]
 async fn derive_contact_info_keys(
     app_context: &Arc<AppContext>,
     identity: &QualifiedIdentity,
     derivation_index: u32,
-) -> Result<([u8; 32], [u8; 32]), TaskError> {
+) -> Result<(Zeroizing<[u8; 32]>, Zeroizing<[u8; 32]>), TaskError> {
     let seed_hash = identity
         .dashpay_wallet_seed_hash()
         .ok_or(TaskError::ContactWalletSeedUnavailable)?;

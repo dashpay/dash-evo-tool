@@ -40,6 +40,8 @@ use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::key_wallet::wallet::Wallet;
 use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOptions;
 use dash_sdk::platform::Identifier;
+use zeroize::Zeroizing;
+
 use platform_wallet::wallet::identity::types::dashpay::contact_request::ContactRequest;
 use platform_wallet::wallet::identity::types::dashpay::established_contact::EstablishedContact;
 use platform_wallet::wallet::identity::types::dashpay::payment::{
@@ -151,11 +153,12 @@ pub(crate) fn derive_contact_xpub_material(
 /// * `seed_bytes`       - The wallet's 64-byte BIP-39 HD seed (borrowed).
 /// * `network`          - Network for coin-type selection in the path.
 /// * `derivation_index` - The contactInfo document's derivation index.
+#[allow(clippy::type_complexity)]
 pub(crate) fn derive_contact_info_encryption_keys(
     seed_bytes: &[u8; 64],
     network: Network,
     derivation_index: u32,
-) -> Result<([u8; 32], [u8; 32]), TaskError> {
+) -> Result<(Zeroizing<[u8; 32]>, Zeroizing<[u8; 32]>), TaskError> {
     use dash_sdk::dpp::key_wallet::bip32::{ChildNumber, DerivationPath, ExtendedPrivKey};
     use std::str::FromStr;
 
@@ -203,8 +206,8 @@ pub(crate) fn derive_contact_info_encryption_keys(
         .map_err(derive_err)?;
 
     Ok((
-        key1.private_key.secret_bytes(),
-        key2.private_key.secret_bytes(),
+        Zeroizing::new(key1.private_key.secret_bytes()),
+        Zeroizing::new(key2.private_key.secret_bytes()),
     ))
 }
 
@@ -2212,16 +2215,16 @@ mod tests {
         let (key1, key2) =
             derive_contact_info_encryption_keys(&TEST_SEED, Network::Testnet, 0).expect("derive");
         assert_eq!(
-            key1, CONTACT_INFO_KEY1_TESTNET_PINNED,
+            *key1, CONTACT_INFO_KEY1_TESTNET_PINNED,
             "contactInfo key1 drifted from its pinned vector"
         );
         assert_eq!(
-            key2, CONTACT_INFO_KEY2_TESTNET_PINNED,
+            *key2, CONTACT_INFO_KEY2_TESTNET_PINNED,
             "contactInfo key2 drifted from its pinned vector"
         );
         // The two DIP-15 keys are derived under distinct hardened branches —
         // they must never be equal.
-        assert_ne!(key1, key2, "key1 and key2 must differ");
+        assert_ne!(*key1, *key2, "key1 and key2 must differ");
     }
 
     /// F3 — the contactInfo encryption keys differ across networks for the
@@ -2232,8 +2235,8 @@ mod tests {
             derive_contact_info_encryption_keys(&TEST_SEED, Network::Testnet, 0).expect("testnet");
         let (m1, m2) =
             derive_contact_info_encryption_keys(&TEST_SEED, Network::Mainnet, 0).expect("mainnet");
-        assert_ne!(t1, m1, "key1 must differ across networks");
-        assert_ne!(t2, m2, "key2 must differ across networks");
+        assert_ne!(*t1, *m1, "key1 must differ across networks");
+        assert_ne!(*t2, *m2, "key2 must differ across networks");
     }
 
     #[test]

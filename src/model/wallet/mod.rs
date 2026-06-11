@@ -2,6 +2,7 @@ pub mod auth_pubkey_cache;
 pub mod birth_height;
 pub mod encryption;
 pub mod meta;
+pub mod passphrase;
 pub mod seed_envelope;
 pub mod shielded;
 pub mod single_key;

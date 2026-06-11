@@ -29,10 +29,10 @@ use crate::model::wallet::single_key::{
 use crate::wallet_backend::single_key_entry::SingleKeyEntry;
 use crate::wallet_backend::{DetKv, DetScope};
 
-/// Minimum length (in characters) for a per-key passphrase. Mirrors
-/// NIST 800-63B / OWASP ASVS 6.2.1's minimum recommendation. The
-/// import dialog enforces this client-side and the backend re-checks.
-pub const MIN_SINGLE_KEY_PASSPHRASE_LEN: usize = 8;
+/// Minimum length (in characters) for a per-key passphrase. Re-exported
+/// from the model so the rule has a single home; both this backend and
+/// the import/restore dialogs share the same value.
+pub use crate::model::wallet::passphrase::MIN_SINGLE_KEY_PASSPHRASE_LEN;
 
 /// Fixed per-backend namespace id for single-key entries.
 ///

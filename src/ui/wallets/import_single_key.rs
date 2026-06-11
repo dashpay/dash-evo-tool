@@ -18,6 +18,7 @@ use eframe::egui::{self, Context, RichText, Ui};
 use zeroize::Zeroizing;
 
 use crate::backend_task::error::TaskError;
+use crate::model::wallet::passphrase::validate_single_key_passphrase;
 use crate::ui::components::password_input::PasswordInput;
 use crate::ui::theme::DashColors;
 
@@ -60,8 +61,10 @@ pub struct ImportSingleKeyRequest {
     pub address_preview: String,
     /// SEC-002 — optional per-key passphrase. `None` means store the
     /// key without an additional encryption layer (still inside the
-    /// vault); `Some` means encrypt under the user's passphrase.
-    pub passphrase: Option<String>,
+    /// vault); `Some` means encrypt under the user's passphrase. Wrapped
+    /// in [`Zeroizing`] so the copy wipes on drop and never lingers as a
+    /// plain `String` between the input field and the vault.
+    pub passphrase: Option<Zeroizing<String>>,
     /// Optional hint shown next to the unlock prompt for protected
     /// imports.
     pub passphrase_hint: Option<String>,
@@ -285,15 +288,19 @@ impl ImportSingleKeyDialog {
                 && let Some(addr) = self.derived_address.clone()
             {
                 let (passphrase, hint) = if self.passphrase_enabled {
-                    let pp = self.passphrase_input.text().to_string();
-                    let cp = self.confirm_passphrase_input.text().to_string();
-                    if let Some(err) = validate_passphrase(&pp, &cp) {
-                        self.passphrase_error = Some(err);
+                    if let Err(err) = validate_single_key_passphrase(
+                        self.passphrase_input.text(),
+                        self.confirm_passphrase_input.text(),
+                    ) {
+                        self.passphrase_error = Some(err.to_string());
                         return;
                     }
                     let trimmed_hint = self.hint_input.trim().to_string();
                     let hint = (!trimmed_hint.is_empty()).then_some(trimmed_hint);
-                    (Some(pp), hint)
+                    (
+                        Some(Zeroizing::new(self.passphrase_input.text().to_string())),
+                        hint,
+                    )
                 } else {
                     (None, None)
                 };
@@ -350,27 +357,6 @@ impl ImportSingleKeyDialog {
     }
 }
 
-/// Client-side passphrase validation mirroring the backend's typed
-/// rules. Returns the user-facing message (from the corresponding
-/// [`TaskError`] variant's `Display`) when the input is rejected,
-/// `None` otherwise. The backend re-checks both rules so a callsite
-/// that skips this still gets the typed error.
-fn validate_passphrase(passphrase: &str, confirm: &str) -> Option<String> {
-    if passphrase.chars().count() < crate::wallet_backend::single_key::MIN_SINGLE_KEY_PASSPHRASE_LEN
-    {
-        return Some(
-            TaskError::SingleKeyPassphraseTooShort {
-                min: crate::wallet_backend::single_key::MIN_SINGLE_KEY_PASSPHRASE_LEN as u32,
-            }
-            .to_string(),
-        );
-    }
-    if passphrase != confirm {
-        return Some(TaskError::SingleKeyPassphraseMismatch.to_string());
-    }
-    None
-}
-
 fn network_label(network: Network) -> &'static str {
     match network {
         Network::Mainnet => "Mainnet",
@@ -402,7 +388,7 @@ mod tests {
             wif: Zeroizing::new(wif.to_string()),
             alias: Some("primary".into()),
             address_preview: "yPreviewAddr".into(),
-            passphrase: Some(passphrase.to_string()),
+            passphrase: Some(Zeroizing::new(passphrase.to_string())),
             passphrase_hint: Some("the usual".into()),
         };
 

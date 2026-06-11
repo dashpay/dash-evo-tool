@@ -15,11 +15,10 @@
 use eframe::egui::{self, Context, RichText, Ui};
 use zeroize::Zeroizing;
 
-use crate::backend_task::error::TaskError;
 use crate::backend_task::migration::single_key_restore::PendingProtectedRestore;
+use crate::model::wallet::passphrase::validate_single_key_passphrase;
 use crate::ui::components::password_input::PasswordInput;
 use crate::ui::theme::DashColors;
-use crate::wallet_backend::single_key::MIN_SINGLE_KEY_PASSPHRASE_LEN;
 
 /// Maximum hint length, matching the import dialog.
 const HINT_MAX_CHARS: usize = 64;
@@ -232,13 +231,14 @@ impl RestoreSingleKeyDialog {
             let confirm_btn = egui::Button::new(RichText::new("Restore key").strong());
             if ui.add_enabled(can_confirm, confirm_btn).clicked() {
                 let new_passphrase = if self.protect_again {
-                    let pp = self.new_passphrase_input.text().to_string();
-                    let cp = self.confirm_passphrase_input.text().to_string();
-                    if let Some(err) = validate_passphrase(&pp, &cp) {
-                        self.passphrase_error = Some(err);
+                    let pp = Zeroizing::new(self.new_passphrase_input.text().to_string());
+                    if let Err(err) =
+                        validate_single_key_passphrase(&pp, self.confirm_passphrase_input.text())
+                    {
+                        self.passphrase_error = Some(err.to_string());
                         return;
                     }
-                    Some(Zeroizing::new(pp))
+                    Some(pp)
                 } else {
                     None
                 };
@@ -255,24 +255,6 @@ impl RestoreSingleKeyDialog {
             }
         });
     }
-}
-
-/// Client-side new-passphrase validation mirroring the backend's typed
-/// rules. Returns the user-facing message (from the corresponding
-/// [`TaskError`] variant's `Display`) when the input is rejected.
-fn validate_passphrase(passphrase: &str, confirm: &str) -> Option<String> {
-    if passphrase.chars().count() < MIN_SINGLE_KEY_PASSPHRASE_LEN {
-        return Some(
-            TaskError::SingleKeyPassphraseTooShort {
-                min: MIN_SINGLE_KEY_PASSPHRASE_LEN as u32,
-            }
-            .to_string(),
-        );
-    }
-    if passphrase != confirm {
-        return Some(TaskError::SingleKeyPassphraseMismatch.to_string());
-    }
-    None
 }
 
 #[cfg(test)]
@@ -311,26 +293,6 @@ mod tests {
         }
         // Non-secret fields stay visible for diagnostics.
         assert!(format!("{request:?}").contains("yProtectedAddr"));
-    }
-
-    /// A too-short new passphrase is rejected with the typed message.
-    #[test]
-    fn short_new_passphrase_is_rejected() {
-        let msg = validate_passphrase("short", "short").expect("short passphrase rejected");
-        assert!(msg.contains("at least"), "got {msg}");
-    }
-
-    /// Mismatched new passphrases are rejected with the typed message.
-    #[test]
-    fn mismatched_new_passphrase_is_rejected() {
-        let msg = validate_passphrase("longenough1", "longenough2").expect("mismatch rejected");
-        assert!(msg.contains("do not match"), "got {msg}");
-    }
-
-    /// A valid, matching new passphrase passes validation.
-    #[test]
-    fn valid_new_passphrase_passes() {
-        assert!(validate_passphrase("longenough123", "longenough123").is_none());
     }
 
     /// `set_target` opens the dialog at the given key; `reset` clears it.

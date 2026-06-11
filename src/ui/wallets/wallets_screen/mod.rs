@@ -2229,7 +2229,7 @@ impl WalletsBalancesScreen {
         }
         if let Some(request) = response.confirmed {
             let passphrase = crate::wallet_backend::single_key::ImportPassphrase {
-                passphrase: request.passphrase.clone().map(zeroize::Zeroizing::new),
+                passphrase: request.passphrase.clone(),
                 hint: request.passphrase_hint.clone(),
             };
             match self.register_imported_single_key(&request.wif, passphrase, request.alias.clone())

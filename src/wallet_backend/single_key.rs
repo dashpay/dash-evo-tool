@@ -432,6 +432,24 @@ impl<'a> SingleKeyView<'a> {
         out
     }
 
+    /// Rebuild the single display [`SingleKeyWallet`] for one imported key,
+    /// reading the same vault + metadata the cold-boot
+    /// [`Self::hydrate_wallets`] path uses. Routes through the shared
+    /// [`Self::rebuild_wallet`], so the in-memory shape an import produces is
+    /// byte-for-byte identical to the one a restart reconstructs: a
+    /// passphrase-protected key comes back **closed** (no plaintext in the
+    /// long-lived map), an unprotected key comes back open.
+    ///
+    /// `Ok(None)` mirrors `rebuild_wallet`'s skip-and-log contract (missing
+    /// vault row, unparseable bytes) — the caller decides how to surface a
+    /// freshly-imported key that could not be rebuilt.
+    pub fn rebuild_display_wallet(
+        &self,
+        meta: &ImportedKey,
+    ) -> Result<Option<SingleKeyWallet>, TaskError> {
+        self.rebuild_wallet(meta)
+    }
+
     /// Seed the in-memory index from the k/v sidecar. Idempotent: re-runs
     /// overwrite existing in-memory entries with the persisted view, so a
     /// cold-boot hydration cannot lose entries created in the same

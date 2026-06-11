@@ -188,6 +188,16 @@ impl AppContext {
     /// screens render from (without which the key stays invisible until
     /// the next cold-boot hydration).
     ///
+    /// The in-memory mirror is rebuilt through
+    /// [`SingleKeyView::rebuild_display_wallet`] — the same vault-backed path
+    /// cold boot uses — so a passphrase-protected key is mirrored **closed**
+    /// (no plaintext private key retained in the long-lived map; signing
+    /// decrypts just-in-time through the secret chokepoint), while an
+    /// unprotected key is mirrored open as before. Rebuilding from the WIF
+    /// with `from_wif(.., None, ..)` would have parked the decrypted key in
+    /// the session map for the whole session, defeating the per-key
+    /// passphrase.
+    ///
     /// Every UI entry point — the import dialog, the import-wallet screen,
     /// and the test seam — routes through here so vault write and
     /// in-memory mirror can never diverge. Returns the rebuilt display
@@ -205,16 +215,17 @@ impl AppContext {
         TaskError,
     > {
         let backend = self.wallet_backend()?;
-        let imported = backend
-            .single_key()
-            .import_wif_with_passphrase(wif, alias, passphrase)?;
+        let single_key = backend.single_key();
+        let imported = single_key.import_wif_with_passphrase(wif, alias, passphrase)?;
 
-        // Rebuild the in-memory display wallet from the same WIF so the
-        // map matches the shape `hydrate_context_wallets` produces on the
-        // next cold boot (alias preserved; the optional import passphrase
-        // guards the vaulted bytes, not this in-memory copy).
-        let wallet = SingleKeyWallet::from_wif(wif, None, imported.alias.clone())
-            .map_err(|_| TaskError::SingleKeyCryptoFailure)?;
+        // Rebuild the in-memory display wallet from the just-written vault
+        // entry so the map matches the shape `hydrate_context_wallets`
+        // produces on the next cold boot. For a passphrase-protected entry
+        // this yields a closed wallet with no plaintext; for an unprotected
+        // entry it yields the open wallet the legacy path produced.
+        let wallet = single_key
+            .rebuild_display_wallet(&imported)?
+            .ok_or(TaskError::ImportedKeyNotFound)?;
         let key_hash = wallet.key_hash();
         let wallet_arc = Arc::new(RwLock::new(wallet));
 
@@ -2510,5 +2521,118 @@ mod tests {
             .expect("gate must recognize an unprotected restore as restored");
         drop_legacy_single_key_table_when_safe(&ctx)
             .expect("the sanctioned drop must succeed once every key is restored");
+    }
+
+    /// Build a deterministic compressed testnet WIF from `raw` so the
+    /// single-key import tests stay offline and reproducible.
+    fn testnet_wif_from_raw(raw: &[u8; 32]) -> String {
+        use dash_sdk::dpp::dashcore::PrivateKey;
+        PrivateKey::from_byte_array(raw, Network::Testnet)
+            .expect("valid private key bytes")
+            .to_wif()
+    }
+
+    /// Importing a **passphrase-protected** single key must NOT retain the
+    /// decrypted private key in the long-lived `single_key_wallets` session
+    /// map. The in-memory mirror must come back closed — exactly the shape
+    /// cold boot reconstructs — so the per-key passphrase is not silently
+    /// defeated by a plaintext copy lingering for the whole session.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn protected_single_key_import_does_not_retain_plaintext_in_session_map() {
+        use crate::wallet_backend::single_key::ImportPassphrase;
+
+        let (ctx, sender, _tmp) = offline_testnet_context();
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("ensure_wallet_backend should succeed offline");
+
+        let mut raw = [0u8; 32];
+        raw[31] = 0x77;
+        let wif = testnet_wif_from_raw(&raw);
+
+        let passphrase = ImportPassphrase {
+            passphrase: Some(zeroize::Zeroizing::new("a-strong-passphrase".into())),
+            hint: Some("the test one".into()),
+        };
+        let (imported, wallet_arc) = ctx
+            .import_single_key_wif(&wif, Some("protected".into()), passphrase)
+            .expect("protected import must succeed");
+        assert!(
+            imported.has_passphrase,
+            "the imported metadata must record the per-key passphrase"
+        );
+
+        // The in-memory mirror must be closed: no `is_open`, no plaintext key
+        // obtainable, and the underlying data must be the encrypted variant.
+        let guard = wallet_arc.read().expect("read mirror");
+        assert!(
+            !guard.is_open(),
+            "a protected single key must be mirrored closed, not open with plaintext"
+        );
+        assert!(
+            guard.private_key(Network::Testnet).is_none(),
+            "no plaintext private key may be retrievable from the session-map mirror"
+        );
+        assert!(
+            matches!(
+                guard.private_key_data,
+                crate::model::wallet::single_key::SingleKeyData::Closed(_)
+            ),
+            "the mirrored key data must be the Closed (encrypted) variant"
+        );
+        assert!(
+            guard.uses_password,
+            "the mirror must advertise that it needs a password"
+        );
+
+        // The same closed entry must be the one tracked in the session map.
+        let key_hash = guard.key_hash();
+        drop(guard);
+        let map = ctx.single_key_wallets.read().expect("read map");
+        let in_map = map.get(&key_hash).expect("imported key present in map");
+        assert!(
+            !in_map.read().expect("read map entry").is_open(),
+            "the session-map entry for a protected key must stay closed"
+        );
+    }
+
+    /// Companion to the protected-key test: an **unprotected** single key
+    /// has no passphrase by definition, so plaintext in the session map is
+    /// inherent and the mirror is expected to be open. This guards against
+    /// over-correcting and breaking the no-passphrase fast path.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn unprotected_single_key_import_mirrors_open() {
+        use crate::wallet_backend::single_key::ImportPassphrase;
+
+        let (ctx, sender, _tmp) = offline_testnet_context();
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("ensure_wallet_backend should succeed offline");
+
+        let mut raw = [0u8; 32];
+        raw[31] = 0x55;
+        let wif = testnet_wif_from_raw(&raw);
+
+        let (imported, wallet_arc) = ctx
+            .import_single_key_wif(&wif, Some("plain".into()), ImportPassphrase::default())
+            .expect("unprotected import must succeed");
+        assert!(
+            !imported.has_passphrase,
+            "an unprotected import must record no per-key passphrase"
+        );
+
+        let guard = wallet_arc.read().expect("read mirror");
+        assert!(
+            guard.is_open(),
+            "an unprotected single key is mirrored open (plaintext is inherent)"
+        );
+        assert!(
+            guard.private_key(Network::Testnet).is_some(),
+            "an unprotected mirror exposes its private key for signing"
+        );
+        assert!(
+            !guard.uses_password,
+            "an unprotected mirror must not advertise a password requirement"
+        );
     }
 }

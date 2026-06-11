@@ -325,6 +325,32 @@ impl<'a> SingleKeyView<'a> {
         entry.decrypt(None)
     }
 
+    /// Confirm that `passphrase` unlocks the protected imported key at
+    /// `address`, without retaining the decrypted key anywhere. The plaintext
+    /// is decrypted just-in-time into a [`Zeroizing`] binding that is dropped
+    /// (and wiped) before this returns — so a successful "Unlock" gesture
+    /// leaves no plaintext in the long-lived session map.
+    ///
+    /// Returns [`TaskError::SingleKeyPassphraseIncorrect`] on a wrong
+    /// passphrase (the same generic signal as the restore path — no oracle).
+    /// For an unprotected entry the passphrase is irrelevant and this is an
+    /// `Ok(())` so callers can treat "ready to use" uniformly.
+    pub fn verify_passphrase(&self, address: &str, passphrase: &str) -> Result<(), TaskError> {
+        let label = label_for_address(address);
+        let payload = self
+            .secret_store
+            .get(&single_key_namespace_id(), &label)
+            .map_err(|source| TaskError::SecretStore {
+                source: Box::new(source),
+            })?
+            .ok_or(TaskError::ImportedKeyNotFound)?;
+        let entry = SingleKeyEntry::decode(payload.expose_secret())?;
+        // Decrypt to verify, then drop immediately — the binding is wiped on
+        // drop, so the plaintext never crosses back out of this method.
+        let _verified: Zeroizing<[u8; 32]> = entry.decrypt(Some(passphrase))?;
+        Ok(())
+    }
+
     /// List every imported key tracked by this backend, sorted by
     /// address. Reads the in-memory index only — does not touch the
     /// secret vault.
@@ -633,16 +659,18 @@ impl<'a> SingleKeyView<'a> {
             inner,
         };
 
-        // `compute_key_hash` is defined over the plaintext private
-        // key; locked entries don't have access to that here, so we
-        // use SHA-256 of the ciphertext as a stable per-entry handle.
-        // Two locked entries with the same plaintext (but distinct
-        // salts) hash to different values — acceptable since the
-        // hash is only used as a map key inside the in-memory wallets
-        // BTreeMap.
+        // `compute_key_hash` is defined over the plaintext private key;
+        // locked entries don't have it here, so the handle is SHA-256 of the
+        // ciphertext under a domain-separation tag. The tag keeps this handle
+        // in a different space from the plaintext `compute_key_hash`, so a
+        // locked entry and an open one can never collide on the same BTreeMap
+        // key. Two locked entries with the same plaintext but distinct salts
+        // still hash apart — fine, the handle is only a per-entry map key.
+        const LOCKED_HANDLE_DOMAIN: &[u8] = b"det-single-key-locked-handle-v1";
         let key_hash = {
             use sha2::{Digest, Sha256};
             let mut hasher = Sha256::new();
+            hasher.update(LOCKED_HANDLE_DOMAIN);
             hasher.update(&entry.ciphertext);
             let out = hasher.finalize();
             let mut h = [0u8; 32];

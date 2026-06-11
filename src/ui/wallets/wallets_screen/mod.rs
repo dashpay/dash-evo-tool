@@ -699,25 +699,18 @@ impl WalletsBalancesScreen {
 
                         ui.add_space(8.0);
 
-                        // Lock/Unlock buttons for SK wallet
-                        let (uses_password, is_open) = wallet_arc
+                        // A password-protected single key is never opened into
+                        // the shared map (signing decrypts just-in-time), so the
+                        // only gesture is "Unlock", which confirms the passphrase
+                        // against the vault without retaining any plaintext.
+                        let uses_password = wallet_arc
                             .read()
                             .ok()
-                            .map(|w| (w.uses_password, w.is_open()))
-                            .unwrap_or((false, false));
+                            .map(|w| w.uses_password)
+                            .unwrap_or(false);
 
-                        let mut should_lock_sk_wallet = false;
-                        if uses_password {
-                            if is_open {
-                                if ui.button("Lock").clicked() {
-                                    should_lock_sk_wallet = true;
-                                }
-                            } else if ui.button("Unlock").clicked() {
-                                self.show_sk_unlock_dialog = true;
-                            }
-                        }
-                        if should_lock_sk_wallet && let Ok(mut wallet) = wallet_arc.write() {
-                            wallet.private_key_data.close();
+                        if uses_password && ui.button("Unlock").clicked() {
+                            self.show_sk_unlock_dialog = true;
                         }
 
                         ui.add_space(8.0);
@@ -2756,15 +2749,40 @@ impl ScreenLike for WalletsBalancesScreen {
 
                         if attempt_unlock {
                             if let Some(wallet_arc) = &self.selected_single_key_wallet {
-                                let mut wallet = wallet_arc.write().unwrap();
-                                let unlock_result = wallet.open(self.sk_password_input.text());
+                                // Verify the passphrase against the encrypted
+                                // vault without opening the map entry: signing
+                                // decrypts just-in-time, so the key stays closed
+                                // (no plaintext re-parked in the session map).
+                                let address = wallet_arc
+                                    .read()
+                                    .ok()
+                                    .map(|w| w.address.to_string());
+                                let verify_result = match address {
+                                    Some(addr) => self
+                                        .app_context
+                                        .verify_single_key_passphrase(
+                                            &addr,
+                                            self.sk_password_input.text(),
+                                        ),
+                                    None => Err(TaskError::ImportedKeyNotFound),
+                                };
 
-                                match unlock_result {
-                                    Ok(_) => {
+                                match verify_result {
+                                    Ok(()) => {
+                                        MessageBanner::set_global(
+                                            ui.ctx(),
+                                            "Password confirmed. This key is ready to use.",
+                                            MessageType::Success,
+                                        );
                                         close_dialog = true;
                                     }
-                                    Err(_) => {
-                                        MessageBanner::set_global(ui.ctx(), "Incorrect Password", MessageType::Error);
+                                    Err(e) => {
+                                        MessageBanner::set_global(
+                                            ui.ctx(),
+                                            e.to_string(),
+                                            MessageType::Error,
+                                        )
+                                        .with_details(&e);
                                     }
                                 }
                             }

@@ -3,6 +3,7 @@
 use crate::app::AppAction;
 use crate::backend_task::BackendTask;
 use crate::backend_task::core::{CoreTask, PaymentRecipient, WalletPaymentRequest};
+use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
 use crate::model::wallet::single_key::SingleKeyWallet;
@@ -732,27 +733,32 @@ impl SingleKeyWalletSendScreen {
                     if ui.button("Unlock").clicked()
                         && let Some(wallet) = &self.selected_wallet
                     {
-                        match wallet.write() {
-                            Ok(mut wallet_guard) => {
-                                match wallet_guard.open(self.password_input.text()) {
-                                    Ok(_) => {
-                                        self.password_input.clear();
-                                    }
-                                    Err(e) => {
-                                        MessageBanner::set_global(
-                                            ui.ctx(),
-                                            format!("Failed to unlock: {}", e),
-                                            MessageType::Error,
-                                        );
-                                    }
-                                }
-                            }
-                            Err(_) => {
+                        // Verify the passphrase against the encrypted vault
+                        // without opening the shared map entry: signing
+                        // decrypts just-in-time, so no plaintext is re-parked.
+                        let address = wallet.read().ok().map(|w| w.address.to_string());
+                        let verify_result = match address {
+                            Some(addr) => self
+                                .app_context
+                                .verify_single_key_passphrase(&addr, self.password_input.text()),
+                            None => Err(TaskError::ImportedKeyNotFound),
+                        };
+                        match verify_result {
+                            Ok(()) => {
+                                self.password_input.clear();
                                 MessageBanner::set_global(
                                     ui.ctx(),
-                                    "Wallet lock error, please try again",
-                                    MessageType::Error,
+                                    "Password confirmed. This key is ready to use.",
+                                    MessageType::Success,
                                 );
+                            }
+                            Err(e) => {
+                                MessageBanner::set_global(
+                                    ui.ctx(),
+                                    e.to_string(),
+                                    MessageType::Error,
+                                )
+                                .with_details(&e);
                             }
                         }
                     }

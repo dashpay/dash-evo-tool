@@ -236,6 +236,23 @@ impl AppContext {
         Ok((imported, wallet_arc))
     }
 
+    /// Confirm that `passphrase` unlocks the protected imported key at
+    /// `address` against the encrypted vault, without leaving any plaintext in
+    /// the long-lived `single_key_wallets` map. Used by the wallets-screen
+    /// "Unlock" gesture: signing already decrypts just-in-time through the
+    /// secret chokepoint, so the map entry can stay closed while the user gets
+    /// confirmation that their passphrase is correct. Returns
+    /// [`TaskError::SingleKeyPassphraseIncorrect`] on a wrong passphrase.
+    pub fn verify_single_key_passphrase(
+        &self,
+        address: &str,
+        passphrase: &str,
+    ) -> Result<(), TaskError> {
+        self.wallet_backend()?
+            .single_key()
+            .verify_passphrase(address, passphrase)
+    }
+
     /// Start chain sync against an already-wired wallet backend.
     ///
     /// Delegates to [`WalletBackend::start`], which spawns the upstream
@@ -2633,6 +2650,76 @@ mod tests {
         assert!(
             !guard.uses_password,
             "an unprotected mirror must not advertise a password requirement"
+        );
+    }
+
+    /// The "Unlock" gesture for a protected single key must confirm the
+    /// passphrase against the vault WITHOUT re-parking the decrypted private
+    /// key in the long-lived `single_key_wallets` map. The map entry must stay
+    /// closed both before and after a successful unlock; a wrong passphrase
+    /// surfaces the generic incorrect error.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn protected_single_key_unlock_verifies_without_reparking_plaintext() {
+        use crate::wallet_backend::single_key::ImportPassphrase;
+
+        let (ctx, sender, _tmp) = offline_testnet_context();
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("ensure_wallet_backend should succeed offline");
+
+        let mut raw = [0u8; 32];
+        raw[31] = 0x91;
+        let wif = testnet_wif_from_raw(&raw);
+        let pass = "a-strong-passphrase";
+
+        let passphrase = ImportPassphrase {
+            passphrase: Some(zeroize::Zeroizing::new(pass.into())),
+            hint: None,
+        };
+        let (_imported, wallet_arc) = ctx
+            .import_single_key_wif(&wif, Some("protected".into()), passphrase)
+            .expect("protected import must succeed");
+        let address = wallet_arc.read().expect("read mirror").address.to_string();
+
+        // Closed before the unlock gesture.
+        assert!(
+            !wallet_arc.read().expect("read mirror").is_open(),
+            "a protected key must be closed before unlock"
+        );
+
+        // A wrong passphrase surfaces the generic incorrect error and leaves
+        // the entry closed.
+        let wrong = ctx
+            .verify_single_key_passphrase(&address, "not-the-passphrase")
+            .expect_err("a wrong passphrase must fail");
+        assert!(
+            matches!(wrong, TaskError::SingleKeyPassphraseIncorrect),
+            "wrong passphrase must surface the generic incorrect error, got {wrong:?}"
+        );
+        assert!(
+            !wallet_arc.read().expect("read mirror").is_open(),
+            "a failed unlock must leave the key closed"
+        );
+
+        // The correct passphrase verifies successfully — and the key STILL
+        // stays closed: no plaintext is re-parked in the session map.
+        ctx.verify_single_key_passphrase(&address, pass)
+            .expect("the correct passphrase must verify");
+        let guard = wallet_arc.read().expect("read mirror");
+        assert!(
+            !guard.is_open(),
+            "a successful unlock must NOT open the map entry (no plaintext re-parked)"
+        );
+        assert!(
+            guard.private_key(Network::Testnet).is_none(),
+            "no plaintext private key may be retrievable after unlock"
+        );
+        assert!(
+            matches!(
+                guard.private_key_data,
+                crate::model::wallet::single_key::SingleKeyData::Closed(_)
+            ),
+            "the map entry must remain the Closed (encrypted) variant after unlock"
         );
     }
 }

@@ -2,7 +2,7 @@ pub mod encrypted_key_storage;
 pub mod qualified_identity_public_key;
 
 use crate::backend_task::error::TaskError;
-use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
+use crate::model::qualified_identity::encrypted_key_storage::{KeyStorage, ResolvedPrivateKey};
 use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 use crate::model::wallet::{Wallet, WalletSeedHash};
 use bincode::{Decode, Encode};
@@ -377,7 +377,7 @@ impl Signer<IdentityPublicKey> for QualifiedIdentity {
 
                     let platform_key_data = identity_public_key.data().as_slice();
 
-                    if let Ok(secret_key) = SecretKey::from_slice(&private_key) {
+                    if let Ok(secret_key) = SecretKey::from_slice(&private_key[..]) {
                         let secp = Secp256k1::new();
                         let derived_pubkey = PublicKey::new(secret_key.public_key(&secp));
                         let pubkey_bytes = derived_pubkey.to_bytes();
@@ -406,7 +406,7 @@ impl Signer<IdentityPublicKey> for QualifiedIdentity {
                     }
                 }
 
-                let signature = signer::sign(data, &private_key)?;
+                let signature = signer::sign(data, &private_key[..])?;
                 Ok(signature.to_vec().into())
             }
             KeyType::BLS12_381 => {
@@ -423,14 +423,7 @@ impl Signer<IdentityPublicKey> for QualifiedIdentity {
                     .into())
             }
             KeyType::EDDSA_25519_HASH160 => {
-                #[allow(clippy::useless_conversion)]
-                let key: [u8; 32] = private_key.try_into().expect("expected 32 bytes");
-                #[allow(clippy::unnecessary_fallible_conversions)]
-                let pk = ed25519_dalek::SigningKey::try_from(&key).map_err(|_e| {
-                    ProtocolError::Generic(
-                        "eddsa 25519 private key from bytes isn't correct".to_string(),
-                    )
-                })?;
+                let pk = ed25519_dalek::SigningKey::from(&*private_key);
                 Ok(pk.sign(data).to_vec().into())
             }
             // the default behavior from
@@ -527,7 +520,7 @@ impl QualifiedIdentity {
         &self,
         target: PrivateKeyTarget,
         key_id: KeyID,
-    ) -> Result<Option<(QualifiedIdentityPublicKey, [u8; 32])>, TaskError> {
+    ) -> Result<Option<ResolvedPrivateKey>, TaskError> {
         let resolve_key = (target, key_id);
         match (
             self.secret_access.as_ref(),

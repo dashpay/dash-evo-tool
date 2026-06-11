@@ -295,7 +295,7 @@ pub async fn send_contact_request_with_proof(
             })
         })?;
 
-    let shared_key = generate_ecdh_shared_key(&sender_private_key, recipient_key)
+    let shared_key = generate_ecdh_shared_key(&sender_private_key[..], recipient_key)
         .map_err(|e| TaskError::EncryptionError { detail: e })?;
 
     let network = app_context.network;

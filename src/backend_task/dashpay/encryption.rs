@@ -52,7 +52,9 @@ pub fn generate_ecdh_shared_key(
             hasher.update([prefix]);
             hasher.update(x);
 
-            let result = hasher.finalize();
+            // The digest is the shared key material; wrap it so the sha2
+            // output buffer is wiped on drop after the copy.
+            let result = Zeroizing::new(hasher.finalize());
             let mut shared_key = Zeroizing::new([0u8; 32]);
             shared_key.copy_from_slice(&result);
 
@@ -310,6 +312,67 @@ mod tests {
         .unwrap();
         let public_key = PublicKey::from_secret_key(&secp, &secret_key);
         (secret_key, public_key)
+    }
+
+    /// Build an `IdentityPublicKey` carrying a raw ECDSA_SECP256K1 public key
+    /// in its `data` field — the shape `generate_ecdh_shared_key` expects.
+    fn ecdsa_identity_public_key(public_key: &PublicKey) -> IdentityPublicKey {
+        use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
+        use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
+        IdentityPublicKey::V0(IdentityPublicKeyV0 {
+            id: 0,
+            purpose: Purpose::ENCRYPTION,
+            security_level: SecurityLevel::MEDIUM,
+            contract_bounds: None,
+            key_type: KeyType::ECDSA_SECP256K1,
+            read_only: false,
+            data: public_key.serialize().to_vec().into(),
+            disabled_at: None,
+        })
+    }
+
+    /// Byte-identity guard for the DIP-15 ECDH derivation.
+    ///
+    /// Pins the shared key for a fixed private key + fixed counterpart public
+    /// key so the zeroize hardening (which wraps the result in `Zeroizing` and
+    /// wipes the sha2 digest) cannot silently alter the derived material.
+    #[test]
+    fn ecdh_shared_key_matches_pinned_vector() {
+        let secp = Secp256k1::new();
+
+        // Our private key: 0x01..=0x20 (same fixed vector the suite uses).
+        let private_key = [
+            0x01u8, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E,
+            0x0F, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B, 0x1C,
+            0x1D, 0x1E, 0x1F, 0x20,
+        ];
+
+        // Counterpart key derived from a different fixed secret so the ECDH
+        // point is non-degenerate.
+        let counterpart_secret = SecretKey::from_slice(&[
+            0xA1u8, 0xA2, 0xA3, 0xA4, 0xA5, 0xA6, 0xA7, 0xA8, 0xA9, 0xAA, 0xAB, 0xAC, 0xAD, 0xAE,
+            0xAF, 0xB0, 0xB1, 0xB2, 0xB3, 0xB4, 0xB5, 0xB6, 0xB7, 0xB8, 0xB9, 0xBA, 0xBB, 0xBC,
+            0xBD, 0xBE, 0xBF, 0xC0,
+        ])
+        .unwrap();
+        let counterpart_pub = PublicKey::from_secret_key(&secp, &counterpart_secret);
+        let counterpart_ipk = ecdsa_identity_public_key(&counterpart_pub);
+
+        let shared_key = generate_ecdh_shared_key(&private_key, &counterpart_ipk)
+            .expect("ECDH derivation should succeed");
+
+        const EXPECTED: [u8; 32] = [
+            0xda, 0x28, 0x35, 0x1f, 0x2d, 0xbd, 0x54, 0xc7, 0x5c, 0x5d, 0xf3, 0x37, 0x9e, 0x33,
+            0xb2, 0x37, 0xac, 0x32, 0x3e, 0xb2, 0x63, 0x87, 0xf5, 0x8f, 0x98, 0x33, 0xec, 0x5a,
+            0x5a, 0x2a, 0x83, 0x85,
+        ];
+        assert_eq!(
+            *shared_key,
+            EXPECTED,
+            "DIP-15 ECDH shared key changed — crypto output is NOT byte-identical. \
+             Got: {}",
+            hex::encode(*shared_key)
+        );
     }
 
     #[test]

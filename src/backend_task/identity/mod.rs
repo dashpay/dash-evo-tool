@@ -1362,7 +1362,7 @@ mod tests {
             .expect("master present");
         // The resolved private key's public key must match the spec's public key.
         let secp = dash_sdk::dpp::dashcore::secp256k1::Secp256k1::new();
-        let resolved_pub = dash_sdk::dpp::dashcore::secp256k1::SecretKey::from_slice(&stored.1)
+        let resolved_pub = dash_sdk::dpp::dashcore::secp256k1::SecretKey::from_slice(&stored.1[..])
             .expect("secret")
             .public_key(&secp);
         assert_eq!(

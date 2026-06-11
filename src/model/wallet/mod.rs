@@ -868,14 +868,24 @@ impl Wallet {
         seed: &[u8; 64],
         derivation_path: &DerivationPath,
         network: Network,
-    ) -> Result<Option<[u8; 32]>, String> {
+    ) -> Result<Option<Zeroizing<[u8; 32]>>, String> {
         for wallet in slice {
             let wallet_ref = wallet.read().unwrap();
             if wallet_ref.seed_hash() == wallet_seed_hash {
-                let extended_private_key = derivation_path
-                    .derive_priv_ecdsa_for_master_seed(seed, network)
-                    .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())?;
-                return Ok(Some(extended_private_key.private_key.secret_bytes()));
+                // SECURITY: `ExtendedPrivKey` is a `Copy` BIP-32 type from
+                // key_wallet with no `Drop`, so its inner SecretKey + ChainCode
+                // cannot be wiped by RAII here. Extract the key straight into a
+                // `Zeroizing` buffer and never bind the intermediate to a named
+                // local; the transient copy left on the stack is the
+                // unavoidable residue of a third-party `Copy` type.
+                let secret = Zeroizing::new(
+                    derivation_path
+                        .derive_priv_ecdsa_for_master_seed(seed, network)
+                        .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())?
+                        .private_key
+                        .secret_bytes(),
+                );
+                return Ok(Some(secret));
             }
         }
         Ok(None)
@@ -2969,7 +2979,7 @@ mod tests {
         )
         .expect("param")
         .expect("found");
-        assert_eq!(reference, param);
+        assert_eq!(reference, *param);
 
         // A non-matching seed hash yields None on the seed-param path too.
         let other_hash = [0xEE; 32];

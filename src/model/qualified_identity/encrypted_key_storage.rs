@@ -13,6 +13,12 @@ use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::{Arc, RwLock};
+use zeroize::Zeroizing;
+
+/// A resolved private key paired with its public-key metadata. The key bytes
+/// are held in [`Zeroizing`] so they are wiped when the resolver's result is
+/// dropped.
+pub type ResolvedPrivateKey = (QualifiedIdentityPublicKey, Zeroizing<[u8; 32]>);
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct WalletDerivationPath {
@@ -330,14 +336,15 @@ impl KeyStorage {
     pub fn get_resolve_local(
         &self,
         key: &(PrivateKeyTarget, KeyID),
-    ) -> Result<Option<(QualifiedIdentityPublicKey, [u8; 32])>, String> {
+    ) -> Result<Option<ResolvedPrivateKey>, String> {
         self.private_keys
             .get(key)
             .map(
                 |(qualified_identity_public_key_data, private_key_data)| match private_key_data {
-                    PrivateKeyData::AlwaysClear(clear) | PrivateKeyData::Clear(clear) => {
-                        Ok((qualified_identity_public_key_data.clone(), *clear))
-                    }
+                    PrivateKeyData::AlwaysClear(clear) | PrivateKeyData::Clear(clear) => Ok((
+                        qualified_identity_public_key_data.clone(),
+                        Zeroizing::new(*clear),
+                    )),
                     PrivateKeyData::Encrypted(_) => {
                         Err("Key is encrypted, please enter password".to_string())
                     }
@@ -381,7 +388,7 @@ impl KeyStorage {
         wallets: &[Arc<RwLock<Wallet>>],
         seed: &[u8; 64],
         network: Network,
-    ) -> Result<Option<(QualifiedIdentityPublicKey, [u8; 32])>, String> {
+    ) -> Result<Option<ResolvedPrivateKey>, String> {
         match self.private_keys.get(key) {
             None => Ok(None),
             Some((

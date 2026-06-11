@@ -159,7 +159,7 @@ pub async fn derive_contact_payment_address(
 
     // Generate ECDH shared key for decryption
     use super::encryption::generate_ecdh_shared_key;
-    let shared_key = generate_ecdh_shared_key(&our_private_key, contact_key)
+    let shared_key = generate_ecdh_shared_key(&our_private_key[..], contact_key)
         .map_err(|e| format!("Failed to generate shared key: {}", e))?;
 
     // Decrypt the extended public key

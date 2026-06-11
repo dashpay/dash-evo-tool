@@ -167,7 +167,7 @@ pub async fn generate_auto_accept_proof(
     // Derive the auto-accept key using DIP-0015 path: m/9'/coin'/16'/timestamp'
     // Using expiration timestamp as the derivation index
     let auto_accept_xprv = derive_auto_accept_key(
-        &wallet_seed,
+        &wallet_seed[..],
         network,
         expires_at as u32, // Truncate to u32 for derivation
     )
@@ -304,7 +304,7 @@ pub async fn verify_auto_accept_proof(
         .map_err(|e| format!("Error resolving private key: {}", e))?
         .map(|(_, private_key)| private_key)
         .ok_or("Private key not found")?;
-    let xprv = derive_auto_accept_key(&wallet_seed, our_identity.network, key_index)
+    let xprv = derive_auto_accept_key(&wallet_seed[..], our_identity.network, key_index)
         .map_err(|e| format!("Failed to derive auto-accept key: {}", e))?;
     let pubkey = dash_sdk::dpp::dashcore::secp256k1::PublicKey::from_secret_key(
         &secp,

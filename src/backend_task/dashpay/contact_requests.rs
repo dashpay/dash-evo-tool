@@ -311,7 +311,9 @@ pub async fn send_contact_request_with_proof(
     // byte material plus the account reference. The seed determines where the
     // contact's payments land, so it must be the same HD seed the receive-side
     // address derivation uses.
-    let seed_hash = first_associated_wallet_seed_hash(&identity)?;
+    let seed_hash = identity
+        .dashpay_wallet_seed_hash()
+        .ok_or(TaskError::ContactWalletSeedUnavailable)?;
     let owner_id = identity.identity.id();
     let contact_material = app_context
         .wallet_backend()?
@@ -518,22 +520,6 @@ pub async fn send_contact_request_with_proof(
     Ok(BackendTaskSuccessResult::DashPayContactRequestSent(
         to_username_or_id.to_string(),
     ))
-}
-
-/// Return the [`WalletSeedHash`] of the first wallet associated with
-/// `identity`. The seed itself is never read here — it is decrypted
-/// just-in-time through the JIT chokepoint keyed by this hash, so the raw
-/// seed never enters this layer. Errors with
-/// [`TaskError::ContactWalletSeedUnavailable`] when no wallet is associated.
-fn first_associated_wallet_seed_hash(
-    identity: &QualifiedIdentity,
-) -> Result<crate::model::wallet::WalletSeedHash, TaskError> {
-    identity
-        .associated_wallets
-        .keys()
-        .next()
-        .copied()
-        .ok_or(TaskError::ContactWalletSeedUnavailable)
 }
 
 async fn resolve_username_to_identity(

@@ -1140,6 +1140,23 @@ mod tests {
         (ctx, sender)
     }
 
+    /// Process-global serialization lock for tests that tear a wallet backend
+    /// down and immediately rebuild it over the *same* on-disk path. The
+    /// upstream persister enforces a single open per `platform-wallet.sqlite`
+    /// (`WalletStorageError::AlreadyOpen`); a bootstrap subtask spawned by
+    /// `ensure_wallet_backend` may keep its `Arc<WalletBackend>` — and that
+    /// open's advisory lock — alive a beat past `stop_spv`, so under parallel
+    /// scheduling the reopen can lose the race. Serializing these reopen tests
+    /// removes the scheduler pressure so the lingering subtask drops the old
+    /// handle before the reopen. Mirrors `support::data_dir_lock` in the
+    /// kittest suite. Held across awaits, hence a `tokio::sync::Mutex`.
+    async fn backend_reopen_lock() -> tokio::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+        LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+            .lock()
+            .await
+    }
+
     /// Before the wallet seam is wired, `start_spv()` must fail fast with the
     /// typed `WalletBackendNotYetWired` rather than silently swallowing the
     /// request. This is the gate the speculative pre-wire callers were tripping.
@@ -1298,6 +1315,10 @@ mod tests {
     async fn reconnect_after_stop_rebuilds_fresh_backend_and_restarts() {
         use crate::context::connection_status::OverallConnectionState;
 
+        // Serialize this reopen-same-path test against any sibling that races on
+        // the upstream single-open advisory lock; see `backend_reopen_lock`.
+        let _reopen_guard = backend_reopen_lock().await;
+
         let (ctx, sender, _tmp) = offline_testnet_context();
 
         ctx.ensure_wallet_backend_and_start_spv(sender.clone())
@@ -1305,12 +1326,17 @@ mod tests {
             .expect("initial start should wire then start offline");
         let first = ctx.wallet_backend().expect("backend wired after start");
         assert!(first.is_started(), "initial start must latch the backend");
-        // Capture the old backend's identity, then release the strong ref before
-        // reconnecting. The upstream persister enforces a single open per path
-        // (WalletStorageError::AlreadyOpen); a lingering `first` would keep the
-        // old handle alive and the reconnect's open of the same path would be
-        // refused. The fresh-backend identity check below uses the raw pointer.
+        // Capture the old backend's identity (raw pointer) and a weak handle,
+        // then release the strong ref before reconnecting. The upstream
+        // persister enforces a single open per path
+        // (WalletStorageError::AlreadyOpen); a lingering strong ref — `first`
+        // here, or a clone held by the upstream run-loop subtask — keeps the old
+        // handle's advisory lock alive, so the reconnect's open of the same path
+        // would be refused. The fresh-backend identity check below uses the raw
+        // pointer; the weak handle lets us prove the old backend is fully torn
+        // down before reopening.
         let first_ptr = Arc::as_ptr(&first);
+        let first_weak = Arc::downgrade(&first);
         drop(first);
 
         ctx.stop_spv().await;
@@ -1323,6 +1349,20 @@ mod tests {
             OverallConnectionState::Disconnected,
             "precondition: disconnected before reconnect"
         );
+
+        // Deterministically wait for the last strong ref to drop: `stop_spv`
+        // awaits the backend's own shutdown, but a background subtask (the
+        // upstream run loop) may briefly outlive that await still holding a
+        // backend clone, and with it the SQLite advisory lock. Block the reopen
+        // until that clone is gone so the reconnect never races into AlreadyOpen.
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        while first_weak.strong_count() > 0 {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "old backend was not torn down within the timeout; a subtask still holds it"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
 
         ctx.ensure_wallet_backend_and_start_spv(sender)
             .await

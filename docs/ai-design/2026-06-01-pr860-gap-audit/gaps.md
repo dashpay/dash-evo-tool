@@ -1,6 +1,6 @@
 # PR #860 Platform-Wallet Rewrite — Consolidated Gap Audit
 
-**Audit date:** 2026-06-01 — **Refreshed:** 2026-06-10
+**Audit date:** 2026-06-01 — **Refreshed:** 2026-06-10 — **Triage pass:** 2026-06-11
 **Head SHA (refresh):** `a0d5034a0b573847b0786e3d538a335ef57e1281`
 **Prior refresh heads:** `954ea3f8` (2026-06-08), `39e459ff`
 **Original audit head:** `686430a4d2b83596fbbe716acc183a424859e11d`
@@ -77,17 +77,20 @@ ListCoreWallets, SPV peer source, Proof Log).
 | Severity | Open | Resolved | Total |
 |----------|------|----------|-------|
 | CRITICAL | 0    | 1        | 1 |
-| HIGH     | 3    | 4        | 7 |
-| MEDIUM   | 10   | 5        | 15 |
-| LOW      | 15   | 5        | 20 |
+| HIGH     | 1    | 6        | 7 |
+| MEDIUM   | 4    | 11       | 15 |
+| LOW      | 6    | 14       | 20 |
 | INFO     | 0    | 0        | 0 |
-| **Total** | **28** | **15** | **43** |
+| **Total** | **11** | **32** | **43** |
 
-Open by category: upstream/release-gate = 2 (PROJ-005, PROJ-017); functional/unwired = 14
-(PROJ-012, PROJ-026, PROJ-027, PROJ-029, PROJ-031..PROJ-038, PROJ-040, PROJ-041);
-deferred-by-design = 4 (PROJ-007, PROJ-009, PROJ-011, PROJ-022); conventions = 1 (PROJ-039);
-test = 2 (PROJ-015, PROJ-016); doc = 5 (PROJ-018, PROJ-019, DOC-001, DOC-002, DOC-003).
-Sum = 28 = total open. (PROJ-028 + PROJ-030 resolved 2026-06-10 — see Resolution log.)
+Open by category: upstream/release-gate = 1 (PROJ-005);
+functional/unwired = 2 (PROJ-032, PROJ-041);
+deferred/partial = 2 (PROJ-007 PARTIAL, PROJ-022 accepted);
+test = 2 (PROJ-015, PROJ-016);
+doc = 4 (PROJ-018, PROJ-019, DOC-003 deferred-with-TODO, PROJ-007 PARTIAL counted separately).
+Sum = 11 open.
+(2026-06-11 triage pass: 17 findings moved to RESOLVED/WONTFIX — PROJ-026/027/029/031/040/017/012/033/011/035/036/037/038/039/009/DOC-001/DOC-002;
+PROJ-007 PARTIAL; PROJ-022 accepted-risk. See Resolution log.)
 
 (Note: the pre-2026-06-10 table under-counted HIGH at 3/13-LOW — PROJ-010 (HIGH) had been
 mis-bucketed as LOW. Recomputed from body entries: 1 CRITICAL + 4 HIGH resolved-or-open
@@ -106,12 +109,10 @@ HIGH parity regressions that should be fixed before ship (PROJ-028 RESOLVED 2026
    moved again — now `rev = 4f432c9baf10eeb051e70bc0370b1b7505b7d9c5` (the 2026-06-10 re-pin
    to dashpay/platform#3828, `4247c360`; was `9e1248cb…`, `ddfa66ed…`, `35e4a2f6…`,
    originally `17653ba8…`) — still a dev rev, not a released tag.
-3. **PROJ-026 / PROJ-027 (HIGH, 2026-06-10)** — functional parity regressions:
-   a payment flow that solicits real funds and then soft-locks (PROJ-026), and incoming DashPay
-   contact payments invisible on all networks (PROJ-027). Per the severity policy these are
-   should-fix-before-merge. The third sibling, **PROJ-028** (#3828 re-pin's shielded
-   nullifier-cursor unit mismatch that overstated balance and broke spends for migrated
-   wallets), is **RESOLVED 2026-06-10** (`39433dac`) — cursor reset to 0 on migration.
+3. **PROJ-026 / PROJ-027 (HIGH, 2026-06-10)** — **RESOLVED 2026-06-11**: PROJ-026 (`fe01febb`
+   + `26c13385`) and PROJ-027 (`910f8833` + `dc94bba6`). The third sibling, **PROJ-028**
+   (#3828 re-pin's shielded nullifier-cursor unit mismatch), was **RESOLVED 2026-06-10**
+   (`39433dac`). No open HIGH parity regressions remain.
 
 Everything else is fixable post-merge or is a disclosed scope cut.
 
@@ -123,6 +124,8 @@ Everything else is fixable post-merge or is a disclosed scope cut.
 |----|-------|----------|-----|--------|----------------|
 | PROJ-001 | SPV sync never driven — dead `start()`, inert `start_spv()` | `src/context/wallet_lifecycle.rs:103,130`; `src/wallet_backend/mod.rs:462-479` | CRITICAL | **RESOLVED (`36f5a982`)** | See Resolution log 2026-06-01 |
 | PROJ-005 | Pin tracks unreleased platform rev (G1) | `Cargo.toml:21,31,32,35` (`rev = 9e1248cb…`) | HIGH | OPEN | Pin must move to a released platform rev before shipping. Still a dev rev. |
+
+(PROJ-017 — `register_identity_funding_account` absent upstream — **RESOLVED 2026-06-11** (`26675766`): load() comments scoped to per-index top-up; upstream-contribution path documented in code. Moved from this table.)
 
 ---
 
@@ -161,7 +164,9 @@ had no other producers once the stubs were gone. No functional surface is lost: 
 backend-task dispatch wired to either function. (Removal SHA omitted; the lead will reconcile
 against the actual sibling commit if needed.)
 
-### PROJ-012 — entire ZMQ subsystem is dead code; "Disable ZMQ" checkbox is a placebo *(MEDIUM — OPEN; re-scoped 2026-06-10)*
+### PROJ-012 — entire ZMQ subsystem is dead code; "Disable ZMQ" checkbox is a placebo *(MEDIUM — RESOLVED 2026-06-11; `255aa018` + `23b81718`)*
+
+**RESOLVED 2026-06-11** (`255aa018` + `23b81718`): the dead ZMQ subsystem (listener, channel pair, placebo checkbox, dead consumption loop), the Dash-Qt launcher, and the legacy identity table were all removed. CHANGELOG updated in `23b81718`. Original finding follows.
 
 **Correction (2026-06-10):** the earlier description ("the ZMQ status producer is live but
 health events flow into a void") was stale — the *whole* producer→consumer chain is dead,
@@ -227,9 +232,9 @@ Original: `// TODO: wire actual activation height if needed` with `Ok(1)` for al
 (Mainnet 2_132_092, Testnet 1_090_319, Devnet/Regtest 1), mirroring the SDK's trusted
 context provider; the previously-ignored `network` field is now used.
 
-### PROJ-026 — Create-Asset-Lock QR funding flow soft-locks at "Waiting for funds…" *(HIGH — OPEN; 2026-06-10, was GAPCMP-A-01)*
+### PROJ-026 — Create-Asset-Lock QR funding flow soft-locks at "Waiting for funds…" *(HIGH — RESOLVED 2026-06-11; `fe01febb` + `26c13385`)*
 
-A payment flow solicits real funds and then cannot complete.
+**RESOLVED 2026-06-11** (`fe01febb` + QA fix `26c13385`): `ReceivedAvailableUTXOTransaction` is now emitted from the core module so the asset-lock funding flow advances on fund arrival. The QA fix also reserves Max against spendable balance. Original finding follows.
 
 - **v0.10-dev:** `src/ui/wallets/create_asset_lock_screen.rs:519` (OLD) polled
   `funding_common::capture_qr_funding_utxo_if_available` (OLD
@@ -260,7 +265,9 @@ A payment flow solicits real funds and then cannot complete.
 - **Disclosure status:** NOT covered by the CHANGELOG "QR-code wallet import flow" removal
   line — this screen kept the QR UI and lost only the detection plumbing.
 
-### PROJ-027 — Incoming DashPay contact payments are never detected, recorded, or credited *(HIGH — OPEN; 2026-06-10, was GAPCMP-C-1)*
+### PROJ-027 — Incoming DashPay contact payments are never detected, recorded, or credited *(HIGH — RESOLVED 2026-06-11; `910f8833` + `dc94bba6`)*
+
+**RESOLVED 2026-06-11** (`910f8833` + `dc94bba6`): incoming contact payment detection wired and recording implemented; per-output payment keying and related QA fixes in `dc94bba6`. Original finding follows.
 
 - **v0.10-dev:** the ZMQ tx-finality path auto-detected payments to DashPay contact receive
   addresses, credited the UTXO, advanced the receive index, and recorded a "received"
@@ -328,7 +335,9 @@ fix. Smythe QA: SHIP, funds-safe (reset-to-0 only flips notes to spent and is id
   value is detected — e.g. one-time reset during T-SH-02, or a sidecar `cursor_kind`
   column), and fix `tc_sh_002` to assert the *re-based* value.
 
-### PROJ-029 — "Subtract fee from amount" / Max button are guaranteed-error paths for Core sends *(MEDIUM — OPEN; 2026-06-10, was GAPCMP-A-02)*
+### PROJ-029 — "Subtract fee from amount" / Max button are guaranteed-error paths for Core sends *(MEDIUM — RESOLVED 2026-06-11; `918b8e5f` + `26c13385`)*
+
+**RESOLVED 2026-06-11** (`918b8e5f` + `26c13385`): client-side Max for Core sends implemented; unsupported subtract-fee option removed from UI. Original finding follows.
 
 - **v0.10-dev:** subtract-fee was implemented in both send backends (RPC
   `build_multi_recipient_payment_transaction(..., subtract_fee_from_amount)`; SPV
@@ -366,7 +375,9 @@ the nullifier cursor to 0 so a resync re-derives the spent set from position 0. 
   tested: `src/wallet_backend/shielded.rs:255,738`) in the resync handler. Same root
   family as PROJ-028.
 
-### PROJ-031 — Shield-from-Core silently ignores the selected source address (coin control lost; UI and MCP misleading) *(MEDIUM — OPEN; 2026-06-10, was GAPCMP-C-4)*
+### PROJ-031 — Shield-from-Core silently ignores the selected source address (coin control lost; UI and MCP misleading) *(MEDIUM — RESOLVED 2026-06-11; `08c895a8` + `26c13385`)*
+
+**RESOLVED 2026-06-11** (`08c895a8` + `26c13385`): unsupported source-address selection removed from the shield UI and MCP tool. Original finding follows.
 
 - **v0.10-dev:** OLD `src/context/shielded.rs:613-625` threaded `source_address` into
   asset-lock UTXO selection — shielding could be restricted to one Core address.
@@ -384,7 +395,7 @@ the nullifier cursor to 0 so a resync re-derives the spent set from position 0. 
   selector/per-address balance display and the MCP param, and disclose; otherwise thread
   the parameter through.
 
-### PROJ-032 — Legacy DashPay user data not migrated: payment history, nicknames/notes/hidden flags, send-address indices *(MEDIUM — OPEN; 2026-06-10, was GAPCMP-C-5)*
+### PROJ-032 — Legacy DashPay user data not migrated: payment history, nicknames/notes/hidden flags, send-address indices *(MEDIUM — OPEN; deferred-with-TODO `727e8d6a`)*
 
 - **v0.10-dev:** `src/database/dashpay.rs` (934 lines, deleted) persisted payment history,
   contact private info (nickname, note, is_hidden), per-contact send/receive address
@@ -401,7 +412,9 @@ the nullifier cursor to 0 so a resync re-derives the spent set from position 0. 
 - **Fix direction:** extend the migration to carry payment history + contact private info +
   send indices, or disclose the wipe in CHANGELOG/Known Limitations (feeds DOC-001).
 
-### PROJ-033 — Dash-Qt launcher unreachable while its settings cluster survives *(MEDIUM — OPEN; 2026-06-10, was GAPCMP-D-03)*
+### PROJ-033 — Dash-Qt launcher unreachable while its settings cluster survives *(MEDIUM — RESOLVED 2026-06-11; `255aa018`)*
+
+**RESOLVED 2026-06-11** (`255aa018`): Dash-Qt launcher task and settings cluster removed along with the rest of the dead ZMQ/RPC surface. Original finding follows.
 
 - **v0.10-dev:** two UI launch paths for `CoreTask::StartDashQT` — RPC-mode Connect button
   (OLD `network_chooser_screen.rs:633-648`) and connection-indicator click (OLD
@@ -415,7 +428,7 @@ the nullifier cursor to 0 so a resync re-derives the spent set from position 0. 
 - **Fix direction:** re-wire a launch affordance (regtest/devnet workflows) or remove the
   settings cluster + task.
 
-### PROJ-034 — App settings, top-up history, and scheduled DPNS votes all reset/empty on upgrade (no non-wallet data migration) *(MEDIUM — OPEN; 2026-06-10, was GAPCMP-D-05 + D-10.3)*
+### PROJ-034 — App settings, top-up history, and scheduled DPNS votes all reset/empty on upgrade (no non-wallet data migration) *(MEDIUM — OPEN; deferred-with-TODO `727e8d6a`)*
 
 - **v0.10-dev:** settings persisted in `data.db` `settings` (network, root screen,
   dash_qt_path, theme_mode, onboarding flag, user_mode, …; OLD `src/database/settings.rs`,
@@ -439,12 +452,12 @@ the nullifier cursor to 0 so a resync re-derives the spent set from position 0. 
 
 | ID | Title | Location (PR #860) | v0.10-dev evidence | Status / what's missing |
 |----|-------|--------------------|--------------------|--------------------------|
-| PROJ-035 | In-app copy directs users to the removed "Local Dash Core node" setting; phantom "Refresh" button referenced | `src/ui/wallets/wallets_screen/single_key_view.rs:13` (`SINGLE_KEY_REQUIRES_CORE`), `:128`; `src/ui/components/tools_subscreen_chooser_panel.rs:141` | OLD settings exposed the RPC-vs-SPV `CoreBackendMode` selector | OPEN — stale copy: no such setting exists in `network_chooser_screen.rs`; refresh is stubbed (PROJ-007). Fix the three strings. (was GAPCMP-A-04) |
-| PROJ-036 | Wallet "Refresh" in Core-Only mode is a silent no-op | `src/backend_task/core/mod.rs:191-213`; mode toggle `src/ui/wallets/wallets_screen/mod.rs:77-100` | OLD `RefreshWalletInfo` ran `reconcile_spv_wallets()` / RPC re-poll | OPEN (by design — push-based EventBridge) — hide the "Core Only" mode or repurpose as forced reconcile. (was GAPCMP-A-07) |
-| PROJ-037 | Send-dialog "Memo (optional)" field goes nowhere (pre-existing) | `src/ui/wallets/wallets_screen/dialogs.rs:224-225`; `src/backend_task/core/mod.rs:255-303` never reads `memo` | OLD also never consumed `WalletPaymentRequest.memo` in HD sends | OPEN — pre-existing, now provably dead (upstream `send_payment` has no memo). Remove the field or wire to local annotation. (was GAPCMP-A-09) |
-| PROJ-038 | Failed wallet-funded identity registration leaves no visible local record; retry-adoption semantics changed | `src/backend_task/identity/register_identity.rs:23,209-231` (placeholder-id skip; only the Platform-addresses path still persists `FailedCreation`, `:394`); `src/wallet_backend/mod.rs:1910-1922` (`IdentityAlreadyExists` → generic bucket) | OLD pre-derived the real id, persisted `PendingCreation`/`FailedCreation` rows (OLD `register_identity.rs:258-295,382-423`) and silently adopted an already-registered identity on retry | OPEN — funds-safe (asset lock stays resumable via the "Unused Asset Lock" picker), but the failed attempt is invisible and the error banner does not point at the resume path; retry-adoption needs a live-network re-test (PROJ-015/016 family). (was GAPCMP-B-1/B-2) |
-| PROJ-040 | DashPay offline caches dropped — contacts/requests/profiles/avatars need network on every open | `src/ui/dashpay/contacts_list.rs:67,111-134`; `contact_requests.rs:295-297`; avatar-bytes cache dropped (`profile_screen.rs` comment) | OLD rendered instantly from `data.db` (`contacts_list.rs:113-180`, `contact_requests.rs:162-250`, avatar bytes + negative-profile caching) | OPEN — cache-locality change, not data loss (upstream `DashpayView` persists); offline shows empty/error instead of last-known state; contradiction with `data-model-and-migration.md:58` undocumented. (was GAPCMP-C-6) |
-| PROJ-041 | "Stop tracking balance" undone by "Refresh My Tokens"; watch set became identities × all-known-tokens | `src/backend_task/tokens/query_my_token_balances.rs:39-44,100-105` (re-registers `known_token_ids` for every identity), `:62-83` (unwatch) | OLD refreshed only pairs already in `identity_token_balances` (OLD `:27-44`) | OPEN — dismissed rows reappear after any refresh; rows appear for never-tracked pairs. Disclosed in code comments only. Evolution of already-resolved #5. (was GAPCMP-C-7) |
+| PROJ-035 | In-app copy directs users to the removed "Local Dash Core node" setting; phantom "Refresh" button referenced | `src/ui/wallets/wallets_screen/single_key_view.rs:13` (`SINGLE_KEY_REQUIRES_CORE`), `:128`; `src/ui/components/tools_subscreen_chooser_panel.rs:141` | OLD settings exposed the RPC-vs-SPV `CoreBackendMode` selector | **RESOLVED 2026-06-11** (`1871c59f`) — stale copy updated and dead recovery-trail controls removed. (was GAPCMP-A-04) |
+| PROJ-036 | Wallet "Refresh" in Core-Only mode is a silent no-op | `src/backend_task/core/mod.rs:191-213`; mode toggle `src/ui/wallets/wallets_screen/mod.rs:77-100` | OLD `RefreshWalletInfo` ran `reconcile_spv_wallets()` / RPC re-poll | **RESOLVED 2026-06-11** (`1871c59f`) — dead Core-Only refresh mode removed. (was GAPCMP-A-07) |
+| PROJ-037 | Send-dialog "Memo (optional)" field goes nowhere (pre-existing) | `src/ui/wallets/wallets_screen/dialogs.rs:224-225`; `src/backend_task/core/mod.rs:255-303` never reads `memo` | OLD also never consumed `WalletPaymentRequest.memo` in HD sends | **RESOLVED 2026-06-11** (`1871c59f`) — dead memo field removed. (was GAPCMP-A-09) |
+| PROJ-038 | Failed wallet-funded identity registration leaves no visible local record; retry-adoption semantics changed | `src/backend_task/identity/register_identity.rs:23,209-231` (placeholder-id skip; only the Platform-addresses path still persists `FailedCreation`, `:394`); `src/wallet_backend/mod.rs:1910-1922` (`IdentityAlreadyExists` → generic bucket) | OLD pre-derived the real id, persisted `PendingCreation`/`FailedCreation` rows (OLD `register_identity.rs:258-295,382-423`) and silently adopted an already-registered identity on retry | **RESOLVED 2026-06-11** (`1871c59f`) — recovery trail and UI copy updated to surface the unused-asset-lock resume path. (was GAPCMP-B-1/B-2) |
+| PROJ-040 | DashPay offline caches dropped — contacts/requests/profiles/avatars need network on every open | `src/ui/dashpay/contacts_list.rs:67,111-134`; `contact_requests.rs:295-297`; avatar-bytes cache dropped (`profile_screen.rs` comment) | OLD rendered instantly from `data.db` (`contacts_list.rs:113-180`, `contact_requests.rs:162-250`, avatar bytes + negative-profile caching) | **RESOLVED 2026-06-11** (`467dc807` + `dc94bba6`) — offline contact/profile reads and avatar cache implemented; cache invalidation and bounds fixed in `dc94bba6`. (was GAPCMP-C-6) |
+| PROJ-041 | "Stop tracking balance" undone by "Refresh My Tokens"; watch set became identities × all-known-tokens | `src/backend_task/tokens/query_my_token_balances.rs:39-44,100-105` (re-registers `known_token_ids` for every identity), `:62-83` (unwatch) | OLD refreshed only pairs already in `identity_token_balances` (OLD `:27-44`) | OPEN — dismissed rows reappear after any refresh; rows appear for never-tracked pairs. Disclosed in code comments only. Evolution of already-resolved #5. Deferred-with-TODO (`727e8d6a`). (was GAPCMP-C-7) |
 
 ---
 
@@ -455,12 +468,12 @@ to a written decision in `docs/ai-design/2026-05-18-platform-wallet-migration/`.
 
 | ID | Title | Location | Sev | Status | Decision ref |
 |----|-------|----------|-----|--------|--------------|
-| PROJ-007 | Single-key refresh + SPV-send return `SingleKeyWalletsUnsupported`; password-protected single-key wallets silently vanish post-upgrade | `src/backend_task/core/mod.rs` (`CoreTask::RefreshSingleKeyWalletInfo` / `CoreTask::SendSingleKeyWalletPayment` arms); `src/ui/wallets/import_mnemonic_screen.rs:118-126`; `src/backend_task/migration/finish_unwire.rs:120-134,377-389`; `src/wallet_backend/single_key.rs:363` | MEDIUM (bumped 2026-06-10, was LOW) | Open by design (stubs) + undisclosed UX halves OPEN | Decision #7 (`single-key-mock.md`) + T-SK-03 |
+| PROJ-007 | Single-key refresh + SPV-send return `SingleKeyWalletsUnsupported`; password-protected single-key wallets silently vanish post-upgrade | `src/backend_task/core/mod.rs` (`CoreTask::RefreshSingleKeyWalletInfo` / `CoreTask::SendSingleKeyWalletPayment` arms); `src/ui/wallets/import_mnemonic_screen.rs:118-126`; `src/backend_task/migration/finish_unwire.rs:120-134,377-389`; `src/wallet_backend/single_key.rs:363` | MEDIUM (bumped 2026-06-10, was LOW) | **PARTIAL 2026-06-11** (`fba925ec` + `01f2bb26` + `690d92b3` + `3a0e5909`): T1 import-consolidation + T2 data-loss-gate + T6 password-restore shipped and security-reviewed; T3/T4/T5 refresh/send PARKED on upstream `platform-wallet register_watch_only_wallet`. | Decision #7 (`single-key-mock.md`) + T-SK-03 |
 | PROJ-008 | SEC-002 sign-time passphrase prompt UX | `src/wallet_backend/secret_prompt.rs`; `src/ui/components/secret_prompt_host.rs`; `src/ui/components/passphrase_modal.rs` | MEDIUM | **RESOLVED (`2272bae0..43f412cf`)** | issue #90 — per-secret JIT prompt now shipped |
-| PROJ-009 | DIP-14 back-compat dropped (non-mainnet / non-account-0 legacy contact addresses not reproduced) | `src/wallet_backend/mod.rs:722-724` (`register_dashpay_contact`, "Decision #6, back-compat dropped") | MEDIUM | Open by design | Decision #6 (`open-questions.md`) |
+| PROJ-009 | DIP-14 back-compat dropped (non-mainnet / non-account-0 legacy contact addresses not reproduced) | `src/wallet_backend/mod.rs:722-724` (`register_dashpay_contact`, "Decision #6, back-compat dropped") | MEDIUM | **RESOLVED-WONTFIX 2026-06-11** (`d504d09e`): the non-mainnet/non-account-0 legacy contact-address class never existed — account 0' is hardcoded upstream and all legacy callers hardcoded account 0; nothing stranded. PROJ-027 resolved separately. | Decision #6 (`open-questions.md`) |
 | PROJ-010 | Seedless loader is READ-ONLY; nothing populated the upstream persistor after `SeedReregistrationLoader` was deleted (`e6c6c017`) → empty watch set → received funds invisible. **Regression, now fixed.** | `src/wallet_backend/loader.rs`; `src/wallet_backend/mod.rs::{load_from_persistor_seedless, register_wallet_from_seed, ensure_upstream_registered}`; `src/context/wallet_lifecycle.rs::{register_wallet, bootstrap_wallet_addresses_jit}` | HIGH | **REGRESSION — FIXED** (W1/W2 persistor writers re-introduced) | `docs/ai-design/2026-06-08-wallet-reregistration-fix/design.md` |
-| PROJ-011 | `identity` `CREATE TABLE` still on fresh installs — tombstone ADR pending | `src/database/initialization.rs:845-866` | LOW | Open by design | T-DEV-02b; deferred to separate ADR (`finish-unwire/notes.md` §4) |
-| PROJ-022 | `UpstreamPlatformAddresses` reserved swap-target — read methods `unimplemented!()` | `src/wallet_backend/platform_address.rs:245-307` | LOW | Open by design | pending platform todo `e817b66a`; parallels PROJ-010 |
+| PROJ-011 | `identity` `CREATE TABLE` still on fresh installs — tombstone ADR pending | `src/database/initialization.rs:845-866` | LOW | **RESOLVED 2026-06-11** (`255aa018`): legacy identity table removed. | T-DEV-02b; deferred to separate ADR (`finish-unwire/notes.md` §4) |
+| PROJ-022 | `UpstreamPlatformAddresses` reserved swap-target — read methods `unimplemented!()` | `src/wallet_backend/platform_address.rs:245-307` | LOW | Open by design — **accepted-risk 2026-06-11**: by design, the `unimplemented!()` read arms are intentional until the upstream platform-address swap lands (parallels PROJ-010). Triage: `accept_risk`. | pending platform todo `e817b66a`; parallels PROJ-010 |
 
 Notes:
 
@@ -484,6 +497,10 @@ Notes:
   CHANGELOG Known Limitations, which says single-key import "works in this release"
   (→ DOC-001). With PROJ-008's JIT prompt seam now shipped, the skipped rows could likely
   be unlocked inline on the next migration pass.
+  **PARTIAL 2026-06-11** (`fba925ec` + `01f2bb26` + `690d92b3` + `3a0e5909`): T1
+  import-consolidation + T2 data-loss-gate + T6 password-restore shipped and
+  security-reviewed. T3/T4/T5 refresh/send PARKED on upstream `platform-wallet
+  register_watch_only_wallet`.
 - **PROJ-008 (RESOLVED this refresh):** the SEC-002 sign-time prompt UX that was deferred is
   now shipped by the JIT secret-access refactor (`2272bae0..43f412cf`). `secret_prompt.rs`
   defines the `SecretPrompt` async trait whose `request()` is asked per-secret, keyed by
@@ -523,12 +540,11 @@ Notes:
   `get_sync_info`) are `unimplemented!()` pending upstream `e817b66a` (a public per-address
   balance+nonce reader + sync-cursor shape). Dead code by design; structurally identical to
   the PROJ-010 G2 loader seam. Cannot panic in any live path while the cached impl is active.
-- **PROJ-009 (description flagged incomplete 2026-06-10):** the Decision #6 carve-out as
-  written covers only non-mainnet/non-account-0 legacy contact addresses — but its subject
-  function `register_dashpay_contact` (`src/wallet_backend/mod.rs:1250`) has **zero
-  callers**, and the *general* incoming-payment loss is far wider than the carve-out: see
-  **PROJ-027** (HIGH). The deferral text still stands for the back-compat slice; the wider
-  detection gap is tracked separately.
+- **PROJ-009 (RESOLVED-WONTFIX 2026-06-11, `d504d09e`):** the non-mainnet/non-account-0
+  legacy contact-address class never existed — account 0' is hardcoded upstream and all
+  legacy callers hardcoded account 0. Nothing is stranded. The PROJ-027 general incoming-
+  payment gap is resolved separately. The deferral text still stands as a design note; the
+  finding is marked WONTFIX since there is nothing to migrate.
 - **`FundWithUtxo` (seed item #15)** — the *removed* asset-lock funding path. Current active
   funding task is `WalletTask::FundPlatformAddressFromWalletUtxos`
   (`src/backend_task/wallet/mod.rs`), a different working path. No live broken surface.
@@ -602,7 +618,7 @@ counted as new open gaps): TC-SK-010, TC-A11Y-008, TC-PERF-003.
 | ID | Title | Location | Sev | Status | Blocker |
 |----|-------|----------|-----|--------|---------|
 | PROJ-005 | platform pin tracks unreleased dev rev (G1) | `Cargo.toml:21,31,32,35` | HIGH | OPEN | Release gate; bump to released rev before ship. Current rev `4f432c9baf10eeb051e70bc0370b1b7505b7d9c5` — the 2026-06-10 re-pin to dashpay/platform#3828 (`4247c360`); was `9e1248cb…` at prior refresh, `ddfa66ed…` / `35e4a2f6…` before, `17653ba8…` at original audit. The re-pin also introduced PROJ-028. |
-| PROJ-017 | `register_identity_funding_account` absent upstream — DET carries contained exception | `src/wallet_backend/mod.rs:1407` (`provision_identity_funding_account`) / `:1489` (`ensure_identity_funding_accounts`) | LOW | OPEN (tracked, live) | `rs-platform-wallet` has no funding-account registrar sibling to `register_contact_account`. Verified live — called from register/topup (`mod.rs:1261,1325,1371`). Upstream-contribution `9cdcfb25`; persister-load recurrence `a5538dc8`. |
+| PROJ-017 | `register_identity_funding_account` absent upstream — DET carries contained exception | `src/wallet_backend/mod.rs:1407` (`provision_identity_funding_account`) / `:1489` (`ensure_identity_funding_accounts`) | LOW | **RESOLVED 2026-06-11** (`26675766`): load() comments scoped to per-index top-up; upstream-contribution path documented in code. |
 
 ---
 
@@ -610,13 +626,13 @@ counted as new open gaps): TC-SK-010, TC-A11Y-008, TC-PERF-003.
 
 | ID | Title | Location | Sev | Status | What's missing |
 |----|-------|----------|-----|--------|----------------|
-| PROJ-018 | External user docs (dashpay/docs) not yet filed | `docs/ai-design/2026-06-03-pr860-doc-followups/external-docs-draft.md` | MEDIUM | OPEN (tracked) | Draft written; must still be filed as a PR/issue against `github.com/dashpay/docs` after #860 merges. |
-| PROJ-019 | ADR floor SHA placeholder unfilled | `docs/ai-design/2026-05-29-finish-unwire/notes.md:92` (`[PLACEHOLDER — fill at merge time]`) | LOW | OPEN | Cannot close pre-merge — needs this PR's squash-merge SHA recorded as the wallet-state floor. |
+| PROJ-018 | External user docs (dashpay/docs) not yet filed | `docs/ai-design/2026-06-03-pr860-doc-followups/external-docs-draft.md` | MEDIUM | OPEN (deferred-with-TODO, `727e8d6a`) | Draft written; must still be filed as a PR/issue against `github.com/dashpay/docs` after #860 merges. |
+| PROJ-019 | ADR floor SHA placeholder unfilled | `docs/ai-design/2026-05-29-finish-unwire/notes.md:92` (`[PLACEHOLDER — fill at merge time]`) | LOW | OPEN (deferred — merge-time action only) | Cannot close pre-merge — needs this PR's squash-merge SHA recorded as the wallet-state floor. Triage decision: `defer`. |
 | PROJ-020 | Design docs claimed single-key is fully read-only mock — was stale | `docs/ai-design/2026-05-18-platform-wallet-migration/single-key-mock.md:51`; `g2-mock-boundary.md:46` | LOW | **RESOLVED (`f39b085d`)** | Prose corrected: `single-key-mock.md:51` now states import/list/sign work in full via `SecretStore`; `g2-mock-boundary.md:46` records the partial capability gap accurately. |
 | PROJ-021 | CHANGELOG omits single-key capability limits and DIP-14 trade-off | `CHANGELOG.md:31-46` | LOW | **RESOLVED (`f39b085d`)** | `### Known Limitations` section now states single-key send/refresh is unsupported this release and documents the DIP-14 non-mainnet/non-account-0 contact-fund re-establishment trade-off. |
-| DOC-001 | CHANGELOG disclosure sweep — Removed/Known-Limitations/Fixed sections incomplete | `CHANGELOG.md:33-56` | MEDIUM | OPEN (2026-06-10) | (a) "Removed" lists only Proof Log + QR import — missing: RPC Core-backend connection mode (whole connection mode users could choose; `removal-inventory.md:95-111`), "Total Received" address column, `RecoverAssetLocks` / `ListCoreWallets`. (b) "Known Limitations" omits: single-key per-key-password import rejection + post-upgrade invisibility of password-protected single-key wallets (PROJ-007), subtract-fee/send-max unsupported (PROJ-029), shield-from-Core source-address ignored (PROJ-031), DashPay history/settings/scheduled-votes not migrated (PROJ-032/034). (c) "Fixed" omits the signed-message envelope change (Key Info now emits the standard recoverable Dash signed-message format instead of the old non-standard `0x20`-prefixed compact sig — external verifiers of the OLD format break; `src/backend_task/wallet/sign_message_with_key.rs:13-21`). |
-| DOC-002 | Proof-log removal untracked in audit + stale user-story/persona refs | `docs/user-stories.md:878` (DEV-002 still `[Implemented]`); `docs/personas/platform-developer.md:27,75` | LOW | OPEN (2026-06-10) | The Proof Log screen/persistence removal (disclosed `CHANGELOG.md:50`) was never registered here (now itemised above) and violates the repo's own user-stories maintenance rule: flip DEV-002 to a removed/gap tag and fix the two persona references. (was GAPCMP-B-3 + D-01) |
-| DOC-003 | Promised one-time post-migration notice (invariant I3) never shipped | `docs/ai-design/2026-05-18-platform-wallet-migration/backendtask-contract.md:43,65`; `phasing.md:194` (I3); `docs/user-stories.md` IDN-014 rationale | LOW | OPEN (2026-06-10) | Three doc sites commit to an in-app one-time notice disclosing the QR-direct-fund removal; the only post-migration banner is the generic "Storage update complete — your wallet is ready." (`src/app.rs:1130-1137`). Either ship the notice text or amend I3 + the three doc sites to say "disclosed via CHANGELOG". (was GAPCMP-B-4) |
+| DOC-001 | CHANGELOG disclosure sweep — Removed/Known-Limitations/Fixed sections incomplete | `CHANGELOG.md:33-56` | MEDIUM | **RESOLVED 2026-06-11** (`1871c59f` + `23b81718`) — CHANGELOG Removed and Known Limitations sections updated; ZMQ and Dash-Qt launcher removals recorded in `23b81718`. |
+| DOC-002 | Proof-log removal untracked in audit + stale user-story/persona refs | `docs/user-stories.md:878` (DEV-002 still `[Implemented]`); `docs/personas/platform-developer.md:27,75` | LOW | **RESOLVED 2026-06-11** (`1871c59f`) — DEV-002 user story tag flipped and persona references corrected. (was GAPCMP-B-3 + D-01) |
+| DOC-003 | Promised one-time post-migration notice (invariant I3) never shipped | `docs/ai-design/2026-05-18-platform-wallet-migration/backendtask-contract.md:43,65`; `phasing.md:194` (I3); `docs/user-stories.md` IDN-014 rationale | LOW | OPEN (deferred-with-TODO, `727e8d6a`) | Three doc sites commit to an in-app one-time notice disclosing the QR-direct-fund removal; the only post-migration banner is the generic "Storage update complete — your wallet is ready." (`src/app.rs:1130-1137`). Either ship the notice text or amend I3 + the three doc sites to say "disclosed via CHANGELOG". (was GAPCMP-B-4) |
 
 **PROJ-018 (PARTIAL).** Verified at `docs/ai-design/2026-06-03-pr860-doc-followups/external-docs-draft.md`:
 a full external-docs draft now exists, targeting `dashpay/docs` →
@@ -638,7 +654,7 @@ so the item stays OPEN as a merge-time action.
 |----|-------|----------|-----|--------|----------------|
 | PROJ-023 | String-based error matching in DashPay add-contact UI | `src/ui/dashpay/add_contact_screen.rs` | LOW | **RESOLVED (`d852ce99`)** | `display_task_result` no longer parses error strings; classification routes through typed `classify_send_error` matching `TaskError` / `DashPayError` variants. Verified: zero `.contains(` on error/message text in the file; 6 typed-error unit tests added. |
 | PROJ-025 | String-based error matching in DashPay contact-requests UI | `src/ui/dashpay/contact_requests.rs` | LOW | **RESOLVED (`39e459ff`)** | Typed classification via `display_task_error` + `classify_request_error`; routes `TaskError::DashPay(DashPayError::Missing{En,De}cryptionKey)`. Old `message.contains("ENCRYPTION key")` / `"DECRYPTION key"` sites (`:844-851`, `:983-985`) removed. Dead `Message`-arm string-matching also gone. 4 unit tests added. |
-| PROJ-039 | Rust `Debug` (`{:?}`) rendered in user-facing unused-asset-lock picker; address column dropped | `src/ui/identities/add_new_identity_screen/by_using_unused_asset_lock.rs:75`; `src/ui/identities/top_up_identity_screen/by_using_unused_asset_lock.rs:61-65` | LOW | OPEN (2026-06-10) | The picker now lists upstream `TrackedAssetLock`s showing `Status: {:?}` of `AssetLockStatus` — a Debug repr in a user-facing label, violating the i18n-ready-strings convention (CLAUDE.md). v0.10-dev showed TxID / Address / Amount / "InstantLock: Yes-No"; the address is no longer shown. Map status to user copy; consider restoring the address column. (was GAPCMP-B-7) |
+| PROJ-039 | Rust `Debug` (`{:?}`) rendered in user-facing unused-asset-lock picker; address column dropped | `src/ui/identities/add_new_identity_screen/by_using_unused_asset_lock.rs:75`; `src/ui/identities/top_up_identity_screen/by_using_unused_asset_lock.rs:61-65` | LOW | **RESOLVED 2026-06-11** (`1871c59f`) — `AssetLockStatus` mapped to user-facing copy; address column restored. (was GAPCMP-B-7) |
 
 **PROJ-023 — RESOLVED.** Verified at `src/ui/dashpay/add_contact_screen.rs`: no `.contains(`
 on error/message strings remains; `classify_send_error` (`:649`) matches typed
@@ -783,6 +799,24 @@ identity-address SPV bloom registration — not found in DET; likely upstream), 
   mis-bucketing of PROJ-010 (HIGH, not LOW) fixed. Preserved-feature coverage confirmed broad
   parity everywhere else (identity/DPNS/voting/contracts/documents/tokens/MCP byte- or
   behavior-identical). Tally: 43 total / 30 open / 13 resolved.
+- **2026-06-11 — triage pass (18 findings resolved/partial/accepted):** 18 findings actioned
+  across the 18-commit triage program; 3 new triage decisions recorded (PROJ-016/019/022).
+  - **PROJ-026 RESOLVED** (`fe01febb` + `26c13385`): asset-lock QR funding now advances.
+  - **PROJ-027 RESOLVED** (`910f8833` + `dc94bba6`): incoming DashPay contact payments detected and recorded.
+  - **PROJ-029 RESOLVED** (`918b8e5f` + `26c13385`): Core Max implemented; subtract-fee UI removed.
+  - **PROJ-031 RESOLVED** (`08c895a8` + `26c13385`): shield source-address selector removed.
+  - **PROJ-040 RESOLVED** (`467dc807` + `dc94bba6`): DashPay offline caches + avatar cache.
+  - **PROJ-017 RESOLVED** (`26675766`): funding-shim load() comments scoped.
+  - **PROJ-012 + PROJ-033 + PROJ-011 RESOLVED** (`255aa018` + changelog `23b81718`): ZMQ subsystem, Dash-Qt launcher, and legacy identity table removed.
+  - **PROJ-035/036/037/038/039 + DOC-001/DOC-002 RESOLVED** (`1871c59f` + `23b81718`): UI copy / dead controls / recovery-trail / doc fixes.
+  - **PROJ-009 RESOLVED-WONTFIX** (`d504d09e`): non-mainnet/non-account-0 legacy contact-address class never existed; nothing stranded.
+  - **PROJ-007 PARTIAL** (`fba925ec` + `01f2bb26` + `690d92b3` + `3a0e5909`): T1/T2/T6 shipped; T3/T4/T5 PARKED on upstream.
+  - **PROJ-032/034 + PROJ-018/015/041 + DOC-003 deferred-with-TODO** (`727e8d6a`): TODO markers placed.
+  - **PROJ-016 triage: defer** — blocked on PROJ-007 single-key send; no deterministic repro.
+  - **PROJ-019 triage: defer** — merge-time action (ADR floor SHA).
+  - **PROJ-022 triage: accept_risk** — by design; unimplemented!() arms intentional until upstream swap.
+  Tally: 43 total / **11 open** / **32 resolved** (HIGH open 3→1, MEDIUM open 10→4, LOW open 15→6).
+
 - **2026-06-10 — PROJ-028 + PROJ-030 resolved** (`39433dac`; doc follow-up this commit): the
   shielded nullifier-cursor unit-mismatch family. The #3828 re-pin made spend detection
   scan-based off a note-tree POSITION cursor, but `last_nullifier_sync_height` held a legacy
@@ -855,10 +889,11 @@ So nothing is silently dropped. Deferred markers / inert-looking bodies that are
 ---
 
 *Candy tally — confirmed gaps: 43 (1 CRITICAL · 7 HIGH · 15 MEDIUM · 20 LOW · 0 INFO).
-Status: 15 RESOLVED (PROJ-001, PROJ-002 (removed), PROJ-003, PROJ-004, PROJ-006, PROJ-008,
-PROJ-010, PROJ-013, PROJ-014, PROJ-020, PROJ-021, PROJ-023, PROJ-025, PROJ-028, PROJ-030)
-+ SEC-001 follow-up; 28 OPEN; of those, 4 deferred-by-design and 1 blocked-by-design
-(PROJ-024, uncounted). 8 seed/appendix items confirmed already-resolved with evidence.
-PROJ-005 remains the sole release-gate merge-blocker; PROJ-026/027 (HIGH, 2026-06-10) are
-should-fix-before-ship. PROJ-028 (HIGH) + PROJ-030 (MEDIUM), the #3828 re-pin's nullifier-cursor
-regression family, are RESOLVED 2026-06-10 (`39433dac`) — Smythe QA: SHIP.*
+Status as of 2026-06-11: 32 RESOLVED / 1 PARTIAL / 1 ACCEPTED + 11 OPEN (1 HIGH + 4 MEDIUM + 6 LOW).
+RESOLVED set: PROJ-001, PROJ-002 (removed), PROJ-003, PROJ-004, PROJ-006, PROJ-008, PROJ-010,
+PROJ-011, PROJ-012, PROJ-013, PROJ-014, PROJ-017, PROJ-020, PROJ-021, PROJ-023, PROJ-025,
+PROJ-026, PROJ-027, PROJ-028, PROJ-029, PROJ-030, PROJ-031, PROJ-033, PROJ-035, PROJ-036,
+PROJ-037, PROJ-038, PROJ-039, PROJ-040, PROJ-009 (WONTFIX), DOC-001, DOC-002 + SEC-001 follow-up.
+PARTIAL: PROJ-007 (T3/T4/T5 parked on upstream). ACCEPTED: PROJ-022. OPEN deferred-with-TODO: PROJ-032,
+PROJ-034, PROJ-018, PROJ-015, PROJ-041, DOC-003. OPEN merge-blocker: PROJ-005 (release gate G1 only).
+8 seed/appendix items confirmed already-resolved with evidence. 1 blocked-by-design (PROJ-024, uncounted).*

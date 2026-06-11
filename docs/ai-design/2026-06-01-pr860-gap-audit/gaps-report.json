@@ -9,12 +9,12 @@
     "overall_assessment": "PR #860 platform-wallet rewrite holds broad feature parity with v0.10-dev, but the 2026-06-10 full-surface parity pass surfaced 3 HIGH functional regressions (asset-lock QR funding soft-lock, incoming DashPay payment detection gone, and a shielded nullifier-cursor unit-mismatch regression introduced by the same-day #3828 re-pin; the last is RESOLVED 2026-06-10 in 39433dac), 7 new MEDIUM gaps, and 9 new LOW gaps on top of the 11 previously-open audit items. No funds-loss path was found: every broken path fails closed. PROJ-005 (unreleased platform pin) remains the sole release-gate merge-blocker; PROJ-026/027 are should-fix-before-ship; PROJ-028 (HIGH) and its sibling PROJ-030 (MEDIUM) are RESOLVED 2026-06-10 (39433dac, Smythe QA: SHIP)."
   },
   "summary_statistics": {
-    "total_findings": 28,
+    "total_findings": 43,
     "severity_counts": {
       "CRITICAL": 0,
-      "HIGH": 3,
-      "MEDIUM": 10,
-      "LOW": 15,
+      "HIGH": 1,
+      "MEDIUM": 4,
+      "LOW": 6,
       "INFO": 0
     }
   },
@@ -348,12 +348,14 @@
       {
         "finding_id": "PROJ-027",
         "action": "fix",
-        "rationale": "delegate fully upstream, we don't store local history other than trough platform-wallet"
+        "rationale": "delegate fully upstream, we don't store local history other than trough platform-wallet",
+        "ticket": "910f8833 dc94bba6"
       },
       {
         "finding_id": "PROJ-026",
         "action": "fix",
-        "rationale": ""
+        "rationale": "RESOLVED 2026-06-11: ReceivedAvailableUTXOTransaction wired; QA Max reserve fix in 26c13385",
+        "ticket": "fe01febb 26c13385"
       },
       {
         "finding_id": "PROJ-005",
@@ -363,82 +365,98 @@
       {
         "finding_id": "PROJ-031",
         "action": "fix",
-        "rationale": "wire with upstream or ask for decision if wiring is not possible"
+        "rationale": "wire with upstream or ask for decision if wiring is not possible",
+        "ticket": "08c895a8 26c13385"
       },
       {
         "finding_id": "PROJ-029",
         "action": "fix",
-        "rationale": "This should be implemented, check also https://github.com/dashpay/platform/pull/3554 , if not - let me know."
+        "rationale": "This should be implemented, check also https://github.com/dashpay/platform/pull/3554 , if not - let me know.",
+        "ticket": "918b8e5f 26c13385"
       },
       {
         "finding_id": "PROJ-007",
         "action": "fix",
-        "rationale": "We want to add support for single keys."
+        "rationale": "PARTIAL 2026-06-11: T1 import-consolidation + T2 data-loss-gate + T6 password-restore shipped; T3/T4/T5 refresh/send PARKED on upstream platform-wallet register_watch_only_wallet",
+        "ticket": "fba925ec 01f2bb26 690d92b3 3a0e5909"
       },
       {
         "finding_id": "PROJ-012",
         "action": "fix",
-        "rationale": "remove zmq"
+        "rationale": "remove zmq",
+        "ticket": "255aa018 23b81718"
       },
       {
         "finding_id": "PROJ-009",
         "action": "fix",
-        "rationale": "if platform-wallet supports it, wire it up, otherwise document add TODO."
+        "rationale": "RESOLVED-WONTFIX 2026-06-11: the non-mainnet/non-account-0 legacy contact-address class never existed (account 0 hardcoded upstream); nothing stranded. PROJ-027 resolved separately.",
+        "ticket": "d504d09e"
       },
       {
         "finding_id": "DOC-001",
         "action": "fix",
-        "rationale": ""
+        "rationale": "RESOLVED 2026-06-11: CHANGELOG Removed and Known Limitations sections updated",
+        "ticket": "1871c59f 23b81718"
       },
       {
         "finding_id": "PROJ-033",
         "action": "fix",
-        "rationale": "remove"
+        "rationale": "remove",
+        "ticket": "255aa018"
       },
       {
         "finding_id": "PROJ-038",
         "action": "fix",
-        "rationale": ""
+        "rationale": "RESOLVED 2026-06-11: recovery trail and stale copy updated",
+        "ticket": "1871c59f"
       },
       {
         "finding_id": "PROJ-035",
         "action": "fix",
-        "rationale": ""
+        "rationale": "RESOLVED 2026-06-11: stale copy and dead recovery-trail controls removed",
+        "ticket": "1871c59f"
       },
       {
         "finding_id": "PROJ-040",
         "action": "fix",
-        "rationale": ""
+        "rationale": "RESOLVED 2026-06-11: offline contact/profile reads and avatar cache implemented",
+        "ticket": "467dc807 dc94bba6"
       },
       {
         "finding_id": "PROJ-017",
         "action": "fix",
-        "rationale": "use upstream"
+        "rationale": "use upstream",
+        "ticket": "26675766"
       },
       {
         "finding_id": "PROJ-036",
         "action": "fix",
-        "rationale": "prefer forced reconcile, if not possible - hide"
+        "rationale": "RESOLVED 2026-06-11: dead Core-Only refresh mode removed",
+        "ticket": "1871c59f"
       },
       {
         "finding_id": "PROJ-039",
         "action": "fix",
-        "rationale": "Map AssetLockStatus to user-facing copy"
+        "rationale": "RESOLVED 2026-06-11: AssetLockStatus mapped to user-facing copy",
+        "ticket": "1871c59f"
       },
       {
         "finding_id": "DOC-002",
         "action": "fix",
-        "rationale": ""
+        "rationale": "RESOLVED 2026-06-11: DEV-002 user story tag flipped and persona references corrected",
+        "ticket": "1871c59f"
       },
       {
         "finding_id": "PROJ-011",
         "action": "fix",
-        "rationale": "Drop legacy database code, we'll handle migrations separately"
+        "rationale": "Drop legacy database code, we'll handle migrations separately",
+        "ticket": "255aa018"
       },
       {
         "finding_id": "PROJ-037",
         "action": "fix",
-        "rationale": ""
+        "rationale": "RESOLVED 2026-06-11: dead memo field removed",
+        "ticket": "1871c59f"
       },
       {
         "finding_id": "PROJ-032",
@@ -469,6 +487,21 @@
         "finding_id": "DOC-003",
         "action": "defer",
         "rationale": ""
+      },
+      {
+        "finding_id": "PROJ-016",
+        "action": "defer",
+        "rationale": "Blocked on PROJ-007 single-key send (parked on upstream); TC-066 has no deterministic repro in tree. Re-test once single-key send lands."
+      },
+      {
+        "finding_id": "PROJ-019",
+        "action": "defer",
+        "rationale": "Merge-time action: the ADR wallet-state floor SHA (notes.md:92 placeholder) can only be filled with this PR's squash-merge SHA. Cannot close pre-merge."
+      },
+      {
+        "finding_id": "PROJ-022",
+        "action": "accept_risk",
+        "rationale": "By design: UpstreamPlatformAddresses is a reserved swap-target seam; the unimplemented!() read arms are intentional until the upstream platform-address swap lands (parallels PROJ-010)."
       }
     ]
   }

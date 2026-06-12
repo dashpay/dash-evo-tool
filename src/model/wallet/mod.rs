@@ -775,6 +775,14 @@ impl Wallet {
     /// same borrow. Derivation paths, the per-network coin-type, and the keys
     /// are identical to the prior parked-seed path — only the seed *source*
     /// changes (parameter vs `self`).
+    // TODO(cleanup): the BIP-44 part seeds external indices 0..32 (30, 31 sit
+    // outside the SPV-watched window of 30) into the legacy display maps. No
+    // funds-safety hand-out reads these anymore — the Receive list now reads the
+    // watched snapshot set. Kept because the address-table, account-summary, and
+    // send-autocomplete display readers still iterate `known_addresses` /
+    // `watched_addresses` and need per-address derivation paths the snapshot does
+    // not yet carry. Remove `bootstrap_bip44_addresses` + `BOOTSTRAP_BIP44_*`
+    // once those readers source BIP-44 rows from a path-aware snapshot.
     pub fn bootstrap_known_addresses(&mut self, seed: &[u8; 64], app_context: &AppContext) {
         let network = app_context.network;
 
@@ -1644,16 +1652,18 @@ impl Wallet {
     ///
     /// NOT funds-safe for user-facing receiving: with `skip = true` it walks the
     /// index past the upstream gap-limit window, so the returned address may be
-    /// outside the SPV-watched pool. The Receive flow no longer uses this — it
-    /// routes through `WalletBackend::next_receive_address` (upstream watched
-    /// pool). Remaining callers derive *funding* addresses for identity / asset-
-    /// lock creation, not user receive addresses.
+    /// outside the SPV-watched pool. No production hand-out/funding path uses it
+    /// anymore — Receive and asset-lock funding route through
+    /// `WalletBackend::next_receive_address` (upstream watched pool). The only
+    /// remaining caller is the `get_receive_address` backend-e2e test helper.
     ///
-    // TODO(funds-safety): migrate the identity-creation funding
-    // (`backend_task/identity`) and asset-lock funding (`create_asset_lock_screen`)
-    // callers onto the upstream watched pool, then delete this method and
-    // `unused_bip_44_public_key`. Those funding addresses must also be SPV-watched
-    // for the funded outputs to be seen.
+    // TODO(cleanup): migrate the `get_receive_address` e2e helper onto
+    // `WalletBackend::next_receive_address`, then delete this method and
+    // `unused_bip_44_public_key`. Deferred from the funds-safety work: removing
+    // it now also requires migrating the address-table / account-summary /
+    // send-autocomplete display readers off `known_addresses`/`watched_addresses`
+    // (they need per-address derivation paths the lock-free snapshot does not yet
+    // carry), so it is a larger refactor than the funds-safety fix.
     pub fn receive_address(
         &mut self,
         network: Network,
@@ -1673,6 +1683,11 @@ impl Wallet {
         ))
     }
 
+    // TODO(cleanup): no production caller remains (platform top-up change now
+    // routes through `generate_platform_receive_address_with_seed`). Kept only
+    // for the `platform_change_address_must_be_a_watched_platform_payment_address`
+    // regression. Delete together with `receive_address` /
+    // `unused_bip_44_public_key`.
     pub fn change_address(
         &mut self,
         network: Network,

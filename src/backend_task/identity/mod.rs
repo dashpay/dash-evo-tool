@@ -642,7 +642,10 @@ pub(crate) fn get_receive_address(
     wallet
         .receive_address(app_context.network, false, Some(app_context))
         .map(|addr| addr.to_string())
-        .map_err(|e| TaskError::WalletAddressDerivationFailed { detail: e })
+        .map_err(|detail| {
+            tracing::warn!(error = %detail, "receive-address derivation failed");
+            TaskError::WalletAddressDerivationFailed
+        })
 }
 
 impl AppContext {

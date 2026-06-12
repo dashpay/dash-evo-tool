@@ -1110,9 +1110,10 @@ pub enum TaskError {
     )]
     WalletKeyLookupFailed,
 
-    /// A new receive or change address could not be derived from the wallet.
+    /// A wallet address or identity-auth key could not be derived. The upstream
+    /// detail (a legacy `String`) is logged at the call site, never stored here.
     #[error("Could not generate a wallet address. Please check your wallet and retry.")]
-    WalletAddressDerivationFailed { detail: String },
+    WalletAddressDerivationFailed,
 
     /// A new Platform (DIP-17/18) receive address could not be derived or
     /// registered. The underlying detail is logged, never shown to the user.

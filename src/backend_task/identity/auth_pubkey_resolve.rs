@@ -74,7 +74,10 @@ impl AppContext {
                         identity_index,
                         key_index,
                     )
-                    .map_err(|e| TaskError::WalletAddressDerivationFailed { detail: e })?;
+                    .map_err(|detail| {
+                        tracing::warn!(error = %detail, "identity-auth key derivation failed");
+                        TaskError::WalletAddressDerivationFailed
+                    })?;
 
                 let mut cache = cache;
                 if cache.insert(network, identity_index, key_index, &public_key) {
@@ -119,7 +122,10 @@ impl AppContext {
                     identity_index,
                     key_index_range,
                 )
-                .map_err(|e| TaskError::WalletAddressDerivationFailed { detail: e })?
+                .map_err(|detail| {
+                    tracing::warn!(error = %detail, "identity-auth key map derivation failed");
+                    TaskError::WalletAddressDerivationFailed
+                })?
         };
 
         if misses.is_empty() {
@@ -144,7 +150,10 @@ impl AppContext {
                             identity_index,
                             &misses,
                         )
-                        .map_err(|e| TaskError::WalletAddressDerivationFailed { detail: e })?
+                        .map_err(|detail| {
+                            tracing::warn!(error = %detail, "identity-auth key map derivation failed");
+                            TaskError::WalletAddressDerivationFailed
+                        })?
                 };
                 public_key_map.extend(miss_key_map);
                 public_key_hash_map.extend(miss_hash_map);

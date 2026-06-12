@@ -3550,4 +3550,58 @@ mod tests {
             "the watched-pool address is funds-safe; the legacy-derived address is not"
         );
     }
+
+    /// FUNDS-SAFETY (H2): the change address for a Platform top-up funded from
+    /// wallet UTXOs must be a watched DIP-17 platform-payment address — the set
+    /// `WalletAddressProvider` syncs balances for. The legacy `change_address`
+    /// derives a BIP-44 *internal* (change) Core address and converts it to a
+    /// `PlatformAddress`; that address is NOT in the platform-payment pool, so
+    /// its change credits are never synced — invisible and unspendable.
+    ///
+    /// Pins: the platform-payment derivation IS in the provider pool, the BIP-44
+    /// change derivation is NOT. RED on the legacy change path, GREEN once the
+    /// change is a platform-payment address.
+    #[test]
+    fn platform_change_address_must_be_a_watched_platform_payment_address() {
+        let seed = TEST_SEED;
+        let network = Network::Testnet;
+
+        // The watched Platform set: the provider's DIP-17 platform-payment pool.
+        let provider = WalletAddressProvider::new(&test_wallet(), network, &seed)
+            .expect("platform address provider");
+        let watched: std::collections::BTreeSet<PlatformAddress> = (0..DEFAULT_GAP_LIMIT)
+            .map(|i| {
+                provider
+                    .derive_address_at_index(i)
+                    .expect("derive platform address")
+                    .0
+            })
+            .collect();
+
+        // The fixed path: a registered platform-payment address is watched.
+        let mut wallet = test_wallet();
+        let platform_core_addr = wallet
+            .generate_platform_receive_address_with_seed(&seed, network, None)
+            .expect("platform receive address");
+        let platform_change =
+            PlatformAddress::try_from(platform_core_addr).expect("platform address conversion");
+        assert!(
+            watched.contains(&platform_change),
+            "a platform-payment change address must be in the watched provider pool"
+        );
+
+        // The legacy path: a BIP-44 change address is NOT a watched platform
+        // address — this is the bug. `change_address` (internal branch) gives a
+        // Core address whose PlatformAddress is outside the provider pool.
+        let mut wallet2 = test_wallet();
+        let bip44_change = wallet2
+            .change_address(network, None)
+            .expect("bip44 change address");
+        let bip44_change_platform =
+            PlatformAddress::try_from(bip44_change).expect("platform address conversion");
+        assert!(
+            !watched.contains(&bip44_change_platform),
+            "the BIP-44 change address must NOT be a watched platform address (the bug being fixed)"
+        );
+    }
 }

@@ -85,54 +85,25 @@ impl AppContext {
             )
             .await?;
 
-        // Derive a fresh BIP-44 change address (only when fees are NOT
-        // deducted from the output — it absorbs the fee-estimate surplus).
-        let (wallet, sdk, change_platform_address) = {
-            let wallet_arc = {
-                let wallets = self.wallets.read()?;
-                wallets
-                    .get(&seed_hash)
-                    .cloned()
-                    .ok_or(TaskError::WalletNotFound)?
-            };
-            let change_platform_address = if !fee_deduct_from_output {
-                let mut wallet_w = wallet_arc.write()?;
-                let addr = wallet_w
-                    .change_address(self.network, Some(self))
-                    .map_err(|e| TaskError::WalletAddressDerivationFailed { detail: e })?;
-                Some(PlatformAddress::try_from(addr).map_err(|e| {
-                    TaskError::AddressConversionFailed {
-                        source: Box::new(e),
-                    }
-                })?)
-            } else {
-                None
-            };
-            let wallet = wallet_arc.read()?.clone();
-            let sdk = self.sdk.load().as_ref().clone();
-            (wallet, sdk, change_platform_address)
+        let wallet_arc = {
+            let wallets = self.wallets.read()?;
+            wallets
+                .get(&seed_hash)
+                .cloned()
+                .ok_or(TaskError::WalletNotFound)?
         };
+        let sdk = self.sdk.load().as_ref().clone();
 
-        let (outputs, fee_strategy) = if fee_deduct_from_output {
-            let mut outputs: FundingOutputs = BTreeMap::new();
-            outputs.insert(destination, None);
-            (outputs, vec![AddressFundsFeeStrategyStep::ReduceOutput(0)])
-        } else {
-            let change_address =
-                change_platform_address.ok_or(TaskError::ChangeAddressUnavailable {
-                    reason: "no change address was derived for platform funding",
-                })?;
-            build_fee_from_wallet_outputs(amount, destination, change_address)?
-        };
-
-        // Sign each funded-output witness through a JIT platform signer that
-        // borrows the HD seed only for the duration of the top-up. The pure
-        // path index is built before the secret scope; the asset-lock private
-        // key was already produced by the upstream wallet above. The seed
-        // zeroizes when the closure returns.
+        // Derive the change address, build the outputs, and sign — all inside
+        // one held-seed scope so the operation prompts at most once and the
+        // seed zeroizes on return. The change must be a watched DIP-17
+        // platform-payment address (so its credits are synced and spendable),
+        // not a BIP-44 change address — hence it is derived and registered via
+        // the platform-payment path, then the signer index is rebuilt to cover
+        // it.
         use crate::wallet_backend::{DetPlatformSigner, PlatformPathIndex};
         let network = self.network;
-        let path_index = PlatformPathIndex::from_wallet(&wallet, network);
+        let ctx = Arc::clone(self);
         backend
             .secret_access()
             .with_secret_session(
@@ -140,6 +111,34 @@ impl AppContext {
                 async |session| {
                     let plaintext = session.plaintext();
                     let seed = plaintext.expose_hd_seed().ok_or(TaskError::WalletLocked)?;
+
+                    let (outputs, fee_strategy) =
+                        if fee_deduct_from_output {
+                            let mut outputs: FundingOutputs = BTreeMap::new();
+                            outputs.insert(destination, None);
+                            (outputs, vec![AddressFundsFeeStrategyStep::ReduceOutput(0)])
+                        } else {
+                            let change_core_addr = {
+                                let mut wallet_w = wallet_arc.write()?;
+                                wallet_w
+                                    .generate_platform_receive_address_with_seed(
+                                        seed,
+                                        network,
+                                        Some(&ctx),
+                                    )
+                                    .map_err(|_| TaskError::WalletPlatformReceiveAddressFailed)?
+                            };
+                            let change_address = PlatformAddress::try_from(change_core_addr)
+                                .map_err(|e| TaskError::AddressConversionFailed {
+                                    source: Box::new(e),
+                                })?;
+                            build_fee_from_wallet_outputs(amount, destination, change_address)?
+                        };
+
+                    let path_index = {
+                        let wallet = wallet_arc.read()?;
+                        PlatformPathIndex::from_wallet(&wallet, network)
+                    };
                     let signer = DetPlatformSigner::from_held(seed, network, &path_index);
                     outputs
                         .top_up(

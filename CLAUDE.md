@@ -118,6 +118,40 @@ User-facing error messages (shown in `MessageBanner` via `Display`) must follow 
 - **Error type**: `McpToolError` enum (InvalidParam, WalletNotFound, SpvSyncFailed, TaskFailed, Internal) converts to `rmcp::ErrorData` via `From`.
 - **Docs**: `docs/MCP.md` (server config, tool reference), `docs/CLI.md` (usage, examples), `docs/MCP_TOOL_DEVELOPMENT.md` (checklist for adding new MCP tools).
 
+### Smoke-testing changes with det-cli
+
+`det-cli` in standalone (stdio, lazy-init) mode is a fast, no-funds, no-GUI smoke test for the **MCP-tool layer + context wiring**. Run these after changes that touch MCP tools (`src/mcp/`), `AppContext` construction, or the wallet-backend boot path — they catch compile/API drift and context-init regressions before any live-network testing.
+
+Build:
+
+```bash
+cargo build --bin det-cli --features cli
+```
+
+Then, with `MCP_API_KEY` unset (or empty — the default `.env` ships it empty, which means standalone), run the read-only checks. Point `DASH_EVO_DATA_DIR` at a throwaway dir to avoid touching real user data or contending with a running GUI / `det-cli serve` instance:
+
+```bash
+DET=$(mktemp -d) && cp .env.example "$DET/.env"
+BIN=target/debug/det-cli   # or "$CARGO_TARGET_DIR/debug/det-cli" if that env var is set
+run() { env -u MCP_API_KEY DASH_EVO_DATA_DIR="$DET" RUST_LOG=off "$BIN" "$@"; }
+
+run network-info                       # active network as JSON — no SPV sync (network-exempt)
+run tools                              # discovers all tools via tools/list
+run tool-describe name=network_info    # full schema for one tool (meta tool, network-exempt)
+run core-wallets-list                  # exercises in-process MCP -> tool -> AppContext -> DB; returns {"wallets":[]}
+```
+
+What each verifies:
+
+- **`network-info`** — binary starts, lazy-inits `AppContext` (creates `.env`/DB/secret store), reports the active network. No SPV gate, so it's a pure context-wiring check.
+- **`tools`** — the in-process MCP server is up and the dynamic `tools/list` discovery path works (catches a tool that fails to register in `tool_router()`).
+- **`tool-describe name=...`** — the meta tool returns a tool's JSON schema; confirms tool metadata serializes cleanly.
+- **`core-wallets-list`** — drives the full dispatch chain (MCP service → tool invoke → `AppContext` → SQLite) without funds; skips the SPV gate.
+
+`--help`, `<cmd> --help`, and `completion <shell>` work from the on-disk tool cache without any context init.
+
+**Not smoke tests** (need a synced chain / live DAPI — they wait on the SPV gate, up to a 10-min timeout): all fund-moving and balance/withdrawal tools — `core-balances-get`, `core-funds-send`, `platform-addresses-list`, `platform-withdrawals-get`, every `identity-*` and `shielded-*` tool. Don't force these in a no-network smoke run.
+
 ### Key Dependencies
 
 - `dash-sdk` - Dash blockchain SDK (git dep from dashpay/platform)

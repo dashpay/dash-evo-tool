@@ -38,6 +38,20 @@ impl ContextHolder {
             Self::Standalone(swap) => swap.store(Some(ctx)),
         }
     }
+
+    /// Whether this holder needs lazy initialization before the first load.
+    /// Only standalone (stdio/CLI) contexts start empty; shared (HTTP) contexts
+    /// are pre-populated by the GUI. A `match` stays correct whether or not the
+    /// `mcp` feature compiles in the `Shared` variant — unlike an `if let`, which
+    /// becomes an irrefutable pattern in a `cli`-only build.
+    #[cfg(feature = "cli")]
+    fn needs_lazy_init(&self) -> bool {
+        match self {
+            #[cfg(feature = "mcp")]
+            Self::Shared(_) => false,
+            Self::Standalone(_) => true,
+        }
+    }
 }
 
 /// MCP service backed by the app's context.
@@ -89,7 +103,7 @@ impl DashMcpService {
     /// In stdio/CLI mode, initializes on first call, then loads.
     pub(crate) async fn ctx(&self) -> Result<Arc<AppContext>, McpError> {
         #[cfg(feature = "cli")]
-        if let ContextHolder::Standalone(_) = &self.ctx {
+        if self.ctx.needs_lazy_init() {
             let ctx_holder = self.ctx.clone();
             self.init_guard
                 .get_or_try_init(|| async {

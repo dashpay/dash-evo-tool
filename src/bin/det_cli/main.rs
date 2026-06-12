@@ -134,8 +134,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 async fn run(cli: Cli) -> Result<(), String> {
+    // An empty/whitespace bearer means "no key": the default .env ships
+    // `MCP_API_KEY=` (empty), which dotenvy sets as an empty string, so clap's
+    // env binding yields `Some("")`. Treat that exactly like an unset key —
+    // matching the HTTP server, which also disables auth on an empty key.
+    let bearer = cli
+        .bearer
+        .as_deref()
+        .map(str::trim)
+        .filter(|b| !b.is_empty());
+
     // Mode selection: --standalone or no bearer -> stdio; bearer present -> HTTP.
-    let use_stdio = cli.standalone || cli.bearer.is_none();
+    let use_stdio = cli.standalone || bearer.is_none();
 
     let client: McpClient = if use_stdio {
         connect::connect_in_process()
@@ -143,7 +153,7 @@ async fn run(cli: Cli) -> Result<(), String> {
             .map_err(|e| e.to_string())?
     } else {
         let addr = resolve_addr(cli.addr);
-        connect::connect_http(&addr, cli.bearer.as_deref())
+        connect::connect_http(&addr, bearer)
             .await
             .map_err(|e| e.to_string())?
     };

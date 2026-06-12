@@ -395,21 +395,14 @@ impl BackendTestContext {
                 tracing::info!("Framework wallet spendable: {} duffs", balance);
             }
             Err(e) => {
-                let (confirmed, total, address) = {
-                    let snap = app_context.snapshot_balance(&framework_wallet_hash);
-                    let wallets = app_context.wallets().read().expect("wallets lock");
-                    let addr = wallets
-                        .get(&framework_wallet_hash)
-                        .and_then(|w| {
-                            w.write()
-                                .expect("wallet lock")
-                                .receive_address(Network::Testnet, false, Some(&app_context))
-                                .ok()
-                                .map(|a| a.to_string())
-                        })
-                        .unwrap_or_else(|| "<unknown>".to_string());
-                    (snap.confirmed, snap.total, addr)
-                };
+                let snap = app_context.snapshot_balance(&framework_wallet_hash);
+                let address = app_context
+                    .wallet_backend()
+                    .expect("wallet backend wired")
+                    .next_receive_address(&framework_wallet_hash)
+                    .await
+                    .unwrap_or_else(|_| "<unknown>".to_string());
+                let (confirmed, total) = (snap.confirmed, snap.total);
                 panic!(
                     "Framework wallet has no spendable balance: {} \
                      (confirmed: {}, total: {})\n  \
@@ -499,13 +492,13 @@ impl BackendTestContext {
         tokio::time::sleep(Duration::from_millis(200)).await;
         tracing::trace!(seed_hash = ?&seed_hash[..4], "create_funded_test_wallet: waited for bloom filter rebuild tick");
 
-        // Get test wallet's receive address
-        let test_address = {
-            let mut w = wallet_arc.write().expect("wallet lock");
-            w.receive_address(Network::Testnet, false, Some(app_context))
-                .expect("Failed to get test wallet receive address")
-                .to_string()
-        };
+        // Get test wallet's receive address from the SPV-watched upstream pool.
+        let test_address = app_context
+            .wallet_backend()
+            .expect("wallet backend wired")
+            .next_receive_address(&seed_hash)
+            .await
+            .expect("Failed to get test wallet receive address");
         tracing::trace!(address = %test_address, "create_funded_test_wallet: receive address derived");
 
         let framework_wallet_arc = {

@@ -28,7 +28,7 @@ use connection_status::ConnectionStatus;
 use dash_sdk::Sdk;
 use dash_sdk::dapi_client::AddressList;
 use dash_sdk::dashcore_rpc::{Auth, Client};
-use dash_sdk::dpp::dashcore::{Address, Network};
+use dash_sdk::dpp::dashcore::Network;
 #[cfg(any(test, feature = "testing"))]
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::state_transition::StateTransitionSigningOptions;
@@ -617,30 +617,6 @@ impl AppContext {
             ),
         )
         .map_err(|e| TaskError::CoreRpc { source: e })
-    }
-
-    /// Ensure an address is tracked for incoming funds.
-    ///
-    /// No-op: chain sync is SPV-only and owned by upstream `platform-wallet`,
-    /// which watches the BIP44 account derived from the wallet seed. There is
-    /// no Dash Core node to import addresses into.
-    pub fn ensure_address_imported(
-        &self,
-        _address: &Address,
-        _core_wallet_name: Option<&str>,
-        _label: Option<&str>,
-    ) -> Result<(), TaskError> {
-        Ok(())
-    }
-
-    /// Best-effort address registration. No-op for the same reason as
-    /// [`Self::ensure_address_imported`].
-    pub fn try_import_address(
-        &self,
-        _address: &Address,
-        _core_wallet_name: Option<&str>,
-        _label: Option<&str>,
-    ) {
     }
 
     /// Convert an RPC error to `TaskError`, enriching connection failures with

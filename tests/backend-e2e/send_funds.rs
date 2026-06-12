@@ -22,7 +22,7 @@ async fn test_send_and_receive_funds() {
 
     // Send 2,000,000 duffs from A to B
     let send_amount: u64 = 2_000_000;
-    let b_address = get_receive_address(app_context, &wallet_b);
+    let b_address = get_receive_address(app_context, &wallet_b).await;
 
     // Ensure wallet A has spendable balance before sending
     wait_for_spendable_balance(
@@ -87,7 +87,7 @@ async fn test_send_and_receive_funds() {
     .expect("Wallet B funds should become spendable");
 
     // Send funds back from B to A
-    let a_address = get_receive_address(app_context, &wallet_a);
+    let a_address = get_receive_address(app_context, &wallet_a).await;
 
     // B holds initial_b_balance + send_amount, so it can send back the full
     // send_amount and still cover the network fee from its surplus.

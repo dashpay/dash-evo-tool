@@ -5,7 +5,6 @@ use dash_evo_tool::backend_task::identity::{
 };
 use dash_evo_tool::context::AppContext;
 use dash_evo_tool::model::wallet::{Wallet, WalletSeedHash};
-use dash_sdk::dpp::dashcore::Network;
 use std::sync::{Arc, RwLock};
 
 /// Asset lock amount in duffs for the e2e registration fixture. Platform
@@ -42,11 +41,18 @@ pub async fn build_identity_registration(
     reg_info
 }
 
-/// Get a receive address string from a wallet.
-pub fn get_receive_address(app_context: &AppContext, wallet_arc: &Arc<RwLock<Wallet>>) -> String {
-    let mut wallet = wallet_arc.write().expect("wallet lock");
-    wallet
-        .receive_address(Network::Testnet, false, Some(app_context))
+/// Get a receive address string from a wallet, via the SPV-watched upstream
+/// pool (the production path). Routes through the wallet backend so the address
+/// is always watched.
+pub async fn get_receive_address(
+    app_context: &AppContext,
+    wallet_arc: &Arc<RwLock<Wallet>>,
+) -> String {
+    let seed_hash = wallet_arc.read().expect("wallet lock").seed_hash();
+    app_context
+        .wallet_backend()
+        .expect("wallet backend wired")
+        .next_receive_address(&seed_hash)
+        .await
         .expect("Failed to get receive address")
-        .to_string()
 }

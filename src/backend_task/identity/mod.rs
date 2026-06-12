@@ -632,22 +632,6 @@ pub async fn build_identity_registration(
         .await
 }
 
-/// Get a receive address string from a wallet.
-#[allow(dead_code)] // Used by backend-e2e tests via pub(crate) visibility
-pub(crate) fn get_receive_address(
-    app_context: &AppContext,
-    wallet_arc: &Arc<RwLock<Wallet>>,
-) -> Result<String, TaskError> {
-    let mut wallet = wallet_arc.write()?;
-    wallet
-        .receive_address(app_context.network, false, Some(app_context))
-        .map(|addr| addr.to_string())
-        .map_err(|detail| {
-            tracing::warn!(error = %detail, "receive-address derivation failed");
-            TaskError::WalletAddressDerivationFailed
-        })
-}
-
 impl AppContext {
     fn verify_voting_key_exists_on_identity(
         &self,

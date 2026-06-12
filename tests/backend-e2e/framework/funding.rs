@@ -65,7 +65,7 @@ const MIN_BALANCE_DUFFS: u64 = 1_000_000_000; // 10 DASH
 /// If the balance is below the threshold, panics with the receive address
 /// and instructions for the user to fund it manually.
 pub async fn verify_framework_funded(app_context: &Arc<AppContext>, wallet_hash: WalletSeedHash) {
-    let (current_balance, address) = get_wallet_balance_and_address(app_context, wallet_hash);
+    let (current_balance, address) = get_wallet_balance_and_address(app_context, wallet_hash).await;
 
     if current_balance >= MIN_BALANCE_DUFFS {
         tracing::info!(
@@ -83,26 +83,18 @@ pub async fn verify_framework_funded(app_context: &Arc<AppContext>, wallet_hash:
     );
 }
 
-/// Get the wallet's current total balance and receive address.
-fn get_wallet_balance_and_address(
+/// Get the wallet's current total balance and a SPV-watched receive address.
+async fn get_wallet_balance_and_address(
     app_context: &Arc<AppContext>,
     wallet_hash: WalletSeedHash,
 ) -> (u64, String) {
-    let wallets = app_context.wallets().read().expect("wallets lock");
-    let wallet_arc = wallets
-        .get(&wallet_hash)
-        .expect("framework wallet must exist");
-
     let balance = app_context.snapshot_balance(&wallet_hash).total;
-    let mut wallet = wallet_arc.write().expect("wallet lock");
-    let address = wallet
-        .receive_address(
-            dash_sdk::dpp::dashcore::Network::Testnet,
-            false,
-            Some(app_context),
-        )
-        .expect("Failed to get receive address")
-        .to_string();
+    let address = app_context
+        .wallet_backend()
+        .expect("wallet backend wired")
+        .next_receive_address(&wallet_hash)
+        .await
+        .expect("Failed to get receive address");
     (balance, address)
 }
 

@@ -29,7 +29,7 @@ async fn test_spv_transactions_is_ours_flag() {
     let (hash_b, wallet_b) = ctx.create_funded_test_wallet(1_000_000).await;
 
     let send_amount: u64 = 500_000;
-    let b_address = get_receive_address(app_context, &wallet_b);
+    let b_address = get_receive_address(app_context, &wallet_b).await;
 
     // Capture B's balance BEFORE sending, so we know the exact target to
     // wait for. Reading this after the send risks including the send amount

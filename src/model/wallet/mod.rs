@@ -775,14 +775,16 @@ impl Wallet {
     /// same borrow. Derivation paths, the per-network coin-type, and the keys
     /// are identical to the prior parked-seed path — only the seed *source*
     /// changes (parameter vs `self`).
-    // TODO(cleanup): the BIP-44 part seeds external indices 0..32 (30, 31 sit
-    // outside the SPV-watched window of 30) into the legacy display maps. No
-    // funds-safety hand-out reads these anymore — the Receive list now reads the
-    // watched snapshot set. Kept because the address-table, account-summary, and
-    // send-autocomplete display readers still iterate `known_addresses` /
-    // `watched_addresses` and need per-address derivation paths the snapshot does
-    // not yet carry. Remove `bootstrap_bip44_addresses` + `BOOTSTRAP_BIP44_*`
-    // once those readers source BIP-44 rows from a path-aware snapshot.
+    // TODO(cleanup): seeds the `known_addresses`/`watched_addresses` display
+    // maps. No funds-safety path reads these — the Receive list reads the
+    // watched snapshot set. Kept because six readers still iterate the maps and
+    // need per-address derivation paths the snapshot does not yet carry: the
+    // address-table, account-summary, and send-autocomplete display views; the
+    // `system_tab_sections` view; the signing-critical identity-key resolver
+    // (`qualified_identity_public_key`); and the bootstrap gate
+    // (`wallet_lifecycle`). Remove the bootstrap + maps + DB rehydrate
+    // (`database/wallet.rs`) once those readers — especially the identity-key
+    // resolver — source paths from a path-aware snapshot.
     pub fn bootstrap_known_addresses(&mut self, seed: &[u8; 64], app_context: &AppContext) {
         let network = app_context.network;
 
@@ -935,100 +937,6 @@ impl Wallet {
                     .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())
             })
             .transpose()
-    }
-
-    pub fn unused_bip_44_public_key(
-        &mut self,
-        network: Network,
-        skip_known_addresses_with_no_funds: bool,
-        change: bool,
-        register: Option<&AppContext>,
-    ) -> Result<(PublicKey, DerivationPath), String> {
-        let mut address_index = 0;
-        let mut found_unused_derivation_path = None;
-        let mut known_public_key = None;
-        let snapshot_address_balances = register
-            .map(|ctx| ctx.snapshot_address_balances(&self.seed_hash()))
-            .unwrap_or_default();
-        while found_unused_derivation_path.is_none() {
-            let derivation_path_extension = DerivationPath::from(
-                [
-                    ChildNumber::Normal {
-                        index: change.into(),
-                    },
-                    ChildNumber::Normal {
-                        index: address_index,
-                    },
-                ]
-                .as_slice(),
-            );
-            let derivation_path =
-                DerivationPath::bip_44_payment_path(network, 0, change, address_index);
-
-            if let Some(address_info) = self.watched_addresses.get(&derivation_path) {
-                // Address is known
-                let address = &address_info.address;
-                let balance = snapshot_address_balances.get(address).cloned().unwrap_or(0);
-
-                if balance > 0 {
-                    // Address has funds, skip it
-                    address_index += 1;
-                    continue;
-                }
-
-                // Address is known and has zero balance
-                if !skip_known_addresses_with_no_funds {
-                    // We can use this address
-                    found_unused_derivation_path = Some(derivation_path.clone());
-                    let secp = Secp256k1::new();
-                    let public_key = self
-                        .master_bip44_ecdsa_extended_public_key
-                        .derive_pub(&secp, &derivation_path_extension)
-                        .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())?
-                        .to_pub();
-                    known_public_key = Some(public_key);
-                    break;
-                } else {
-                    // Skip known addresses with no funds
-                    address_index += 1;
-                    continue;
-                }
-            } else {
-                let secp = Secp256k1::new();
-                let public_key = self
-                    .master_bip44_ecdsa_extended_public_key
-                    .derive_pub(&secp, &derivation_path_extension)
-                    .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())?
-                    .to_pub();
-                known_public_key = Some(public_key);
-                if let Some(app_context) = register {
-                    let address = Address::p2pkh(&public_key, network);
-                    app_context.try_import_address(
-                        &address,
-                        self.core_wallet_name.as_deref(),
-                        Some(&format!(
-                            "Managed by Dash Evo Tool {} {}",
-                            self.alias.clone().unwrap_or_default(),
-                            derivation_path
-                        )),
-                    );
-
-                    self.register_address(
-                        address,
-                        &derivation_path,
-                        DerivationPathType::CLEAR_FUNDS,
-                        DerivationPathReference::BIP44,
-                        app_context,
-                    )?;
-                }
-                found_unused_derivation_path = Some(derivation_path.clone());
-                break;
-            }
-        }
-
-        let derivation_path = found_unused_derivation_path.unwrap();
-        let known_public_key = known_public_key.unwrap();
-        Ok((known_public_key, derivation_path))
     }
 
     /// Look up one identity-authentication ECDSA public key from the
@@ -1646,59 +1554,6 @@ impl Wallet {
             Network::Mainnet => 5,
             _ => 1,
         }
-    }
-
-    /// Derive a BIP-44 receive address DET-side, advancing the in-memory index.
-    ///
-    /// NOT funds-safe for user-facing receiving: with `skip = true` it walks the
-    /// index past the upstream gap-limit window, so the returned address may be
-    /// outside the SPV-watched pool. No production hand-out/funding path uses it
-    /// anymore — Receive and asset-lock funding route through
-    /// `WalletBackend::next_receive_address` (upstream watched pool). The only
-    /// remaining caller is the `get_receive_address` backend-e2e test helper.
-    ///
-    // TODO(cleanup): migrate the `get_receive_address` e2e helper onto
-    // `WalletBackend::next_receive_address`, then delete this method and
-    // `unused_bip_44_public_key`. Deferred from the funds-safety work: removing
-    // it now also requires migrating the address-table / account-summary /
-    // send-autocomplete display readers off `known_addresses`/`watched_addresses`
-    // (they need per-address derivation paths the lock-free snapshot does not yet
-    // carry), so it is a larger refactor than the funds-safety fix.
-    pub fn receive_address(
-        &mut self,
-        network: Network,
-        skip_known_addresses_with_no_funds: bool,
-        register: Option<&AppContext>,
-    ) -> Result<Address, String> {
-        Ok(Address::p2pkh(
-            &self
-                .unused_bip_44_public_key(
-                    network,
-                    skip_known_addresses_with_no_funds,
-                    false,
-                    register,
-                )?
-                .0,
-            network,
-        ))
-    }
-
-    // TODO(cleanup): no production caller remains (platform top-up change now
-    // routes through `generate_platform_receive_address_with_seed`). Kept only
-    // for the `platform_change_address_must_be_a_watched_platform_payment_address`
-    // regression. Delete together with `receive_address` /
-    // `unused_bip_44_public_key`.
-    pub fn change_address(
-        &mut self,
-        network: Network,
-        register: Option<&AppContext>,
-    ) -> Result<Address, String> {
-        Ok(Address::p2pkh(
-            &self
-                .unused_bip_44_public_key(network, false, true, register)?
-                .0,
-            network,
-        ))
     }
 
     /// Derive and register a *new* Platform payment address at the next unused
@@ -3267,66 +3122,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_receive_address_returns_first_unused() {
-        let mut wallet = test_wallet();
-        // With no watched addresses, should derive address at index 0
-        let addr = wallet
-            .receive_address(Network::Testnet, false, None)
-            .unwrap();
-        assert!(!addr.to_string().is_empty());
-    }
-
-    /// Helper: manually register an address in watched_addresses so the wallet
-    /// considers it "known" (normally done by register_address with AppContext).
-    fn register_address_locally(
-        wallet: &mut Wallet,
-        address: &Address,
-        derivation_path: &DerivationPath,
-    ) {
-        wallet
-            .known_addresses
-            .insert(address.clone(), derivation_path.clone());
-        wallet.watched_addresses.insert(
-            derivation_path.clone(),
-            AddressInfo {
-                address: address.clone(),
-                path_type: DerivationPathType::CLEAR_FUNDS,
-                path_reference: DerivationPathReference::BIP44,
-            },
-        );
-    }
-
-    #[test]
-    fn test_receive_address_skip_known_with_no_funds() {
-        let mut wallet = test_wallet();
-
-        // Derive address at index 0 and register it locally
-        let addr0 = wallet
-            .derive_bip44_address(Network::Testnet, false, 0)
-            .unwrap();
-        let path0 = DerivationPath::from(vec![
-            ChildNumber::Hardened { index: 44 },
-            ChildNumber::Hardened { index: 1 },
-            ChildNumber::Hardened { index: 0 },
-            ChildNumber::Normal { index: 0 },
-            ChildNumber::Normal { index: 0 },
-        ]);
-        register_address_locally(&mut wallet, &addr0, &path0);
-
-        // With skip=false, should return the same known zero-balance address
-        let addr_same = wallet
-            .receive_address(Network::Testnet, false, None)
-            .unwrap();
-        assert_eq!(addr0, addr_same);
-
-        // With skip=true, should skip the known zero-balance address and get a new one
-        let addr_next = wallet
-            .receive_address(Network::Testnet, true, None)
-            .unwrap();
-        assert_ne!(addr0, addr_next);
-    }
-
     // ========================================================================
     // WalletSeed tests
     // ========================================================================
@@ -3524,62 +3319,26 @@ mod tests {
             "upstream next_unused must return a watched address"
         );
 
-        // Reproduce the user's actions: advance the legacy receive path past
-        // the gap window. We pre-register zero-balance known addresses 0..=31
-        // so `skip_known_addresses_with_no_funds` walks past them and derives a
-        // brand-new index 32 — outside the watched pool.
-        let mut wallet = test_wallet();
-        let secp = Secp256k1::new();
-        for index in 0u32..=31 {
-            let path = DerivationPath::bip_44_payment_path(network, 0, false, index);
-            let pubkey = wallet
-                .master_bip44_ecdsa_extended_public_key
-                .derive_pub(
-                    &secp,
-                    &DerivationPath::from(
-                        [
-                            ChildNumber::Normal { index: 0 },
-                            ChildNumber::Normal { index },
-                        ]
-                        .as_slice(),
-                    ),
-                )
-                .expect("derive")
-                .to_pub();
-            let address = Address::p2pkh(&pubkey, network);
-            wallet.known_addresses.insert(address.clone(), path.clone());
-            wallet.watched_addresses.insert(
-                path,
-                AddressInfo {
-                    address,
-                    path_type: DerivationPathType::CREDIT_FUNDING,
-                    path_reference: DerivationPathReference::BIP44,
-                },
-            );
-        }
-
-        let legacy_addr = wallet
-            .receive_address(network, true, None)
-            .expect("legacy receive_address");
-
-        // The legacy path escaped the watched window. This documents the bug:
-        // index 32 is NOT in the SPV-watched pool, so funds sent there are
-        // invisible. The Receive action must never hand out such an address.
+        // An out-of-window index (32, past the gap limit of 30) — what the old
+        // DET-side derivation could hand out — is NOT in the watched pool, so
+        // funds sent there would be invisible. The Receive action must never
+        // produce such an address; it derives via the upstream pool above.
+        let out_of_window = test_wallet()
+            .derive_bip44_address(network, false, 32)
+            .expect("derive index 32");
         assert!(
-            !watched_pool.contains_address(&legacy_addr),
-            "legacy receive_address must escape the watched pool (the bug being fixed); \
-             if it now stays inside the pool the gap window changed and this guard needs review"
+            !watched_pool.contains_address(&out_of_window),
+            "an index-32 address must escape the watched pool (the hazard being guarded); \
+             if it now stays inside, the gap window changed and this guard needs review"
         );
 
-        // The invariant the fixed Receive action satisfies: the address handed
-        // to the user is always watched. The legacy address fails it; the
-        // upstream address passes it. The production "New Address" button now
-        // routes through the upstream path, so the user-visible address is
-        // always `watched_addr`-class, never `legacy_addr`-class.
+        // The invariant the fixed Receive action satisfies: the handed-out
+        // address (upstream `next_unused`) is always watched, while an
+        // out-of-window index is not.
         assert!(
             watched_pool.contains_address(&watched_addr)
-                && !watched_pool.contains_address(&legacy_addr),
-            "the watched-pool address is funds-safe; the legacy-derived address is not"
+                && !watched_pool.contains_address(&out_of_window),
+            "the watched-pool address is funds-safe; an out-of-window index is not"
         );
     }
 
@@ -3623,11 +3382,10 @@ mod tests {
         );
 
         // The legacy path: a BIP-44 change address is NOT a watched platform
-        // address — this is the bug. `change_address` (internal branch) gives a
+        // address — this is the bug. The BIP-44 internal (change) branch gives a
         // Core address whose PlatformAddress is outside the provider pool.
-        let mut wallet2 = test_wallet();
-        let bip44_change = wallet2
-            .change_address(network, None)
+        let bip44_change = test_wallet()
+            .derive_bip44_address(network, true, 0)
             .expect("bip44 change address");
         let bip44_change_platform =
             PlatformAddress::try_from(bip44_change).expect("platform address conversion");

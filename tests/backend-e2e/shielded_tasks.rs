@@ -356,14 +356,16 @@ async fn step_withdrawal(app_context: &Arc<AppContext>, seed_hash: WalletSeedHas
     tracing::info!("=== Step 8: ShieldedWithdrawal ===");
 
     let core_addr = {
-        let wallets = app_context.wallets().read().expect("wallets lock");
-        let wallet_arc = wallets
-            .get(&seed_hash)
-            .expect("framework wallet must exist");
-        let mut wallet = wallet_arc.write().expect("wallet lock");
-        wallet
-            .receive_address(Network::Testnet, false, Some(app_context))
-            .expect("Failed to get receive address")
+        let addr_str = app_context
+            .wallet_backend()
+            .expect("wallet backend wired")
+            .next_receive_address(&seed_hash)
+            .await
+            .expect("Failed to get receive address");
+        addr_str
+            .parse::<dash_sdk::dpp::dashcore::Address<_>>()
+            .expect("watched address parses")
+            .assume_checked()
     };
 
     let withdrawal_amount = 20_000;

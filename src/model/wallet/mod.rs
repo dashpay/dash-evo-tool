@@ -1640,6 +1640,20 @@ impl Wallet {
         }
     }
 
+    /// Derive a BIP-44 receive address DET-side, advancing the in-memory index.
+    ///
+    /// NOT funds-safe for user-facing receiving: with `skip = true` it walks the
+    /// index past the upstream gap-limit window, so the returned address may be
+    /// outside the SPV-watched pool. The Receive flow no longer uses this — it
+    /// routes through `WalletBackend::next_receive_address` (upstream watched
+    /// pool). Remaining callers derive *funding* addresses for identity / asset-
+    /// lock creation, not user receive addresses.
+    ///
+    // TODO(funds-safety): migrate the identity-creation funding
+    // (`backend_task/identity`) and asset-lock funding (`create_asset_lock_screen`)
+    // callers onto the upstream watched pool, then delete this method and
+    // `unused_bip_44_public_key`. Those funding addresses must also be SPV-watched
+    // for the funded outputs to be seen.
     pub fn receive_address(
         &mut self,
         network: Network,
@@ -1659,22 +1673,6 @@ impl Wallet {
         ))
     }
 
-    // Allow dead_code: This method provides receive addresses with derivation paths,
-    // useful for advanced address management and BIP44 path tracking
-    #[allow(dead_code)]
-    pub fn receive_address_with_derivation_path(
-        &mut self,
-        network: Network,
-        register: Option<&AppContext>,
-    ) -> Result<(Address, DerivationPath), String> {
-        let (receive_public_key, derivation_path) =
-            self.unused_bip_44_public_key(network, false, false, register)?;
-        Ok((
-            Address::p2pkh(&receive_public_key, network),
-            derivation_path,
-        ))
-    }
-
     pub fn change_address(
         &mut self,
         network: Network,
@@ -1685,22 +1683,6 @@ impl Wallet {
                 .unused_bip_44_public_key(network, false, true, register)?
                 .0,
             network,
-        ))
-    }
-
-    // Allow dead_code: This method provides change addresses with derivation paths,
-    // useful for advanced address management and BIP44 path tracking
-    #[allow(dead_code)]
-    pub fn change_address_with_derivation_path(
-        &mut self,
-        network: Network,
-        register: Option<&AppContext>,
-    ) -> Result<(Address, DerivationPath), String> {
-        let (receive_public_key, derivation_path) =
-            self.unused_bip_44_public_key(network, false, true, register)?;
-        Ok((
-            Address::p2pkh(&receive_public_key, network),
-            derivation_path,
         ))
     }
 

@@ -70,6 +70,41 @@ pub fn create_database_at_path(path: &std::path::Path) -> rusqlite::Result<Datab
     Ok(db)
 }
 
+/// Insert an unprotected HD wallet row into the legacy `wallet` table, the
+/// pre-PR-#860 on-disk shape the `FinishUnwire` migration drains. Lets tests
+/// (including the network e2e suite, which cannot depend on `rusqlite`) stage
+/// a "migrated-on-disk" wallet without raw SQL.
+///
+/// `encrypted_seed` carries the verbatim 64-byte seed (salt/nonce stay empty
+/// for an unprotected wallet, per SEC-007); `epk_encoded` is the BIP44 ECDSA
+/// account-0 extended-public-key bytes the W2 fund-routing gate matches.
+pub fn seed_legacy_unprotected_hd_wallet_row(
+    db: &Database,
+    seed_hash: &[u8; 32],
+    encrypted_seed: &[u8; 64],
+    epk_encoded: &[u8],
+    alias: &str,
+    network: dash_sdk::dpp::dashcore::Network,
+) -> rusqlite::Result<()> {
+    db.execute(
+        "INSERT INTO wallet (
+            seed_hash, encrypted_seed, salt, nonce,
+            master_ecdsa_bip44_account_0_epk, alias, is_main,
+            uses_password, password_hint, network, core_wallet_name
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, 0, NULL, ?7, NULL)",
+        rusqlite::params![
+            seed_hash.as_slice(),
+            encrypted_seed.as_slice(),
+            Vec::<u8>::new(),
+            Vec::<u8>::new(),
+            epk_encoded,
+            alias,
+            network.to_string(),
+        ],
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -2330,6 +2330,81 @@ mod tests {
             .await;
     }
 
+    /// F140 (resolve half) — a wallet migrated from legacy `data.db` at cold
+    /// start must be RESOLVABLE through the wallet backend right after the
+    /// migration completes, NOT only after a second restart. The bug: the
+    /// post-migration re-hydration (`hydrate_context_wallets`) refills
+    /// `ctx.wallets` (so the wallet shows in the picker and addresses resolve),
+    /// but it never re-runs the W2 cold-boot reconciliation
+    /// (`bootstrap_loaded_wallets` → `ensure_upstream_registered`). So the
+    /// upstream `id_map` stays empty and every seed-keyed operation
+    /// (`resolve_wallet`) returns `WalletNotLoaded` until the next launch —
+    /// exactly the "wallet still loading" banner that repeats forever in the
+    /// field report. The companion F140 test above only proves `ctx.wallets`
+    /// visibility; this one proves upstream registration, which is what
+    /// `resolve_wallet` keys off.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn migrated_wallet_is_upstream_registered_without_second_restart() {
+        let (ctx, sender, _tmp) = offline_testnet_context();
+
+        // Seed a legacy unprotected `wallet` row whose verbatim seed and
+        // published xpub agree, so the migration's seed + meta passes produce a
+        // wallet the W2 fund-routing gate will accept.
+        let seed = [0xD7u8; 64];
+        let seed_hash: WalletSeedHash =
+            crate::model::wallet::ClosedKeyItem::compute_seed_hash(&seed);
+        let epk = legacy_master_epk_bytes(&seed);
+        ctx.db
+            .execute(
+                "INSERT INTO wallet (
+                    seed_hash, encrypted_seed, salt, nonce,
+                    master_ecdsa_bip44_account_0_epk, alias, is_main,
+                    uses_password, password_hint, network, core_wallet_name
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, 0, NULL, 'testnet', NULL)",
+                rusqlite::params![
+                    seed_hash.as_slice(),
+                    // Unprotected wallet: salt/nonce must be empty (SEC-007), the
+                    // encrypted_seed slot carries the verbatim 64-byte seed.
+                    seed.to_vec(),
+                    Vec::<u8>::new(),
+                    Vec::<u8>::new(),
+                    epk,
+                    "migrated-wallet",
+                ],
+            )
+            .expect("insert legacy wallet row");
+
+        // Wire the backend: hydration + the cold-boot bootstrap run NOW, against
+        // the EMPTY sidecars (the migration has not run yet), so the upstream
+        // persistor is empty and nothing is registered.
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("ensure_wallet_backend should succeed offline");
+        let backend = ctx.wallet_backend().expect("backend wired");
+        assert!(
+            !backend.is_wallet_registered(&seed_hash),
+            "precondition: the migrated wallet is not yet upstream-registered (sidecars empty at wiring)"
+        );
+
+        // Run the cold-start migration. It populates the sidecars, re-hydrates
+        // `ctx.wallets`, AND must re-run the W2 cold-boot reconciliation so the
+        // just-migrated wallet is registered upstream.
+        crate::backend_task::migration::finish_unwire::run(&ctx)
+            .await
+            .expect("migration should succeed");
+
+        // The migrated wallet must be RESOLVABLE WITHOUT a second backend build:
+        // `is_wallet_registered` reads the same `id_map` that `resolve_wallet`
+        // consults, so this is a deterministic proxy for "`resolve_wallet`
+        // succeeds".
+        assert!(
+            backend.is_wallet_registered(&seed_hash),
+            "the migrated wallet must be upstream-registered right after migration (no second restart)"
+        );
+
+        backend.shutdown().await;
+    }
+
     /// F61 — clearing the SPV chain cache removes every `dash-spv` storage
     /// folder/file (and the storage lock) under the per-network directory while
     /// leaving the wallet (`platform-wallet.sqlite`) and shielded sidecars

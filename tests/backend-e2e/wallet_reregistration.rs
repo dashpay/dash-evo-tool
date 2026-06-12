@@ -16,6 +16,7 @@
 
 use crate::framework::harness;
 use crate::framework::wait;
+use std::sync::Arc;
 use std::time::Duration;
 
 /// W1 below-tip visibility: a freshly created+funded wallet (registered with
@@ -101,4 +102,154 @@ async fn re_registration_is_idempotent_for_funded_wallet() {
         before, after,
         "a reconciliation pass must not disturb the visible balance"
     );
+}
+
+/// F140 (cold-process boot from migrated on-disk state — the smoke test that
+/// would have caught the "wallet still loading forever" field report).
+///
+/// The live repro: a user upgrades, their wallet exists ONLY as legacy
+/// `data.db` rows (no upstream persistor, no DET sidecars). On the next launch
+/// the wallet backend wires and runs its cold-boot reconciliation BEFORE the
+/// cold-start `FinishUnwire` migration imports the wallet — so the
+/// reconciliation sees zero wallets and registers nothing. The migration then
+/// imports the seed + meta, but if it does not RE-RUN the reconciliation the
+/// upstream `id_map` stays empty and `resolve_wallet` returns `WalletNotLoaded`
+/// for 20+ minutes until a restart.
+///
+/// This drives that exact sequence on a fresh, isolated `AppContext` /
+/// `WalletBackend` (a true cold process boundary — no in-process
+/// `register_wallet`): seed the framework wallet's seed as a legacy `data.db`
+/// row, wire a fresh backend (sidecars empty → nothing registered), run the
+/// migration, and assert the wallet is registered AND its historical balance
+/// becomes visible — all without a second backend build.
+///
+/// Fund-safe: it only reads the framework wallet's pre-existing balance; no
+/// funds move. It shares the already-synced framework backend's SPV peer set
+/// via a fresh backend over an isolated workdir, so it does not disturb the
+/// singleton harness context.
+#[ignore]
+#[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
+async fn cold_process_boot_from_migrated_state_registers_and_shows_balance() {
+    use dash_evo_tool::app::TaskResult;
+    use dash_evo_tool::app_dir::ensure_env_file;
+    use dash_evo_tool::context::AppContext;
+    use dash_evo_tool::context::connection_status::ConnectionStatus;
+    use dash_evo_tool::database::test_helpers::{
+        create_database_at_path, seed_legacy_unprotected_hd_wallet_row,
+    };
+    use dash_evo_tool::utils::egui_mpsc::EguiMpscAsync;
+    use dash_evo_tool::utils::tasks::TaskManager;
+    use dash_sdk::dpp::dashcore::Network;
+    use dash_sdk::dpp::dashcore::secp256k1::Secp256k1;
+    use dash_sdk::dpp::key_wallet::bip32::{
+        ChildNumber, DerivationPath, ExtendedPrivKey, ExtendedPubKey,
+    };
+
+    // Ensure the shared framework backend is up first — it owns the funded
+    // framework wallet and a synced SPV view; reading the mnemonic from the
+    // same env guarantees the seed we migrate is the funded one.
+    let _shared = harness::ctx().await;
+    let mnemonic_phrase = std::env::var("E2E_WALLET_MNEMONIC")
+        .expect("E2E_WALLET_MNEMONIC must be set for E2E tests");
+    let mnemonic = bip39::Mnemonic::parse_in(bip39::Language::English, &mnemonic_phrase)
+        .expect("valid mnemonic");
+    let seed = mnemonic.to_seed("");
+
+    // Isolated cold-boot workdir: no sidecars, no upstream persistor — only the
+    // legacy `data.db` row we seed below, exactly the migrated-on-disk shape.
+    let workdir =
+        std::env::temp_dir().join(format!("dash-evo-e2e-coldboot-{}", std::process::id()));
+    std::fs::create_dir_all(&workdir).expect("create cold-boot workdir");
+    ensure_env_file(&workdir);
+
+    let db_path = workdir.join("data.db");
+    let db = Arc::new(create_database_at_path(&db_path).expect("create cold-boot database"));
+
+    // Compute the wallet's seed hash and BIP44 account-0 xpub so the legacy row
+    // is internally consistent (the W2 fund-routing gate matches the published
+    // xpub against the seed's derivation).
+    let seed_hash = {
+        let w =
+            dash_evo_tool::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
+                .expect("build wallet for hash");
+        w.seed_hash()
+    };
+    let epk = {
+        let secp = Secp256k1::new();
+        let master = ExtendedPrivKey::new_master(Network::Testnet, &seed).expect("master key");
+        let path = DerivationPath::from(vec![
+            ChildNumber::Hardened { index: 44 },
+            ChildNumber::Hardened { index: 1 },
+            ChildNumber::Hardened { index: 0 },
+        ]);
+        let account = master.derive_priv(&secp, &path).expect("derive account");
+        ExtendedPubKey::from_priv(&secp, &account).encode().to_vec()
+    };
+    seed_legacy_unprotected_hd_wallet_row(
+        &db,
+        &seed_hash,
+        &seed,
+        &epk,
+        "cold-boot-migrated",
+        Network::Testnet,
+    )
+    .expect("insert legacy wallet row");
+
+    // Build a fresh, independent AppContext over the migrated-on-disk state.
+    let subtasks = Arc::new(TaskManager::new());
+    let connection_status = Arc::new(ConnectionStatus::new());
+    let egui_ctx = egui::Context::default();
+    let app_kv = AppContext::open_app_kv(&workdir).expect("open app k/v");
+    let secret_store = AppContext::open_secret_store(&workdir).expect("open secret store");
+    let app_context = AppContext::new(
+        workdir.clone(),
+        Network::Testnet,
+        db,
+        subtasks,
+        connection_status,
+        egui_ctx,
+        app_kv,
+        secret_store,
+    )
+    .expect("create cold-boot AppContext");
+
+    let (task_result_sender, _task_result_rx) =
+        tokio::sync::mpsc::channel::<TaskResult>(256).with_egui_ctx(app_context.egui_ctx().clone());
+
+    // Wire the fresh backend: its cold-boot reconciliation runs NOW, against the
+    // empty sidecars (the migration has not run yet), so nothing is registered.
+    app_context
+        .ensure_wallet_backend(task_result_sender)
+        .await
+        .expect("ensure_wallet_backend on cold-boot context");
+    let backend = app_context
+        .wallet_backend()
+        .expect("cold-boot backend wired");
+    assert!(
+        !backend.is_wallet_registered(&seed_hash),
+        "precondition: the migrated wallet is not registered at cold wiring (sidecars empty)"
+    );
+
+    // Run the cold-start migration — it must import the wallet AND re-run the
+    // reconciliation so the wallet is registered without a restart.
+    dash_evo_tool::backend_task::migration::finish_unwire::run(&app_context)
+        .await
+        .expect("cold-start migration should succeed");
+
+    assert!(
+        backend.is_wallet_registered(&seed_hash),
+        "the migrated wallet must be upstream-registered right after migration (no restart)"
+    );
+
+    // Start chain sync and confirm the historical balance becomes visible — the
+    // end-to-end PROJ-010 assertion on a genuinely cold-booted, migrated wallet.
+    backend.start().await.expect("start cold-boot chain sync");
+    wait::wait_for_spv_peers(&app_context, Duration::from_secs(60))
+        .await
+        .expect("cold-boot SPV failed to connect to peers");
+    wait::wait_for_balance(&app_context, seed_hash, 1, Duration::from_secs(600))
+        .await
+        .expect("migrated framework wallet must surface its historical balance");
+
+    backend.shutdown().await;
 }

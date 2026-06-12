@@ -316,6 +316,17 @@ pub async fn run(app_context: &Arc<AppContext>) -> Result<bool, TaskError> {
                 "Post-migration wallet re-hydration failed; wallets will appear on next restart",
             );
         }
+        // F140 (resolve half): re-hydration only refills `ctx.wallets` (the
+        // picker / address view). The upstream `id_map` that `resolve_wallet`
+        // keys off is still empty — `WalletBackend::new`'s cold-boot
+        // `bootstrap_loaded_wallets` walked the then-empty `ctx.wallets`, so the
+        // W2 reconciliation never registered these wallets and every seed-keyed
+        // operation returns `WalletNotLoaded` until the next launch. Re-run the
+        // same cold-boot bridge now that `ctx.wallets` is populated, so the
+        // just-migrated unprotected wallets are registered upstream without a
+        // restart. Idempotent (skips already-registered wallets) and prompt-free
+        // (locked protected wallets register on their unlock gesture, as before).
+        app_context.bootstrap_loaded_wallets().await;
     } else {
         tracing::debug!(
             target = "migration::finish_unwire",

@@ -210,13 +210,14 @@ pub(super) fn incoming_payment_candidates(
 }
 
 /// The wallet's BIP-44 external (receive) addresses — the SPV-watched gap-limit
-/// window — read non-blocking from a held wallet-state guard.
+/// window — read from the managed wallet info.
 ///
 /// Reads the standard BIP-44 account's external pool the same way the upstream
-/// `account_address_pools_blocking` accessor does, but off the already-held
-/// non-blocking `try_state()` guard so the event callback never blocks.
-fn external_addresses_from_state(
-    state: &platform_wallet::wallet::WalletStateReadGuard<'_>,
+/// `account_address_pools_blocking` accessor does. The caller derefs the
+/// non-blocking `try_state()` guard to its `core_wallet`, so the event callback
+/// never blocks.
+fn external_addresses_from_info(
+    info: &dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::ManagedWalletInfo,
 ) -> Vec<String> {
     use dash_sdk::dpp::key_wallet::account::{AccountType, StandardAccountType};
 
@@ -224,9 +225,7 @@ fn external_addresses_from_state(
         index: 0,
         standard_account_type: StandardAccountType::BIP44Account,
     };
-    state
-        .core_wallet
-        .accounts
+    info.accounts
         .all_accounts()
         .into_iter()
         .find(|a| a.managed_account_type().to_account_type() == standard)
@@ -400,7 +399,7 @@ impl SnapshotStore {
                         address: u.address.clone(),
                     });
                 }
-                let monitored = external_addresses_from_state(&state);
+                let monitored = external_addresses_from_info(&state.core_wallet);
                 (utxos, address_balances, monitored)
             }
             None => (
@@ -559,6 +558,42 @@ mod tests {
         // there is no other source, so the rendered set ⊆ watched set.
         for addr in &snap.monitored_receive_addresses {
             assert!(watched.contains(addr));
+        }
+    }
+
+    /// QA-301: the `external_addresses_from_info` filter — the real seam the
+    /// recompute uses — extracts exactly the standard BIP-44 account's external
+    /// (receive) pool. Exercised against a real upstream `ManagedWalletInfo`, not
+    /// a hand-injected vec: this is what publishes the watched receive set the
+    /// Receive list renders.
+    #[test]
+    fn external_addresses_from_info_returns_the_standard_external_pool() {
+        use dash_sdk::dpp::dashcore::Address;
+        use dash_sdk::dpp::key_wallet::wallet::Wallet as UpstreamWallet;
+        use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOptions;
+        use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::ManagedWalletInfo;
+
+        let seed = [0x42u8; 64];
+        let network = Network::Testnet;
+        let wallet =
+            UpstreamWallet::from_seed_bytes(seed, network, WalletAccountCreationOptions::Default)
+                .expect("upstream wallet");
+        let info = ManagedWalletInfo::from_wallet(&wallet, 1);
+
+        let external = external_addresses_from_info(&info);
+
+        // The standard BIP-44 external pool is bootstrapped to the gap limit, so
+        // the filter must return a non-empty set of decodable testnet addresses.
+        assert!(
+            !external.is_empty(),
+            "the external pool must yield the bootstrapped receive addresses"
+        );
+        for addr in &external {
+            let parsed = addr
+                .parse::<Address<_>>()
+                .expect("a decodable address")
+                .require_network(network);
+            assert!(parsed.is_ok(), "every address is on the active network");
         }
     }
 

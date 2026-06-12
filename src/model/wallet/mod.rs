@@ -1711,6 +1711,23 @@ impl Wallet {
     /// is the caller's responsibility (see `Wallet::platform_addresses`); this
     /// is the unlock-required generation step. Same DIP-17 path, same
     /// per-network derivation, same address as the retired parked-seed method.
+    /// The highest registered platform-payment (DIP-17) address index, or
+    /// `None` if none are registered. Shared by the receive-address generator
+    /// (`next = this + 1`) and the sync provider (which must cover every
+    /// registered index) so the handed-out address is always synced.
+    pub fn highest_platform_payment_index(&self, network: Network) -> Option<u32> {
+        self.watched_addresses
+            .keys()
+            .filter(|path| path.is_platform_payment(network))
+            .filter_map(|path| {
+                path.into_iter().last().and_then(|child| match child {
+                    ChildNumber::Normal { index } | ChildNumber::Hardened { index } => Some(*index),
+                    _ => None,
+                })
+            })
+            .max()
+    }
+
     pub fn generate_platform_receive_address_with_seed(
         &mut self,
         seed: &[u8; 64],
@@ -1721,22 +1738,13 @@ impl Wallet {
         let account = 0u32;
         let key_class = 0u32;
 
-        // Find the highest index in existing Platform payment addresses
-        let existing_indices: Vec<u32> = self
-            .watched_addresses
-            .iter()
-            .filter(|(path, _)| path.is_platform_payment(network))
-            .filter_map(|(path, _)| {
-                // Extract the index from the path (last component)
-                path.into_iter().last().and_then(|child| match child {
-                    ChildNumber::Normal { index } | ChildNumber::Hardened { index } => Some(*index),
-                    _ => None,
-                })
-            })
-            .collect();
-
-        // Generate a new Platform address at the next index
-        let next_index = existing_indices.iter().max().map(|m| m + 1).unwrap_or(0);
+        // Generate a new Platform address at the next index. The sync provider
+        // covers every registered index (see `WalletAddressProvider::with_gap_limit`),
+        // so this handed-out address is always inside the synced window.
+        let next_index = self
+            .highest_platform_payment_index(network)
+            .map(|m| m + 1)
+            .unwrap_or(0);
 
         let derivation_path =
             DerivationPath::platform_payment_path(network, account, key_class, next_index);
@@ -1955,7 +1963,7 @@ impl WalletAddressProvider {
     /// # Errors
     /// Returns an error if the account-level xpub cannot be derived.
     pub fn with_gap_limit(
-        _wallet: &Wallet,
+        wallet: &Wallet,
         network: Network,
         gap_limit: AddressIndex,
         seed: &[u8; 64],
@@ -1978,8 +1986,17 @@ impl WalletAddressProvider {
             stored_sync_height: 0,
         };
 
-        // Bootstrap initial addresses (0 to gap_limit - 1)
-        provider.ensure_addresses_up_to(gap_limit.saturating_sub(1))?;
+        // Cover at least the bootstrap window (0..gap_limit-1) AND every
+        // platform-payment index DET has already handed out. The generator
+        // derives `max(registered)+1` unbounded, so a registered index can
+        // exceed the gap window; syncing only the window would leave such an
+        // address unsynced and its credits invisible (SEC-001). The provider is
+        // the sync window's single source of truth, so it follows derivation.
+        let highest_registered = wallet.highest_platform_payment_index(network);
+        let max_index = highest_registered
+            .map(|i| i.max(gap_limit.saturating_sub(1)))
+            .unwrap_or(gap_limit.saturating_sub(1));
+        provider.ensure_addresses_up_to(max_index)?;
 
         Ok(provider)
     }
@@ -3617,6 +3634,48 @@ mod tests {
         assert!(
             !watched.contains(&bip44_change_platform),
             "the BIP-44 change address must NOT be a watched platform address (the bug being fixed)"
+        );
+    }
+
+    /// FUNDS-SAFETY (SEC-001): every platform-payment address DET hands out or
+    /// funds must be inside the provider's synced window. The generator derives
+    /// `max(registered)+1` unbounded, but the provider only bootstraps
+    /// `0..=gap_limit-1` and extends past *funded* indices. So a handed-out
+    /// address at index ≥ gap_limit with nothing funded before it would never be
+    /// synced — credits invisible/unspendable.
+    ///
+    /// Drives the generator past the gap limit (to index 20 with
+    /// `DEFAULT_GAP_LIMIT == 20`) and asserts that index is in the provider's
+    /// `pending_addresses()` (the synced set). RED before the provider covers
+    /// every registered index, GREEN after.
+    #[test]
+    fn platform_payment_handout_stays_within_synced_window() {
+        let seed = TEST_SEED;
+        let network = Network::Testnet;
+
+        // Hand out platform-payment addresses 0..=DEFAULT_GAP_LIMIT — the last
+        // one is index DEFAULT_GAP_LIMIT (== 20), one past the bootstrap window.
+        let mut wallet = test_wallet();
+        let mut last_addr = None;
+        for _ in 0..=DEFAULT_GAP_LIMIT {
+            last_addr = Some(
+                wallet
+                    .generate_platform_receive_address_with_seed(&seed, network, None)
+                    .expect("platform receive address"),
+            );
+        }
+        let handed_out = PlatformAddress::try_from(last_addr.expect("at least one address"))
+            .expect("platform address conversion");
+
+        // The provider must sync the handed-out address: it appears in the
+        // pending (to-be-synced) set, with nothing funded to trigger an extend.
+        let provider = WalletAddressProvider::new(&wallet, network, &seed).expect("provider");
+        let synced: std::collections::BTreeSet<PlatformAddress> =
+            provider.pending_addresses().map(|(_, addr)| addr).collect();
+        assert!(
+            synced.contains(&handed_out),
+            "a handed-out platform-payment address at index {} must be inside the synced window",
+            DEFAULT_GAP_LIMIT
         );
     }
 }

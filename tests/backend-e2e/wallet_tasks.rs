@@ -112,6 +112,49 @@ async fn tc_012b_receive_address_is_spv_watched() {
     );
 }
 
+/// TC-012c (FUNDS-SAFETY, asset-lock funding / H1): the Create-Asset-Lock
+/// screen shows a deposit address (QR + Copy) for the user to send DASH to;
+/// the asset lock is then built from the resulting watched UTXO. That deposit
+/// address must therefore be SPV-watched, or the deposit is invisible and the
+/// asset lock can never be built.
+///
+/// The screen now derives the deposit address through the same
+/// `GenerateReceiveAddress` task as the Receive flow (upstream watched pool),
+/// not the legacy unbounded `Wallet::receive_address(skip=true)`. This pins the
+/// funding-address ∈ watched-pool invariant for that scenario. RED on the
+/// legacy path, GREEN on the fix.
+#[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
+#[ignore]
+async fn tc_012c_asset_lock_funding_address_is_spv_watched() {
+    let ctx = harness::ctx().await;
+    let seed_hash = ctx.framework_wallet_hash;
+
+    let task = BackendTask::WalletTask(WalletTask::GenerateReceiveAddress { seed_hash });
+    let result = run_task(&ctx.app_context, task)
+        .await
+        .expect("TC-012c: GenerateReceiveAddress failed");
+    let address = match result {
+        BackendTaskSuccessResult::GeneratedReceiveAddress { address, .. } => address,
+        other => panic!(
+            "TC-012c: expected GeneratedReceiveAddress, got: {:?}",
+            other
+        ),
+    };
+
+    let backend = ctx
+        .app_context
+        .wallet_backend()
+        .expect("wallet backend must be wired");
+    let watched = tokio::task::block_in_place(|| backend.monitored_receive_addresses(&seed_hash))
+        .expect("monitored_receive_addresses");
+
+    assert!(
+        watched.contains(&address),
+        "TC-012c: asset-lock deposit address {address} is not in the SPV-watched pool \
+         (a deposit there would be invisible and the asset lock could never be built)"
+    );
+}
+
 // ─── TC-013 ───────────────────────────────────────────────────────────────────
 
 /// TC-013: FetchPlatformAddressBalances — verify task returns valid result.

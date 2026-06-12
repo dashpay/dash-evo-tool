@@ -1,11 +1,11 @@
 use crate::app::AppAction;
 use crate::backend_task::core::{CoreItem, CoreTask};
-use crate::backend_task::error::TaskError;
+use crate::backend_task::wallet::WalletTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::amount::Amount;
 use crate::model::qualified_identity::QualifiedIdentity;
-use crate::model::wallet::Wallet;
+use crate::model::wallet::{Wallet, WalletSeedHash};
 use crate::ui::components::Component;
 use crate::ui::components::MessageBanner;
 use crate::ui::components::amount_input::AmountInput;
@@ -42,7 +42,12 @@ pub struct CreateAssetLockScreen {
     amount_input: Option<AmountInput>,
     identity_index: u32,
     funding_address: Option<Address>,
-    core_has_funding_address: Option<bool>,
+    /// A queued "derive the deposit address" request the `ui()` loop drains into
+    /// a `WalletTask::GenerateReceiveAddress` backend task. The address comes
+    /// from the upstream SPV-watched pool so the deposit becomes a spendable,
+    /// visible UTXO. Carries the wallet's seed hash; the address returns via
+    /// `GeneratedReceiveAddress`.
+    pending_funding_address_request: Option<WalletSeedHash>,
     is_creating: bool,
     asset_lock_tx_id: Option<String>,
 
@@ -83,7 +88,7 @@ impl CreateAssetLockScreen {
             ),
             identity_index,
             funding_address: None,
-            core_has_funding_address: None,
+            pending_funding_address_request: None,
             is_creating: false,
             asset_lock_tx_id: None,
             asset_lock_purpose: None,
@@ -94,45 +99,30 @@ impl CreateAssetLockScreen {
         }
     }
 
-    fn generate_funding_address(&mut self) -> Result<(), TaskError> {
-        let mut wallet = self.wallet.write().unwrap();
-
-        // Generate a new asset lock funding address
-        let receive_address = wallet
-            .receive_address(self.app_context.network, true, Some(&self.app_context))
-            .map_err(|e| TaskError::WalletAddressDerivationFailed { detail: e })?;
-        let core_wallet_name = wallet.core_wallet_name.clone();
-        drop(wallet);
-
-        // Import address to core if needed
-        if let Some(has_address) = self.core_has_funding_address {
-            if !has_address {
-                self.app_context.ensure_address_imported(
-                    &receive_address,
-                    core_wallet_name.as_deref(),
-                    Some("Managed by Dash Evo Tool - Asset Lock"),
-                )?;
-            }
-            self.funding_address = Some(receive_address);
-        } else {
-            self.app_context.ensure_address_imported(
-                &receive_address,
-                core_wallet_name.as_deref(),
-                Some("Managed by Dash Evo Tool - Asset Lock"),
-            )?;
-            self.funding_address = Some(receive_address);
-            self.core_has_funding_address = Some(true);
+    /// Queue a request to derive the deposit address from the SPV-watched pool.
+    ///
+    /// The derivation runs in the backend via `WalletTask::GenerateReceiveAddress`
+    /// (→ upstream `next_unused`), so the deposit address is always watched and
+    /// the incoming UTXO becomes visible and spendable by the asset-lock build.
+    /// Idempotent: a request already in flight, or an address already derived,
+    /// is not re-queued.
+    fn queue_funding_address_request(&mut self) {
+        if self.funding_address.is_some() || self.pending_funding_address_request.is_some() {
+            return;
         }
-
-        Ok(())
+        let Ok(seed_hash) = self.wallet.read().map(|w| w.seed_hash()) else {
+            return;
+        };
+        self.pending_funding_address_request = Some(seed_hash);
     }
 
-    fn render_qr_code(&mut self, ui: &mut egui::Ui) -> Result<(), TaskError> {
-        if self.funding_address.is_none() {
-            self.generate_funding_address()?
-        }
+    fn render_qr_code(&mut self, ui: &mut egui::Ui) {
+        let Some(address) = self.funding_address.as_ref() else {
+            self.queue_funding_address_request();
+            ui.label("Generating a deposit address…");
+            return;
+        };
 
-        let address = self.funding_address.as_ref().unwrap();
         let amount = self
             .amount_input
             .as_ref()
@@ -163,8 +153,6 @@ impl CreateAssetLockScreen {
                 MessageType::Success,
             );
         }
-
-        Ok(())
     }
 
     fn show_success(&mut self, ui: &mut Ui) -> AppAction {
@@ -216,7 +204,7 @@ impl CreateAssetLockScreen {
                         .with_min_amount(Some(1000)),
                 );
                 self.funding_address = None;
-                self.core_has_funding_address = None;
+                self.pending_funding_address_request = None;
                 self.asset_lock_tx_id = None;
                 self.show_advanced_options = false;
                 *self.step.write().unwrap() = WalletFundedScreenStep::WaitingOnFunds;
@@ -543,14 +531,7 @@ impl ScreenLike for CreateAssetLockScreen {
                             let layout_action = ui.with_layout(
                                 egui::Layout::top_down(egui::Align::Min).with_cross_align(egui::Align::Center),
                                 |ui| {
-                                    if let Err(e) = self.render_qr_code(ui) {
-                                        MessageBanner::set_global(
-                                            ui.ctx(),
-                                            "Failed to render QR code",
-                                            MessageType::Error,
-                                        )
-                                        .with_details(e);
-                                    }
+                                    self.render_qr_code(ui);
 
                                     ui.add_space(20.0);
 
@@ -630,6 +611,15 @@ impl ScreenLike for CreateAssetLockScreen {
             inner_action
         });
 
+        // Drain a queued "derive the deposit address" request into a backend
+        // task that derives it from the SPV-watched upstream pool. The address
+        // returns via `GeneratedReceiveAddress`.
+        if let Some(seed_hash) = self.pending_funding_address_request.take() {
+            action |= AppAction::BackendTask(BackendTask::WalletTask(
+                WalletTask::GenerateReceiveAddress { seed_hash },
+            ));
+        }
+
         action
     }
 
@@ -644,6 +634,20 @@ impl ScreenLike for CreateAssetLockScreen {
     fn refresh(&mut self) {}
 
     fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
+        // The backend derived the deposit address from the SPV-watched pool;
+        // store it so the QR renders. Only adopt it for this wallet.
+        if let BackendTaskSuccessResult::GeneratedReceiveAddress { seed_hash, address } = &result {
+            let is_ours = self
+                .wallet
+                .read()
+                .map(|w| w.seed_hash() == *seed_hash)
+                .unwrap_or(false);
+            if is_ours && let Ok(addr) = address.parse::<Address<_>>() {
+                self.funding_address = Some(addr.assume_checked());
+            }
+            return;
+        }
+
         let current_step = *self.step.read().unwrap();
 
         match current_step {

@@ -5,7 +5,7 @@ use crate::backend_task::wallet::WalletTask;
 use crate::model::address::{AddressKind, ValidatedAddress};
 use crate::model::amount::Amount;
 use crate::model::secret::Secret;
-use crate::model::wallet::{DerivationPathHelpers, Wallet, WalletSeedHash};
+use crate::model::wallet::{Wallet, WalletSeedHash};
 use crate::ui::MessageType;
 use crate::ui::components::MessageBanner;
 use crate::ui::components::address_input::AddressInput;
@@ -1130,36 +1130,32 @@ impl WalletsBalancesScreen {
         AppAction::None
     }
 
-    /// Load the BIP44 external (receive) addresses with balances for display.
+    /// Load the SPV-watched BIP44 external (receive) addresses with balances.
     ///
-    /// Reads the in-memory `watched_addresses` map (sync, lock-free). This is a
-    /// display-only list; the actual SPV-watched receive set is the upstream
-    /// pool. The two can diverge (the legacy map is bootstrapped DET-side), but
-    /// that is cosmetic — the Receive "New Address" action derives from the
-    /// watched pool via the backend, so it never hands out an unwatched address.
-    //
-    // TODO(display-parity): publish the upstream monitored receive set into the
-    // lock-free `WalletSnapshot` and source this list from there, so the Receive
-    // list shows exactly what SPV watches. The upstream
-    // `WalletBackend::monitored_receive_addresses` accessor takes a blocking
-    // lock and cannot be called from the egui thread (it runs inside the tokio
-    // runtime), so it must flow through the snapshot, not be called here.
+    /// Sourced from the lock-free `WalletSnapshot` monitored set, so the Receive
+    /// list shows exactly the addresses SPV watches — never a DET-side index
+    /// past the gap window. Empty before the first sync publishes a snapshot;
+    /// the caller then asks the backend to derive a watched address.
     fn load_bip44_external_addresses(
         &self,
         wallet: &Arc<RwLock<Wallet>>,
     ) -> Result<Vec<(String, u64)>, String> {
-        let wallet_guard = wallet.read().map_err(|e| e.to_string())?;
-        let network = self.app_context.network;
-        let address_balances = self
+        let seed_hash = wallet.read().map_err(|e| e.to_string())?.seed_hash();
+        let backend = self
             .app_context
-            .snapshot_address_balances(&wallet_guard.seed_hash());
-        let addresses: Vec<(String, u64)> = wallet_guard
-            .watched_addresses
-            .iter()
-            .filter(|(path, _)| path.is_bip44_external(network))
-            .map(|(_, info)| {
-                let balance = address_balances.get(&info.address).copied().unwrap_or(0);
-                (info.address.to_string(), balance)
+            .wallet_backend()
+            .map_err(|e| e.to_string())?;
+        let address_balances = self.app_context.snapshot_address_balances(&seed_hash);
+        let addresses: Vec<(String, u64)> = backend
+            .snapshot_monitored_receive_addresses(&seed_hash)
+            .into_iter()
+            .map(|addr_str| {
+                let balance = addr_str
+                    .parse::<Address<_>>()
+                    .ok()
+                    .and_then(|addr| address_balances.get(&addr.assume_checked()).copied())
+                    .unwrap_or(0);
+                (addr_str, balance)
             })
             .collect();
         Ok(addresses)

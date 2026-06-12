@@ -93,6 +93,11 @@ pub struct WalletSnapshot {
     /// Feeds the account-summary view that used to read
     /// `Wallet.address_balances`.
     pub address_balances: BTreeMap<Address, u64>,
+    /// The BIP-44 external (receive) addresses SPV actually watches, as strings.
+    /// The Receive flow renders this set, so it can only ever show, copy, or QR
+    /// an address inside the watched gap-limit window — never a legacy DET-side
+    /// index past it. Lock-free read on the UI hot path.
+    pub monitored_receive_addresses: Vec<String>,
 }
 
 /// Map a finalized-or-pending upstream `TransactionContext` to DET's richer
@@ -202,6 +207,40 @@ pub(super) fn incoming_payment_candidates(
             })
         })
         .collect()
+}
+
+/// The wallet's BIP-44 external (receive) addresses — the SPV-watched gap-limit
+/// window — read non-blocking from a held wallet-state guard.
+///
+/// Reads the standard BIP-44 account's external pool the same way the upstream
+/// `account_address_pools_blocking` accessor does, but off the already-held
+/// non-blocking `try_state()` guard so the event callback never blocks.
+fn external_addresses_from_state(
+    state: &platform_wallet::wallet::WalletStateReadGuard<'_>,
+) -> Vec<String> {
+    use dash_sdk::dpp::key_wallet::account::{AccountType, StandardAccountType};
+
+    let standard = AccountType::Standard {
+        index: 0,
+        standard_account_type: StandardAccountType::BIP44Account,
+    };
+    state
+        .core_wallet
+        .accounts
+        .all_accounts()
+        .into_iter()
+        .find(|a| a.managed_account_type().to_account_type() == standard)
+        .map(|account| {
+            account
+                .managed_account_type()
+                .address_pools()
+                .into_iter()
+                .filter(|pool| pool.is_external())
+                .flat_map(|pool| pool.all_addresses())
+                .map(|addr| addr.to_string())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Shared store of per-wallet display snapshots plus the event-sourced
@@ -348,7 +387,7 @@ impl SnapshotStore {
         // Non-blocking UTXO read. On contention, carry the prior snapshot's
         // UTXO view forward rather than blocking the event callback.
         let prior = self.snapshot(&seed_hash);
-        let (utxos, address_balances) = match wallet.try_state() {
+        let (utxos, address_balances, monitored_receive_addresses) = match wallet.try_state() {
             Some(state) => {
                 let mut utxos = Vec::new();
                 let mut address_balances: BTreeMap<Address, u64> = BTreeMap::new();
@@ -361,12 +400,24 @@ impl SnapshotStore {
                         address: u.address.clone(),
                     });
                 }
-                (utxos, address_balances)
+                let monitored = external_addresses_from_state(&state);
+                (utxos, address_balances, monitored)
             }
-            None => (prior.utxos.clone(), prior.address_balances.clone()),
+            None => (
+                prior.utxos.clone(),
+                prior.address_balances.clone(),
+                prior.monitored_receive_addresses.clone(),
+            ),
         };
 
-        self.publish(&seed_hash, wallet_id, balance, utxos, address_balances);
+        self.publish(
+            &seed_hash,
+            wallet_id,
+            balance,
+            utxos,
+            address_balances,
+            monitored_receive_addresses,
+        );
     }
 
     /// Assemble the event-sourced tx history with the freshly-read
@@ -380,6 +431,7 @@ impl SnapshotStore {
         balance: DetWalletBalance,
         utxos: Vec<DetUtxo>,
         address_balances: BTreeMap<Address, u64>,
+        monitored_receive_addresses: Vec<String>,
     ) {
         let transactions: Vec<WalletTransaction> = self
             .tx_log
@@ -393,6 +445,7 @@ impl SnapshotStore {
             transactions,
             utxos,
             address_balances,
+            monitored_receive_addresses,
         });
 
         self.snapshots.rcu(|current| {
@@ -461,6 +514,7 @@ mod tests {
             DetWalletBalance::default(),
             Vec::new(),
             BTreeMap::new(),
+            Vec::new(),
         );
     }
 
@@ -471,6 +525,41 @@ mod tests {
         assert_eq!(snap.balance, DetWalletBalance::default());
         assert!(snap.transactions.is_empty());
         assert!(snap.utxos.is_empty());
+        // Pre-sync: no watched receive set is published yet.
+        assert!(snap.monitored_receive_addresses.is_empty());
+    }
+
+    /// QA-003 (FUNDS-SAFETY, display list): the Receive list is sourced from the
+    /// snapshot's `monitored_receive_addresses` — the SPV-watched set published
+    /// off the event-bridge recompute. Publishing a watched set makes it the
+    /// only set the read accessor returns, so the rendered list ⊆ watched set by
+    /// construction (it shows nothing else). Pins the round-trip the UI relies
+    /// on; before this seam the list read the legacy map and could show unwatched
+    /// indices (30, 31, …) with Copy + QR.
+    #[test]
+    fn published_monitored_set_is_the_only_receive_list_source() {
+        let store = SnapshotStore::new();
+        let watched = vec!["yWatched1".to_string(), "yWatched2".to_string()];
+
+        store.publish(
+            &seed(9),
+            &wid(9),
+            DetWalletBalance::default(),
+            Vec::new(),
+            BTreeMap::new(),
+            watched.clone(),
+        );
+
+        let snap = store.snapshot(&seed(9));
+        assert_eq!(
+            snap.monitored_receive_addresses, watched,
+            "the read accessor returns exactly the published watched set"
+        );
+        // Every address the Receive list would render comes from this set —
+        // there is no other source, so the rendered set ⊆ watched set.
+        for addr in &snap.monitored_receive_addresses {
+            assert!(watched.contains(addr));
+        }
     }
 
     #[test]

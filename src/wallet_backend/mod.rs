@@ -1428,6 +1428,21 @@ impl WalletBackend {
             .clone()
     }
 
+    /// The SPV-watched BIP-44 external (receive) addresses from the lock-free
+    /// display snapshot, as strings.
+    ///
+    /// UI-thread safe (no blocking lock), unlike
+    /// [`Self::monitored_receive_addresses`]. The Receive list reads this so it
+    /// only ever shows watched addresses. Empty before the first sync publishes
+    /// a snapshot — the UI then asks the backend to derive one.
+    pub fn snapshot_monitored_receive_addresses(&self, seed_hash: &WalletSeedHash) -> Vec<String> {
+        self.inner
+            .snapshots
+            .snapshot(seed_hash)
+            .monitored_receive_addresses
+            .clone()
+    }
+
     /// Whether a (post-first-sync) snapshot has been published for the
     /// wallet. `false` ⇒ render the "syncing" state, not a zero balance.
     pub fn has_snapshot(&self, seed_hash: &WalletSeedHash) -> bool {

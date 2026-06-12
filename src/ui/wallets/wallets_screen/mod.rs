@@ -441,33 +441,31 @@ impl WalletsBalancesScreen {
         self.cached_tx_source_len = None;
     }
 
-    fn add_receiving_address(&mut self) {
-        if let Some(wallet) = &self.selected_wallet {
-            let result = {
-                let mut wallet = wallet.write().unwrap();
-                wallet.receive_address(self.app_context.network, true, Some(&self.app_context))
-            };
-
-            match result {
-                Ok(address) => {
-                    let message = format!("Added new receiving address: {}", address);
-                    MessageBanner::set_global(
-                        self.app_context.egui_ctx(),
-                        &message,
-                        MessageType::Success,
-                    );
-                }
-                Err(e) => {
-                    MessageBanner::set_global(self.app_context.egui_ctx(), &e, MessageType::Error);
-                }
-            }
-        } else {
+    /// Request a fresh receive address through the SPV-watched upstream pool.
+    ///
+    /// Routes through the [`GenerateReceiveAddress`](crate::backend_task::wallet::WalletTask::GenerateReceiveAddress)
+    /// backend task (→ `next_receive_address` → upstream `next_unused`) so the
+    /// returned address is always inside the gap-limit window SPV monitors.
+    /// Deriving DET-side here would hand out addresses past the watched window
+    /// and lose deposits sent to them.
+    fn add_receiving_address(&mut self) -> AppAction {
+        let Some(seed_hash) = self
+            .selected_wallet
+            .as_ref()
+            .and_then(|w| w.read().ok())
+            .map(|w| w.seed_hash())
+        else {
             MessageBanner::set_global(
                 self.app_context.egui_ctx(),
-                "No wallet selected",
+                "Select a wallet first, then try again.",
                 MessageType::Error,
             );
-        }
+            return AppAction::None;
+        };
+
+        AppAction::BackendTask(BackendTask::WalletTask(
+            crate::backend_task::wallet::WalletTask::GenerateReceiveAddress { seed_hash },
+        ))
     }
 
     fn render_wallet_selection(&mut self, ui: &mut Ui) -> AppAction {
@@ -728,7 +726,8 @@ impl WalletsBalancesScreen {
         action
     }
 
-    fn render_bottom_options(&mut self, ui: &mut Ui) {
+    fn render_bottom_options(&mut self, ui: &mut Ui) -> AppAction {
+        let mut action = AppAction::None;
         let wallet_is_open = self
             .selected_wallet
             .as_ref()
@@ -749,10 +748,11 @@ impl WalletsBalancesScreen {
                     .button(RichText::new("➕ Add Receiving Address").size(14.0))
                     .clicked()
                 {
-                    self.add_receiving_address();
+                    action |= self.add_receiving_address();
                 }
             });
         }
+        action
     }
 
     fn render_remove_wallet_button(&mut self, ui: &mut Ui) {
@@ -1437,7 +1437,7 @@ impl WalletsBalancesScreen {
                     });
                     ui.add_space(4.0);
                     action |= self.render_address_table(ui, (cat.clone(), idx));
-                    self.render_bottom_options(ui);
+                    action |= self.render_bottom_options(ui);
                 });
 
                 // Dash Core tab: transaction history + asset locks
@@ -2513,6 +2513,15 @@ impl ScreenLike for WalletsBalancesScreen {
                 crate::backend_task::wallet::WalletTask::GeneratePlatformReceiveAddress {
                     seed_hash,
                 },
+            ));
+        }
+
+        // Drain a queued "generate Core receive address" request into a backend
+        // task that derives the next address from the SPV-watched upstream pool.
+        // The new address returns via `GeneratedReceiveAddress`.
+        if let Some(seed_hash) = self.receive_dialog.pending_core_address_request.take() {
+            action |= AppAction::BackendTask(BackendTask::WalletTask(
+                crate::backend_task::wallet::WalletTask::GenerateReceiveAddress { seed_hash },
             ));
         }
 

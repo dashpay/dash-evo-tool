@@ -69,6 +69,12 @@ pub(super) struct ReceiveDialogState {
     /// The seed is fetched just-in-time in the backend; only the new address
     /// returns here. Carries the wallet's seed hash.
     pub pending_platform_address_request: Option<WalletSeedHash>,
+    /// A queued "generate Core receive address" request the `ui()` loop drains
+    /// into a `WalletTask::GenerateReceiveAddress` backend task. The address is
+    /// derived from the upstream SPV-watched pool so it is always monitored —
+    /// never a DET-side index past the gap window. Carries the wallet's seed
+    /// hash; the new address returns via `GeneratedReceiveAddress`.
+    pub pending_core_address_request: Option<WalletSeedHash>,
 }
 
 /// State for the Fund Platform Address from Asset Lock dialog
@@ -475,20 +481,8 @@ impl WalletsBalancesScreen {
                                 }
 
                                 if generate_new
-                                    && let Some(wallet) = &self.selected_wallet {
-                                        match self.generate_new_core_receive_address(wallet) {
-                                            Ok((new_addr, new_balance)) => {
-                                                self.receive_dialog.core_addresses.push((new_addr, new_balance));
-                                                self.receive_dialog.selected_core_index =
-                                                    self.receive_dialog.core_addresses.len() - 1;
-                                                self.receive_dialog.qr_texture = None;
-                                                self.receive_dialog.qr_address = None;
-                                                self.receive_dialog.status = Some("New address generated!".to_string());
-                                            }
-                                            Err(err) => {
-                                                self.receive_dialog.status = Some(err);
-                                            }
-                                        }
+                                    && let Some(wallet) = self.selected_wallet.clone() {
+                                        self.queue_core_address_request(&wallet);
                                     }
                             }
 
@@ -667,26 +661,25 @@ impl WalletsBalancesScreen {
         self.receive_dialog.status = Some("Generating a new address…".to_string());
     }
 
-    /// Generate a new Core receive address for the wallet
-    /// Returns (address_string, balance_duffs)
-    pub(super) fn generate_new_core_receive_address(
-        &self,
-        wallet: &Arc<RwLock<Wallet>>,
-    ) -> Result<(String, u64), String> {
-        let (address, seed_hash) = {
-            let mut wallet_guard = wallet.write().map_err(|e| e.to_string())?;
-            let address = wallet_guard
-                .receive_address(self.app_context.network, true, Some(&self.app_context))
-                .map_err(|e| e.to_string())?;
-            (address, wallet_guard.seed_hash())
+    /// Queue a "generate a new Core receive address" request for the wallet.
+    ///
+    /// The derivation runs in the backend via `WalletTask::GenerateReceiveAddress`
+    /// (→ upstream `next_unused`), so the returned address is always inside the
+    /// SPV-watched gap-limit window. The `ui()` loop drains
+    /// `pending_core_address_request` into the backend task; the new address
+    /// returns via `GeneratedReceiveAddress`. Deriving DET-side here would hand
+    /// out an address past the watched window and lose deposits sent to it.
+    pub(super) fn queue_core_address_request(&mut self, wallet: &Arc<RwLock<Wallet>>) {
+        let seed_hash = match wallet.read() {
+            Ok(w) => w.seed_hash(),
+            Err(_) => {
+                self.receive_dialog.status =
+                    Some("Could not read the selected wallet. Please retry.".to_string());
+                return;
+            }
         };
-        let balance = self
-            .app_context
-            .snapshot_address_balances(&seed_hash)
-            .get(&address)
-            .copied()
-            .unwrap_or(0);
-        Ok((address.to_string(), balance))
+        self.receive_dialog.pending_core_address_request = Some(seed_hash);
+        self.receive_dialog.status = Some("Generating a new address…".to_string());
     }
 
     /// Render the Fund Platform Address from Asset Lock dialog
@@ -1137,7 +1130,20 @@ impl WalletsBalancesScreen {
         AppAction::None
     }
 
-    /// Load BIP44 external addresses with balances from a wallet.
+    /// Load the BIP44 external (receive) addresses with balances for display.
+    ///
+    /// Reads the in-memory `watched_addresses` map (sync, lock-free). This is a
+    /// display-only list; the actual SPV-watched receive set is the upstream
+    /// pool. The two can diverge (the legacy map is bootstrapped DET-side), but
+    /// that is cosmetic — the Receive "New Address" action derives from the
+    /// watched pool via the backend, so it never hands out an unwatched address.
+    //
+    // TODO(display-parity): publish the upstream monitored receive set into the
+    // lock-free `WalletSnapshot` and source this list from there, so the Receive
+    // list shows exactly what SPV watches. The upstream
+    // `WalletBackend::monitored_receive_addresses` accessor takes a blocking
+    // lock and cannot be called from the egui thread (it runs inside the tokio
+    // runtime), so it must flow through the snapshot, not be called here.
     fn load_bip44_external_addresses(
         &self,
         wallet: &Arc<RwLock<Wallet>>,
@@ -1162,24 +1168,18 @@ impl WalletsBalancesScreen {
     /// Load Core addresses into the receive dialog
     fn load_core_addresses_for_receive(&mut self, wallet: &Arc<RwLock<Wallet>>) {
         match self.load_bip44_external_addresses(wallet) {
-            Ok(addresses) if addresses.is_empty() => {
-                match self.generate_new_core_receive_address(wallet) {
-                    Ok((address, balance)) => {
-                        self.receive_dialog.core_addresses = vec![(address, balance)];
-                        self.receive_dialog.selected_core_index = 0;
-                    }
-                    Err(err) => {
-                        self.receive_dialog.status = Some(err);
-                        self.receive_dialog.core_addresses.clear();
-                    }
-                }
-            }
-            Ok(addresses) => {
+            Ok(addresses) if !addresses.is_empty() => {
                 self.receive_dialog.core_addresses = addresses;
                 self.receive_dialog.selected_core_index = 0;
             }
-            Err(err) => {
-                self.receive_dialog.status = Some(err);
+            // Empty list or the wallet isn't watched yet: ask the backend to
+            // derive an address from the SPV-watched pool. The result arrives
+            // via `GeneratedReceiveAddress`; this is self-healing once the
+            // wallet finishes registering with the backend.
+            _ => {
+                self.receive_dialog.core_addresses.clear();
+                self.receive_dialog.selected_core_index = 0;
+                self.queue_core_address_request(wallet);
             }
         }
     }

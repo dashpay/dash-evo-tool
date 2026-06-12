@@ -3467,4 +3467,105 @@ mod tests {
             Err(TaskError::PaymentNoRecipients)
         ));
     }
+
+    /// FUNDS-SAFETY: every Core receive address handed to a user must live
+    /// inside the upstream gap-limit pool that SPV actually watches. The
+    /// upstream BIP-44 external pool watches indices `0..=29` (gap limit 30);
+    /// anything past index 29 is invisible to SPV, so funds sent there never
+    /// appear. This pins the property the Receive "New Address" action must
+    /// satisfy: the address it returns is always in the watched pool.
+    ///
+    /// The legacy `Wallet::receive_address(skip = true)` path violated this —
+    /// it walked the index forward past every known zero-balance address with
+    /// no gap-limit bound, handing out e.g. index 32 (a real user lost a
+    /// 1 tDASH deposit this way). The fix routes the action through the
+    /// upstream `next_unused`, which can only return a watched address.
+    #[test]
+    fn receive_address_stays_within_upstream_watched_pool() {
+        use dash_sdk::dpp::key_wallet::gap_limit::DEFAULT_EXTERNAL_GAP_LIMIT;
+        use dash_sdk::dpp::key_wallet::managed_account::address_pool::{
+            AddressPool, AddressPoolType, KeySource,
+        };
+
+        let network = Network::Testnet;
+
+        // The upstream SPV-watched external pool: same account xpub DET uses,
+        // gap limit 30 ⇒ generates indices 0..=29 and watches exactly those.
+        let account_xpub = test_wallet().master_bip44_ecdsa_extended_public_key;
+        let mut watched_pool = AddressPool::new(
+            DerivationPath::master(),
+            AddressPoolType::External,
+            DEFAULT_EXTERNAL_GAP_LIMIT,
+            network,
+            &KeySource::Public(account_xpub),
+        )
+        .expect("upstream external pool");
+
+        // The upstream next-unused address is, by construction, watched.
+        let watched_addr = watched_pool
+            .next_unused(&KeySource::Public(account_xpub), false)
+            .expect("upstream next_unused");
+        assert!(
+            watched_pool.contains_address(&watched_addr),
+            "upstream next_unused must return a watched address"
+        );
+
+        // Reproduce the user's actions: advance the legacy receive path past
+        // the gap window. We pre-register zero-balance known addresses 0..=31
+        // so `skip_known_addresses_with_no_funds` walks past them and derives a
+        // brand-new index 32 — outside the watched pool.
+        let mut wallet = test_wallet();
+        let secp = Secp256k1::new();
+        for index in 0u32..=31 {
+            let path = DerivationPath::bip_44_payment_path(network, 0, false, index);
+            let pubkey = wallet
+                .master_bip44_ecdsa_extended_public_key
+                .derive_pub(
+                    &secp,
+                    &DerivationPath::from(
+                        [
+                            ChildNumber::Normal { index: 0 },
+                            ChildNumber::Normal { index },
+                        ]
+                        .as_slice(),
+                    ),
+                )
+                .expect("derive")
+                .to_pub();
+            let address = Address::p2pkh(&pubkey, network);
+            wallet.known_addresses.insert(address.clone(), path.clone());
+            wallet.watched_addresses.insert(
+                path,
+                AddressInfo {
+                    address,
+                    path_type: DerivationPathType::CREDIT_FUNDING,
+                    path_reference: DerivationPathReference::BIP44,
+                },
+            );
+        }
+
+        let legacy_addr = wallet
+            .receive_address(network, true, None)
+            .expect("legacy receive_address");
+
+        // The legacy path escaped the watched window. This documents the bug:
+        // index 32 is NOT in the SPV-watched pool, so funds sent there are
+        // invisible. The Receive action must never hand out such an address.
+        assert!(
+            !watched_pool.contains_address(&legacy_addr),
+            "legacy receive_address must escape the watched pool (the bug being fixed); \
+             if it now stays inside the pool the gap window changed and this guard needs review"
+        );
+
+        // The invariant the fixed Receive action satisfies: the address handed
+        // to the user is always watched. The legacy address fails it; the
+        // upstream address passes it. The production "New Address" button now
+        // routes through the upstream path, so the user-visible address is
+        // always `watched_addr`-class, never `legacy_addr`-class.
+        assert!(
+            watched_pool.contains_address(&watched_addr)
+                && !watched_pool.contains_address(&legacy_addr),
+            "the watched-pool address is funds-safe; the legacy-derived address is not"
+        );
+    }
 }

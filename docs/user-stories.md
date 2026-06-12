@@ -107,6 +107,7 @@ As a user, I want to generate a new receive address so that I can share it with 
 
 - Address displayed with QR code.
 - Alex sees a single address by default.
+- A generated address is always within the SPV-watched pool, so deposits to it are seen.
 
 ### WAL-011: View address table [Implemented]
 **Persona:** Priya, Jordan

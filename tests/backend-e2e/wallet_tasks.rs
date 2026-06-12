@@ -62,6 +62,56 @@ async fn tc_012_generate_receive_address() {
     tracing::info!("TC-012 passed: addr1={} addr2={}", address1, address2);
 }
 
+/// TC-012b (FUNDS-SAFETY): the address the Receive flow hands out via
+/// `GenerateReceiveAddress` must be one SPV actually watches.
+///
+/// A real user lost a deposit because the old Receive "New Address" button
+/// derived addresses past the gap window (index 32), outside the SPV-watched
+/// pool, so the funds never appeared. This pins the invariant the fix
+/// guarantees: every generated receive address is in
+/// `monitored_receive_addresses` — the SPV-watched gap-limit window. RED on
+/// the legacy DET-side derivation, GREEN once the flow routes through the
+/// upstream watched pool.
+#[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
+#[ignore]
+async fn tc_012b_receive_address_is_spv_watched() {
+    let ctx = harness::ctx().await;
+    let seed_hash = ctx.framework_wallet_hash;
+
+    let task = BackendTask::WalletTask(WalletTask::GenerateReceiveAddress { seed_hash });
+    let result = run_task(&ctx.app_context, task)
+        .await
+        .expect("TC-012b: GenerateReceiveAddress failed");
+    let address = match result {
+        BackendTaskSuccessResult::GeneratedReceiveAddress { address, .. } => address,
+        other => panic!(
+            "TC-012b: expected GeneratedReceiveAddress, got: {:?}",
+            other
+        ),
+    };
+
+    // `monitored_receive_addresses` takes the manager's blocking read lock, so
+    // it must run outside the async task. `block_in_place` is valid on this
+    // multi-thread runtime.
+    let backend = ctx
+        .app_context
+        .wallet_backend()
+        .expect("wallet backend must be wired");
+    let watched = tokio::task::block_in_place(|| backend.monitored_receive_addresses(&seed_hash))
+        .expect("monitored_receive_addresses");
+
+    assert!(
+        watched.contains(&address),
+        "TC-012b: generated receive address {address} is not in the SPV-watched pool \
+         (funds sent there would be invisible); watched window has {} addresses",
+        watched.len()
+    );
+    tracing::info!(
+        "TC-012b passed: {address} is one of {} SPV-watched addresses",
+        watched.len()
+    );
+}
+
 // ─── TC-013 ───────────────────────────────────────────────────────────────────
 
 /// TC-013: FetchPlatformAddressBalances — verify task returns valid result.

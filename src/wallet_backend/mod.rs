@@ -1274,6 +1274,45 @@ impl WalletBackend {
         Ok(addr.to_string())
     }
 
+    /// The BIP-44 external (receive) addresses SPV currently watches for the
+    /// wallet's default account, as DET address strings.
+    ///
+    /// This is the SPV-monitored gap-limit window: only deposits to one of
+    /// these addresses are seen by the wallet. The Receive flow must only ever
+    /// hand out an address from this set — see the funds-safety regression in
+    /// `tests/backend-e2e/wallet_tasks.rs`.
+    ///
+    /// Takes the upstream manager's blocking read lock, so this is for sync
+    /// (UI-thread) callers only — never call it from inside a tokio task. From
+    /// async, wrap it in `tokio::task::block_in_place`.
+    pub fn monitored_receive_addresses(
+        &self,
+        seed_hash: &WalletSeedHash,
+    ) -> Result<Vec<String>, TaskError> {
+        use dash_sdk::dpp::key_wallet::account::{AccountType, StandardAccountType};
+
+        let wallet_id = *self
+            .inner
+            .id_map
+            .read()?
+            .get(seed_hash)
+            .ok_or(TaskError::WalletNotLoaded)?;
+        let standard = AccountType::Standard {
+            index: DEFAULT_BIP44_ACCOUNT,
+            standard_account_type: StandardAccountType::BIP44Account,
+        };
+        let addresses = self
+            .inner
+            .pwm
+            .account_address_pools_blocking(&wallet_id, &standard)
+            .into_iter()
+            // pool_type 0 == External (receive); change addresses are pool 1.
+            .filter(|pool| pool.pool_type == 0)
+            .flat_map(|pool| pool.addresses.into_iter().map(|info| info.address))
+            .collect();
+        Ok(addresses)
+    }
+
     /// Re-establish a DashPay contact on UPSTREAM derivation only.
     ///
     /// Derives the `DashpayReceivingFunds` account via the upstream engine and

@@ -54,12 +54,12 @@ fn build_fee_from_wallet_outputs(
 impl AppContext {
     /// Fund a Platform (DIP-17) address directly from wallet UTXOs.
     ///
-    /// Branches on destination ownership. When the destination (and any change
-    /// recipient) is one of this wallet's own platform addresses inside the
-    /// upstream pool window, the funding routes through the orchestrated
-    /// `fund_from_asset_lock` pipeline (build/broadcast the lock, CL-height
-    /// retry, InstantSend → ChainLock fallback, consume on acceptance). A
-    /// destination this wallet does not own — an advanced footgun users are
+    /// Branches on upstream pool membership. When the destination is already
+    /// revealed in this wallet's upstream platform-payment pool — the exact
+    /// recipient set the orchestrator's pre-flight accepts — the funding routes
+    /// through the orchestrated `fund_from_asset_lock` pipeline (build/broadcast
+    /// the lock, CL-height retry, InstantSend → ChainLock fallback, consume on
+    /// acceptance). Any other destination — an advanced footgun users are
     /// trusted to take — keeps the manual asset-lock + `TopUpAddress` path.
     pub(crate) async fn fund_platform_address_from_wallet_utxos(
         self: &Arc<Self>,
@@ -68,25 +68,17 @@ impl AppContext {
         destination: PlatformAddress,
         fee_deduct_from_output: bool,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
-        let wallet_arc = {
-            let wallets = self.wallets.read()?;
-            wallets
-                .get(&seed_hash)
-                .cloned()
-                .ok_or(TaskError::WalletNotFound)?
-        };
-        let network = self.network;
-
-        let destination_owned = wallet_arc
-            .read()?
-            .is_orchestratable_platform_destination(&destination, network);
+        let backend = self.wallet_backend()?;
+        let destination_in_pool = backend
+            .platform_address_in_pool(&seed_hash, &destination)
+            .await?;
 
         // The orchestrated path is available only for the fee-from-output case:
         // it needs no separate change recipient, so a single in-pool destination
         // satisfies the orchestrator's one-`None` invariant and pre-flight. The
-        // fee-from-wallet case derives a fresh change address that may fall
-        // outside the pool window, so it stays on the manual path.
-        if destination_owned && fee_deduct_from_output {
+        // fee-from-wallet case derives a fresh change address that may not be in
+        // the pool, so it stays on the manual path.
+        if destination_in_pool && fee_deduct_from_output {
             return self
                 .fund_platform_address_from_wallet_utxos_orchestrated(
                     seed_hash,

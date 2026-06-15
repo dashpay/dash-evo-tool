@@ -1850,6 +1850,38 @@ impl WalletBackend {
             .await
     }
 
+    /// Whether `address` is already revealed in this wallet's upstream
+    /// platform-payment pool (account 0). This is the exact membership query the
+    /// orchestrated `fund_from_asset_lock` pre-flight runs, so a `true` here
+    /// means the orchestrator will accept the recipient. The pool holds only the
+    /// wallet's own revealed platform addresses, so a `true` also implies
+    /// ownership. No reveal side effect: an owned-but-unrevealed address reads
+    /// `false`, and the caller falls back to the manual path.
+    pub(crate) async fn platform_address_in_pool(
+        &self,
+        seed_hash: &WalletSeedHash,
+        address: &dash_sdk::dpp::address_funds::PlatformAddress,
+    ) -> Result<bool, TaskError> {
+        use dash_sdk::dpp::address_funds::PlatformAddress;
+        use dash_sdk::dpp::key_wallet::PlatformP2PKHAddress;
+
+        let PlatformAddress::P2pkh(hash) = address else {
+            return Ok(false);
+        };
+        let p2pkh = PlatformP2PKHAddress::new(*hash);
+
+        let wallet = self.resolve_wallet(seed_hash).await?;
+        let wallet_id = wallet.wallet_id();
+        let manager = wallet.wallet_manager().read().await;
+        Ok(manager
+            .get_wallet_info(&wallet_id)
+            .and_then(|info| {
+                info.core_wallet
+                    .platform_payment_managed_account_at_index(0)
+            })
+            .is_some_and(|account| account.contains_platform_address(&p2pkh)))
+    }
+
     /// Fund wallet-owned platform addresses from a Core asset lock through the
     /// upstream orchestration pipeline.
     ///
@@ -1859,12 +1891,13 @@ impl WalletBackend {
     /// ChainLock fallback, and `consume_asset_lock` on acceptance (so the lock
     /// is never left reusable on an ambiguous failure).
     ///
-    /// Callers must pass only destination addresses this wallet owns and that
-    /// are within the upstream platform-payment pool's pre-generated window —
-    /// the orchestrator's pre-flight rejects any other recipient. The
-    /// `address_signer` authorises per-output witnesses; the `asset_lock_signer`
-    /// signs the outer state transition against the lock's credit-output key.
-    /// Neither signer copies the seed — both borrow it from the held session.
+    /// Callers must pass only destination addresses already revealed in this
+    /// wallet's upstream platform-payment pool (gate with
+    /// [`Self::platform_address_in_pool`]) — the orchestrator's pre-flight
+    /// rejects any other recipient. The `address_signer` authorises per-output
+    /// witnesses; the `asset_lock_signer` signs the outer state transition
+    /// against the lock's credit-output key. Neither signer copies the seed —
+    /// both borrow it from the held session.
     ///
     /// `platform_account_index` selects the platform-payment account (DET uses
     /// 0). The `addresses` map must contain exactly one `None`-amount entry (the
@@ -2386,6 +2419,69 @@ mod tests {
         assert!(
             matches!(mapped, TaskError::WalletBackend { .. }),
             "Expected WalletBackend fallthrough, got: {mapped:?}"
+        );
+    }
+
+    /// The orchestrator-vs-manual gate is decided by upstream's own pool
+    /// membership: `WalletBackend::platform_address_in_pool` converts a
+    /// `PlatformAddress` to the upstream `PlatformP2PKHAddress` and asks
+    /// `ManagedPlatformAccount::contains_platform_address`. This pins that exact
+    /// semantic offline — building a real upstream `ManagedPlatformAccount` from
+    /// a known platform-payment account xpub and asserting an address inside the
+    /// pre-generated pool is recognised while a foreign one is not. (The full
+    /// helper needs a resolved `PlatformWallet`, which isn't constructible
+    /// offline; this covers the membership logic the helper delegates to.)
+    #[test]
+    fn upstream_pool_membership_distinguishes_in_pool_from_foreign() {
+        use dash_sdk::dpp::dashcore::Network;
+        use dash_sdk::dpp::key_wallet::bip32::{ChildNumber, DerivationPath};
+        use dash_sdk::dpp::key_wallet::managed_account::address_pool::AddressPoolType;
+        use dash_sdk::dpp::key_wallet::{
+            AddressPool, KeySource, ManagedPlatformAccount, PlatformP2PKHAddress,
+        };
+
+        let network = Network::Testnet;
+        let seed = [7u8; 64];
+
+        // DIP-17 platform-payment account path: m/9'/coin'/17'/0'/0' (coin 1' on
+        // testnet). The pool appends the non-hardened leaf, matching DET's
+        // `platform_payment_path`.
+        let account_path = DerivationPath::from(vec![
+            ChildNumber::Hardened { index: 9 },
+            ChildNumber::Hardened { index: 1 },
+            ChildNumber::Hardened { index: 17 },
+            ChildNumber::Hardened { index: 0 },
+            ChildNumber::Hardened { index: 0 },
+        ]);
+        let account_xpub = account_path
+            .derive_pub_ecdsa_for_master_seed(&seed, network)
+            .expect("derive account xpub");
+
+        let pool = AddressPool::new(
+            account_path,
+            AddressPoolType::Absent,
+            20,
+            network,
+            &KeySource::Public(account_xpub),
+        )
+        .expect("build pool");
+        let account = ManagedPlatformAccount::new(0, 0, pool, false);
+
+        // An address the pool actually generated is recognised as in-pool.
+        let in_pool = *account
+            .all_platform_addresses()
+            .first()
+            .expect("pre-generated pool is non-empty");
+        assert!(
+            account.contains_platform_address(&in_pool),
+            "a pre-generated pool address must be recognised"
+        );
+
+        // A foreign address (not derived from this account) is not in the pool.
+        let foreign = PlatformP2PKHAddress::new([0xAB; 20]);
+        assert!(
+            !account.contains_platform_address(&foreign),
+            "a foreign address must not be recognised as in-pool"
         );
     }
 

@@ -308,13 +308,6 @@ const BOOTSTRAP_PROVIDER_ADDRESS_COUNT: u32 = 4;
 /// DIP-17: Number of Platform payment addresses to bootstrap per key class
 const BOOTSTRAP_PLATFORM_PAYMENT_ADDRESS_COUNT: u32 = 20;
 
-/// Upstream platform-payment pool's pre-generated address window (the DIP-17
-/// gap limit). A wallet-owned platform address whose leaf index is below this
-/// is guaranteed to be in the upstream pool, so the orchestrated
-/// `fund_from_asset_lock` pre-flight accepts it. DET bootstraps exactly this
-/// many addresses, so the two windows coincide.
-const UPSTREAM_PLATFORM_POOL_WINDOW: u32 = 20;
-
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
     pub struct DerivationPathType: u32 {
@@ -1590,47 +1583,6 @@ impl Wallet {
             .max()
     }
 
-    /// The DIP-17 leaf index of `platform_address` if this wallet watches it on
-    /// `network`, else `None`. Compares by canonical [`PlatformAddress`] bytes so
-    /// equivalent encodings match.
-    pub fn platform_payment_index_of(
-        &self,
-        platform_address: &PlatformAddress,
-        network: Network,
-    ) -> Option<u32> {
-        let target = platform_address.to_bytes();
-        self.watched_addresses.iter().find_map(|(path, info)| {
-            if !path.is_platform_payment(network) {
-                return None;
-            }
-            let owned = PlatformAddress::try_from(info.address.clone()).ok()?;
-            if owned.to_bytes() != target {
-                return None;
-            }
-            path.into_iter().last().and_then(|child| match child {
-                ChildNumber::Normal { index } | ChildNumber::Hardened { index } => Some(*index),
-                _ => None,
-            })
-        })
-    }
-
-    /// Whether `platform_address` is wallet-owned and falls inside the upstream
-    /// platform-payment pool's pre-generated window, making it eligible for the
-    /// orchestrated `fund_from_asset_lock` path (whose pre-flight requires the
-    /// recipient to be in that pool). Addresses this wallet does not own, or own
-    /// beyond the window, are not eligible and must use the manual funding path.
-    ///
-    /// The window matches the upstream DIP-17 gap limit, which DET bootstraps
-    /// 1:1 (`BOOTSTRAP_PLATFORM_PAYMENT_ADDRESS_COUNT`).
-    pub fn is_orchestratable_platform_destination(
-        &self,
-        platform_address: &PlatformAddress,
-        network: Network,
-    ) -> bool {
-        self.platform_payment_index_of(platform_address, network)
-            .is_some_and(|index| index < UPSTREAM_PLATFORM_POOL_WINDOW)
-    }
-
     pub fn generate_platform_receive_address_with_seed(
         &mut self,
         seed: &[u8; 64],
@@ -2872,101 +2824,6 @@ mod tests {
                 "platform receive address drift for {network:?}"
             );
         }
-    }
-
-    /// Register a platform-payment address at `index` into `wallet`'s watched
-    /// maps and return the derived [`PlatformAddress`]. Mirrors what
-    /// `generate_platform_receive_address_with_seed` would persist.
-    fn add_platform_address_at(
-        wallet: &mut Wallet,
-        network: Network,
-        index: u32,
-    ) -> PlatformAddress {
-        let path = DerivationPath::platform_payment_path(network, 0, 0, index);
-        let xprv = path
-            .derive_priv_ecdsa_for_master_seed(&TEST_SEED, network)
-            .expect("derive platform key");
-        let secp = Secp256k1::new();
-        let address = Address::p2pkh(&xprv.to_priv().public_key(&secp), network);
-        let platform_address =
-            PlatformAddress::try_from(address.clone()).expect("to platform address");
-        wallet.known_addresses.insert(address.clone(), path.clone());
-        wallet.watched_addresses.insert(
-            path,
-            AddressInfo {
-                address,
-                path_type: DerivationPathType::CLEAR_FUNDS,
-                path_reference: DerivationPathReference::PlatformPayment,
-            },
-        );
-        platform_address
-    }
-
-    /// `platform_payment_index_of` returns the DIP-17 leaf index for an owned
-    /// platform address and `None` for a foreign one, on every network.
-    #[test]
-    fn platform_payment_index_of_owned_vs_foreign() {
-        for network in [Network::Testnet, Network::Mainnet] {
-            let mut wallet = test_wallet();
-            let owned = add_platform_address_at(&mut wallet, network, 3);
-
-            assert_eq!(
-                wallet.platform_payment_index_of(&owned, network),
-                Some(3),
-                "owned address resolves to its index on {network:?}"
-            );
-
-            // A different index never registered into this wallet.
-            let foreign_path = DerivationPath::platform_payment_path(network, 0, 0, 99);
-            let foreign_xprv = foreign_path
-                .derive_priv_ecdsa_for_master_seed(&TEST_SEED, network)
-                .expect("derive");
-            let secp = Secp256k1::new();
-            let foreign_addr = Address::p2pkh(&foreign_xprv.to_priv().public_key(&secp), network);
-            let foreign = PlatformAddress::try_from(foreign_addr).expect("platform addr");
-            assert_eq!(
-                wallet.platform_payment_index_of(&foreign, network),
-                None,
-                "unregistered address is not owned on {network:?}"
-            );
-        }
-    }
-
-    /// Branch selector: an owned address inside the pool window is
-    /// orchestratable; an owned address beyond the window and a foreign address
-    /// are not (both route to the manual funding path).
-    #[test]
-    fn is_orchestratable_platform_destination_branches() {
-        let network = Network::Testnet;
-        let mut wallet = test_wallet();
-
-        let in_window = add_platform_address_at(&mut wallet, network, 0);
-        assert!(
-            wallet.is_orchestratable_platform_destination(&in_window, network),
-            "owned address inside the pool window routes to the orchestrator"
-        );
-
-        let beyond_window =
-            add_platform_address_at(&mut wallet, network, UPSTREAM_PLATFORM_POOL_WINDOW);
-        assert!(
-            !wallet.is_orchestratable_platform_destination(&beyond_window, network),
-            "owned address beyond the pool window routes to the manual path"
-        );
-
-        // A platform address this wallet never derived (foreign destination).
-        let foreign_path =
-            DerivationPath::platform_payment_path(network, 0, 0, UPSTREAM_PLATFORM_POOL_WINDOW + 5);
-        let foreign_xprv = foreign_path
-            .derive_priv_ecdsa_for_master_seed(&TEST_SEED, network)
-            .expect("derive");
-        let secp = Secp256k1::new();
-        let foreign_addr = Address::p2pkh(&foreign_xprv.to_priv().public_key(&secp), network);
-        // Note: not registered into the wallet, so it is foreign regardless of index.
-        let foreign = PlatformAddress::try_from(foreign_addr).expect("platform addr");
-        assert!(
-            !wallet.is_orchestratable_platform_destination(&foreign, network),
-            "foreign address routes to the manual path"
-        );
     }
 
     /// `derive_private_key_in_arc_rw_lock_slice_with_seed` matches a direct

@@ -25,6 +25,7 @@ pub mod auth_pubkey_cache;
 pub(crate) mod auth_pubkey_cache;
 mod avatar_cache;
 mod contact_profile_cache;
+mod coordinator_gate;
 mod dashpay;
 mod det_platform_signer;
 mod det_signer;
@@ -66,6 +67,8 @@ pub use secret_prompt::{
     NullSecretPrompt, RememberPolicy, SecretPrompt, SecretPromptCancelled, SecretPromptReply,
     SecretPromptRequest, SecretPromptRetry, SecretScope,
 };
+
+use coordinator_gate::CoordinatorGate;
 
 pub use auth_pubkey_cache::AuthPubkeyCacheView;
 pub use avatar_cache::AvatarCacheView;
@@ -211,6 +214,10 @@ struct Inner {
     /// Guards [`WalletBackend::start`] so chain sync spawns exactly once.
     /// See [`StartLatch`].
     start_latch: StartLatch,
+    /// Quorum-readiness gate for the Platform/identity sync coordinators.
+    /// Shared with the `EventBridge`: `start` arms it, the bridge fires it when
+    /// the masternode list reaches `Synced`. See [`CoordinatorGate`].
+    coordinator_gate: Arc<CoordinatorGate>,
 }
 
 /// The single wallet entry point. See module docs.
@@ -263,10 +270,13 @@ impl WalletBackend {
 
         let snapshots = Arc::new(SnapshotStore::new());
 
+        let coordinator_gate = Arc::new(CoordinatorGate::new());
+
         let bridge = Arc::new(EventBridge::new(
             connection_status,
             task_result_sender,
             Arc::clone(&snapshots),
+            Arc::clone(&coordinator_gate),
         ));
 
         let pwm = PlatformWalletManager::new(sdk, Arc::clone(&persister), bridge);
@@ -300,6 +310,7 @@ impl WalletBackend {
                 app_kv,
                 secret_access,
                 start_latch: StartLatch::default(),
+                coordinator_gate,
             }),
         };
 
@@ -930,6 +941,13 @@ impl WalletBackend {
     ///
     /// Idempotent: the first call latches a started flag and spawns the run
     /// loop; subsequent calls return `Ok(())` without spawning a second loop.
+    ///
+    /// SPV is spawned immediately, but the Platform/identity sync coordinators
+    /// are gated on masternode-list readiness via [`CoordinatorGate`]: starting
+    /// them before quorums exist fires proof-verifying DAPI calls that fail
+    /// locally and get every node banned by the SDK. The gate fires them once,
+    /// either now (if masternodes already synced) or when the `EventBridge`
+    /// reports the masternode list reached `Synced`.
     pub async fn start(&self) -> Result<(), TaskError> {
         if !self.inner.start_latch.try_begin() {
             tracing::debug!("Wallet backend chain sync already started; ignoring");
@@ -940,11 +958,26 @@ impl WalletBackend {
 
         self.inner.pwm.spv_arc().spawn_in_background(config);
 
-        self.inner.pwm.platform_address_sync_arc().start();
-        self.inner.pwm.identity_sync_arc().start();
+        // Defer the coordinator starts behind the quorum-readiness gate. The
+        // gate is reachable from the `EventBridge`, which the long-lived SPV
+        // run loop holds, so the action captures WEAK handles: a strong capture
+        // would pin the coordinators (and through them the persister's advisory
+        // lock) for as long as the SPV task lives, surviving backend teardown
+        // and blocking the next reconnect's persister open. At fire time the
+        // backend is live, so the upgrade always succeeds.
         // The upstream shielded sync coordinator only exists when
         // `platform-wallet`'s `shielded` feature is enabled; DET enables only
-        // `serde`, so there is no `shielded_sync_arc()` to start here.
+        // `serde`, so there is none to start here.
+        let platform_address_sync = Arc::downgrade(&self.inner.pwm.platform_address_sync_arc());
+        let identity_sync = Arc::downgrade(&self.inner.pwm.identity_sync_arc());
+        self.inner.coordinator_gate.arm(Box::new(move || {
+            if let Some(coordinator) = platform_address_sync.upgrade() {
+                coordinator.start();
+            }
+            if let Some(coordinator) = identity_sync.upgrade() {
+                coordinator.start();
+            }
+        }));
 
         Ok(())
     }

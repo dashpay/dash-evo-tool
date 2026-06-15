@@ -22,6 +22,15 @@ static LOGGER_USES_FILE: AtomicBool = AtomicBool::new(false);
 /// Number of days a rotated log file is kept before cleanup removes it.
 const LOG_RETENTION_DAYS: i64 = 7;
 
+/// Whether stderr may be redirected to the crash sidecar file.
+///
+/// Returns `false` when the logger fell back to stderr, so redirecting would
+/// hide the only visible logs. This guards the no-op-on-fallback contract of
+/// [`capture_stderr_to_file`].
+fn should_capture_stderr() -> bool {
+    LOGGER_USES_FILE.load(Ordering::SeqCst)
+}
+
 pub fn initialize_logger() {
     INIT_LOGGER.call_once(|| {
         initialize_logger_internal();
@@ -136,7 +145,7 @@ fn initialize_logger_internal() {
 /// then would swallow the fallback logs. On non-Unix targets this is currently
 /// a best-effort no-op; see the inline note.
 pub fn capture_stderr_to_file() {
-    if !LOGGER_USES_FILE.load(Ordering::SeqCst) {
+    if !should_capture_stderr() {
         tracing::warn!(
             "Logging is using the stderr fallback; skipping crash-stderr capture to keep logs visible"
         );
@@ -217,21 +226,28 @@ pub fn install_fatal_signal_handler() {
     install_fatal_signal_handler_impl();
 }
 
+/// Maps a fatal signal number to a fixed `'static` marker line written to
+/// stderr from the signal handler. Pure match over constants — no allocation,
+/// no formatting — so it stays async-signal-safe when called from the handler.
+#[cfg(unix)]
+fn marker_for_signal(sig: nix::libc::c_int) -> &'static [u8] {
+    use nix::sys::signal::Signal;
+    match Signal::try_from(sig) {
+        Ok(Signal::SIGSEGV) => b"\nFATAL: SIGSEGV (segmentation fault)\n",
+        Ok(Signal::SIGABRT) => b"\nFATAL: SIGABRT (abort)\n",
+        Ok(Signal::SIGBUS) => b"\nFATAL: SIGBUS (bus error)\n",
+        Ok(Signal::SIGILL) => b"\nFATAL: SIGILL (illegal instruction)\n",
+        Ok(Signal::SIGFPE) => b"\nFATAL: SIGFPE (arithmetic error)\n",
+        _ => b"\nFATAL: unexpected signal\n",
+    }
+}
+
 #[cfg(unix)]
 fn install_fatal_signal_handler_impl() {
     use nix::sys::signal::{SaFlags, SigAction, SigHandler, SigSet, Signal, sigaction};
 
     extern "C" fn handle_fatal(sig: nix::libc::c_int) {
-        // Async-signal-safe: a single `write` of a constant string. Picking the
-        // marker by signal number avoids any formatting/allocation.
-        let marker: &[u8] = match Signal::try_from(sig) {
-            Ok(Signal::SIGSEGV) => b"\nFATAL: SIGSEGV (segmentation fault)\n",
-            Ok(Signal::SIGABRT) => b"\nFATAL: SIGABRT (abort)\n",
-            Ok(Signal::SIGBUS) => b"\nFATAL: SIGBUS (bus error)\n",
-            Ok(Signal::SIGILL) => b"\nFATAL: SIGILL (illegal instruction)\n",
-            Ok(Signal::SIGFPE) => b"\nFATAL: SIGFPE (arithmetic error)\n",
-            _ => b"\nFATAL: unexpected signal\n",
-        };
+        let marker = marker_for_signal(sig);
         // SAFETY: `write` is async-signal-safe. `marker` is a 'static byte
         // string, valid for the call. The result is intentionally ignored —
         // there is nothing safe to do on failure inside a signal handler.
@@ -418,5 +434,57 @@ mod tests {
         rotate_log_in_dir(dir.path(), "det-stderr");
         let count = fs::read_dir(dir.path()).expect("read_dir").count();
         assert_eq!(count, 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn marker_for_signal_names_each_fatal_signal() {
+        use nix::sys::signal::Signal;
+
+        for (signal, needle) in [
+            (Signal::SIGSEGV, "SIGSEGV"),
+            (Signal::SIGABRT, "SIGABRT"),
+            (Signal::SIGBUS, "SIGBUS"),
+            (Signal::SIGILL, "SIGILL"),
+            (Signal::SIGFPE, "SIGFPE"),
+        ] {
+            let marker = marker_for_signal(signal as nix::libc::c_int);
+            let text = std::str::from_utf8(marker).expect("marker is utf8");
+            assert!(
+                text.contains(needle),
+                "marker for {signal:?} should contain {needle:?}, got {text:?}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn marker_for_signal_falls_back_for_unknown() {
+        // SIGUSR1 is not one of the handled fatal signals, so it must hit the
+        // generic fallback rather than naming a specific fatal signal.
+        let marker = marker_for_signal(nix::libc::SIGUSR1);
+        let text = std::str::from_utf8(marker).expect("marker is utf8");
+        assert!(text.contains("unexpected signal"), "got {text:?}");
+    }
+
+    #[test]
+    fn should_capture_stderr_tracks_logger_uses_file() {
+        // LOGGER_USES_FILE is a process-global static shared with other tests
+        // in this binary; save and restore it so this test is order-independent.
+        let saved = LOGGER_USES_FILE.load(Ordering::SeqCst);
+
+        LOGGER_USES_FILE.store(false, Ordering::SeqCst);
+        assert!(
+            !should_capture_stderr(),
+            "must not capture when logging fell back to stderr"
+        );
+
+        LOGGER_USES_FILE.store(true, Ordering::SeqCst);
+        assert!(
+            should_capture_stderr(),
+            "must capture when logging owns the det.log file"
+        );
+
+        LOGGER_USES_FILE.store(saved, Ordering::SeqCst);
     }
 }

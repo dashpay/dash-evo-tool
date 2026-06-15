@@ -26,8 +26,8 @@ use dash_sdk::dpp::dashcore::sml::masternode_list::MasternodeList;
 use dash_sdk::dpp::dashcore::sml::masternode_list_engine::{
     MasternodeListEngine, MasternodeListEngineBlockContainer, WORK_DIFF_DEPTH,
 };
-use dash_sdk::dpp::dashcore::sml::masternode_list_entry::EntryMasternodeType;
 use dash_sdk::dpp::dashcore::sml::masternode_list_entry::qualified_masternode_list_entry::QualifiedMasternodeListEntry;
+use dash_sdk::dpp::dashcore::sml::masternode_list_entry::{EntryMasternodeType, MasternodeNetInfo};
 use dash_sdk::dpp::dashcore::sml::quorum_entry::qualified_quorum_entry::{
     QualifiedQuorumEntry, VerifyingChainLockSignaturesType,
 };
@@ -49,6 +49,28 @@ use std::path::Path;
 use std::sync::Arc;
 
 type HeightHash = (u32, BlockHash);
+
+/// Placeholder shown for masternode entries whose service address has no routable
+/// IPv4/IPv6 (Tor, I2P, CJDNS, or domain entries).
+const NO_ROUTABLE_ADDRESS: &str = "(no routable address)";
+
+/// Renders a masternode's IP for display, falling back to a placeholder for
+/// entries without a routable IPv4/IPv6 address.
+fn service_ip_display(net_info: &MasternodeNetInfo) -> String {
+    net_info
+        .primary_service_address()
+        .map(|addr| addr.ip().to_string())
+        .unwrap_or_else(|| NO_ROUTABLE_ADDRESS.to_string())
+}
+
+/// Renders a masternode's `ip:port` for display, falling back to a placeholder
+/// for entries without a routable IPv4/IPv6 address.
+fn service_addr_display(net_info: &MasternodeNetInfo) -> String {
+    net_info
+        .primary_service_address()
+        .map(|addr| addr.to_string())
+        .unwrap_or_else(|| NO_ROUTABLE_ADDRESS.to_string())
+}
 
 enum SelectedQRItem {
     SelectedSnapshot(QuorumSnapshot),
@@ -2007,7 +2029,7 @@ impl MasternodeListDiffScreen {
                         .confirmed_hash
                         .map(|h| h.to_string().to_lowercase())
                         .unwrap_or_default();
-                    let service_ip = masternode.service_address.ip().to_string().to_lowercase();
+                    let service_ip = service_ip_display(&masternode.service_address).to_lowercase();
                     let operator_public_key =
                         masternode.operator_public_key.to_string().to_lowercase();
                     let voting_key_id = masternode.key_id_voting.to_string().to_lowercase();
@@ -2078,7 +2100,9 @@ impl MasternodeListDiffScreen {
                                 } else {
                                     "EN"
                                 },
-                                masternode.masternode_list_entry.service_address.ip(),
+                                service_ip_display(
+                                    &masternode.masternode_list_entry.service_address
+                                ),
                                 pro_tx_hash.to_string().as_str().split_at(5).0
                             ),
                         )
@@ -2410,7 +2434,7 @@ impl MasternodeListDiffScreen {
                                 } else {
                                     "EN"
                                 },
-                                masternode.service_address.ip(),
+                                service_ip_display(&masternode.service_address),
                                 masternode
                                     .pro_reg_tx_hash
                                     .to_string()
@@ -2781,7 +2805,7 @@ impl MasternodeListDiffScreen {
                                         "Version: {}\n\
                                      ProRegTxHash: {}\n\
                                      Confirmed Hash: {}\n\
-                                     Service Address: {}:{}\n\
+                                     Service Address: {}\n\
                                      Operator Public Key: {}\n\
                                      Voting Key ID: {}\n\
                                      Is Valid: {}\n\
@@ -2793,8 +2817,7 @@ impl MasternodeListDiffScreen {
                                             Some(confirmed_hash) =>
                                                 confirmed_hash.reverse().to_string(),
                                         },
-                                        masternode.service_address.ip(),
-                                        masternode.service_address.port(),
+                                        service_addr_display(&masternode.service_address),
                                         masternode.operator_public_key,
                                         masternode.key_id_voting,
                                         masternode.is_valid,
@@ -2837,7 +2860,7 @@ impl MasternodeListDiffScreen {
                                 "Version: {}\n\
                                      ProRegTxHash: {}\n\
                                      Confirmed Hash: {}\n\
-                                     Service Address: {}:{}\n\
+                                     Service Address: {}\n\
                                      Operator Public Key: {}\n\
                                      Voting Key ID: {}\n\
                                      Is Valid: {}\n\
@@ -2850,8 +2873,7 @@ impl MasternodeListDiffScreen {
                                     None => "No confirmed hash".to_string(),
                                     Some(confirmed_hash) => confirmed_hash.reverse().to_string(),
                                 },
-                                masternode.service_address.ip(),
-                                masternode.service_address.port(),
+                                service_addr_display(&masternode.service_address),
                                 masternode.operator_public_key,
                                 masternode.key_id_voting,
                                 masternode.is_valid,
@@ -3161,10 +3183,9 @@ impl MasternodeListDiffScreen {
                 ui.heading("New Masternodes");
                 for masternode in &mn_list_diff.new_masternodes {
                     ui.label(format!(
-                        "{} {}:{}",
+                        "{} {}",
                         masternode.pro_reg_tx_hash,
-                        masternode.service_address.ip(),
-                        masternode.service_address.port(),
+                        service_addr_display(&masternode.service_address),
                     ));
                 }
 

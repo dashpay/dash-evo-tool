@@ -212,6 +212,7 @@ pub async fn build_shield_credit(
                 0,
                 &prover,
                 [0u8; 36],
+                None,
                 sdk.version(),
             )
             .await
@@ -312,6 +313,7 @@ pub async fn shield_credits(
                 0,
                 &prover,
                 [0u8; 36],
+                None,
                 sdk.version(),
             )
             .await
@@ -598,8 +600,11 @@ pub async fn shield_from_asset_lock(
     );
 
     // memo: 36-byte structured memo (4-byte type tag + 32-byte payload); all zeros = empty memo.
+    // `sender_ovk = None`: no outgoing viewing key, so this shield carries no
+    // sender-recoverable note metadata.
     // `surplus_output = None`: the asset-lock surplus (lock value − shield amount
     // − fee) folds into the fee pools rather than going to a separate address.
+    // `dummy_outputs = 0`: no anonymity-set fillers, matching DET's prior behavior.
     let state_transition = build_shield_from_asset_lock_transition(
         &recipient,
         shield_amount_credits,
@@ -608,6 +613,8 @@ pub async fn shield_from_asset_lock(
         &prover,
         [0u8; 36],
         None,
+        None,
+        0,
         sdk.version(),
     )
     .map_err(|e| shielded_build_error(e.to_string()))?;

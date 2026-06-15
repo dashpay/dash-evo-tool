@@ -2295,6 +2295,12 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
         | P::ShieldedMerkleWitnessUnavailable(_)
         | P::ShieldedKeyDerivation(_)
         | P::ShieldedNotBound
+        // Broadcast was accepted but its execution result is unconfirmed — the
+        // op may already be on chain, so it is neither a rejection nor a
+        // finality timeout. Bucket as Other; the upstream contract says the
+        // caller must not re-submit (the next sync reconciles).
+        | P::ShieldedBroadcastUnconfirmed { .. }
+        | P::ShieldedSpendUnconfirmed { .. }
         | P::RehydrationTopologyUnsupported { .. } => IdentityOpErrorKind::Other,
     }
 }

@@ -448,6 +448,45 @@ the nullifier cursor to 0 so a resync re-derives the spent set from position 0. 
 - **Fix direction:** add a settings/k-v importer to the cold-start migration (at minimum:
   network, theme, onboarding flag, scheduled votes), or disclose prominently.
 
+### PROJ-042 — Non-identity asset-lock flows bypass upstream orchestration: post-broadcast recovery gap *(MEDIUM — PARTIAL: shield-from-asset-lock false-success RESOLVED in PR; platform-address consume orchestration OPEN/deferred, upstream-gated)*
+
+Identity asset-lock flows route through upstream `IdentityWallet::*_with_funding`, which runs
+the full resolve → `submit_with_cl_height_retry` → `consume_asset_lock` pipeline. Three
+**non-identity** asset-lock flows build the asset lock upstream but then submit the Platform
+transition manually, so they miss the post-asset-lock / pre-final-accounting recovery
+upstream owns:
+
+- **`src/backend_task/shielded/bundle.rs` — `shield_from_asset_lock`:** built the Type 18
+  `ShieldFromAssetLock`, broadcast it, then **swallowed** a post-broadcast `wait_for_response`
+  failure as a `warn!` + `.ok()`, falling through to `Ok(shield_amount_credits)`. A
+  confirmation failure thus reported success even though the credits may not have reached the
+  pool — and the locked Core funds back a single-use asset lock that resumes the same shield
+  on retry.
+- **`src/backend_task/wallet/fund_platform_address_from_wallet_utxos.rs`** and
+  **`src/backend_task/wallet/fund_platform_address_from_asset_lock.rs`:** call the SDK
+  `TopUpAddress::top_up` directly. Submit failures **do** propagate via `?` (no false
+  success), but a successful top-up never marks the tracked lock `Consumed`, so it stays
+  resumable, and there is no CL-height retry on a submit-time consensus 10506.
+
+- **Resolved in PR:** the shield-from-asset-lock false-success. The post-broadcast
+  confirmation failure now maps to a dedicated typed `TaskError::ShieldedConfirmationUnknown`
+  (`#[source] Box<dash_sdk::Error>`, no `String` message field) that surfaces "your funds were
+  sent but the confirmation could not be verified — wait, then refresh before sending again".
+  Unit-tested in `bundle.rs` (`confirmation_failure_maps_to_unknown_confirmation_error`,
+  `unknown_confirmation_message_is_actionable_and_jargon_free`).
+- **Deferred / upstream-gated:** routing all three through the upstream orchestrators —
+  `PlatformWallet::shielded_fund_from_asset_lock` and `PlatformWallet::fund_from_asset_lock`
+  (both `pub` on the public `PlatformWallet` at rev `4f432c9`). DET reaches a `PlatformWallet`
+  only via `WalletBackend::resolve_wallet` (private; returns `Arc<PlatformWallet>`), and the
+  call needs an external `key_wallet::signer::Signer` (plus `Signer<PlatformAddress>` for the
+  address paths) and an `AssetLockFunding` plumbed through. `submit_with_cl_height_retry` /
+  `consume_asset_lock` remain `pub(crate)` upstream, so they are reachable only through those
+  two public orchestrators. Wiring this is a funds-safety change gated on Smythe+Marvin
+  review; precise TODOs sit at each choicepoint in the three files.
+- **Fix direction:** expose a delegating `WalletBackend` method (or make `resolve_wallet`
+  reachable) and route each flow through the matching upstream orchestrator so consume/retry
+  is owned upstream end-to-end.
+
 ### New LOW parity deltas (2026-06-10)
 
 | ID | Title | Location (PR #860) | v0.10-dev evidence | Status / what's missing |
@@ -458,6 +497,7 @@ the nullifier cursor to 0 so a resync re-derives the spent set from position 0. 
 | PROJ-038 | Failed wallet-funded identity registration leaves no visible local record; retry-adoption semantics changed | `src/backend_task/identity/register_identity.rs:23,209-231` (placeholder-id skip; only the Platform-addresses path still persists `FailedCreation`, `:394`); `src/wallet_backend/mod.rs:1910-1922` (`IdentityAlreadyExists` → generic bucket) | OLD pre-derived the real id, persisted `PendingCreation`/`FailedCreation` rows (OLD `register_identity.rs:258-295,382-423`) and silently adopted an already-registered identity on retry | **RESOLVED 2026-06-11** (`1871c59f`) — recovery trail and UI copy updated to surface the unused-asset-lock resume path. (was GAPCMP-B-1/B-2) |
 | PROJ-040 | DashPay offline caches dropped — contacts/requests/profiles/avatars need network on every open | `src/ui/dashpay/contacts_list.rs:67,111-134`; `contact_requests.rs:295-297`; avatar-bytes cache dropped (`profile_screen.rs` comment) | OLD rendered instantly from `data.db` (`contacts_list.rs:113-180`, `contact_requests.rs:162-250`, avatar bytes + negative-profile caching) | **RESOLVED 2026-06-11** (`467dc807` + `dc94bba6`) — offline contact/profile reads and avatar cache implemented; cache invalidation and bounds fixed in `dc94bba6`. (was GAPCMP-C-6) |
 | PROJ-041 | "Stop tracking balance" undone by "Refresh My Tokens"; watch set became identities × all-known-tokens | `src/backend_task/tokens/query_my_token_balances.rs:39-44,100-105` (re-registers `known_token_ids` for every identity), `:62-83` (unwatch) | OLD refreshed only pairs already in `identity_token_balances` (OLD `:27-44`) | OPEN — dismissed rows reappear after any refresh; rows appear for never-tracked pairs. Disclosed in code comments only. Evolution of already-resolved #5. Deferred-with-TODO (`727e8d6a`). (was GAPCMP-C-7) |
+| PROJ-042 | Non-identity asset-lock flows bypass upstream orchestration: shield-from-asset-lock falsely confirmed on a post-broadcast confirmation failure; platform-address top-ups never mark the lock `Consumed` | `src/backend_task/shielded/bundle.rs` (`shield_from_asset_lock`, post-broadcast `wait_for_response`); `src/backend_task/wallet/fund_platform_address_from_wallet_utxos.rs` (`top_up`); `src/backend_task/wallet/fund_platform_address_from_asset_lock.rs` (`top_up`) | Identity asset-lock flows route through `IdentityWallet::*_with_funding`; these three never did | **PARTIAL** — shield-from-asset-lock false-success **RESOLVED in PR** (typed `TaskError::ShieldedConfirmationUnknown`, `#[source]`; unit-tested). Platform-address consume/retry orchestration **OPEN/deferred** — upstream-gated on a reachable route to `PlatformWallet::fund_from_asset_lock` / `shielded_fund_from_asset_lock` (public methods, but `WalletBackend::resolve_wallet` is private and an external `Signer` + `AssetLockFunding` must be plumbed). Submit failures already propagate via `?`, so no other false-success remains. Deferred-with-TODO at each choicepoint. |
 
 ---
 

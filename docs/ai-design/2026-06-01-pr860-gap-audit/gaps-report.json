@@ -9,11 +9,11 @@
     "overall_assessment": "PR #860 platform-wallet rewrite holds broad feature parity with v0.10-dev, but the 2026-06-10 full-surface parity pass surfaced 3 HIGH functional regressions (asset-lock QR funding soft-lock, incoming DashPay payment detection gone, and a shielded nullifier-cursor unit-mismatch regression introduced by the same-day #3828 re-pin; the last is RESOLVED 2026-06-10 in 39433dac), 7 new MEDIUM gaps, and 9 new LOW gaps on top of the 11 previously-open audit items. No funds-loss path was found: every broken path fails closed. PROJ-005 (unreleased platform pin) remains the sole release-gate merge-blocker; PROJ-026/027 are should-fix-before-ship; PROJ-028 (HIGH) and its sibling PROJ-030 (MEDIUM) are RESOLVED 2026-06-10 (39433dac, Smythe QA: SHIP)."
   },
   "summary_statistics": {
-    "total_findings": 43,
+    "total_findings": 44,
     "severity_counts": {
       "CRITICAL": 0,
       "HIGH": 1,
-      "MEDIUM": 4,
+      "MEDIUM": 5,
       "LOW": 6,
       "INFO": 0
     }
@@ -193,6 +193,16 @@
           "location": "src/backend_task/tokens/query_my_token_balances.rs:39-44",
           "description": "`stop_tracking_token_balance` (`:62-83`) unwatches upstream and prunes the order — but `query_my_token_balances` / `query_token_balance` register the full local token registry for **every** identity (`known_token_ids`, `:39-44,100-105`), deliberately re-watching stopped pairs ('Refresh all my tokens … deliberately re-tracks everything known') and creating rows for identity×token pairs the user never tracked. v0.10-dev refreshed only pairs already present in `identity_token_balances`, so a removed row stayed gone. Disclosed in code comments only.",
           "recommendation": "Persist the user's dismissed pairs and exclude them from the refresh re-watch, or scope refresh to currently-watched pairs (the v0.10-dev semantics)."
+        },
+        {
+          "id": "PROJ-042",
+          "risk": 0.5,
+          "impact": 0.55,
+          "scope": 0.5,
+          "title": "Non-identity asset-lock flows bypass upstream orchestration: shield-from-asset-lock falsely confirmed on a post-broadcast confirmation failure; platform-address top-ups never mark the lock Consumed",
+          "location": "src/backend_task/shielded/bundle.rs (shield_from_asset_lock, post-broadcast wait_for_response); src/backend_task/wallet/fund_platform_address_from_wallet_utxos.rs (top_up); src/backend_task/wallet/fund_platform_address_from_asset_lock.rs (top_up)",
+          "description": "Identity asset-lock flows route through upstream IdentityWallet::*_with_funding (resolve -> submit_with_cl_height_retry -> consume_asset_lock). Three non-identity flows build the asset lock upstream but submit the Platform transition manually. shield_from_asset_lock swallowed a post-broadcast wait_for_response failure as warn!+.ok() and fell through to Ok(shield_amount_credits) -- a confirmation failure reported success even though the single-use asset lock backs funds that may not have reached the pool. The two platform-address top_up paths propagate submit failures via ? (no false success) but never mark the tracked lock Consumed on success and have no CL-height submit retry. RESOLVED in PR: the shield false-success now maps to dedicated typed TaskError::ShieldedConfirmationUnknown (#[source] Box<dash_sdk::Error>, no String message field), unit-tested in bundle.rs.",
+          "recommendation": "Deferred/upstream-gated: route all three through PlatformWallet::shielded_fund_from_asset_lock and PlatformWallet::fund_from_asset_lock (both pub on the public PlatformWallet at rev 4f432c9), which own consume/retry. DET reaches a PlatformWallet only via WalletBackend::resolve_wallet (private, -> Arc<PlatformWallet>), and the route needs an external key_wallet::signer::Signer (plus Signer<PlatformAddress> for the address paths) and an AssetLockFunding plumbed in; submit_with_cl_height_retry / consume_asset_lock stay pub(crate) upstream, reachable only through those public orchestrators. Funds-safety change gated on Smythe+Marvin review; precise TODOs at each choicepoint."
         }
       ]
     },

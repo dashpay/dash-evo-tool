@@ -92,7 +92,11 @@ Sum = 11 open.
 (2026-06-15: PROJ-042's platform-address half moved PARTIAL → RESOLVED in PR — wallet-owned
 destinations now route through the upstream orchestrator; non-owned destinations keep the
 manual path by design. The finding was already in the resolved tally for its actionable
-shield-half fix, so the counts are unchanged. PROJ-043 stays OPEN.)
+shield-half fix, so the counts are unchanged. PROJ-043 stays OPEN.
+Follow-up same day: the fee-from-wallet residual on owned in-pool destinations is now CLOSED —
+that case also routes through the orchestrator using an in-pool, watched platform-payment change
+recipient. Only the by-design foreign-destination footgun and a narrow no-spare-change edge
+remain on the manual path; counts unchanged.)
 (2026-06-11 triage pass: 17 findings moved to RESOLVED/WONTFIX — PROJ-026/027/029/031/040/017/012/033/011/035/036/037/038/039/009/DOC-001/DOC-002;
 PROJ-007 PARTIAL; PROJ-022 accepted-risk. See Resolution log.)
 
@@ -495,17 +499,31 @@ transition manually, missing the post-asset-lock / pre-final-accounting recovery
   no `String` message field). Pool-membership semantics, the mixed-ownership routing rule, and
   error mapping are unit-tested (`upstream_pool_membership_distinguishes_in_pool_from_foreign`,
   `route_to_orchestrator` cases, `map_platform_address_fund_error_*`).
+- **Resolved in PR (fee-from-wallet residual):** funding your **own in-pool** address with
+  **fee-from-wallet** now also routes through the orchestrator. The branch sources the change
+  recipient from the wallet's own **watched platform-payment addresses** (every one is inside
+  DET's synced provider window — the `0a64be55` funds-safety invariant) and gates each through
+  the same `WalletBackend::platform_address_in_pool` check the orchestrator's pre-flight runs.
+  When a distinct in-pool, watched change address exists, the two-output map
+  (`{destination: Some(amount_credits), change: None}` with `ReduceOutput(change_index)`)
+  satisfies the orchestrator's exactly-one-`None` / all-in-pool contract, so the whole
+  fee-from-wallet flow gains orchestrated recovery (CL-height retry, IS→CL fallback,
+  `consume_asset_lock`). The lock is sized to `amount + estimated_fee` so the change absorbs
+  exactly the fee budget — identical amount/fee semantics to the manual path. No reveal or pool
+  advance happens: only already-revealed (watched + in-pool) addresses are used as change.
+  Change selection is a pure, unit-tested helper (`select_in_pool_change`:
+  `change_picker_returns_first_non_destination_candidate`, `change_picker_skips_the_destination`,
+  `change_picker_returns_none_without_a_distinct_candidate`).
 - **Two residuals on the manual fallback, stated honestly:**
   - *By design (footgun):* a **foreign / non-pool** destination — funding an address the wallet
     does not watch (advanced send, MCP/CLI) — keeps the manual `TopUpAddress` path. The
     orchestrator's pre-flight requires recipients to be in this wallet's platform-payment pool,
     and credits sent to an unwatched address are recoverable only by that key's holder.
-  - *Accepted minor residual:* funding your **own in-pool** address with **fee-from-wallet**
-    still drops to the manual path, because that branch derives a separate change recipient that
-    may not be in the pool, which the orchestrator's one-`None` / all-in-pool pre-flight would
-    reject. This case keeps weaker recovery (no orchestrated consume / CL-retry) than
-    fee-from-output. Closing it needs an in-pool change recipient so the whole fee-from-wallet
-    map is in-pool — a minor follow-up, accepted for this PR.
+  - *Narrow edge:* a fee-from-wallet top-up to an in-pool destination when the wallet has **no
+    other** watched, in-pool platform-payment address to serve as change falls back to the manual
+    path (which derives a fresh change address). This only occurs for a wallet whose single
+    revealed platform-payment address is the destination itself; revealing any second receive
+    address closes it on the next attempt.
   - Both manual fallbacks still propagate submit failures via `?` (no false success).
 
 ### PROJ-043 — Sibling shielded spend fns mark notes spent on an unverified post-broadcast confirmation *(LOW — OPEN/deferred; scoped out of the PROJ-042 PR by QA)*
@@ -541,7 +559,7 @@ the `wait_for_response` failure after a successful broadcast and return `Ok(...)
 | PROJ-038 | Failed wallet-funded identity registration leaves no visible local record; retry-adoption semantics changed | `src/backend_task/identity/register_identity.rs:23,209-231` (placeholder-id skip; only the Platform-addresses path still persists `FailedCreation`, `:394`); `src/wallet_backend/mod.rs:1910-1922` (`IdentityAlreadyExists` → generic bucket) | OLD pre-derived the real id, persisted `PendingCreation`/`FailedCreation` rows (OLD `register_identity.rs:258-295,382-423`) and silently adopted an already-registered identity on retry | **RESOLVED 2026-06-11** (`1871c59f`) — recovery trail and UI copy updated to surface the unused-asset-lock resume path. (was GAPCMP-B-1/B-2) |
 | PROJ-040 | DashPay offline caches dropped — contacts/requests/profiles/avatars need network on every open | `src/ui/dashpay/contacts_list.rs:67,111-134`; `contact_requests.rs:295-297`; avatar-bytes cache dropped (`profile_screen.rs` comment) | OLD rendered instantly from `data.db` (`contacts_list.rs:113-180`, `contact_requests.rs:162-250`, avatar bytes + negative-profile caching) | **RESOLVED 2026-06-11** (`467dc807` + `dc94bba6`) — offline contact/profile reads and avatar cache implemented; cache invalidation and bounds fixed in `dc94bba6`. (was GAPCMP-C-6) |
 | PROJ-041 | "Stop tracking balance" undone by "Refresh My Tokens"; watch set became identities × all-known-tokens | `src/backend_task/tokens/query_my_token_balances.rs:39-44,100-105` (re-registers `known_token_ids` for every identity), `:62-83` (unwatch) | OLD refreshed only pairs already in `identity_token_balances` (OLD `:27-44`) | OPEN — dismissed rows reappear after any refresh; rows appear for never-tracked pairs. Disclosed in code comments only. Evolution of already-resolved #5. Deferred-with-TODO (`727e8d6a`). (was GAPCMP-C-7) |
-| PROJ-042 | Non-identity asset-lock flows bypass upstream orchestration: shield-from-asset-lock falsely confirmed on a post-broadcast confirmation failure; platform-address top-ups never mark the lock `Consumed` | `src/backend_task/shielded/bundle.rs` (`shield_from_asset_lock`, post-broadcast `wait_for_response`); `src/backend_task/wallet/fund_platform_address_from_wallet_utxos.rs` (`top_up`); `src/backend_task/wallet/fund_platform_address_from_asset_lock.rs` (`top_up`) | Identity asset-lock flows route through `IdentityWallet::*_with_funding`; these three never did | **RESOLVED in PR** — shield-from-asset-lock false-success fixed (typed `TaskError::ShieldedConfirmationUnknown`, `#[source]`; unit-tested). Platform-address funding now gates on **upstream pool membership** (`WalletBackend::platform_address_in_pool` → upstream `ManagedPlatformAccount::contains_platform_address`, no DET-side constant); in-pool destinations route through `WalletBackend::fund_platform_address` → `PlatformAddressWallet::fund_from_asset_lock` (full resolve → `submit_with_cl_height_retry` → IS→CL → `consume_asset_lock`); errors map to `TaskError::PlatformAddressFundRejected` (`#[source]`). Membership + mixed-ownership routing + error mapping unit-tested. Two manual-fallback residuals stated honestly: foreign/non-pool destinations are by-design (footgun); funding your own in-pool address with fee-from-wallet keeps weaker recovery (accepted minor residual). Manual submit failures still propagate via `?`, so no false-success remains. |
+| PROJ-042 | Non-identity asset-lock flows bypass upstream orchestration: shield-from-asset-lock falsely confirmed on a post-broadcast confirmation failure; platform-address top-ups never mark the lock `Consumed` | `src/backend_task/shielded/bundle.rs` (`shield_from_asset_lock`, post-broadcast `wait_for_response`); `src/backend_task/wallet/fund_platform_address_from_wallet_utxos.rs` (`top_up`); `src/backend_task/wallet/fund_platform_address_from_asset_lock.rs` (`top_up`) | Identity asset-lock flows route through `IdentityWallet::*_with_funding`; these three never did | **RESOLVED in PR** — shield-from-asset-lock false-success fixed (typed `TaskError::ShieldedConfirmationUnknown`, `#[source]`; unit-tested). Platform-address funding now gates on **upstream pool membership** (`WalletBackend::platform_address_in_pool` → upstream `ManagedPlatformAccount::contains_platform_address`, no DET-side constant); in-pool destinations route through `WalletBackend::fund_platform_address` → `PlatformAddressWallet::fund_from_asset_lock` (full resolve → `submit_with_cl_height_retry` → IS→CL → `consume_asset_lock`); errors map to `TaskError::PlatformAddressFundRejected` (`#[source]`). Membership + mixed-ownership routing + error mapping unit-tested. **Fee-from-wallet residual now CLOSED**: funding your own in-pool address with fee-from-wallet also routes through the orchestrator, sourcing an in-pool, watched platform-payment change recipient (gated through `platform_address_in_pool`) so the two-output map satisfies the orchestrator's one-`None` / all-in-pool contract; change selection is a pure, unit-tested helper (`select_in_pool_change`). One by-design residual remains (foreign/non-pool destinations — footgun) plus a narrow edge (an in-pool destination that is the wallet's only revealed platform-payment address has no distinct change → manual fallback). Manual submit failures still propagate via `?`, so no false-success remains. |
 | PROJ-043 | Four sibling shielded spend fns swallow the same post-broadcast confirmation failure, so notes are marked spent for spends that may never confirm | `src/backend_task/shielded/bundle.rs:334-339` (`shield_credits`), `:429-436` (`shielded_transfer`), `:520-527` (`unshield_credits`), `:737-744` (`shielded_withdrawal`) — all `warn!`+`.ok()` then `Ok(...)`; `mark_notes_spent` at `src/context/shielded.rs:755-757` persists via `mark_shielded_note_spent` (`:867`) | Same swallow pattern PROJ-042 fixed for `shield_from_asset_lock` | OPEN/deferred (LOW) — the three spend fns return `Ok(spent_nullifiers)` on a confirmation failure, so `mark_notes_spent` marks notes spent locally for spends that may not have confirmed. **Self-heals** on the next nullifier/note resync (`check_nullifiers_task` reconciles against chain, `src/context/shielded.rs:813,856-859`) → temporary local divergence, not permanent note/fund loss. Fix direction: defer `mark_notes_spent` until confirmation is verified (extend the `ShieldedConfirmationUnknown` treatment or a confirmation-pending state) — a wider change touching spent-note bookkeeping + the resync contract, scoped out of this PR by QA. |
 
 ---

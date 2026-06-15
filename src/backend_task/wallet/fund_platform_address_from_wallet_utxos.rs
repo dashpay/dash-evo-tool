@@ -15,6 +15,26 @@ use std::sync::Arc;
 /// explicit credit amount, or `None` to absorb the remainder after fees.
 type FundingOutputs = BTreeMap<PlatformAddress, Option<u64>>;
 
+/// Pick a change recipient for the fee-from-wallet branch from a list of
+/// candidate platform-payment addresses that are already in the wallet's
+/// upstream pool.
+///
+/// Returns the first candidate that differs from `destination`, preserving the
+/// caller's ordering so selection is deterministic. `None` means no distinct
+/// in-pool candidate exists — the caller must then fall back to the manual path
+/// (which derives a fresh change address). Both inputs are already restricted to
+/// in-pool, watched addresses by the caller, so any returned address satisfies
+/// the orchestrator's all-in-pool contract and DET's watched-window invariant.
+fn select_in_pool_change(
+    destination: &PlatformAddress,
+    in_pool_candidates: &[PlatformAddress],
+) -> Option<PlatformAddress> {
+    in_pool_candidates
+        .iter()
+        .find(|candidate| *candidate != destination)
+        .copied()
+}
+
 /// Build the output map and fee strategy for the fee-from-wallet funding branch.
 ///
 /// The `destination` receives exactly `amount` converted to credits, and a
@@ -61,6 +81,12 @@ impl AppContext {
     /// the lock, CL-height retry, InstantSend → ChainLock fallback, consume on
     /// acceptance). Any other destination — an advanced footgun users are
     /// trusted to take — keeps the manual asset-lock + `TopUpAddress` path.
+    ///
+    /// The fee-from-wallet case needs a second (change) recipient, and the
+    /// orchestrator's pre-flight requires *every* recipient to be in-pool. So it
+    /// reaches the orchestrator only when a distinct in-pool, watched
+    /// platform-payment address is available to absorb the change; otherwise it
+    /// falls back to the manual path (which derives a fresh change address).
     pub(crate) async fn fund_platform_address_from_wallet_utxos(
         self: &Arc<Self>,
         seed_hash: WalletSeedHash,
@@ -73,19 +99,37 @@ impl AppContext {
             .platform_address_in_pool(&seed_hash, &destination)
             .await?;
 
-        // The orchestrated path is available only for the fee-from-output case:
-        // it needs no separate change recipient, so a single in-pool destination
-        // satisfies the orchestrator's one-`None` invariant and pre-flight. The
-        // fee-from-wallet case derives a fresh change address that may not be in
-        // the pool, so it stays on the manual path.
-        if destination_in_pool && fee_deduct_from_output {
-            return self
-                .fund_platform_address_from_wallet_utxos_orchestrated(
-                    seed_hash,
-                    amount,
-                    destination,
-                )
-                .await;
+        if destination_in_pool {
+            if fee_deduct_from_output {
+                // Fee-from-output: a single in-pool destination is the lone
+                // `None` recipient, satisfying the orchestrator's one-`None`
+                // invariant with no change recipient.
+                return self
+                    .fund_platform_address_from_wallet_utxos_orchestrated(
+                        seed_hash,
+                        amount,
+                        destination,
+                    )
+                    .await;
+            }
+
+            // Fee-from-wallet: the orchestrator accepts this only when the
+            // change recipient is also in-pool. Source one from the wallet's
+            // own watched platform-payment addresses; if found, route through
+            // the orchestrator for the same recovery guarantees.
+            if let Some(change) = self
+                .select_in_pool_platform_change(&seed_hash, &destination)
+                .await?
+            {
+                return self
+                    .fund_platform_address_from_wallet_utxos_orchestrated_with_change(
+                        seed_hash,
+                        amount,
+                        destination,
+                        change,
+                    )
+                    .await;
+            }
         }
 
         self.fund_platform_address_from_wallet_utxos_manual(
@@ -95,6 +139,57 @@ impl AppContext {
             fee_deduct_from_output,
         )
         .await
+    }
+
+    /// Find a watched platform-payment address (distinct from `destination`)
+    /// that is already in this wallet's upstream pool, to absorb fee-from-wallet
+    /// change.
+    ///
+    /// Candidates are the wallet's watched platform-payment addresses — every
+    /// one is inside DET's synced provider window, so its change credits are
+    /// visible and spendable (the funds-safety invariant from `0a64be55`). Each
+    /// is gated through [`WalletBackend::platform_address_in_pool`], the exact
+    /// membership check the orchestrator's pre-flight runs, so a returned
+    /// address is guaranteed to pass `validate_recipient_addresses`. No reveal
+    /// or pool advance happens — only already-revealed addresses are inspected.
+    /// `None` means no distinct in-pool candidate exists; the caller falls back
+    /// to the manual path.
+    async fn select_in_pool_platform_change(
+        self: &Arc<Self>,
+        seed_hash: &WalletSeedHash,
+        destination: &PlatformAddress,
+    ) -> Result<Option<PlatformAddress>, TaskError> {
+        let candidates: Vec<PlatformAddress> = {
+            let wallet_arc = {
+                let wallets = self.wallets.read()?;
+                wallets
+                    .get(seed_hash)
+                    .cloned()
+                    .ok_or(TaskError::WalletNotFound)?
+            };
+            let wallet = wallet_arc.read()?;
+            wallet
+                .platform_addresses(self.network)
+                .into_iter()
+                .map(|(_, platform_address)| platform_address)
+                .collect()
+        };
+
+        // Verify candidates in order, stopping at the first that is both
+        // distinct from the destination and confirmed in-pool. `select_in_pool_change`
+        // encodes the ordering rule; the loop is just the async membership gate.
+        let backend = self.wallet_backend()?;
+        for candidate in candidates {
+            let Some(picked) = select_in_pool_change(destination, std::slice::from_ref(&candidate))
+            else {
+                continue;
+            };
+            if backend.platform_address_in_pool(seed_hash, &picked).await? {
+                return Ok(Some(picked));
+            }
+        }
+
+        Ok(None)
     }
 
     /// Orchestrated wallet-UTXO funding for a wallet-owned destination: the
@@ -149,10 +244,76 @@ impl AppContext {
         Ok(BackendTaskSuccessResult::PlatformAddressFunded { seed_hash })
     }
 
+    /// Orchestrated fee-from-wallet funding for a wallet-owned destination with
+    /// an in-pool change recipient.
+    ///
+    /// The `destination` receives exactly `amount` credits; the `change`
+    /// recipient (the lone `None` entry) absorbs the asset-lock surplus, from
+    /// which the Platform fee is deducted via `ReduceOutput`. Both recipients are
+    /// in-pool, so the orchestrator's pre-flight accepts the map and the full
+    /// recovery pipeline (CL-height retry, IS→CL fallback, consume-on-accept)
+    /// applies. The lock is sized to cover `amount` plus the estimated fee so the
+    /// surplus the change absorbs is exactly the fee budget.
+    async fn fund_platform_address_from_wallet_utxos_orchestrated_with_change(
+        self: &Arc<Self>,
+        seed_hash: WalletSeedHash,
+        amount: u64,
+        destination: PlatformAddress,
+        change: PlatformAddress,
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
+        use crate::wallet_backend::PlatformPathIndex;
+        use platform_wallet::wallet::asset_lock::AssetLockFunding;
+
+        let wallet_arc = {
+            let wallets = self.wallets.read()?;
+            wallets
+                .get(&seed_hash)
+                .cloned()
+                .ok_or(TaskError::WalletNotFound)?
+        };
+        let network = self.network;
+
+        let (outputs, fee_strategy) = build_fee_from_wallet_outputs(amount, destination, change)?;
+
+        // The lock must also cover the Platform fee, since fees are paid from the
+        // wallet (the surplus the change output absorbs), not from `amount`.
+        let estimated_platform_fee_duffs = self
+            .fee_estimator()
+            .estimate_address_funding_from_asset_lock_duffs(2);
+        let asset_lock_amount = amount.saturating_add(estimated_platform_fee_duffs);
+
+        let path_index = {
+            let wallet = wallet_arc.read()?;
+            PlatformPathIndex::from_wallet(&wallet, network)
+        };
+
+        let backend = self.wallet_backend()?;
+        backend
+            .fund_platform_address(
+                &seed_hash,
+                AssetLockFunding::FromWalletBalance {
+                    amount_duffs: asset_lock_amount,
+                    account_index: 0,
+                },
+                0,
+                outputs,
+                fee_strategy,
+                &path_index,
+                None,
+            )
+            .await?;
+
+        self.fetch_platform_address_balances(seed_hash).await?;
+
+        Ok(BackendTaskSuccessResult::PlatformAddressFunded { seed_hash })
+    }
+
     /// Manual wallet-UTXO funding: create the asset lock, then submit the
-    /// `TopUpAddress` transition directly. Used for non-owned destinations and
-    /// the fee-from-wallet case (which needs a change recipient). A submit
-    /// failure propagates via `?`, so the flow never reports a false success.
+    /// `TopUpAddress` transition directly. The fallback path — used for non-owned
+    /// destinations, and for the fee-from-wallet case only when no distinct
+    /// in-pool change address is available (it then derives a fresh one). A
+    /// submit failure propagates via `?`, so the flow never reports a false
+    /// success.
     async fn fund_platform_address_from_wallet_utxos_manual(
         self: &Arc<Self>,
         seed_hash: WalletSeedHash,
@@ -316,5 +477,49 @@ mod tests {
         let err = build_fee_from_wallet_outputs(u64::MAX, p2pkh(0x01), p2pkh(0x02))
             .expect_err("overflows");
         assert!(matches!(err, TaskError::CreditCalculationOverflow { .. }));
+    }
+
+    /// The fee-from-wallet change picker returns the first in-pool candidate
+    /// that is not the destination, preserving the caller's ordering.
+    #[test]
+    fn change_picker_returns_first_non_destination_candidate() {
+        let destination = p2pkh(0x01);
+        let candidates = [p2pkh(0x02), p2pkh(0x03)];
+        assert_eq!(
+            select_in_pool_change(&destination, &candidates),
+            Some(p2pkh(0x02)),
+            "the first distinct in-pool candidate is chosen"
+        );
+    }
+
+    /// The destination is never picked as its own change, even when it appears
+    /// among the in-pool candidates — the orchestrator needs two distinct
+    /// recipients (one `Some` amount, one `None` remainder).
+    #[test]
+    fn change_picker_skips_the_destination() {
+        let destination = p2pkh(0x01);
+        let candidates = [p2pkh(0x01), p2pkh(0x05)];
+        assert_eq!(
+            select_in_pool_change(&destination, &candidates),
+            Some(p2pkh(0x05)),
+            "the destination is skipped; the next distinct candidate is chosen"
+        );
+    }
+
+    /// With no candidate other than the destination, the picker returns `None`
+    /// so the caller falls back to the manual (fresh-change) path.
+    #[test]
+    fn change_picker_returns_none_without_a_distinct_candidate() {
+        let destination = p2pkh(0x01);
+        assert_eq!(
+            select_in_pool_change(&destination, &[]),
+            None,
+            "an empty candidate set yields no change"
+        );
+        assert_eq!(
+            select_in_pool_change(&destination, &[p2pkh(0x01)]),
+            None,
+            "only-the-destination yields no change"
+        );
     }
 }

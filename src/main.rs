@@ -4,7 +4,7 @@ use dash_evo_tool::*;
 
 use crate::app_dir::{app_user_data_dir_path, create_app_user_data_directory_if_not_exists};
 use crate::cpu_compatibility::check_cpu_compatibility;
-use crate::logging::initialize_logger;
+use crate::logging::{capture_stderr_to_file, initialize_logger, install_fatal_signal_handler};
 
 fn main() -> eframe::Result<()> {
     create_app_user_data_directory_if_not_exists()
@@ -12,6 +12,12 @@ fn main() -> eframe::Result<()> {
     let app_data_dir =
         app_user_data_dir_path().expect("Failed to get app user_data directory path");
     initialize_logger();
+    // Redirect stderr to a sidecar file so native crashes (SIGSEGV, abort, OOM)
+    // that bypass the tracing panic hook still leave evidence on disk, then
+    // mark which fatal signal fired. Both must run before the eframe/tokio
+    // runtime starts.
+    capture_stderr_to_file();
+    install_fatal_signal_handler();
     tracing::info!(
         version = VERSION,
         data_dir = %app_data_dir.display(),

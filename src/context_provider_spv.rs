@@ -107,6 +107,18 @@ impl ContextProvider for SpvProvider {
             .clone();
         drop(guard);
 
+        // Before the SPV masternode list has synced, quorum keys are not yet
+        // resolvable. A proof failure here would get the queried DAPI node
+        // banned by the SDK (`ban_failed_address: true`), so short-circuit to a
+        // `Config` "not ready" diagnostic — the same non-ban-inducing class the
+        // pre-unlock guard below uses. Any stray early proof call thus degrades
+        // gracefully instead of triggering the self-ban storm.
+        if !app_ctx.connection_status().masternodes_ready() {
+            return Err(ContextProviderError::Config(
+                "masternode list not yet synced (quorums unavailable)".to_string(),
+            ));
+        }
+
         // The wallet-backend gate ("not yet wired") is a startup-window
         // configuration state — `Config`, not `Generic`. Do NOT broadcast
         // the typed error's user-facing Display ("temporarily unavailable")

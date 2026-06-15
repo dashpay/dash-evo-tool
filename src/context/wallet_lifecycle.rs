@@ -378,6 +378,11 @@ impl AppContext {
         self.connection_status.set_spv_connected_peers(0);
         self.connection_status.set_spv_sync_progress(None);
         self.connection_status.set_spv_last_error(None);
+        // Re-arm the quorum gate: the next reconnect builds a fresh backend
+        // whose SPV session must re-sync the masternode list. Leaving the flag
+        // set would let early proof calls through before quorums exist again,
+        // re-triggering the DAPI self-ban storm.
+        self.connection_status.set_masternodes_ready(false);
         self.connection_status.refresh_state();
     }
 
@@ -1257,12 +1262,19 @@ mod tests {
             ctx.wallet_backend().is_ok(),
             "precondition: backend wired after start"
         );
+        // Simulate a session that reached quorum readiness, so the disconnect
+        // has a flag to re-arm.
+        ctx.connection_status().set_masternodes_ready(true);
 
         ctx.stop_spv().await;
 
         assert!(
             ctx.wallet_backend().is_err(),
             "stop_spv must unwire the backend so the next Connect rebuilds it"
+        );
+        assert!(
+            !ctx.connection_status().masternodes_ready(),
+            "stop_spv must re-arm the quorum gate so the next reconnect waits for masternode re-sync"
         );
         assert_eq!(
             ctx.connection_status().spv_status(),

@@ -15,6 +15,7 @@ use dash_sdk::dash_spv::sync::{SyncEvent, SyncProgress, SyncState};
 use platform_wallet::events::{EventHandler, PlatformEventHandler, WalletEvent};
 use platform_wallet::manager::platform_address_sync::PlatformAddressSyncSummary;
 
+use super::coordinator_gate::CoordinatorGate;
 use super::snapshot::{SnapshotStore, incoming_payment_candidates, received_outputs_for_record};
 use crate::app::TaskResult;
 use crate::backend_task::BackendTaskSuccessResult;
@@ -31,6 +32,10 @@ pub struct EventBridge {
     connection_status: Arc<ConnectionStatus>,
     task_result_sender: SenderAsync<TaskResult>,
     snapshots: Arc<SnapshotStore>,
+    /// Quorum-readiness gate, shared with `WalletBackend`. Fired here when the
+    /// masternode list reaches `Synced` so the Platform/identity coordinators
+    /// start only once quorums are resolvable.
+    coordinator_gate: Arc<CoordinatorGate>,
 }
 
 impl EventBridge {
@@ -38,11 +43,29 @@ impl EventBridge {
         connection_status: Arc<ConnectionStatus>,
         task_result_sender: SenderAsync<TaskResult>,
         snapshots: Arc<SnapshotStore>,
+        coordinator_gate: Arc<CoordinatorGate>,
     ) -> Self {
         Self {
             connection_status,
             task_result_sender,
             snapshots,
+            coordinator_gate,
+        }
+    }
+
+    /// Mark masternodes ready and release the Platform-sync gate when the
+    /// masternode-list phase has reached `Synced`. Idempotent — the gate fires
+    /// the coordinators at most once and the flag is a cheap atomic store, so
+    /// re-checking on every progress event is safe.
+    fn check_masternodes_ready(&self, progress: &SyncProgress) {
+        // `masternodes()` is `Err` until the manager has started reporting; a
+        // not-yet-started or still-syncing phase simply leaves the gate closed.
+        if progress
+            .masternodes()
+            .is_ok_and(|mn| mn.state() == SyncState::Synced)
+        {
+            self.connection_status.set_masternodes_ready(true);
+            self.coordinator_gate.on_masternodes_ready();
         }
     }
 
@@ -127,6 +150,9 @@ impl EventHandler for EventBridge {
         // determinate progress bar, not just a coarse status label.
         self.connection_status
             .set_spv_sync_progress(Some(progress.clone()));
+        // Release the Platform-sync gate once the masternode list is synced —
+        // before the (slow) filter/block scan that `is_synced()` waits on.
+        self.check_masternodes_ready(progress);
         self.apply_status(status);
         self.nudge_refresh();
     }
@@ -283,11 +309,27 @@ mod tests {
         Arc<ConnectionStatus>,
         tokio::sync::mpsc::Receiver<TaskResult>,
     ) {
+        let (bridge, cs, rx, _gate) = make_bridge_with_gate();
+        (bridge, cs, rx)
+    }
+
+    fn make_bridge_with_gate() -> (
+        EventBridge,
+        Arc<ConnectionStatus>,
+        tokio::sync::mpsc::Receiver<TaskResult>,
+        Arc<CoordinatorGate>,
+    ) {
         let cs = Arc::new(ConnectionStatus::new());
         let (tx, rx) =
             tokio::sync::mpsc::channel::<TaskResult>(8).with_egui_ctx(egui::Context::default());
-        let bridge = EventBridge::new(Arc::clone(&cs), tx, Arc::new(SnapshotStore::new()));
-        (bridge, cs, rx)
+        let gate = Arc::new(CoordinatorGate::default());
+        let bridge = EventBridge::new(
+            Arc::clone(&cs),
+            tx,
+            Arc::new(SnapshotStore::new()),
+            Arc::clone(&gate),
+        );
+        (bridge, cs, rx, gate)
     }
 
     fn drained_refresh(rx: &mut tokio::sync::mpsc::Receiver<TaskResult>) -> bool {
@@ -436,6 +478,78 @@ mod tests {
         assert_eq!(stored_headers.target_height(), 10_000);
         assert_eq!(stored_headers.current_height(), 4_200);
         assert!(drained_refresh(&mut rx));
+    }
+
+    /// A `SyncProgress` whose masternode phase is in `state`, headers still
+    /// mid-sync (so the overall pipeline is not yet "synced").
+    fn progress_with_masternode_state(state: SyncState) -> SyncProgress {
+        use dash_sdk::dash_spv::sync::{BlockHeadersProgress, MasternodesProgress};
+
+        let mut headers = BlockHeadersProgress::default();
+        headers.set_state(SyncState::Syncing);
+        headers.update_target_height(10_000);
+        headers.update_tip_height(4_200);
+
+        let mut mn = MasternodesProgress::default();
+        mn.set_state(state);
+
+        let mut progress = SyncProgress::default();
+        progress.update_headers(headers);
+        progress.update_masternodes(mn);
+        progress
+    }
+
+    #[test]
+    fn masternodes_synced_progress_opens_gate_and_sets_flag() {
+        let (bridge, cs, mut rx, gate) = make_bridge_with_gate();
+        // Arm the gate so it has a coordinator action to run (mirrors
+        // `WalletBackend::start`). A bare counter stands in for the real
+        // coordinator starts.
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let calls_for_action = Arc::clone(&calls);
+        gate.arm(Box::new(move || {
+            calls_for_action.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }));
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "coordinators must not start before masternodes are synced"
+        );
+
+        bridge.on_progress(&progress_with_masternode_state(SyncState::Synced));
+
+        assert!(
+            cs.masternodes_ready(),
+            "a synced masternode phase must set the readiness flag"
+        );
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "a synced masternode phase must open the gate and start coordinators once"
+        );
+        assert!(drained_refresh(&mut rx));
+    }
+
+    #[test]
+    fn masternodes_still_syncing_keeps_gate_closed() {
+        let (bridge, cs, _rx, gate) = make_bridge_with_gate();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let calls_for_action = Arc::clone(&calls);
+        gate.arm(Box::new(move || {
+            calls_for_action.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }));
+
+        bridge.on_progress(&progress_with_masternode_state(SyncState::Syncing));
+
+        assert!(
+            !cs.masternodes_ready(),
+            "a still-syncing masternode phase must not set the readiness flag"
+        );
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "coordinators must stay closed while masternodes are still syncing"
+        );
     }
 
     #[test]

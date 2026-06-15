@@ -51,6 +51,18 @@ pub struct ConnectionStatus {
     rpc_online: AtomicBool,
     spv_status: AtomicU8,
     overall_state: AtomicU8,
+    /// `true` once the SPV masternode list has finished syncing, so quorum
+    /// public keys are resolvable. Platform/identity sync must wait on this:
+    /// firing proof-verifying DAPI calls before quorums exist makes every
+    /// queried node fail locally and get banned by the SDK. Push-based from
+    /// the wallet-backend `EventBridge` `on_progress` callback. Reset by
+    /// [`Self::reset`] on disconnect / network switch.
+    ///
+    /// ADVISORY MIRROR: read only by the `get_quorum_public_key` defense
+    /// backstop. `Relaxed` is sufficient because it guards no other memory —
+    /// the authoritative coordinator-start ordering lives in `CoordinatorGate`,
+    /// whose own `masternodes_ready`/`fired` swap is `SeqCst`.
+    masternodes_ready: AtomicBool,
     // NOTE: Mutex (not RwLock) is intentional — single reader (tooltip hover),
     // single writer (poll cycle), minimal contention. RwLock overhead not justified.
     spv_last_error: Mutex<Option<String>>,
@@ -74,6 +86,7 @@ impl ConnectionStatus {
             rpc_online: AtomicBool::new(false),
             spv_status: AtomicU8::new(SpvStatus::Idle as u8),
             overall_state: AtomicU8::new(OverallConnectionState::Disconnected as u8),
+            masternodes_ready: AtomicBool::new(false),
             spv_last_error: Mutex::new(None),
             spv_sync_progress: Mutex::new(None),
             rpc_last_error: Mutex::new(None),
@@ -91,6 +104,7 @@ impl ConnectionStatus {
         self.rpc_online.store(false, Ordering::Relaxed);
         self.spv_status
             .store(SpvStatus::Idle as u8, Ordering::Relaxed);
+        self.masternodes_ready.store(false, Ordering::Relaxed);
         self.spv_connected_peers.store(0, Ordering::Relaxed);
         *self
             .spv_no_peers_since
@@ -184,6 +198,19 @@ impl ConnectionStatus {
             }
         }
         false
+    }
+
+    /// Whether the SPV masternode list has finished syncing and quorum public
+    /// keys are resolvable. Platform/identity sync gates on this to avoid the
+    /// DAPI self-ban storm (see [`Self::masternodes_ready`] field docs).
+    pub fn masternodes_ready(&self) -> bool {
+        self.masternodes_ready.load(Ordering::Relaxed)
+    }
+
+    /// Record whether the SPV masternode list has finished syncing. Push-based
+    /// from the wallet-backend `EventBridge` `on_progress` callback.
+    pub fn set_masternodes_ready(&self, ready: bool) {
+        self.masternodes_ready.store(ready, Ordering::Relaxed);
     }
 
     /// Set the last SPV error message (push-based from SpvManager event handlers).
@@ -596,6 +623,34 @@ mod tests {
 
         status.reset();
         assert!(status.spv_sync_progress().is_none());
+    }
+
+    #[test]
+    fn masternodes_ready_defaults_false_and_toggles() {
+        let status = ConnectionStatus::new();
+        assert!(
+            !status.masternodes_ready(),
+            "a fresh status must report masternodes not ready"
+        );
+
+        status.set_masternodes_ready(true);
+        assert!(status.masternodes_ready(), "setter must flip the flag");
+
+        status.set_masternodes_ready(false);
+        assert!(!status.masternodes_ready(), "setter must clear the flag");
+    }
+
+    #[test]
+    fn reset_clears_masternodes_ready() {
+        let status = ConnectionStatus::new();
+        status.set_masternodes_ready(true);
+        assert!(status.masternodes_ready());
+
+        status.reset();
+        assert!(
+            !status.masternodes_ready(),
+            "reset (disconnect / network switch) must re-arm the gate"
+        );
     }
 
     #[test]

@@ -15,24 +15,18 @@ use std::sync::Arc;
 /// explicit credit amount, or `None` to absorb the remainder after fees.
 type FundingOutputs = BTreeMap<PlatformAddress, Option<u64>>;
 
-/// Pick a change recipient for the fee-from-wallet branch from a list of
-/// candidate platform-payment addresses that are already in the wallet's
-/// upstream pool.
+/// Whether `candidate` can serve as the fee-from-wallet change recipient — i.e.
+/// it is distinct from `destination`.
 ///
-/// Returns the first candidate that differs from `destination`, preserving the
-/// caller's ordering so selection is deterministic. `None` means no distinct
-/// in-pool candidate exists — the caller must then fall back to the manual path
-/// (which derives a fresh change address). Both inputs are already restricted to
-/// in-pool, watched addresses by the caller, so any returned address satisfies
-/// the orchestrator's all-in-pool contract and DET's watched-window invariant.
-fn select_in_pool_change(
+/// The orchestrator needs two distinct recipients (one `Some` amount, one `None`
+/// remainder), so the destination can never be its own change. This is the only
+/// rule the caller delegates here; ordering across candidates and the async
+/// in-pool membership gate both live in the calling loop.
+fn is_distinct_change_candidate(
     destination: &PlatformAddress,
-    in_pool_candidates: &[PlatformAddress],
-) -> Option<PlatformAddress> {
-    in_pool_candidates
-        .iter()
-        .find(|candidate| *candidate != destination)
-        .copied()
+    candidate: &PlatformAddress,
+) -> bool {
+    candidate != destination
 }
 
 /// Build the output map and fee strategy for the fee-from-wallet funding branch.
@@ -175,17 +169,20 @@ impl AppContext {
                 .collect()
         };
 
-        // Verify candidates in order, stopping at the first that is both
-        // distinct from the destination and confirmed in-pool. `select_in_pool_change`
-        // encodes the ordering rule; the loop is just the async membership gate.
+        // This loop owns ordering and the async in-pool membership gate: it walks
+        // candidates in order and returns the first that is both distinct from the
+        // destination and confirmed in-pool. The predicate only excludes the
+        // destination.
         let backend = self.wallet_backend()?;
         for candidate in candidates {
-            let Some(picked) = select_in_pool_change(destination, std::slice::from_ref(&candidate))
-            else {
+            if !is_distinct_change_candidate(destination, &candidate) {
                 continue;
-            };
-            if backend.platform_address_in_pool(seed_hash, &picked).await? {
-                return Ok(Some(picked));
+            }
+            if backend
+                .platform_address_in_pool(seed_hash, &candidate)
+                .await?
+            {
+                return Ok(Some(candidate));
             }
         }
 
@@ -479,47 +476,25 @@ mod tests {
         assert!(matches!(err, TaskError::CreditCalculationOverflow { .. }));
     }
 
-    /// The fee-from-wallet change picker returns the first in-pool candidate
-    /// that is not the destination, preserving the caller's ordering.
+    /// A candidate distinct from the destination qualifies as change — the
+    /// orchestrator needs two distinct recipients (one `Some` amount, one `None`
+    /// remainder).
     #[test]
-    fn change_picker_returns_first_non_destination_candidate() {
+    fn change_predicate_accepts_a_distinct_candidate() {
         let destination = p2pkh(0x01);
-        let candidates = [p2pkh(0x02), p2pkh(0x03)];
-        assert_eq!(
-            select_in_pool_change(&destination, &candidates),
-            Some(p2pkh(0x02)),
-            "the first distinct in-pool candidate is chosen"
+        assert!(
+            is_distinct_change_candidate(&destination, &p2pkh(0x02)),
+            "a candidate that differs from the destination is valid change"
         );
     }
 
-    /// The destination is never picked as its own change, even when it appears
-    /// among the in-pool candidates — the orchestrator needs two distinct
-    /// recipients (one `Some` amount, one `None` remainder).
+    /// The destination is never its own change.
     #[test]
-    fn change_picker_skips_the_destination() {
+    fn change_predicate_rejects_the_destination() {
         let destination = p2pkh(0x01);
-        let candidates = [p2pkh(0x01), p2pkh(0x05)];
-        assert_eq!(
-            select_in_pool_change(&destination, &candidates),
-            Some(p2pkh(0x05)),
-            "the destination is skipped; the next distinct candidate is chosen"
-        );
-    }
-
-    /// With no candidate other than the destination, the picker returns `None`
-    /// so the caller falls back to the manual (fresh-change) path.
-    #[test]
-    fn change_picker_returns_none_without_a_distinct_candidate() {
-        let destination = p2pkh(0x01);
-        assert_eq!(
-            select_in_pool_change(&destination, &[]),
-            None,
-            "an empty candidate set yields no change"
-        );
-        assert_eq!(
-            select_in_pool_change(&destination, &[p2pkh(0x01)]),
-            None,
-            "only-the-destination yields no change"
+        assert!(
+            !is_distinct_change_candidate(&destination, &p2pkh(0x01)),
+            "the destination cannot absorb its own change"
         );
     }
 }

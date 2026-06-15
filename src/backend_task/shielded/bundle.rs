@@ -1049,5 +1049,15 @@ mod tests {
                 );
             }
         }
+
+        // Each operation must name itself so the user knows which transfer is in
+        // limbo. A future copy-paste that homogenizes two messages collapses the
+        // set below 4.
+        let distinct: std::collections::HashSet<&String> = messages.iter().collect();
+        assert_eq!(
+            distinct.len(),
+            messages.len(),
+            "each per-op confirmation message must be distinct, got: {messages:?}"
+        );
     }
 }

@@ -1850,6 +1850,70 @@ impl WalletBackend {
             .await
     }
 
+    /// Fund wallet-owned platform addresses from a Core asset lock through the
+    /// upstream orchestration pipeline.
+    ///
+    /// Wraps `PlatformAddressWallet::fund_from_asset_lock` — upstream owns the
+    /// full recovery pipeline: asset-lock build/broadcast (for
+    /// `FromWalletBalance`), `submit_with_cl_height_retry`, the InstantSend →
+    /// ChainLock fallback, and `consume_asset_lock` on acceptance (so the lock
+    /// is never left reusable on an ambiguous failure).
+    ///
+    /// Callers must pass only destination addresses this wallet owns and that
+    /// are within the upstream platform-payment pool's pre-generated window —
+    /// the orchestrator's pre-flight rejects any other recipient. The
+    /// `address_signer` authorises per-output witnesses; the `asset_lock_signer`
+    /// signs the outer state transition against the lock's credit-output key.
+    /// Neither signer copies the seed — both borrow it from the held session.
+    ///
+    /// `platform_account_index` selects the platform-payment account (DET uses
+    /// 0). The `addresses` map must contain exactly one `None`-amount entry (the
+    /// remainder recipient); the lock is consumed in full.
+    // Mirrors the upstream `fund_from_asset_lock` surface; each argument is a
+    // distinct, required input to that orchestrator.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn fund_platform_address(
+        &self,
+        seed_hash: &WalletSeedHash,
+        funding: platform_wallet::wallet::asset_lock::AssetLockFunding,
+        platform_account_index: u32,
+        addresses: std::collections::BTreeMap<
+            dash_sdk::dpp::address_funds::PlatformAddress,
+            Option<dash_sdk::dpp::balances::credits::Credits>,
+        >,
+        fee_strategy: dash_sdk::dpp::address_funds::AddressFundsFeeStrategy,
+        path_index: &PlatformPathIndex,
+        settings: Option<dash_sdk::platform::transition::put_settings::PutSettings>,
+    ) -> Result<(), TaskError> {
+        let scope = Self::hd_scope(seed_hash);
+        self.inner
+            .secret_access
+            .with_secret_session(&scope, async |session| {
+                let plaintext = session.plaintext();
+                let seed = plaintext.expose_hd_seed().ok_or(TaskError::WalletLocked)?;
+                let address_signer =
+                    DetPlatformSigner::from_held(seed, self.inner.network, path_index);
+                let asset_lock_signer =
+                    DetSigner::from_held(session.plaintext(), self.inner.network);
+                let wallet = self.resolve_wallet(seed_hash).await?;
+                wallet
+                    .platform()
+                    .fund_from_asset_lock(
+                        funding,
+                        platform_account_index,
+                        addresses,
+                        fee_strategy,
+                        &address_signer,
+                        &asset_lock_signer,
+                        settings,
+                    )
+                    .await
+                    .map(|_changeset| ())
+                    .map_err(map_platform_address_fund_error)
+            })
+            .await
+    }
+
     // UPSTREAM GAP: rs-platform-wallet has no identity-funding-account
     // registrar (sibling to register_contact_account). Contained exception —
     // key_wallet plumbing lives ONLY here, never leaks past WalletBackend.
@@ -2044,6 +2108,25 @@ fn map_identity_top_up_error(
     match identity_op_error_kind(&e) {
         IdentityOpErrorKind::Rejected => TaskError::IdentityTopUpRejected {
             identity_id,
+            source: Box::new(e),
+        },
+        IdentityOpErrorKind::FinalityTimeout => TaskError::AssetLockFinalityTimeout {
+            source: Box::new(e),
+        },
+        IdentityOpErrorKind::Other => TaskError::WalletBackend {
+            source: Box::new(e),
+        },
+    }
+}
+
+/// Map an orchestrated platform-address funding error to a typed `TaskError`.
+/// Shares the identity-flow bucketing: an asset-lock finality timeout reuses
+/// [`TaskError::AssetLockFinalityTimeout`], a network/broadcast rejection lands
+/// in [`TaskError::PlatformAddressFundRejected`], and everything else falls
+/// through to the generic [`TaskError::WalletBackend`] envelope.
+fn map_platform_address_fund_error(e: platform_wallet::error::PlatformWalletError) -> TaskError {
+    match identity_op_error_kind(&e) {
+        IdentityOpErrorKind::Rejected => TaskError::PlatformAddressFundRejected {
             source: Box::new(e),
         },
         IdentityOpErrorKind::FinalityTimeout => TaskError::AssetLockFinalityTimeout {
@@ -2259,6 +2342,51 @@ mod tests {
             } => assert_eq!(got, identity_id, "identity_id must be preserved"),
             other => panic!("Expected IdentityTopUpRejected, got: {other:?}"),
         }
+    }
+
+    /// A network/broadcast rejection from the orchestrated platform-address
+    /// funding maps to the dedicated `PlatformAddressFundRejected` envelope
+    /// (not the generic `WalletBackend` fallback). Structural — no string
+    /// parsing.
+    #[test]
+    fn map_platform_address_fund_error_classifies_rejection() {
+        let inner = platform_wallet::error::PlatformWalletError::TransactionBroadcast(
+            "rejected".to_string(),
+        );
+        let mapped = map_platform_address_fund_error(inner);
+        assert!(
+            matches!(mapped, TaskError::PlatformAddressFundRejected { .. }),
+            "Expected PlatformAddressFundRejected, got: {mapped:?}"
+        );
+    }
+
+    /// An asset-lock finality failure surfaced during orchestrated platform
+    /// funding reuses the shared `AssetLockFinalityTimeout` envelope.
+    #[test]
+    fn map_platform_address_fund_error_classifies_finality_timeout() {
+        use dash_sdk::dpp::dashcore::hashes::Hash;
+        let outpoint = dash_sdk::dpp::dashcore::OutPoint::new(
+            dash_sdk::dpp::dashcore::Txid::from_byte_array([0u8; 32]),
+            0,
+        );
+        let inner = platform_wallet::error::PlatformWalletError::FinalityTimeout(outpoint);
+        let mapped = map_platform_address_fund_error(inner);
+        assert!(
+            matches!(mapped, TaskError::AssetLockFinalityTimeout { .. }),
+            "Expected AssetLockFinalityTimeout, got: {mapped:?}"
+        );
+    }
+
+    /// Precondition / wallet-state failures fall through to the generic
+    /// `WalletBackend` envelope.
+    #[test]
+    fn map_platform_address_fund_error_falls_through_for_other() {
+        let inner = platform_wallet::error::PlatformWalletError::WalletLocked;
+        let mapped = map_platform_address_fund_error(inner);
+        assert!(
+            matches!(mapped, TaskError::WalletBackend { .. }),
+            "Expected WalletBackend fallthrough, got: {mapped:?}"
+        );
     }
 
     /// The upstream load-skip families map 1:1 onto the DET-opaque

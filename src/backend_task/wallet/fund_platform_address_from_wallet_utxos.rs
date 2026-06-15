@@ -54,9 +54,13 @@ fn build_fee_from_wallet_outputs(
 impl AppContext {
     /// Fund a Platform (DIP-17) address directly from wallet UTXOs.
     ///
-    /// The asset-lock build/broadcast/track-to-proof step is owned by the
-    /// upstream `AssetLockManager`; the Platform-side `TopUpAddress` state
-    /// transition (DAPI/SDK) is retained DET orchestration.
+    /// Branches on destination ownership. When the destination (and any change
+    /// recipient) is one of this wallet's own platform addresses inside the
+    /// upstream pool window, the funding routes through the orchestrated
+    /// `fund_from_asset_lock` pipeline (build/broadcast the lock, CL-height
+    /// retry, InstantSend → ChainLock fallback, consume on acceptance). A
+    /// destination this wallet does not own — an advanced footgun users are
+    /// trusted to take — keeps the manual asset-lock + `TopUpAddress` path.
     pub(crate) async fn fund_platform_address_from_wallet_utxos(
         self: &Arc<Self>,
         seed_hash: WalletSeedHash,
@@ -64,6 +68,108 @@ impl AppContext {
         destination: PlatformAddress,
         fee_deduct_from_output: bool,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
+        let wallet_arc = {
+            let wallets = self.wallets.read()?;
+            wallets
+                .get(&seed_hash)
+                .cloned()
+                .ok_or(TaskError::WalletNotFound)?
+        };
+        let network = self.network;
+
+        let destination_owned = wallet_arc
+            .read()?
+            .is_orchestratable_platform_destination(&destination, network);
+
+        // The orchestrated path is available only for the fee-from-output case:
+        // it needs no separate change recipient, so a single in-pool destination
+        // satisfies the orchestrator's one-`None` invariant and pre-flight. The
+        // fee-from-wallet case derives a fresh change address that may fall
+        // outside the pool window, so it stays on the manual path.
+        if destination_owned && fee_deduct_from_output {
+            return self
+                .fund_platform_address_from_wallet_utxos_orchestrated(
+                    seed_hash,
+                    amount,
+                    destination,
+                )
+                .await;
+        }
+
+        self.fund_platform_address_from_wallet_utxos_manual(
+            seed_hash,
+            amount,
+            destination,
+            fee_deduct_from_output,
+        )
+        .await
+    }
+
+    /// Orchestrated wallet-UTXO funding for a wallet-owned destination: the
+    /// upstream `fund_from_asset_lock` builds and broadcasts the asset lock,
+    /// submits the address-funding transition with CL-height retry and IS→CL
+    /// fallback, then consumes the lock on acceptance.
+    async fn fund_platform_address_from_wallet_utxos_orchestrated(
+        self: &Arc<Self>,
+        seed_hash: WalletSeedHash,
+        amount: u64,
+        destination: PlatformAddress,
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
+        use crate::wallet_backend::PlatformPathIndex;
+        use platform_wallet::wallet::asset_lock::AssetLockFunding;
+
+        let wallet_arc = {
+            let wallets = self.wallets.read()?;
+            wallets
+                .get(&seed_hash)
+                .cloned()
+                .ok_or(TaskError::WalletNotFound)?
+        };
+        let network = self.network;
+
+        let mut outputs: FundingOutputs = BTreeMap::new();
+        outputs.insert(destination, None);
+        let fee_strategy = vec![AddressFundsFeeStrategyStep::ReduceOutput(0)];
+
+        let path_index = {
+            let wallet = wallet_arc.read()?;
+            PlatformPathIndex::from_wallet(&wallet, network)
+        };
+
+        let backend = self.wallet_backend()?;
+        backend
+            .fund_platform_address(
+                &seed_hash,
+                AssetLockFunding::FromWalletBalance {
+                    amount_duffs: amount,
+                    account_index: 0,
+                },
+                0,
+                outputs,
+                fee_strategy,
+                &path_index,
+                None,
+            )
+            .await?;
+
+        self.fetch_platform_address_balances(seed_hash).await?;
+
+        Ok(BackendTaskSuccessResult::PlatformAddressFunded { seed_hash })
+    }
+
+    /// Manual wallet-UTXO funding: create the asset lock, then submit the
+    /// `TopUpAddress` transition directly. Used for non-owned destinations and
+    /// the fee-from-wallet case (which needs a change recipient). A submit
+    /// failure propagates via `?`, so the flow never reports a false success.
+    async fn fund_platform_address_from_wallet_utxos_manual(
+        self: &Arc<Self>,
+        seed_hash: WalletSeedHash,
+        amount: u64,
+        destination: PlatformAddress,
+        fee_deduct_from_output: bool,
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
+        use crate::wallet_backend::{DetPlatformSigner, PlatformPathIndex};
+
         // When fees are paid from the wallet (not the output), the asset lock
         // must be large enough to also cover the estimated Platform fee.
         let (asset_lock_amount, _allow_take_fee_from_amount) = if fee_deduct_from_output {
@@ -101,7 +207,6 @@ impl AppContext {
         // not a BIP-44 change address — hence it is derived and registered via
         // the platform-payment path, then the signer index is rebuilt to cover
         // it.
-        use crate::wallet_backend::{DetPlatformSigner, PlatformPathIndex};
         let network = self.network;
         let ctx = Arc::clone(self);
         backend
@@ -140,21 +245,6 @@ impl AppContext {
                         PlatformPathIndex::from_wallet(&wallet, network)
                     };
                     let signer = DetPlatformSigner::from_held(seed, network, &path_index);
-                    // A Platform submit failure here propagates via `?` below, so
-                    // the flow never reports success on a failed top-up. What is
-                    // missing is the upstream recovery pipeline: on submit failure
-                    // the freshly-created asset lock is left tracked-but-unconsumed
-                    // (resumable), and on success it is not marked `Consumed`.
-                    //
-                    // TODO(upstream-gated): route this through
-                    // `platform_wallet::PlatformWallet::fund_from_asset_lock`,
-                    // which runs resolve → `submit_with_cl_height_retry` →
-                    // `consume_asset_lock`. That method is public on the public
-                    // `PlatformWallet`, but DET reaches it only via
-                    // `WalletBackend::resolve_wallet` (private, -> `Arc<PlatformWallet>`),
-                    // and the route needs an external `Signer<PlatformAddress>` plus a
-                    // `key_wallet::signer::Signer` and an `AssetLockFunding`. Wiring it
-                    // is a funds-safety change gated on Smythe+Marvin review.
                     outputs
                         .top_up(
                             &sdk,

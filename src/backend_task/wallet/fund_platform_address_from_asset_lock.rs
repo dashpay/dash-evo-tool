@@ -12,13 +12,96 @@ use std::sync::Arc;
 impl AppContext {
     /// Fund Platform addresses from a tracked asset lock.
     ///
-    /// The lock is identified by its credit-output [`OutPoint`]. We pull the
-    /// finalized proof, transaction, and credit-output address from the
-    /// upstream `AssetLockManager` (DET no longer mirrors that state). The
-    /// credit-output address is the BIP-32 address that originally received
-    /// the credit output at lock-build time; its private key lives in the
-    /// wallet's `known_addresses` map.
+    /// Branches on destination ownership. When every recipient is one of this
+    /// wallet's own platform addresses inside the upstream pool window, the
+    /// funding routes through the orchestrated `fund_from_asset_lock` pipeline,
+    /// which resumes the tracked lock, submits with CL-height retry and IS→CL
+    /// fallback, and consumes the lock on acceptance. A non-owned destination —
+    /// an advanced footgun users are trusted to take — keeps the manual
+    /// `TopUpAddress` path.
     pub(crate) async fn fund_platform_address_from_asset_lock(
+        self: &Arc<Self>,
+        seed_hash: WalletSeedHash,
+        out_point: OutPoint,
+        outputs: BTreeMap<PlatformAddress, Option<Credits>>,
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
+        let wallet_arc = {
+            let wallets = self.wallets.read()?;
+            wallets
+                .get(&seed_hash)
+                .cloned()
+                .ok_or(TaskError::WalletNotFound)?
+        };
+        let network = self.network;
+
+        let all_owned = {
+            let wallet = wallet_arc.read()?;
+            outputs
+                .keys()
+                .all(|addr| wallet.is_orchestratable_platform_destination(addr, network))
+        };
+
+        if all_owned {
+            return self
+                .fund_platform_address_from_asset_lock_orchestrated(seed_hash, out_point, outputs)
+                .await;
+        }
+
+        self.fund_platform_address_from_asset_lock_manual(seed_hash, out_point, outputs)
+            .await
+    }
+
+    /// Orchestrated tracked-lock funding for wallet-owned destinations: resumes
+    /// the lock by outpoint, submits the address-funding transition with
+    /// CL-height retry and IS→CL fallback, then consumes the lock on
+    /// acceptance.
+    async fn fund_platform_address_from_asset_lock_orchestrated(
+        self: &Arc<Self>,
+        seed_hash: WalletSeedHash,
+        out_point: OutPoint,
+        outputs: BTreeMap<PlatformAddress, Option<Credits>>,
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
+        use crate::wallet_backend::PlatformPathIndex;
+        use dash_sdk::dpp::address_funds::AddressFundsFeeStrategyStep;
+        use platform_wallet::wallet::asset_lock::AssetLockFunding;
+
+        let wallet_arc = {
+            let wallets = self.wallets.read()?;
+            wallets
+                .get(&seed_hash)
+                .cloned()
+                .ok_or(TaskError::WalletNotFound)?
+        };
+        let network = self.network;
+        let path_index = {
+            let wallet = wallet_arc.read()?;
+            PlatformPathIndex::from_wallet(&wallet, network)
+        };
+        let fee_strategy = vec![AddressFundsFeeStrategyStep::ReduceOutput(0)];
+
+        let backend = self.wallet_backend()?;
+        backend
+            .fund_platform_address(
+                &seed_hash,
+                AssetLockFunding::FromExistingAssetLock { out_point },
+                0,
+                outputs,
+                fee_strategy,
+                &path_index,
+                None,
+            )
+            .await?;
+
+        self.fetch_platform_address_balances(seed_hash).await?;
+
+        Ok(BackendTaskSuccessResult::PlatformAddressFunded { seed_hash })
+    }
+
+    /// Manual tracked-lock funding: derive the credit-output key and submit the
+    /// `TopUpAddress` transition directly. Used for non-owned destinations. A
+    /// submit failure propagates via `?`, so the flow never reports a false
+    /// success.
+    async fn fund_platform_address_from_asset_lock_manual(
         self: &Arc<Self>,
         seed_hash: WalletSeedHash,
         out_point: OutPoint,
@@ -103,21 +186,11 @@ impl AppContext {
                         })?
                         .ok_or(TaskError::AssetLockAddressNotFound)?;
                     let signer = DetPlatformSigner::from_held(seed, network, &path_index);
-                    // A Platform submit failure here propagates via `?` below, so
-                    // the flow never reports success on a failed top-up. What is
-                    // missing is terminal accounting: on success the tracked lock
-                    // is not marked `Consumed`, so it stays resumable.
-                    //
-                    // TODO(upstream-gated): route this through
-                    // `platform_wallet::PlatformWallet::fund_from_asset_lock`
-                    // (with `AssetLockFunding::FromExistingAssetLock { out_point }`),
-                    // which runs resolve → `submit_with_cl_height_retry` →
-                    // `consume_asset_lock`. That method is public on the public
-                    // `PlatformWallet`, but DET reaches it only via
-                    // `WalletBackend::resolve_wallet` (private, -> `Arc<PlatformWallet>`),
-                    // and the route needs an external `Signer<PlatformAddress>` plus a
-                    // `key_wallet::signer::Signer`. Wiring it is a funds-safety change
-                    // gated on Smythe+Marvin review.
+                    // Non-owned destination: the manual `TopUpAddress` submit
+                    // has no orchestrated consume/retry. A failure propagates via
+                    // `?`, so the flow never reports a false success; the
+                    // orchestrated recovery is reserved for wallet-owned
+                    // destinations (see the owned branch above).
                     outputs
                         .top_up(
                             &sdk,

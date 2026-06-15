@@ -747,6 +747,18 @@ pub enum TaskError {
     #[error("Could not prepare a change address for this transaction. Please retry.")]
     ChangeAddressUnavailable { reason: &'static str },
 
+    /// The network rejected an orchestrated platform-address funding for a
+    /// wallet-owned destination. Covers upstream SDK rejections and asset-lock
+    /// broadcast rejections surfaced during `fund_from_asset_lock`. The funding
+    /// lock is preserved by the orchestrator, so the user can resume it.
+    #[error(
+        "Funding the platform address was rejected by the network. Your funds are safe and saved as a funding lock. Wait a minute, then try funding from your existing asset lock."
+    )]
+    PlatformAddressFundRejected {
+        #[source]
+        source: Box<platform_wallet::error::PlatformWalletError>,
+    },
+
     // ──────────────────────────────────────────────────────────────────────────
     // Asset-lock transaction errors
     // ──────────────────────────────────────────────────────────────────────────

@@ -618,15 +618,25 @@ pub async fn shield_from_asset_lock(
         .await
         .map_err(shielded_broadcast_error)?;
 
+    // A confirmation failure after a successful broadcast must NOT report
+    // success: the locked Core funds back a single-use asset lock and the
+    // credits may or may not have reached the pool. Surfacing it tells the user
+    // to refresh before retrying instead of double-spending the lock.
+    //
+    // TODO(upstream-gated): route this flow through
+    // `platform_wallet::PlatformWallet::shielded_fund_from_asset_lock`, which
+    // runs the full resolve → `submit_with_cl_height_retry` → `consume_asset_lock`
+    // pipeline (build + broadcast + confirm + terminal consume). That orchestrator
+    // is a public method on the public `PlatformWallet`, but DET holds a
+    // `WalletBackend` wrapper whose `resolve_wallet` (-> `Arc<PlatformWallet>`) is
+    // private, and the route needs an external `key_wallet::signer::Signer` plus an
+    // `AssetLockFunding` plumbed in. Wiring it is a funds-safety change gated on
+    // Smythe+Marvin review; until then this manual path at least never falsely
+    // confirms.
     state_transition
         .wait_for_response::<StateTransitionProofResult>(&sdk, None)
         .await
-        .map_err(|e| {
-            tracing::warn!(
-                "Shield from asset lock broadcast succeeded but confirmation wait failed: {e}"
-            );
-        })
-        .ok();
+        .map_err(shield_confirmation_error)?;
 
     tracing::info!(
         "Shield from asset lock broadcast succeeded: {}",
@@ -634,6 +644,17 @@ pub async fn shield_from_asset_lock(
     );
 
     Ok(shield_amount_credits)
+}
+
+/// Map a post-broadcast confirmation failure for a shield-from-asset-lock into
+/// the typed [`TaskError::ShieldedConfirmationUnknown`]. The broadcast already
+/// landed, so the funds may have reached the pool — the operation must surface
+/// the unverified state rather than report success.
+fn shield_confirmation_error(e: dash_sdk::Error) -> TaskError {
+    tracing::warn!("Shield from asset lock broadcast succeeded but confirmation wait failed: {e}");
+    TaskError::ShieldedConfirmationUnknown {
+        source: Box::new(e),
+    }
 }
 
 /// Build and broadcast a ShieldedWithdrawal transition (shielded pool -> core L1 address).
@@ -866,4 +887,49 @@ fn extract_spends_and_anchor(
 fn payment_address_to_orchard(addr: &PaymentAddress) -> Result<OrchardAddress, TaskError> {
     let raw = addr.to_raw_address_bytes();
     OrchardAddress::from_raw_bytes(&raw).map_err(|_| TaskError::ShieldedInvalidRecipientAddress)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A post-broadcast confirmation failure must map to the typed
+    /// `ShieldedConfirmationUnknown` so `shield_from_asset_lock` propagates an
+    /// error instead of falling through to its success return.
+    #[test]
+    fn confirmation_failure_maps_to_unknown_confirmation_error() {
+        let sdk_err = dash_sdk::Error::Generic("confirmation wait timed out".to_string());
+        let err = shield_confirmation_error(sdk_err);
+        assert!(
+            matches!(err, TaskError::ShieldedConfirmationUnknown { .. }),
+            "Expected ShieldedConfirmationUnknown, got: {err:?}"
+        );
+    }
+
+    /// The user-facing message tells the user the funds were sent, that the
+    /// confirmation is unverified, and what to do — without ZK or SDK jargon.
+    #[test]
+    fn unknown_confirmation_message_is_actionable_and_jargon_free() {
+        let err = TaskError::ShieldedConfirmationUnknown {
+            source: Box::new(dash_sdk::Error::Generic("boom".to_string())),
+        };
+        let msg = err.to_string();
+        assert!(
+            msg.contains("refresh") || msg.contains("Wait") || msg.contains("wait"),
+            "Expected concrete recovery guidance, got: {msg}"
+        );
+        for jargon in [
+            "nonce",
+            "state transition",
+            "SDK",
+            "RPC",
+            "Orchard",
+            "anchor",
+        ] {
+            assert!(
+                !msg.contains(jargon),
+                "Expected no jargon ({jargon}) in user message, got: {msg}"
+            );
+        }
+    }
 }

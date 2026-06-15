@@ -1411,6 +1411,18 @@ pub enum TaskError {
     )]
     ShieldedAssetLockTimeout,
 
+    /// A shield-from-asset-lock was sent but its confirmation could not be
+    /// verified. The funds may or may not have reached the shielded pool, so the
+    /// operation must not report success — the locked Core funds are tied to a
+    /// single-use asset lock that resumes the same shield on retry.
+    #[error(
+        "Your funds were sent to the shielded pool but the confirmation could not be verified. Wait a moment, then refresh your shielded balance before sending again."
+    )]
+    ShieldedConfirmationUnknown {
+        #[source]
+        source: Box<dash_sdk::Error>,
+    },
+
     /// Failed to sync shielded notes from the platform.
     #[error(
         "Could not sync shielded notes from the platform. Please check your connection and retry."

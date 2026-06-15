@@ -140,6 +140,21 @@ impl AppContext {
                         PlatformPathIndex::from_wallet(&wallet, network)
                     };
                     let signer = DetPlatformSigner::from_held(seed, network, &path_index);
+                    // A Platform submit failure here propagates via `?` below, so
+                    // the flow never reports success on a failed top-up. What is
+                    // missing is the upstream recovery pipeline: on submit failure
+                    // the freshly-created asset lock is left tracked-but-unconsumed
+                    // (resumable), and on success it is not marked `Consumed`.
+                    //
+                    // TODO(upstream-gated): route this through
+                    // `platform_wallet::PlatformWallet::fund_from_asset_lock`,
+                    // which runs resolve → `submit_with_cl_height_retry` →
+                    // `consume_asset_lock`. That method is public on the public
+                    // `PlatformWallet`, but DET reaches it only via
+                    // `WalletBackend::resolve_wallet` (private, -> `Arc<PlatformWallet>`),
+                    // and the route needs an external `Signer<PlatformAddress>` plus a
+                    // `key_wallet::signer::Signer` and an `AssetLockFunding`. Wiring it
+                    // is a funds-safety change gated on Smythe+Marvin review.
                     outputs
                         .top_up(
                             &sdk,

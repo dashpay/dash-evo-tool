@@ -1435,6 +1435,53 @@ pub enum TaskError {
         source: Box<dash_sdk::Error>,
     },
 
+    /// A shield-credits transition (platform address into the shielded pool) was
+    /// broadcast but its confirmation could not be verified. The credits may or
+    /// may not have reached the pool, so the operation must not report success.
+    #[error(
+        "Your credits were sent to the shielded pool but the confirmation could not be verified. Wait a moment, then refresh your shielded balance before sending again."
+    )]
+    ShieldCreditsConfirmationUnknown {
+        #[source]
+        source: Box<dash_sdk::Error>,
+    },
+
+    /// A shielded transfer (pool to pool) was broadcast but its confirmation
+    /// could not be verified. The notes may or may not have been spent, so the
+    /// operation must not report success and the spent notes are left untouched —
+    /// the next refresh reconciles spent notes against the network.
+    #[error(
+        "Your shielded transfer was sent but the confirmation could not be verified. Wait a moment, then refresh your shielded balance before sending again."
+    )]
+    ShieldedTransferConfirmationUnknown {
+        #[source]
+        source: Box<dash_sdk::Error>,
+    },
+
+    /// An unshield (pool to platform address) was broadcast but its confirmation
+    /// could not be verified. The notes may or may not have been spent, so the
+    /// operation must not report success and the spent notes are left untouched —
+    /// the next refresh reconciles spent notes against the network.
+    #[error(
+        "Your unshield was sent but the confirmation could not be verified. Wait a moment, then refresh your shielded balance before sending again."
+    )]
+    UnshieldConfirmationUnknown {
+        #[source]
+        source: Box<dash_sdk::Error>,
+    },
+
+    /// A shielded withdrawal (pool to a Dash address) was broadcast but its
+    /// confirmation could not be verified. The notes may or may not have been
+    /// spent, so the operation must not report success and the spent notes are
+    /// left untouched — the next refresh reconciles spent notes against the network.
+    #[error(
+        "Your withdrawal was sent but the confirmation could not be verified. Wait a moment, then refresh your shielded balance before sending again."
+    )]
+    ShieldedWithdrawalConfirmationUnknown {
+        #[source]
+        source: Box<dash_sdk::Error>,
+    },
+
     /// Failed to sync shielded notes from the platform.
     #[error(
         "Could not sync shielded notes from the platform. Please check your connection and retry."

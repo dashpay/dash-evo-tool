@@ -330,13 +330,14 @@ pub async fn shield_credits(
         .await
         .map_err(shielded_broadcast_error)?;
 
+    // A confirmation failure after a successful broadcast must NOT report
+    // success: the credits may or may not have reached the pool. Surfacing it
+    // tells the user to refresh before retrying, and keeps the caller from
+    // bumping the platform-address nonce for an unverified spend.
     state_transition
         .wait_for_response::<StateTransitionProofResult>(&sdk, None)
         .await
-        .map_err(|e| {
-            tracing::warn!("Shield credits broadcast succeeded but confirmation wait failed: {e}");
-        })
-        .ok();
+        .map_err(shield_credits_confirmation_error)?;
 
     tracing::info!(
         "Shield credits broadcast succeeded: {}",
@@ -425,15 +426,15 @@ pub async fn shielded_transfer(
         .await
         .map_err(shielded_broadcast_error)?;
 
+    // A confirmation failure after a successful broadcast must NOT report
+    // success: the notes may or may not have been spent. Propagating it keeps
+    // the caller from marking notes spent on an unverified spend; if the spend
+    // did land, the next nullifier resync reconciles it and a retry is rejected
+    // by consensus as a double-spend, so funds are never at risk.
     state_transition
         .wait_for_response::<StateTransitionProofResult>(&sdk, None)
         .await
-        .map_err(|e| {
-            tracing::warn!(
-                "Shielded transfer broadcast succeeded but confirmation wait failed: {e}"
-            );
-        })
-        .ok();
+        .map_err(shielded_transfer_confirmation_error)?;
 
     tracing::info!(
         "Shielded transfer broadcast succeeded: {} nullifiers created, change={}",
@@ -516,15 +517,15 @@ pub async fn unshield_credits(
         .await
         .map_err(shielded_broadcast_error)?;
 
+    // A confirmation failure after a successful broadcast must NOT report
+    // success: the notes may or may not have been spent. Propagating it keeps
+    // the caller from marking notes spent on an unverified spend; if the spend
+    // did land, the next nullifier resync reconciles it and a retry is rejected
+    // by consensus as a double-spend, so funds are never at risk.
     state_transition
         .wait_for_response::<StateTransitionProofResult>(&sdk, None)
         .await
-        .map_err(|e| {
-            tracing::warn!(
-                "Unshield credits broadcast succeeded but confirmation wait failed: {e}"
-            );
-        })
-        .ok();
+        .map_err(unshield_confirmation_error)?;
 
     tracing::info!(
         "Unshield credits broadcast succeeded: {} nullifiers created, change={}",
@@ -657,6 +658,49 @@ fn shield_confirmation_error(e: dash_sdk::Error) -> TaskError {
     }
 }
 
+/// Map a post-broadcast confirmation failure for a shield-credits transition.
+/// The broadcast already landed, so the credits may have reached the pool — the
+/// operation must surface the unverified state rather than report success.
+fn shield_credits_confirmation_error(e: dash_sdk::Error) -> TaskError {
+    tracing::warn!("Shield credits broadcast succeeded but confirmation wait failed: {e}");
+    TaskError::ShieldCreditsConfirmationUnknown {
+        source: Box::new(e),
+    }
+}
+
+/// Map a post-broadcast confirmation failure for a shielded transfer. The
+/// broadcast already landed, so the notes may already be spent — propagating
+/// this keeps the caller from marking notes spent on an unverified spend; the
+/// next nullifier resync reconciles the true spent state against the network.
+fn shielded_transfer_confirmation_error(e: dash_sdk::Error) -> TaskError {
+    tracing::warn!("Shielded transfer broadcast succeeded but confirmation wait failed: {e}");
+    TaskError::ShieldedTransferConfirmationUnknown {
+        source: Box::new(e),
+    }
+}
+
+/// Map a post-broadcast confirmation failure for an unshield. The broadcast
+/// already landed, so the notes may already be spent — propagating this keeps
+/// the caller from marking notes spent on an unverified spend; the next
+/// nullifier resync reconciles the true spent state against the network.
+fn unshield_confirmation_error(e: dash_sdk::Error) -> TaskError {
+    tracing::warn!("Unshield credits broadcast succeeded but confirmation wait failed: {e}");
+    TaskError::UnshieldConfirmationUnknown {
+        source: Box::new(e),
+    }
+}
+
+/// Map a post-broadcast confirmation failure for a shielded withdrawal. The
+/// broadcast already landed, so the notes may already be spent — propagating
+/// this keeps the caller from marking notes spent on an unverified spend; the
+/// next nullifier resync reconciles the true spent state against the network.
+fn shielded_withdrawal_confirmation_error(e: dash_sdk::Error) -> TaskError {
+    tracing::warn!("Shielded withdrawal broadcast succeeded but confirmation wait failed: {e}");
+    TaskError::ShieldedWithdrawalConfirmationUnknown {
+        source: Box::new(e),
+    }
+}
+
 /// Build and broadcast a ShieldedWithdrawal transition (shielded pool -> core L1 address).
 ///
 /// Returns the nullifiers of the notes that were spent.
@@ -733,15 +777,15 @@ pub async fn shielded_withdrawal(
         .await
         .map_err(shielded_broadcast_error)?;
 
+    // A confirmation failure after a successful broadcast must NOT report
+    // success: the notes may or may not have been spent. Propagating it keeps
+    // the caller from marking notes spent on an unverified spend; if the spend
+    // did land, the next nullifier resync reconciles it and a retry is rejected
+    // by consensus as a double-spend, so funds are never at risk.
     state_transition
         .wait_for_response::<StateTransitionProofResult>(&sdk, None)
         .await
-        .map_err(|e| {
-            tracing::warn!(
-                "Shielded withdrawal broadcast succeeded but confirmation wait failed: {e}"
-            );
-        })
-        .ok();
+        .map_err(shielded_withdrawal_confirmation_error)?;
 
     tracing::info!(
         "Shielded withdrawal broadcast succeeded: {} nullifiers created, change={}",
@@ -930,6 +974,80 @@ mod tests {
                 !msg.contains(jargon),
                 "Expected no jargon ({jargon}) in user message, got: {msg}"
             );
+        }
+    }
+
+    /// Each spend op's post-broadcast confirmation failure must map to its own
+    /// typed `*ConfirmationUnknown` variant so the caller propagates an error
+    /// instead of falling through to success and marking notes/nonce committed.
+    #[test]
+    fn spend_confirmation_failures_map_to_typed_unknown_variants() {
+        let err = shield_credits_confirmation_error(dash_sdk::Error::Generic("boom".into()));
+        assert!(
+            matches!(err, TaskError::ShieldCreditsConfirmationUnknown { .. }),
+            "Expected ShieldCreditsConfirmationUnknown, got: {err:?}"
+        );
+
+        let err = shielded_transfer_confirmation_error(dash_sdk::Error::Generic("boom".into()));
+        assert!(
+            matches!(err, TaskError::ShieldedTransferConfirmationUnknown { .. }),
+            "Expected ShieldedTransferConfirmationUnknown, got: {err:?}"
+        );
+
+        let err = unshield_confirmation_error(dash_sdk::Error::Generic("boom".into()));
+        assert!(
+            matches!(err, TaskError::UnshieldConfirmationUnknown { .. }),
+            "Expected UnshieldConfirmationUnknown, got: {err:?}"
+        );
+
+        let err = shielded_withdrawal_confirmation_error(dash_sdk::Error::Generic("boom".into()));
+        assert!(
+            matches!(err, TaskError::ShieldedWithdrawalConfirmationUnknown { .. }),
+            "Expected ShieldedWithdrawalConfirmationUnknown, got: {err:?}"
+        );
+    }
+
+    /// Every per-op confirmation-unknown message must be actionable (tells the
+    /// user to wait and refresh) and free of ZK / SDK jargon.
+    #[test]
+    fn spend_confirmation_messages_are_actionable_and_jargon_free() {
+        let messages = [
+            TaskError::ShieldCreditsConfirmationUnknown {
+                source: Box::new(dash_sdk::Error::Generic("boom".into())),
+            }
+            .to_string(),
+            TaskError::ShieldedTransferConfirmationUnknown {
+                source: Box::new(dash_sdk::Error::Generic("boom".into())),
+            }
+            .to_string(),
+            TaskError::UnshieldConfirmationUnknown {
+                source: Box::new(dash_sdk::Error::Generic("boom".into())),
+            }
+            .to_string(),
+            TaskError::ShieldedWithdrawalConfirmationUnknown {
+                source: Box::new(dash_sdk::Error::Generic("boom".into())),
+            }
+            .to_string(),
+        ];
+        for msg in &messages {
+            assert!(
+                msg.contains("refresh") && (msg.contains("Wait") || msg.contains("wait")),
+                "Expected concrete recovery guidance (wait + refresh), got: {msg}"
+            );
+            for jargon in [
+                "nonce",
+                "state transition",
+                "SDK",
+                "RPC",
+                "Orchard",
+                "anchor",
+                "nullifier",
+            ] {
+                assert!(
+                    !msg.contains(jargon),
+                    "Expected no jargon ({jargon}) in user message, got: {msg}"
+                );
+            }
         }
     }
 }

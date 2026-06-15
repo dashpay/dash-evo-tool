@@ -79,20 +79,24 @@ ListCoreWallets, SPV peer source, Proof Log).
 | CRITICAL | 0    | 1        | 1 |
 | HIGH     | 1    | 6        | 7 |
 | MEDIUM   | 4    | 11       | 15 |
-| LOW      | 6    | 14       | 20 |
+| LOW      | 5    | 15       | 20 |
 | INFO     | 0    | 0        | 0 |
-| **Total** | **11** | **32** | **43** |
+| **Total** | **10** | **33** | **43** |
 
 Open by category: upstream/release-gate = 1 (PROJ-005);
 functional/unwired = 2 (PROJ-032, PROJ-041);
 deferred/partial = 2 (PROJ-007 PARTIAL, PROJ-022 accepted);
 test = 2 (PROJ-015, PROJ-016);
-doc = 4 (PROJ-018, PROJ-019, DOC-003 deferred-with-TODO, PROJ-007 PARTIAL counted separately).
-Sum = 11 open.
+doc = 3 (PROJ-018, PROJ-019, DOC-003 deferred-with-TODO).
+Sum = 10 open.
 (2026-06-15: PROJ-042's platform-address half moved PARTIAL → RESOLVED in PR — wallet-owned
 destinations now route through the upstream orchestrator; non-owned destinations keep the
 manual path by design. The finding was already in the resolved tally for its actionable
-shield-half fix, so the counts are unchanged. PROJ-043 stays OPEN.)
+shield-half fix, so the counts are unchanged.)
+(2026-06-15: PROJ-043 moved OPEN → RESOLVED in PR — the four sibling shielded spend fns now
+propagate the post-broadcast confirmation failure as dedicated typed `*ConfirmationUnknown`
+errors via `?` instead of swallowing it, so the caller no longer marks notes spent (or bumps
+the platform-address nonce) on an unverified spend. LOW open 6 → 5; total open 11 → 10.)
 (2026-06-11 triage pass: 17 findings moved to RESOLVED/WONTFIX — PROJ-026/027/029/031/040/017/012/033/011/035/036/037/038/039/009/DOC-001/DOC-002;
 PROJ-007 PARTIAL; PROJ-022 accepted-risk. See Resolution log.)
 
@@ -508,28 +512,39 @@ transition manually, missing the post-asset-lock / pre-final-accounting recovery
     map is in-pool — a minor follow-up, accepted for this PR.
   - Both manual fallbacks still propagate submit failures via `?` (no false success).
 
-### PROJ-043 — Sibling shielded spend fns mark notes spent on an unverified post-broadcast confirmation *(LOW — OPEN/deferred; scoped out of the PROJ-042 PR by QA)*
+### PROJ-043 — Sibling shielded spend fns marked notes spent on an unverified post-broadcast confirmation *(LOW — RESOLVED in PR)*
 
 PROJ-042 fixed the post-broadcast confirmation swallow only in `shield_from_asset_lock`. The
-four sibling spend fns in the same file carry the identical pattern: they `warn!` + `.ok()`
-the `wait_for_response` failure after a successful broadcast and return `Ok(...)`.
+four sibling spend fns in the same file carried the identical pattern: they `warn!` + `.ok()`
+the `wait_for_response` failure after a successful broadcast and returned `Ok(...)`.
 
-- **`src/backend_task/shielded/bundle.rs`:** `shield_credits` (`:334-339`, returns `Ok(())`),
-  `shielded_transfer` (`:429-436`), `unshield_credits` (`:520-527`), `shielded_withdrawal`
-  (`:737-744`) — the latter three return `Ok(spent_nullifiers)`.
-- **Effect:** the caller path takes the `Ok` branch and calls `mark_notes_spent`
-  (`src/context/shielded.rs:755-757`), which persists each nullifier via
-  `mark_shielded_note_spent` (`:867`). So notes are marked spent for spends whose state
-  transition may never have confirmed.
-- **Why LOW (self-heals):** the divergence is local and temporary. The next nullifier/note
-  resync (`check_nullifiers_task`, `src/context/shielded.rs:813`) reconciles spent state
-  against the chain (docstring `:856-859`), so a note marked spent for an unconfirmed spend is
-  restored. No permanent note or fund loss; spends that *did* confirm are unaffected.
-- **Fix direction:** defer `mark_notes_spent` until confirmation is verified — extend the
-  `TaskError::ShieldedConfirmationUnknown` treatment to these fns, or introduce a
-  confirmation-pending note state so bookkeeping commits only on confirmed spends. This is a
-  wider change touching spent-note bookkeeping and the resync reconciliation contract, so QA
-  deliberately scoped it out of the PROJ-042 PR; tracked here as a follow-up.
+- **`src/backend_task/shielded/bundle.rs`:** `shield_credits` (returned `Ok(())`),
+  `shielded_transfer`, `unshield_credits`, `shielded_withdrawal` — the latter three returned
+  `Ok(spent_nullifiers)`.
+- **Effect (before):** the caller path took the `Ok` branch and called `mark_notes_spent`
+  (`src/context/shielded.rs`), which persists each nullifier via `mark_shielded_note_spent`.
+  So notes were marked spent for spends whose state transition may never have confirmed
+  (`shield_credits` instead bumped the platform-address nonce on the unverified spend).
+- **Why it was LOW (self-heals):** the divergence was local and temporary. The next
+  nullifier/note resync (`check_nullifiers`) reconciles spent state against the chain, so a
+  note wrongly hidden would resurface; no permanent note or fund loss.
+- **Fix (this PR):** each fn now maps the post-broadcast `wait_for_response` failure through a
+  dedicated typed error and propagates it via `?` instead of swallowing it:
+  `TaskError::ShieldCreditsConfirmationUnknown`, `ShieldedTransferConfirmationUnknown`,
+  `UnshieldConfirmationUnknown`, `ShieldedWithdrawalConfirmationUnknown` (each `#[source]
+  Box<dash_sdk::Error>`, no `String` message field; jargon-free, actionable "wait then refresh"
+  message). Because the callers commit side effects only on `Ok`, propagating the error means
+  `mark_notes_spent` is skipped (transfer/unshield/withdrawal) and the platform-address nonce
+  is not bumped (`shield_credits`). The notes stay unspent locally — the balance is briefly
+  *overstated* rather than understated.
+- **Safety reasoning:** if the broadcast actually landed on-chain, a retry rebuilds a spend of
+  the same notes; consensus rejects the already-revealed nullifier (double-spend), so funds are
+  never at risk, and the next `check_nullifiers` resync observes the on-chain nullifier and
+  marks the notes spent — self-correcting the overstate through routine sync. This mirrors the
+  `shield_from_asset_lock` precedent (PROJ-042). The change is the minimal swallow→propagate
+  fix; it does not touch the resync state machine.
+- **Tests:** `src/backend_task/shielded/bundle.rs` unit tests assert each mapper yields its
+  typed variant and that every message is actionable (wait + refresh) and jargon-free.
 
 ### New LOW parity deltas (2026-06-10)
 
@@ -542,7 +557,7 @@ the `wait_for_response` failure after a successful broadcast and return `Ok(...)
 | PROJ-040 | DashPay offline caches dropped — contacts/requests/profiles/avatars need network on every open | `src/ui/dashpay/contacts_list.rs:67,111-134`; `contact_requests.rs:295-297`; avatar-bytes cache dropped (`profile_screen.rs` comment) | OLD rendered instantly from `data.db` (`contacts_list.rs:113-180`, `contact_requests.rs:162-250`, avatar bytes + negative-profile caching) | **RESOLVED 2026-06-11** (`467dc807` + `dc94bba6`) — offline contact/profile reads and avatar cache implemented; cache invalidation and bounds fixed in `dc94bba6`. (was GAPCMP-C-6) |
 | PROJ-041 | "Stop tracking balance" undone by "Refresh My Tokens"; watch set became identities × all-known-tokens | `src/backend_task/tokens/query_my_token_balances.rs:39-44,100-105` (re-registers `known_token_ids` for every identity), `:62-83` (unwatch) | OLD refreshed only pairs already in `identity_token_balances` (OLD `:27-44`) | OPEN — dismissed rows reappear after any refresh; rows appear for never-tracked pairs. Disclosed in code comments only. Evolution of already-resolved #5. Deferred-with-TODO (`727e8d6a`). (was GAPCMP-C-7) |
 | PROJ-042 | Non-identity asset-lock flows bypass upstream orchestration: shield-from-asset-lock falsely confirmed on a post-broadcast confirmation failure; platform-address top-ups never mark the lock `Consumed` | `src/backend_task/shielded/bundle.rs` (`shield_from_asset_lock`, post-broadcast `wait_for_response`); `src/backend_task/wallet/fund_platform_address_from_wallet_utxos.rs` (`top_up`); `src/backend_task/wallet/fund_platform_address_from_asset_lock.rs` (`top_up`) | Identity asset-lock flows route through `IdentityWallet::*_with_funding`; these three never did | **RESOLVED in PR** — shield-from-asset-lock false-success fixed (typed `TaskError::ShieldedConfirmationUnknown`, `#[source]`; unit-tested). Platform-address funding now gates on **upstream pool membership** (`WalletBackend::platform_address_in_pool` → upstream `ManagedPlatformAccount::contains_platform_address`, no DET-side constant); in-pool destinations route through `WalletBackend::fund_platform_address` → `PlatformAddressWallet::fund_from_asset_lock` (full resolve → `submit_with_cl_height_retry` → IS→CL → `consume_asset_lock`); errors map to `TaskError::PlatformAddressFundRejected` (`#[source]`). Membership + mixed-ownership routing + error mapping unit-tested. Two manual-fallback residuals stated honestly: foreign/non-pool destinations are by-design (footgun); funding your own in-pool address with fee-from-wallet keeps weaker recovery (accepted minor residual). Manual submit failures still propagate via `?`, so no false-success remains. |
-| PROJ-043 | Four sibling shielded spend fns swallow the same post-broadcast confirmation failure, so notes are marked spent for spends that may never confirm | `src/backend_task/shielded/bundle.rs:334-339` (`shield_credits`), `:429-436` (`shielded_transfer`), `:520-527` (`unshield_credits`), `:737-744` (`shielded_withdrawal`) — all `warn!`+`.ok()` then `Ok(...)`; `mark_notes_spent` at `src/context/shielded.rs:755-757` persists via `mark_shielded_note_spent` (`:867`) | Same swallow pattern PROJ-042 fixed for `shield_from_asset_lock` | OPEN/deferred (LOW) — the three spend fns return `Ok(spent_nullifiers)` on a confirmation failure, so `mark_notes_spent` marks notes spent locally for spends that may not have confirmed. **Self-heals** on the next nullifier/note resync (`check_nullifiers_task` reconciles against chain, `src/context/shielded.rs:813,856-859`) → temporary local divergence, not permanent note/fund loss. Fix direction: defer `mark_notes_spent` until confirmation is verified (extend the `ShieldedConfirmationUnknown` treatment or a confirmation-pending state) — a wider change touching spent-note bookkeeping + the resync contract, scoped out of this PR by QA. |
+| PROJ-043 | Four sibling shielded spend fns swallowed the same post-broadcast confirmation failure, so notes were marked spent for spends that may never confirm | `src/backend_task/shielded/bundle.rs` (`shield_credits`, `shielded_transfer`, `unshield_credits`, `shielded_withdrawal`) — all `warn!`+`.ok()` then `Ok(...)`; `mark_notes_spent` at `src/context/shielded.rs` persists via `mark_shielded_note_spent` | Same swallow pattern PROJ-042 fixed for `shield_from_asset_lock` | **RESOLVED in PR** — the four fns now map the post-broadcast `wait_for_response` failure to dedicated typed errors (`ShieldCreditsConfirmationUnknown`, `ShieldedTransferConfirmationUnknown`, `UnshieldConfirmationUnknown`, `ShieldedWithdrawalConfirmationUnknown`; `#[source] Box<dash_sdk::Error>`, no String message field) and propagate via `?`. Callers commit side effects only on `Ok`, so `mark_notes_spent` (transfer/unshield/withdrawal) and the nonce bump (`shield_credits`) are skipped on an unverified spend — balance is briefly overstated, not understated. Retry is double-spend-rejected by consensus and the next `check_nullifiers` resync reconciles the spent state, so funds are never at risk. Mirrors the PROJ-042 `shield_from_asset_lock` fix; unit-tested. |
 
 ---
 
@@ -974,11 +989,11 @@ So nothing is silently dropped. Deferred markers / inert-looking bodies that are
 ---
 
 *Candy tally — confirmed gaps: 43 (1 CRITICAL · 7 HIGH · 15 MEDIUM · 20 LOW · 0 INFO).
-Status as of 2026-06-11: 32 RESOLVED / 1 PARTIAL / 1 ACCEPTED + 11 OPEN (1 HIGH + 4 MEDIUM + 6 LOW).
+Status as of 2026-06-15: 33 RESOLVED / 1 PARTIAL / 1 ACCEPTED + 10 OPEN (1 HIGH + 4 MEDIUM + 5 LOW).
 RESOLVED set: PROJ-001, PROJ-002 (removed), PROJ-003, PROJ-004, PROJ-006, PROJ-008, PROJ-010,
 PROJ-011, PROJ-012, PROJ-013, PROJ-014, PROJ-017, PROJ-020, PROJ-021, PROJ-023, PROJ-025,
 PROJ-026, PROJ-027, PROJ-028, PROJ-029, PROJ-030, PROJ-031, PROJ-033, PROJ-035, PROJ-036,
-PROJ-037, PROJ-038, PROJ-039, PROJ-040, PROJ-009 (WONTFIX), DOC-001, DOC-002 + SEC-001 follow-up.
+PROJ-037, PROJ-038, PROJ-039, PROJ-040, PROJ-043, PROJ-009 (WONTFIX), DOC-001, DOC-002 + SEC-001 follow-up.
 PARTIAL: PROJ-007 (T3/T4/T5 parked on upstream). ACCEPTED: PROJ-022. OPEN deferred-with-TODO: PROJ-032,
 PROJ-034, PROJ-018, PROJ-015, PROJ-041, DOC-003. OPEN merge-blocker: PROJ-005 (release gate G1 only).
 8 seed/appendix items confirmed already-resolved with evidence. 1 blocked-by-design (PROJ-024, uncounted).*

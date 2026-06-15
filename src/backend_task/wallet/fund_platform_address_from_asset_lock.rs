@@ -36,6 +36,14 @@ impl AppContext {
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         let backend = self.wallet_backend()?;
 
+        // The UI caller always supplies one `None` remainder recipient. A future
+        // programmatic caller passing an empty map routes to the orchestrator
+        // (vacuously all-in-pool) and is rejected by its pre-flight pre-broadcast.
+        debug_assert!(
+            !outputs.is_empty(),
+            "tracked-lock funding expects at least one recipient"
+        );
+
         // Resolve each recipient's pool membership (short-circuiting on the first
         // miss to skip remaining network-touching queries), then apply the pure
         // routing rule. Splitting the async query from the decision keeps the
@@ -241,10 +249,12 @@ mod tests {
         assert!(!route_to_orchestrator([false]));
     }
 
-    /// An empty map (no recipients) is vacuously all-in-pool. Unreachable in
-    /// practice — the dialog always supplies one `None` remainder recipient and
-    /// the orchestrator's own pre-flight rejects an empty map — but the rule is
-    /// pinned so the helper's contract is explicit.
+    /// An empty map (no recipients) is vacuously all-in-pool, so it routes to
+    /// the orchestrator. Unreachable via the current UI caller, which always
+    /// inserts exactly one `None` remainder recipient; a future programmatic /
+    /// MCP caller passing an empty map would route here and be rejected by the
+    /// orchestrator's own `validate_recipient_addresses` pre-flight before
+    /// broadcast. The rule is pinned so the helper's contract is explicit.
     #[test]
     fn empty_is_vacuously_in_pool() {
         assert!(route_to_orchestrator(std::iter::empty()));

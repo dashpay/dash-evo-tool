@@ -487,6 +487,29 @@ upstream owns:
   reachable) and route each flow through the matching upstream orchestrator so consume/retry
   is owned upstream end-to-end.
 
+### PROJ-043 — Sibling shielded spend fns mark notes spent on an unverified post-broadcast confirmation *(LOW — OPEN/deferred; scoped out of the PROJ-042 PR by QA)*
+
+PROJ-042 fixed the post-broadcast confirmation swallow only in `shield_from_asset_lock`. The
+four sibling spend fns in the same file carry the identical pattern: they `warn!` + `.ok()`
+the `wait_for_response` failure after a successful broadcast and return `Ok(...)`.
+
+- **`src/backend_task/shielded/bundle.rs`:** `shield_credits` (`:334-339`, returns `Ok(())`),
+  `shielded_transfer` (`:429-436`), `unshield_credits` (`:520-527`), `shielded_withdrawal`
+  (`:737-744`) — the latter three return `Ok(spent_nullifiers)`.
+- **Effect:** the caller path takes the `Ok` branch and calls `mark_notes_spent`
+  (`src/context/shielded.rs:755-757`), which persists each nullifier via
+  `mark_shielded_note_spent` (`:867`). So notes are marked spent for spends whose state
+  transition may never have confirmed.
+- **Why LOW (self-heals):** the divergence is local and temporary. The next nullifier/note
+  resync (`check_nullifiers_task`, `src/context/shielded.rs:813`) reconciles spent state
+  against the chain (docstring `:856-859`), so a note marked spent for an unconfirmed spend is
+  restored. No permanent note or fund loss; spends that *did* confirm are unaffected.
+- **Fix direction:** defer `mark_notes_spent` until confirmation is verified — extend the
+  `TaskError::ShieldedConfirmationUnknown` treatment to these fns, or introduce a
+  confirmation-pending note state so bookkeeping commits only on confirmed spends. This is a
+  wider change touching spent-note bookkeeping and the resync reconciliation contract, so QA
+  deliberately scoped it out of the PROJ-042 PR; tracked here as a follow-up.
+
 ### New LOW parity deltas (2026-06-10)
 
 | ID | Title | Location (PR #860) | v0.10-dev evidence | Status / what's missing |
@@ -498,6 +521,7 @@ upstream owns:
 | PROJ-040 | DashPay offline caches dropped — contacts/requests/profiles/avatars need network on every open | `src/ui/dashpay/contacts_list.rs:67,111-134`; `contact_requests.rs:295-297`; avatar-bytes cache dropped (`profile_screen.rs` comment) | OLD rendered instantly from `data.db` (`contacts_list.rs:113-180`, `contact_requests.rs:162-250`, avatar bytes + negative-profile caching) | **RESOLVED 2026-06-11** (`467dc807` + `dc94bba6`) — offline contact/profile reads and avatar cache implemented; cache invalidation and bounds fixed in `dc94bba6`. (was GAPCMP-C-6) |
 | PROJ-041 | "Stop tracking balance" undone by "Refresh My Tokens"; watch set became identities × all-known-tokens | `src/backend_task/tokens/query_my_token_balances.rs:39-44,100-105` (re-registers `known_token_ids` for every identity), `:62-83` (unwatch) | OLD refreshed only pairs already in `identity_token_balances` (OLD `:27-44`) | OPEN — dismissed rows reappear after any refresh; rows appear for never-tracked pairs. Disclosed in code comments only. Evolution of already-resolved #5. Deferred-with-TODO (`727e8d6a`). (was GAPCMP-C-7) |
 | PROJ-042 | Non-identity asset-lock flows bypass upstream orchestration: shield-from-asset-lock falsely confirmed on a post-broadcast confirmation failure; platform-address top-ups never mark the lock `Consumed` | `src/backend_task/shielded/bundle.rs` (`shield_from_asset_lock`, post-broadcast `wait_for_response`); `src/backend_task/wallet/fund_platform_address_from_wallet_utxos.rs` (`top_up`); `src/backend_task/wallet/fund_platform_address_from_asset_lock.rs` (`top_up`) | Identity asset-lock flows route through `IdentityWallet::*_with_funding`; these three never did | **PARTIAL** — shield-from-asset-lock false-success **RESOLVED in PR** (typed `TaskError::ShieldedConfirmationUnknown`, `#[source]`; unit-tested). Platform-address consume/retry orchestration **OPEN/deferred** — upstream-gated on a reachable route to `PlatformWallet::fund_from_asset_lock` / `shielded_fund_from_asset_lock` (public methods, but `WalletBackend::resolve_wallet` is private and an external `Signer` + `AssetLockFunding` must be plumbed). Submit failures already propagate via `?`, so no other false-success remains. Deferred-with-TODO at each choicepoint. |
+| PROJ-043 | Four sibling shielded spend fns swallow the same post-broadcast confirmation failure, so notes are marked spent for spends that may never confirm | `src/backend_task/shielded/bundle.rs:334-339` (`shield_credits`), `:429-436` (`shielded_transfer`), `:520-527` (`unshield_credits`), `:737-744` (`shielded_withdrawal`) — all `warn!`+`.ok()` then `Ok(...)`; `mark_notes_spent` at `src/context/shielded.rs:755-757` persists via `mark_shielded_note_spent` (`:867`) | Same swallow pattern PROJ-042 fixed for `shield_from_asset_lock` | OPEN/deferred (LOW) — the three spend fns return `Ok(spent_nullifiers)` on a confirmation failure, so `mark_notes_spent` marks notes spent locally for spends that may not have confirmed. **Self-heals** on the next nullifier/note resync (`check_nullifiers_task` reconciles against chain, `src/context/shielded.rs:813,856-859`) → temporary local divergence, not permanent note/fund loss. Fix direction: defer `mark_notes_spent` until confirmation is verified (extend the `ShieldedConfirmationUnknown` treatment or a confirmation-pending state) — a wider change touching spent-note bookkeeping + the resync contract, scoped out of this PR by QA. |
 
 ---
 

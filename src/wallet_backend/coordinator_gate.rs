@@ -50,10 +50,6 @@ impl std::fmt::Debug for CoordinatorGate {
 }
 
 impl CoordinatorGate {
-    pub(super) fn new() -> Self {
-        Self::default()
-    }
-
     /// Whether masternodes have been reported ready to this gate.
     pub(super) fn masternodes_ready(&self) -> bool {
         self.masternodes_ready.load(Ordering::SeqCst)
@@ -129,7 +125,7 @@ mod tests {
     #[test]
     fn arm_before_ready_defers_then_fires_on_ready() {
         let calls = Arc::new(AtomicUsize::new(0));
-        let gate = CoordinatorGate::new();
+        let gate = CoordinatorGate::default();
 
         gate.arm(counting_action(&calls));
         assert_eq!(
@@ -151,7 +147,7 @@ mod tests {
     #[test]
     fn ready_before_arm_fires_immediately_on_arm() {
         let calls = Arc::new(AtomicUsize::new(0));
-        let gate = CoordinatorGate::new();
+        let gate = CoordinatorGate::default();
 
         gate.on_masternodes_ready();
         assert_eq!(
@@ -172,7 +168,7 @@ mod tests {
     #[test]
     fn fires_exactly_once_across_repeated_signals() {
         let calls = Arc::new(AtomicUsize::new(0));
-        let gate = CoordinatorGate::new();
+        let gate = CoordinatorGate::default();
 
         gate.arm(counting_action(&calls));
         gate.on_masternodes_ready();
@@ -192,17 +188,17 @@ mod tests {
     #[test]
     fn should_fire_decision_table() {
         // Not ready, not armed → no.
-        let gate = CoordinatorGate::new();
+        let gate = CoordinatorGate::default();
         assert!(!gate.should_fire());
 
         // Ready, not armed → no.
-        let gate = CoordinatorGate::new();
+        let gate = CoordinatorGate::default();
         gate.masternodes_ready.store(true, Ordering::SeqCst);
         assert!(!gate.should_fire());
 
         // Armed, not ready → no.
         let calls = Arc::new(AtomicUsize::new(0));
-        let gate = CoordinatorGate::new();
+        let gate = CoordinatorGate::default();
         let _ = gate.action.set(counting_action(&calls));
         assert!(!gate.should_fire());
 
@@ -218,7 +214,7 @@ mod tests {
     #[test]
     fn single_winner_under_concurrent_fire() {
         let calls = Arc::new(AtomicUsize::new(0));
-        let gate = Arc::new(CoordinatorGate::new());
+        let gate = Arc::new(CoordinatorGate::default());
         gate.arm(counting_action(&calls));
 
         let handles: Vec<_> = (0..16)
@@ -235,6 +231,65 @@ mod tests {
             calls.load(Ordering::SeqCst),
             1,
             "concurrent ready signals must still fire the action exactly once"
+        );
+    }
+
+    /// Regression guard for the WEAK capture at `WalletBackend::start`.
+    ///
+    /// The gate is reachable from the `EventBridge`, which the long-lived SPV
+    /// run loop holds, so the arming closure must capture WEAK coordinator
+    /// handles — a strong capture would pin the coordinators (and through them
+    /// the persister's advisory lock) past backend teardown and break the next
+    /// reconnect with `WalletStorageError::AlreadyOpen`.
+    ///
+    /// This mirrors that pattern with a stand-in coordinator `Arc<AtomicUsize>`:
+    /// downgrade it, capture only the `Weak` in the action, drop the strong ref
+    /// (simulating teardown), then fire. It goes RED if the closure captured a
+    /// strong `Arc` instead: the dropped-strong-ref `strong_count` would stay
+    /// `> 0` and `upgrade()` would return `Some` (started == 1), not `None`.
+    #[test]
+    fn weak_capture_does_not_pin_coordinator_past_teardown() {
+        let coordinator = Arc::new(AtomicUsize::new(0));
+        let weak_to_coordinator = Arc::downgrade(&coordinator);
+
+        // The action upgrades the weak handle and "starts" the coordinator,
+        // recording whether the upgrade observed a live coordinator.
+        let started = Arc::new(AtomicUsize::new(0));
+        let observed_none = Arc::new(AtomicBool::new(false));
+        let started_for_action = Arc::clone(&started);
+        let observed_none_for_action = Arc::clone(&observed_none);
+        let captured = Arc::downgrade(&coordinator);
+
+        let gate = CoordinatorGate::default();
+        gate.arm(Box::new(move || match captured.upgrade() {
+            Some(c) => {
+                c.fetch_add(1, Ordering::SeqCst);
+                started_for_action.fetch_add(1, Ordering::SeqCst);
+            }
+            None => observed_none_for_action.store(true, Ordering::SeqCst),
+        }));
+
+        // Simulate backend teardown: the only strong ref to the coordinator is
+        // dropped. A strong capture in the armed closure would keep it alive.
+        drop(coordinator);
+        assert_eq!(
+            weak_to_coordinator.strong_count(),
+            0,
+            "the gate's armed closure must NOT keep a strong coordinator ref alive"
+        );
+
+        // Firing after teardown must not panic and must no-op gracefully.
+        gate.on_masternodes_ready();
+
+        assert!(gate.has_fired(), "the gate still latches as fired");
+        assert!(
+            observed_none.load(Ordering::SeqCst),
+            "the action must observe upgrade()==None after teardown"
+        );
+        assert_eq!(
+            started.load(Ordering::SeqCst),
+            0,
+            "no coordinator may be started once it has been torn down"
         );
     }
 }

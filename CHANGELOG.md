@@ -92,3 +92,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - A failed wallet-funded identity registration now tells you that your funds are
   safe as a funding lock and how to finish: start a new identity and fund it from
   your existing asset lock.
+- Platform and identity features stay reachable during initial sync. Previously,
+  on a fresh connection the app contacted Platform network nodes before its local
+  masternode list had finished syncing; every node it tried was wrongly marked as
+  failed and set aside, and once all of them were set aside Platform stopped
+  working until restart. The app now waits for the masternode list to be ready
+  before contacting those nodes.
+- Silent crashes now leave a trace: the app captures stderr output and fatal
+  signals to its log file, so an unexpected exit can be diagnosed from the logs
+  instead of vanishing without a record.

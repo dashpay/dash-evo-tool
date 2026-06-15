@@ -322,7 +322,7 @@ mod tests {
         let cs = Arc::new(ConnectionStatus::new());
         let (tx, rx) =
             tokio::sync::mpsc::channel::<TaskResult>(8).with_egui_ctx(egui::Context::default());
-        let gate = Arc::new(CoordinatorGate::new());
+        let gate = Arc::new(CoordinatorGate::default());
         let bridge = EventBridge::new(
             Arc::clone(&cs),
             tx,

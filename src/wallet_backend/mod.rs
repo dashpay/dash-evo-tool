@@ -270,7 +270,7 @@ impl WalletBackend {
 
         let snapshots = Arc::new(SnapshotStore::new());
 
-        let coordinator_gate = Arc::new(CoordinatorGate::new());
+        let coordinator_gate = Arc::new(CoordinatorGate::default());
 
         let bridge = Arc::new(EventBridge::new(
             connection_status,
@@ -971,11 +971,19 @@ impl WalletBackend {
         let platform_address_sync = Arc::downgrade(&self.inner.pwm.platform_address_sync_arc());
         let identity_sync = Arc::downgrade(&self.inner.pwm.identity_sync_arc());
         self.inner.coordinator_gate.arm(Box::new(move || {
-            if let Some(coordinator) = platform_address_sync.upgrade() {
-                coordinator.start();
+            match platform_address_sync.upgrade() {
+                Some(coordinator) => coordinator.start(),
+                None => tracing::warn!(
+                    coordinator = "platform-address-sync",
+                    "Coordinator start skipped: backend torn down before the quorum gate fired"
+                ),
             }
-            if let Some(coordinator) = identity_sync.upgrade() {
-                coordinator.start();
+            match identity_sync.upgrade() {
+                Some(coordinator) => coordinator.start(),
+                None => tracing::warn!(
+                    coordinator = "identity-sync",
+                    "Coordinator start skipped: backend torn down before the quorum gate fired"
+                ),
             }
         }));
 

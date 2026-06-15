@@ -57,6 +57,11 @@ pub struct ConnectionStatus {
     /// queried node fail locally and get banned by the SDK. Push-based from
     /// the wallet-backend `EventBridge` `on_progress` callback. Reset by
     /// [`Self::reset`] on disconnect / network switch.
+    ///
+    /// ADVISORY MIRROR: read only by the `get_quorum_public_key` defense
+    /// backstop. `Relaxed` is sufficient because it guards no other memory —
+    /// the authoritative coordinator-start ordering lives in `CoordinatorGate`,
+    /// whose own `masternodes_ready`/`fired` swap is `SeqCst`.
     masternodes_ready: AtomicBool,
     // NOTE: Mutex (not RwLock) is intentional — single reader (tooltip hover),
     // single writer (poll cycle), minimal contention. RwLock overhead not justified.

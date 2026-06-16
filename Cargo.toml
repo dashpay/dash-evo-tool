@@ -31,6 +31,7 @@ dash-sdk = { git = "https://github.com/dashpay/platform", branch = "fix/wallet-c
 rs-sdk-trusted-context-provider = { git = "https://github.com/dashpay/platform", branch = "fix/wallet-core-derived-rehydration" }
 platform-wallet = { git = "https://github.com/dashpay/platform", branch = "fix/wallet-core-derived-rehydration", features = [
     "serde",
+    "shielded",
 ] }
 platform-wallet-storage = { git = "https://github.com/dashpay/platform", branch = "fix/wallet-core-derived-rehydration" }
 zip32 = "0.2.0"

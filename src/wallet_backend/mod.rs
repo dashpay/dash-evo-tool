@@ -281,6 +281,21 @@ impl WalletBackend {
 
         let pwm = PlatformWalletManager::new(sdk, Arc::clone(&persister), bridge);
 
+        // Wire the upstream shielded coordinator into the manager.
+        //
+        // Uses a dedicated SQLite file (`platform-wallet-shielded.sqlite`) that
+        // is separate from DET's existing commitment-tree sidecar
+        // (`shielded-commitment-tree.sqlite`, opened by `context/shielded.rs`
+        // via `open_commitment_tree_with_migration`) to avoid dual-writer
+        // conflicts. The coordinator starts empty — no wallets are bound until
+        // `bind_shielded` is called per-wallet during Phase B. Subsequent calls
+        // with the same path are idempotent (upstream no-ops).
+        pwm.configure_shielded(spv_storage_dir.join("platform-wallet-shielded.sqlite"))
+            .await
+            .map_err(|e| TaskError::WalletBackend {
+                source: Box::new(e),
+            })?;
+
         let peer = Self::spv_primary_peer_socket(ctx, network);
 
         let app_kv = ctx.app_kv();
@@ -965,11 +980,15 @@ impl WalletBackend {
         // lock) for as long as the SPV task lives, surviving backend teardown
         // and blocking the next reconnect's persister open. At fire time the
         // backend is live, so the upgrade always succeeds.
-        // The upstream shielded sync coordinator only exists when
-        // `platform-wallet`'s `shielded` feature is enabled; DET enables only
-        // `serde`, so there is none to start here.
         let platform_address_sync = Arc::downgrade(&self.inner.pwm.platform_address_sync_arc());
         let identity_sync = Arc::downgrade(&self.inner.pwm.identity_sync_arc());
+        // Shielded sync coordinator (Orchard note scanning). Runs the
+        // background `ShieldedSyncManager` loop once masternodes are ready.
+        // `configure_shielded` (called in `new()`) opens the coordinator's
+        // SQLite file up front; `start()` here just fires the scan loop.
+        // If no wallets have called `bind_shielded` yet, each pass produces
+        // an empty summary and returns immediately — safe no-op.
+        let shielded_sync = Arc::downgrade(&self.inner.pwm.shielded_sync_arc());
         self.inner.coordinator_gate.arm(Box::new(move || {
             match platform_address_sync.upgrade() {
                 Some(coordinator) => coordinator.start(),
@@ -982,6 +1001,13 @@ impl WalletBackend {
                 Some(coordinator) => coordinator.start(),
                 None => tracing::warn!(
                     coordinator = "identity-sync",
+                    "Coordinator start skipped: backend torn down before the quorum gate fired"
+                ),
+            }
+            match shielded_sync.upgrade() {
+                Some(coordinator) => coordinator.start(),
+                None => tracing::warn!(
+                    coordinator = "shielded-sync",
                     "Coordinator start skipped: backend torn down before the quorum gate fired"
                 ),
             }

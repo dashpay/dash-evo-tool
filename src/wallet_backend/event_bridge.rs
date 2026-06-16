@@ -283,10 +283,10 @@ impl PlatformEventHandler for EventBridge {
         }
     }
 
-    // `on_shielded_sync_completed` is left at its upstream no-op default:
-    // `platform-wallet`'s `shielded` feature is not enabled for DET (only
-    // `serde`), so that callback never fires. DET's shielded path is the
-    // separate retained grovestark flow, unrelated to this event.
+    // `on_shielded_sync_completed` is left at the upstream no-op default.
+    // DET's shielded flow (context/shielded.rs) is the retained grovestark
+    // path; the upstream ShieldedSyncManager fires this callback after each
+    // pass but DET has no UI reaction wired to it yet (Phase B).
 }
 
 #[cfg(test)]

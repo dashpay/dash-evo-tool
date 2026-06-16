@@ -1020,13 +1020,7 @@ impl WalletsBalancesScreen {
     }
 
     fn shielded_balance_duffs(&self, seed_hash: &WalletSeedHash) -> u64 {
-        self.app_context
-            .shielded_states
-            .lock()
-            .ok()
-            .and_then(|states| states.get(seed_hash).map(|s| s.shielded_balance))
-            .unwrap_or(0)
-            / CREDITS_PER_DUFF
+        self.app_context.shielded_balance_duffs(seed_hash)
     }
 
     /// Core (chain) balance in duffs, read from the display-only

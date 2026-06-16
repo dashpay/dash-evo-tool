@@ -662,15 +662,19 @@ impl AppContext {
         };
 
         // Enter the seed scope when there is any seed-dependent work to do:
-        // address bootstrap OR upstream registration. A fully-bootstrapped,
-        // already-registered wallet needs neither and is skipped without
-        // touching the vault.
+        // address bootstrap, upstream registration, or shielded key binding.
+        // `ensure_shielded_bound` is idempotent and exits immediately if the
+        // wallet is already bound (upstream does an in-memory check), so
+        // `needs_shielded_bind` is always true — the overhead of entering the
+        // scope is negligible. The upstream 60 s ShieldedSyncManager loop picks
+        // up any newly bound wallets automatically.
         let needs_bootstrap = wallet
             .read()
             .map(|g| Self::wallet_needs_bootstrap(&g))
             .unwrap_or(false);
         let needs_registration = !backend.is_wallet_registered(&seed_hash);
-        if !needs_bootstrap && !needs_registration {
+        let needs_shielded_bind = true;
+        if !needs_bootstrap && !needs_registration && !needs_shielded_bind {
             return;
         }
 
@@ -703,6 +707,19 @@ impl AppContext {
                             wallet = %hex::encode(seed_hash),
                             %error,
                             "W2 upstream registration failed; will retry at next cold boot"
+                        );
+                    }
+                    // Phase C-bind: lazily bind Orchard ZIP-32 keys for this wallet.
+                    // Best-effort — a failure only defers the first shielded op prompt.
+                    // The upstream ShieldedSyncManager 60s loop picks up any newly
+                    // bound wallets automatically; no manual sync trigger needed.
+                    if let Err(error) =
+                        backend.ensure_shielded_bound(&seed_hash, seed).await
+                    {
+                        tracing::debug!(
+                            wallet = %hex::encode(seed_hash),
+                            %error,
+                            "Shielded bind deferred; will retry on next unlock"
                         );
                     }
                     // D4b lazy warm: populate the identity-auth public-key
@@ -907,105 +924,41 @@ impl AppContext {
         );
     }
 
-    /// Initialize shielded state for unlocked wallets that were skipped
-    /// because the protocol version wasn't known at unlock time. Called when
-    /// the protocol version first crosses the shielded threshold.
+    /// Bind Orchard ZIP-32 keys for all currently-open wallets that have not
+    /// yet been shielded-bound through the upstream coordinator.  Called when
+    /// the network protocol version first crosses the shielded threshold —
+    /// at that point open wallets are typically already bootstrapped and
+    /// registered, so the regular JIT path in
+    /// [`Self::bootstrap_wallet_addresses_jit`] would have been the right
+    /// vehicle, but it may not have run yet for wallets opened before the
+    /// version was known.
     ///
-    /// Each init now derives the Orchard keys by pulling the seed just-in-time
-    /// through the JIT chokepoint, which is async, so each candidate is
-    /// initialized on a tracked subtask (mirroring [`Self::queue_shielded_sync`]).
-    /// Only currently-open wallets are candidates, so a no-password wallet
-    /// derives silently and a passphrase-protected wallet whose seed the user
-    /// already remembered for the session resolves from the session cache
-    /// without a surprise background prompt.
+    /// Reuses `bootstrap_wallet_addresses_jit` (which now unconditionally
+    /// calls `ensure_shielded_bound`) so the logic is not duplicated.
+    /// The upstream 60 s `ShieldedSyncManager` loop picks up any newly bound
+    /// wallets automatically — no manual sync trigger needed.
     pub(crate) fn init_missing_shielded_wallets(self: &Arc<Self>) {
-        // Collect candidate seed hashes while holding locks, then release.
-        let candidates: Vec<WalletSeedHash> = (|| {
-            let wallets = self.wallets.read().ok()?;
-            let existing = self.shielded_states.lock().ok()?;
-            Some(
+        // Collect open wallet arcs while holding the read lock, then release.
+        let candidates: Vec<Arc<RwLock<Wallet>>> = self
+            .wallets
+            .read()
+            .ok()
+            .map(|wallets| {
                 wallets
-                    .iter()
-                    .filter(|(hash, wallet_arc)| {
-                        !existing.contains_key(*hash)
-                            && wallet_arc.read().ok().map(|w| w.is_open()).unwrap_or(false)
-                    })
-                    .map(|(hash, _)| *hash)
-                    .collect(),
-            )
-        })()
-        .unwrap_or_default();
+                    .values()
+                    .filter(|w| w.read().ok().map(|g| g.is_open()).unwrap_or(false))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
 
-        for seed_hash in candidates {
+        for wallet in candidates {
             let ctx = Arc::clone(self);
             self.subtasks
-                .spawn_sync("shielded_init_after_protocol_update", async move {
-                    let handle = tokio::runtime::Handle::current();
-                    let _ = tokio::task::spawn_blocking(move || {
-                        handle.block_on(async {
-                            match ctx.initialize_shielded_wallet(seed_hash).await {
-                                Ok(_) => {
-                                    tracing::info!(
-                                        seed = %hex::encode(seed_hash),
-                                        "Shielded wallet initialized after protocol version update"
-                                    );
-                                    ctx.queue_shielded_sync(seed_hash);
-                                }
-                                Err(e) => tracing::debug!(
-                                    seed = %hex::encode(seed_hash),
-                                    error = %e,
-                                    "Shielded wallet init failed after protocol version update"
-                                ),
-                            }
-                        })
-                    })
-                    .await;
+                .spawn_sync("shielded_bind_after_protocol_update", async move {
+                    ctx.bootstrap_wallet_addresses_jit(&wallet).await;
                 });
         }
-    }
-
-    /// Queue async SyncNotes -> CheckNullifiers for an already-initialized
-    /// shielded wallet. Tracked via `subtasks` so it participates in graceful
-    /// shutdown and cancellation.
-    ///
-    /// Uses `spawn_blocking(block_on(...))` because the async methods on
-    /// `Arc<Self>` produce futures that borrow `self`, which the compiler
-    /// cannot prove are `'static` (rust-lang/rust#100013). The trampoline
-    /// resolves the futures synchronously on a blocking thread, satisfying
-    /// the `'static` bound required by `spawn_sync`.
-    fn queue_shielded_sync(self: &Arc<Self>, seed_hash: WalletSeedHash) {
-        let ctx = Arc::clone(self);
-        self.subtasks.spawn_sync("shielded_sync", async move {
-            let handle = tokio::runtime::Handle::current();
-            let result = tokio::task::spawn_blocking(move || {
-                handle.block_on(async {
-                    match ctx.sync_shielded_notes(seed_hash).await {
-                        Ok(_) => {
-                            if let Err(e) = ctx.check_nullifiers_task(seed_hash).await {
-                                tracing::debug!(
-                                    seed = %hex::encode(seed_hash),
-                                    error = %e,
-                                    "Shielded nullifier check after init failed"
-                                );
-                            }
-                        }
-                        Err(e) => tracing::debug!(
-                            seed = %hex::encode(seed_hash),
-                            error = %e,
-                            "Shielded note sync after init failed"
-                        ),
-                    }
-                })
-            })
-            .await;
-            if let Err(e) = result {
-                tracing::debug!(
-                    seed = %hex::encode(seed_hash),
-                    error = %e,
-                    "Shielded sync task panicked"
-                );
-            }
-        });
     }
 
     /// Queue automatic discovery of identities derived from a wallet.

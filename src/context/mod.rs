@@ -128,6 +128,14 @@ pub struct AppContext {
             crate::model::wallet::shielded::ShieldedWalletState,
         >,
     >,
+    /// Frame-safe shielded balance snapshot (credits, summed across all Orchard accounts).
+    ///
+    /// Written by the Phase-E `on_shielded_sync_completed` event handler from the
+    /// upstream `ShieldedSyncManager` 60-second loop; read synchronously in the frame
+    /// loop via [`Self::shielded_balance_duffs`].  Starts empty — returns 0 until the
+    /// first completed sync delivers a balance.  Must never be written from the frame
+    /// loop (Nagatha ruling: no `block_in_place`/`block_on` on the UI thread).
+    pub(crate) shielded_balances: Mutex<std::collections::HashMap<WalletSeedHash, u64>>,
     /// The egui context, stored for use in non-UI code paths (e.g. display_task_result).
     /// Clone is O(1) — egui::Context is Arc-backed and the same instance for the app lifetime.
     egui_ctx: egui::Context,
@@ -357,6 +365,7 @@ impl AppContext {
             ),
             platform_protocol_version: AtomicU32::new(0),
             shielded_states: Mutex::new(std::collections::HashMap::new()),
+            shielded_balances: Mutex::new(std::collections::HashMap::new()),
             egui_ctx,
             wallet_backend: ArcSwapOption::const_empty(),
             wallet_backend_build: tokio::sync::Mutex::new(()),
@@ -495,6 +504,24 @@ impl AppContext {
         if !was_shielded && FeatureGate::Shielded.is_available(self) {
             self.init_missing_shielded_wallets();
         }
+    }
+
+    /// Synchronous read of the frame-safe shielded balance for `seed_hash`.
+    ///
+    /// Returns the total shielded balance in duffs, summed across all Orchard accounts.
+    /// Returns `0` if no sync has completed yet (field is empty on cold boot).
+    ///
+    /// This is the **read side** of the push snapshot; the write side is
+    /// `on_shielded_sync_completed` in Phase E.  Safe to call from the egui frame
+    /// loop — no blocking I/O, no async (Nagatha ruling).
+    pub(crate) fn shielded_balance_duffs(&self, seed_hash: &WalletSeedHash) -> u64 {
+        use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
+        self.shielded_balances
+            .lock()
+            .ok()
+            .and_then(|map| map.get(seed_hash).copied())
+            .unwrap_or(0)
+            / CREDITS_PER_DUFF
     }
 
     /// Get a fee estimator configured with the cached fee multiplier.

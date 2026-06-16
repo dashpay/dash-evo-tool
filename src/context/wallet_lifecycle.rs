@@ -1627,6 +1627,166 @@ mod tests {
         backend.shutdown().await;
     }
 
+    /// ROOT CAUSE for issue #7 (currently REPRODUCES the bug — `#[ignore]` until
+    /// fixed, then it becomes the passing regression guard).
+    ///
+    /// On a FRESH DB the upstream `create_wallet_from_seed_bytes` persists the
+    /// BIP44 account-0 xpub at DEPTH-1 (`m/0'`), while DET's sidecar bridge
+    /// stores `Wallet::new_from_seed`'s DEPTH-3 (`m/44'/coin'/0'`) xpub — DIFFERENT
+    /// pubkey AND chaincode, not just BIP32 metadata. So the seedless cold-boot
+    /// reload reads back the depth-1 xpub, it matches no bridge entry, and the
+    /// fund-routing gate rejects every wallet -> systematic WalletNotLoaded. This
+    /// is a LIVE upstream-vs-DET derivation mismatch on the pinned crates, NOT
+    /// legacy format drift. Note `from_seed_bytes(Default)` matches DET (depth-3),
+    /// so the divergence is in the persistor write path, not pure derivation.
+    ///
+    /// It inspects the persistor `account_registrations` directly (a read-only
+    /// rusqlite connection) rather than reopening an AppContext, because the
+    /// offline harness can't release the shared `app_kv` advisory lock to reopen.
+    #[ignore = "issue #7: reproduces the upstream depth-1 vs DET depth-3 persistor mismatch; un-ignore once fixed"]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn issue7_fresh_persistor_bip44_xpub_matches_det_bridge() {
+        let _serialize = backend_reopen_lock().await;
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+
+        let seed = [0x71u8; 64];
+        let (seed_hash, meta_xpub) = {
+            // ---- First boot: create + register through the full W1 path ----
+            let (ctx, sender) = offline_testnet_context_at(temp_dir.path());
+            ctx.ensure_wallet_backend(sender)
+                .await
+                .expect("ensure_wallet_backend (first boot)");
+            let backend = ctx.wallet_backend().expect("backend wired (first boot)");
+
+            let wallet =
+                crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
+                    .expect("build wallet");
+            let seed_hash = wallet.seed_hash();
+
+            // W1 create/import: writes seed envelope + wallet-meta sidecar
+            // (synchronously) and spawns the upstream persistor registration.
+            ctx.register_wallet(wallet, &seed, WalletOrigin::Imported)
+                .expect("register_wallet (W1)");
+
+            // Drive the persistor registration deterministically (the same call
+            // the spawned W1 subtask makes); idempotent if the spawn already ran.
+            backend
+                .register_wallet_from_seed(&seed_hash, &seed, Some(0))
+                .await
+                .expect("W1 upstream registration must succeed on first boot");
+            assert!(
+                backend.is_wallet_registered(&seed_hash),
+                "precondition: wallet must register in-process on first boot"
+            );
+            // Capture the bridge side for diagnostics.
+            let meta_xpub = backend
+                .wallet_meta()
+                .get(Network::Testnet, &seed_hash)
+                .map(|m| m.xpub_encoded)
+                .unwrap_or_default();
+            eprintln!(
+                "ISSUE7 first-boot: registered=true meta_xpub_len={} meta_xpub_empty={}",
+                meta_xpub.len(),
+                meta_xpub.is_empty()
+            );
+
+            backend.shutdown().await;
+            (seed_hash, meta_xpub)
+        };
+        let _ = seed_hash;
+
+        // Inspect the persistor on disk directly (a fresh read-only rusqlite
+        // connection; SQLite allows concurrent readers, so the lingering app_kv
+        // handle on the *other* file does not block this). This shows exactly
+        // what the seedless reload would read back for the BIP44 account-0 row —
+        // the gate's "loaded" side — without needing a second AppContext.
+        let persistor_path = temp_dir
+            .path()
+            .join("spv")
+            .join("testnet")
+            .join("platform-wallet.sqlite");
+        eprintln!("ISSUE7 persistor exists={}", persistor_path.exists());
+        let conn = rusqlite::Connection::open_with_flags(
+            &persistor_path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .expect("open persistor read-only");
+        let rows: Vec<(String, i64, Vec<u8>)> = conn
+            .prepare(
+                "SELECT account_type, account_index, account_xpub_bytes FROM account_registrations",
+            )
+            .expect("prepare")
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .expect("query")
+            .map(|r| r.expect("row"))
+            .collect();
+        eprintln!("ISSUE7 account_registrations rows={}", rows.len());
+        for (at, idx, blob) in &rows {
+            eprintln!(
+                "ISSUE7   row account_type={at:?} index={idx} blob_len={}",
+                blob.len()
+            );
+        }
+        eprintln!("ISSUE7 bridge meta_xpub_len={}", meta_xpub.len());
+
+        // The seedless reload needs a BIP44 account-0 ("standard", 0) row to
+        // rebuild the watch-only account the gate reads. If it's absent or under
+        // a different key, the gate rejects every wallet on a fresh DB.
+        let bip44_0_blob = rows
+            .iter()
+            .find(|(at, idx, _)| at == "standard" && *idx == 0)
+            .map(|(_, _, blob)| blob.clone());
+        assert!(
+            bip44_0_blob.is_some(),
+            "ISSUE7: persistor has no BIP44 account-0 (standard,0) row after W1. rows={rows:?}"
+        );
+
+        // THE GATE CHECK: decode the stored BIP44 account-0 row exactly as the
+        // seedless reload does and compare its account_xpub.encode() to the
+        // bridge's meta xpub. If these differ, the fund-routing gate rejects the
+        // wallet on a fresh cold boot — the systematic WalletNotLoaded.
+        {
+            use platform_wallet::changeset::AccountRegistrationEntry;
+            let blob = bip44_0_blob.unwrap();
+            let cfg = bincode::config::standard();
+            let (entry, _): (AccountRegistrationEntry, usize) =
+                bincode::serde::decode_from_slice(&blob, cfg).expect("decode stored entry");
+            let stored = entry.account_xpub;
+            let stored_xpub_encoded = stored.encode().to_vec();
+            eprintln!(
+                "ISSUE7 GATE: stored_xpub_len={} bridge_xpub_len={} EQ={}",
+                stored_xpub_encoded.len(),
+                meta_xpub.len(),
+                stored_xpub_encoded == meta_xpub
+            );
+            // FIELD-LEVEL DIFF (the task's exact ask): decode the bridge xpub
+            // too and compare every BIP32 field, to localize the divergence.
+            let bridge = dash_sdk::dpp::key_wallet::bip32::ExtendedPubKey::decode(&meta_xpub)
+                .expect("decode bridge xpub");
+            eprintln!(
+                "ISSUE7 FIELDS stored: net={:?} depth={} parent_fp={:?} child={:?}",
+                stored.network, stored.depth, stored.parent_fingerprint, stored.child_number
+            );
+            eprintln!(
+                "ISSUE7 FIELDS bridge: net={:?} depth={} parent_fp={:?} child={:?}",
+                bridge.network, bridge.depth, bridge.parent_fingerprint, bridge.child_number
+            );
+            eprintln!(
+                "ISSUE7 FIELDS pubkey_eq={} chaincode_eq={} depth_eq={} parentfp_eq={} child_eq={} net_eq={}",
+                stored.public_key == bridge.public_key,
+                stored.chain_code == bridge.chain_code,
+                stored.depth == bridge.depth,
+                stored.parent_fingerprint == bridge.parent_fingerprint,
+                stored.child_number == bridge.child_number,
+                stored.network == bridge.network,
+            );
+            assert_eq!(
+                stored_xpub_encoded, meta_xpub,
+                "ISSUE7 REPRODUCED: the seedless-reloaded BIP44 account-0 xpub != the bridge meta xpub — the fund-routing gate rejects every wallet on a fresh cold boot"
+            );
+        }
+    }
+
     /// `WalletTask::ListTrackedAssetLocks` reads tracked locks off the UI thread
     /// through the App Task System. This drives the production dispatch path
     /// (`run_backend_task`) for a registered wallet and asserts it returns the

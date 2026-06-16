@@ -156,16 +156,23 @@ impl AppContext {
             }
         }
 
-        // Drop the per-network shielded commitment-tree SQLite sidecar
-        // (replaces the legacy in-place table truncation on `data.db`).
-        // Missing file is the expected state on fresh installs and is
-        // tolerated. Backend-not-initialised is also fine — the file
-        // cannot exist without the backend having opened it.
-        if let Ok(tree_path) = self.shielded_commitment_tree_path()
-            && let Err(e) = std::fs::remove_file(&tree_path)
-            && e.kind() != std::io::ErrorKind::NotFound
-        {
-            return Err(TaskError::FileSystem { source: e });
+        // Reset the upstream shielded coordinator (quiesces its sync loop and
+        // empties the per-network store) and unlink DET's two retired legacy
+        // shielded files. The coordinator reset is async, so it runs off-thread
+        // as a best-effort subtask; the legacy-file unlinks are synchronous and
+        // scoped strictly to THIS network's spv directory.
+        if let Ok(backend) = self.wallet_backend() {
+            cleanup_legacy_shielded_files(backend.spv_storage_dir())?;
+
+            let ctx = Arc::clone(self);
+            self.subtasks
+                .spawn_sync("shielded_coordinator_clear", async move {
+                    if let Ok(backend) = ctx.wallet_backend()
+                        && let Err(error) = backend.clear_shielded().await
+                    {
+                        tracing::warn!(%error, "Shielded coordinator reset failed during clear");
+                    }
+                });
         }
 
         if let Ok(mut wallets) = self.wallets.write() {
@@ -1049,6 +1056,30 @@ impl AppContext {
 
         Ok(())
     }
+}
+
+/// Unlink DET's two retired legacy shielded files from `spv_dir` (the active
+/// network's spv directory), tolerating a missing file.
+///
+/// These are the files DET's deleted shielded subsystem owned:
+/// `det-shielded.sqlite` (the plaintext note sidecar) and
+/// `shielded-commitment-tree.sqlite` (the grovedb commitment tree). The
+/// upstream coordinator's store (`platform-wallet-shielded.sqlite`) is a
+/// DIFFERENT file and is deliberately NOT touched here — it is reset via the
+/// coordinator's own `clear_shielded`. Scoped strictly to `spv_dir` so a clear
+/// of one network can never reach another network's files.
+fn cleanup_legacy_shielded_files(spv_dir: &Path) -> Result<(), TaskError> {
+    const LEGACY_SHIELDED_FILES: [&str; 2] =
+        ["det-shielded.sqlite", "shielded-commitment-tree.sqlite"];
+    for file in LEGACY_SHIELDED_FILES {
+        let path = spv_dir.join(file);
+        if let Err(e) = std::fs::remove_file(&path)
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            return Err(TaskError::FileSystem { source: e });
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -2122,12 +2153,12 @@ mod tests {
     }
 
     /// F17/F20 — removing a wallet wipes its secret-bearing state: the
-    /// seed-envelope vault entry, the plaintext shielded notes, the shielded
-    /// balance, and the nullifier cursor. Before the fix, `remove_wallet` only
-    /// touched SQLite + the in-memory map, leaving the encrypted seed and the
-    /// plaintext Orchard notes (plus the nullifier cursor) on disk.
+    /// encrypted seed-envelope vault entry. Before the fix, `remove_wallet`
+    /// only touched SQLite + the in-memory map, leaving the encrypted seed on
+    /// disk. (DET's plaintext shielded sidecar was retired in Phase D; Orchard
+    /// state now lives in the upstream coordinator, detached on removal.)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn remove_wallet_wipes_seed_envelope_and_shielded_state() {
+    async fn remove_wallet_wipes_seed_envelope() {
         let (ctx, sender, _tmp) = offline_testnet_context();
         ctx.ensure_wallet_backend(sender)
             .await
@@ -2143,43 +2174,13 @@ mod tests {
 
         let backend = ctx.wallet_backend().expect("backend wired");
 
-        // Seed the shielded sidecar: one note + a nullifier cursor.
-        let cmx = [0x01u8; 32];
-        let nullifier = [0x02u8; 32];
-        backend
-            .shielded()
-            .insert_shielded_note(
-                &seed_hash,
-                &crate::wallet_backend::InsertShieldedNote {
-                    note_data: &[0u8; 8],
-                    position: 0,
-                    cmx: &cmx,
-                    nullifier: &nullifier,
-                    block_height: 100,
-                    value: 50,
-                    network: "testnet",
-                },
-            )
-            .expect("insert shielded note");
-        backend
-            .shielded()
-            .set_nullifier_sync_info(&seed_hash, "testnet", 100, 200)
-            .expect("set nullifier cursor");
-
-        // Preconditions: the seed envelope and shielded state are present.
+        // Precondition: the seed envelope is present.
         assert!(
             WalletSeedView::new(&ctx.secret_store())
                 .get(&seed_hash)
                 .expect("vault read")
                 .is_some(),
             "precondition: the seed envelope must exist before removal"
-        );
-        assert_eq!(
-            backend
-                .shielded()
-                .get_shielded_balance(&seed_hash, "testnet")
-                .unwrap(),
-            50
         );
 
         ctx.remove_wallet(&seed_hash).expect("remove wallet");
@@ -2192,31 +2193,6 @@ mod tests {
                 .is_none(),
             "the seed envelope must be deleted from the vault on removal"
         );
-        // Plaintext shielded notes, balance, and the nullifier cursor are gone.
-        assert!(
-            backend
-                .shielded()
-                .get_unspent_shielded_notes(&seed_hash, "testnet")
-                .unwrap()
-                .is_empty(),
-            "shielded notes must be deleted on removal"
-        );
-        assert_eq!(
-            backend
-                .shielded()
-                .get_shielded_balance(&seed_hash, "testnet")
-                .unwrap(),
-            0,
-            "shielded balance must be zero after removal"
-        );
-        assert_eq!(
-            backend
-                .shielded()
-                .get_nullifier_sync_info(&seed_hash, "testnet")
-                .unwrap(),
-            (0, 0),
-            "the nullifier cursor must reset to zero after removal"
-        );
 
         backend.shutdown().await;
     }
@@ -2225,14 +2201,14 @@ mod tests {
     /// its secret-bearing state on a truly-fresh install where the legacy
     /// `wallet`/`wallet_addresses`/`utxos` tables are gated OUT of the schema.
     ///
-    /// The sibling `remove_wallet_wipes_seed_envelope_and_shielded_state`
+    /// The sibling `remove_wallet_wipes_seed_envelope`
     /// builds its context with `create_tables(true)`, which force-creates
     /// those legacy tables and therefore masks this path. Here the real
     /// `Database::initialize` fresh path runs, so the unguarded
     /// `SELECT address FROM wallet_addresses` in `Database::remove_wallet`
     /// errored with `no such table` and propagated through
     /// `AppContext::remove_wallet` BEFORE the secret wipe — leaving the seed
-    /// envelope and plaintext shielded notes on disk. The existence-guarded
+    /// envelope on disk. The existence-guarded
     /// statements now no-op cleanly so the caller reaches the wipe.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn remove_wallet_wipes_secrets_on_fresh_install_without_legacy_tables() {
@@ -2262,38 +2238,13 @@ mod tests {
 
         let backend = ctx.wallet_backend().expect("backend wired");
 
-        // Seed the shielded sidecar so the wipe has plaintext to remove.
-        backend
-            .shielded()
-            .insert_shielded_note(
-                &seed_hash,
-                &crate::wallet_backend::InsertShieldedNote {
-                    note_data: &[0u8; 8],
-                    position: 0,
-                    cmx: &[0x01u8; 32],
-                    nullifier: &[0x02u8; 32],
-                    block_height: 100,
-                    value: 50,
-                    network: "testnet",
-                },
-            )
-            .expect("insert shielded note");
-
-        // Preconditions: the seed envelope and a shielded note exist.
+        // Precondition: the seed envelope exists.
         assert!(
             WalletSeedView::new(&ctx.secret_store())
                 .get(&seed_hash)
                 .expect("vault read")
                 .is_some(),
             "precondition: the seed envelope must exist before removal"
-        );
-        assert_eq!(
-            backend
-                .shielded()
-                .get_shielded_balance(&seed_hash, "testnet")
-                .unwrap(),
-            50,
-            "precondition: the shielded note must exist before removal"
         );
 
         // Pre-fix this returned `Err(no such table: wallet_addresses)` and the
@@ -2307,14 +2258,6 @@ mod tests {
                 .expect("vault read after removal")
                 .is_none(),
             "the seed envelope must be deleted from the vault on a fresh install"
-        );
-        assert_eq!(
-            backend
-                .shielded()
-                .get_shielded_balance(&seed_hash, "testnet")
-                .unwrap(),
-            0,
-            "shielded balance must be zero after removal on a fresh install"
         );
 
         backend.shutdown().await;

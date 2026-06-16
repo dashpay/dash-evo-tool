@@ -230,7 +230,7 @@ impl AddressInput {
     /// - **Identities**: call [`with_identities()`] with `QualifiedIdentity`
     ///   data from `AppContext::load_local_qualified_identities()`.
     /// - **Shielded**: call [`with_shielded_balance()`] with the address
-    ///   string from `AppContext::shielded_states`.
+    ///   string from the upstream shielded coordinator's default address.
     ///
     /// Entries are extracted immediately (read lock acquired once per wallet).
     /// Skips gracefully if a wallet lock is poisoned.

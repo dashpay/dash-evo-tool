@@ -6,9 +6,6 @@
 // changed since this helper was written (created 2026-04-08 based on commit 79a6907c).
 // The production code undergoes heavy refactoring; inspect for divergence before reuse.
 
-use crate::framework::task_runner::run_task;
-use dash_evo_tool::backend_task::shielded::ShieldedTask;
-use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
 use dash_evo_tool::context::AppContext;
 use dash_evo_tool::model::feature_gate::FeatureGate;
 use dash_evo_tool::model::wallet::WalletSeedHash;
@@ -82,44 +79,18 @@ pub fn is_platform_shielded_unsupported(
     }
 }
 
-/// Run `WarmUpProvingKey` followed by `InitializeShieldedWallet` in sequence.
+/// No-op shim retained for call-site compatibility.
 ///
-/// This ensures the proving key is downloaded/cached and the wallet's
-/// shielded state (ZIP32 keys, commitment tree) is initialized before
-/// any shielded operations.
-pub async fn warm_up_and_init(app_context: &Arc<AppContext>, seed_hash: WalletSeedHash) {
-    // Warm up proving key (may take 30-60s on first run)
-    tracing::info!("shielded_helpers: warming up proving key...");
-    let task = BackendTask::ShieldedTask(ShieldedTask::WarmUpProvingKey);
-    let result = run_task(app_context, task)
-        .await
-        .expect("shielded_helpers: WarmUpProvingKey failed");
-    assert!(
-        matches!(result, BackendTaskSuccessResult::ProvingKeyReady),
-        "shielded_helpers: expected ProvingKeyReady, got: {:?}",
-        result
+/// Phase D retired DET's `WarmUpProvingKey` / `InitializeShieldedWallet` tasks:
+/// the Orchard prover is warmed lazily by the upstream coordinator and shielded
+/// keys are bound automatically on wallet unlock (`ensure_shielded_bound`). The
+/// callers of this helper are `#[ignore]`d network tests pending a rewrite.
+///
+/// TODO(Phase F): rewrite shielded e2e tests for the upstream coordinator —
+/// drive `ensure_shielded_bound` + `sync_now`, then assert coordinator-store
+/// balances/activity.
+pub async fn warm_up_and_init(_app_context: &Arc<AppContext>, _seed_hash: WalletSeedHash) {
+    tracing::info!(
+        "shielded_helpers: warm_up_and_init is now a no-op (upstream coordinator owns warm-up + binding)"
     );
-
-    // Initialize shielded wallet
-    tracing::info!("shielded_helpers: initializing shielded wallet...");
-    let task = BackendTask::ShieldedTask(ShieldedTask::InitializeShieldedWallet { seed_hash });
-    let result = run_task(app_context, task)
-        .await
-        .expect("shielded_helpers: InitializeShieldedWallet failed");
-    match result {
-        BackendTaskSuccessResult::ShieldedInitialized {
-            seed_hash: sh,
-            balance,
-        } => {
-            assert_eq!(sh, seed_hash);
-            tracing::info!(
-                "shielded_helpers: wallet initialized (balance: {})",
-                balance
-            );
-        }
-        other => panic!(
-            "shielded_helpers: expected ShieldedInitialized, got: {:?}",
-            other
-        ),
-    }
 }

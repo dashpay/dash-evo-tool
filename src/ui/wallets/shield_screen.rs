@@ -1,11 +1,9 @@
 use crate::app::AppAction;
 use crate::backend_task::shielded::ShieldedTask;
-use crate::backend_task::shielded::bundle::ShieldStage;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::address::{AddressKind, ValidatedAddress};
 use crate::model::amount::Amount;
-use crate::model::feature_gate::{FeatureGate, FeatureGateUiExt};
 use crate::model::fee_estimation::shielded_fee_for_actions;
 use crate::model::wallet::WalletSeedHash;
 use crate::ui::components::ComponentResponse;
@@ -16,52 +14,19 @@ use crate::ui::components::component_trait::Component;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::theme::{ComponentStyles, DashColors};
+use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
-use dash_sdk::dpp::serialization::PlatformSerializable;
-use dash_sdk::dpp::state_transition::proof_result::StateTransitionProofResult;
 use dash_sdk::dpp::version::PlatformVersion;
 use eframe::egui::{self, Context};
 use egui::RichText;
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
-
-/// Extract the expected nonce from an `AddressInvalidNonceError` buried in an SDK error.
-///
-/// The error can arrive via two paths:
-/// 1. `Error::StateTransitionBroadcastError` → `cause: ConsensusError` → `AddressInvalidNonceError`
-/// 2. `Error::Protocol(ProtocolError::ConsensusError(...))` → `AddressInvalidNonceError`
-fn extract_expected_nonce(error: &dash_sdk::Error) -> Option<u32> {
-    use dash_sdk::dpp::ProtocolError;
-    use dash_sdk::dpp::consensus::ConsensusError;
-    use dash_sdk::dpp::consensus::state::state_error::StateError;
-
-    // Helper: extract from a ConsensusError
-    let from_consensus = |c: &ConsensusError| -> Option<u32> {
-        match c {
-            ConsensusError::StateError(StateError::AddressInvalidNonceError(e)) => {
-                Some(e.expected_nonce())
-            }
-            _ => None,
-        }
-    };
-
-    match error {
-        // Path 1: broadcast error with consensus cause
-        dash_sdk::Error::StateTransitionBroadcastError(e) => from_consensus(e.cause.as_ref()?),
-        // Path 2: protocol error wrapping consensus error (boxed)
-        dash_sdk::Error::Protocol(ProtocolError::ConsensusError(c)) => from_consensus(c.as_ref()),
-        _ => None,
-    }
-}
+use std::sync::Arc;
 
 #[derive(PartialEq)]
 enum Status {
     NotStarted,
     WaitingForResult,
-    BatchInProgress,
     Complete,
 }
 
@@ -69,22 +34,24 @@ enum Status {
 ///
 /// This is a routing choice, not coin control: `Core` shields the whole wallet
 /// (the asset lock spends the full live UTXO set — no per-address selection
-/// exists), while `Platform` shields one chosen platform address.
+/// exists), while `Platform` shields from the wallet's platform balance (the
+/// upstream coordinator selects the input addresses).
 #[derive(PartialEq, Clone, Copy)]
 enum ShieldSourceKind {
     /// Type 18 asset-lock shield of the whole Core wallet.
     Core,
-    /// Type 15 shield of a single chosen platform address.
+    /// Type 15 shield from the wallet's platform balance.
     Platform,
 }
 
 pub struct ShieldScreen {
     pub app_context: Arc<AppContext>,
     pub seed_hash: WalletSeedHash,
-    /// Whether the shield draws from the whole Core wallet or a platform address.
+    /// Whether the shield draws from the whole Core wallet or platform balance.
     source_kind: ShieldSourceKind,
-    /// Platform-address picker — only shown (and only meaningful) when
-    /// `source_kind` is `Platform`. The Core path has no per-address selection.
+    /// Platform-address picker — only shown when `source_kind` is `Platform`.
+    /// The chosen address sizes the available-balance display; the upstream
+    /// coordinator selects the actual spend inputs.
     address_input: Option<AddressInput>,
     /// The chosen platform address, set by `address_input`. `None` for the Core
     /// path, which always shields the whole wallet.
@@ -92,25 +59,6 @@ pub struct ShieldScreen {
     amount_input: Option<AmountInput>,
     amount: Option<Amount>,
     status: Status,
-    // Batch mode (dev only, Platform flow only)
-    repeat_count_str: String,
-    parallel: bool,
-    batch_total: u32,
-    batch_succeeded: u32,
-    batch_failed: u32,
-    batch_remaining: u32,
-    /// Queued task to dispatch on next frame (for sequential batch mode).
-    pending_next_task: Option<BackendTask>,
-    /// Queued sync task to dispatch on next frame after successful operation.
-    pending_refresh_task: Option<BackendTask>,
-    /// Per-operation progress for parallel batch mode.
-    batch_stages: Option<Vec<Arc<Mutex<ShieldStage>>>>,
-    /// JSON of a failed state transition to show in the popup.
-    json_preview: Option<String>,
-    /// Frozen amount for the current batch (set at batch start, cleared on completion).
-    batch_amount: Option<u64>,
-    /// Frozen platform address for the current batch.
-    batch_address: Option<PlatformAddress>,
     // Cached wallet data to avoid per-frame RwLock reads (CODE-007)
     cached_base_nonce: Option<u32>,
     cached_platform_balance: Option<u64>,
@@ -128,18 +76,6 @@ impl ShieldScreen {
             amount_input: None,
             amount: None,
             status: Status::NotStarted,
-            repeat_count_str: "1".to_string(),
-            parallel: false,
-            batch_total: 0,
-            batch_succeeded: 0,
-            batch_failed: 0,
-            batch_remaining: 0,
-            pending_next_task: None,
-            pending_refresh_task: None,
-            batch_stages: None,
-            json_preview: None,
-            batch_amount: None,
-            batch_address: None,
             cached_base_nonce: None,
             cached_platform_balance: None,
             cached_core_balance: None,
@@ -160,14 +96,6 @@ impl ShieldScreen {
         self.cached_core_balance = None;
     }
 
-    fn parse_repeat_count(&self) -> u32 {
-        self.repeat_count_str
-            .trim()
-            .parse::<u32>()
-            .unwrap_or(1)
-            .clamp(1, 1000)
-    }
-
     /// Returns the selected platform address, if a platform source is selected.
     fn selected_platform_address(&self) -> Option<PlatformAddress> {
         self.validated_source
@@ -186,7 +114,7 @@ impl ShieldScreen {
 
     /// Whether the source is fully specified and the amount/confirm controls may
     /// show. Core shields the whole wallet so it is always ready; Platform needs
-    /// a chosen address.
+    /// a chosen address (to size the available-balance display).
     fn source_is_ready(&self) -> bool {
         match self.source_kind {
             ShieldSourceKind::Core => true,
@@ -269,457 +197,6 @@ impl ShieldScreen {
     fn read_core_balance_duffs(&self) -> u64 {
         self.cached_core_balance.unwrap_or(0)
     }
-
-    /// Build a single ShieldCredits task with optional nonce override.
-    fn make_shield_credits_task(
-        &self,
-        amount: u64,
-        addr: PlatformAddress,
-        nonce_override: Option<u32>,
-    ) -> BackendTask {
-        BackendTask::ShieldedTask(ShieldedTask::ShieldCredits {
-            seed_hash: self.seed_hash,
-            amount,
-            from_address: addr,
-            nonce_override,
-        })
-    }
-
-    /// Queue the next sequential batch task if any remain, using frozen batch parameters.
-    fn queue_next_sequential(&mut self) {
-        if self.batch_remaining > 0
-            && let (Some(amount), Some(addr)) = (self.batch_amount, self.batch_address)
-        {
-            self.batch_remaining -= 1;
-            self.pending_next_task = Some(self.make_shield_credits_task(amount, addr, None));
-        }
-    }
-
-    /// Check if the sequential batch is complete and update status accordingly.
-    fn check_batch_complete(&mut self, ctx: &Context) {
-        if self.batch_stages.is_none()
-            && self.batch_succeeded + self.batch_failed >= self.batch_total
-        {
-            self.status = Status::Complete;
-            self.batch_amount = None;
-            self.batch_address = None;
-            MessageBanner::set_global(
-                ctx,
-                format!(
-                    "Batch complete: {} succeeded, {} failed out of {}",
-                    self.batch_succeeded, self.batch_failed, self.batch_total,
-                ),
-                if self.batch_failed > 0 {
-                    MessageType::Warning
-                } else {
-                    MessageType::Success
-                },
-            );
-        }
-    }
-
-    /// Spawn parallel batch: build proofs in parallel, broadcast in nonce order.
-    fn spawn_parallel_batch(
-        &mut self,
-        ctx: &Context,
-        amount: u64,
-        addr: PlatformAddress,
-        repeat: u32,
-    ) {
-        let base_nonce = match self.read_base_nonce() {
-            Some(n) => n,
-            None => {
-                MessageBanner::set_global(
-                    ctx,
-                    "Could not read wallet data. Please try again.",
-                    MessageType::Error,
-                );
-                return;
-            }
-        };
-        let default_address = match self.app_context.shielded_default_address(&self.seed_hash) {
-            Some(a) => a,
-            None => {
-                MessageBanner::set_global(
-                    ctx,
-                    "Shielded wallet not initialized. Please set up the shielded wallet first.",
-                    MessageType::Error,
-                );
-                return;
-            }
-        };
-
-        self.batch_total = repeat;
-        self.batch_succeeded = 0;
-        self.batch_failed = 0;
-        self.batch_remaining = 0;
-        self.status = Status::BatchInProgress;
-
-        let stages: Vec<Arc<Mutex<ShieldStage>>> = (0..repeat)
-            .map(|_| Arc::new(Mutex::new(ShieldStage::Queued)))
-            .collect();
-        self.batch_stages = Some(stages.clone());
-
-        let app_ctx = self.app_context.clone();
-        let seed_hash = self.seed_hash;
-
-        tokio::spawn(async move {
-            use crate::backend_task::shielded::bundle;
-            use dash_sdk::platform::transition::broadcast::BroadcastStateTransition;
-
-            // Resolve the passphrase once for the whole batch: the seed lands in
-            // the session cache so the parallel builds below never re-prompt. If
-            // the prompt is cancelled, fail every stage instead of asking N times.
-            if let Err(e) = bundle::warm_seed_for_batch(&app_ctx, &seed_hash).await {
-                let message = e.to_string();
-                for stage in &stages {
-                    if let Ok(mut guard) = stage.lock() {
-                        *guard = ShieldStage::Failed {
-                            error: message.clone(),
-                            st_json: None,
-                        };
-                    }
-                }
-                return;
-            }
-
-            let build_futures: Vec<_> = (0..repeat)
-                .map(|i| {
-                    let app_ctx = app_ctx.clone();
-                    let stage = stages[i as usize].clone();
-                    let nonce = base_nonce + 1 + i;
-
-                    async move {
-                        if let Ok(mut guard) = stage.lock() {
-                            *guard = ShieldStage::BuildingProof { nonce };
-                        }
-
-                        let result = bundle::build_shield_credit(
-                            &app_ctx,
-                            &seed_hash,
-                            &default_address,
-                            amount,
-                            addr,
-                            nonce,
-                        )
-                        .await
-                        .map_err(|e| e.to_string());
-
-                        match &result {
-                            Ok(_) => {
-                                if let Ok(mut guard) = stage.lock() {
-                                    *guard = ShieldStage::WaitingToBroadcast;
-                                }
-                            }
-                            Err(e) => {
-                                if let Ok(mut guard) = stage.lock() {
-                                    *guard = ShieldStage::Failed {
-                                        error: e.clone(),
-                                        st_json: None,
-                                    };
-                                }
-                            }
-                        }
-
-                        result
-                    }
-                })
-                .collect();
-
-            let build_results = futures::future::join_all(build_futures).await;
-
-            // Builds are done; drop the batch-cached seed early.
-            bundle::forget_batch_seed(&app_ctx, &seed_hash);
-
-            let sdk = { app_ctx.sdk.load().as_ref().clone() };
-
-            for (i, result) in build_results.into_iter().enumerate() {
-                let stage = &stages[i];
-                match result {
-                    Ok(state_transition) => {
-                        if let Ok(mut guard) = stage.lock() {
-                            *guard = ShieldStage::Broadcasting;
-                        }
-
-                        let st_repr: Option<String> =
-                            serde_json::to_string_pretty(&state_transition)
-                                .ok()
-                                .or_else(|| {
-                                    state_transition.serialize_to_bytes().map(hex::encode).ok()
-                                });
-
-                        let our_nonce = base_nonce + 1 + i as u32;
-                        match state_transition.broadcast(&sdk, None).await {
-                            Ok(_) => {
-                                // Address nonces are strictly sequential — Platform
-                                // requires block confirmation before accepting the next
-                                // nonce. Retry wait_for_response to ensure the state
-                                // transition is included in a block before proceeding.
-                                let mut confirmed = false;
-                                for attempt in 0..3 {
-                                    match state_transition
-                                        .wait_for_response::<StateTransitionProofResult>(&sdk, None)
-                                        .await
-                                    {
-                                        Ok(_) => {
-                                            confirmed = true;
-                                            break;
-                                        }
-                                        Err(e) => {
-                                            tracing::warn!(
-                                                "Batch item {} wait_for_response attempt {}: {e}",
-                                                i + 1,
-                                                attempt + 1
-                                            );
-                                            if attempt < 2 {
-                                                tokio::time::sleep(Duration::from_secs(5)).await;
-                                            }
-                                        }
-                                    }
-                                }
-
-                                if confirmed {
-                                    app_ctx.bump_platform_address_nonce(&seed_hash, &addr);
-                                    if let Ok(mut guard) = stage.lock() {
-                                        *guard = ShieldStage::Complete;
-                                    }
-                                } else {
-                                    // Cannot confirm — nonce chain is broken, cascade-fail
-                                    tracing::error!(
-                                        "Batch item {} broadcast succeeded but confirmation failed after 3 attempts",
-                                        i + 1
-                                    );
-                                    if let Ok(mut guard) = stage.lock() {
-                                        *guard = ShieldStage::Failed {
-                                            error: "Broadcast succeeded but could not confirm. \
-                                                 Remaining items skipped to avoid nonce errors."
-                                                .to_string(),
-                                            st_json: st_repr,
-                                        };
-                                    }
-                                    for remaining in stages.iter().skip(i + 1) {
-                                        if let Ok(mut s) = remaining.lock()
-                                            && !s.is_terminal()
-                                        {
-                                            *s = ShieldStage::Failed {
-                                                error: "Skipped: previous item not confirmed"
-                                                    .to_string(),
-                                                st_json: None,
-                                            };
-                                        }
-                                    }
-                                    break;
-                                }
-                            }
-                            Err(e) => {
-                                // Check for AddressInvalidNonceError via typed error chain.
-                                // On any nonce mismatch, fail this item but continue to the
-                                // next — Platform may catch up (nonce-ahead) or the next item
-                                // may have a valid nonce (stale). Only cascade on non-nonce errors.
-                                if let Some(expected) = extract_expected_nonce(&e) {
-                                    tracing::warn!(
-                                        "Batch item {} nonce mismatch: ours={}, Platform expects {}",
-                                        i + 1,
-                                        our_nonce,
-                                        expected
-                                    );
-                                    if let Ok(mut guard) = stage.lock() {
-                                        *guard = ShieldStage::Failed {
-                                            error: format!(
-                                                "Nonce mismatch: sent {}, Platform expects {}",
-                                                our_nonce, expected
-                                            ),
-                                            st_json: st_repr,
-                                        };
-                                    }
-                                    continue;
-                                }
-
-                                // Non-nonce error — fail and cascade
-                                if let Ok(mut guard) = stage.lock() {
-                                    *guard = ShieldStage::Failed {
-                                        error: format!("Broadcast failed: {e}"),
-                                        st_json: st_repr,
-                                    };
-                                }
-                                for remaining in stages.iter().skip(i + 1) {
-                                    if let Ok(mut s) = remaining.lock()
-                                        && !s.is_terminal()
-                                    {
-                                        *s = ShieldStage::Failed {
-                                            error: "Skipped: earlier nonce failed".to_string(),
-                                            st_json: None,
-                                        };
-                                    }
-                                }
-                                break;
-                            }
-                        }
-                    }
-                    Err(_) => {
-                        for remaining in stages.iter().skip(i + 1) {
-                            if let Ok(mut s) = remaining.lock()
-                                && !s.is_terminal()
-                            {
-                                *s = ShieldStage::Failed {
-                                    error: "Skipped: earlier nonce failed".to_string(),
-                                    st_json: None,
-                                };
-                            }
-                        }
-                        break;
-                    }
-                }
-            }
-        });
-    }
-
-    /// Render the batch progress UI (used for Platform batch mode).
-    fn render_batch_progress(&mut self, ui: &mut egui::Ui, ctx: &Context, action: &mut AppAction) {
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
-        let stages_snapshot = self.batch_stages.clone();
-        if let Some(stages) = stages_snapshot {
-            let lock_stage = |s: &Arc<Mutex<ShieldStage>>| -> ShieldStage {
-                s.lock()
-                    .ok()
-                    .map(|guard| guard.clone())
-                    .unwrap_or(ShieldStage::Failed {
-                        error: "Internal error: lock poisoned".to_string(),
-                        st_json: None,
-                    })
-            };
-
-            let all_done = stages.iter().all(|s| lock_stage(s).is_terminal());
-
-            if !all_done {
-                ctx.request_repaint_after(Duration::from_millis(100));
-            }
-
-            let succeeded = stages
-                .iter()
-                .filter(|s| matches!(lock_stage(s), ShieldStage::Complete))
-                .count();
-            let failed = stages
-                .iter()
-                .filter(|s| matches!(lock_stage(s), ShieldStage::Failed { .. }))
-                .count();
-
-            if all_done {
-                if failed > 0 {
-                    ui.colored_label(
-                        DashColors::error_color(dark_mode),
-                        format!(
-                            "Batch complete: {} succeeded, {} failed out of {}",
-                            succeeded,
-                            failed,
-                            stages.len(),
-                        ),
-                    );
-                } else {
-                    ui.colored_label(
-                        DashColors::success_color(dark_mode),
-                        format!("Batch complete: all {} succeeded", stages.len()),
-                    );
-                }
-            } else {
-                ui.label(format!(
-                    "Succeeded {}/{}  Failed {}/{}",
-                    succeeded,
-                    stages.len(),
-                    failed,
-                    stages.len(),
-                ));
-            }
-            ui.add_space(5.0);
-
-            let rows: Vec<(ShieldStage, Option<String>)> = stages
-                .iter()
-                .map(|s| {
-                    let s = lock_stage(s);
-                    let json = if let ShieldStage::Failed { ref st_json, .. } = s {
-                        st_json.clone()
-                    } else {
-                        None
-                    };
-                    (s, json)
-                })
-                .collect();
-
-            let total = rows.len();
-            let mut pending_json: Option<String> = None;
-
-            egui::ScrollArea::vertical()
-                .max_height(400.0)
-                .show(ui, |ui| {
-                    for (i, (stage, st_json)) in rows.iter().enumerate() {
-                        let fraction = stage.progress_fraction();
-                        let text = format!("[{}/{}] {}", i + 1, total, stage.label());
-
-                        // Progress bar fills need vibrant, saturated colors for contrast
-                        // against bar background — use static constants, not theme-aware
-                        // text colors (which are muted/dark for readability on backgrounds).
-                        let color = match stage {
-                            ShieldStage::Queued => DashColors::GRAY,
-                            ShieldStage::BuildingProof { .. } => DashColors::DASH_BLUE,
-                            ShieldStage::WaitingToBroadcast => DashColors::INFO,
-                            ShieldStage::Broadcasting => DashColors::WARNING,
-                            ShieldStage::Complete => DashColors::SUCCESS,
-                            ShieldStage::Failed { .. } => DashColors::ERROR,
-                        };
-
-                        if let Some(json_str) = st_json {
-                            ui.horizontal(|ui| {
-                                let btn_width = 100.0_f32;
-                                let bar_width = (ui.available_width() - btn_width - 6.0).max(100.0);
-                                ui.add_sized(
-                                    [bar_width, 20.0],
-                                    egui::ProgressBar::new(fraction).text(text).fill(color),
-                                );
-                                let btn = egui::Button::new(
-                                    RichText::new("View JSON")
-                                        .color(DashColors::WHITE)
-                                        .size(12.0),
-                                )
-                                .fill(ComponentStyles::button_disabled_fill(dark_mode));
-                                if ui
-                                    .add_sized([btn_width, 20.0], btn)
-                                    .on_hover_text("View state transition JSON")
-                                    .clicked()
-                                {
-                                    pending_json = Some(json_str.clone());
-                                }
-                            });
-                        } else {
-                            let bar = egui::ProgressBar::new(fraction).text(text).fill(color);
-                            if matches!(stage, ShieldStage::BuildingProof { .. }) {
-                                ui.add(bar.animate(true));
-                            } else {
-                                ui.add(bar);
-                            }
-                        }
-                    }
-                });
-
-            if let Some(json) = pending_json {
-                self.json_preview = Some(json);
-            }
-
-            if all_done {
-                ui.add_space(10.0);
-                if ui.button("Done").clicked() {
-                    *action = AppAction::PopScreen;
-                }
-            }
-        } else {
-            ui.horizontal(|ui| {
-                ui.add(egui::Spinner::new());
-                ui.label(format!(
-                    "Succeeded {}/{}  Failed {}/{}",
-                    self.batch_succeeded, self.batch_total, self.batch_failed, self.batch_total,
-                ));
-            });
-        }
-    }
 }
 
 impl ScreenLike for ShieldScreen {
@@ -740,16 +217,6 @@ impl ScreenLike for ShieldScreen {
             RootScreenType::RootScreenWalletsBalances,
         );
 
-        // Dispatch pending sequential task from previous frame
-        if let Some(task) = self.pending_next_task.take() {
-            action |= AppAction::BackendTask(task);
-        }
-
-        // Dispatch pending refresh task (sync notes after successful shield)
-        if let Some(task) = self.pending_refresh_task.take() {
-            action |= AppAction::BackendTask(task);
-        }
-
         island_central_panel(ctx, |ui| {
             let dark_mode = ui.ctx().style().visuals.dark_mode;
             ui.heading("Shield");
@@ -766,14 +233,13 @@ impl ScreenLike for ShieldScreen {
                 return;
             }
 
-            let is_busy =
-                self.status == Status::WaitingForResult || self.status == Status::BatchInProgress;
+            let is_busy = self.status == Status::WaitingForResult;
 
-            // Source selection and amount inputs (disabled during batch)
+            // Source selection and amount inputs (disabled while a shield is in flight)
             let source_kind = ui
                 .add_enabled_ui(!is_busy, |ui| {
-                    // Source kind: whole Core wallet (Type 18 asset lock) vs a
-                    // single platform address (Type 15). This routes the shield;
+                    // Source kind: whole Core wallet (Type 18 asset lock) vs the
+                    // wallet's platform balance (Type 15). This routes the shield;
                     // it is not coin control. The Core path has no per-address
                     // selection — the asset lock always spends the whole wallet.
                     let has_platform = self.has_platform_addresses();
@@ -798,7 +264,7 @@ impl ScreenLike for ShieldScreen {
                                 .radio_value(
                                     &mut self.source_kind,
                                     ShieldSourceKind::Platform,
-                                    "Platform address",
+                                    "Platform balance",
                                 )
                                 .changed()
                             {
@@ -814,8 +280,9 @@ impl ScreenLike for ShieldScreen {
 
                     match self.source_kind {
                         ShieldSourceKind::Platform => {
-                            // Genuine coin control: the chosen platform address is
-                            // the spend source for the Type 15 shield.
+                            // The chosen platform address sizes the available-
+                            // balance display; the upstream coordinator selects
+                            // the actual input addresses for the Type 15 shield.
                             let addr_input = self.address_input.get_or_insert_with(|| {
                                 let mut builder = AddressInput::new(self.app_context.network)
                                     .with_address_kinds(&[AddressKind::Platform])
@@ -931,23 +398,6 @@ impl ScreenLike for ShieldScreen {
                         let response = amount_input.show(ui);
                         response.inner.update(&mut self.amount);
                         ui.add_space(5.0);
-
-                        // Dev-mode batch controls (Platform flow only)
-                        if source_kind == Some(AddressKind::Platform)
-                            && self.status == Status::NotStarted
-                        {
-                            ui.feature_gated(&self.app_context, FeatureGate::DeveloperMode, |ui| {
-                                ui.add_space(10.0);
-                                ui.horizontal(|ui| {
-                                    ui.label("Repeat");
-                                    let te = egui::TextEdit::singleline(&mut self.repeat_count_str)
-                                        .desired_width(50.0);
-                                    ui.add(te);
-                                    ui.label("times");
-                                });
-                                ui.checkbox(&mut self.parallel, "Parallel");
-                            });
-                        }
                     }
 
                     source_kind
@@ -957,9 +407,7 @@ impl ScreenLike for ShieldScreen {
             ui.add_space(15.0);
 
             // Progress display
-            if self.status == Status::BatchInProgress {
-                self.render_batch_progress(ui, ctx, &mut action);
-            } else if self.status == Status::WaitingForResult {
+            if self.status == Status::WaitingForResult {
                 let spinner_msg = match source_kind {
                     Some(AddressKind::Core) => {
                         "Creating asset lock and shielding... (this may take a few minutes)"
@@ -1001,56 +449,32 @@ impl ScreenLike for ShieldScreen {
                     {
                         match source_kind {
                             Some(AddressKind::Platform) => {
-                                let addr = self.selected_platform_address().unwrap();
-                                let repeat = if self.app_context.is_developer_mode() {
-                                    self.parse_repeat_count()
-                                } else {
-                                    1
-                                };
-
-                                // Balance check
-                                if let Some(balance) = self.read_platform_balance() {
-                                    let total = amount.saturating_mul(repeat as u64);
-                                    if total > balance {
-                                        let total_dash =
-                                            total as f64 / CREDITS_PER_DUFF as f64 / 1e8;
-                                        let balance_dash =
-                                            balance as f64 / CREDITS_PER_DUFF as f64 / 1e8;
-                                        MessageBanner::set_global(
-                                            ctx,
-                                            format!(
-                                                "Insufficient balance: {repeat}x {:.8} DASH = {:.8} DASH total, but only {:.8} DASH available. Try a smaller amount.",
-                                                amount as f64 / CREDITS_PER_DUFF as f64 / 1e8,
-                                                total_dash,
-                                                balance_dash,
-                                            ),
-                                            MessageType::Error,
-                                        );
-                                        return;
-                                    }
+                                // Balance check against the selected address.
+                                if let Some(balance) = self.read_platform_balance()
+                                    && amount > balance
+                                {
+                                    let amount_dash =
+                                        amount as f64 / CREDITS_PER_DUFF as f64 / 1e8;
+                                    let balance_dash =
+                                        balance as f64 / CREDITS_PER_DUFF as f64 / 1e8;
+                                    MessageBanner::set_global(
+                                        ctx,
+                                        format!(
+                                            "Insufficient balance: {:.8} DASH requested but only {:.8} DASH available. Try a smaller amount.",
+                                            amount_dash, balance_dash,
+                                        ),
+                                        MessageType::Error,
+                                    );
+                                    return;
                                 }
 
-                                if repeat <= 1 {
-                                    self.status = Status::WaitingForResult;
-                                    action = AppAction::BackendTask(
-                                        self.make_shield_credits_task(amount, addr, None),
-                                    );
-                                } else if self.parallel {
-                                    self.batch_amount = Some(amount);
-                                    self.batch_address = Some(addr);
-                                    self.spawn_parallel_batch(ctx, amount, addr, repeat);
-                                } else {
-                                    self.batch_total = repeat;
-                                    self.batch_succeeded = 0;
-                                    self.batch_failed = 0;
-                                    self.batch_remaining = repeat - 1;
-                                    self.batch_amount = Some(amount);
-                                    self.batch_address = Some(addr);
-                                    self.status = Status::BatchInProgress;
-                                    action = AppAction::BackendTask(
-                                        self.make_shield_credits_task(amount, addr, None),
-                                    );
-                                }
+                                self.status = Status::WaitingForResult;
+                                action = AppAction::BackendTask(BackendTask::ShieldedTask(
+                                    ShieldedTask::ShieldFromBalance {
+                                        seed_hash: self.seed_hash,
+                                        amount,
+                                    },
+                                ));
                             }
                             Some(AddressKind::Core) => {
                                 let amount_duffs = amount / CREDITS_PER_DUFF;
@@ -1074,31 +498,6 @@ impl ScreenLike for ShieldScreen {
             }
         });
 
-        // JSON preview popup
-        if let Some(json) = self.json_preview.clone() {
-            let mut is_open = true;
-            egui::Window::new("State Transition JSON")
-                .collapsible(false)
-                .resizable(true)
-                .max_height(500.0)
-                .max_width(800.0)
-                .scroll(true)
-                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-                .open(&mut is_open)
-                .show(ctx, |ui| {
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        ui.monospace(&json);
-                    });
-                    ui.add_space(10.0);
-                    if ui.button("Copy").clicked() {
-                        let _ = crate::ui::helpers::copy_text_to_clipboard(&json);
-                    }
-                });
-            if !is_open {
-                self.json_preview = None;
-            }
-        }
-
         action
     }
 
@@ -1113,30 +512,13 @@ impl ScreenLike for ShieldScreen {
             BackendTaskSuccessResult::ShieldedCreditsShielded { seed_hash, amount }
                 if seed_hash == self.seed_hash =>
             {
-                if self.status == Status::BatchInProgress {
-                    self.batch_succeeded += 1;
-                    self.check_batch_complete(&ctx);
-                    if self.status == Status::BatchInProgress {
-                        self.queue_next_sequential();
-                    } else {
-                        self.pending_refresh_task =
-                            Some(BackendTask::ShieldedTask(ShieldedTask::SyncNotes {
-                                seed_hash: self.seed_hash,
-                            }));
-                    }
-                } else {
-                    self.status = Status::Complete;
-                    let dash = amount as f64 / CREDITS_PER_DUFF as f64 / 1e8;
-                    MessageBanner::set_global(
-                        &ctx,
-                        format!("Successfully shielded {:.8} DASH", dash),
-                        MessageType::Success,
-                    );
-                    self.pending_refresh_task =
-                        Some(BackendTask::ShieldedTask(ShieldedTask::SyncNotes {
-                            seed_hash: self.seed_hash,
-                        }));
-                }
+                self.status = Status::Complete;
+                let dash = amount as f64 / CREDITS_PER_DUFF as f64 / 1e8;
+                MessageBanner::set_global(
+                    &ctx,
+                    format!("Successfully shielded {:.8} DASH", dash),
+                    MessageType::Success,
+                );
             }
             BackendTaskSuccessResult::ShieldedFromAssetLock { seed_hash, amount }
                 if seed_hash == self.seed_hash =>
@@ -1148,29 +530,15 @@ impl ScreenLike for ShieldScreen {
                     format!("Successfully shielded {:.8} DASH from core wallet", dash),
                     MessageType::Success,
                 );
-                self.pending_refresh_task =
-                    Some(BackendTask::ShieldedTask(ShieldedTask::SyncNotes {
-                        seed_hash: self.seed_hash,
-                    }));
             }
             _ => {}
         }
     }
 
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
-        let ctx = self.app_context.egui_ctx().clone();
-        if message_type == MessageType::Error {
-            if self.status == Status::BatchInProgress {
-                self.batch_failed += 1;
-                self.check_batch_complete(&ctx);
-                if self.status == Status::BatchInProgress {
-                    self.queue_next_sequential();
-                }
-            } else if self.status == Status::WaitingForResult {
-                self.status = Status::NotStarted;
-            }
-            // If status is Complete, leave it — the shield succeeded, a post-success
-            // refresh failure (e.g. SyncNotes) is non-critical.
+        if message_type == MessageType::Error && self.status == Status::WaitingForResult {
+            self.status = Status::NotStarted;
         }
+        // If status is Complete, leave it — the shield succeeded.
     }
 }

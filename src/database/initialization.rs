@@ -35,7 +35,7 @@ impl<T> MigrationResultExt<T> for rusqlite::Result<T> {
     }
 }
 
-pub const DEFAULT_DB_VERSION: u16 = 36;
+pub const DEFAULT_DB_VERSION: u16 = 37;
 
 /// Minimal view of `.env` values the v34 migration needs.
 struct V34EnvSnapshot {
@@ -239,6 +239,18 @@ impl Database {
         data_dir: Option<&Path>,
     ) -> Result<(), MigrationError> {
         match version {
+            37 => {
+                // Retire DET's home-grown shielded subsystem: the upstream
+                // `platform-wallet` coordinator owns all Orchard state now.
+                // No released build ever persisted shielded rows (v0.9.3 ships
+                // zero shielded code), so dropping the dead tables is safe and
+                // loses no user data. Existence-guarded via IF EXISTS.
+                tx.execute_batch(
+                    "DROP TABLE IF EXISTS shielded_notes;\n\
+                     DROP TABLE IF EXISTS shielded_wallet_meta;",
+                )
+                .migration_err("shielded_notes", "v37: drop dead shielded tables")?;
+            }
             36 => {
                 // Drop the orphaned `dashpay_dip14_quarantine_active`
                 // settings column left behind by an early P3a build and the
@@ -322,14 +334,11 @@ impl Database {
                 // table was retired in D4d (private memos now live in the
                 // per-network k/v sidecar). Pre-D4d installs keep the
                 // dormant row set; fresh installs never create the table.
-                self.create_shielded_tables(tx)
-                    .migration_err("shielded_notes", "create shielded tables")?;
-                self.create_shielded_wallet_meta_table(tx)
-                    .migration_err("shielded_wallet_meta", "create shielded_wallet_meta table")?;
-                self.add_nullifier_sync_timestamp_column(tx).migration_err(
-                    "shielded_wallet_meta",
-                    "add last_nullifier_sync_timestamp column",
-                )?;
+                //
+                // The old `shielded_notes` / `shielded_wallet_meta` tables are
+                // no longer created here: DET's shielded subsystem was retired
+                // and the v37 migration drops them. A DB stepping through v33
+                // simply skips the create; v37 then drops any legacy copies.
                 // Defer FK checks so parent->child rename order doesn't matter
                 // (contestant and token have composite FKs that include network).
                 tx.execute_batch("PRAGMA defer_foreign_keys = ON")
@@ -895,9 +904,10 @@ impl Database {
             // Initialize single key wallet table
             self.initialize_single_key_wallet_table(&conn)?;
 
-            // Initialize shielded pool tables
-            self.create_shielded_tables(&conn)?;
-            self.create_shielded_wallet_meta_table(&conn)?;
+            // The shielded pool tables (`shielded_notes` /
+            // `shielded_wallet_meta`) are intentionally NOT created: DET's
+            // shielded subsystem was retired and the upstream coordinator owns
+            // all Orchard state. The v37 migration drops any legacy copies.
         }
 
         Ok(())
@@ -1337,8 +1347,9 @@ impl Database {
         Ok(())
     }
 
-    // Shielded table helpers (create_shielded_tables, create_shielded_wallet_meta_table,
-    // add_nullifier_sync_timestamp_column) are implemented in database/shielded.rs.
+    // DET's shielded subsystem was retired (Phase D); the old shielded table
+    // helpers and the `database::shielded` module were deleted. The v37
+    // migration drops any legacy `shielded_notes` / `shielded_wallet_meta`.
 
     /// Rebuild legacy `asset_lock_transaction` rows so both `identity_id`
     /// FKs use `ON DELETE SET NULL` instead of `ON DELETE CASCADE`.
@@ -1872,29 +1883,11 @@ mod test {
         // wallet.core_wallet_name (v28)
         assert_column_exists(conn, "wallet", "core_wallet_name");
 
-        // shielded_notes table (v29)
-        assert_table_exists(conn, "shielded_notes");
-        for col in [
-            "wallet_seed_hash",
-            "note_data",
-            "position",
-            "cmx",
-            "nullifier",
-            "block_height",
-            "is_spent",
-            "value",
-            "network",
-        ] {
-            assert_column_exists(conn, "shielded_notes", col);
-        }
-
-        // shielded_wallet_meta table with last_nullifier_sync_timestamp (v30)
-        assert_table_exists(conn, "shielded_wallet_meta");
-        assert_column_exists(
-            conn,
-            "shielded_wallet_meta",
-            "last_nullifier_sync_timestamp",
-        );
+        // The shielded tables were retired in Phase D: v33 no longer creates
+        // them and the v37 migration drops any legacy copies, so after a full
+        // migration they must be absent.
+        assert_table_absent(conn, "shielded_notes");
+        assert_table_absent(conn, "shielded_wallet_meta");
 
         // wallet_transactions.status (v30)
         assert_column_exists(conn, "wallet_transactions", "status");
@@ -2303,7 +2296,7 @@ mod test {
             .unwrap();
 
             // Strip v28+ additions to simulate v27 state (same as test_v33_migration_from_v27)
-            // Remove shielded tables — they'll be recreated by migration
+            // Remove shielded tables — Phase D drops them (v37); not recreated
             conn.execute("DROP TABLE IF EXISTS shielded_notes", [])
                 .unwrap();
             conn.execute("DROP TABLE IF EXISTS shielded_wallet_meta", [])
@@ -2431,8 +2424,10 @@ mod test {
 
         // Shielded tables should exist but be empty (recreated fresh by migration;
         // the cleanup handles them gracefully even when just-created)
-        assert_table_exists(&conn, "shielded_notes");
-        assert_table_exists(&conn, "shielded_wallet_meta");
+        // Phase D retired the shielded tables — v33 no longer creates them and
+        // v37 drops any legacy copies, so they must be absent post-migration.
+        assert_table_absent(&conn, "shielded_notes");
+        assert_table_absent(&conn, "shielded_wallet_meta");
 
         // Valid wallet_transactions should survive with network renamed to mainnet
         let valid_txs: i64 = conn
@@ -3068,8 +3063,9 @@ mod test {
         assert_table_exists(&conn, "utxos");
         assert_table_exists(&conn, "single_key_wallet");
         assert_table_exists(&conn, "wallet_transactions");
-        assert_table_exists(&conn, "shielded_notes");
-        assert_table_exists(&conn, "shielded_wallet_meta");
+        // Phase D retired the shielded tables — they are dropped by v37.
+        assert_table_absent(&conn, "shielded_notes");
+        assert_table_absent(&conn, "shielded_wallet_meta");
     }
 
     /// TC-MIG-008 (partial) — Fresh install and the `data.db` file.

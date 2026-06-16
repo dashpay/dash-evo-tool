@@ -402,16 +402,8 @@ pub enum BackendTaskSuccessResult {
     // Mining results (dev mode, Regtest/Devnet only)
     MineBlocksSuccess(u64),
 
-    // Shielded pool results
-    ShieldedInitialized {
-        seed_hash: WalletSeedHash,
-        balance: u64,
-    },
-    ShieldedNotesSynced {
-        seed_hash: WalletSeedHash,
-        new_notes: u32,
-        balance: u64,
-    },
+    // Shielded pool results (one per surviving op; sync/init/nullifier-scan
+    // are owned by the upstream coordinator now and carry no DET result).
     ShieldedCreditsShielded {
         seed_hash: WalletSeedHash,
         amount: u64,
@@ -424,10 +416,6 @@ pub enum BackendTaskSuccessResult {
         seed_hash: WalletSeedHash,
         amount: u64,
     },
-    ShieldedNullifiersChecked {
-        seed_hash: WalletSeedHash,
-        spent_count: u32,
-    },
     ShieldedFromAssetLock {
         seed_hash: WalletSeedHash,
         amount: u64,
@@ -436,7 +424,6 @@ pub enum BackendTaskSuccessResult {
         seed_hash: WalletSeedHash,
         amount: u64,
     },
-    ProvingKeyReady,
 
     /// Core RPC client and SDK were successfully rebuilt (e.g. after password change).
     CoreClientReinitialized,
@@ -536,22 +523,10 @@ impl AppContext {
             );
             return Err(TaskError::WalletStorageNotReady);
         }
-        // Only consult the shielded migration gate once the backend is wired —
-        // an unwired backend means "cannot gate yet", not a migration failure.
-        // The lazy-build above wires it for shielded tasks, so this normally
-        // holds; the guard covers a transient init deferral (F51).
-        if matches!(task, BackendTask::ShieldedTask(_))
-            && self.wallet_backend().is_ok()
-            && crate::backend_task::migration::finish_unwire::legacy_shielded_present_but_sidecar_empty(
-                self,
-            )?
-        {
-            tracing::debug!(
-                target = "migration::gate",
-                "Short-circuiting shielded task — legacy shielded rows still need to be mirrored",
-            );
-            return Err(TaskError::WalletStorageNotReady);
-        }
+        // The legacy shielded-migration gate was removed in Phase D: DET no
+        // longer migrates shielded rows (the upstream coordinator owns all
+        // Orchard state and resyncs from chain), so shielded tasks never defer
+        // on a pending mirror.
 
         match task {
             BackendTask::ContractTask(contract_task) => {
@@ -798,7 +773,10 @@ mod tests {
             CoreTask::GetBestChainLock,
         )));
         assert!(is_wallet_touching(&BackendTask::ShieldedTask(
-            shielded::ShieldedTask::InitializeShieldedWallet { seed_hash },
+            shielded::ShieldedTask::ShieldFromBalance {
+                seed_hash,
+                amount: 1,
+            },
         )));
         assert!(is_wallet_touching(&BackendTask::IdentityTask(
             identity::IdentityTask::RefreshLoadedIdentitiesOwnedDPNSNames,
@@ -833,7 +811,10 @@ mod tests {
     fn shielded_task_triggers_lazy_backend_build() {
         let seed_hash = crate::model::wallet::WalletSeedHash::default();
         assert!(needs_lazy_backend_build(&BackendTask::ShieldedTask(
-            shielded::ShieldedTask::InitializeShieldedWallet { seed_hash },
+            shielded::ShieldedTask::ShieldFromBalance {
+                seed_hash,
+                amount: 1,
+            },
         )));
         // A network-level task must not eagerly build the backend.
         assert!(!needs_lazy_backend_build(

@@ -1,6 +1,5 @@
 mod initialization;
 mod settings;
-pub mod shielded;
 mod single_key_wallet;
 #[cfg(any(test, feature = "testing"))]
 pub mod test_helpers;

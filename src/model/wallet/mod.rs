@@ -4,7 +4,6 @@ pub mod encryption;
 pub mod meta;
 pub mod passphrase;
 pub mod seed_envelope;
-pub mod shielded;
 pub mod single_key;
 
 use crate::backend_task::error::TaskError;

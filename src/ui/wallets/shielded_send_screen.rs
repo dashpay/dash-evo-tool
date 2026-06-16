@@ -33,8 +33,6 @@ pub struct ShieldedSendScreen {
     status: Status,
     error_message: Option<String>,
     success_message: Option<String>,
-    /// Queued task to dispatch on next frame (e.g., sync notes after successful send).
-    pending_refresh_task: Option<BackendTask>,
     /// Whether to show the balance-update-pending info banner on the success screen.
     balance_update_pending: bool,
 }
@@ -53,7 +51,6 @@ impl ShieldedSendScreen {
             status: Status::NotStarted,
             error_message: None,
             success_message: None,
-            pending_refresh_task: None,
             balance_update_pending: false,
         }
     }
@@ -88,11 +85,7 @@ impl ScreenLike for ShieldedSendScreen {
     }
 
     fn ui(&mut self, ctx: &Context) -> AppAction {
-        let mut action = self
-            .pending_refresh_task
-            .take()
-            .map(AppAction::BackendTask)
-            .unwrap_or(AppAction::None);
+        let mut action = AppAction::None;
 
         action |= add_top_panel(
             ctx,
@@ -222,35 +215,18 @@ impl ScreenLike for ShieldedSendScreen {
                 if seed_hash == self.seed_hash =>
             {
                 tracing::info!(
-                    "ShieldedSendScreen: transfer complete, amount={} credits, queueing post-transfer note sync",
+                    "ShieldedSendScreen: transfer complete, amount={} credits",
                     amount,
                 );
                 self.status = Status::Complete;
                 let dash = amount as f64 / CREDITS_PER_DUFF as f64 / 1e8;
                 self.success_message =
                     Some(format!("Successfully sent {:.8} DASH privately", dash));
-                self.pending_refresh_task =
-                    Some(BackendTask::ShieldedTask(ShieldedTask::SyncNotes {
-                        seed_hash: self.seed_hash,
-                    }));
+                // The push snapshot was refreshed by the backend op; pull it
+                // in so the displayed balance reflects the spend. The upstream
+                // sync loop reconciles further on the next block.
+                self.max_balance = self.app_context.shielded_balance_credits(&self.seed_hash);
                 self.balance_update_pending = true;
-            }
-            BackendTaskSuccessResult::ShieldedNotesSynced {
-                seed_hash,
-                new_notes,
-                balance,
-            } if seed_hash == self.seed_hash => {
-                tracing::debug!(
-                    "ShieldedSendScreen: post-transfer sync complete, new_notes={}, balance={} credits",
-                    new_notes,
-                    balance,
-                );
-                self.max_balance = balance;
-                self.balance_update_pending = false;
-                let dash = balance as f64 / CREDITS_PER_DUFF as f64 / 1e8;
-                if let Some(msg) = self.success_message.as_mut() {
-                    *msg = format!("{}\nBalance updated: {:.8} DASH remaining.", msg, dash,);
-                }
             }
             _ => {}
         }

@@ -5,11 +5,10 @@ mod single_key_view;
 
 pub(crate) use single_key_view::SINGLE_KEY_SEND_UNAVAILABLE;
 
-use crate::app::{AppAction, BackendTasksExecutionMode, DesiredAppAction};
+use crate::app::{AppAction, DesiredAppAction};
 use crate::backend_task::BackendTask;
 use crate::backend_task::core::CoreTask;
 use crate::backend_task::error::TaskError;
-use crate::backend_task::shielded::ShieldedTask;
 use crate::context::AppContext;
 use crate::context::connection_status::spv_phase_summary;
 use crate::model::amount::Amount;
@@ -939,11 +938,6 @@ impl WalletsBalancesScreen {
         Amount::dash_from_duffs(amount_duffs).to_string()
     }
 
-    /// Format a `std::time::Instant` as a relative "time ago" string.
-    fn format_instant_ago(instant: std::time::Instant) -> String {
-        Self::format_duration_ago(instant.elapsed())
-    }
-
     /// Format a Unix timestamp (seconds since epoch) as a relative "time ago" string.
     fn format_unix_time_ago(unix_ts: u64) -> String {
         let now = std::time::SystemTime::now()
@@ -1831,86 +1825,25 @@ impl WalletsBalancesScreen {
                     ui.label(RichText::new(addr_text).size(sz).color(addr_color));
                 });
 
-                // -- Shielded: Notes + Nullifiers --
-                let seed_hash = self
+                // -- Shielded balance --
+                // The upstream coordinator's 60-second sync loop keeps the
+                // push snapshot current; the detailed per-note / nullifier
+                // sync display returns with the Phase-F coordinator read path.
+                let shielded_seed_hash = self
                     .selected_wallet
                     .as_ref()
                     .and_then(|w| w.read().ok().map(|g| g.seed_hash()));
-                let shielded_info = seed_hash.and_then(|hash| {
-                    let states = self.app_context.shielded_states.lock().ok()?;
-                    let state = states.get(&hash)?;
-                    Some((
-                        state.last_synced_index,
-                        state.notes.iter().filter(|n| !n.is_spent).count(),
-                        state.last_nullifier_sync_height,
-                        state.last_notes_synced_at,
-                        state.last_nullifiers_synced_at,
-                    ))
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("•").size(sz).color(secondary));
+                    let shielded_text = match shielded_seed_hash {
+                        Some(hash) => format!(
+                            "Shielded: {}",
+                            Self::format_dash(self.app_context.shielded_balance_duffs(&hash))
+                        ),
+                        None => "Shielded: unavailable".to_string(),
+                    };
+                    ui.label(RichText::new(shielded_text).size(sz).color(secondary));
                 });
-                let shielded_syncing = self
-                    .shielded_tab_view
-                    .as_ref()
-                    .is_some_and(|v| v.is_syncing());
-                let shielded_color = if shielded_syncing {
-                    syncing_color
-                } else {
-                    secondary
-                };
-
-                match shielded_info {
-                    Some((synced_index, note_count, nf_height, notes_synced_at, nf_synced_at)) => {
-                        // Notes bullet
-                        ui.horizontal(|ui| {
-                            ui.label(RichText::new("•").size(sz).color(secondary));
-                            if shielded_syncing {
-                                ui.add(egui::Spinner::new().size(sz).color(syncing_color));
-                            }
-                            let notes_text = if let Some(t) = notes_synced_at {
-                                let ago = Self::format_instant_ago(t);
-                                format!(
-                                    "Notes: {} synced ({} notes, {})",
-                                    synced_index, note_count, ago
-                                )
-                            } else if synced_index > 0 {
-                                format!("Notes: {} synced ({} notes)", synced_index, note_count)
-                            } else {
-                                "Notes: never synced".to_string()
-                            };
-                            ui.label(RichText::new(notes_text).size(sz).color(shielded_color));
-                        });
-                        // Nullifiers bullet
-                        ui.horizontal(|ui| {
-                            ui.label(RichText::new("•").size(sz).color(secondary));
-                            let nf_text = if let Some(t) = nf_synced_at {
-                                let ago = Self::format_instant_ago(t);
-                                format!("Nullifiers: height {} ({})", nf_height, ago)
-                            } else if nf_height > 0 {
-                                format!("Nullifiers: height {}", nf_height)
-                            } else {
-                                "Nullifiers: never synced".to_string()
-                            };
-                            ui.label(RichText::new(nf_text).size(sz).color(shielded_color));
-                        });
-                    }
-                    None => {
-                        ui.horizontal(|ui| {
-                            ui.label(RichText::new("•").size(sz).color(secondary));
-                            ui.label(
-                                RichText::new("Notes: never synced")
-                                    .size(sz)
-                                    .color(secondary),
-                            );
-                        });
-                        ui.horizontal(|ui| {
-                            ui.label(RichText::new("•").size(sz).color(secondary));
-                            ui.label(
-                                RichText::new("Nullifiers: never synced")
-                                    .size(sz)
-                                    .color(secondary),
-                            );
-                        });
-                    }
-                }
             },
         );
     }
@@ -2114,19 +2047,6 @@ impl WalletsBalancesScreen {
         }
     }
 
-    /// Returns a SyncNotes backend task if the shielded wallet has been initialized
-    /// for the given seed hash.
-    fn shielded_sync_task(&self, seed_hash: &WalletSeedHash) -> Option<BackendTask> {
-        let states = self.app_context.shielded_states.lock().ok()?;
-        if states.contains_key(seed_hash) {
-            Some(BackendTask::ShieldedTask(ShieldedTask::SyncNotes {
-                seed_hash: *seed_hash,
-            }))
-        } else {
-            None
-        }
-    }
-
     /// Creates the appropriate refresh action based on the current refresh mode
     fn create_refresh_action(&self, wallet_arc: &Arc<RwLock<Wallet>>) -> AppAction {
         self.create_refresh_action_for_mode(wallet_arc, self.refresh_mode)
@@ -2163,15 +2083,10 @@ impl WalletsBalancesScreen {
             }
         };
 
-        // Also trigger shielded note sync if initialized
-        if let Some(shielded_task) = self.shielded_sync_task(&seed_hash) {
-            AppAction::BackendTasks(
-                vec![core_task, shielded_task],
-                BackendTasksExecutionMode::Concurrent,
-            )
-        } else {
-            AppAction::BackendTask(core_task)
-        }
+        // Shielded balances are kept current by the upstream coordinator's
+        // 60-second sync loop and the post-op snapshot refresh — DET no longer
+        // dispatches a manual shielded sync from the refresh chain.
+        AppAction::BackendTask(core_task)
     }
 
     /// Run the single import path
@@ -3065,12 +2980,13 @@ impl ScreenLike for WalletsBalancesScreen {
                 );
             }
             // Shielded pool results
-            result @ (crate::ui::BackendTaskSuccessResult::ShieldedInitialized { .. }
-            | crate::ui::BackendTaskSuccessResult::ShieldedNotesSynced { .. }
-            | crate::ui::BackendTaskSuccessResult::ShieldedCreditsShielded { .. }
+            result @ (crate::ui::BackendTaskSuccessResult::ShieldedCreditsShielded { .. }
             | crate::ui::BackendTaskSuccessResult::ShieldedTransferComplete { .. }
             | crate::ui::BackendTaskSuccessResult::ShieldedCreditsUnshielded { .. }
-            | crate::ui::BackendTaskSuccessResult::ShieldedNullifiersChecked { .. }) => {
+            | crate::ui::BackendTaskSuccessResult::ShieldedFromAssetLock { .. }
+            | crate::ui::BackendTaskSuccessResult::ShieldedWithdrawalComplete {
+                ..
+            }) => {
                 if let Some(shielded_view) = &mut self.shielded_tab_view {
                     shielded_view.handle_result(&result);
                 }

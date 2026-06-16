@@ -5,7 +5,6 @@ mod identity_db;
 pub mod migration_status;
 mod platform_address_db;
 mod settings_db;
-pub mod shielded;
 mod wallet_lifecycle;
 
 use crate::app_dir::core_cookie_path;
@@ -121,13 +120,6 @@ pub struct AppContext {
     /// Updated alongside fee_multiplier when epoch info is fetched.
     /// 0 means not yet fetched from the network.
     platform_protocol_version: AtomicU32,
-    /// Per-wallet shielded state (initialized lazily, keyed by wallet seed hash)
-    pub(crate) shielded_states: Mutex<
-        std::collections::HashMap<
-            WalletSeedHash,
-            crate::model::wallet::shielded::ShieldedWalletState,
-        >,
-    >,
     /// Frame-safe shielded balance snapshot (credits, summed across all Orchard accounts).
     ///
     /// Written by the Phase-E `on_shielded_sync_completed` event handler from the
@@ -364,7 +356,6 @@ impl AppContext {
                 PlatformFeeEstimator::DEFAULT_FEE_MULTIPLIER_PERMILLE,
             ),
             platform_protocol_version: AtomicU32::new(0),
-            shielded_states: Mutex::new(std::collections::HashMap::new()),
             shielded_balances: Mutex::new(std::collections::HashMap::new()),
             egui_ctx,
             wallet_backend: ArcSwapOption::const_empty(),

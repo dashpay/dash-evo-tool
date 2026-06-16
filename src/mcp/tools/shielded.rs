@@ -137,8 +137,8 @@ impl ToolBase for ShieldedShieldFromPlatform {
 
     fn description() -> Option<Cow<'static, str>> {
         Some(
-            "Shield credits from a Platform address into the shielded pool. \
-             Auto-selects the highest-balance Platform address. \
+            "Shield credits from the wallet's Platform balance into the shielded pool. \
+             The wallet selects the input addresses. \
              The 'network' parameter is required."
                 .into(),
         )
@@ -171,44 +171,30 @@ impl AsyncTool<DashMcpService> for ShieldedShieldFromPlatform {
         // not Core UTXO spends
         let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
 
-        // Auto-select highest-balance platform address and verify sufficient balance
-        let from_address = {
+        // Pre-flight: verify the wallet's total platform balance can cover the
+        // amount. The upstream coordinator selects the actual input addresses —
+        // DET no longer picks a single `from_address`.
+        {
             let wallet_arc = resolve::wallet_arc(&ctx, seed_hash)?;
             let wallet = wallet_arc.read().unwrap_or_else(|e| e.into_inner());
-            let best = wallet
+            let total: u64 = wallet
                 .platform_address_info
-                .iter()
-                .filter_map(|(addr, info)| {
-                    if info.balance > 0 {
-                        dash_sdk::dpp::address_funds::PlatformAddress::try_from(addr.clone())
-                            .ok()
-                            .map(|pa| (pa, info.balance))
-                    } else {
-                        None
-                    }
-                })
-                .max_by_key(|(_, balance)| *balance)
-                .ok_or_else(|| McpToolError::InvalidParam {
-                    message: "No Platform addresses with balance found".to_owned(),
-                })?;
-
-            if best.1 < param.amount_credits {
+                .values()
+                .map(|info| info.balance)
+                .sum();
+            if total < param.amount_credits {
                 return Err(McpToolError::InvalidParam {
                     message: format!(
-                        "Insufficient platform balance. Highest address has {} credits but {} required.",
-                        best.1, param.amount_credits
+                        "Insufficient platform balance. Total available is {} credits but {} required.",
+                        total, param.amount_credits
                     ),
                 });
             }
+        }
 
-            best.0
-        };
-
-        let task = BackendTask::ShieldedTask(ShieldedTask::ShieldCredits {
+        let task = BackendTask::ShieldedTask(ShieldedTask::ShieldFromBalance {
             seed_hash,
             amount: param.amount_credits,
-            from_address,
-            nonce_override: None,
         });
 
         let result = dispatch_task(&ctx, task)

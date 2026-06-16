@@ -37,8 +37,6 @@ pub struct UnshieldCreditsScreen {
     status: Status,
     error_message: Option<String>,
     success_message: Option<String>,
-    /// Queued task to dispatch on next frame (e.g., sync notes after successful unshield).
-    pending_refresh_task: Option<BackendTask>,
     /// Whether to show the balance-update-pending info on the success screen.
     balance_update_pending: bool,
 }
@@ -64,7 +62,6 @@ impl UnshieldCreditsScreen {
             status: Status::NotStarted,
             error_message: None,
             success_message: None,
-            pending_refresh_task: None,
             balance_update_pending: false,
         }
     }
@@ -76,11 +73,7 @@ impl ScreenLike for UnshieldCreditsScreen {
     }
 
     fn ui(&mut self, ctx: &Context) -> AppAction {
-        let mut action = self
-            .pending_refresh_task
-            .take()
-            .map(AppAction::BackendTask)
-            .unwrap_or(AppAction::None);
+        let mut action = AppAction::None;
 
         action |= add_top_panel(
             ctx,
@@ -270,10 +263,8 @@ impl ScreenLike for UnshieldCreditsScreen {
                     "Successfully unshielded {:.8} DASH to platform address",
                     dash
                 ));
-                self.pending_refresh_task =
-                    Some(BackendTask::ShieldedTask(ShieldedTask::SyncNotes {
-                        seed_hash: self.seed_hash,
-                    }));
+                // The backend op refreshed the push snapshot; pull it in.
+                self.max_balance = self.app_context.shielded_balance_credits(&self.seed_hash);
                 self.balance_update_pending = true;
             }
             BackendTaskSuccessResult::ShieldedWithdrawalComplete { seed_hash, amount }
@@ -285,10 +276,7 @@ impl ScreenLike for UnshieldCreditsScreen {
                     "Successfully withdrew {:.8} DASH to core address",
                     dash
                 ));
-                self.pending_refresh_task =
-                    Some(BackendTask::ShieldedTask(ShieldedTask::SyncNotes {
-                        seed_hash: self.seed_hash,
-                    }));
+                self.max_balance = self.app_context.shielded_balance_credits(&self.seed_hash);
                 self.balance_update_pending = true;
             }
             _ => {}

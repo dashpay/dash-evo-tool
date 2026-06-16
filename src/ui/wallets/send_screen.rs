@@ -398,9 +398,6 @@ pub struct WalletSendScreen {
     // Wallet unlock
     wallet_unlock_popup: WalletUnlockPopup,
     wallet_open_attempted: bool,
-
-    /// Queued task to dispatch on next frame (e.g., sync shielded notes after send).
-    pending_refresh_task: Option<BackendTask>,
 }
 
 impl WalletSendScreen {
@@ -429,7 +426,6 @@ impl WalletSendScreen {
             send_banner: None,
             wallet_unlock_popup: WalletUnlockPopup::new(),
             wallet_open_attempted: false,
-            pending_refresh_task: None,
         }
     }
 
@@ -622,22 +618,12 @@ impl WalletSendScreen {
             .collect()
     }
 
-    /// Get shielded pool balance for the selected wallet (if initialized).
+    /// Get shielded pool balance for the selected wallet from the frame-safe
+    /// push snapshot (no lock-in-frame-loop, no `block_in_place`). Returns
+    /// `None` when there is no positive shielded balance to spend.
     fn get_shielded_balance(&self) -> Option<(WalletSeedHash, u64)> {
         let seed_hash = self.selected_wallet_seed_hash?;
-        // Primary: frame-safe push snapshot (no lock-in-frame-loop, no block_in_place).
         let balance = self.app_context.shielded_balance_credits(&seed_hash);
-        if balance > 0 {
-            return Some((seed_hash, balance));
-        }
-        // Fallback: per-network shielded sidecar balance (T-SH-03) — returns 0 until
-        // the push snapshot is populated by the sync-completed event (Phase E).
-        let network_str = self.app_context.network.to_string();
-        let backend = self.app_context.wallet_backend().ok()?;
-        let balance = backend
-            .shielded()
-            .get_shielded_balance(&seed_hash, &network_str)
-            .ok()?;
         if balance > 0 {
             Some((seed_hash, balance))
         } else {
@@ -1507,11 +1493,12 @@ impl WalletSendScreen {
         )))
     }
 
-    /// Shield credits from Platform address(es) to shielded pool (Platform -> Shielded).
+    /// Shield credits from the wallet's Platform balance into the shielded pool
+    /// (Platform -> Shielded).
     ///
-    /// When the requested amount exceeds a single address balance, multiple
-    /// addresses are used — one `ShieldCredits` task per address, dispatched
-    /// sequentially.
+    /// The upstream coordinator selects the funding platform addresses, so DET
+    /// dispatches a single `ShieldFromBalance` task with the total amount rather
+    /// than one task per address.
     fn send_platform_to_shielded(
         &mut self,
         seed_hash: WalletSeedHash,
@@ -1533,11 +1520,9 @@ impl WalletSendScreen {
             return Err("Amount must be greater than 0".to_string());
         }
 
-        // Sort addresses by balance descending (greedy allocation)
-        let mut sorted_addrs = addresses;
-        sorted_addrs.sort_by(|a, b| b.2.cmp(&a.2));
-
-        let total_available: u64 = sorted_addrs.iter().map(|(_, _, b)| b).sum();
+        // Pre-flight: the total platform balance must cover the amount. The
+        // upstream coordinator handles per-address selection and fees.
+        let total_available: u64 = addresses.iter().map(|(_, _, b)| b).sum();
         if amount_credits > total_available {
             return Err(format!(
                 "Insufficient platform balance. Need {} but total available is {}.",
@@ -1546,63 +1531,13 @@ impl WalletSendScreen {
             ));
         }
 
-        // Allocate amount across addresses (highest balance first), reserving
-        // per-operation fee headroom so each address can cover its own shield fee.
-        // Apply the network fee multiplier for consistency with ShieldScreen.
-        let base_fee = crate::model::fee_estimation::shielded_fee_for_actions(
-            2,
-            dash_sdk::dpp::version::PlatformVersion::latest(),
-        )
-        .unwrap_or(0);
-        let multiplier = self.app_context.fee_multiplier_permille().max(1000);
-        let per_op_fee = base_fee.saturating_mul(multiplier) / 1000;
-        let mut remaining = amount_credits;
-        let mut tasks: Vec<BackendTask> = Vec::new();
-        for (platform_addr, _, balance) in &sorted_addrs {
-            if remaining == 0 {
-                break;
-            }
-            let available = balance.saturating_sub(per_op_fee);
-            if available == 0 {
-                continue;
-            }
-            let spend = remaining.min(available);
-            tasks.push(BackendTask::ShieldedTask(
-                crate::backend_task::shielded::ShieldedTask::ShieldCredits {
-                    seed_hash,
-                    amount: spend,
-                    from_address: *platform_addr,
-                    nonce_override: None,
-                },
-            ));
-            remaining -= spend;
-        }
-
-        // Reject if allocation could not cover the full amount after fee deductions
-        if tasks.is_empty() {
-            return Err(
-                "Insufficient platform balance after fees. No address has enough to cover the shield operation fee."
-                    .to_string(),
-            );
-        }
-        if remaining > 0 {
-            let max_sendable = amount_credits.saturating_sub(remaining);
-            return Err(format!(
-                "Insufficient platform balance after fees. Need {} but only {} is available after estimated shield fees.",
-                format_credits_as_dash(amount_credits),
-                format_credits_as_dash(max_sendable),
-            ));
-        }
-
         self.mark_sending();
-        if tasks.len() == 1 {
-            Ok(AppAction::BackendTask(tasks.into_iter().next().unwrap()))
-        } else {
-            Ok(AppAction::BackendTasks(
-                tasks,
-                crate::app::BackendTasksExecutionMode::Sequential,
-            ))
-        }
+        Ok(AppAction::BackendTask(BackendTask::ShieldedTask(
+            crate::backend_task::shielded::ShieldedTask::ShieldFromBalance {
+                seed_hash,
+                amount: amount_credits,
+            },
+        )))
     }
 
     /// Top up an identity from Platform addresses (Platform -> Identity).
@@ -2133,19 +2068,14 @@ impl WalletSendScreen {
                 .into_iter()
                 .filter(|qi| Some(qi.identity.id()) != source_identity_id)
                 .collect();
-            let shielded_info: Option<(String, u64)> =
-                self.selected_wallet_seed_hash.and_then(|sh| {
-                    // Address still comes from the legacy shielded_states key slot
-                    // until Phase D wires the upstream wallet's default address here.
-                    let states = self.app_context.shielded_states.lock().ok()?;
-                    let state = states.get(&sh)?;
-                    use dash_sdk::dpp::address_funds::OrchardAddress;
-                    let raw = state.keys.default_address.to_raw_address_bytes();
-                    let addr = OrchardAddress::from_raw_bytes(&raw).ok()?;
-                    // Balance: push snapshot (frame-safe; 0 until Phase E populates it).
-                    let balance = self.app_context.shielded_balance_credits(&sh);
-                    Some((addr.to_bech32m_string(self.app_context.network), balance))
-                });
+            // The wallet's own shielded receive address comes from the upstream
+            // coordinator's bound keys, which is an async read — not available
+            // synchronously in the frame loop. The "send to my shielded address"
+            // chip therefore shows balance only here; the address affordance
+            // returns with the Phase-F coordinator read path.
+            // TODO(Phase F): source the default Orchard address via the upstream
+            // coordinator read path and restore the address chip.
+            let shielded_info: Option<(String, u64)> = None;
             self.address_input.get_or_insert_with(|| {
                 let allowed_kinds = match &self.selected_source {
                     Some(SourceSelection::CoreWallet) => {
@@ -3473,11 +3403,7 @@ impl WalletSendScreen {
 
 impl ScreenLike for WalletSendScreen {
     fn ui(&mut self, ctx: &Context) -> AppAction {
-        let mut action = self
-            .pending_refresh_task
-            .take()
-            .map(AppAction::BackendTask)
-            .unwrap_or(AppAction::None);
+        let mut action = AppAction::None;
 
         action |= add_top_panel(
             ctx,
@@ -3606,8 +3532,8 @@ impl ScreenLike for WalletSendScreen {
                     SendStatus::Complete("Platform credits transferred successfully!".to_string());
             }
             crate::backend_task::BackendTaskSuccessResult::ShieldedTransferComplete {
-                seed_hash,
                 amount,
+                ..
             } => {
                 self.send_status = SendStatus::Complete(format!(
                     "Shielded transfer of {} complete!\n\n\
@@ -3615,21 +3541,15 @@ impl ScreenLike for WalletSendScreen {
                      The recipient's balance will also update after the next block and a wallet sync.",
                     format_credits_as_dash(amount)
                 ));
-                self.pending_refresh_task = Some(crate::backend_task::BackendTask::ShieldedTask(
-                    crate::backend_task::shielded::ShieldedTask::SyncNotes { seed_hash },
-                ));
             }
             crate::backend_task::BackendTaskSuccessResult::ShieldedCreditsUnshielded {
-                seed_hash,
                 amount,
+                ..
             } => {
                 self.send_status = SendStatus::Complete(format!(
                     "Unshielded {} to platform address!\n\n\
                      Your remaining balance will update after the next block is confirmed.",
                     format_credits_as_dash(amount)
-                ));
-                self.pending_refresh_task = Some(crate::backend_task::BackendTask::ShieldedTask(
-                    crate::backend_task::shielded::ShieldedTask::SyncNotes { seed_hash },
                 ));
             }
             // Core->Identity or Platform->Identity top-up result
@@ -3659,44 +3579,34 @@ impl ScreenLike for WalletSendScreen {
             }
             // Core->Shielded or Platform->Shielded shield result
             crate::backend_task::BackendTaskSuccessResult::ShieldedCreditsShielded {
-                seed_hash,
                 amount,
+                ..
             } => {
                 self.send_status = SendStatus::Complete(format!(
                     "{} shielded successfully!\n\n\
                      Balance will update after the next block.",
                     format_credits_as_dash(amount)
                 ));
-                self.pending_refresh_task = Some(crate::backend_task::BackendTask::ShieldedTask(
-                    crate::backend_task::shielded::ShieldedTask::SyncNotes { seed_hash },
-                ));
             }
             // Core->Shielded via asset lock result
             crate::backend_task::BackendTaskSuccessResult::ShieldedFromAssetLock {
-                seed_hash,
-                amount,
+                amount, ..
             } => {
                 self.send_status = SendStatus::Complete(format!(
                     "{} shielded from asset lock successfully!\n\n\
                      Balance will update after the next block.",
                     format_credits_as_dash(amount)
                 ));
-                self.pending_refresh_task = Some(crate::backend_task::BackendTask::ShieldedTask(
-                    crate::backend_task::shielded::ShieldedTask::SyncNotes { seed_hash },
-                ));
             }
             // Shielded->Core withdrawal result
             crate::backend_task::BackendTaskSuccessResult::ShieldedWithdrawalComplete {
-                seed_hash,
                 amount,
+                ..
             } => {
                 self.send_status = SendStatus::Complete(format!(
                     "Withdrawal of {} from shielded pool initiated.\n\n\
                      Funds will appear after confirmation.",
                     format_credits_as_dash(amount)
-                ));
-                self.pending_refresh_task = Some(crate::backend_task::BackendTask::ShieldedTask(
-                    crate::backend_task::shielded::ShieldedTask::SyncNotes { seed_hash },
                 ));
             }
             _ => {

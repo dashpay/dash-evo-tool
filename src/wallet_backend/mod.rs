@@ -39,7 +39,6 @@ mod loader;
 mod platform_address;
 pub mod secret_access;
 pub mod secret_prompt;
-mod shielded;
 #[cfg(any(test, feature = "bench"))]
 pub mod single_key;
 #[cfg(not(any(test, feature = "bench")))]
@@ -58,7 +57,6 @@ pub(crate) mod wallet_seed_store;
 
 pub use dashpay::DashpayView;
 pub(crate) use dashpay::{derive_contact_info_encryption_keys, derive_contact_xpub_material};
-pub use shielded::{InsertShieldedNote, SHIELDED_SIDECAR_FILE, ShieldedNoteRow, ShieldedView};
 
 pub(crate) use det_platform_signer::{DetPlatformSigner, PlatformPathIndex};
 pub(crate) use det_signer::DetSigner;
@@ -186,10 +184,6 @@ struct Inner {
     /// just-in-time from this vault for each signing operation; no
     /// long-lived plaintext seed cache exists.
     secret_store: Arc<SecretStore>,
-    /// Per-network shielded-notes sidecar. Lazy-materialised on first
-    /// write at `<spv_storage_dir>/det-shielded.sqlite`. See
-    /// [`shielded`] (T-SH-01).
-    shielded: ShieldedView,
     /// Cross-network app-level k/v store at `<data_dir>/det-app.sqlite`.
     /// Backs the DET-owned wallet-metadata sidecar (alias / `is_main` /
     /// `core_wallet_name`) — see [`wallet_meta`] (T-W-00). Shared with
@@ -283,13 +277,12 @@ impl WalletBackend {
 
         // Wire the upstream shielded coordinator into the manager.
         //
-        // Uses a dedicated SQLite file (`platform-wallet-shielded.sqlite`) that
-        // is separate from DET's existing commitment-tree sidecar
-        // (`shielded-commitment-tree.sqlite`, opened by `context/shielded.rs`
-        // via `open_commitment_tree_with_migration`) to avoid dual-writer
-        // conflicts. The coordinator starts empty — no wallets are bound until
-        // `bind_shielded` is called per-wallet during Phase B. Subsequent calls
-        // with the same path are idempotent (upstream no-ops).
+        // Uses a dedicated SQLite file (`platform-wallet-shielded.sqlite`) owned
+        // entirely by the upstream coordinator — it is the single source of
+        // truth for all Orchard state now that DET's home-grown subsystem was
+        // retired (Phase D). The coordinator starts empty — no wallets are bound
+        // until `ensure_shielded_bound` runs (on wallet unlock). Subsequent
+        // calls with the same path are idempotent (upstream no-ops).
         pwm.configure_shielded(spv_storage_dir.join("platform-wallet-shielded.sqlite"))
             .await
             .map_err(|e| TaskError::WalletBackend {
@@ -317,7 +310,6 @@ impl WalletBackend {
                 wallets: std::sync::RwLock::new(std::collections::BTreeMap::new()),
                 peer,
                 network,
-                shielded: ShieldedView::new(&spv_storage_dir),
                 spv_storage_dir,
                 dashpay_address_index_lock: std::sync::Mutex::new(()),
                 secret_store,
@@ -781,8 +773,9 @@ impl WalletBackend {
 
     /// Wipe every piece of DET-local state for a forgotten wallet — the
     /// encrypted seed-envelope vault, the session secret cache, the wallet-meta
-    /// sidecar, the plaintext shielded-note rows and nullifier cursor, and the
-    /// in-memory `id_map`/`wallets`/snapshot registration.
+    /// sidecar, and the in-memory `id_map`/`wallets`/snapshot registration.
+    /// (Orchard state lives in the upstream coordinator now and is detached by
+    /// [`Self::remove_upstream_wallet`].)
     ///
     /// This is the synchronous secret-bearing cleanup. The upstream
     /// (watch-only, seedless) persistor removal is the sole async step and is
@@ -817,30 +810,8 @@ impl WalletBackend {
             );
         }
 
-        // Shielded notes + nullifier cursor (plaintext Orchard state).
-        let network_str = self.inner.network.to_string();
-        if let Err(e) = self
-            .inner
-            .shielded
-            .delete_shielded_notes(seed_hash, &network_str)
-        {
-            tracing::warn!(
-                wallet = %hex::encode(seed_hash),
-                error = ?e,
-                "Failed to delete shielded notes"
-            );
-        }
-        if let Err(e) = self
-            .inner
-            .shielded
-            .delete_shielded_wallet_meta(seed_hash, &network_str)
-        {
-            tracing::warn!(
-                wallet = %hex::encode(seed_hash),
-                error = ?e,
-                "Failed to clear shielded nullifier cursor"
-            );
-        }
+        // Plaintext Orchard state (notes + nullifier cursor) now lives in the
+        // upstream coordinator store; `remove_upstream_wallet` detaches it.
 
         // DET-side avatar cache (PROJ-040). Avatars live in the cross-network
         // Global scope keyed by URL, not partitioned per wallet, so a forgotten
@@ -870,6 +841,21 @@ impl WalletBackend {
     /// path to drive the async upstream persistor removal off the main thread.
     pub(crate) fn registered_wallet_id(&self, seed_hash: &WalletSeedHash) -> Option<WalletId> {
         self.inner.id_map.read().ok()?.get(seed_hash).copied()
+    }
+
+    /// Reset the upstream shielded coordinator for this network: quiesces the
+    /// 60-second sync loop and empties the coordinator's per-subwallet store so
+    /// the next bind cold-resyncs from index 0. Idempotent and a no-op when
+    /// shielded support was never configured. Used by the "delete all local
+    /// data" sweep.
+    pub(crate) async fn clear_shielded(&self) -> Result<(), TaskError> {
+        self.inner
+            .pwm
+            .clear_shielded()
+            .await
+            .map_err(|e| TaskError::WalletBackend {
+                source: Box::new(e),
+            })
     }
 
     /// Remove a wallet from the upstream `platform-wallet.sqlite` persistor
@@ -1124,15 +1110,6 @@ impl WalletBackend {
         if let Ok(index) = self.inner.single_key_index.read() {
             self.inner.secret_access.set_single_key_index(index.clone());
         }
-    }
-
-    /// Per-network shielded sidecar (T-SH-01). The file at
-    /// `<spv_storage_dir>/det-shielded.sqlite` is created lazily on the
-    /// first write; a wallet with no shielded activity gets no sidecar
-    /// on disk (FR-3.3). T-SH-03 will rewire callers off the legacy
-    /// `database::shielded` API onto this view.
-    pub fn shielded(&self) -> &ShieldedView {
-        &self.inner.shielded
     }
 
     /// View over the single-key (imported WIF) operations. The view
@@ -2129,16 +2106,16 @@ impl WalletBackend {
     //
     // `platform-wallet` is always built with the `shielded` Cargo feature in
     // DET (added in Phase A).  No DET-level opt-out exists, so these methods
-    // are unconditionally available.  Consumers are wired in Phase C; until
-    // then the `#[allow(dead_code)]` attributes below suppress clippy/rustc
-    // lint errors from `-D warnings`.
+    // are unconditionally available.  The fund-moving ops and reads consumed by
+    // `run_shielded_task` / `ensure_shielded_bound` are wired (Phase D); the
+    // activity/notes list reads remain `#[allow(dead_code)]` until the Phase-F
+    // upstream-coordinator read path lands.
 
     /// Resolve the network-scoped shielded coordinator.
     ///
     /// Returns `ShieldedNotConfigured` when `configure_shielded` was not called
     /// during backend construction (should never happen in practice — it is
     /// called unconditionally in `WalletBackend::new`).
-    #[allow(dead_code)]
     async fn shielded_coordinator_arc(
         &self,
     ) -> Result<
@@ -2159,7 +2136,6 @@ impl WalletBackend {
     /// Called from `bootstrap_wallet_addresses_jit` (Phase C-bind) inside the
     /// existing `with_secret_session` scope; also callable directly for the
     /// MCP headless path.
-    #[allow(dead_code)]
     pub(crate) async fn ensure_shielded_bound(
         &self,
         seed_hash: &WalletSeedHash,
@@ -2189,7 +2165,7 @@ impl WalletBackend {
     ///
     /// The Orchard prover is created internally via
     /// `CachedOrchardProver::new()` — callers do not supply a prover.
-    #[allow(dead_code, clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn shield_from_asset_lock(
         &self,
         seed_hash: &WalletSeedHash,
@@ -2233,7 +2209,6 @@ impl WalletBackend {
     ///
     /// The Orchard prover is created internally via
     /// `CachedOrchardProver::new()` — callers do not supply a prover.
-    #[allow(dead_code)]
     pub(crate) async fn shield_from_balance(
         &self,
         seed_hash: &WalletSeedHash,
@@ -2274,7 +2249,6 @@ impl WalletBackend {
     ///
     /// The Orchard prover is created internally via
     /// `CachedOrchardProver::new()` — callers do not supply a prover.
-    #[allow(dead_code)]
     pub(crate) async fn shielded_transfer(
         &self,
         seed_hash: &WalletSeedHash,
@@ -2306,7 +2280,6 @@ impl WalletBackend {
     ///
     /// The Orchard prover is created internally via
     /// `CachedOrchardProver::new()` — callers do not supply a prover.
-    #[allow(dead_code)]
     pub(crate) async fn shielded_unshield(
         &self,
         seed_hash: &WalletSeedHash,
@@ -2335,7 +2308,6 @@ impl WalletBackend {
     ///
     /// The Orchard prover is created internally via
     /// `CachedOrchardProver::new()` — callers do not supply a prover.
-    #[allow(dead_code)]
     pub(crate) async fn shielded_withdraw(
         &self,
         seed_hash: &WalletSeedHash,
@@ -2365,7 +2337,6 @@ impl WalletBackend {
     /// Returns an empty map when the wallet is not bound or has no shielded
     /// balance.  This is the push-snapshot producer (Phase E): the result is
     /// written into `AppContext::shielded_balances` by `on_shielded_sync_completed`.
-    #[allow(dead_code)]
     pub(crate) async fn shielded_balances(
         &self,
         seed_hash: &WalletSeedHash,
@@ -2383,7 +2354,6 @@ impl WalletBackend {
     /// The default Orchard payment address for `account` on `seed_hash`'s wallet
     /// (raw 43-byte representation).  Returns `None` if the wallet is not bound
     /// or `account` is not registered.
-    #[allow(dead_code)]
     pub(crate) async fn shielded_default_address(
         &self,
         seed_hash: &WalletSeedHash,
@@ -2518,7 +2488,6 @@ impl WalletBackend {
 /// `&'static str` (not an enum): we copy it out without consuming `e`, then
 /// route to the correct per-op `*ConfirmationUnknown` variant.  Unknown
 /// `operation` values (future upstream ops) fall through to `WalletBackend`.
-#[allow(dead_code)]
 fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> TaskError {
     use platform_wallet::error::PlatformWalletError as P;
 

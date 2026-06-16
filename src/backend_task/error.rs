@@ -3860,4 +3860,45 @@ mod tests {
             "the substring must not match outside a proof-error leaf"
         );
     }
+
+    /// Ported from the deleted `backend_task::shielded::bundle` tests (Phase D):
+    /// every per-op confirmation-unknown message must be actionable (tells the
+    /// user to wait and refresh), distinct (names its own operation), and free
+    /// of ZK / SDK jargon. `map_shielded_op_error` routes `ShieldedSpendUnconfirmed`
+    /// into these variants, so a wording regression here would surface verbatim.
+    #[test]
+    fn shielded_confirmation_unknown_messages_are_actionable_and_jargon_free() {
+        let boxed = || {
+            Box::new(platform_wallet::error::PlatformWalletError::Sdk(
+                dash_sdk::Error::Generic("boom".to_string()),
+            ))
+        };
+        let messages = [
+            TaskError::ShieldCreditsConfirmationUnknown { source: boxed() }.to_string(),
+            TaskError::ShieldedTransferConfirmationUnknown { source: boxed() }.to_string(),
+            TaskError::UnshieldConfirmationUnknown { source: boxed() }.to_string(),
+            TaskError::ShieldedWithdrawalConfirmationUnknown { source: boxed() }.to_string(),
+            TaskError::ShieldedConfirmationUnknown { source: boxed() }.to_string(),
+        ];
+        for msg in &messages {
+            assert!(
+                msg.contains("refresh") && (msg.contains("Wait") || msg.contains("wait")),
+                "Expected concrete recovery guidance (wait + refresh), got: {msg}"
+            );
+            for jargon in [
+                "nonce",
+                "state transition",
+                "SDK",
+                "RPC",
+                "Orchard",
+                "anchor",
+                "nullifier",
+            ] {
+                assert!(
+                    !msg.contains(jargon),
+                    "Expected no jargon ({jargon}) in user message, got: {msg}"
+                );
+            }
+        }
+    }
 }

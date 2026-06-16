@@ -700,13 +700,9 @@ impl AppState {
             }
         }
 
-        // Warm up the Halo 2 ProvingKey in a background thread (~30s build).
-        // This ensures the key is ready for the user's first shielded operation.
-        #[cfg(not(feature = "testing"))]
-        std::thread::spawn(|| {
-            let _ = crate::context::shielded::get_proving_key();
-            tracing::info!("Halo 2 ProvingKey built and cached");
-        });
+        // The Orchard proving key is now owned by the upstream shielded
+        // coordinator (`CachedOrchardProver`), warmed lazily on the first
+        // shielded operation — DET no longer builds or caches it here.
 
         Ok(app_state)
     }

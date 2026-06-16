@@ -1,13 +1,11 @@
 use crate::app::AppAction;
 use crate::backend_task::BackendTask;
 use crate::backend_task::migration::MigrationTask;
-use crate::backend_task::shielded::ShieldedTask;
 use crate::context::AppContext;
 use crate::context::migration_status::{MigrationState, MigrationStep};
 use crate::model::wallet::WalletSeedHash;
 use crate::ui::ScreenType;
 use crate::ui::components::wallet_unlock_popup::wallet_needs_unlock;
-use crate::ui::helpers::copy_text_to_clipboard;
 use crate::ui::theme::DashColors;
 use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
 use eframe::egui::{self, Ui};
@@ -116,10 +114,6 @@ impl ShieldedTabView {
         derive_shielded_indicator(&state, self.sidecar_skipped)
     }
 
-    pub fn is_syncing(&self) -> bool {
-        self.syncing
-    }
-
     pub fn update_seed_hash(&mut self, seed_hash: WalletSeedHash) {
         if self.seed_hash != seed_hash {
             self.seed_hash = seed_hash;
@@ -154,30 +148,26 @@ impl ShieldedTabView {
             .unwrap_or(AppAction::None)
     }
 
-    /// Sync local display state from push snapshots and `AppContext::shielded_states`.
+    /// Sync local display state from the push balance snapshot and the
+    /// upstream coordinator.
     ///
-    /// Balance comes from the frame-safe push snapshot
-    /// (`AppContext::shielded_balance_credits`).  Sync-progress fields
-    /// (`is_initialized`, `tree_synced`, `syncing`) still derive from
-    /// `shielded_states` until Phase D wires those into the push path.
+    /// Phase D: the upstream `platform-wallet` coordinator owns all Orchard
+    /// state (keys, sync progress, note tree). Balance is read from the
+    /// frame-safe push snapshot; `is_initialized` / `tree_synced` are set
+    /// true whenever the wallet backend is wired so spend buttons are
+    /// enabled. Phase E will wire a push notification for fine-grained
+    /// sync progress.
     fn refresh_from_backend_state(&mut self) {
-        // Balance: use the push snapshot (no lock-in-frame-loop, no block_in_place).
+        // Balance: use the frame-safe push snapshot (no lock in frame loop).
         self.shielded_balance = self.app_context.shielded_balance_credits(&self.seed_hash);
 
-        // Sync progress: still sourced from the legacy in-memory state.
-        if let Ok(states) = self.app_context.shielded_states.lock()
-            && let Some(state) = states.get(&self.seed_hash)
-        {
+        // Treat the wallet as initialized and the tree as synced whenever the
+        // backend is available — the coordinator resyncs Orchard state from
+        // chain on its own schedule.
+        if self.app_context.wallet_backend().is_ok() {
             self.is_initialized = true;
-            // The background sync chain (SyncNotes -> CheckNullifiers) runs
-            // outside the UI task system. Derive tree_synced from state so
-            // spend buttons become enabled after the backend finishes.
-            if state.last_notes_synced_at.is_some() {
-                self.tree_synced = true;
-            }
-            if state.last_nullifiers_synced_at.is_some() {
-                self.syncing = false;
-            }
+            self.tree_synced = true;
+            self.syncing = false;
         }
     }
 
@@ -195,144 +185,29 @@ impl ShieldedTabView {
         .default_open(dev_mode);
 
         header.show(ui, |ui| {
-            ui.horizontal(|ui| {
-                if ui
-                    .small_button("+")
-                    .on_hover_text("Generate new diversified address")
-                    .clicked()
-                {
-                    self.address_count += 1;
-                }
-            });
-
-            ui.add_space(4.0);
-
-            // Collect all addresses for the table
-            let addresses: Vec<(u32, String)> = {
-                let Ok(states) = self.app_context.shielded_states.lock() else {
-                    ui.label(
-                        RichText::new("Unable to read shielded state.")
-                            .color(DashColors::text_secondary(dark_mode)),
-                    );
-                    return;
-                };
-                if let Some(state) = states.get(&self.seed_hash) {
-                    (0..self.address_count)
-                        .filter_map(|idx| {
-                            use dash_sdk::dpp::address_funds::OrchardAddress;
-                            use dash_sdk::grovedb_commitment_tree::Scope;
-                            let addr = state.keys.fvk.address_at(idx, Scope::External);
-                            let raw = addr.to_raw_address_bytes();
-                            let orchard_addr = OrchardAddress::from_raw_bytes(&raw).ok()?;
-                            Some((
-                                idx,
-                                orchard_addr.to_bech32m_string(self.app_context.network),
-                            ))
-                        })
-                        .collect()
-                } else {
-                    vec![]
-                }
-            };
-
-            if addresses.is_empty() {
-                ui.label(
-                    RichText::new("No addresses generated yet.")
-                        .color(DashColors::text_secondary(dark_mode)),
-                );
-                return;
-            }
-
-            egui::Grid::new("shielded_addresses_grid")
-                .num_columns(4)
-                .striped(true)
-                .spacing([20.0, 4.0])
-                .show(ui, |ui| {
-                    ui.label(RichText::new("Index").strong());
-                    ui.label(RichText::new("Address").strong());
-                    ui.label(RichText::new("Status").strong());
-                    ui.label(""); // Copy column header
-                    ui.end_row();
-
-                    for (idx, full_addr) in &addresses {
-                        // Index column
-                        if *idx == 0 {
-                            ui.label("0 (Default)");
-                        } else {
-                            ui.label(idx.to_string());
-                        }
-
-                        // Address column: truncated, clickable to copy
-                        let truncated = truncate_address(full_addr);
-                        let addr_response = ui.add(
-                            egui::Label::new(RichText::new(&truncated).monospace())
-                                .sense(egui::Sense::click()),
-                        );
-                        if addr_response.clicked() {
-                            let _ = copy_text_to_clipboard(full_addr);
-                        }
-                        addr_response.on_hover_text(full_addr.as_str());
-
-                        // Status column
-                        if *idx == 0 {
-                            ui.label("Default");
-                        } else {
-                            ui.label("");
-                        }
-
-                        // Copy button column
-                        if ui.small_button("Copy").clicked() {
-                            let _ = copy_text_to_clipboard(full_addr);
-                        }
-
-                        ui.end_row();
-                    }
-                });
+            // Phase D: shielded addresses are now derived by the upstream
+            // platform-wallet coordinator. The default address is available
+            // via the async WalletBackend::shielded_default_address API;
+            // a synchronous display path will be wired in Phase E via the
+            // push snapshot.
+            ui.label(
+                RichText::new("Shielded address available after wallet unlock and sync.")
+                    .color(DashColors::text_secondary(dark_mode)),
+            );
         });
     }
 
     /// Handle backend task results for shielded operations.
+    ///
+    /// Phase D: variants for the retired DET-owned subsystem
+    /// (`ShieldedInitialized`, `ShieldedNotesSynced`, `ShieldedNullifiersChecked`)
+    /// have been removed. Only fund-moving results remain.
     pub fn handle_result(
         &mut self,
         result: &crate::backend_task::BackendTaskSuccessResult,
     ) -> bool {
         use crate::backend_task::BackendTaskSuccessResult;
         match result {
-            BackendTaskSuccessResult::ShieldedInitialized { seed_hash, balance }
-                if *seed_hash == self.seed_hash =>
-            {
-                self.initializing = false;
-                self.is_initialized = true;
-                self.shielded_balance = *balance;
-                // Chain SyncNotes after user-initiated Resync (the only UI
-                // path that dispatches InitializeShieldedWallet).
-                if self.syncing || self.pending_task.is_some() {
-                    // Already in a sync flow — skip duplicate chain.
-                } else {
-                    self.syncing = true;
-                    self.pending_task = Some(BackendTask::ShieldedTask(ShieldedTask::SyncNotes {
-                        seed_hash: self.seed_hash,
-                    }));
-                }
-                true
-            }
-            BackendTaskSuccessResult::ShieldedNotesSynced {
-                seed_hash,
-                new_notes,
-                balance,
-            } if *seed_hash == self.seed_hash => {
-                self.tree_synced = true;
-                self.shielded_balance = *balance;
-                if *new_notes > 0 {
-                    self.success_message = Some(format!("Synced {} new note(s)", new_notes));
-                }
-                // Auto-check nullifiers after sync to detect spent notes
-                self.pending_task =
-                    Some(BackendTask::ShieldedTask(ShieldedTask::CheckNullifiers {
-                        seed_hash: self.seed_hash,
-                    }));
-                true
-            }
             BackendTaskSuccessResult::ShieldedCreditsShielded { seed_hash, amount }
                 if *seed_hash == self.seed_hash =>
             {
@@ -362,16 +237,13 @@ impl ShieldedTabView {
                 ));
                 true
             }
-            BackendTaskSuccessResult::ShieldedNullifiersChecked {
-                seed_hash,
-                spent_count,
-            } if *seed_hash == self.seed_hash => {
-                self.syncing = false;
-                // Refresh balance from the push snapshot after nullifier check.
-                self.shielded_balance = self.app_context.shielded_balance_credits(&self.seed_hash);
-                if *spent_count > 0 {
-                    self.success_message = Some(format!("Detected {} spent note(s)", spent_count));
-                }
+            BackendTaskSuccessResult::ShieldedWithdrawalComplete { seed_hash, amount }
+                if *seed_hash == self.seed_hash =>
+            {
+                self.success_message = Some(format!(
+                    "Withdrew {} to core address",
+                    format_credits(*amount)
+                ));
                 true
             }
             _ => false,
@@ -670,166 +542,26 @@ impl ShieldedTabView {
 
         ui.add_space(15.0);
 
-        // Notes section header with sync status and buttons
-        let (notes_info, synced_index): (Vec<(u64, u64, bool)>, u64) = {
-            self.app_context
-                .shielded_states
-                .lock()
-                .ok()
-                .and_then(|states| {
-                    states.get(&self.seed_hash).map(|state| {
-                        let notes = state
-                            .notes
-                            .iter()
-                            .map(|n| (n.value, n.block_height, n.is_spent))
-                            .collect();
-                        (notes, state.last_synced_index)
-                    })
-                })
-                .unwrap_or_default()
-        };
-
-        // Shielded Notes (collapsible)
-        let notes_label = if notes_info.is_empty() {
-            "Shielded Notes".to_string()
-        } else {
-            format!(
-                "Shielded Notes (synced to index {}, {} notes)",
-                synced_index,
-                notes_info.len()
-            )
-        };
+        // Shielded Notes (Phase D: notes are now owned by the upstream coordinator)
         let notes_header = egui::CollapsingHeader::new(
-            RichText::new(notes_label)
+            RichText::new("Shielded Notes")
                 .size(16.0)
                 .color(DashColors::text_primary(dark_mode)),
         )
         .id_salt("shielded_notes")
-        .default_open(true);
+        .default_open(false);
         notes_header.show(ui, |ui| {
-            ui.horizontal(|ui| {
-                // Sync status indicator
-                if self.syncing {
-                    ui.add(egui::Spinner::new().color(DashColors::DASH_BLUE));
-                    ui.label(
-                        RichText::new("Syncing...")
-                            .size(12.0)
-                            .color(DashColors::DASH_BLUE),
-                    );
-                } else if self.tree_synced {
-                    ui.label(
-                        RichText::new("Synced")
-                            .size(12.0)
-                            .color(Color32::DARK_GREEN),
-                    );
-                }
-
-                // Sync buttons
-                if !self.syncing {
-                    if ui.small_button("Sync Notes").clicked() {
-                        self.syncing = true;
-                        self.success_message = None;
-                        self.error_message = None;
-                        action |= AppAction::BackendTask(BackendTask::ShieldedTask(
-                            ShieldedTask::SyncNotes {
-                                seed_hash: self.seed_hash,
-                            },
-                        ));
-                    }
-
-                    if self.app_context.is_developer_mode()
-                        && ui.small_button("Resync Notes").clicked()
-                    {
-                        if let Ok(mut states) = self.app_context.shielded_states.lock() {
-                            states.remove(&self.seed_hash);
-                        }
-                        let network_str = self.app_context.network.to_string();
-                        // T-SH-03: drop notes in the shielded sidecar
-                        // instead of `data.db`. No-op on a missing
-                        // sidecar.
-                        if let Ok(backend) = self.app_context.wallet_backend() {
-                            let _ = backend
-                                .shielded()
-                                .delete_shielded_notes(&self.seed_hash, &network_str);
-                            // Reset the nullifier-spend cursor too. Without
-                            // this, a resync re-derives notes from position 0
-                            // but resumes spend detection from the old cursor,
-                            // resurrecting previously-spent notes.
-                            let _ = backend
-                                .shielded()
-                                .delete_shielded_wallet_meta(&self.seed_hash, &network_str);
-                        }
-                        if let Ok(tree_path) = self.app_context.shielded_commitment_tree_path()
-                            && let Err(e) = std::fs::remove_file(&tree_path)
-                            && e.kind() != std::io::ErrorKind::NotFound
-                        {
-                            tracing::warn!(
-                                error = ?e,
-                                "Failed to remove shielded commitment tree file during resync",
-                            );
-                        }
-
-                        self.shielded_balance = 0;
-                        self.tree_synced = false;
-                        self.is_initialized = false;
-                        self.initializing = true;
-                        self.syncing = false;
-                        self.success_message = None;
-                        self.error_message = None;
-                        action |= AppAction::BackendTask(BackendTask::ShieldedTask(
-                            ShieldedTask::InitializeShieldedWallet {
-                                seed_hash: self.seed_hash,
-                            },
-                        ));
-                    }
-                }
-            });
-            ui.add_space(5.0);
-
-            if !notes_info.is_empty() {
-                egui::Grid::new("shielded_notes_grid")
-                    .num_columns(3)
-                    .striped(true)
-                    .spacing([20.0, 4.0])
-                    .show(ui, |ui| {
-                        ui.label(RichText::new("Value").strong());
-                        ui.label(RichText::new("Block").strong());
-                        ui.label(RichText::new("Status").strong());
-                        ui.end_row();
-
-                        for (value, height, is_spent) in &notes_info {
-                            ui.label(format_credits(*value));
-                            ui.label(if *height > 0 {
-                                height.to_string()
-                            } else {
-                                "-".to_string()
-                            });
-                            if *is_spent {
-                                ui.label(
-                                    RichText::new("Spent")
-                                        .color(DashColors::text_secondary(dark_mode)),
-                                );
-                            } else {
-                                ui.label(RichText::new("Unspent").color(Color32::DARK_GREEN));
-                            }
-                            ui.end_row();
-                        }
-                    });
-            } else if !self.syncing {
-                ui.label(
-                    RichText::new("No shielded notes yet. Shield some credits to get started.")
-                        .color(DashColors::text_secondary(dark_mode)),
-                );
-            }
+            ui.label(
+                RichText::new(
+                    "Note history is managed by the upstream platform-wallet coordinator \
+                     and will be surfaced here in a future update.",
+                )
+                .color(DashColors::text_secondary(dark_mode)),
+            );
         });
 
         action
     }
-}
-
-/// Truncate a bech32m address for display (12 prefix + 8 suffix).
-fn truncate_address(addr: &str) -> String {
-    crate::model::address::truncate_address(addr, 12, 8)
 }
 
 fn format_credits(credits: u64) -> String {

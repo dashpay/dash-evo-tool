@@ -1602,23 +1602,28 @@ mod tests {
         backend.shutdown().await;
     }
 
-    /// ROOT CAUSE for issue #7 (currently REPRODUCES the bug — `#[ignore]` until
-    /// fixed, then it becomes the passing regression guard).
+    /// Regression guard for issue #7 (now PASSES — was the bug reproducer).
     ///
-    /// On a FRESH DB the upstream `create_wallet_from_seed_bytes` persists the
-    /// BIP44 account-0 xpub at DEPTH-1 (`m/0'`), while DET's sidecar bridge
-    /// stores `Wallet::new_from_seed`'s DEPTH-3 (`m/44'/coin'/0'`) xpub — DIFFERENT
-    /// pubkey AND chaincode, not just BIP32 metadata. So the seedless cold-boot
-    /// reload reads back the depth-1 xpub, it matches no bridge entry, and the
-    /// fund-routing gate rejects every wallet -> systematic WalletNotLoaded. This
-    /// is a LIVE upstream-vs-DET derivation mismatch on the pinned crates, NOT
-    /// legacy format drift. Note `from_seed_bytes(Default)` matches DET (depth-3),
-    /// so the divergence is in the persistor write path, not pure derivation.
+    /// Before the upstream fix (platform PR #3828), `WalletAccountCreationOptions::Default`
+    /// created BOTH a BIP32 account-0 (`m/0'`, depth-1) and a BIP44 account-0
+    /// (`m/44'/coin'/0'`, depth-3), but the persistor collapsed both
+    /// `StandardAccountType` variants to the single `account_type` label
+    /// `"standard"`. They shared the `account_registrations` primary key
+    /// `(wallet_id, account_type, account_index)`, so the BIP32 row overwrote the
+    /// BIP44 row via `ON CONFLICT DO UPDATE`. The seedless cold-boot reload then
+    /// read back the depth-1 xpub, it matched no DET sidecar bridge entry, and the
+    /// fund-routing gate rejected every wallet -> systematic WalletNotLoaded.
+    ///
+    /// The fix distinguishes the two standard accounts in the persistor key:
+    /// the label is now `"standard_bip44"` vs `"standard_bip32"`, so both rows
+    /// coexist and the BIP44 depth-3 xpub survives alongside the BIP32 one.
+    /// This guard asserts the post-fix invariant: a current-binary wallet
+    /// survives create -> persist -> real `load_from_persistor_seedless` -> gate,
+    /// BOTH standard rows persist, and the stored BIP44 xpub matches the bridge.
     ///
     /// It inspects the persistor `account_registrations` directly (a read-only
     /// rusqlite connection) rather than reopening an AppContext, because the
     /// offline harness can't release the shared `app_kv` advisory lock to reopen.
-    #[ignore = "issue #7: reproduces the upstream depth-1 vs DET depth-3 persistor mismatch; un-ignore once fixed"]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn issue7_fresh_persistor_bip44_xpub_matches_det_bridge() {
         let _serialize = backend_reopen_lock().await;
@@ -1787,16 +1792,31 @@ mod tests {
         }
         eprintln!("ISSUE7 bridge meta_xpub_len={}", meta_xpub.len());
 
-        // The seedless reload needs a BIP44 account-0 ("standard", 0) row to
-        // rebuild the watch-only account the gate reads. If it's absent or under
-        // a different key, the gate rejects every wallet on a fresh DB.
+        // The seedless reload needs a BIP44 account-0 ("standard_bip44", 0) row
+        // to rebuild the watch-only account the gate reads. If it's absent or
+        // under a different key, the gate rejects every wallet on a fresh DB.
+        // The label is "standard_bip44" (not the pre-fix "standard"): the fix
+        // distinguishes the two StandardAccountType variants so the BIP44 row no
+        // longer shares a primary key with — and is no longer overwritten by —
+        // the BIP32 account-0 row.
         let bip44_0_blob = rows
             .iter()
-            .find(|(at, idx, _)| at == "standard" && *idx == 0)
+            .find(|(at, idx, _)| at == "standard_bip44" && *idx == 0)
             .map(|(_, _, blob)| blob.clone());
         assert!(
             bip44_0_blob.is_some(),
-            "ISSUE7: persistor has no BIP44 account-0 (standard,0) row after W1. rows={rows:?}"
+            "ISSUE7: persistor has no BIP44 account-0 (standard_bip44,0) row after W1. rows={rows:?}"
+        );
+
+        // Coexistence guarantee (the heart of the fix): the BIP32 account-0 row
+        // must ALSO survive — the collision used to drop one of the two. People
+        // hold funds on the BIP32 m/0' account, so it must never be clobbered.
+        let bip32_0_present = rows
+            .iter()
+            .any(|(at, idx, _)| at == "standard_bip32" && *idx == 0);
+        assert!(
+            bip32_0_present,
+            "ISSUE7: persistor lost the BIP32 account-0 (standard_bip32,0) row — the collision fix must keep BOTH standard accounts. rows={rows:?}"
         );
 
         // THE GATE CHECK: decode the stored BIP44 account-0 row exactly as the
@@ -1839,8 +1859,18 @@ mod tests {
                 stored.network == bridge.network,
             );
             eprintln!(
-                "ISSUE7 blob-decode: stored==bridge={} (false reproduces the mismatch)",
+                "ISSUE7 blob-decode: stored==bridge={} (true confirms the fix)",
                 stored_xpub_encoded == meta_xpub
+            );
+
+            // THE GATE INVARIANT, as a hard assertion: the persisted BIP44
+            // account-0 xpub must equal DET's sidecar bridge xpub. Equality is
+            // exactly what the fund-routing gate checks on a seedless cold boot;
+            // before the fix the stored row was the depth-1 BIP32 xpub and this
+            // differed, rejecting every wallet.
+            assert_eq!(
+                stored_xpub_encoded, meta_xpub,
+                "ISSUE7: stored BIP44 account-0 xpub must match the DET bridge xpub — the fund-routing gate rejects the wallet otherwise"
             );
         }
 

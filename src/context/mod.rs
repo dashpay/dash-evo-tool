@@ -505,7 +505,7 @@ impl AppContext {
     /// This is the **read side** of the push snapshot; the write side is
     /// `on_shielded_sync_completed` in Phase E.  Safe to call from the egui frame
     /// loop — no blocking I/O, no async (Nagatha ruling).
-    pub(crate) fn shielded_balance_duffs(&self, seed_hash: &WalletSeedHash) -> u64 {
+    pub fn shielded_balance_duffs(&self, seed_hash: &WalletSeedHash) -> u64 {
         use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
         self.shielded_balances
             .lock()
@@ -522,7 +522,7 @@ impl AppContext {
     /// Use this for screens that display or operate on credits (shielded send,
     /// unshield, coin-selection).  For screens that sum Core + Platform +
     /// Shielded in duffs, use [`Self::shielded_balance_duffs`] instead.
-    pub(crate) fn shielded_balance_credits(&self, seed_hash: &WalletSeedHash) -> u64 {
+    pub fn shielded_balance_credits(&self, seed_hash: &WalletSeedHash) -> u64 {
         self.shielded_balances
             .lock()
             .ok()

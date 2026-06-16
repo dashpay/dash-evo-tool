@@ -2357,7 +2357,7 @@ impl WalletBackend {
     /// The default Orchard payment address for `account` on `seed_hash`'s wallet
     /// (raw 43-byte representation).  Returns `None` if the wallet is not bound
     /// or `account` is not registered.
-    pub(crate) async fn shielded_default_address(
+    pub async fn shielded_default_address(
         &self,
         seed_hash: &WalletSeedHash,
         account: u32,
@@ -2424,6 +2424,21 @@ impl WalletBackend {
                     platform_wallet::error::PlatformWalletError::ShieldedStoreError(e.to_string()),
                 ),
             })
+    }
+
+    /// Force an immediate shielded sync pass (network-wide across every bound
+    /// wallet on the coordinator).
+    ///
+    /// `sync_now` fires `on_shielded_sync_completed` synchronously before it
+    /// returns, so the [`EventBridge`] has already written the post-sync
+    /// per-wallet balances into `AppContext::shielded_balances` (Phase E) by the
+    /// time this resolves — a subsequent `shielded_balance_credits` read sees
+    /// the fresh figure. The 60-second background loop is the normal driver;
+    /// this is the explicit-refresh primitive for the backend-e2e lifecycle test
+    /// and the Phase-G `shielded_sync` MCP tool. A no-op when shielded support
+    /// was never configured (empty coordinator → empty pass).
+    pub async fn sync_shielded_now(&self, force: bool) {
+        self.inner.pwm.shielded_sync_arc().sync_now(force).await;
     }
 
     fn build_client_config(&self) -> ClientConfig {

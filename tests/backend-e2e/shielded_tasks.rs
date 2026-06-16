@@ -28,19 +28,20 @@ use dash_evo_tool::model::wallet::WalletSeedHash;
 use dash_sdk::dpp::dashcore::Network;
 
 // ---------------------------------------------------------------------------
-// Lifecycle test — shield-from-core → unshield → withdraw
+// Lifecycle test — shield → transfer → unshield → withdraw, with balance checks
 // ---------------------------------------------------------------------------
 
-/// Shielded lifecycle (TC-074 → TC-078 → TC-081 → TC-082): shield core DASH
-/// into the pool via asset lock, unshield part to a platform address, then
-/// withdraw part to a Core address. Binding is automatic on wallet load, so no
-/// explicit init step is needed; each op confirms through the upstream
-/// coordinator and returns its typed result.
+/// Full shielded lifecycle (TC-074 → TC-078 → TC-080 → TC-081 → TC-082):
+/// shield core DASH into the pool via asset lock, self-transfer within the
+/// pool, unshield part to a platform address, then withdraw part to a Core
+/// address. Binding is automatic on wallet load (no explicit init step).
 ///
-/// The shielded→shielded transfer (TC-080) and the balance assertions between
-/// steps are deferred to the Phase-G det-cli self-test, which has the public
-/// MCP read tools (this crate cannot read the `pub(crate)` shielded address /
-/// balance).
+/// Each fund-moving op confirms through the upstream coordinator and returns
+/// its typed result; between the shield and the unshield we force a coordinator
+/// sync ([`shielded_helpers::force_shielded_sync`]) and assert the push-snapshot
+/// balance moves in the expected direction — exercising the Phase-E writer
+/// end-to-end (op → `sync_now` → `on_shielded_sync_completed` →
+/// `AppContext::shielded_balances`).
 #[ignore]
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
 async fn tc_074_shielded_lifecycle() {
@@ -58,6 +59,11 @@ async fn tc_074_shielded_lifecycle() {
         );
         return;
     }
+
+    // Baseline shielded balance after an initial sync (the wallet may already
+    // hold shielded notes from a prior run).
+    let baseline = shielded_helpers::force_shielded_sync(app_context, seed_hash).await;
+    tracing::info!("tc_074: baseline shielded balance = {baseline} credits");
 
     // Step 1 (TC-078): shield core DASH into the pool via asset lock. The
     // recipient (the wallet's own default Orchard address) is resolved
@@ -84,7 +90,47 @@ async fn tc_074_shielded_lifecycle() {
         Ok(other) => panic!("Expected ShieldedFromAssetLock, got: {other:?}"),
     }
 
-    // Step 2 (TC-081): unshield part of the pool back to a platform address.
+    // Sync and assert the shielded balance increased (Phase-E push writer).
+    let after_shield = shielded_helpers::force_shielded_sync(app_context, seed_hash).await;
+    assert!(
+        after_shield > baseline,
+        "shielding must increase the shielded balance: {after_shield} !> {baseline}"
+    );
+    tracing::info!("tc_074: post-shield shielded balance = {after_shield} credits");
+
+    // Step 2 (TC-080): private self-transfer within the pool. The recipient is
+    // this wallet's own default Orchard address (raw 43-byte form).
+    let recipient_address_bytes = app_context
+        .wallet_backend()
+        .expect("wallet backend wired")
+        .shielded_default_address(&seed_hash, 0)
+        .await
+        .expect("default shielded address read")
+        .expect("wallet must be shielded-bound after a shield op")
+        .to_vec();
+    let task = BackendTask::ShieldedTask(ShieldedTask::ShieldedTransfer {
+        seed_hash,
+        amount: 50_000,
+        recipient_address_bytes,
+    });
+    match run_task(app_context, task).await {
+        Err(e) if shielded_helpers::is_platform_shielded_unsupported(&e) => {
+            tracing::warn!("tc_074: transfer skipped — platform unsupported: {e}");
+            return;
+        }
+        Err(e) => panic!("ShieldedTransfer failed unexpectedly: {e:?}"),
+        Ok(BackendTaskSuccessResult::ShieldedTransferComplete {
+            seed_hash: sh,
+            amount,
+        }) => {
+            assert_eq!(sh, seed_hash);
+            assert_eq!(amount, 50_000);
+            tracing::info!("tc_074: transferred {amount} credits privately");
+        }
+        Ok(other) => panic!("Expected ShieldedTransferComplete, got: {other:?}"),
+    }
+
+    // Step 3 (TC-081): unshield part of the pool back to a platform address.
     let platform_addr = {
         let wallets = app_context.wallets().read().expect("wallets lock");
         let wallet_arc = wallets
@@ -120,7 +166,15 @@ async fn tc_074_shielded_lifecycle() {
         Ok(other) => panic!("Expected ShieldedCreditsUnshielded, got: {other:?}"),
     }
 
-    // Step 3 (TC-082): withdraw part of the pool to a Core L1 address.
+    // Sync and assert the shielded balance decreased after unshielding.
+    let after_unshield = shielded_helpers::force_shielded_sync(app_context, seed_hash).await;
+    assert!(
+        after_unshield < after_shield,
+        "unshielding must decrease the shielded balance: {after_unshield} !< {after_shield}"
+    );
+    tracing::info!("tc_074: post-unshield shielded balance = {after_unshield} credits");
+
+    // Step 4 (TC-082): withdraw part of the pool to a Core L1 address.
     let core_address = app_context
         .wallet_backend()
         .expect("wallet backend wired")
@@ -228,6 +282,9 @@ async fn tc_079_shield_from_balance() {
         other => panic!("Expected PlatformAddressBalances, got: {:?}", other),
     };
 
+    // Baseline shielded balance before the shield (after a coordinator sync).
+    let baseline = shielded_helpers::force_shielded_sync(app_context, seed_hash).await;
+
     // Shield a portion of the credits. The upstream coordinator selects the
     // input addresses — DET no longer supplies a `from_address`.
     let shield_amount = available_credits / 2;
@@ -249,6 +306,13 @@ async fn tc_079_shield_from_balance() {
             assert_eq!(sh, seed_hash, "seed_hash should match");
             assert_eq!(amount, shield_amount, "shielded amount should match");
             tracing::info!("ShieldFromBalance: shielded {} credits", amount);
+
+            // Sync and assert the shielded balance increased (Phase-E writer).
+            let after = shielded_helpers::force_shielded_sync(app_context, seed_hash).await;
+            assert!(
+                after > baseline,
+                "shield-from-balance must increase the shielded balance: {after} !> {baseline}"
+            );
         }
         Ok(other) => panic!("Expected ShieldedCreditsShielded, got: {:?}", other),
     }

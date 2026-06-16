@@ -2,13 +2,14 @@
 //!
 //! Phase D retired DET's home-grown shielded subsystem; warm-up and key
 //! binding are owned by the upstream coordinator (binding happens automatically
-//! on wallet unlock), so the only helpers left are availability / skip / error
-//! classification. The coordinator-store balance reads are `pub(crate)` and not
-//! reachable from this external test crate — balance/sync verification lives in
-//! the Phase-G det-cli self-test, which drives the public MCP read tools.
+//! on wallet unlock). The helpers here cover availability / skip / error
+//! classification plus a sync-and-read primitive ([`force_shielded_sync`]) that
+//! drives a coordinator pass and returns the resulting push-snapshot balance.
 
 use dash_evo_tool::context::AppContext;
 use dash_evo_tool::model::feature_gate::FeatureGate;
+use dash_evo_tool::model::wallet::WalletSeedHash;
+use std::sync::Arc;
 
 /// Check whether the connected platform supports shielded operations
 /// via the `FeatureGate::Shielded` protocol version check.
@@ -76,4 +77,18 @@ pub fn is_platform_shielded_unsupported(
 
         _ => false,
     }
+}
+
+/// Drive an immediate shielded sync pass and return the wallet's post-sync
+/// shielded balance (credits) from the frame-safe snapshot.
+///
+/// `sync_shielded_now` runs a coordinator pass that dispatches
+/// `on_shielded_sync_completed`, which the `EventBridge` turns into the
+/// `AppContext::shielded_balances` write (Phase E); the read below therefore
+/// sees the fresh figure. Returns `0` when the wallet backend is not wired.
+pub async fn force_shielded_sync(app_context: &Arc<AppContext>, seed_hash: WalletSeedHash) -> u64 {
+    if let Ok(backend) = app_context.wallet_backend() {
+        backend.sync_shielded_now(true).await;
+    }
+    app_context.shielded_balance_credits(&seed_hash)
 }

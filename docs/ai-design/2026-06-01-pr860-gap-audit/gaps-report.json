@@ -10,13 +10,15 @@
   },
   "summary_statistics": {
     "total_findings": 45,
-    "severity_counts": {
+    "open_findings": 9,
+    "severity_counts_open": {
       "CRITICAL": 0,
       "HIGH": 1,
-      "MEDIUM": 5,
-      "LOW": 7,
+      "MEDIUM": 3,
+      "LOW": 5,
       "INFO": 0
-    }
+    },
+    "note": "2026-06-16: PROJ-032 moved to closed_na (DashPay never persisted in any release). PROJ-034 confirmed real per v0.9.3 cross-check."
   },
   "findings": [
     {
@@ -104,14 +106,16 @@
         },
         {
           "id": "PROJ-032",
-          "risk": 0.55,
-          "impact": 0.45,
+          "risk": 0.0,
+          "impact": 0.0,
           "scope": 1.0,
+          "status": "closed_na",
+          "verdict": "2026-06-16 cross-check confirmed N/A: v0.9.3 (latest release) had DashPay as a 'Coming Soon' placeholder (dashpay_coming_soon_screen.rs); zero DashPay tables or persistence ever shipped in any DET release. Precondition for the migration was never true. TODO removed from finish_unwire.rs.",
           "title": "Legacy DashPay user data not migrated: payment history, nicknames/notes/hidden flags, send-address indices",
-          "location": "src/backend_task/migration/finish_unwire.rs:60",
-          "description": "v0.10-dev's `src/database/dashpay.rs` (934 lines, deleted) persisted payment history, contact private info (nickname/note/is_hidden), per-contact send/receive address indices, and address mappings in `data.db`. New homes exist (upstream `ManagedIdentity` payments + `det-app.sqlite` sidecar, `src/wallet_backend/dashpay.rs`), but the cold-start migration copies **no DashPay tables**: `LEGACY_TABLES = [\"wallet\",\"single_key_wallet\",\"shielded_notes\",\"utxos\"]`; zero `dashpay` references in `src/backend_task/migration/`. Old 'received' rows can never be regenerated (PROJ-027); 'sent' rows are lost; send-index reset to 0 causes payment-address reuse with pre-existing contacts. Partially contradicts `data-model-and-migration.md:58` ('DET payment-history / avatar cache retained DET-side').",
-          "impact_description": "Upgrade silently wipes DashPay payment history and per-contact nicknames/notes/hidden flags; first payments to existing contacts reuse address index 0 (privacy degradation, no fund loss — DIP-15 addresses remain valid).",
-          "recommendation": "Extend the cold-start migration to carry payment history, contact private info, and send indices into their new homes — or disclose the wipe in CHANGELOG Known Limitations (DOC-001) and fix the design-doc contradiction."
+          "location": "src/backend_task/migration/finish_unwire.rs",
+          "description": "CLOSED/N-A. The original finding assumed src/database/dashpay.rs represented previously-shipped persistence — it did not. The file was developed on the feature branch and deleted on the same branch; it never appeared in a released binary. v0.9.3 cross-check confirms DashPay was a placeholder screen only. No user data exists to migrate for any release.",
+          "impact_description": "No impact — no DashPay user data was ever persisted in any shipped release.",
+          "recommendation": "No action required. No migration needed; no CHANGELOG disclosure needed."
         },
         {
           "id": "PROJ-033",
@@ -128,11 +132,13 @@
           "risk": 0.5,
           "impact": 0.45,
           "scope": 1.0,
+          "status": "open",
+          "verdict": "2026-06-16 cross-check CONFIRMED REAL: v0.9.3 persisted all three — settings (network, theme, dash_qt_path, start screen), top_up (identity_id, top_up_index, amount), scheduled_votes (identity_id, contested_name, vote_choice, time, executed, network). Real user data is silently lost on upgrade. Follow-up priority: scheduled votes (vote-window deadline risk) > app settings (UX friction) > top-up history (audit trail).",
           "title": "App settings, top-up history, and scheduled DPNS votes all reset/empty on upgrade (no non-wallet data migration)",
-          "location": "src/backend_task/migration/finish_unwire.rs:60",
-          "description": "Settings moved from the legacy `data.db` `settings` table to k/v `det:settings:v1` in `det-app.sqlite` (`src/model/settings.rs:63-88`; `src/context/settings_db.rs`) with **no importer** — `db.get_settings` has zero callers and the migration drains only `LEGACY_TABLES` (wallets/secrets). Commit `e4ff9621` disclosed 'migration tool will import in a later PR' — that PR never landed. Top-up history and scheduled DPNS votes likewise start empty (commit `7778eb64`). Disclosed in commit messages only — not in CHANGELOG.",
-          "impact_description": "At upgrade: selected network resets to Mainnet (a testnet user relaunches into mainnet), theme/paths/onboarding/user-mode reset, and silently dropped scheduled DPNS votes can mean **missed votes** for masternode voters. One-time, no fund loss.",
-          "recommendation": "Add a legacy-settings/k-v importer to the cold-start migration (at minimum: network, theme, onboarding flag, scheduled votes), or disclose prominently in CHANGELOG (DOC-001) and show a first-launch reminder for scheduled-vote users."
+          "location": "src/backend_task/migration/finish_unwire.rs",
+          "description": "Settings moved from the legacy `data.db` `settings` table to k/v `det:settings:v1` in `det-app.sqlite` (`src/model/settings.rs:63-88`; `src/context/settings_db.rs`) with **no importer** — `db.get_settings` has zero callers and the migration drains only `LEGACY_TABLES` (wallets/secrets). Commit `e4ff9621` disclosed 'migration tool will import in a later PR' — that PR never landed. Top-up history and scheduled DPNS votes likewise start empty (commit `7778eb64`). Disclosed in commit messages only — not in CHANGELOG. Confirmed real by v0.9.3 cross-check (2026-06-16).",
+          "impact_description": "At upgrade: selected network resets to Mainnet (a testnet user relaunches into mainnet), theme/paths/onboarding/user-mode reset, and silently dropped scheduled DPNS votes can mean **missed votes** for masternode voters. One-time, no fund loss. Highest-priority sub-item: scheduled votes (vote-window deadline).",
+          "recommendation": "Add a legacy-settings/k-v importer to the cold-start migration (at minimum: network, theme, onboarding flag, scheduled votes), or disclose prominently in CHANGELOG (DOC-001) and show a first-launch reminder for scheduled-vote users. Priority: scheduled votes > settings > top-up history."
         },
         {
           "id": "PROJ-035",
@@ -480,13 +486,13 @@
       },
       {
         "finding_id": "PROJ-032",
-        "action": "defer",
-        "rationale": "We'll handle data migration separately."
+        "action": "close_na",
+        "rationale": "2026-06-16 cross-check: DashPay was a Coming Soon placeholder in v0.9.3 — zero tables or persistence ever shipped. Precondition was never true. TODO removed from finish_unwire.rs."
       },
       {
         "finding_id": "PROJ-034",
         "action": "defer",
-        "rationale": "migration will be handled separately"
+        "rationale": "2026-06-16 cross-check CONFIRMED REAL: v0.9.3 persisted settings, top_up, and scheduled_votes. Follow-up priority: scheduled votes (vote-window deadline risk) > app settings (UX friction) > top-up history (audit trail). Migration to be handled in a separate PR."
       },
       {
         "finding_id": "PROJ-018",

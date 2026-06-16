@@ -84,11 +84,12 @@ ListCoreWallets, SPV peer source, Proof Log).
 | **Total** | **10** | **33** | **43** |
 
 Open by category: upstream/release-gate = 1 (PROJ-005);
-functional/unwired = 2 (PROJ-032, PROJ-041);
+functional/unwired = 1 (PROJ-041);
 deferred/partial = 2 (PROJ-007 PARTIAL, PROJ-022 accepted);
+deferred-with-TODO = 1 (PROJ-034 OPEN — confirmed real data loss per v0.9.3 cross-check);
 test = 2 (PROJ-015, PROJ-016);
 doc = 3 (PROJ-018, PROJ-019, DOC-003 deferred-with-TODO).
-Sum = 10 open.
+Sum = 10 open (PROJ-032 CLOSED/N-A: DashPay was never persisted in any v0.9.3 release — net count unchanged, PROJ-032 removed from open and added to resolved).
 (2026-06-15: PROJ-042's platform-address half moved PARTIAL → RESOLVED in PR — wallet-owned
 destinations now route through the upstream orchestrator; non-owned destinations keep the
 manual path by design. The finding was already in the resolved tally for its actionable
@@ -407,22 +408,25 @@ the nullifier cursor to 0 so a resync re-derives the spent set from position 0. 
   selector/per-address balance display and the MCP param, and disclose; otherwise thread
   the parameter through.
 
-### PROJ-032 — Legacy DashPay user data not migrated: payment history, nicknames/notes/hidden flags, send-address indices *(MEDIUM — OPEN; deferred-with-TODO `727e8d6a`)*
+### PROJ-032 — Legacy DashPay user data not migrated: payment history, nicknames/notes/hidden flags, send-address indices *(MEDIUM — CLOSED / RESOLVED-N-A)*
 
-- **v0.10-dev:** `src/database/dashpay.rs` (934 lines, deleted) persisted payment history,
-  contact private info (nickname, note, is_hidden), per-contact send/receive address
-  indices (`get_and_increment_send_index`), and address mappings in `data.db`.
-- **PR #860:** new homes exist (upstream `ManagedIdentity` payments + `det-app.sqlite`
-  sidecar, `src/wallet_backend/dashpay.rs`), but the cold-start migration copies **no
-  DashPay tables** — `LEGACY_TABLES = ["wallet","single_key_wallet","shielded_notes","utxos"]`
-  (`src/backend_task/migration/finish_unwire.rs:60`); zero `dashpay` references in
-  `src/backend_task/migration/`. Old "received" rows can never be regenerated (PROJ-027);
-  old "sent" rows are simply lost; send-index reset to 0 causes payment-address reuse with
-  pre-existing contacts (privacy degradation; DIP-15 addresses remain valid, no fund loss).
-  Partially contradicts `data-model-and-migration.md:58` ("DET payment-history / avatar
-  cache retained DET-side" — neither was).
-- **Fix direction:** extend the migration to carry payment history + contact private info +
-  send indices, or disclose the wipe in CHANGELOG/Known Limitations (feeds DOC-001).
+**CLOSED 2026-06-16 — precondition never true in any shipped release.**
+
+v0.9.3 is the latest release. Cross-check of the v0.9.3 source tree confirms that DashPay
+was a literal "Coming Soon" placeholder (`dashpay_coming_soon_screen.rs`). **Zero DashPay
+tables or persistence code ever shipped in any DET release.** There is no user data to
+migrate, for any user on any release. The TODO comment that anchored this finding
+(`src/backend_task/migration/finish_unwire.rs`) has been removed.
+
+- **Original concern:** `src/database/dashpay.rs` (present in PR #860's pre-unwire ancestor
+  branch) was assumed to represent previously-shipped persistence. It did not — the file was
+  developed on the feature branch and deleted on the same branch; it never appeared in a
+  released binary.
+- **`data-model-and-migration.md:58`** contradiction ("DET payment-history / avatar cache
+  retained DET-side") is stale design-intent prose from the pre-release plan, not a
+  description of shipped behaviour. No correction needed to docs because the design-intent
+  context is already marked superseded in that file.
+- **No action required.** No migration needed; no CHANGELOG disclosure needed; no follow-up.
 
 ### PROJ-033 — Dash-Qt launcher unreachable while its settings cluster survives *(MEDIUM — RESOLVED 2026-06-11; `255aa018`)*
 
@@ -442,13 +446,20 @@ the nullifier cursor to 0 so a resync re-derives the spent set from position 0. 
 
 ### PROJ-034 — App settings, top-up history, and scheduled DPNS votes all reset/empty on upgrade (no non-wallet data migration) *(MEDIUM — OPEN; deferred-with-TODO `727e8d6a`)*
 
-- **v0.10-dev:** settings persisted in `data.db` `settings` (network, root screen,
+**CONFIRMED REAL per v0.9.3 cross-check (2026-06-16).** v0.9.3 persisted all three:
+`settings` (network, theme, custom dash_qt_path, start screen, …), `top_up` (identity_id,
+top_up_index, amount), and `scheduled_votes` (identity_id, contested_name, vote_choice,
+time, executed, network). Real user data is silently lost on upgrade. **Follow-up priority:
+scheduled DPNS votes (vote-window deadline risk) > app settings (UX friction) > top-up
+history (audit trail).**
+
+- **v0.10-dev / v0.9.3:** settings persisted in `data.db` `settings` (network, root screen,
   dash_qt_path, theme_mode, onboarding flag, user_mode, …; OLD `src/database/settings.rs`,
   `src/model/settings.rs:28-45`); top-up history and scheduled DPNS votes in legacy SQLite.
 - **PR #860:** settings moved to k/v `det:settings:v1` in `det-app.sqlite`
   (`src/model/settings.rs:63-88`; `src/context/settings_db.rs`) with **no importer**
   (`db.get_settings` has zero callers; the migration drains only
-  `LEGACY_TABLES` = wallets/secrets, `src/backend_task/migration/finish_unwire.rs:60`).
+  `LEGACY_TABLES` = wallets/secrets, `src/backend_task/migration/finish_unwire.rs`).
   Commit `e4ff9621` discloses "Existing users get default AppSettings on first launch …
   migration tool will import in a later PR" — that later PR never landed. Top-up history
   and scheduled votes likewise start empty (commit `7778eb64`: "Existing users get empty
@@ -458,7 +469,8 @@ the nullifier cursor to 0 so a resync re-derives the spent set from position 0. 
   **scheduled DPNS votes can mean missed votes** for masternode voters. One-time, no fund
   loss. Disclosed in commit messages only — not in CHANGELOG (feeds DOC-001).
 - **Fix direction:** add a settings/k-v importer to the cold-start migration (at minimum:
-  network, theme, onboarding flag, scheduled votes), or disclose prominently.
+  network, theme, onboarding flag, scheduled votes), or disclose prominently. Scheduled-vote
+  migration is highest priority given the vote-window deadline risk.
 
 ### PROJ-042 — Non-identity asset-lock flows bypass upstream orchestration: post-broadcast recovery gap *(MEDIUM — RESOLVED IN PR: shield-from-asset-lock false-success fixed; platform-address funding now routes wallet-owned destinations through the upstream orchestrator)*
 
@@ -903,8 +915,9 @@ identity-address SPV bloom registration — not found in DET; likely upstream), 
   a **regression introduced by the same-day #3828 re-pin** `4247c360`+`a0d5034a`, cross-linked
   to follow-up todo `1ff97ad7`); 7 MEDIUM (PROJ-029 subtract-fee/Max dead-end, PROJ-030 resync
   keeps nullifier watermark, PROJ-031 shield source-address ignored, PROJ-032 DashPay data not
-  migrated, PROJ-033 Dash-Qt launcher unreachable, PROJ-034 settings/top-up-history/scheduled-votes
-  reset on upgrade, DOC-001 CHANGELOG sweep); 9 LOW (PROJ-035..038, PROJ-040, PROJ-041,
+  migrated [later CLOSED/N-A per v0.9.3 cross-check — DashPay never shipped], PROJ-033
+  Dash-Qt launcher unreachable, PROJ-034 settings/top-up-history/scheduled-votes reset on
+  upgrade [confirmed real per v0.9.3 cross-check], DOC-001 CHANGELOG sweep); 9 LOW (PROJ-035..038, PROJ-040, PROJ-041,
   PROJ-039 conventions, DOC-002 proof-log doc debt, DOC-003 I3 notice). **Corrected 4 existing
   entries**: PROJ-012 re-scoped (whole ZMQ chain dead — listener spawn gated off by
   `FeatureGate::RpcBackend=false`; placebo "Disable ZMQ" checkbox folded in), PROJ-007 extended
@@ -929,7 +942,8 @@ identity-address SPV bloom registration — not found in DET; likely upstream), 
   - **PROJ-035/036/037/038/039 + DOC-001/DOC-002 RESOLVED** (`1871c59f` + `23b81718`): UI copy / dead controls / recovery-trail / doc fixes.
   - **PROJ-009 RESOLVED-WONTFIX** (`d504d09e`): non-mainnet/non-account-0 legacy contact-address class never existed; nothing stranded.
   - **PROJ-007 PARTIAL** (`fba925ec` + `01f2bb26` + `690d92b3` + `3a0e5909`): T1/T2/T6 shipped; T3/T4/T5 PARKED on upstream.
-  - **PROJ-032/034 + PROJ-018/015/041 + DOC-003 deferred-with-TODO** (`727e8d6a`): TODO markers placed.
+  - **PROJ-034/018/015/041 + DOC-003 deferred-with-TODO** (`727e8d6a`): TODO markers placed.
+  - **PROJ-032 CLOSED/N-A** (2026-06-16 cross-check): DashPay was a "Coming Soon" placeholder in v0.9.3 — zero tables or persistence ever shipped in any release; precondition for the migration was never true; TODO removed from source.
   - **PROJ-016 triage: defer** — blocked on PROJ-007 single-key send; no deterministic repro.
   - **PROJ-019 triage: defer** — merge-time action (ADR floor SHA).
   - **PROJ-022 triage: accept_risk** — by design; unimplemented!() arms intentional until upstream swap.
@@ -1007,11 +1021,14 @@ So nothing is silently dropped. Deferred markers / inert-looking bodies that are
 ---
 
 *Candy tally — confirmed gaps: 43 (1 CRITICAL · 7 HIGH · 15 MEDIUM · 20 LOW · 0 INFO).
-Status as of 2026-06-15: 33 RESOLVED / 1 PARTIAL / 1 ACCEPTED + 10 OPEN (1 HIGH + 4 MEDIUM + 5 LOW).
+Status as of 2026-06-16: 34 RESOLVED / 1 PARTIAL / 1 ACCEPTED + 9 OPEN (1 HIGH + 3 MEDIUM + 5 LOW).
 RESOLVED set: PROJ-001, PROJ-002 (removed), PROJ-003, PROJ-004, PROJ-006, PROJ-008, PROJ-010,
 PROJ-011, PROJ-012, PROJ-013, PROJ-014, PROJ-017, PROJ-020, PROJ-021, PROJ-023, PROJ-025,
 PROJ-026, PROJ-027, PROJ-028, PROJ-029, PROJ-030, PROJ-031, PROJ-033, PROJ-035, PROJ-036,
-PROJ-037, PROJ-038, PROJ-039, PROJ-040, PROJ-043, PROJ-009 (WONTFIX), DOC-001, DOC-002 + SEC-001 follow-up.
-PARTIAL: PROJ-007 (T3/T4/T5 parked on upstream). ACCEPTED: PROJ-022. OPEN deferred-with-TODO: PROJ-032,
-PROJ-034, PROJ-018, PROJ-015, PROJ-041, DOC-003. OPEN merge-blocker: PROJ-005 (release gate G1 only).
+PROJ-037, PROJ-038, PROJ-039, PROJ-040, PROJ-043, PROJ-009 (WONTFIX), DOC-001, DOC-002,
+PROJ-032 (CLOSED/N-A — DashPay never persisted in any v0.9.3 release; precondition false)
++ SEC-001 follow-up.
+PARTIAL: PROJ-007 (T3/T4/T5 parked on upstream). ACCEPTED: PROJ-022. OPEN deferred-with-TODO:
+PROJ-034 (REAL — confirmed per v0.9.3 cross-check; priority: scheduled votes > settings > top-up),
+PROJ-018, PROJ-015, PROJ-041, DOC-003. OPEN merge-blocker: PROJ-005 (release gate G1 only).
 8 seed/appendix items confirmed already-resolved with evidence. 1 blocked-by-design (PROJ-024, uncounted).*

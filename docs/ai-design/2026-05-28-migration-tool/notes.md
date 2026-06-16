@@ -233,6 +233,12 @@ idempotency is confirmed.
 
 ### DashPay tables (DET source file: `src/database/dashpay.rs`)
 
+> **⚠ MIGRATION-TOOL N/A (2026-06-16 cross-check).** v0.9.3 is the latest release. DashPay
+> was a "Coming Soon" placeholder in every shipped DET release — `src/database/dashpay.rs`
+> and the tables below never shipped in any released binary. No legacy user has DashPay data
+> in their `data.db`. The migration tool can skip all DashPay tables entirely.
+> (Reference: PROJ-032 CLOSED/N-A in `docs/ai-design/2026-06-01-pr860-gap-audit/gaps.md`.)
+
 Tables: `dashpay_profiles`, `dashpay_contacts`, `dashpay_contact_requests`,
 `dashpay_payments`, `dashpay_contact_address_indices`, `dashpay_address_mappings`,
 `contact_private_info`
@@ -246,6 +252,7 @@ Tables: `dashpay_profiles`, `dashpay_contacts`, `dashpay_contact_requests`,
   `dashpay_address_mappings`) may have no upstream equivalent — confirm during audit. Do not
   assume 1:1 column parity; DET and upstream evolved independently.
 - **Status:** DONE (D1–D4d unwire on `feat/unwire-deferred-domains`, stacked on PR #860).
+  **Migration-tool action: SKIP (no user data to migrate — see N/A note above).**
   S1 retired the shielded data.db code path; D1 introduced the `DashpayView` adapter; D2
   wired sidecar reads/writes for DET-only overlays; D3 added blocked/rejected/timestamp
   markers; D4a–D4c migrated every DashPay read and write off the DET tables; D4d deletes
@@ -260,6 +267,11 @@ Tables: `dashpay_profiles`, `dashpay_contacts`, `dashpay_contact_requests`,
 ---
 
 ### `settings` (DET source file: `src/database/settings.rs`)
+
+> **CONFIRMED REAL (2026-06-16 cross-check, PROJ-034).** v0.9.3 persisted the `settings`
+> table (network, theme, custom dash_qt_path, start screen, …). Real user data is silently
+> lost on upgrade without a migration. **Priority: MEDIUM** (UX friction — network reset to
+> Mainnet, theme/paths/onboarding reset; behind scheduled votes in urgency).
 
 - **Source:** `settings` in `data.db`
 - **Destination:** upstream k/v store (k/v shipped in upstream PR #3625 at SHA
@@ -329,13 +341,19 @@ Tables: `dashpay_profiles`, `dashpay_contacts`, `dashpay_contact_requests`,
 
 ### `scheduled_votes`
 
+> **CONFIRMED REAL — HIGHEST PRIORITY (2026-06-16 cross-check, PROJ-034).** v0.9.3
+> persisted `scheduled_votes` (identity_id, contested_name, vote_choice, time, executed,
+> network). Silently dropped votes can mean **missed votes** for masternode voters within
+> their vote window. This is the highest-priority sub-item in PROJ-034:
+> scheduled votes > app settings > top-up history.
+
 - **Source:** `scheduled_votes` in `data.db`
 - **Destination:** DET k/v sidecar (masternode vote queuing — DET-only)
 - **Mapping:** Encode as k/v entries keyed by vote identity + target
 - **Per-network split:** Yes
 - **Gotchas:** No upstream analog. DET-specific feature; stays in DET storage layer.
 - **Status:** DONE for new-install path — see commit `7778eb64` (`scheduled_votes` → k/v).
-  Migration tool still needs to import legacy rows.
+  Migration tool still needs to import legacy rows. **Implement this migration first.**
 
 ---
 

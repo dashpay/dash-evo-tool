@@ -1084,6 +1084,33 @@ impl AppState {
         }
     }
 
+    /// Surface a sticky restart notice when the wallet backend has repaired
+    /// stored wallet data this session (the #251 account-xpub format-drift
+    /// upsert). The repair is on disk, but the already-loaded in-memory wallet
+    /// cannot be refreshed without a restart, so the affected wallet stays
+    /// dormant until the user relaunches.
+    ///
+    /// Re-asserted every frame so it is effectively permanent: `set_global` is
+    /// idempotent for identical text, and refreshing the auto-dismiss keeps the
+    /// warning visible (a manual dismiss reappears on the next frame) until the
+    /// restart it asks for. One-way latch on `AppContext`, so it never clears
+    /// itself mid-session.
+    fn update_restart_required_banner(
+        &mut self,
+        ctx: &egui::Context,
+        app_context: &Arc<AppContext>,
+    ) {
+        if !app_context.wallet_restart_required() {
+            return;
+        }
+        MessageBanner::set_global(
+            ctx,
+            "Dash Evo Tool updated stored wallet data and needs to restart to finish. Please close and reopen the application.",
+            MessageType::Warning,
+        )
+        .with_auto_dismiss(std::time::Duration::from_secs(60));
+    }
+
     /// Dismiss the migration banner (if any) on Escape. Per Diziet
     /// §2.3 a11y the banner must be dismissible via Esc — falls back
     /// to no-op when the banner has already been closed by the user
@@ -1534,6 +1561,7 @@ impl App for AppState {
         self.update_connection_banner(ctx, &active_context);
         self.dispatch_cold_start_migration();
         self.update_migration_banner(ctx, &active_context);
+        self.update_restart_required_banner(ctx, &active_context);
         self.handle_banner_esc(ctx);
         self.drain_banner_actions(ctx);
 

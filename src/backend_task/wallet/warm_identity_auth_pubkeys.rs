@@ -1,3 +1,6 @@
+//! Backend task: warm the identity-authentication public-key cache for one identity index.
+//! Fetches the seed JIT through the secret chokepoint; only derived public keys are persisted — no secret leaves the backend.
+
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;

@@ -12,12 +12,12 @@
 //! Backed by TC-SK-004 (valid WIF accepted), TC-SK-005 (invalid WIF
 //! inline error), TC-SK-007 (mask + reveal toggle, ARIA), TC-A11Y-005.
 
-use dash_sdk::dpp::dashcore::secp256k1::Secp256k1;
-use dash_sdk::dpp::dashcore::{Address, Network, PrivateKey, PublicKey};
+use dash_sdk::dpp::dashcore::Network;
 use eframe::egui::{self, Context, RichText, Ui};
 use zeroize::Zeroizing;
 
 use crate::backend_task::error::TaskError;
+use crate::model::single_key::validate_wif;
 use crate::model::wallet::passphrase::validate_single_key_passphrase;
 use crate::ui::components::password_input::PasswordInput;
 use crate::ui::theme::DashColors;
@@ -333,15 +333,9 @@ impl ImportSingleKeyDialog {
             self.error_message = None;
             return;
         }
-        match PrivateKey::from_wif(raw) {
-            Ok(priv_key) => {
-                let secp = Secp256k1::new();
-                let pub_key = PublicKey {
-                    compressed: priv_key.compressed,
-                    inner: priv_key.inner.public_key(&secp),
-                };
-                let address = Address::p2pkh(&pub_key, self.network);
-                self.derived_address = Some(address.to_string());
+        match validate_wif(raw, self.network) {
+            Ok(address) => {
+                self.derived_address = Some(address);
                 self.error_message = None;
             }
             Err(e) => {

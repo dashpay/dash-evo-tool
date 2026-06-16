@@ -4,8 +4,27 @@
 //! struct is the public-facing handle that backend tasks and the UI use
 //! to list, label, and address-route imported keys.
 
-use dash_sdk::dpp::dashcore::Network;
+use dash_sdk::dpp::dashcore::key::Error as KeyError;
+use dash_sdk::dpp::dashcore::secp256k1::Secp256k1;
+use dash_sdk::dpp::dashcore::{Address, Network, PrivateKey, PublicKey};
 use serde::{Deserialize, Serialize};
+
+/// Validates a WIF-encoded private key and derives the P2PKH address.
+///
+/// Returns the derived address string on success, or the parse error on
+/// failure. Pure format validation — no network I/O, no DB access.
+/// Used by the import dialog for instant feedback (P8); the backend
+/// task is the authoritative enforcement layer.
+pub fn validate_wif(wif: &str, network: Network) -> Result<String, KeyError> {
+    let priv_key = PrivateKey::from_wif(wif)?;
+    let secp = Secp256k1::new();
+    let pub_key = PublicKey {
+        compressed: priv_key.compressed,
+        inner: priv_key.inner.public_key(&secp),
+    };
+    let address = Address::p2pkh(&pub_key, network);
+    Ok(address.to_string())
+}
 
 /// Display-side metadata for one imported single-key wallet.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -19,7 +19,6 @@ pub mod styled;
 pub mod tokens_subscreen_chooser_panel;
 pub mod tools_subscreen_chooser_panel;
 pub mod top_panel;
-pub mod tracked_asset_lock_cache;
 pub mod wallet_unlock;
 pub mod wallet_unlock_popup;
 
@@ -30,4 +29,3 @@ pub use message_banner::{
     OptionBannerShowExt, ResultBannerExt,
 };
 pub use secret_prompt_host::{ActivePrompt, EguiSecretPromptHost, QueuedPrompt};
-pub use tracked_asset_lock_cache::TrackedAssetLockCache;

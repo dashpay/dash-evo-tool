@@ -1,3 +1,6 @@
+//! Backend task: sign a message with a wallet-derived key at a given derivation path.
+//! Fetches the seed JIT through the secret chokepoint; only the Base64 signature crosses back to the UI.
+
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;

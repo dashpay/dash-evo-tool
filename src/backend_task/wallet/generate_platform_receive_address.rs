@@ -1,3 +1,6 @@
+//! Backend task: generate a fresh Platform (DIP-17/18) receive address for a wallet.
+//! Fetches the seed JIT through the secret chokepoint; only the Bech32m address crosses back to the UI.
+
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;

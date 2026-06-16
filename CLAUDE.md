@@ -69,6 +69,23 @@ scripts/safe-cargo.sh +nightly fmt --all
 * **Never parse error strings** to extract information. Always use the typed error chain (downcast, match on variants, access structured fields). If no typed variant exists for the information you need, define a new `TaskError` variant or extend the existing error type. String parsing is fragile, breaks on message changes, and bypasses the type system.
 * **Validation placement**: Pure input validation (format, length, character sets) lives in `model/` as stateless functions — single source of truth, unit-testable, no dependencies on `AppContext` or `Sdk`. Backend tasks are the authoritative enforcement layer: they call model validators for format checks AND perform stateful validation that requires network or database (existence checks, uniqueness, business rules). UI screens may call model validators for instant user feedback, but must never implement their own validation logic — always delegate to the model function.
 
+### DET Module Placement Policy
+
+Code lives by responsibility, not convenience:
+
+- **`model/`** — stateless data types and pure validation (format/length/charset). The single source of truth for validation. No `AppContext`, `Sdk`, DB, or `BackendTask`. All fee estimation goes in `model/fee_estimation.rs` — never inlined elsewhere.
+- **`backend_task/`** — async business logic, one submodule per domain; the authoritative enforcement layer. `TaskError` and its typed variants live in `backend_task/error.rs`.
+- **`database/`** — SQLite persistence, one module per domain.
+- **`context/`** — `AppContext` submodules (`*_db.rs`, lifecycle, settings, status).
+- **`wallet_backend/`** — the wallet orchestration seam: adapters, views, backend-side live caches, signers, the secret chokepoint, the event bridge.
+- **`ui/<domain>/`** — screens (`ScreenLike`). UI may *call* `model/` validators for instant feedback but never implements its own validation.
+- **`ui/components/`** — reusable **Component-pattern widgets ONLY**: a `show()` plus a `ComponentResponse`, a display-only render widget, or component infrastructure. If it does not render egui, it is not a component.
+- **`ui/state/`** — non-widget UI state: per-screen view-models and async fetch-state caches (e.g. `TrackedAssetLockCache`). Owned by screens, may return `BackendTask`, render nothing.
+- **`src/mcp/tools/`** — MCP tool logic (one struct per file); never in `src/bin/det_cli/`.
+- **`src/localization.rs`** — localization logic. **`src/ui/theme.rs`** — theme/alignment helpers.
+
+Discriminator for `ui/components/` vs `ui/state/`: *does it render egui (`show`/`ui`/a render fn)?* Yes → component. No → state.
+
 ### Error messages
 
 User-facing error messages (shown in `MessageBanner` via `Display`) must follow these rules:

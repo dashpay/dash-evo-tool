@@ -253,3 +253,26 @@ async fn cold_process_boot_from_migrated_state_registers_and_shows_balance() {
 
     backend.shutdown().await;
 }
+
+// TODO(issue #251): live persistor xpub format-drift self-heal coverage.
+//
+// The seed-bearing registration path (`register_wallet_from_seed`) now self-heals
+// a stale persistor entry: when `get_wallet(wallet_id)` returns a wallet whose
+// stored BIP44 account xpub was written at the legacy depth-1 (`m/0'`) format by
+// an older rev, it removes and rewrites the entry from the in-hand seed at the
+// current depth-3 (`m/44'/coin'/0'`) format, then re-resolves. The decision logic
+// and the two cryptographic invariants this relies on (depth-1 != depth-3 for the
+// same seed; `WalletId` independent of account-derivation depth) are unit-tested
+// in `src/wallet_backend/mod.rs` (`classify_persistor_xpub_*`,
+// `legacy_depth1_xpub_is_classified_as_drift_against_depth3`,
+// `wallet_id_is_independent_of_account_creation`).
+//
+// A full live drift-heal e2e (forge a depth-1 `account_registrations` row, cold
+// boot, drive the seed-bearing path, assert re-registration + balance) is NOT
+// added here: faithfully writing a depth-1 row from DET requires reproducing the
+// upstream persistor's sealed `blob::encode` (bincode v2 over the private
+// `AccountRegistrationEntry` serde layout). Hand-rolling that in a test couples it
+// to an upstream-internal serialization detail and would rot silently on any
+// upstream change — see the project boundary conventions. Add this e2e once
+// upstream exposes either a depth-1 writer fixture or a stable persistor-row test
+// helper.

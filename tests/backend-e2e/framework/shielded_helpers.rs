@@ -1,15 +1,14 @@
 //! Helpers for shielded (ZK) operations in tests.
-
-// TODO(production-reuse): This helper parallels `src/backend_task/shielded/mod.rs::run_warm_up_proving_key`
-// and `run_initialize_shielded_wallet`.
-// Before extracting to production, diff against the original source — it may have
-// changed since this helper was written (created 2026-04-08 based on commit 79a6907c).
-// The production code undergoes heavy refactoring; inspect for divergence before reuse.
+//!
+//! Phase D retired DET's home-grown shielded subsystem; warm-up and key
+//! binding are owned by the upstream coordinator (binding happens automatically
+//! on wallet unlock), so the only helpers left are availability / skip / error
+//! classification. The coordinator-store balance reads are `pub(crate)` and not
+//! reachable from this external test crate — balance/sync verification lives in
+//! the Phase-G det-cli self-test, which drives the public MCP read tools.
 
 use dash_evo_tool::context::AppContext;
 use dash_evo_tool::model::feature_gate::FeatureGate;
-use dash_evo_tool::model::wallet::WalletSeedHash;
-use std::sync::Arc;
 
 /// Check whether the connected platform supports shielded operations
 /// via the `FeatureGate::Shielded` protocol version check.
@@ -77,20 +76,4 @@ pub fn is_platform_shielded_unsupported(
 
         _ => false,
     }
-}
-
-/// No-op shim retained for call-site compatibility.
-///
-/// Phase D retired DET's `WarmUpProvingKey` / `InitializeShieldedWallet` tasks:
-/// the Orchard prover is warmed lazily by the upstream coordinator and shielded
-/// keys are bound automatically on wallet unlock (`ensure_shielded_bound`). The
-/// callers of this helper are `#[ignore]`d network tests pending a rewrite.
-///
-/// TODO(Phase F): rewrite shielded e2e tests for the upstream coordinator —
-/// drive `ensure_shielded_bound` + `sync_now`, then assert coordinator-store
-/// balances/activity.
-pub async fn warm_up_and_init(_app_context: &Arc<AppContext>, _seed_hash: WalletSeedHash) {
-    tracing::info!(
-        "shielded_helpers: warm_up_and_init is now a no-op (upstream coordinator owns warm-up + binding)"
-    );
 }

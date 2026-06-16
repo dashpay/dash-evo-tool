@@ -3161,4 +3161,54 @@ mod tests {
             "bincode round-trip must preserve the account xpub encoding"
         );
     }
+
+    /// `map_shielded_op_error` must route an ambiguous post-broadcast
+    /// `ShieldedSpendUnconfirmed` to the per-operation `*ConfirmationUnknown`
+    /// variant keyed off `operation`, so the UI surfaces the correct
+    /// "do not re-submit" message and never falsely reports success. A wrong
+    /// route here is a funds-safety bug (the user re-spends thinking it failed),
+    /// so this guards the exact string keys upstream emits.
+    #[test]
+    fn map_shielded_op_error_routes_spend_unconfirmed_by_operation() {
+        use platform_wallet::error::PlatformWalletError as P;
+        let unconfirmed = |op: &'static str| P::ShieldedSpendUnconfirmed {
+            operation: op,
+            reason: "ambiguous broadcast".to_string(),
+        };
+
+        assert!(matches!(
+            map_shielded_op_error(unconfirmed("shield")),
+            TaskError::ShieldCreditsConfirmationUnknown { .. }
+        ));
+        assert!(matches!(
+            map_shielded_op_error(unconfirmed("transfer")),
+            TaskError::ShieldedTransferConfirmationUnknown { .. }
+        ));
+        assert!(matches!(
+            map_shielded_op_error(unconfirmed("unshield")),
+            TaskError::UnshieldConfirmationUnknown { .. }
+        ));
+        assert!(matches!(
+            map_shielded_op_error(unconfirmed("withdraw")),
+            TaskError::ShieldedWithdrawalConfirmationUnknown { .. }
+        ));
+        // An operation name from a newer upstream must fall through to the
+        // generic wrapper rather than silently mis-routing.
+        assert!(matches!(
+            map_shielded_op_error(unconfirmed("future-op")),
+            TaskError::WalletBackend { .. }
+        ));
+    }
+
+    /// The not-bound / not-configured shielded preconditions map to their
+    /// dedicated typed variants (not the generic `WalletBackend` wrapper) so
+    /// callers can react and the UI can guide the user to unlock / restart.
+    #[test]
+    fn map_shielded_op_error_maps_bind_preconditions() {
+        use platform_wallet::error::PlatformWalletError as P;
+        assert!(matches!(
+            map_shielded_op_error(P::ShieldedNotBound),
+            TaskError::ShieldedNotBound
+        ));
+    }
 }

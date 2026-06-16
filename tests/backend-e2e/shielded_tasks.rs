@@ -6,8 +6,17 @@
 //! Phase D retired DET's home-grown shielded subsystem: the `WarmUpProvingKey`,
 //! `InitializeShieldedWallet`, `SyncNotes` and `CheckNullifiers` tasks are gone
 //! (the upstream coordinator owns proving-key warm-up, key binding, note sync
-//! and nullifier scanning). Only the five fund-moving ops remain. The full
-//! lifecycle chain is stubbed pending a Phase-F rewrite against the coordinator.
+//! and nullifier scanning). Only the five fund-moving ops remain, and shielded
+//! keys are bound automatically when the wallet is loaded/unlocked, so these
+//! tests just dispatch the ops and assert on the typed result.
+//!
+//! Scope note: the coordinator-store balance readers (`shielded_balance_*`,
+//! `shielded_default_address`) are `pub(crate)`, so this external test crate
+//! cannot read the post-sync balance or build a self-transfer recipient. The
+//! balance/sync/transfer verification therefore lives in the Phase-G det-cli
+//! self-test, which drives the public MCP read tools (`shielded_sync`,
+//! `shielded_balance_get`, `shielded_address_get`). Here we verify each op
+//! dispatches and confirms through the upstream coordinator.
 
 use crate::framework::harness::ctx;
 use crate::framework::shielded_helpers;
@@ -19,26 +28,128 @@ use dash_evo_tool::model::wallet::WalletSeedHash;
 use dash_sdk::dpp::dashcore::Network;
 
 // ---------------------------------------------------------------------------
-// Lifecycle test — pending Phase-F rewrite
+// Lifecycle test — shield-from-core → unshield → withdraw
 // ---------------------------------------------------------------------------
 
-/// Shielded lifecycle E2E test (TC-074 … TC-082).
+/// Shielded lifecycle (TC-074 → TC-078 → TC-081 → TC-082): shield core DASH
+/// into the pool via asset lock, unshield part to a platform address, then
+/// withdraw part to a Core address. Binding is automatic on wallet load, so no
+/// explicit init step is needed; each op confirms through the upstream
+/// coordinator and returns its typed result.
 ///
-/// TODO(Phase F): rewrite for the upstream coordinator. The DET-owned
-/// `WarmUpProvingKey` / `InitializeShieldedWallet` / `SyncNotes` /
-/// `CheckNullifiers` tasks were removed in Phase D; the lifecycle now runs
-/// through `ensure_shielded_bound` + the coordinator's `sync_now`, asserting
-/// against the coordinator store rather than DET's deleted sidecar. Kept
-/// `#[ignore]` and stubbed until ported.
+/// The shielded→shielded transfer (TC-080) and the balance assertions between
+/// steps are deferred to the Phase-G det-cli self-test, which has the public
+/// MCP read tools (this crate cannot read the `pub(crate)` shielded address /
+/// balance).
 #[ignore]
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
 async fn tc_074_shielded_lifecycle() {
     if shielded_helpers::skip_if_shielded_disabled() {
         return;
     }
-    tracing::warn!(
-        "tc_074_shielded_lifecycle: pending Phase-F rewrite for the upstream shielded coordinator"
-    );
+
+    let test_ctx = ctx().await;
+    let app_context = &test_ctx.app_context;
+    let seed_hash = test_ctx.framework_wallet_hash;
+
+    if !shielded_helpers::is_shielded_available(app_context) {
+        tracing::warn!(
+            "tc_074: platform does not support shielded ops (FeatureGate check) — skipping"
+        );
+        return;
+    }
+
+    // Step 1 (TC-078): shield core DASH into the pool via asset lock. The
+    // recipient (the wallet's own default Orchard address) is resolved
+    // internally by `run_shielded_task`. SPV-gated — can take minutes.
+    let amount_duffs = 500_000; // 0.005 DASH
+    let task = BackendTask::ShieldedTask(ShieldedTask::ShieldFromAssetLock {
+        seed_hash,
+        amount_duffs,
+    });
+    match run_task(app_context, task).await {
+        Err(e) if shielded_helpers::is_platform_shielded_unsupported(&e) => {
+            tracing::warn!("tc_074: shield-from-core skipped — platform unsupported: {e}");
+            return;
+        }
+        Err(e) => panic!("ShieldFromAssetLock failed unexpectedly: {e:?}"),
+        Ok(BackendTaskSuccessResult::ShieldedFromAssetLock {
+            seed_hash: sh,
+            amount,
+        }) => {
+            assert_eq!(sh, seed_hash, "seed_hash should match");
+            assert!(amount > 0, "shielded amount should be > 0, got {amount}");
+            tracing::info!("tc_074: shielded {amount} credits from core wallet");
+        }
+        Ok(other) => panic!("Expected ShieldedFromAssetLock, got: {other:?}"),
+    }
+
+    // Step 2 (TC-081): unshield part of the pool back to a platform address.
+    let platform_addr = {
+        let wallets = app_context.wallets().read().expect("wallets lock");
+        let wallet_arc = wallets
+            .get(&seed_hash)
+            .expect("framework wallet must exist");
+        let wallet = wallet_arc.read().expect("wallet lock");
+        let addrs = wallet.platform_addresses(Network::Testnet);
+        assert!(
+            !addrs.is_empty(),
+            "wallet must have at least one platform address"
+        );
+        addrs[0].1
+    };
+    let task = BackendTask::ShieldedTask(ShieldedTask::UnshieldCredits {
+        seed_hash,
+        amount: 30_000,
+        to_platform_address: platform_addr,
+    });
+    match run_task(app_context, task).await {
+        Err(e) if shielded_helpers::is_platform_shielded_unsupported(&e) => {
+            tracing::warn!("tc_074: unshield skipped — platform unsupported: {e}");
+            return;
+        }
+        Err(e) => panic!("UnshieldCredits failed unexpectedly: {e:?}"),
+        Ok(BackendTaskSuccessResult::ShieldedCreditsUnshielded {
+            seed_hash: sh,
+            amount,
+        }) => {
+            assert_eq!(sh, seed_hash);
+            assert_eq!(amount, 30_000);
+            tracing::info!("tc_074: unshielded {amount} credits to platform address");
+        }
+        Ok(other) => panic!("Expected ShieldedCreditsUnshielded, got: {other:?}"),
+    }
+
+    // Step 3 (TC-082): withdraw part of the pool to a Core L1 address.
+    let core_address = app_context
+        .wallet_backend()
+        .expect("wallet backend wired")
+        .next_receive_address(&seed_hash)
+        .await
+        .expect("get receive address")
+        .parse::<dash_sdk::dpp::dashcore::Address<_>>()
+        .expect("watched address parses")
+        .assume_checked();
+    let task = BackendTask::ShieldedTask(ShieldedTask::ShieldedWithdrawal {
+        seed_hash,
+        amount: 20_000,
+        to_core_address: core_address.clone(),
+    });
+    match run_task(app_context, task).await {
+        Err(e) if shielded_helpers::is_platform_shielded_unsupported(&e) => {
+            tracing::warn!("tc_074: withdrawal skipped — platform unsupported: {e}");
+        }
+        Err(e) => panic!("ShieldedWithdrawal failed unexpectedly: {e:?}"),
+        Ok(BackendTaskSuccessResult::ShieldedWithdrawalComplete {
+            seed_hash: sh,
+            amount,
+        }) => {
+            assert_eq!(sh, seed_hash);
+            assert_eq!(amount, 20_000);
+            tracing::info!("tc_074: withdrew {amount} credits to {core_address}");
+        }
+        Ok(other) => panic!("Expected ShieldedWithdrawalComplete, got: {other:?}"),
+    }
 }
 
 // ---------------------------------------------------------------------------

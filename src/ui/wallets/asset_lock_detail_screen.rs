@@ -2,13 +2,10 @@ use crate::app::AppAction;
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
-use crate::model::wallet::Wallet;
 use crate::ui::components::MessageBanner;
 use crate::ui::components::left_panel::add_left_panel;
-use crate::ui::components::password_input::PasswordInput;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
 use crate::ui::state::TrackedAssetLockCache;
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
@@ -17,14 +14,12 @@ use dash_sdk::dpp::prelude::AssetLockProof;
 use eframe::egui::{self, Context, Ui};
 use egui::{Color32, Frame, Margin, RichText};
 use platform_wallet::wallet::asset_lock::tracked::TrackedAssetLock;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
 
 pub struct AssetLockDetailScreen {
     pub wallet_seed_hash: [u8; 32],
     pub out_point: OutPoint,
     pub app_context: Arc<AppContext>,
-    wallet: Option<Arc<RwLock<Wallet>>>,
-    password_input: PasswordInput,
     asset_lock_cache: TrackedAssetLockCache,
 }
 
@@ -34,20 +29,10 @@ impl AssetLockDetailScreen {
         out_point: OutPoint,
         app_context: &Arc<AppContext>,
     ) -> Self {
-        let wallet = app_context
-            .wallets
-            .read()
-            .unwrap()
-            .values()
-            .find(|w| w.read().unwrap().seed_hash() == wallet_seed_hash)
-            .cloned();
-
         Self {
             wallet_seed_hash,
             out_point,
             app_context: app_context.clone(),
-            wallet,
-            password_input: PasswordInput::new().with_hint_text("Enter password"),
             asset_lock_cache: TrackedAssetLockCache::default(),
         }
     }
@@ -284,20 +269,6 @@ impl AssetLockDetailScreen {
                     });
                 }
             });
-    }
-}
-
-impl ScreenWithWalletUnlock for AssetLockDetailScreen {
-    fn selected_wallet_ref(&self) -> &Option<Arc<RwLock<Wallet>>> {
-        &self.wallet
-    }
-
-    fn password_input(&mut self) -> &mut PasswordInput {
-        &mut self.password_input
-    }
-
-    fn app_context(&self) -> Arc<AppContext> {
-        self.app_context.clone()
     }
 }
 

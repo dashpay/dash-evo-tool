@@ -11,10 +11,9 @@ use crate::ui::components::MessageBanner;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::left_panel::add_left_panel;
-use crate::ui::components::password_input::PasswordInput;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::components::wallet_unlock::ScreenWithWalletUnlock;
+use crate::ui::components::wallet_unlock_popup::{WalletUnlockPopup, try_open_wallet_no_password};
 use crate::ui::identities::funding_common::{WalletFundedScreenStep, generate_qr_code_image};
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
@@ -36,7 +35,7 @@ pub struct CreateAssetLockScreen {
     pub wallet: Arc<RwLock<Wallet>>,
     pub(crate) selected_wallet: Option<Arc<RwLock<Wallet>>>,
     pub app_context: Arc<AppContext>,
-    password_input: PasswordInput,
+    wallet_unlock_popup: WalletUnlockPopup,
     // Asset lock creation fields
     step: Arc<RwLock<WalletFundedScreenStep>>,
     amount_input: Option<AmountInput>,
@@ -79,7 +78,7 @@ impl CreateAssetLockScreen {
             wallet,
             selected_wallet,
             app_context: app_context.clone(),
-            password_input: PasswordInput::new().with_hint_text("Enter password"),
+            wallet_unlock_popup: WalletUnlockPopup::new(),
             step: Arc::new(RwLock::new(WalletFundedScreenStep::WaitingOnFunds)),
             amount_input: Some(
                 AmountInput::new(Amount::new_dash(0.5))
@@ -217,20 +216,6 @@ impl CreateAssetLockScreen {
     }
 }
 
-impl ScreenWithWalletUnlock for CreateAssetLockScreen {
-    fn selected_wallet_ref(&self) -> &Option<Arc<RwLock<Wallet>>> {
-        &self.selected_wallet
-    }
-
-    fn password_input(&mut self) -> &mut PasswordInput {
-        &mut self.password_input
-    }
-
-    fn app_context(&self) -> Arc<AppContext> {
-        self.app_context.clone()
-    }
-}
-
 impl ScreenLike for CreateAssetLockScreen {
     fn ui(&mut self, ctx: &Context) -> AppAction {
         let wallet_name = self
@@ -303,10 +288,36 @@ impl ScreenLike for CreateAssetLockScreen {
                     ui.separator();
                     ui.add_space(10.0);
 
-                    // Wallet unlock section
-                    let (needs_unlock, unlocked) = self.render_wallet_unlock_if_needed(ui);
+                    // Determine if the selected wallet is ready for operations.
+                    let wallet_is_open = self
+                        .selected_wallet
+                        .as_ref()
+                        .map(|w| {
+                            let g = w.read().unwrap();
+                            !g.uses_password || g.is_open()
+                        })
+                        .unwrap_or(false);
 
-                    if !needs_unlock || unlocked {
+                    if !wallet_is_open {
+                        // Auto-open no-password wallets; open the popup for password wallets.
+                        if let Some(wallet) = self.selected_wallet.clone() {
+                            if !wallet.read().unwrap().uses_password {
+                                if let Err(e) =
+                                    try_open_wallet_no_password(&self.app_context, &wallet)
+                                {
+                                    MessageBanner::set_global(
+                                        ui.ctx(),
+                                        &e,
+                                        MessageType::Error,
+                                    );
+                                }
+                            } else if !self.wallet_unlock_popup.is_open() {
+                                self.wallet_unlock_popup.open();
+                            }
+                        }
+                    }
+
+                    if wallet_is_open {
                         // First, select the purpose of the asset lock
                         if self.asset_lock_purpose.is_none() {
                             ui.heading(RichText::new("Select Asset Lock Purpose").color(DashColors::text_primary(dark_mode)));
@@ -601,15 +612,22 @@ impl ScreenLike for CreateAssetLockScreen {
 
                             inner_action |= layout_action.inner;
                         }
-                    } else {
-                        // Wallet needs to be unlocked
                     }
+                    // (implicit else: popup is open; modal overlay handles the interaction)
                 });
 
             // Message display is handled by the global MessageBanner
 
             inner_action
         });
+
+        // Show the wallet unlock popup modal when needed.
+        if self.wallet_unlock_popup.is_open()
+            && let Some(wallet) = self.selected_wallet.clone()
+        {
+            self.wallet_unlock_popup
+                .show(ctx, &wallet, &self.app_context);
+        }
 
         // Drain a queued "derive the deposit address" request into a backend
         // task that derives it from the SPV-watched upstream pool. The address

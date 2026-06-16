@@ -1218,31 +1218,6 @@ mod tests {
         backend.shutdown().await;
     }
 
-    /// The #251 drift heal latches a restart-required flag on the backend that
-    /// the UI reads from `AppContext`. Prove the two share one atomic: the
-    /// flag starts clear, and setting it through the backend (the same call the
-    /// heal makes) is observable via `AppContext::wallet_restart_required`.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn drift_heal_restart_flag_is_shared_with_context() {
-        let (ctx, sender, _tmp) = offline_testnet_context();
-        ctx.ensure_wallet_backend(sender)
-            .await
-            .expect("ensure_wallet_backend should succeed offline");
-        let backend = ctx.wallet_backend().expect("backend wired");
-
-        assert!(
-            !ctx.wallet_restart_required(),
-            "restart flag must start clear"
-        );
-        backend.test_mark_restart_required();
-        assert!(
-            ctx.wallet_restart_required(),
-            "setting the flag via the backend must be visible through AppContext (shared atomic)"
-        );
-
-        backend.shutdown().await;
-    }
-
     /// The async chokepoint wires the backend and starts chain sync in one call,
     /// so a caller need not have wired the backend beforehand. Pins the
     /// "ensure-then-start" sequencing the GUI/MCP/network-switch paths share.

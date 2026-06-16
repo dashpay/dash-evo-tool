@@ -150,12 +150,6 @@ struct Inner {
     /// typed key/value adapter ([`DetKv`]) can read/write app data
     /// alongside wallet state without opening a second connection.
     persister: Arc<DetPersister>,
-    /// Shared restart-required latch (owned by [`AppContext`]). Set when the
-    /// #251 drift heal upserts a corrected account xpub on disk: the live
-    /// in-memory wallet stays stale until the next boot, so the UI surfaces a
-    /// sticky "please restart" banner. Lets the backend signal without holding
-    /// an `AppContext` reference.
-    wallet_restart_required: Arc<std::sync::atomic::AtomicBool>,
     loader: Arc<dyn PersistedWalletLoader>,
     /// Display-only snapshot store (balance/tx/utxo), pushed by the
     /// `EventBridge`. See [`snapshot`]. DISPLAY-ONLY — never feeds coin
@@ -301,7 +295,6 @@ impl WalletBackend {
             inner: Arc::new(Inner {
                 pwm,
                 persister,
-                wallet_restart_required: ctx.wallet_restart_required_flag(),
                 loader,
                 snapshots,
                 token_balances: Arc::new(TokenBalanceStore::new()),
@@ -557,21 +550,20 @@ impl WalletBackend {
             .map(|a| a.account_xpub.encode().to_vec())
     }
 
-    /// The upstream `WalletId = SHA256(root_xpub ‖ chaincode)` and the typed
-    /// BIP44 account-0 xpub for the given seed, computed WITHOUT registering.
+    /// The upstream `WalletId = SHA256(root_xpub ‖ chaincode)` and BIP44
+    /// account-0 xpub bytes for the given seed, computed WITHOUT registering.
     ///
     /// Builds the same `key_wallet::Wallet` the upstream
     /// `create_wallet_from_seed_bytes` builds internally and reads its
     /// already-computed `wallet_id` (the idempotency probe key) and account
-    /// xpub (the fund-routing gate's expected value, and the corrected value
-    /// the #251 upsert writes). DET cannot derive the `WalletId` from its
-    /// sidecar account xpub — BIP44 hardens every level above the account — so
-    /// the seed is required; this is only ever called where the seed is already
-    /// in hand. Callers that need the encoded bytes call `.encode()`.
+    /// xpub (the fund-routing gate's expected value). DET cannot derive the
+    /// `WalletId` from its sidecar account xpub — BIP44 hardens every level
+    /// above the account — so the seed is required; this is only ever called
+    /// where the seed is already in hand.
     fn upstream_identity_from_seed(
         &self,
         seed: &[u8; 64],
-    ) -> Result<(WalletId, dash_sdk::dpp::key_wallet::bip32::ExtendedPubKey), TaskError> {
+    ) -> Result<(WalletId, Vec<u8>), TaskError> {
         use dash_sdk::dpp::key_wallet::account::{AccountType, StandardAccountType};
         use dash_sdk::dpp::key_wallet::wallet::Wallet as UpstreamWallet;
         use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOptions;
@@ -598,7 +590,7 @@ impl WalletBackend {
                     }
                 )
             })
-            .map(|a| a.account_xpub)
+            .map(|a| a.account_xpub.encode().to_vec())
             .ok_or(TaskError::WalletRegistrationXpubMismatch)?;
         Ok((wallet.wallet_id, account_xpub))
     }
@@ -647,43 +639,15 @@ impl WalletBackend {
         }
 
         // Not registered: derive the upstream identity (BIP32 from the seed)
-        // now, since the resolve / heal / create paths below all need it.
+        // now, since the resolve / create paths below both need it.
         let (wallet_id, expected_account_xpub) = self.upstream_identity_from_seed(seed)?;
-        let expected_account_xpub_bytes = expected_account_xpub.encode().to_vec();
 
-        if let Some(pw) = self.inner.pwm.get_wallet(&wallet_id).await {
+        if self.inner.pwm.get_wallet(&wallet_id).await.is_some() {
             // Present upstream but absent from the DET maps (e.g. a prior
-            // partial run, or a persistor written by an older rev). The
-            // upstream `WalletId` already binds the root to THIS seed, so the
-            // only thing that can disagree is the stored account-xpub depth.
-            let registered_xpub = self.bip44_account_xpub_encoded(&pw).await;
-            match classify_persistor_xpub(registered_xpub.as_deref(), &expected_account_xpub_bytes)
-            {
-                PersistorXpubState::Matches => {
-                    // Already in the correct format: resolve into the maps
-                    // without a second create.
-                    return self
-                        .resolve_registered_wallet(
-                            *seed_hash,
-                            wallet_id,
-                            &expected_account_xpub_bytes,
-                        )
-                        .await;
-                }
-                PersistorXpubState::Drifted | PersistorXpubState::Absent => {
-                    // Stale persistor format (depth-1 xpub from an older rev):
-                    // correct the on-disk row IN PLACE from the in-hand seed via
-                    // an upsert — no wallet removal, no re-create. The live
-                    // in-memory wallet still holds the stale xpub and cannot be
-                    // refreshed without a restart, so we deliberately leave it
-                    // out of `id_map` this session and ask the user to restart;
-                    // the next cold boot loads the corrected depth-3 row and
-                    // resolves cleanly.
-                    return self
-                        .heal_drifted_persistor_entry(*seed_hash, wallet_id, expected_account_xpub)
-                        .await;
-                }
-            }
+            // partial run): resolve it into the maps without a second create.
+            return self
+                .resolve_registered_wallet(*seed_hash, wallet_id, &expected_account_xpub)
+                .await;
         }
 
         // Write the persistor via the sole upstream writer. A concurrent
@@ -714,7 +678,7 @@ impl WalletBackend {
             }
         }
 
-        self.resolve_registered_wallet(*seed_hash, wallet_id, &expected_account_xpub_bytes)
+        self.resolve_registered_wallet(*seed_hash, wallet_id, &expected_account_xpub)
             .await?;
         tracing::info!(
             wallet = %hex::encode(seed_hash),
@@ -798,62 +762,6 @@ impl WalletBackend {
             .snapshots
             .register_wallet(seed_hash, wallet_id, pw);
         Ok(())
-    }
-
-    /// Repair a stale persistor account-xpub IN PLACE from the in-hand seed
-    /// (the #251 format-drift heal), without removing or re-creating the wallet.
-    ///
-    /// Upsert-only: writes a registrations-only changeset (see
-    /// [`build_account_xpub_heal_changeset`]) through `persister.store`, which
-    /// rewrites just the BIP44 account-0 `account_xpub_bytes` column. No
-    /// `remove_wallet`, no `create_wallet_from_seed_bytes`, nothing destructive.
-    ///
-    /// The already-loaded in-memory wallet still holds the stale depth-1 xpub
-    /// and the upstream offers no no-remove way to refresh it in place, so this
-    /// deliberately does NOT resolve the wallet into `id_map` this session — the
-    /// fund-routing gate would (correctly) still reject the stale copy. It
-    /// latches `wallet_restart_required` so the UI shows a sticky restart
-    /// notice; the next cold boot loads the corrected depth-3 row and resolves
-    /// cleanly. The wallet stays unresolved, so `resolve_wallet` keeps returning
-    /// [`TaskError::WalletNotLoaded`] until restart — never mis-routing funds.
-    async fn heal_drifted_persistor_entry(
-        &self,
-        seed_hash: WalletSeedHash,
-        wallet_id: WalletId,
-        expected_account_xpub: dash_sdk::dpp::key_wallet::bip32::ExtendedPubKey,
-    ) -> Result<(), TaskError> {
-        use platform_wallet::changeset::PlatformWalletPersistence;
-        tracing::warn!(
-            wallet = %hex::encode(seed_hash),
-            "Persisted wallet xpub is stale (format drift); repairing the persistor entry in place (upsert) and requesting a restart"
-        );
-        let changeset = build_account_xpub_heal_changeset(expected_account_xpub);
-        self.inner
-            .persister
-            .store(wallet_id, changeset)
-            .map_err(|source| TaskError::WalletPersistenceFlushFailed { source })?;
-        // Disk is now correct; the live in-memory wallet cannot be refreshed
-        // without a restart. Latch the restart notice and leave the wallet out
-        // of the maps so the gate keeps it dormant until the next boot.
-        self.mark_restart_required();
-        Ok(())
-    }
-
-    /// Latch the shared restart-required flag (owned by `AppContext`). Single
-    /// writer used by [`Self::heal_drifted_persistor_entry`]; factored out so a
-    /// unit test can prove the flag is genuinely shared with the context.
-    fn mark_restart_required(&self) {
-        self.inner
-            .wallet_restart_required
-            .store(true, std::sync::atomic::Ordering::Relaxed);
-    }
-
-    /// Test seam: drive the restart latch the same way the heal does, so a test
-    /// can assert the backend's flag and `AppContext::wallet_restart_required`
-    /// observe the same atomic without forging a drifted persistor row.
-    #[cfg(test)]
-    pub(crate) fn test_mark_restart_required(&self) {
-        self.mark_restart_required();
     }
 
     /// Wipe every piece of DET-local state for a forgotten wallet — the
@@ -2244,62 +2152,6 @@ impl WalletBackend {
     }
 }
 
-/// Outcome of comparing an upstream wallet's stored BIP44 account xpub against
-/// DET's seed-derived expected xpub. Pure decision so it is unit testable
-/// without standing up an upstream manager.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PersistorXpubState {
-    /// The stored account xpub equals the expected one — accept and resolve.
-    Matches,
-    /// An account xpub is present but differs from the expected one. In the
-    /// seed-bearing path this is provably persistor format-drift: the upstream
-    /// `WalletId` already binds the root to this exact seed, so only the
-    /// account-derivation depth can differ (older revs stored the BIP44 account
-    /// xpub at depth-1 `m/0'`; the current rev derives depth-3 `m/44'/coin'/0'`).
-    Drifted,
-    /// No account xpub could be read back from the upstream wallet.
-    Absent,
-}
-
-/// Classify a stored account xpub against the expected seed-derived xpub. Pure:
-/// no I/O, no locks — see [`PersistorXpubState`].
-fn classify_persistor_xpub(
-    registered_account_xpub: Option<&[u8]>,
-    expected_account_xpub: &[u8],
-) -> PersistorXpubState {
-    match registered_account_xpub {
-        Some(xpub) if xpub == expected_account_xpub => PersistorXpubState::Matches,
-        Some(_) => PersistorXpubState::Drifted,
-        None => PersistorXpubState::Absent,
-    }
-}
-
-/// Build the UPSERT-ONLY changeset that corrects the BIP44 account-0
-/// registration xpub on disk (the #251 format-drift heal).
-///
-/// Carries ONLY a single `account_registrations` entry, every other changeset
-/// field at `Default` (empty/`None`), so `apply_changeset_to_tx`'s per-table
-/// gating writes nothing but the one account-xpub column via
-/// `INSERT ... ON CONFLICT ... DO UPDATE SET account_xpub_bytes`. Pure: no I/O.
-/// The upsert-only invariant is the fund-safety guard — this changeset can
-/// touch no UTXOs, pools, identities, or the wallet row, and removes nothing.
-fn build_account_xpub_heal_changeset(
-    account_xpub: dash_sdk::dpp::key_wallet::bip32::ExtendedPubKey,
-) -> platform_wallet::changeset::PlatformWalletChangeSet {
-    use dash_sdk::dpp::key_wallet::account::{AccountType, StandardAccountType};
-    use platform_wallet::changeset::{AccountRegistrationEntry, PlatformWalletChangeSet};
-    PlatformWalletChangeSet {
-        account_registrations: vec![AccountRegistrationEntry {
-            account_type: AccountType::Standard {
-                index: 0,
-                standard_account_type: StandardAccountType::BIP44Account,
-            },
-            account_xpub,
-        }],
-        ..Default::default()
-    }
-}
-
 /// Classify a `PlatformWalletError` returned from
 /// `register_identity_with_funding` into a typed `TaskError`. Network /
 /// broadcast rejections become `IdentityCreateRejected`; asset-lock
@@ -2772,103 +2624,11 @@ mod tests {
         );
     }
 
-    /// An exact-match stored xpub is accepted (the steady-state case): the
-    /// seed-bearing path resolves it without rewriting the persistor.
-    #[test]
-    fn classify_persistor_xpub_accepts_exact_match() {
-        let expected = b"account-xpub-bytes";
-        assert_eq!(
-            classify_persistor_xpub(Some(expected.as_slice()), expected),
-            PersistorXpubState::Matches
-        );
-    }
-
-    /// A present-but-different stored xpub is classified as drift, so the
-    /// seed-bearing path rebuilds the persistor entry rather than dead-ending
-    /// in `WalletRegistrationXpubMismatch` (issue #251).
-    #[test]
-    fn classify_persistor_xpub_flags_drift() {
-        assert_eq!(
-            classify_persistor_xpub(
-                Some(b"stale-depth-1-xpub".as_slice()),
-                b"fresh-depth-3-xpub"
-            ),
-            PersistorXpubState::Drifted
-        );
-    }
-
-    /// A missing stored xpub is classified as absent (also heal-eligible in the
-    /// seed-bearing path — the seed can rewrite a usable entry).
-    #[test]
-    fn classify_persistor_xpub_flags_absent() {
-        assert_eq!(
-            classify_persistor_xpub(None, b"fresh-depth-3-xpub"),
-            PersistorXpubState::Absent
-        );
-    }
-
-    /// Locks the real format-drift shape: an account xpub derived at the legacy
-    /// depth-1 path (`m/0'`) differs from the current depth-3 BIP44 account xpub
-    /// (`m/44'/coin'/0'`) for the SAME seed, and `classify_persistor_xpub`
-    /// reports drift. This is the exact condition the #251 self-heal recovers.
-    #[test]
-    fn legacy_depth1_xpub_is_classified_as_drift_against_depth3() {
-        use dash_sdk::dpp::key_wallet::account::{AccountType, StandardAccountType};
-        use dash_sdk::dpp::key_wallet::bip32::{ChildNumber, DerivationPath};
-        use dash_sdk::dpp::key_wallet::wallet::Wallet as UpstreamWallet;
-        use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOptions;
-
-        let seed = [0x42u8; 64];
-        let network = Network::Testnet;
-
-        // Current (correct) depth-3 BIP44 account xpub — what DET publishes and
-        // the seed-bearing path expects.
-        let up =
-            UpstreamWallet::from_seed_bytes(seed, network, WalletAccountCreationOptions::Default)
-                .expect("upstream wallet");
-        let depth3 = up
-            .accounts
-            .all_accounts()
-            .into_iter()
-            .find(|a| {
-                matches!(
-                    a.account_type,
-                    AccountType::Standard {
-                        index: 0,
-                        standard_account_type: StandardAccountType::BIP44Account,
-                    }
-                )
-            })
-            .map(|a| a.account_xpub.encode().to_vec())
-            .expect("upstream BIP44 account");
-
-        // Legacy (stale) depth-1 account xpub — what an older persistor stored
-        // at `m/0'`.
-        let depth1 = DerivationPath::from(vec![ChildNumber::Hardened { index: 0 }])
-            .derive_pub_ecdsa_for_master_seed(&seed, network)
-            .expect("derive depth-1 xpub")
-            .encode()
-            .to_vec();
-
-        assert_ne!(depth1, depth3, "the two formats must actually differ");
-        assert_eq!(
-            classify_persistor_xpub(Some(depth1.as_slice()), &depth3),
-            PersistorXpubState::Drifted,
-            "a stale depth-1 xpub must be classified as drift, not a wrong seed"
-        );
-        assert_eq!(
-            classify_persistor_xpub(Some(depth3.as_slice()), &depth3),
-            PersistorXpubState::Matches,
-            "the correct depth-3 xpub must be accepted"
-        );
-    }
-
-    /// The self-heal's safety rests on `WalletId` being independent of the
-    /// account-xpub depth: the same seed yields the same `WalletId` whether or
-    /// not BIP44 accounts are created. So an upstream `get_wallet(wallet_id)`
-    /// hit during the seed-bearing path proves the entry shares this seed's
-    /// root, making an account-xpub mismatch provably format-drift — never a
-    /// wrong seed.
+    /// `WalletId` is independent of the account-xpub depth: the same seed yields
+    /// the same `WalletId` whether or not BIP44 accounts are created. An upstream
+    /// `get_wallet(wallet_id)` hit therefore proves the entry shares this seed's
+    /// root, so the fund-routing gate's account-xpub comparison is the only thing
+    /// that can vary — the invariant the gate relies on.
     #[test]
     fn wallet_id_is_independent_of_account_creation() {
         use dash_sdk::dpp::key_wallet::wallet::Wallet as UpstreamWallet;
@@ -2918,78 +2678,6 @@ mod tests {
             })
             .map(|a| a.account_xpub)
             .expect("BIP44 account-0 xpub")
-    }
-
-    /// FUND-SAFETY GUARD: the heal changeset is UPSERT-ONLY. It carries exactly
-    /// one `account_registrations` entry (BIP44 account 0, the corrected xpub)
-    /// and EVERY other changeset field is empty/`None`, so the field-gated
-    /// persister write can touch no other table — no UTXOs, pools, identities,
-    /// or the wallet row — and removes nothing. This is the regression trap
-    /// against any future destructive drift in the heal path.
-    #[test]
-    fn heal_changeset_is_upsert_only_single_registration() {
-        use dash_sdk::dpp::key_wallet::account::{AccountType, StandardAccountType};
-
-        let xpub = bip44_account0_xpub_for(&[0x42u8; 64], Network::Testnet);
-        let cs = build_account_xpub_heal_changeset(xpub);
-
-        // Exactly one registration, for BIP44 account 0, with the corrected xpub.
-        assert_eq!(
-            cs.account_registrations.len(),
-            1,
-            "heal must write exactly one account registration"
-        );
-        let entry = &cs.account_registrations[0];
-        assert!(
-            matches!(
-                entry.account_type,
-                AccountType::Standard {
-                    index: 0,
-                    standard_account_type: StandardAccountType::BIP44Account,
-                }
-            ),
-            "heal must target the BIP44 account-0 row, got {:?}",
-            entry.account_type
-        );
-        assert_eq!(
-            entry.account_xpub, xpub,
-            "heal must write the corrected xpub"
-        );
-
-        // Every other table-bearing field is empty/None: the field-gated
-        // apply_changeset_to_tx then writes ONLY account_registrations.
-        assert!(
-            cs.account_address_pools.is_empty(),
-            "heal must not touch address pools"
-        );
-        assert!(cs.core.is_none(), "heal must not touch core/UTXO state");
-        assert!(cs.identities.is_none(), "heal must not touch identities");
-        assert!(
-            cs.identity_keys.is_none(),
-            "heal must not touch identity keys"
-        );
-        assert!(cs.contacts.is_none(), "heal must not touch contacts");
-        assert!(
-            cs.platform_addresses.is_none(),
-            "heal must not touch platform addresses"
-        );
-        assert!(cs.asset_locks.is_none(), "heal must not touch asset locks");
-        assert!(
-            cs.token_balances.is_none(),
-            "heal must not touch token balances"
-        );
-        assert!(
-            cs.dashpay_profiles.is_none(),
-            "heal must not touch dashpay profiles"
-        );
-        assert!(
-            cs.dashpay_payments_overlay.is_none(),
-            "heal must not touch dashpay payments"
-        );
-        assert!(
-            cs.wallet_metadata.is_none(),
-            "heal must not touch the wallet row"
-        );
     }
 
     /// Issue #7 regression guard: on a FRESH wallet the fund-routing gate's two

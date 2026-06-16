@@ -254,29 +254,28 @@ async fn cold_process_boot_from_migrated_state_registers_and_shows_balance() {
     backend.shutdown().await;
 }
 
-// TODO(issue #251): live persistor xpub format-drift heal coverage.
+// TODO(issue #7): fund-routing-gate xpub mismatch on a fresh DB (the REAL bug).
 //
-// The seed-bearing registration path (`register_wallet_from_seed`) heals a stale
-// persistor entry UPSERT-ONLY: when `get_wallet(wallet_id)` returns a wallet
-// whose stored BIP44 account xpub was written at the legacy depth-1 (`m/0'`)
-// format by an older rev, it rewrites ONLY that account row to the seed-derived
-// depth-3 (`m/44'/coin'/0'`) xpub via `persister.store` (no wallet removal, no
-// re-create), latches a restart-required flag, and leaves the wallet dormant
-// until the next boot reloads the corrected row. The decision logic, the
-// upsert-only changeset shape, and the two cryptographic invariants it relies on
-// (depth-1 != depth-3 for the same seed; `WalletId` independent of
-// account-derivation depth) are unit-tested in `src/wallet_backend/mod.rs`
-// (`classify_persistor_xpub_*`, `legacy_depth1_xpub_is_classified_as_drift_against_depth3`,
-// `wallet_id_is_independent_of_account_creation`, `heal_changeset_is_upsert_only_single_registration`);
-// the shared restart flag is covered by `drift_heal_restart_flag_is_shared_with_context`
-// in `src/context/wallet_lifecycle.rs`.
+// On a fresh DB the upstream persistor stores the BIP44 account-0 row at DEPTH-1
+// (BIP32 `m/0'`) instead of DEPTH-3 (`m/44'/coin'/0'`): `Default` creates both a
+// BIP32 and a BIP44 account-0, both map to the same persistor primary key
+// (`account_type_db_label` collapses both `StandardAccountType` variants to
+// "standard"), and the BIP32 row overwrites the BIP44 row via
+// `ON CONFLICT DO UPDATE`. The seedless cold-boot reload then reads the depth-1
+// xpub, it matches no depth-3 DET sidecar bridge entry, and the fund-routing gate
+// rejects every wallet -> systematic `WalletNotLoaded`. This is an upstream
+// `platform-wallet-storage` data-loss bug, NOT legacy format drift.
 //
-// A full live heal e2e (forge a depth-1 `account_registrations` row, cold boot,
-// drive the seed-bearing path, assert the row is corrected + restart flag set +
-// balance after a re-boot) is NOT added here: faithfully writing a depth-1 row
-// from DET requires reproducing the upstream persistor's sealed `blob::encode`
-// (bincode v2 over the private `AccountRegistrationEntry` serde layout).
-// Hand-rolling that in a test couples it to an upstream-internal serialization
-// detail and would rot silently on any upstream change — see the project
-// boundary conventions. Add this e2e once upstream exposes either a depth-1
-// writer fixture or a stable persistor-row test helper.
+// The earlier #251 "drift self-heal" was REVERTED — it treated a non-cause and
+// would be re-clobbered by the same collision on the next persist. The real fix
+// is upstream (distinguish BIP32 vs BIP44 standard accounts in the persistor key)
+// + pin bump + a re-derive migration.
+//
+// Reproduced by the `#[ignore]`d `issue7_fresh_persistor_bip44_xpub_matches_det_bridge`
+// in `src/context/wallet_lifecycle.rs` (field-level diff of the persisted vs
+// expected xpub); the sound DET-vs-upstream derivation is guarded by
+// `fresh_bip44_account0_xpub_is_stable_across_gate_sides` and
+// `wallet_id_is_independent_of_account_creation` in `src/wallet_backend/mod.rs`.
+// A full live cold-boot e2e through `load_from_persistor` is blocked offline by
+// the persistor's single-open advisory lock (see the in-test fallback); add it
+// once the upstream fix lands.

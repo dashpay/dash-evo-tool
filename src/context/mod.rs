@@ -76,14 +76,6 @@ pub struct AppContext {
     pub(crate) keyword_search_contract: Arc<DataContract>,
     pub(crate) core_client: RwLock<Client>,
     pub(crate) has_wallet: AtomicBool,
-    /// Set once when the wallet backend repairs stale on-disk wallet data
-    /// (the #251 account-xpub format-drift upsert). The repair lands on disk
-    /// but the already-loaded in-memory wallet cannot be refreshed without a
-    /// restart, so the UI surfaces a sticky "please restart" banner while this
-    /// is set. One-way latch — cleared only by the restart it asks for. Shared
-    /// (`Arc`) so the wallet backend can set it without threading `ctx` through
-    /// every registration call site.
-    wallet_restart_required: Arc<AtomicBool>,
     pub(crate) wallets: RwLock<BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>>>,
     pub(crate) single_key_wallets: RwLock<BTreeMap<SingleKeyHash, Arc<RwLock<SingleKeyWallet>>>>,
     /// Whether to animate the UI elements.
@@ -348,7 +340,6 @@ impl AppContext {
             keyword_search_contract: Arc::new(keyword_search_contract),
             core_client: core_client.into(),
             has_wallet: (!wallets.is_empty() || !single_key_wallets.is_empty()).into(),
-            wallet_restart_required: Arc::new(AtomicBool::new(false)),
             wallets: RwLock::new(wallets),
             single_key_wallets: RwLock::new(single_key_wallets),
             animate,
@@ -515,19 +506,6 @@ impl AppContext {
 
     pub fn is_developer_mode(&self) -> bool {
         self.developer_mode.load(Ordering::Relaxed)
-    }
-
-    /// A shared handle to the restart-required latch, for the wallet backend to
-    /// set when it repairs stored wallet data (the #251 account-xpub
-    /// format-drift upsert) without threading `ctx` through registration.
-    pub(crate) fn wallet_restart_required_flag(&self) -> Arc<AtomicBool> {
-        Arc::clone(&self.wallet_restart_required)
-    }
-
-    /// Whether stored wallet data was repaired this session and the app must
-    /// restart to finish applying it. Drives the sticky restart banner.
-    pub fn wallet_restart_required(&self) -> bool {
-        self.wallet_restart_required.load(Ordering::Relaxed)
     }
 
     /// Repaints the UI if animations are enabled.

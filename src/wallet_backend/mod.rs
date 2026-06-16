@@ -2650,36 +2650,6 @@ mod tests {
         );
     }
 
-    /// The depth-3 BIP44 account-0 xpub for a seed, as a typed `ExtendedPubKey`
-    /// — the corrected value the heal upsert writes.
-    #[cfg(test)]
-    fn bip44_account0_xpub_for(
-        seed: &[u8; 64],
-        network: Network,
-    ) -> dash_sdk::dpp::key_wallet::bip32::ExtendedPubKey {
-        use dash_sdk::dpp::key_wallet::account::{AccountType, StandardAccountType};
-        use dash_sdk::dpp::key_wallet::wallet::Wallet as UpstreamWallet;
-        use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOptions;
-        let wallet =
-            UpstreamWallet::from_seed_bytes(*seed, network, WalletAccountCreationOptions::Default)
-                .expect("upstream wallet");
-        wallet
-            .accounts
-            .all_accounts()
-            .into_iter()
-            .find(|a| {
-                matches!(
-                    a.account_type,
-                    AccountType::Standard {
-                        index: 0,
-                        standard_account_type: StandardAccountType::BIP44Account,
-                    }
-                )
-            })
-            .map(|a| a.account_xpub)
-            .expect("BIP44 account-0 xpub")
-    }
-
     /// Issue #7 regression guard: on a FRESH wallet the fund-routing gate's two
     /// BIP44 account-0 xpubs must agree byte-for-byte. Two independent
     /// `from_seed_bytes(Default)` builds (the gate's expected vs just-created
@@ -2757,42 +2727,6 @@ mod tests {
             decoded.account_xpub.encode(),
             a.encode(),
             "bincode round-trip must preserve the account xpub encoding"
-        );
-    }
-
-    /// DIAGNOSTIC (issue #7, throwaway): prints the literal ISSUE7 lines for the
-    /// two seedless-bridge sides — DET's model BIP44 xpub
-    /// (`Wallet::new_from_seed -> master_bip44_ecdsa_extended_public_key`, what
-    /// the sidecar publishes) vs the upstream `from_seed_bytes(Default)` BIP44
-    /// account-0 xpub (what the manager derives). These TWO agree (the bridge
-    /// comparison is sound); the real bug is the persistor PK collision shown by
-    /// `issue7_fresh_persistor_bip44_xpub_matches_det_bridge`. Run with
-    /// `--nocapture --exact`.
-    #[test]
-    fn diag_issue7_det_model_vs_upstream_from_seed() {
-        use dash_sdk::dpp::key_wallet::bip32::ExtendedPubKey;
-
-        let seed = [0x42u8; 64];
-        let network = Network::Testnet;
-
-        let a = bip44_account0_xpub_for(&seed, network); // upstream from_seed_bytes(Default)
-        let det = crate::model::wallet::Wallet::new_from_seed(seed, network, None, None)
-            .expect("DET wallet");
-        let det_xpub: ExtendedPubKey = det.master_bip44_ecdsa_extended_public_key;
-
-        eprintln!(
-            "ISSUE7 a (upstream from_seed_bytes BIP44-0): net={:?} depth={} parent_fp={:?} child={:?}",
-            a.network, a.depth, a.parent_fingerprint, a.child_number
-        );
-        eprintln!(
-            "ISSUE7 det (DET model master_bip44): net={:?} depth={} parent_fp={:?} child={:?}",
-            det_xpub.network, det_xpub.depth, det_xpub.parent_fingerprint, det_xpub.child_number
-        );
-        eprintln!("ISSUE7 det_encode_eq_a={}", det_xpub.encode() == a.encode());
-        eprintln!(
-            "ISSUE7 det_vs_a pubkey_eq={} chaincode_eq={}",
-            det_xpub.public_key == a.public_key,
-            det_xpub.chain_code == a.chain_code
         );
     }
 }

@@ -848,6 +848,37 @@ impl AppContext {
                 "Unlock seed promotion skipped"
             ),
         }
+
+        // W2 reconciliation on the unlock gesture (PROJ-010). A
+        // password-protected wallet hydrates `Closed` at cold boot, so
+        // `bootstrap_wallet_addresses_jit` skips it (no surprise startup prompt)
+        // and it is never upstream-registered until the seed becomes available.
+        // The unlock just verified the passphrase and promoted the seed into the
+        // session cache above, so re-driving the JIT bootstrap now registers the
+        // wallet with the upstream SPV backend without a second prompt — the
+        // difference between the wallet being usable this session and a
+        // `WalletNotLoaded` until the next launch. Idempotent (an
+        // already-registered wallet is a no-op) and resolved prompt-free from the
+        // session cache. The in-memory wallet is already flipped `Open` by the
+        // unlock callsite before this runs, so the JIT `is_open()` gate passes.
+        self.drive_unlock_registration(wallet);
+    }
+
+    /// Spawn the unlock-triggered JIT bootstrap/registration for a wallet whose
+    /// seed was just promoted to the session cache by [`Self::handle_wallet_unlocked`].
+    ///
+    /// `handle_wallet_unlocked` is synchronous (called from the UI thread) while
+    /// [`Self::bootstrap_wallet_addresses_jit`] is async, so the reconciliation
+    /// runs on a tracked subtask — mirroring [`Self::register_wallet_upstream`].
+    /// Best-effort: the JIT bootstrap logs and swallows its own failures, and a
+    /// missing-backend cold-boot path is covered by `bootstrap_loaded_wallets`.
+    fn drive_unlock_registration(self: &Arc<Self>, wallet: &Arc<RwLock<Wallet>>) {
+        let ctx = Arc::clone(self);
+        let wallet = Arc::clone(wallet);
+        self.subtasks
+            .spawn_sync("wallet_unlock_registration", async move {
+                ctx.bootstrap_wallet_addresses_jit(&wallet).await;
+            });
     }
 
     /// Wipe the session-cached seed when a wallet is locked.
@@ -2844,6 +2875,128 @@ mod tests {
             prompt.requests.load(Ordering::Relaxed),
             0,
             "the migration must never prompt for a passphrase while a protected wallet is locked"
+        );
+
+        backend.shutdown().await;
+    }
+
+    /// PROJ-010 (protected-unlock reconciliation — the delete-DB + re-import
+    /// acceptance flow): a password-protected wallet that hydrates LOCKED at cold
+    /// boot, and is therefore deferred by the W2 bridge (proven by
+    /// [`migrated_protected_wallet_registration_is_deferred_until_unlock`]), MUST
+    /// become upstream-registered on the unlock gesture — without a second app
+    /// restart.
+    ///
+    /// The gap this guards: before the fix, the unlock path
+    /// ([`AppContext::handle_wallet_unlocked`]) only promoted the just-verified
+    /// seed into the session cache; it never re-drove
+    /// [`AppContext::bootstrap_wallet_addresses_jit`], so the wallet stayed out
+    /// of the upstream `id_map` that `resolve_wallet` keys off and every
+    /// seed-keyed operation kept failing with `WalletNotLoaded` for the rest of
+    /// the session. The fix re-drives the JIT bootstrap from
+    /// `handle_wallet_unlocked` once the seed is in the session cache; this test
+    /// asserts the post-unlock registration that fix enables.
+    ///
+    /// Staging mirrors the deferral test: a legacy PROTECTED `wallet` row is
+    /// migrated so the wallet hydrates `Closed` (locked) with EMPTY persistor and
+    /// is NOT registered. Then the wallet is opened with the real passphrase and
+    /// `handle_wallet_unlocked` is invoked exactly as the unlock popup does
+    /// (`src/ui/components/wallet_unlock_popup.rs`), passing the passphrase so the
+    /// seed resolves prompt-free from the session cache.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn protected_wallet_registers_upstream_on_unlock_without_restart() {
+        use crate::database::test_helpers::seed_legacy_protected_hd_wallet_row;
+        use crate::model::wallet::encryption::encrypt_message;
+
+        let (ctx, sender, _tmp) = offline_testnet_context();
+
+        // Stage a legacy PROTECTED `wallet` row whose published BIP44 xpub agrees
+        // with the seed, so the W2 fund-routing gate accepts it once reached. The
+        // passphrase is the one the test feeds back in at unlock time.
+        let seed = [0x42u8; 64];
+        let passphrase = "correct-horse-battery-staple";
+        let seed_hash: WalletSeedHash =
+            crate::model::wallet::ClosedKeyItem::compute_seed_hash(&seed);
+        let epk = legacy_master_epk_bytes(&seed);
+        let (encrypted_seed, salt, nonce) =
+            encrypt_message(&seed, passphrase).expect("encrypt legacy seed");
+        seed_legacy_protected_hd_wallet_row(
+            &ctx.db,
+            &seed_hash,
+            &encrypted_seed,
+            &salt,
+            &nonce,
+            &epk,
+            "protected-wallet",
+            Some("the usual passphrase"),
+            Network::Testnet,
+        )
+        .expect("insert legacy protected wallet row");
+
+        // Wire the backend, then run the cold-start migration. This reproduces
+        // the boot state of the acceptance flow: the protected wallet hydrates
+        // into `ctx.wallets` but stays LOCKED, and the W2 bridge defers it.
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("ensure_wallet_backend should succeed offline");
+        let backend = ctx.wallet_backend().expect("backend wired");
+        crate::backend_task::migration::finish_unwire::run(&ctx)
+            .await
+            .expect("migration must succeed for a protected wallet");
+
+        let wallet_arc = ctx
+            .wallets
+            .read()
+            .unwrap()
+            .get(&seed_hash)
+            .cloned()
+            .expect("protected wallet must be hydrated into ctx.wallets after migration");
+
+        // Precondition: the locked protected wallet is NOT yet registered — the
+        // exact `WalletNotLoaded`-producing state the unlock must clear.
+        assert!(
+            !wallet_arc.read().unwrap().is_open(),
+            "precondition: the protected wallet hydrates locked"
+        );
+        assert!(
+            !backend.is_wallet_registered(&seed_hash),
+            "precondition: a still-locked protected wallet is not upstream-registered"
+        );
+
+        // The unlock gesture, exactly as the unlock popup performs it: open the
+        // in-memory wallet by verifying the passphrase, then notify the context
+        // with that passphrase so the seed is promoted to the session cache and
+        // (with the fix) the JIT bootstrap is re-driven.
+        wallet_arc
+            .write()
+            .unwrap()
+            .wallet_seed
+            .open(passphrase)
+            .expect("correct passphrase opens the wallet");
+        ctx.handle_wallet_unlocked(&wallet_arc, Some(passphrase));
+
+        // `handle_wallet_unlocked` spawns the registration on a tracked subtask,
+        // so poll the `id_map` (what `resolve_wallet` consults) with a bounded
+        // deadline rather than racing it. The deadline is generous because the
+        // unlock reconciliation uses the genesis-floored `Imported` birth height
+        // (`ensure_upstream_registered`), and the upstream
+        // `create_wallet_from_seed_bytes` scan-window setup over the empty
+        // offline persistor takes several seconds with no chain to read.
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+        while !backend.is_wallet_registered(&seed_hash) {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the protected wallet must be upstream-registered after unlock (no second restart)"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+
+        // The wallet is now watched exactly once — the unlock reconciliation does
+        // not double-watch.
+        assert_eq!(
+            backend.wallet_count().await,
+            1,
+            "exactly one wallet must be watched after the unlock reconciliation"
         );
 
         backend.shutdown().await;

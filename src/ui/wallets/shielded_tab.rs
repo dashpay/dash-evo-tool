@@ -154,13 +154,21 @@ impl ShieldedTabView {
             .unwrap_or(AppAction::None)
     }
 
-    /// Sync local display state from `AppContext::shielded_states`.
+    /// Sync local display state from push snapshots and `AppContext::shielded_states`.
+    ///
+    /// Balance comes from the frame-safe push snapshot
+    /// (`AppContext::shielded_balance_credits`).  Sync-progress fields
+    /// (`is_initialized`, `tree_synced`, `syncing`) still derive from
+    /// `shielded_states` until Phase D wires those into the push path.
     fn refresh_from_backend_state(&mut self) {
+        // Balance: use the push snapshot (no lock-in-frame-loop, no block_in_place).
+        self.shielded_balance = self.app_context.shielded_balance_credits(&self.seed_hash);
+
+        // Sync progress: still sourced from the legacy in-memory state.
         if let Ok(states) = self.app_context.shielded_states.lock()
             && let Some(state) = states.get(&self.seed_hash)
         {
             self.is_initialized = true;
-            self.shielded_balance = state.shielded_balance;
             // The background sync chain (SyncNotes -> CheckNullifiers) runs
             // outside the UI task system. Derive tree_synced from state so
             // spend buttons become enabled after the backend finishes.
@@ -359,12 +367,8 @@ impl ShieldedTabView {
                 spent_count,
             } if *seed_hash == self.seed_hash => {
                 self.syncing = false;
-                // Update balance from state after nullifier check
-                if let Ok(states) = self.app_context.shielded_states.lock()
-                    && let Some(state) = states.get(&self.seed_hash)
-                {
-                    self.shielded_balance = state.shielded_balance;
-                }
+                // Refresh balance from the push snapshot after nullifier check.
+                self.shielded_balance = self.app_context.shielded_balance_credits(&self.seed_hash);
                 if *spent_count > 0 {
                     self.success_message = Some(format!("Detected {} spent note(s)", spent_count));
                 }

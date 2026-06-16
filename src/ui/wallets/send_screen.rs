@@ -625,23 +625,13 @@ impl WalletSendScreen {
     /// Get shielded pool balance for the selected wallet (if initialized).
     fn get_shielded_balance(&self) -> Option<(WalletSeedHash, u64)> {
         let seed_hash = self.selected_wallet_seed_hash?;
-        // Try in-memory state first (most accurate, reflects optimistic spend marks)
-        let Ok(states) = self.app_context.shielded_states.lock() else {
-            return None;
-        };
-        if let Some(state) = states.get(&seed_hash) {
-            let balance = state.shielded_balance;
-            return if balance > 0 {
-                Some((seed_hash, balance))
-            } else {
-                None
-            };
+        // Primary: frame-safe push snapshot (no lock-in-frame-loop, no block_in_place).
+        let balance = self.app_context.shielded_balance_credits(&seed_hash);
+        if balance > 0 {
+            return Some((seed_hash, balance));
         }
-        drop(states);
-        // Fall back to the per-network shielded sidecar balance (T-SH-03)
-        // — works even if the in-memory shielded state was temporarily
-        // removed during an async operation, or if the Shielded tab was
-        // never visited. The sidecar returns 0 when never materialised.
+        // Fallback: per-network shielded sidecar balance (T-SH-03) — returns 0 until
+        // the push snapshot is populated by the sync-completed event (Phase E).
         let network_str = self.app_context.network.to_string();
         let backend = self.app_context.wallet_backend().ok()?;
         let balance = backend
@@ -2145,15 +2135,16 @@ impl WalletSendScreen {
                 .collect();
             let shielded_info: Option<(String, u64)> =
                 self.selected_wallet_seed_hash.and_then(|sh| {
+                    // Address still comes from the legacy shielded_states key slot
+                    // until Phase D wires the upstream wallet's default address here.
                     let states = self.app_context.shielded_states.lock().ok()?;
                     let state = states.get(&sh)?;
                     use dash_sdk::dpp::address_funds::OrchardAddress;
                     let raw = state.keys.default_address.to_raw_address_bytes();
                     let addr = OrchardAddress::from_raw_bytes(&raw).ok()?;
-                    Some((
-                        addr.to_bech32m_string(self.app_context.network),
-                        state.shielded_balance,
-                    ))
+                    // Balance: push snapshot (frame-safe; 0 until Phase E populates it).
+                    let balance = self.app_context.shielded_balance_credits(&sh);
+                    Some((addr.to_bech32m_string(self.app_context.network), balance))
                 });
             self.address_input.get_or_insert_with(|| {
                 let allowed_kinds = match &self.selected_source {

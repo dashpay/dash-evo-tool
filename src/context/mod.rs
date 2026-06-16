@@ -524,6 +524,21 @@ impl AppContext {
             / CREDITS_PER_DUFF
     }
 
+    /// Synchronous, frame-safe reader for the per-wallet shielded balance in
+    /// Platform **credits** (the native unit for Platform/Orchard operations).
+    /// Returns 0 when no snapshot has been written yet.
+    ///
+    /// Use this for screens that display or operate on credits (shielded send,
+    /// unshield, coin-selection).  For screens that sum Core + Platform +
+    /// Shielded in duffs, use [`Self::shielded_balance_duffs`] instead.
+    pub(crate) fn shielded_balance_credits(&self, seed_hash: &WalletSeedHash) -> u64 {
+        self.shielded_balances
+            .lock()
+            .ok()
+            .and_then(|map| map.get(seed_hash).copied())
+            .unwrap_or(0)
+    }
+
     /// Get a fee estimator configured with the cached fee multiplier.
     /// Use this instead of `PlatformFeeEstimator::new()` to get accurate fee estimates
     /// that reflect the current network fee multiplier.

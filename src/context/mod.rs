@@ -127,7 +127,7 @@ pub struct AppContext {
     /// loop via [`Self::shielded_balance_duffs`].  Starts empty — returns 0 until the
     /// first completed sync delivers a balance.  Must never be written from the frame
     /// loop (Nagatha ruling: no `block_in_place`/`block_on` on the UI thread).
-    pub(crate) shielded_balances: Mutex<std::collections::HashMap<WalletSeedHash, u64>>,
+    pub(crate) shielded_balances: Arc<Mutex<std::collections::HashMap<WalletSeedHash, u64>>>,
     /// The egui context, stored for use in non-UI code paths (e.g. display_task_result).
     /// Clone is O(1) — egui::Context is Arc-backed and the same instance for the app lifetime.
     egui_ctx: egui::Context,
@@ -356,7 +356,7 @@ impl AppContext {
                 PlatformFeeEstimator::DEFAULT_FEE_MULTIPLIER_PERMILLE,
             ),
             platform_protocol_version: AtomicU32::new(0),
-            shielded_balances: Mutex::new(std::collections::HashMap::new()),
+            shielded_balances: Arc::new(Mutex::new(std::collections::HashMap::new())),
             egui_ctx,
             wallet_backend: ArcSwapOption::const_empty(),
             wallet_backend_build: tokio::sync::Mutex::new(()),

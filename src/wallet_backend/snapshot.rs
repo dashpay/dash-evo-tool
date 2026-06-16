@@ -317,6 +317,17 @@ impl SnapshotStore {
         }
     }
 
+    /// Resolve an upstream `WalletId` to DET's `WalletSeedHash`, if the wallet
+    /// is registered. The shielded sync-completed event is keyed by `WalletId`
+    /// (network-scoped, upstream-native), but DET's balance snapshot is keyed by
+    /// `WalletSeedHash`, so the `EventBridge` maps through this registry.
+    pub(super) fn seed_hash_for(&self, wallet_id: &WalletId) -> Option<WalletSeedHash> {
+        self.registered
+            .lock()
+            .ok()
+            .and_then(|map| map.get(wallet_id).map(|r| r.seed_hash))
+    }
+
     /// Read a wallet's published snapshot. Lock-free, infallible. An absent
     /// entry (pre-first-sync) yields the default empty snapshot, which the UI
     /// renders as "syncing".

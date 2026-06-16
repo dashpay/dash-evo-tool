@@ -263,6 +263,66 @@ impl ShieldedTabView {
     // Currently the layout is: balance card -> address card -> buttons -> notes list.
     // The redesign should move buttons to the top and use collapsible sections.
 
+    /// Render in-flight shielded sync progress, read from the push-based
+    /// [`ConnectionStatus`] (Phase E). Shows the downloaded-notes counter and
+    /// the committed-to-tree ("checked") progress — a determinate bar when the
+    /// on-chain leaf total is known, a spinner otherwise. Renders nothing
+    /// between passes (both progress fields `None`).
+    fn render_sync_progress(&self, ui: &mut Ui, dark_mode: bool) {
+        let cs = self.app_context.connection_status();
+        let sync = cs.shielded_sync_progress();
+        let tree = cs.shielded_tree_progress();
+        if sync.is_none() && tree.is_none() {
+            return;
+        }
+        Frame::new()
+            .fill(DashColors::surface(dark_mode))
+            .inner_margin(Margin::symmetric(12, 8))
+            .corner_radius(6.0)
+            .show(ui, |ui| {
+                if let Some(s) = sync {
+                    ui.horizontal(|ui| {
+                        ui.add(egui::Spinner::new().size(14.0).color(DashColors::DASH_BLUE));
+                        ui.label(
+                            RichText::new(format!(
+                                "Scanning shielded notes: {} scanned (block {}).",
+                                s.cumulative_scanned, s.block_height
+                            ))
+                            .size(12.0)
+                            .color(DashColors::text_secondary(dark_mode)),
+                        );
+                    });
+                }
+                if let Some(t) = tree {
+                    if t.total_target > 0 {
+                        let fraction =
+                            (t.leaves_committed as f32 / t.total_target as f32).clamp(0.0, 1.0);
+                        ui.add(
+                            egui::ProgressBar::new(fraction)
+                                .text(format!(
+                                    "Checked {} / {} notes",
+                                    t.leaves_committed, t.total_target
+                                ))
+                                .fill(DashColors::DASH_BLUE),
+                        );
+                    } else {
+                        ui.horizontal(|ui| {
+                            ui.add(egui::Spinner::new().size(14.0).color(DashColors::DASH_BLUE));
+                            ui.label(
+                                RichText::new(format!(
+                                    "Checking shielded notes: {} committed.",
+                                    t.leaves_committed
+                                ))
+                                .size(12.0)
+                                .color(DashColors::text_secondary(dark_mode)),
+                            );
+                        });
+                    }
+                }
+            });
+        ui.add_space(10.0);
+    }
+
     /// Render the shielded tab content.
     pub fn ui(&mut self, ui: &mut Ui) -> AppAction {
         let dark_mode = ui.ctx().style().visuals.dark_mode;
@@ -446,6 +506,9 @@ impl ShieldedTabView {
             });
 
         ui.add_space(10.0);
+
+        // In-flight shielded sync progress (push-based; Phase E).
+        self.render_sync_progress(ui, dark_mode);
 
         // Shielded Addresses (collapsible table)
         self.render_address_section(ui, dark_mode);

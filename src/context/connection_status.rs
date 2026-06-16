@@ -70,6 +70,14 @@ pub struct ConnectionStatus {
     /// `EventBridge` `on_progress` callback. Drives the determinate progress
     /// bars in the network and wallet screens.
     spv_sync_progress: Mutex<Option<SpvSyncProgress>>,
+    /// Latest downloaded-notes progress for an in-flight shielded sync pass,
+    /// pushed by the wallet-backend `EventBridge` `on_shielded_sync_progress`
+    /// callback. `None` between passes. Cleared by [`Self::reset`] and on pass
+    /// completion.
+    shielded_sync_progress: Mutex<Option<ShieldedSyncProgress>>,
+    /// Latest committed-to-tree progress for an in-flight shielded sync pass,
+    /// pushed by `on_shielded_tree_progress`. `None` between passes.
+    shielded_tree_progress: Mutex<Option<ShieldedTreeProgress>>,
     rpc_last_error: Mutex<Option<String>>,
     last_update: Mutex<Instant>,
     spv_connected_peers: AtomicU16,
@@ -78,6 +86,30 @@ pub struct ConnectionStatus {
     spv_no_peers_since: Mutex<Option<Instant>>,
     dapi_total_endpoints: AtomicU16,
     dapi_available_endpoints: AtomicU16,
+}
+
+/// Downloaded-notes progress for an in-flight shielded sync pass (DET-shaped —
+/// no upstream type crosses the seam). Network-scoped: a single pass covers
+/// every viewing key on the coordinator. `None` when no pass is in flight.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShieldedSyncProgress {
+    /// Cumulative encrypted notes scanned so far in the current pass.
+    pub cumulative_scanned: u64,
+    /// Latest block height observed during the pass.
+    pub block_height: u64,
+}
+
+/// Committed-to-tree progress for an in-flight shielded sync pass (DET-shaped).
+/// Distinct from [`ShieldedSyncProgress`]: this counts commitments appended to
+/// the local Orchard tree (the "checked" signal). `total_target == 0` means the
+/// on-chain leaf count was unavailable, so progress is indeterminate (render a
+/// spinner, not a determinate bar).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ShieldedTreeProgress {
+    /// Cumulative tree leaf count committed so far.
+    pub leaves_committed: u64,
+    /// On-chain MMR total leaf count fetched at pass start; `0` = indeterminate.
+    pub total_target: u64,
 }
 
 impl ConnectionStatus {
@@ -89,6 +121,8 @@ impl ConnectionStatus {
             masternodes_ready: AtomicBool::new(false),
             spv_last_error: Mutex::new(None),
             spv_sync_progress: Mutex::new(None),
+            shielded_sync_progress: Mutex::new(None),
+            shielded_tree_progress: Mutex::new(None),
             rpc_last_error: Mutex::new(None),
             last_update: Mutex::new(Instant::now()),
             spv_connected_peers: AtomicU16::new(0),
@@ -119,6 +153,14 @@ impl ConnectionStatus {
         }
         *self
             .spv_sync_progress
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = None;
+        *self
+            .shielded_sync_progress
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = None;
+        *self
+            .shielded_tree_progress
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = None;
         if let Ok(mut err) = self.rpc_last_error.lock() {
@@ -242,6 +284,40 @@ impl ConnectionStatus {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone()
+    }
+
+    /// Store the latest shielded downloaded-notes progress (push-based from the
+    /// `EventBridge` `on_shielded_sync_progress` callback). `None` clears it.
+    pub fn set_shielded_sync_progress(&self, progress: Option<ShieldedSyncProgress>) {
+        *self
+            .shielded_sync_progress
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = progress;
+    }
+
+    /// Latest shielded downloaded-notes progress, if a pass is in flight.
+    pub fn shielded_sync_progress(&self) -> Option<ShieldedSyncProgress> {
+        *self
+            .shielded_sync_progress
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Store the latest shielded committed-to-tree progress (push-based from
+    /// the `EventBridge` `on_shielded_tree_progress` callback). `None` clears it.
+    pub fn set_shielded_tree_progress(&self, progress: Option<ShieldedTreeProgress>) {
+        *self
+            .shielded_tree_progress
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = progress;
+    }
+
+    /// Latest shielded committed-to-tree progress, if a pass is in flight.
+    pub fn shielded_tree_progress(&self) -> Option<ShieldedTreeProgress> {
+        *self
+            .shielded_tree_progress
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
     }
 
     /// Build a [`SpvStatusSnapshot`] for UI rendering from the live
@@ -772,6 +848,65 @@ mod tests {
             status.overall_state(),
             OverallConnectionState::Disconnected,
             "unavailable DAPI without an SPV error should read Disconnected"
+        );
+    }
+
+    #[test]
+    fn shielded_sync_progress_round_trips_and_clears() {
+        let status = ConnectionStatus::new();
+        assert!(status.shielded_sync_progress().is_none());
+
+        status.set_shielded_sync_progress(Some(ShieldedSyncProgress {
+            cumulative_scanned: 4_096,
+            block_height: 123_456,
+        }));
+        let got = status.shielded_sync_progress().expect("progress stored");
+        assert_eq!(got.cumulative_scanned, 4_096);
+        assert_eq!(got.block_height, 123_456);
+
+        status.set_shielded_sync_progress(None);
+        assert!(status.shielded_sync_progress().is_none());
+    }
+
+    #[test]
+    fn shielded_tree_progress_round_trips_and_clears() {
+        let status = ConnectionStatus::new();
+        assert!(status.shielded_tree_progress().is_none());
+
+        status.set_shielded_tree_progress(Some(ShieldedTreeProgress {
+            leaves_committed: 2_048,
+            total_target: 10_000,
+        }));
+        let got = status.shielded_tree_progress().expect("progress stored");
+        assert_eq!(got.leaves_committed, 2_048);
+        assert_eq!(got.total_target, 10_000);
+
+        status.set_shielded_tree_progress(None);
+        assert!(status.shielded_tree_progress().is_none());
+    }
+
+    #[test]
+    fn reset_clears_shielded_progress() {
+        let status = ConnectionStatus::new();
+        status.set_shielded_sync_progress(Some(ShieldedSyncProgress {
+            cumulative_scanned: 1,
+            block_height: 2,
+        }));
+        status.set_shielded_tree_progress(Some(ShieldedTreeProgress {
+            leaves_committed: 3,
+            total_target: 4,
+        }));
+        assert!(status.shielded_sync_progress().is_some());
+        assert!(status.shielded_tree_progress().is_some());
+
+        status.reset();
+        assert!(
+            status.shielded_sync_progress().is_none(),
+            "reset must clear in-flight shielded sync progress"
+        );
+        assert!(
+            status.shielded_tree_progress().is_none(),
+            "reset must clear in-flight shielded tree progress"
         );
     }
 }

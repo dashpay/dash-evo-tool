@@ -8,20 +8,25 @@
 //! visible-screen `display_task_result` / `refresh` then re-reads state
 //! through `WalletBackend` accessors, exactly as the old reconcile path did.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use dash_sdk::dash_spv::network::NetworkEvent;
 use dash_sdk::dash_spv::sync::{SyncEvent, SyncProgress, SyncState};
 use platform_wallet::events::{EventHandler, PlatformEventHandler, WalletEvent};
 use platform_wallet::manager::platform_address_sync::PlatformAddressSyncSummary;
+use platform_wallet::manager::shielded_sync::{ShieldedSyncPassSummary, WalletShieldedOutcome};
 
 use super::coordinator_gate::CoordinatorGate;
 use super::snapshot::{SnapshotStore, incoming_payment_candidates, received_outputs_for_record};
 use crate::app::TaskResult;
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::core::CoreItem;
-use crate::context::connection_status::ConnectionStatus;
+use crate::context::connection_status::{
+    ConnectionStatus, ShieldedSyncProgress, ShieldedTreeProgress,
+};
 use crate::model::spv_status::SpvStatus;
+use crate::model::wallet::WalletSeedHash;
 use crate::utils::egui_mpsc::SenderAsync;
 use dash_sdk::dpp::key_wallet::managed_account::transaction_record::TransactionRecord;
 
@@ -36,6 +41,11 @@ pub struct EventBridge {
     /// masternode list reaches `Synced` so the Platform/identity coordinators
     /// start only once quorums are resolvable.
     coordinator_gate: Arc<CoordinatorGate>,
+    /// Phase-E push writer: AppContext's frame-safe shielded balance snapshot
+    /// (credits, keyed by `WalletSeedHash`). Written by
+    /// `on_shielded_sync_completed`; read synchronously in the frame loop via
+    /// `AppContext::shielded_balance_credits`.
+    shielded_balances: Arc<Mutex<HashMap<WalletSeedHash, u64>>>,
 }
 
 impl EventBridge {
@@ -44,12 +54,14 @@ impl EventBridge {
         task_result_sender: SenderAsync<TaskResult>,
         snapshots: Arc<SnapshotStore>,
         coordinator_gate: Arc<CoordinatorGate>,
+        shielded_balances: Arc<Mutex<HashMap<WalletSeedHash, u64>>>,
     ) -> Self {
         Self {
             connection_status,
             task_result_sender,
             snapshots,
             coordinator_gate,
+            shielded_balances,
         }
     }
 
@@ -283,15 +295,72 @@ impl PlatformEventHandler for EventBridge {
         }
     }
 
-    // `on_shielded_sync_completed` is left at the upstream no-op default.
-    // DET's shielded flow (context/shielded.rs) is the retained grovestark
-    // path; the upstream ShieldedSyncManager fires this callback after each
-    // pass but DET has no UI reaction wired to it yet (Phase B).
+    fn on_shielded_sync_progress(&self, cumulative_scanned: u64, block_height: u64) {
+        // Downloaded-notes progress for an in-flight pass — drives the
+        // shielded tab's "scanning" indicator. Network-scoped (one pass covers
+        // every viewing key), so it lands on ConnectionStatus, not per-wallet.
+        self.connection_status
+            .set_shielded_sync_progress(Some(ShieldedSyncProgress {
+                cumulative_scanned,
+                block_height,
+            }));
+        self.nudge_refresh();
+    }
+
+    fn on_shielded_tree_progress(&self, leaves_committed: u64, total_target: u64) {
+        // Committed-to-tree ("checked") progress for an in-flight pass.
+        self.connection_status
+            .set_shielded_tree_progress(Some(ShieldedTreeProgress {
+                leaves_committed,
+                total_target,
+            }));
+        self.nudge_refresh();
+    }
+
+    fn on_shielded_sync_completed(&self, summary: &ShieldedSyncPassSummary) {
+        // PUSH PRODUCER (Phase E): write each successfully-synced wallet's
+        // shielded balance into AppContext's frame-safe snapshot so the frame
+        // loop reads the current balance with no blocking coordinator call.
+        // The summary is keyed by upstream `WalletId`; map it to DET's
+        // `WalletSeedHash` through the snapshot registry. Skipped/errored
+        // wallets leave their prior balance untouched.
+        if let Ok(mut balances) = self.shielded_balances.lock() {
+            for (wallet_id, balance) in summary_ok_balances(summary) {
+                if let Some(seed_hash) = self.snapshots.seed_hash_for(&wallet_id) {
+                    balances.insert(seed_hash, balance);
+                }
+            }
+        }
+        // The pass finished — clear the in-flight progress so the UI stops
+        // rendering the "scanning / checking" indicators.
+        self.connection_status.set_shielded_sync_progress(None);
+        self.connection_status.set_shielded_tree_progress(None);
+        self.nudge_refresh();
+    }
+}
+
+/// Collect `(wallet_id, balance_credits)` for every wallet that synced
+/// successfully in `summary`. Skipped (no bound shielded sub-wallet) and
+/// errored wallets are excluded so their snapshot balance is left untouched.
+/// Pure — no I/O — so it is unit-testable without a coordinator or a
+/// registered wallet.
+fn summary_ok_balances(summary: &ShieldedSyncPassSummary) -> Vec<([u8; 32], u64)> {
+    summary
+        .wallet_results
+        .iter()
+        .filter_map(|(wallet_id, outcome)| match outcome {
+            WalletShieldedOutcome::Ok(sync) => Some((*wallet_id, sync.balance_total())),
+            WalletShieldedOutcome::Skipped | WalletShieldedOutcome::Err(_) => None,
+        })
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Shorthand for the shielded-balance snapshot handle the helpers wire.
+    type ShieldedBalancesHandle = Arc<Mutex<HashMap<WalletSeedHash, u64>>>;
     use crate::utils::egui_mpsc::EguiMpscAsync;
     use dash_sdk::dpp::dashcore::{Address, Network, PublicKey, Transaction, TxOut};
     use dash_sdk::dpp::key_wallet::WalletCoreBalance;
@@ -328,8 +397,32 @@ mod tests {
             tx,
             Arc::new(SnapshotStore::new()),
             Arc::clone(&gate),
+            Arc::new(Mutex::new(HashMap::new())),
         );
         (bridge, cs, rx, gate)
+    }
+
+    /// Like [`make_bridge`] but also returns the shielded-balances snapshot Arc
+    /// so shielded-event tests can assert the push writer's effect.
+    fn make_bridge_with_balances() -> (
+        EventBridge,
+        Arc<ConnectionStatus>,
+        tokio::sync::mpsc::Receiver<TaskResult>,
+        ShieldedBalancesHandle,
+    ) {
+        let cs = Arc::new(ConnectionStatus::new());
+        let (tx, rx) =
+            tokio::sync::mpsc::channel::<TaskResult>(8).with_egui_ctx(egui::Context::default());
+        let gate = Arc::new(CoordinatorGate::default());
+        let balances = Arc::new(Mutex::new(HashMap::new()));
+        let bridge = EventBridge::new(
+            Arc::clone(&cs),
+            tx,
+            Arc::new(SnapshotStore::new()),
+            gate,
+            Arc::clone(&balances),
+        );
+        (bridge, cs, rx, balances)
     }
 
     fn drained_refresh(rx: &mut tokio::sync::mpsc::Receiver<TaskResult>) -> bool {
@@ -651,5 +744,83 @@ mod tests {
         let addresses = drained_received_utxo_addresses(&mut rx)
             .expect("a confirmed-first funding tx still produces the event");
         assert!(addresses.contains(&funding));
+    }
+
+    #[test]
+    fn shielded_sync_progress_event_sets_connection_status() {
+        let (bridge, cs, mut rx) = make_bridge();
+        bridge.on_shielded_sync_progress(4_096, 123_456);
+        let got = cs
+            .shielded_sync_progress()
+            .expect("downloaded-notes progress published");
+        assert_eq!(got.cumulative_scanned, 4_096);
+        assert_eq!(got.block_height, 123_456);
+        assert!(drained_refresh(&mut rx));
+    }
+
+    #[test]
+    fn shielded_tree_progress_event_sets_connection_status() {
+        let (bridge, cs, mut rx) = make_bridge();
+        bridge.on_shielded_tree_progress(2_048, 10_000);
+        let got = cs
+            .shielded_tree_progress()
+            .expect("committed-to-tree progress published");
+        assert_eq!(got.leaves_committed, 2_048);
+        assert_eq!(got.total_target, 10_000);
+        assert!(drained_refresh(&mut rx));
+    }
+
+    #[test]
+    fn shielded_sync_completed_clears_progress_and_nudges() {
+        let (bridge, cs, mut rx, balances) = make_bridge_with_balances();
+        // Simulate a pass mid-flight, then complete it.
+        bridge.on_shielded_sync_progress(10, 20);
+        bridge.on_shielded_tree_progress(30, 40);
+        assert!(cs.shielded_sync_progress().is_some());
+        assert!(cs.shielded_tree_progress().is_some());
+
+        bridge.on_shielded_sync_completed(&ShieldedSyncPassSummary::default());
+
+        assert!(
+            cs.shielded_sync_progress().is_none(),
+            "completion must clear the downloaded-notes progress"
+        );
+        assert!(
+            cs.shielded_tree_progress().is_none(),
+            "completion must clear the committed-to-tree progress"
+        );
+        // No wallet registered in the snapshot store, so nothing is written.
+        assert!(
+            balances.lock().unwrap().is_empty(),
+            "an unresolved wallet id must not write a balance"
+        );
+        assert!(drained_refresh(&mut rx));
+    }
+
+    #[test]
+    fn summary_ok_balances_extracts_only_successful_wallets() {
+        use platform_wallet::wallet::shielded::ShieldedSyncSummary;
+
+        let mut summary = ShieldedSyncPassSummary::default();
+        let ok = ShieldedSyncSummary {
+            balances: BTreeMap::from([(0u32, 1_000u64), (1u32, 234u64)]),
+            ..Default::default()
+        };
+        summary
+            .wallet_results
+            .insert([1u8; 32], WalletShieldedOutcome::Ok(ok));
+        summary
+            .wallet_results
+            .insert([2u8; 32], WalletShieldedOutcome::Skipped);
+        summary
+            .wallet_results
+            .insert([3u8; 32], WalletShieldedOutcome::Err("boom".to_string()));
+
+        let got = summary_ok_balances(&summary);
+        assert_eq!(
+            got,
+            vec![([1u8; 32], 1_234)],
+            "only the Ok wallet contributes its summed balance_total"
+        );
     }
 }

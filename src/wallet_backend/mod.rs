@@ -271,6 +271,9 @@ impl WalletBackend {
             task_result_sender,
             Arc::clone(&snapshots),
             Arc::clone(&coordinator_gate),
+            // Phase E push writer: the shielded sync-completed callback writes
+            // per-wallet balances into AppContext's frame-safe snapshot.
+            Arc::clone(&ctx.shielded_balances),
         ));
 
         let pwm = PlatformWalletManager::new(sdk, Arc::clone(&persister), bridge);

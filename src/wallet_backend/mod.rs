@@ -2125,6 +2125,337 @@ impl WalletBackend {
         .await
     }
 
+    // ── Shielded-pool methods ──────────────────────────────────────────────────
+    //
+    // `platform-wallet` is always built with the `shielded` Cargo feature in
+    // DET (added in Phase A).  No DET-level opt-out exists, so these methods
+    // are unconditionally available.  Consumers are wired in Phase C; until
+    // then the `#[allow(dead_code)]` attributes below suppress clippy/rustc
+    // lint errors from `-D warnings`.
+    //
+    // Phase B uses `map_shielded_error` for error mapping.  Phase F replaces
+    // it with the fully exhaustive `map_shielded_op_error`.
+
+    /// Resolve the network-scoped shielded coordinator.
+    ///
+    /// Returns `ShieldedNotConfigured` when `configure_shielded` was not called
+    /// during backend construction (should never happen in practice — it is
+    /// called unconditionally in `WalletBackend::new`).
+    #[allow(dead_code)]
+    async fn shielded_coordinator_arc(
+        &self,
+    ) -> Result<
+        std::sync::Arc<platform_wallet::wallet::shielded::NetworkShieldedCoordinator>,
+        TaskError,
+    > {
+        self.inner
+            .pwm
+            .shielded_coordinator()
+            .await
+            .ok_or(TaskError::ShieldedNotConfigured)
+    }
+
+    /// Idempotently bind Orchard ZIP-32 keys for `seed_hash` to the shielded
+    /// coordinator.  A no-op when the wallet is already bound; one call needed
+    /// per wallet per process lifetime.
+    ///
+    /// Called from `bootstrap_wallet_addresses_jit` (Phase C-bind) inside the
+    /// existing `with_secret_session` scope; also callable directly for the
+    /// MCP headless path.
+    #[allow(dead_code)]
+    pub(crate) async fn ensure_shielded_bound(
+        &self,
+        seed_hash: &WalletSeedHash,
+        seed: &[u8],
+    ) -> Result<(), TaskError> {
+        let wallet = self.resolve_wallet(seed_hash).await?;
+        if wallet.is_shielded_bound().await {
+            return Ok(());
+        }
+        let coordinator = self.shielded_coordinator_arc().await?;
+        wallet
+            .bind_shielded(seed, &[0], &coordinator)
+            .await
+            .map_err(|e| TaskError::WalletBackend {
+                source: Box::new(e),
+            })
+    }
+
+    /// Fund the shielded pool from a Core asset lock through the upstream
+    /// orchestrator pipeline.
+    ///
+    /// Mirrors `fund_platform_address` exactly: the `asset_lock_signer` is a
+    /// `DetSigner` borrowed from the held JIT session, and the upstream method
+    /// owns the full IS→CL fallback + `consume_asset_lock` path.  A single
+    /// `(recipient, None)` entry passes the whole lock value (minus the flat
+    /// shielded fee) to `recipient`.
+    #[allow(dead_code, clippy::too_many_arguments)]
+    pub(crate) async fn shield_from_asset_lock<P>(
+        &self,
+        seed_hash: &WalletSeedHash,
+        funding: platform_wallet::wallet::asset_lock::AssetLockFunding,
+        recipient: dash_sdk::dpp::address_funds::OrchardAddress,
+        dummy_outputs: usize,
+        prover: P,
+        settings: Option<dash_sdk::platform::transition::put_settings::PutSettings>,
+    ) -> Result<(), TaskError>
+    where
+        P: dash_sdk::dpp::shielded::builder::OrchardProver + Send,
+    {
+        let coordinator = self.shielded_coordinator_arc().await?;
+        let scope = Self::hd_scope(seed_hash);
+        self.inner
+            .secret_access
+            .with_secret_session(&scope, async |session| {
+                let asset_lock_signer =
+                    DetSigner::from_held(session.plaintext(), self.inner.network);
+                let wallet = self.resolve_wallet(seed_hash).await?;
+                wallet
+                    .shielded_fund_from_asset_lock(
+                        &coordinator,
+                        funding,
+                        vec![(recipient, None)],
+                        &asset_lock_signer,
+                        prover,
+                        None,
+                        dummy_outputs,
+                        settings,
+                    )
+                    .await
+                    .map_err(map_shielded_error)
+            })
+            .await
+    }
+
+    /// Shield platform-address credits (Type 15) into the Orchard pool.
+    ///
+    /// The `signer` authorises the per-address `AddressWitness`; it is a
+    /// `DetPlatformSigner` built from the held JIT seed and `path_index`.
+    /// Build `path_index` via `PlatformPathIndex::from_wallet` before calling —
+    /// the same pattern as `fund_platform_address`.
+    #[allow(dead_code)]
+    pub(crate) async fn shield_from_balance<P>(
+        &self,
+        seed_hash: &WalletSeedHash,
+        path_index: &PlatformPathIndex,
+        shielded_account: u32,
+        payment_account: u32,
+        amount: u64,
+        prover: P,
+    ) -> Result<(), TaskError>
+    where
+        P: dash_sdk::dpp::shielded::builder::OrchardProver + Send,
+    {
+        let coordinator = self.shielded_coordinator_arc().await?;
+        let scope = Self::hd_scope(seed_hash);
+        self.inner
+            .secret_access
+            .with_secret_session(&scope, async |session| {
+                let plaintext = session.plaintext();
+                let seed = plaintext.expose_hd_seed().ok_or(TaskError::WalletLocked)?;
+                let signer = DetPlatformSigner::from_held(seed, self.inner.network, path_index);
+                let wallet = self.resolve_wallet(seed_hash).await?;
+                wallet
+                    .shielded_shield_from_account(
+                        &coordinator,
+                        shielded_account,
+                        payment_account,
+                        amount,
+                        &signer,
+                        prover,
+                    )
+                    .await
+                    .map_err(map_shielded_error)
+            })
+            .await
+    }
+
+    /// Shielded → shielded transfer from `account`'s notes to `recipient`.
+    ///
+    /// No seed scope needed — the Orchard ASK is already resident in the
+    /// wallet's bound `shielded_keys` slot from `ensure_shielded_bound`.
+    #[allow(dead_code)]
+    pub(crate) async fn shielded_transfer<P>(
+        &self,
+        seed_hash: &WalletSeedHash,
+        account: u32,
+        recipient_raw_43: &[u8; 43],
+        amount: u64,
+        memo: [u8; 36],
+        prover: P,
+    ) -> Result<(), TaskError>
+    where
+        P: dash_sdk::dpp::shielded::builder::OrchardProver + Send,
+    {
+        let coordinator = self.shielded_coordinator_arc().await?;
+        let wallet = self.resolve_wallet(seed_hash).await?;
+        wallet
+            .shielded_transfer_to(
+                &coordinator,
+                account,
+                recipient_raw_43,
+                amount,
+                memo,
+                prover,
+            )
+            .await
+            .map_err(map_shielded_error)
+    }
+
+    /// Unshield from `account`'s notes to a transparent platform address
+    /// (bech32m `"dash1…"` / `"tdash1…"` string).
+    ///
+    /// No seed scope needed — keys are already bound.
+    #[allow(dead_code)]
+    pub(crate) async fn shielded_unshield<P>(
+        &self,
+        seed_hash: &WalletSeedHash,
+        account: u32,
+        to_platform_addr_bech32m: &str,
+        amount: u64,
+        prover: P,
+    ) -> Result<(), TaskError>
+    where
+        P: dash_sdk::dpp::shielded::builder::OrchardProver + Send,
+    {
+        let coordinator = self.shielded_coordinator_arc().await?;
+        let wallet = self.resolve_wallet(seed_hash).await?;
+        wallet
+            .shielded_unshield_to(
+                &coordinator,
+                account,
+                to_platform_addr_bech32m,
+                amount,
+                prover,
+            )
+            .await
+            .map_err(map_shielded_error)
+    }
+
+    /// Withdraw from `account`'s notes to a Core L1 address (Base58Check).
+    ///
+    /// No seed scope needed — keys are already bound.
+    #[allow(dead_code)]
+    pub(crate) async fn shielded_withdraw<P>(
+        &self,
+        seed_hash: &WalletSeedHash,
+        account: u32,
+        to_core_address: &str,
+        amount: u64,
+        core_fee_per_byte: u32,
+        prover: P,
+    ) -> Result<(), TaskError>
+    where
+        P: dash_sdk::dpp::shielded::builder::OrchardProver + Send,
+    {
+        let coordinator = self.shielded_coordinator_arc().await?;
+        let wallet = self.resolve_wallet(seed_hash).await?;
+        wallet
+            .shielded_withdraw_to(
+                &coordinator,
+                account,
+                to_core_address,
+                amount,
+                core_fee_per_byte,
+                prover,
+            )
+            .await
+            .map_err(map_shielded_error)
+    }
+
+    /// Per-account unspent shielded balance for `seed_hash`'s wallet.
+    ///
+    /// Returns an empty map when the wallet is not bound or has no shielded
+    /// balance.  This is the push-snapshot producer (Phase E): the result is
+    /// written into `AppContext::shielded_balances` by `on_shielded_sync_completed`.
+    #[allow(dead_code)]
+    pub(crate) async fn shielded_balances(
+        &self,
+        seed_hash: &WalletSeedHash,
+    ) -> Result<std::collections::BTreeMap<u32, u64>, TaskError> {
+        let coordinator = self.shielded_coordinator_arc().await?;
+        let wallet = self.resolve_wallet(seed_hash).await?;
+        wallet
+            .shielded_balances(&coordinator)
+            .await
+            .map_err(|e| TaskError::WalletBackend {
+                source: Box::new(e),
+            })
+    }
+
+    /// The default Orchard payment address for `account` on `seed_hash`'s wallet
+    /// (raw 43-byte representation).  Returns `None` if the wallet is not bound
+    /// or `account` is not registered.
+    #[allow(dead_code)]
+    pub(crate) async fn shielded_default_address(
+        &self,
+        seed_hash: &WalletSeedHash,
+        account: u32,
+    ) -> Result<Option<[u8; 43]>, TaskError> {
+        let wallet = self.resolve_wallet(seed_hash).await?;
+        Ok(wallet.shielded_default_address(account).await)
+    }
+
+    /// A page of shielded activity for `account` on `seed_hash`'s wallet,
+    /// sorted for display (pending first, then descending block height).
+    ///
+    /// `offset` / `limit` mirror the coordinator store's pagination contract.
+    #[allow(dead_code)]
+    pub(crate) async fn shielded_activity(
+        &self,
+        seed_hash: &WalletSeedHash,
+        account: u32,
+        offset: usize,
+        limit: usize,
+    ) -> Result<Vec<platform_wallet::wallet::shielded::ShieldedActivityEntry>, TaskError> {
+        use platform_wallet::wallet::shielded::{ShieldedStore, SubwalletId};
+
+        let coordinator = self.shielded_coordinator_arc().await?;
+        let wallet = self.resolve_wallet(seed_hash).await?;
+        let wallet_id = wallet.wallet_id();
+        let subwallet = SubwalletId::new(wallet_id, account);
+
+        coordinator
+            .store()
+            .read()
+            .await
+            .get_activity(subwallet, offset, limit)
+            .map_err(|e| TaskError::WalletBackend {
+                source: Box::new(
+                    platform_wallet::error::PlatformWalletError::ShieldedStoreError(e.to_string()),
+                ),
+            })
+    }
+
+    /// Unspent shielded notes for `account` on `seed_hash`'s wallet.
+    ///
+    /// Note: for spendability checks, prefer `shielded_balances`; this method
+    /// exposes the raw note list for diagnostic and display purposes.
+    #[allow(dead_code)]
+    pub(crate) async fn shielded_notes(
+        &self,
+        seed_hash: &WalletSeedHash,
+        account: u32,
+    ) -> Result<Vec<platform_wallet::wallet::shielded::ShieldedNote>, TaskError> {
+        use platform_wallet::wallet::shielded::{ShieldedStore, SubwalletId};
+
+        let coordinator = self.shielded_coordinator_arc().await?;
+        let wallet = self.resolve_wallet(seed_hash).await?;
+        let wallet_id = wallet.wallet_id();
+        let subwallet = SubwalletId::new(wallet_id, account);
+
+        coordinator
+            .store()
+            .read()
+            .await
+            .get_unspent_notes(subwallet)
+            .map_err(|e| TaskError::WalletBackend {
+                source: Box::new(
+                    platform_wallet::error::PlatformWalletError::ShieldedStoreError(e.to_string()),
+                ),
+            })
+    }
+
     fn build_client_config(&self) -> ClientConfig {
         // Scan from genesis so historical wallet transactions are found via
         // compact block filters.
@@ -2175,6 +2506,35 @@ impl WalletBackend {
         });
         std::fs::create_dir_all(&dir).map_err(|source| TaskError::FileSystem { source })?;
         Ok(dir)
+    }
+}
+
+#[allow(dead_code)]
+/// Basic shielded-op error mapper (Phase B).
+///
+/// Handles the two cases that need distinct `TaskError` variants before the
+/// full exhaustive `map_shielded_op_error` is wired in Phase F:
+///
+/// - `ShieldedNotBound` → [`TaskError::ShieldedNotBound`] (bind not called).
+/// - Asset-lock finality failures → [`TaskError::AssetLockFinalityTimeout`]
+///   (IS deadline / IS-expired / CL fallback, same as identity ops).
+/// - Everything else → [`TaskError::WalletBackend`].
+///
+/// Phase F replaces this with the full exhaustive mapper that routes
+/// `ShieldedSpendUnconfirmed{operation}` to the correct per-op
+/// `*ConfirmationUnknown` variant.
+fn map_shielded_error(e: platform_wallet::error::PlatformWalletError) -> TaskError {
+    use platform_wallet::error::PlatformWalletError as P;
+    if let P::ShieldedNotBound = e {
+        return TaskError::ShieldedNotBound;
+    }
+    match identity_op_error_kind(&e) {
+        IdentityOpErrorKind::FinalityTimeout => TaskError::AssetLockFinalityTimeout {
+            source: Box::new(e),
+        },
+        IdentityOpErrorKind::Rejected | IdentityOpErrorKind::Other => TaskError::WalletBackend {
+            source: Box::new(e),
+        },
     }
 }
 

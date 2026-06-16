@@ -1482,6 +1482,19 @@ pub enum TaskError {
         source: Box<dash_sdk::Error>,
     },
 
+    /// The upstream shielded coordinator has not been configured — either
+    /// `configure_shielded` was not called during backend startup or the call
+    /// failed. Restarting the application is the user-actionable path.
+    #[error("The shielded pool is not available yet. Restart the application and try again.")]
+    ShieldedNotConfigured,
+
+    /// A shielded operation was requested but this wallet's Orchard keys have
+    /// not been bound. `bind_shielded` is triggered automatically on wallet
+    /// unlock; this error surfaces when the operation races the bind (e.g. an
+    /// MCP tool call immediately after a headless wallet load).
+    #[error("Your shielded wallet is still loading. Unlock your wallet and try again.")]
+    ShieldedNotBound,
+
     /// Failed to sync shielded notes from the platform.
     #[error(
         "Could not sync shielded notes from the platform. Please check your connection and retry."

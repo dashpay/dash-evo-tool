@@ -688,6 +688,15 @@ impl AppContext {
 
         self.has_wallet.store(has_wallet, Ordering::Relaxed);
 
+        // Evict the wallet's shielded balance snapshot. The seed hash is
+        // deterministic from the seed, so re-importing the same recovery phrase
+        // re-binds this exact key — without eviction the freshly-imported wallet
+        // would surface the removed wallet's stale shielded balance until the
+        // next completed sync overwrites it.
+        if let Ok(mut balances) = self.shielded_balances.lock() {
+            balances.remove(seed_hash);
+        }
+
         // Permanently wipe the wallet's secret-bearing state so removal is not
         // recoverable: the encrypted seed-envelope vault, the session secret
         // cache, the wallet-meta sidecar, and the plaintext shielded-note rows

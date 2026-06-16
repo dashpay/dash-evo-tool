@@ -64,8 +64,8 @@ Concise catalog of all reusable UI components. Consult before creating new UI el
 | Component | File | Description |
 |-----------|------|-------------|
 | `U256EntropyGrid` | `entropy_grid.rs` | 32x8 interactive grid for 256-bit entropy generation |
-| `ScreenWithWalletUnlock` | `wallet_unlock.rs` | Trait for screens needing wallet unlock |
-| `TrackedAssetLockCache` | `tracked_asset_lock_cache.rs` | Per-screen cache of wallets' tracked asset locks; fetches once per wallet via `WalletTask::ListTrackedAssetLocks` and renders off the UI thread |
+
+> Non-widget UI state (per-screen view-models and async fetch-state caches that render no egui) lives in `src/ui/state/`, not here. For example `TrackedAssetLockCache` (`src/ui/state/tracked_asset_lock_cache.rs`) caches each wallet's tracked asset locks. See the module placement policy in `CLAUDE.md`.
 
 ## Usage Pattern
 

@@ -2435,11 +2435,7 @@ impl WalletBackend {
             .read()
             .await
             .get_activity(subwallet, offset, limit)
-            .map_err(|e| TaskError::WalletBackend {
-                source: Box::new(
-                    platform_wallet::error::PlatformWalletError::ShieldedStoreError(e.to_string()),
-                ),
-            })
+            .map_err(|source| TaskError::ShieldedStoreReadFailed { source })
     }
 
     /// Unspent shielded notes for `account` on `seed_hash`'s wallet.
@@ -2464,11 +2460,7 @@ impl WalletBackend {
             .read()
             .await
             .get_unspent_notes(subwallet)
-            .map_err(|e| TaskError::WalletBackend {
-                source: Box::new(
-                    platform_wallet::error::PlatformWalletError::ShieldedStoreError(e.to_string()),
-                ),
-            })
+            .map_err(|source| TaskError::ShieldedStoreReadFailed { source })
     }
 
     /// Force an immediate shielded sync pass (network-wide across every bound

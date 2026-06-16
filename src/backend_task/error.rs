@@ -1546,6 +1546,15 @@ pub enum TaskError {
         source: Box<dash_sdk::dpp::ProtocolError>,
     },
 
+    /// Reading the local shielded store (activity history or unspent notes)
+    /// failed. The concrete store error is preserved as the source so `Debug`
+    /// keeps the chain; `Display` stays user-facing.
+    #[error("Could not read your shielded activity. Wait for the next sync and try again.")]
+    ShieldedStoreReadFailed {
+        #[source]
+        source: platform_wallet::wallet::shielded::FileShieldedStoreError,
+    },
+
     // ──────────────────────────────────────────────────────────────────────────
     // Network context errors
     // ──────────────────────────────────────────────────────────────────────────

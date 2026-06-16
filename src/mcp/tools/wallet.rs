@@ -380,7 +380,7 @@ impl AsyncTool<DashMcpService> for FetchPlatformBalances {
 /// Import a wallet from a BIP-39 recovery phrase.
 pub struct ImportWallet;
 
-#[derive(Debug, Deserialize, schemars::JsonSchema, Default)]
+#[derive(Deserialize, schemars::JsonSchema, Default)]
 pub struct ImportWalletParams {
     /// BIP-39 recovery phrase (12 or 24 words, space-separated)
     pub mnemonic: String,
@@ -389,6 +389,19 @@ pub struct ImportWalletParams {
     /// Optional human-readable wallet name
     #[serde(default)]
     pub alias: Option<String>,
+}
+
+// Hand-written so the recovery phrase can never reach a log sink. A derived
+// `Debug` would print the mnemonic verbatim, and the BIP-39 phrase is the
+// highest-value secret in the app (full, irreversible wallet compromise).
+impl std::fmt::Debug for ImportWalletParams {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ImportWalletParams")
+            .field("mnemonic", &"<redacted>")
+            .field("network", &self.network)
+            .field("alias", &self.alias)
+            .finish()
+    }
 }
 
 #[derive(Serialize, schemars::JsonSchema)]
@@ -449,12 +462,19 @@ impl AsyncTool<DashMcpService> for ImportWallet {
         }
         resolve::require_network(&ctx, Some(&param.network))?;
 
-        let mnemonic = bip39::Mnemonic::parse_normalized(param.mnemonic.trim()).map_err(|e| {
+        // Hold the phrase in a zeroizing buffer so the cleartext seed words are
+        // scrubbed from memory on drop rather than lingering in a freed String.
+        // `bip39` is built with its `zeroize` feature, so the parsed `Mnemonic`
+        // scrubs its word indices on drop too.
+        let mnemonic_phrase = zeroize::Zeroizing::new(param.mnemonic);
+        let mnemonic = bip39::Mnemonic::parse_normalized(mnemonic_phrase.trim()).map_err(|e| {
             McpToolError::InvalidParam {
                 message: format!("The recovery phrase is not valid: {e}"),
             }
         })?;
-        let seed = mnemonic.to_seed("");
+        // The derived 64-byte HD seed is the spend secret; keep it zeroizing so
+        // it never outlives this call in freed heap/stack memory.
+        let seed = zeroize::Zeroizing::new(mnemonic.to_seed(""));
 
         let alias = param
             .alias
@@ -464,7 +484,7 @@ impl AsyncTool<DashMcpService> for ImportWallet {
             .map(str::to_owned);
 
         let wallet =
-            crate::model::wallet::Wallet::new_from_seed(seed, ctx.network(), alias.clone(), None)
+            crate::model::wallet::Wallet::new_from_seed(*seed, ctx.network(), alias.clone(), None)
                 .map_err(McpToolError::TaskFailed)?;
         // Capture the seed hash before `register_wallet` consumes the wallet so
         // the already-imported branch can still report it.

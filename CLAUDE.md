@@ -81,7 +81,7 @@ Code lives by responsibility, not convenience:
 - **`ui/<domain>/`** — screens (`ScreenLike`). UI may *call* `model/` validators for instant feedback but never implements its own validation.
 - **`ui/components/`** — reusable **Component-pattern widgets ONLY**: a `show()` plus a `ComponentResponse`, a display-only render widget, or component infrastructure. If it does not render egui, it is not a component.
 - **`ui/state/`** — non-widget UI state: per-screen view-models and async fetch-state caches (e.g. `TrackedAssetLockCache`). Owned by screens, may return `BackendTask`, render nothing.
-- **`src/mcp/tools/`** — MCP tool logic (one struct per file); never in `src/bin/det_cli/`.
+- **`src/mcp/tools/`** — MCP tool logic, one file per domain (e.g. `wallet.rs`, `shielded.rs`, `identity.rs`) with multiple tool structs per file; never in `src/bin/det_cli/`.
 - **`src/localization.rs`** — localization logic. **`src/ui/theme.rs`** — theme/alignment helpers.
 
 Discriminator for `ui/components/` vs `ui/state/`: *does it render egui (`show`/`ui`/a render fn)?* Yes → component. No → state.

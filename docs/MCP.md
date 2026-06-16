@@ -99,7 +99,7 @@ Parameters marked `?` are optional. The `det-cli` column shows the equivalent CL
 
 All wallet-facing tools wait for SPV to fully sync before executing. This includes both core-chain tools (`core_address_create`, `core_balances_get`, `core_funds_send`) and platform tools (`platform_addresses_list`, `identity_credits_topup`, `shielded_shield_from_core`). Even DAPI-only operations need SPV because the SDK verifies DAPI proofs against quorum and masternode list data from the synced chain. When another DET instance is already running, SPV falls back to a temporary directory and must sync from scratch.
 
-Tools that make no network calls skip the SPV gate: the metadata tools (`core_wallets_list`, `network_info`, `tool_describe`), the local wallet import (`core_wallet_import`), and the shielded snapshot reads (`shielded_balance_get`, `shielded_address_get`). `shielded_init` and `shielded_sync` still wait for SPV — they wire the wallet backend and drive a coordinator sync.
+Tools that make no network calls skip the SPV gate: the metadata tools (`core_wallets_list`, `network_info`, `tool_describe`), the local wallet import (`core_wallet_import`), and the shielded snapshot read `shielded_balance_get` (a pure in-memory read of the last synced balance). `shielded_address_get` also skips the SPV gate, but it reads through the wallet backend, so the backend must already be wired — run `shielded_init` (or any SPV-gated tool) first in standalone mode. `shielded_init` and `shielded_sync` still wait for SPV — they wire the wallet backend and drive a coordinator sync.
 
 ## CLI interface (det-cli)
 
@@ -135,9 +135,9 @@ See [CLI.md](CLI.md) for full documentation.
 
 Tools accept a `network` parameter (e.g. `"mainnet"`, `"testnet"`, `"devnet"`, `"local"`). When provided, the request fails immediately if it does not match the server's active network. This prevents accidentally operating on the wrong network.
 
-For **destructive tools** (those that spend funds or modify state — all identity and shielded tools), `network` is **required**. The tool will reject the request if `network` is omitted or does not match the active network. This is a safety measure to prevent accidentally spending funds on the wrong network.
+For **destructive tools** (those that spend funds or modify state — all identity tools, `core_funds_send`, `core_wallet_import`, and the fund-moving shielded tools `shielded_shield_from_core`, `shielded_shield_from_platform`, `shielded_transfer`, `shielded_unshield`, `shielded_withdraw`), `network` is **required**. The tool will reject the request if `network` is omitted or does not match the active network. This is a safety measure to prevent accidentally spending funds on the wrong network.
 
-For **read-only tools** (e.g. `core_wallets_list`, `core_balances_get`), `network` is optional. When omitted, the tool operates on whatever network is currently active.
+For **read-only tools** (e.g. `core_wallets_list`, `core_balances_get`) and the shielded control/read tools (`shielded_init`, `shielded_sync`, `shielded_balance_get`, `shielded_address_get`), `network` is optional. When omitted, the tool operates on whatever network is currently active.
 
 The `network_info` and `tool_describe` tools do not perform this check.
 

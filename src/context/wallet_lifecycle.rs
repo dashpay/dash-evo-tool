@@ -668,23 +668,13 @@ impl AppContext {
             guard.seed_hash()
         };
 
-        // Enter the seed scope when there is any seed-dependent work to do:
-        // address bootstrap, upstream registration, or shielded key binding.
-        // `ensure_shielded_bound` is idempotent and exits immediately if the
-        // wallet is already bound (upstream does an in-memory check), so
-        // `needs_shielded_bind` is always true — the overhead of entering the
-        // scope is negligible. The upstream 60 s ShieldedSyncManager loop picks
-        // up any newly bound wallets automatically.
-        let needs_bootstrap = wallet
-            .read()
-            .map(|g| Self::wallet_needs_bootstrap(&g))
-            .unwrap_or(false);
-        let needs_registration = !backend.is_wallet_registered(&seed_hash);
-        let needs_shielded_bind = true;
-        if !needs_bootstrap && !needs_registration && !needs_shielded_bind {
-            return;
-        }
-
+        // An open wallet always enters the seed scope: shielded key binding runs
+        // on every cold boot and `ensure_shielded_bound` is idempotent (upstream
+        // does an in-memory check and returns immediately when already bound), so
+        // there is no cheap pre-check that would let us skip the scope. Address
+        // bootstrap and upstream registration are re-checked inside the scope, so
+        // entering with nothing to do is harmless. The upstream 60 s
+        // ShieldedSyncManager loop picks up any newly bound wallets automatically.
         let wallet = Arc::clone(wallet);
         let result = backend
             .secret_access()
@@ -2192,6 +2182,53 @@ mod tests {
                 .expect("vault read after removal")
                 .is_none(),
             "the seed envelope must be deleted from the vault on removal"
+        );
+
+        backend.shutdown().await;
+    }
+
+    /// Removing a wallet evicts its shielded balance snapshot from
+    /// `AppContext::shielded_balances`. The seed hash is deterministic from the
+    /// seed, so without eviction a re-import of the same recovery phrase would
+    /// surface the removed wallet's stale shielded balance until the next sync
+    /// overwrote it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn remove_wallet_evicts_shielded_balance_snapshot() {
+        let (ctx, sender, _tmp) = offline_testnet_context();
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("ensure_wallet_backend should succeed offline");
+
+        let seed = [0xB2u8; 64];
+        let wallet =
+            crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
+                .expect("build wallet");
+        let seed_hash = wallet.seed_hash();
+        ctx.register_wallet(wallet, &seed, WalletOrigin::Fresh)
+            .expect("register wallet");
+
+        let backend = ctx.wallet_backend().expect("backend wired");
+
+        // Seed a snapshot entry as the sync-completed push writer would.
+        ctx.shielded_balances
+            .lock()
+            .expect("lock shielded_balances")
+            .insert(seed_hash, 123_456);
+        assert_eq!(
+            ctx.shielded_balance_credits(&seed_hash),
+            123_456,
+            "precondition: the snapshot entry must exist before removal"
+        );
+
+        ctx.remove_wallet(&seed_hash).expect("remove wallet");
+
+        assert!(
+            ctx.shielded_balances
+                .lock()
+                .expect("lock shielded_balances")
+                .get(&seed_hash)
+                .is_none(),
+            "the shielded balance snapshot must be evicted on removal"
         );
 
         backend.shutdown().await;

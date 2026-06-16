@@ -8,7 +8,7 @@ rust-version = "1.92"
 
 [dependencies]
 tokio-util = { version = "0.7.15" }
-bip39 = { version = "2.2.0", features = ["all-languages", "rand"] }
+bip39 = { version = "2.2.0", features = ["all-languages", "rand", "zeroize"] }
 derive_more = "2.1.1"
 egui = "0.33.3"
 egui_extras = "0.33.3"

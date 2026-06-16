@@ -38,6 +38,12 @@ pub struct PasswordInputResponse {
 /// let resp = pw.show(ui);
 /// if resp.changed { /* validate */ }
 /// ```
+// Intentional: `Clone` is derived so `passphrase_modal` can store the input
+// state in egui's data cache (which requires `Clone + Send + Sync + 'static`).
+// `Secret::clone` correctly allocates a new mlock-protected buffer so the clone
+// is as safe as the original.  Callers should not clone `PasswordInput` in
+// application code — this impl exists solely for the egui memory subsystem.
+#[derive(Clone)]
 pub struct PasswordInput {
     secret: Secret,
     hint_text: String,

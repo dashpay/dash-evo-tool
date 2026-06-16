@@ -10,32 +10,64 @@
 //!
 //! It resolves Cancel / Escape / X / click-outside uniformly to
 //! [`PassphraseModalOutcome::Cancel`] so callers never re-implement dismissal.
-//! It holds no secret state of its own — the [`PasswordInput`] the caller
-//! passes in owns (and zeroizes) the typed bytes.
+//!
+//! ## State ownership
+//!
+//! Per-modal mutable state — the [`PasswordInput`] buffer and a focus-once flag
+//! — is stored in egui's data cache keyed by `window_title`. Callers carry only
+//! domain state (`remember`, `error`). On [`PassphraseModalOutcome::Submit`] the
+//! typed text is extracted into a [`Zeroizing`] string and the cache entry is
+//! cleared; on [`PassphraseModalOutcome::Cancel`] the cache entry is cleared too.
+
+use std::fmt;
 
 use egui::Context;
+use zeroize::Zeroizing;
 
 use crate::ui::components::password_input::PasswordInput;
 use crate::ui::helpers::clicked_outside_window;
 use crate::ui::theme::{ComponentStyles, DashColors};
 
+/// The "keep unlocked" checkbox label, shared by every passphrase modal caller.
+///
+/// A complete, translatable sentence (i18n-ready, no placeholders). Defined
+/// here so [`WalletUnlockPopup`](super::wallet_unlock_popup) and
+/// [`ActivePrompt`](super::secret_prompt_host::ActivePrompt) reference exactly
+/// one literal — no silent drift between the two UIs.
+pub const KEEP_UNLOCKED_LABEL: &str = "Keep this wallet unlocked until I close the app.";
+
 /// What the user did with a [`passphrase_modal`] this frame.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, PartialEq)]
 pub enum PassphraseModalOutcome {
     /// The modal is still open; no decision yet.
     Pending,
-    /// The user submitted (Enter or the submit button). The caller reads the
-    /// passphrase from its `PasswordInput`.
-    Submit,
+    /// The user submitted (Enter or the submit button). The inner value is the
+    /// typed passphrase; the internal buffer is zeroized immediately after
+    /// extraction.
+    Submit(Zeroizing<String>),
     /// The user dismissed (Cancel button, Escape, X, or click-outside).
     Cancel,
 }
 
+// Manual Debug to prevent the typed passphrase from leaking into logs.
+// (`Zeroizing` derives its Debug from the inner type, which would expose the
+// plaintext string.)
+impl fmt::Debug for PassphraseModalOutcome {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Pending => f.write_str("Pending"),
+            Self::Submit(_) => f.write_str("Submit(<redacted>)"),
+            Self::Cancel => f.write_str("Cancel"),
+        }
+    }
+}
+
 /// Static copy + layout knobs for one render of [`passphrase_modal`].
 ///
-/// Borrowed for the call only; carries no secret. `title` and `submit_label`
-/// are complete, translatable sentences/labels (i18n-ready) supplied by the
-/// caller so the same chrome serves "Unlock Wallet" and the JIT prompt.
+/// Borrowed for the call only; carries no secret. `window_title` and
+/// `submit_label` are complete, translatable sentences/labels (i18n-ready)
+/// supplied by the caller so the same chrome serves "Unlock Wallet" and the
+/// JIT prompt.
 pub struct PassphraseModalConfig<'a> {
     /// `Window` title (top bar). Stable across re-asks.
     pub window_title: &'a str,
@@ -47,25 +79,49 @@ pub struct PassphraseModalConfig<'a> {
     pub error: Option<&'a str>,
     /// Submit button label, e.g. "Unlock".
     pub submit_label: &'a str,
+    /// Placeholder text shown inside the password field before the user types.
+    /// Defaults to `"Enter passphrase"` when the callers' existing default is
+    /// appropriate; use `"Enter password"` for wallet-unlock flows.
+    pub input_placeholder: &'a str,
+}
+
+/// Per-modal mutable state stored in egui's data cache between frames.
+///
+/// Keyed by `window_title` via [`egui::Id::new("passphrase_modal_state").with(title)`].
+/// Created on the first call with `config.input_placeholder`; cleared on
+/// Submit or Cancel.
+#[derive(Clone)]
+struct PassphraseModalState {
+    password_input: PasswordInput,
+    focus_requested: bool,
 }
 
 /// Render the shared passphrase modal and return what the user did.
 ///
-/// `focus_requested` tracks whether the field was focused once already; the
-/// modal sets it `true` after requesting focus so the cursor lands in the
-/// field on open without stealing focus every frame. `extra` draws any caller-
-/// specific body (the remember checkbox) between the error line and the button
-/// row.
+/// All per-modal mutable state (the [`PasswordInput`], focus tracking) is
+/// managed internally via egui's data cache so callers only need to carry
+/// domain state (`remember`, `error`). The typed passphrase is returned inside
+/// [`PassphraseModalOutcome::Submit`] and zeroized in the cache immediately
+/// after extraction.
 ///
-/// The caller owns dismissal side effects (clearing the `PasswordInput`,
-/// sending a reply): this function only reports the outcome.
+/// `extra` draws any caller-specific body (e.g. the "keep unlocked" checkbox)
+/// between the error line and the button row.
 pub fn passphrase_modal(
     ctx: &Context,
     config: &PassphraseModalConfig<'_>,
-    password_input: &mut PasswordInput,
-    focus_requested: &mut bool,
     extra: impl FnOnce(&mut egui::Ui),
 ) -> PassphraseModalOutcome {
+    let state_id = egui::Id::new("passphrase_modal_state").with(config.window_title);
+
+    // Load or initialise per-modal state from egui's data cache.  `get_temp`
+    // returns a clone; we mutate the clone during rendering then write it back.
+    let mut state: PassphraseModalState = ctx
+        .data(|d| d.get_temp::<PassphraseModalState>(state_id))
+        .unwrap_or_else(|| PassphraseModalState {
+            password_input: PasswordInput::new().with_hint_text(config.input_placeholder),
+            focus_requested: false,
+        });
+
     // Dark overlay behind the modal. The layer id is salted with the window
     // title so a wallet-unlock modal and a JIT secret prompt drawn in the same
     // frame get distinct overlay layers instead of fighting over one.
@@ -76,7 +132,8 @@ pub fn passphrase_modal(
     ));
     painter.rect_filled(screen_rect, 0.0, DashColors::modal_overlay());
 
-    let mut outcome = PassphraseModalOutcome::Pending;
+    let mut should_submit = false;
+    let mut should_cancel = false;
     let mut window_is_open = true;
 
     let window_response = egui::Window::new(config.window_title)
@@ -107,17 +164,15 @@ pub fn passphrase_modal(
 
             ui.add_space(12.0);
 
-            let mut submit = false;
+            let pw_response = state.password_input.show(ui);
 
-            let pw_response = password_input.show(ui);
-
-            if !*focus_requested {
+            if !state.focus_requested {
                 pw_response.response.request_focus();
-                *focus_requested = true;
+                state.focus_requested = true;
             }
 
             if pw_response.response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                submit = true;
+                should_submit = true;
             }
 
             if let Some(hint) = config.hint {
@@ -142,40 +197,50 @@ pub fn passphrase_modal(
             ui.horizontal(|ui| {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ComponentStyles::add_primary_button(ui, config.submit_label).clicked() {
-                        submit = true;
+                        should_submit = true;
                     }
                     if ComponentStyles::add_secondary_button(ui, "Cancel", dark_mode).clicked() {
-                        outcome = PassphraseModalOutcome::Cancel;
+                        should_cancel = true;
                     }
                     ui.add_space(8.0);
                 });
             });
-
-            if submit && outcome == PassphraseModalOutcome::Pending {
-                outcome = PassphraseModalOutcome::Submit;
-            }
         });
 
     // X button on the window title bar.
-    if !window_is_open && outcome == PassphraseModalOutcome::Pending {
-        outcome = PassphraseModalOutcome::Cancel;
+    if !window_is_open {
+        should_cancel = true;
     }
 
     // Escape key. Consume it so a second passphrase modal in the same frame
     // does not also dismiss on the same keypress.
-    if outcome == PassphraseModalOutcome::Pending
+    if !should_submit
+        && !should_cancel
         && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
     {
-        outcome = PassphraseModalOutcome::Cancel;
+        should_cancel = true;
     }
 
     // Click outside the window.
     if let Some(ref wr) = window_response
-        && outcome == PassphraseModalOutcome::Pending
+        && !should_submit
+        && !should_cancel
         && clicked_outside_window(ctx, wr.response.rect)
     {
-        outcome = PassphraseModalOutcome::Cancel;
+        should_cancel = true;
     }
 
-    outcome
+    // Resolve outcome: Submit takes priority; save or clear the cache entry.
+    if should_submit {
+        let text = Zeroizing::new(state.password_input.text().to_string());
+        state.password_input.clear();
+        ctx.data_mut(|d| d.remove::<PassphraseModalState>(state_id));
+        PassphraseModalOutcome::Submit(text)
+    } else if should_cancel {
+        ctx.data_mut(|d| d.remove::<PassphraseModalState>(state_id));
+        PassphraseModalOutcome::Cancel
+    } else {
+        ctx.data_mut(|d| d.insert_temp(state_id, state));
+        PassphraseModalOutcome::Pending
+    }
 }

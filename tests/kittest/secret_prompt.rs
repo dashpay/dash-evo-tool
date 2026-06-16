@@ -13,19 +13,16 @@
 //! NOTE: the kittest suite has pre-existing `DivergentVersion` failures
 //! unrelated to this module.
 
-use dash_evo_tool::ui::components::passphrase_modal::{PassphraseModalConfig, passphrase_modal};
-use dash_evo_tool::ui::components::password_input::PasswordInput;
+use dash_evo_tool::ui::components::passphrase_modal::{
+    KEEP_UNLOCKED_LABEL, PassphraseModalConfig, passphrase_modal,
+};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
-
-const REMEMBER_LABEL: &str = "Keep this wallet unlocked until I close the app.";
 
 /// The modal renders the scope body, the hint, the retry error, and the
 /// remember checkbox.
 #[test]
 fn modal_renders_body_hint_error_and_remember_checkbox() {
-    let mut password_input = PasswordInput::new();
-    let mut focus_requested = false;
     let mut remember = false;
 
     let mut harness = Harness::builder()
@@ -38,16 +35,11 @@ fn modal_renders_body_hint_error_and_remember_checkbox() {
                 hint: Some("granny's birthday"),
                 error: Some("That passphrase is not correct. Try again."),
                 submit_label: "Unlock",
+                input_placeholder: "Enter passphrase",
             };
-            passphrase_modal(
-                &ctx,
-                &config,
-                &mut password_input,
-                &mut focus_requested,
-                |ui| {
-                    ui.checkbox(&mut remember, REMEMBER_LABEL);
-                },
-            );
+            passphrase_modal(&ctx, &config, |ui| {
+                ui.checkbox(&mut remember, KEEP_UNLOCKED_LABEL);
+            });
         });
     harness.run();
 
@@ -68,7 +60,7 @@ fn modal_renders_body_hint_error_and_remember_checkbox() {
         "inline retry error should render"
     );
     assert!(
-        harness.query_by_label(REMEMBER_LABEL).is_some(),
+        harness.query_by_label(KEEP_UNLOCKED_LABEL).is_some(),
         "remember-until-close checkbox should render"
     );
     assert!(
@@ -89,8 +81,6 @@ fn remember_checkbox_toggles() {
     use std::rc::Rc;
 
     let remember = Rc::new(Cell::new(false));
-    let mut password_input = PasswordInput::new();
-    let mut focus_requested = false;
 
     let remember_for_ui = Rc::clone(&remember);
     let mut harness = Harness::builder()
@@ -103,23 +93,18 @@ fn remember_checkbox_toggles() {
                 hint: None,
                 error: None,
                 submit_label: "Unlock",
+                input_placeholder: "Enter passphrase",
             };
             let mut local = remember_for_ui.get();
-            passphrase_modal(
-                &ctx,
-                &config,
-                &mut password_input,
-                &mut focus_requested,
-                |ui| {
-                    ui.checkbox(&mut local, REMEMBER_LABEL);
-                },
-            );
+            passphrase_modal(&ctx, &config, |ui| {
+                ui.checkbox(&mut local, KEEP_UNLOCKED_LABEL);
+            });
             remember_for_ui.set(local);
         });
     harness.run();
 
     assert!(!remember.get(), "checkbox starts unchecked (default None)");
-    harness.get_by_label(REMEMBER_LABEL).click();
+    harness.get_by_label(KEEP_UNLOCKED_LABEL).click();
     harness.run();
     assert!(
         remember.get(),

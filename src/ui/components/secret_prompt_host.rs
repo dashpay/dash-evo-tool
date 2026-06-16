@@ -21,9 +21,8 @@ use platform_wallet_storage::secrets::SecretString;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::ui::components::passphrase_modal::{
-    PassphraseModalConfig, PassphraseModalOutcome, passphrase_modal,
+    KEEP_UNLOCKED_LABEL, PassphraseModalConfig, PassphraseModalOutcome, passphrase_modal,
 };
-use crate::ui::components::password_input::PasswordInput;
 use crate::wallet_backend::secret_prompt::{
     RememberPolicy, SecretPrompt, SecretPromptCancelled, SecretPromptReply, SecretPromptRequest,
     SecretPromptRetry,
@@ -80,16 +79,15 @@ impl SecretPrompt for EguiSecretPromptHost {
 
 /// The prompt `AppState` is currently rendering, holding the field state.
 ///
-/// Drains one [`QueuedPrompt`] off the host channel and owns the
-/// [`PasswordInput`] (which zeroizes the typed bytes) plus the remember
-/// checkbox until the user submits or cancels. On either, it answers the
-/// one-shot and is dropped.
+/// Drains one [`QueuedPrompt`] off the host channel and owns only the domain
+/// state — the remember checkbox and the reply channel — until the user submits
+/// or cancels. The [`PasswordInput`] and focus-tracking state are managed
+/// internally by [`passphrase_modal`] in egui's data cache. On Submit or
+/// Cancel the prompt answers the one-shot and is dropped.
 pub struct ActivePrompt {
     request: SecretPromptRequest,
     reply: Option<ReplySender>,
-    password_input: PasswordInput,
     remember: bool,
-    focus_requested: bool,
 }
 
 impl ActivePrompt {
@@ -98,9 +96,7 @@ impl ActivePrompt {
         Self {
             request: queued.request,
             reply: Some(queued.reply),
-            password_input: PasswordInput::new().with_hint_text("Enter passphrase"),
             remember: false,
-            focus_requested: false,
         }
     }
 
@@ -118,27 +114,19 @@ impl ActivePrompt {
             hint: self.request.hint.as_deref(),
             error: retry_error,
             submit_label: "Unlock",
+            input_placeholder: "Enter passphrase",
         };
 
         let mut remember = self.remember;
-        let outcome = passphrase_modal(
-            ctx,
-            &config,
-            &mut self.password_input,
-            &mut self.focus_requested,
-            |ui| {
-                ui.checkbox(
-                    &mut remember,
-                    "Keep this wallet unlocked until I close the app.",
-                );
-            },
-        );
+        let outcome = passphrase_modal(ctx, &config, |ui| {
+            ui.checkbox(&mut remember, KEEP_UNLOCKED_LABEL);
+        });
         self.remember = remember;
 
         match outcome {
             PassphraseModalOutcome::Pending => false,
-            PassphraseModalOutcome::Submit => {
-                self.submit();
+            PassphraseModalOutcome::Submit(text) => {
+                self.submit(&text);
                 true
             }
             PassphraseModalOutcome::Cancel => {
@@ -148,9 +136,9 @@ impl ActivePrompt {
         }
     }
 
-    /// Send the typed reply and zeroize the field.
-    fn submit(&mut self) {
-        let passphrase = SecretString::new(self.password_input.text());
+    /// Send the typed reply.
+    fn submit(&mut self, text: &str) {
+        let passphrase = SecretString::new(text);
         let remember = if self.remember {
             RememberPolicy::UntilAppClose
         } else {
@@ -159,15 +147,13 @@ impl ActivePrompt {
         if let Some(reply) = self.reply.take() {
             let _ = reply.send(Ok(SecretPromptReply::new(passphrase, remember)));
         }
-        self.password_input.clear();
     }
 
-    /// Answer the one-shot with a cancel and zeroize the field.
+    /// Answer the one-shot with a cancel.
     fn cancel(&mut self) {
         if let Some(reply) = self.reply.take() {
             let _ = reply.send(Err(SecretPromptCancelled));
         }
-        self.password_input.clear();
     }
 }
 
@@ -263,9 +249,8 @@ mod tests {
             request: SecretPromptRequest::new(hd_scope(), "My Wallet"),
             reply: tx,
         });
-        prompt.password_input.set_text("pw");
         prompt.remember = false;
-        prompt.submit();
+        prompt.submit("pw");
         let reply = rx.await.expect("reply").expect("not cancelled");
         assert_eq!(reply.remember, RememberPolicy::None);
         assert_eq!(reply.passphrase.expose_secret(), "pw");
@@ -276,9 +261,8 @@ mod tests {
             request: SecretPromptRequest::new(hd_scope(), "My Wallet"),
             reply: tx,
         });
-        prompt.password_input.set_text("pw");
         prompt.remember = true;
-        prompt.submit();
+        prompt.submit("pw");
         let reply = rx.await.expect("reply").expect("not cancelled");
         assert_eq!(reply.remember, RememberPolicy::UntilAppClose);
     }

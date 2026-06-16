@@ -1,9 +1,8 @@
 use crate::context::AppContext;
 use crate::model::wallet::Wallet;
 use crate::ui::components::passphrase_modal::{
-    PassphraseModalConfig, PassphraseModalOutcome, passphrase_modal,
+    KEEP_UNLOCKED_LABEL, PassphraseModalConfig, PassphraseModalOutcome, passphrase_modal,
 };
-use crate::ui::components::password_input::PasswordInput;
 use egui;
 use std::sync::{Arc, RwLock};
 use zeroize::Zeroizing;
@@ -19,17 +18,17 @@ pub enum WalletUnlockResult {
     Cancelled,
 }
 
-/// The remember-checkbox label: a complete, translatable sentence (i18n-ready,
-/// no placeholders), shared verbatim with the just-in-time secret prompt host.
-const REMEMBER_LABEL: &str = "Keep this wallet unlocked until I close the app.";
-
-/// A popup dialog for unlocking a wallet with password
-/// Similar to InfoPopup and ConfirmationDialog but specialized for wallet unlock flow
+/// A popup dialog for unlocking a wallet with password.
+///
+/// Thin wrapper around [`passphrase_modal`]: it stores only the two domain
+/// fields (`remember`, `error`) plus the open/closed flag. All chrome —
+/// overlay, window, `PasswordInput`, focus tracking, dismiss handling — lives
+/// in `passphrase_modal`'s egui data-cache state.
 pub struct WalletUnlockPopup {
     is_open: bool,
-    password_input: PasswordInput,
-    error_message: Option<String>,
-    focus_requested: bool,
+    /// Optional wrong-password message forwarded to `passphrase_modal`'s error
+    /// line. Reset on open; set on a failed unlock attempt.
+    error: Option<String>,
     /// Whether the user opted to keep the seed in the session cache after this
     /// unlock. The secure default is `false` — the seed is promoted to the
     /// session cache only when the user ticks the box; otherwise the next
@@ -48,9 +47,7 @@ impl WalletUnlockPopup {
     pub fn new() -> Self {
         Self {
             is_open: false,
-            password_input: PasswordInput::new().with_hint_text("Enter password"),
-            error_message: None,
-            focus_requested: false,
+            error: None,
             remember: false,
         }
     }
@@ -58,17 +55,14 @@ impl WalletUnlockPopup {
     /// Open the popup
     pub fn open(&mut self) {
         self.is_open = true;
-        self.password_input.clear();
-        self.error_message = None;
-        self.focus_requested = false;
+        self.error = None;
         self.remember = false;
     }
 
     /// Close the popup
     pub fn close(&mut self) {
         self.is_open = false;
-        self.password_input.clear();
-        self.error_message = None;
+        self.error = None;
     }
 
     /// Check if the popup is currently open
@@ -76,8 +70,8 @@ impl WalletUnlockPopup {
         self.is_open
     }
 
-    /// Show the popup and handle wallet unlock
-    /// Returns the result of the unlock attempt
+    /// Show the popup and handle wallet unlock.
+    /// Returns the result of the unlock attempt.
     pub fn show(
         &mut self,
         ctx: &egui::Context,
@@ -98,20 +92,15 @@ impl WalletUnlockPopup {
             window_title: "Unlock Wallet",
             body: &format!("Enter password to unlock \"{wallet_alias}\":"),
             hint: None,
-            error: self.error_message.as_deref(),
+            error: self.error.as_deref(),
             submit_label: "Unlock",
+            input_placeholder: "Enter password",
         };
 
         let mut remember = self.remember;
-        let outcome = passphrase_modal(
-            ctx,
-            &config,
-            &mut self.password_input,
-            &mut self.focus_requested,
-            |ui| {
-                ui.checkbox(&mut remember, REMEMBER_LABEL);
-            },
-        );
+        let outcome = passphrase_modal(ctx, &config, |ui| {
+            ui.checkbox(&mut remember, KEEP_UNLOCKED_LABEL);
+        });
         self.remember = remember;
 
         match outcome {
@@ -120,9 +109,9 @@ impl WalletUnlockPopup {
                 self.close();
                 WalletUnlockResult::Cancelled
             }
-            PassphraseModalOutcome::Submit => {
+            PassphraseModalOutcome::Submit(text) => {
                 let mut wallet_guard = wallet.write().unwrap();
-                match wallet_guard.wallet_seed.open(self.password_input.text()) {
+                match wallet_guard.wallet_seed.open(&text) {
                     Ok(_) => {
                         drop(wallet_guard);
                         // Mark the wallet open for display. Promote the
@@ -130,9 +119,7 @@ impl WalletUnlockPopup {
                         // the user opted in; otherwise the next operation
                         // re-prompts (secure default). The remembered passphrase
                         // copy is zeroized on drop.
-                        let passphrase = self
-                            .remember
-                            .then(|| Zeroizing::new(self.password_input.text().to_string()));
+                        let passphrase = self.remember.then(|| Zeroizing::new((*text).clone()));
                         app_context.handle_wallet_unlocked(
                             wallet,
                             passphrase.as_deref().map(|s| s.as_str()),
@@ -141,7 +128,7 @@ impl WalletUnlockPopup {
                         WalletUnlockResult::Unlocked
                     }
                     Err(_) => {
-                        self.error_message = Some(match wallet_guard.password_hint() {
+                        self.error = Some(match wallet_guard.password_hint() {
                             Some(hint) => format!(
                                 "That password did not match. Check it and try again. Hint: {hint}"
                             ),
@@ -149,8 +136,6 @@ impl WalletUnlockPopup {
                                 "That password did not match. Check it and try again.".to_string()
                             }
                         });
-                        self.password_input.clear();
-                        self.focus_requested = false;
                         WalletUnlockResult::Pending
                     }
                 }

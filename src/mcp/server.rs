@@ -134,6 +134,7 @@ impl DashMcpService {
             .with_async_tool::<tools::network::NetworkReinitSdk>()
             .with_async_tool::<tools::network::NetworkSwitch>()
             .with_async_tool::<tools::wallet::ListWalletsTool>()
+            .with_async_tool::<tools::wallet::ImportWallet>()
             .with_async_tool::<tools::wallet::GenerateReceiveAddress>()
             .with_async_tool::<tools::wallet::WalletBalancesQuery>()
             .with_async_tool::<tools::wallet::FetchPlatformBalances>()
@@ -152,6 +153,11 @@ impl DashMcpService {
             .with_async_tool::<tools::shielded::ShieldedTransferTool>()
             .with_async_tool::<tools::shielded::ShieldedUnshield>()
             .with_async_tool::<tools::shielded::ShieldedWithdrawTool>()
+            // Shielded read/control tools (Phase G — agent self-verification)
+            .with_async_tool::<tools::shielded::ShieldedInit>()
+            .with_async_tool::<tools::shielded::ShieldedSync>()
+            .with_async_tool::<tools::shielded::ShieldedBalanceGet>()
+            .with_async_tool::<tools::shielded::ShieldedAddressGet>()
     }
 }
 

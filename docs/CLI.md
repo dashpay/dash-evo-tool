@@ -139,3 +139,42 @@ det-cli core-funds-send wallet-id=savings address=yXyz... amount-duffs=1000000 n
 # Run as stdio MCP server for Claude Desktop or Claude Code
 det-cli serve
 ```
+
+## Shielded self-verification loop (testnet)
+
+The shielded read/control tools let an agent drive and verify a full shielded
+lifecycle headlessly — no GUI. Onboard a pre-funded testnet seed, prepare the
+wallet, then move funds and confirm each balance change with `shielded-sync`.
+
+```bash
+# 1. Import the funded testnet seed (returns its seed_hash; idempotent)
+det-cli core-wallet-import mnemonic="word1 word2 ... word12" network=testnet alias=shielded-test
+
+# 2. Bind shielded keys + warm the proving key (~30s; idempotent)
+det-cli shielded-init wallet-id=shielded-test
+
+# 3. Shield some Core DASH into the pool (SPV-gated — can take minutes)
+det-cli shielded-shield-from-core wallet-id=shielded-test amount-duffs=2000000 network=testnet
+
+# 4. Sync and read the new shielded balance (expect it to increase)
+det-cli shielded-sync wallet-id=shielded-test
+
+# 5. Read the wallet's own shielded address, then transfer to it privately
+det-cli shielded-address-get wallet-id=shielded-test
+det-cli shielded-transfer wallet-id=shielded-test to-address=tdash1z... amount-credits=50000 network=testnet
+
+# 6. Unshield part back to a Platform address, then withdraw part to Core
+det-cli shielded-unshield wallet-id=shielded-test to-address=tdash1... amount-credits=300000 network=testnet
+det-cli shielded-withdraw wallet-id=shielded-test to-address=yXyz... amount-credits=300000 network=testnet
+
+# 7. Final sync to confirm the closing balance
+det-cli shielded-sync wallet-id=shielded-test
+
+# Fast read at any time (no sync, returns the last synced snapshot)
+det-cli shielded-balance-get wallet-id=shielded-test
+```
+
+The `mnemonic` for the framework wallet is read from `E2E_WALLET_MNEMONIC`
+(shell env or the project-root `.env`) in the backend-e2e harness; for the
+standalone `det-cli` loop above, pass it directly to `core-wallet-import`.
+

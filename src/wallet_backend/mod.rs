@@ -2157,6 +2157,51 @@ impl WalletBackend {
             })
     }
 
+    /// Bind Orchard keys for `seed_hash` by resolving its HD seed just-in-time
+    /// through the [`SecretAccess`] chokepoint, then delegating to
+    /// [`Self::ensure_shielded_bound`].
+    ///
+    /// The headless sibling of the Phase-C-bind call in
+    /// `bootstrap_wallet_addresses_jit`: an unprotected wallet resolves
+    /// prompt-free via the no-passphrase fast-path; a protected one needs its
+    /// seed already promoted to the session cache. Idempotent — exits
+    /// immediately when the wallet is already bound. The Phase-G `shielded_init`
+    /// MCP tool uses this so an agent can bind a wallet without a GUI prompt.
+    #[cfg(any(feature = "mcp", feature = "cli"))]
+    pub(crate) async fn ensure_shielded_bound_jit(
+        &self,
+        seed_hash: &WalletSeedHash,
+    ) -> Result<(), TaskError> {
+        let scope = Self::hd_scope(seed_hash);
+        self.inner
+            .secret_access
+            .with_secret_session(&scope, async |session| {
+                let plaintext = session.plaintext();
+                let seed = plaintext.expose_hd_seed().ok_or(TaskError::WalletLocked)?;
+                self.ensure_shielded_bound(seed_hash, seed).await
+            })
+            .await
+    }
+
+    /// Warm the Orchard proving key so the first shielded spend does not block.
+    ///
+    /// The Halo2 proving key takes ~30 s to build on first use; this primes the
+    /// process-global cache ahead of time. Runs on a blocking thread so the
+    /// async runtime keeps serving other work during the build, and is
+    /// idempotent — a second call returns immediately. Returns whether the key
+    /// is ready afterwards (a `spawn_blocking` panic leaves it unbuilt → `false`).
+    /// The Phase-G `shielded_init` MCP tool calls this during headless setup.
+    #[cfg(any(feature = "mcp", feature = "cli"))]
+    pub(crate) async fn warm_shielded_prover(&self) -> bool {
+        tokio::task::spawn_blocking(|| {
+            let prover = platform_wallet::wallet::shielded::CachedOrchardProver::new();
+            prover.warm_up();
+            prover.is_ready()
+        })
+        .await
+        .unwrap_or(false)
+    }
+
     /// Fund the shielded pool from a Core asset lock through the upstream
     /// orchestrator pipeline.
     ///

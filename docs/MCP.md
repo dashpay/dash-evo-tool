@@ -71,6 +71,7 @@ Set these in the app's `.env` file (see `.env.example`) or as environment variab
 | `network_reinit_sdk` | `network` | `det-cli network-reinit-sdk` | Rebuild Core RPC client and Platform SDK with current config (use after changing credentials) |
 | `network_switch` | `network` | `det-cli network-switch` | Switch the active network (creates context if needed, may take a few seconds) |
 | `core_wallets_list` | `network`? | `det-cli core-wallets-list` | List wallets loaded in the app (alias + seed hash) |
+| `core_wallet_import` | `mnemonic`, `network`, `alias`? | `det-cli core-wallet-import` | Import a wallet from a BIP-39 recovery phrase (unprotected); returns its seed hash. Idempotent |
 | `core_address_create` | `wallet_id`, `network`? | `det-cli core-address-create` | Generate a new receive address for a wallet |
 | `core_balances_get` | `wallet_id`, `network`? | `det-cli core-balances-get` | Show wallet balances (total, confirmed, unconfirmed) in duffs |
 | `platform_addresses_list` | `wallet_id`, `network`? | `det-cli platform-addresses-list` | Fetch platform address balances (credits and nonces) |
@@ -86,6 +87,10 @@ Set these in the app's `.env` file (see `.env.example`) or as environment variab
 | `shielded_transfer` | `wallet_id`, `to_address`, `amount_credits`, `network` | `det-cli shielded-transfer` | Private shielded-to-shielded transfer |
 | `shielded_unshield` | `wallet_id`, `to_address`, `amount_credits`, `network` | `det-cli shielded-unshield` | Unshield credits to a Platform address |
 | `shielded_withdraw` | `wallet_id`, `to_address`, `amount_credits`, `network` | `det-cli shielded-withdraw` | Withdraw from shielded pool to a Core address |
+| `shielded_init` | `wallet_id`, `network`? | `det-cli shielded-init` | Bind a wallet's shielded keys and warm the proving key (~30s); idempotent. Run once before shielded ops |
+| `shielded_sync` | `wallet_id`, `network`? | `det-cli shielded-sync` | Force a shielded sync and return the post-sync balance (credits + duffs); use to verify a balance change |
+| `shielded_balance_get` | `wallet_id`, `network`? | `det-cli shielded-balance-get` | Read the shielded balance from the last synced snapshot (credits + duffs); no sync |
+| `shielded_address_get` | `wallet_id`, `network`? | `det-cli shielded-address-get` | Return the wallet's default shielded (Orchard) receive address (bech32m) |
 | `tool_describe` | `name` | `det-cli tool-describe` | Return the full MCP tool definition for a given tool name |
 
 Parameters marked `?` are optional. The `det-cli` column shows the equivalent CLI command (underscores become hyphens).
@@ -94,7 +99,7 @@ Parameters marked `?` are optional. The `det-cli` column shows the equivalent CL
 
 All wallet-facing tools wait for SPV to fully sync before executing. This includes both core-chain tools (`core_address_create`, `core_balances_get`, `core_funds_send`) and platform tools (`platform_addresses_list`, `identity_credits_topup`, `shielded_shield_from_core`). Even DAPI-only operations need SPV because the SDK verifies DAPI proofs against quorum and masternode list data from the synced chain. When another DET instance is already running, SPV falls back to a temporary directory and must sync from scratch.
 
-Only metadata tools that make no network calls (`core_wallets_list`, `network_info`, `tool_describe`) skip the SPV gate.
+Tools that make no network calls skip the SPV gate: the metadata tools (`core_wallets_list`, `network_info`, `tool_describe`), the local wallet import (`core_wallet_import`), and the shielded snapshot reads (`shielded_balance_get`, `shielded_address_get`). `shielded_init` and `shielded_sync` still wait for SPV — they wire the wallet backend and drive a coordinator sync.
 
 ## CLI interface (det-cli)
 

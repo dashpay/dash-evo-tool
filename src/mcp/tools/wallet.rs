@@ -8,6 +8,7 @@ use rmcp::schemars;
 use serde::{Deserialize, Serialize};
 
 use crate::backend_task::core::{CoreTask, PaymentRecipient, WalletPaymentRequest};
+use crate::backend_task::error::TaskError;
 use crate::backend_task::wallet::WalletTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::mcp::dispatch::dispatch_task;
@@ -368,6 +369,123 @@ impl AsyncTool<DashMcpService> for FetchPlatformBalances {
             other => Err(McpToolError::Internal(format!(
                 "Unexpected task result: {other:?}"
             ))),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ImportWallet (BIP-39 mnemonic -> registered wallet)
+// ---------------------------------------------------------------------------
+
+/// Import a wallet from a BIP-39 recovery phrase.
+pub struct ImportWallet;
+
+#[derive(Debug, Deserialize, schemars::JsonSchema, Default)]
+pub struct ImportWalletParams {
+    /// BIP-39 recovery phrase (12 or 24 words, space-separated)
+    pub mnemonic: String,
+    /// Expected network (required so addresses are derived for the right chain)
+    pub network: String,
+    /// Optional human-readable wallet name
+    #[serde(default)]
+    pub alias: Option<String>,
+}
+
+#[derive(Serialize, schemars::JsonSchema)]
+pub struct ImportWalletOutput {
+    seed_hash: String,
+    alias: Option<String>,
+    /// True when this seed was already present (the import was a no-op).
+    already_imported: bool,
+}
+
+impl ToolBase for ImportWallet {
+    type Parameter = ImportWalletParams;
+    type Output = ImportWalletOutput;
+    type Error = McpToolError;
+
+    fn name() -> Cow<'static, str> {
+        "core_wallet_import".into()
+    }
+
+    fn description() -> Option<Cow<'static, str>> {
+        Some(
+            "Import a wallet from a BIP-39 recovery phrase and register it on the \
+             active network, returning its seed hash. Imports unprotected (no \
+             passphrase) for headless use. Idempotent: re-importing the same \
+             phrase is a no-op that returns the existing seed hash. \
+             The 'network' parameter is required."
+                .into(),
+        )
+    }
+
+    fn annotations() -> Option<ToolAnnotations> {
+        Some(
+            ToolAnnotations::default()
+                .read_only(false)
+                .destructive(false)
+                .idempotent(true)
+                .open_world(false),
+        )
+    }
+}
+
+impl AsyncTool<DashMcpService> for ImportWallet {
+    async fn invoke(
+        service: &DashMcpService,
+        param: ImportWalletParams,
+    ) -> Result<ImportWalletOutput, McpToolError> {
+        let ctx = service
+            .ctx()
+            .await
+            .map_err(|e| McpToolError::Internal(e.to_string()))?;
+
+        if param.network.is_empty() {
+            return Err(McpToolError::InvalidParam {
+                message: "The 'network' parameter must not be empty. \
+                          Use \"mainnet\", \"testnet\", \"devnet\", or \"local\"."
+                    .to_owned(),
+            });
+        }
+        resolve::require_network(&ctx, Some(&param.network))?;
+
+        let mnemonic = bip39::Mnemonic::parse_normalized(param.mnemonic.trim()).map_err(|e| {
+            McpToolError::InvalidParam {
+                message: format!("The recovery phrase is not valid: {e}"),
+            }
+        })?;
+        let seed = mnemonic.to_seed("");
+
+        let alias = param
+            .alias
+            .as_deref()
+            .map(str::trim)
+            .filter(|a| !a.is_empty())
+            .map(str::to_owned);
+
+        let wallet =
+            crate::model::wallet::Wallet::new_from_seed(seed, ctx.network(), alias.clone(), None)
+                .map_err(McpToolError::TaskFailed)?;
+        // Capture the seed hash before `register_wallet` consumes the wallet so
+        // the already-imported branch can still report it.
+        let seed_hash = wallet.seed_hash();
+
+        match ctx.register_wallet(
+            wallet,
+            &seed,
+            crate::model::wallet::birth_height::WalletOrigin::Imported,
+        ) {
+            Ok((hash, _)) => Ok(ImportWalletOutput {
+                seed_hash: hex::encode(hash),
+                alias,
+                already_imported: false,
+            }),
+            Err(TaskError::WalletAlreadyImported) => Ok(ImportWalletOutput {
+                seed_hash: hex::encode(seed_hash),
+                alias,
+                already_imported: true,
+            }),
+            Err(e) => Err(McpToolError::TaskFailed(e)),
         }
     }
 }

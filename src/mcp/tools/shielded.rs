@@ -13,6 +13,7 @@ use crate::mcp::dispatch::dispatch_task;
 use crate::mcp::error::McpToolError;
 use crate::mcp::resolve;
 use crate::mcp::server::DashMcpService;
+use crate::mcp::tools::WalletIdParams;
 
 // ---------------------------------------------------------------------------
 // ShieldedShieldFromCore (Core -> Shielded via asset lock)
@@ -513,5 +514,276 @@ impl AsyncTool<DashMcpService> for ShieldedWithdrawTool {
                 "Unexpected task result: {other:?}"
             ))),
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ShieldedInit (warm prover + bind shielded keys)
+// ---------------------------------------------------------------------------
+
+/// Warm the Orchard prover and bind shielded keys for a wallet.
+pub struct ShieldedInit;
+
+#[derive(Serialize, schemars::JsonSchema)]
+pub struct ShieldedInitOutput {
+    /// Whether the Halo2 proving key finished building (ready for spends).
+    prover_ready: bool,
+    /// Whether the wallet's Orchard keys are bound to the shielded coordinator.
+    shielded_bound: bool,
+}
+
+impl ToolBase for ShieldedInit {
+    type Parameter = WalletIdParams;
+    type Output = ShieldedInitOutput;
+    type Error = McpToolError;
+
+    fn name() -> Cow<'static, str> {
+        "shielded_init".into()
+    }
+
+    fn description() -> Option<Cow<'static, str>> {
+        Some(
+            "Prepare a wallet for shielded operations: bind its Orchard keys and \
+             warm the proving key (~30s on first call). Idempotent — safe to call \
+             repeatedly. Run this once before shielding or transferring."
+                .into(),
+        )
+    }
+
+    fn annotations() -> Option<ToolAnnotations> {
+        Some(
+            ToolAnnotations::default()
+                .read_only(false)
+                .destructive(false)
+                .idempotent(true)
+                .open_world(true),
+        )
+    }
+}
+
+impl AsyncTool<DashMcpService> for ShieldedInit {
+    async fn invoke(
+        service: &DashMcpService,
+        param: WalletIdParams,
+    ) -> Result<ShieldedInitOutput, McpToolError> {
+        let ctx = service
+            .ctx()
+            .await
+            .map_err(|e| McpToolError::Internal(e.to_string()))?;
+        resolve::verify_network(&ctx, param.network.as_deref())?;
+        let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
+
+        // Binding rehydrates from the local shielded store and does not need a
+        // fully-synced chain, but the wallet backend must be wired so the
+        // coordinator exists and the wallet resolves. `ensure_spv_synced` is the
+        // single MCP chokepoint that wires it (idempotent on later calls).
+        resolve::ensure_spv_synced(&ctx).await?;
+
+        let backend = ctx.wallet_backend().map_err(McpToolError::TaskFailed)?;
+
+        // Bind first (fast), then warm the proving key (~30s). A successful bind
+        // guarantees the wallet is bound; report it directly.
+        backend
+            .ensure_shielded_bound_jit(&seed_hash)
+            .await
+            .map_err(McpToolError::TaskFailed)?;
+        let prover_ready = backend.warm_shielded_prover().await;
+
+        Ok(ShieldedInitOutput {
+            prover_ready,
+            shielded_bound: true,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ShieldedSync (force a coordinator sync, return fresh balance)
+// ---------------------------------------------------------------------------
+
+/// Force an immediate shielded sync and return the post-sync balance.
+pub struct ShieldedSync;
+
+#[derive(Serialize, schemars::JsonSchema)]
+pub struct ShieldedSyncOutput {
+    shielded_credits: u64,
+    shielded_duffs: u64,
+}
+
+impl ToolBase for ShieldedSync {
+    type Parameter = WalletIdParams;
+    type Output = ShieldedSyncOutput;
+    type Error = McpToolError;
+
+    fn name() -> Cow<'static, str> {
+        "shielded_sync".into()
+    }
+
+    fn description() -> Option<Cow<'static, str>> {
+        Some(
+            "Force an immediate shielded sync pass and return the wallet's \
+             post-sync shielded balance (credits and duffs). Use this to verify \
+             a balance change after a shield, transfer, unshield, or withdraw."
+                .into(),
+        )
+    }
+
+    fn annotations() -> Option<ToolAnnotations> {
+        Some(
+            ToolAnnotations::default()
+                .read_only(false)
+                .destructive(false)
+                .idempotent(true)
+                .open_world(true),
+        )
+    }
+}
+
+impl AsyncTool<DashMcpService> for ShieldedSync {
+    async fn invoke(
+        service: &DashMcpService,
+        param: WalletIdParams,
+    ) -> Result<ShieldedSyncOutput, McpToolError> {
+        let ctx = service
+            .ctx()
+            .await
+            .map_err(|e| McpToolError::Internal(e.to_string()))?;
+        resolve::verify_network(&ctx, param.network.as_deref())?;
+        let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
+
+        resolve::ensure_spv_synced(&ctx).await?;
+
+        let backend = ctx.wallet_backend().map_err(McpToolError::TaskFailed)?;
+        // `sync_now` fires `on_shielded_sync_completed` synchronously, so the
+        // push snapshot is fresh by the time this returns (Phase E writer).
+        backend.sync_shielded_now(true).await;
+
+        Ok(ShieldedSyncOutput {
+            shielded_credits: ctx.shielded_balance_credits(&seed_hash),
+            shielded_duffs: ctx.shielded_balance_duffs(&seed_hash),
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ShieldedBalanceGet (read the push snapshot, no sync)
+// ---------------------------------------------------------------------------
+
+/// Read the wallet's shielded balance from the push snapshot (no sync).
+pub struct ShieldedBalanceGet;
+
+#[derive(Serialize, schemars::JsonSchema)]
+pub struct ShieldedBalanceGetOutput {
+    shielded_credits: u64,
+    shielded_duffs: u64,
+}
+
+impl ToolBase for ShieldedBalanceGet {
+    type Parameter = WalletIdParams;
+    type Output = ShieldedBalanceGetOutput;
+    type Error = McpToolError;
+
+    fn name() -> Cow<'static, str> {
+        "shielded_balance_get".into()
+    }
+
+    fn description() -> Option<Cow<'static, str>> {
+        Some(
+            "Read the wallet's shielded balance (credits and duffs) from the last \
+             synced snapshot without triggering a sync. Returns zero when the \
+             wallet has never synced. Use shielded_sync to refresh first."
+                .into(),
+        )
+    }
+
+    fn annotations() -> Option<ToolAnnotations> {
+        Some(ToolAnnotations::default().read_only(true).open_world(false))
+    }
+}
+
+impl AsyncTool<DashMcpService> for ShieldedBalanceGet {
+    async fn invoke(
+        service: &DashMcpService,
+        param: WalletIdParams,
+    ) -> Result<ShieldedBalanceGetOutput, McpToolError> {
+        let ctx = service
+            .ctx()
+            .await
+            .map_err(|e| McpToolError::Internal(e.to_string()))?;
+        resolve::verify_network(&ctx, param.network.as_deref())?;
+        let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
+
+        // INTENTIONAL: a pure snapshot read — no SPV gate, no sync. The figure
+        // reflects the last completed shielded sync (zero if none).
+        Ok(ShieldedBalanceGetOutput {
+            shielded_credits: ctx.shielded_balance_credits(&seed_hash),
+            shielded_duffs: ctx.shielded_balance_duffs(&seed_hash),
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ShieldedAddressGet (default Orchard receive address)
+// ---------------------------------------------------------------------------
+
+/// Return the wallet's default shielded (Orchard) receive address.
+pub struct ShieldedAddressGet;
+
+#[derive(Serialize, schemars::JsonSchema)]
+pub struct ShieldedAddressGetOutput {
+    /// Bech32m Orchard address (dash1z.../tdash1z...).
+    address: String,
+}
+
+impl ToolBase for ShieldedAddressGet {
+    type Parameter = WalletIdParams;
+    type Output = ShieldedAddressGetOutput;
+    type Error = McpToolError;
+
+    fn name() -> Cow<'static, str> {
+        "shielded_address_get".into()
+    }
+
+    fn description() -> Option<Cow<'static, str>> {
+        Some(
+            "Return the wallet's default shielded (Orchard) receive address as a \
+             bech32m string, usable as the recipient for a shielded transfer. \
+             Run shielded_init first if the wallet is not yet bound."
+                .into(),
+        )
+    }
+
+    fn annotations() -> Option<ToolAnnotations> {
+        Some(ToolAnnotations::default().read_only(true).open_world(false))
+    }
+}
+
+impl AsyncTool<DashMcpService> for ShieldedAddressGet {
+    async fn invoke(
+        service: &DashMcpService,
+        param: WalletIdParams,
+    ) -> Result<ShieldedAddressGetOutput, McpToolError> {
+        let ctx = service
+            .ctx()
+            .await
+            .map_err(|e| McpToolError::Internal(e.to_string()))?;
+        resolve::verify_network(&ctx, param.network.as_deref())?;
+        let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
+
+        let backend = ctx.wallet_backend().map_err(McpToolError::TaskFailed)?;
+        let raw = backend
+            .shielded_default_address(&seed_hash, 0)
+            .await
+            .map_err(McpToolError::TaskFailed)?
+            .ok_or_else(|| McpToolError::InvalidParam {
+                message: "This wallet has no shielded address yet. \
+                          Run shielded_init first to bind its shielded keys."
+                    .to_owned(),
+            })?;
+
+        let address = dash_sdk::dpp::address_funds::OrchardAddress::from_raw_bytes(&raw)
+            .map_err(|e| McpToolError::Internal(format!("Failed to encode shielded address: {e}")))?
+            .to_bech32m_string(ctx.network());
+
+        Ok(ShieldedAddressGetOutput { address })
     }
 }

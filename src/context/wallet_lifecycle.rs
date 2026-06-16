@@ -1662,36 +1662,110 @@ mod tests {
                 crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
                     .expect("build wallet");
             let seed_hash = wallet.seed_hash();
+            let det_master_bip44 = wallet.master_bip44_ecdsa_extended_public_key;
 
-            // W1 create/import: writes seed envelope + wallet-meta sidecar
-            // (synchronously) and spawns the upstream persistor registration.
-            ctx.register_wallet(wallet, &seed, WalletOrigin::Imported)
-                .expect("register_wallet (W1)");
+            // Write the wallet-meta sidecar (the seedless bridge key) DIRECTLY —
+            // avoid `register_wallet`, which spawns an upstream-registration
+            // subtask that keeps an `Arc<WalletBackend>` (and the shared app_kv
+            // handle) alive and blocks the cold-boot reopen below.
+            backend
+                .wallet_meta()
+                .set(
+                    Network::Testnet,
+                    &seed_hash,
+                    &crate::model::wallet::meta::WalletMeta {
+                        alias: String::new(),
+                        is_main: false,
+                        core_wallet_name: None,
+                        xpub_encoded: det_master_bip44.encode().to_vec(),
+                    },
+                )
+                .expect("write wallet-meta sidecar");
 
-            // Drive the persistor registration deterministically (the same call
-            // the spawned W1 subtask makes); idempotent if the spawn already ran.
+            // W1 upstream registration via the REAL create_wallet_from_seed_bytes
+            // writer (awaited, no spawn). Confirms the FRESH in-memory create
+            // resolves through the gate.
             backend
                 .register_wallet_from_seed(&seed_hash, &seed, Some(0))
                 .await
                 .expect("W1 upstream registration must succeed on first boot");
-            assert!(
-                backend.is_wallet_registered(&seed_hash),
-                "precondition: wallet must register in-process on first boot"
-            );
-            // Capture the bridge side for diagnostics.
-            let meta_xpub = backend
-                .wallet_meta()
-                .get(Network::Testnet, &seed_hash)
-                .map(|m| m.xpub_encoded)
-                .unwrap_or_default();
+            let registered_first_boot = backend.is_wallet_registered(&seed_hash);
             eprintln!(
-                "ISSUE7 first-boot: registered=true meta_xpub_len={} meta_xpub_empty={}",
-                meta_xpub.len(),
-                meta_xpub.is_empty()
+                "ISSUE7 first-boot: registered={} (fresh in-memory create through the gate)",
+                registered_first_boot
             );
+            assert!(
+                registered_first_boot,
+                "precondition: a fresh in-memory create must resolve through the gate"
+            );
+            let meta_xpub = det_master_bip44.encode().to_vec();
 
             backend.shutdown().await;
+            // Drain ctx1's subtasks + drop everything so the persistor + app_kv
+            // advisory locks release before the cold-boot reopen.
+            let _ = ctx.subtasks.shutdown_async().await;
+            drop(backend);
+            drop(ctx);
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             (seed_hash, meta_xpub)
+        };
+
+        // ---- COLD BOOT: real load_from_persistor over the SAME persistor ----
+        // This is the decisive cycle: a CURRENT-binary-written wallet, reloaded
+        // through the upstream seedless path, run through the SAME fund-routing
+        // gate. Does it survive create -> persist -> reload -> gate?
+        //
+        // The offline harness can't always release the shared app_kv advisory
+        // lock in-process (a lingering upstream subtask holds an
+        // `Arc<WalletBackend>`), so build the cold-boot context with a FALLIBLE
+        // app_kv open: if it's AlreadyOpen, skip the live reload and rely on the
+        // exact blob-decode equivalent below (the same `Account::from_xpub` of
+        // the stored manifest that `load_from_persistor` performs).
+        let cold_boot_registered = {
+            let data_dir = temp_dir.path().to_path_buf();
+            match (
+                AppContext::open_app_kv(&data_dir),
+                AppContext::open_secret_store(&data_dir),
+            ) {
+                (Ok(app_kv), Ok(secret_store)) => {
+                    let db = Arc::new(
+                        create_database_at_path(&data_dir.join("data.db"))
+                            .expect("reopen test database"),
+                    );
+                    let ctx2 = AppContext::new(
+                        data_dir,
+                        Network::Testnet,
+                        db,
+                        Arc::new(TaskManager::new()),
+                        Arc::new(ConnectionStatus::new()),
+                        egui::Context::default(),
+                        app_kv,
+                        secret_store,
+                    )
+                    .expect("cold-boot AppContext::new");
+                    let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+                    let sender2 = SenderAsync::new(tx, ctx2.egui_ctx().clone());
+                    ctx2.ensure_wallet_backend(sender2)
+                        .await
+                        .expect("ensure_wallet_backend (cold boot)");
+                    let backend2 = ctx2.wallet_backend().expect("backend wired (cold boot)");
+                    // WalletBackend::new ran the seedless load_from_persistor pass.
+                    let registered = backend2.is_wallet_registered(&seed_hash);
+                    let watched = backend2.wallet_count().await;
+                    eprintln!(
+                        "ISSUE7 COLD-BOOT (real load_from_persistor): registered={registered} watched_count={watched}"
+                    );
+                    backend2.shutdown().await;
+                    let _ = ctx2.subtasks.shutdown_async().await;
+                    Some(registered)
+                }
+                _ => {
+                    eprintln!(
+                        "ISSUE7 COLD-BOOT reopen blocked (app_kv AlreadyOpen, harness limit) — using the blob-decode equivalent below"
+                    );
+                    None
+                }
+            }
         };
         let _ = seed_hash;
 
@@ -1782,7 +1856,16 @@ mod tests {
             );
             assert_eq!(
                 stored_xpub_encoded, meta_xpub,
-                "ISSUE7 REPRODUCED: the seedless-reloaded BIP44 account-0 xpub != the bridge meta xpub — the fund-routing gate rejects every wallet on a fresh cold boot"
+                "ISSUE7 REPRODUCED (blob decode): the seedless-reloaded BIP44 account-0 xpub != the bridge meta xpub — the fund-routing gate rejects every wallet on a fresh cold boot"
+            );
+        }
+
+        // DECISIVE: if the real cold-boot reopen ran, a CURRENT-binary-written
+        // wallet must survive create -> persist -> load_from_persistor -> gate.
+        if let Some(registered) = cold_boot_registered {
+            assert!(
+                registered,
+                "ISSUE7 REPRODUCED (real load_from_persistor): a current-binary wallet is NOT resolved after cold-boot seedless reload — systematic WalletNotLoaded"
             );
         }
     }

@@ -4,7 +4,10 @@ use dash_evo_tool::*;
 
 use crate::app_dir::{app_user_data_dir_path, create_app_user_data_directory_if_not_exists};
 use crate::cpu_compatibility::check_cpu_compatibility;
-use crate::logging::{capture_stderr_to_file, initialize_logger, install_fatal_signal_handler};
+use crate::logging::{
+    capture_stderr_to_file, initialize_logger, install_fatal_signal_handler,
+    report_startup_failure_to_terminal,
+};
 
 fn main() -> eframe::Result<()> {
     create_app_user_data_directory_if_not_exists()
@@ -32,7 +35,16 @@ fn main() -> eframe::Result<()> {
         .expect("multi-threading runtime cannot be initialized");
 
     // Run the native application
-    runtime.block_on(start(&app_data_dir))
+    let result = runtime.block_on(start(&app_data_dir));
+    if let Err(e) = &result {
+        // Full technical detail to det.log; the returned Err's Debug repr still
+        // reaches the redirected det-stderr.log via default termination.
+        tracing::error!(error = ?e, "Dash Evo Tool failed to start");
+        // Generic, actionable notice to the real terminal (fd 2 is redirected
+        // to the sidecar log, so this writes to the preserved original stderr).
+        report_startup_failure_to_terminal();
+    }
+    result
 }
 
 fn load_icon() -> egui::IconData {

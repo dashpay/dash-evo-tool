@@ -3,13 +3,19 @@ use chrono::{Duration, Local};
 use std::backtrace::Backtrace;
 use std::fs;
 use std::panic;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Once;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
 static INIT_LOGGER: Once = Once::new();
+
+/// Duplicate of the real terminal stderr (fd 2), saved before it is redirected
+/// to the crash sidecar. Lets [`report_startup_failure_to_terminal`] surface a
+/// user-facing notice on the terminal even while fd 2 points at the log file.
+/// `-1` means no handle was preserved (capture skipped or `dup` failed).
+static ORIGINAL_STDERR_FD: AtomicI32 = AtomicI32::new(-1);
 
 /// Whether the tracing subscriber writes to the on-disk log file (`det.log`).
 ///
@@ -179,6 +185,14 @@ fn redirect_stderr_to(path: &Path) {
         }
     };
 
+    // fd 2 is about to point at the sidecar; keep a handle to the real terminal
+    // so a startup-failure notice can still reach the user (see ORIGINAL_STDERR_FD).
+    // SAFETY: `dup` only reads the fd table; STDERR_FILENO (2) is valid here.
+    let saved_fd = unsafe { nix::libc::dup(nix::libc::STDERR_FILENO) };
+    if saved_fd >= 0 {
+        ORIGINAL_STDERR_FD.store(saved_fd, Ordering::SeqCst);
+    }
+
     // SAFETY: `dup2` only manipulates the file-descriptor table. `file`'s fd is
     // valid for the duration of the call, and `STDERR_FILENO` (2) is the
     // standard error descriptor. On success fd 2 is rebound to the sidecar
@@ -294,6 +308,69 @@ fn install_fatal_signal_handler_impl() {
     tracing::warn!(
         "Fatal-signal capture is only implemented on Unix; native faults may leave no marker on this platform"
     );
+}
+
+/// Builds the calm, generic notice shown on the terminal when startup fails.
+///
+/// Pure function: names what happened and lists each provided log path on its
+/// own line, with no raw error text, no jargon, and no support redirect. Side
+/// effect free so it can be unit-tested directly.
+fn startup_failure_message(log_paths: &[PathBuf]) -> String {
+    let mut message = String::from("Dash Evo Tool failed to start.\n");
+    if log_paths.is_empty() {
+        message.push_str("Please try again, and report the problem if it keeps happening.\n");
+        return message;
+    }
+    message.push_str(
+        "Details were written to the log files below. Please check them, or include them when reporting the problem:\n",
+    );
+    for path in log_paths {
+        message.push_str("  ");
+        message.push_str(&path.display().to_string());
+        message.push('\n');
+    }
+    message
+}
+
+/// Writes a generic startup-failure notice to the real terminal.
+///
+/// Best-effort: resolves the log paths, builds the message, and writes it to the
+/// preserved terminal stderr (fd 2 is redirected to the sidecar during a normal
+/// run). Never panics; write errors are ignored.
+pub fn report_startup_failure_to_terminal() {
+    let log_paths: Vec<PathBuf> = ["det.log", "det-stderr.log"]
+        .into_iter()
+        .filter_map(|name| app_user_data_file_path(name).ok())
+        .collect();
+    let message = startup_failure_message(&log_paths);
+    write_to_terminal(message.as_bytes());
+}
+
+/// Writes `bytes` to the real terminal, best-effort.
+#[cfg(unix)]
+fn write_to_terminal(bytes: &[u8]) {
+    // Use the preserved terminal handle if we captured one; otherwise fd 2 is
+    // still the terminal (capture skipped or failed), so write straight to it.
+    let saved = ORIGINAL_STDERR_FD.load(Ordering::SeqCst);
+    let fd = if saved >= 0 {
+        saved
+    } else {
+        nix::libc::STDERR_FILENO
+    };
+    // SAFETY: `write` only touches the given fd and reads `bytes` for its length.
+    // A single best-effort write is enough for a short message; failures are
+    // ignored because there is nothing useful to do at terminating startup.
+    unsafe {
+        nix::libc::write(fd, bytes.as_ptr() as *const nix::libc::c_void, bytes.len());
+    }
+}
+
+/// Writes `bytes` to the terminal, best-effort.
+#[cfg(not(unix))]
+fn write_to_terminal(bytes: &[u8]) {
+    // stderr is not redirected on non-Unix targets, so a plain write reaches the
+    // terminal. Lossy UTF-8 is fine here — the message is ASCII.
+    eprint!("{}", String::from_utf8_lossy(bytes));
 }
 
 fn rotate_log_file() {
@@ -465,6 +542,40 @@ mod tests {
         let marker = marker_for_signal(nix::libc::SIGUSR1);
         let text = std::str::from_utf8(marker).expect("marker is utf8");
         assert!(text.contains("unexpected signal"), "got {text:?}");
+    }
+
+    #[test]
+    fn startup_failure_message_states_failure_and_lists_each_path() {
+        let paths = vec![
+            PathBuf::from("/tmp/data/det.log"),
+            PathBuf::from("/tmp/data/det-stderr.log"),
+        ];
+        let message = startup_failure_message(&paths);
+
+        assert!(
+            message.contains("failed to start"),
+            "message should state the app failed to start, got {message:?}"
+        );
+        for path in &paths {
+            assert!(
+                message.contains(&path.display().to_string()),
+                "message should list {path:?}, got {message:?}"
+            );
+        }
+        // No raw error text and no "contact support" redirect (project rule).
+        assert!(
+            !message.to_lowercase().contains("contact support"),
+            "message must not redirect to support, got {message:?}"
+        );
+    }
+
+    #[test]
+    fn startup_failure_message_omits_path_list_when_empty() {
+        let message = startup_failure_message(&[]);
+        assert!(
+            message.contains("failed to start"),
+            "message should still state the failure, got {message:?}"
+        );
     }
 
     #[test]

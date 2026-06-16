@@ -2991,4 +2991,84 @@ mod tests {
             "heal must not touch the wallet row"
         );
     }
+
+    /// Issue #7 regression guard: on a FRESH wallet the fund-routing gate's two
+    /// BIP44 account-0 xpubs must agree byte-for-byte. Two independent
+    /// `from_seed_bytes(Default)` builds (the gate's expected vs just-created
+    /// sides), DET's published `master_bip44_ecdsa_extended_public_key`, and a
+    /// bincode persist round-trip (the watch-only reload path) must ALL encode
+    /// identically — same depth/parent_fingerprint/child_number, not just
+    /// pubkey+chaincode. If this ever diverges, the gate rejects fresh wallets
+    /// and every wallet dead-ends in `WalletNotLoaded`. Empirically the layers
+    /// agree (issue #7 is not a pure-derivation/persistence defect).
+    #[test]
+    fn fresh_bip44_account0_xpub_is_stable_across_gate_sides() {
+        use dash_sdk::dpp::key_wallet::account::{AccountType, StandardAccountType};
+        use dash_sdk::dpp::key_wallet::wallet::Wallet as UpstreamWallet;
+        use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOptions;
+
+        let seed = [0x42u8; 64];
+        let network = Network::Testnet;
+
+        let find_bip44_0 = |w: &UpstreamWallet| {
+            w.accounts
+                .all_accounts()
+                .into_iter()
+                .find(|a| {
+                    matches!(
+                        a.account_type,
+                        AccountType::Standard {
+                            index: 0,
+                            standard_account_type: StandardAccountType::BIP44Account,
+                        }
+                    )
+                })
+                .map(|a| a.account_xpub)
+                .expect("a fresh Default wallet must contain a BIP44 account-0")
+        };
+
+        let a = find_bip44_0(
+            &UpstreamWallet::from_seed_bytes(seed, network, WalletAccountCreationOptions::Default)
+                .expect("wallet a"),
+        );
+        let b = find_bip44_0(
+            &UpstreamWallet::from_seed_bytes(seed, network, WalletAccountCreationOptions::Default)
+                .expect("wallet b"),
+        );
+        assert_eq!(
+            a.encode(),
+            b.encode(),
+            "two fresh from_seed_bytes BIP44 account-0 xpubs must encode identically"
+        );
+
+        let det = crate::model::wallet::Wallet::new_from_seed(seed, network, None, None)
+            .expect("DET wallet");
+        assert_eq!(
+            det.master_bip44_ecdsa_extended_public_key.encode(),
+            a.encode(),
+            "DET's published xpub must match the upstream-derived one (the bridge invariant)"
+        );
+
+        // Watch-only reload path: the persister stores the xpub as a bincode
+        // blob and the loader reads it back. That round-trip must not change the
+        // encoding, or a freshly-registered wallet would fail the gate on the
+        // next boot.
+        use platform_wallet::changeset::AccountRegistrationEntry;
+        let entry = AccountRegistrationEntry {
+            account_type: AccountType::Standard {
+                index: 0,
+                standard_account_type: StandardAccountType::BIP44Account,
+            },
+            account_xpub: a,
+        };
+        let cfg = bincode::config::standard();
+        let bytes = bincode::serde::encode_to_vec(&entry, cfg).expect("encode entry");
+        let (decoded, _): (AccountRegistrationEntry, usize) =
+            bincode::serde::decode_from_slice(&bytes, cfg).expect("decode entry");
+        assert_eq!(
+            decoded.account_xpub.encode(),
+            a.encode(),
+            "bincode round-trip must preserve the account xpub encoding"
+        );
+    }
 }

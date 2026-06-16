@@ -661,7 +661,7 @@ pub async fn shield_from_asset_lock(
 fn shield_confirmation_error(e: dash_sdk::Error) -> TaskError {
     tracing::warn!("Shield from asset lock broadcast succeeded but confirmation wait failed: {e}");
     TaskError::ShieldedConfirmationUnknown {
-        source: Box::new(e),
+        source: Box::new(platform_wallet::error::PlatformWalletError::Sdk(e)),
     }
 }
 
@@ -671,7 +671,7 @@ fn shield_confirmation_error(e: dash_sdk::Error) -> TaskError {
 fn shield_credits_confirmation_error(e: dash_sdk::Error) -> TaskError {
     tracing::warn!("Shield credits broadcast succeeded but confirmation wait failed: {e}");
     TaskError::ShieldCreditsConfirmationUnknown {
-        source: Box::new(e),
+        source: Box::new(platform_wallet::error::PlatformWalletError::Sdk(e)),
     }
 }
 
@@ -682,7 +682,7 @@ fn shield_credits_confirmation_error(e: dash_sdk::Error) -> TaskError {
 fn shielded_transfer_confirmation_error(e: dash_sdk::Error) -> TaskError {
     tracing::warn!("Shielded transfer broadcast succeeded but confirmation wait failed: {e}");
     TaskError::ShieldedTransferConfirmationUnknown {
-        source: Box::new(e),
+        source: Box::new(platform_wallet::error::PlatformWalletError::Sdk(e)),
     }
 }
 
@@ -693,7 +693,7 @@ fn shielded_transfer_confirmation_error(e: dash_sdk::Error) -> TaskError {
 fn unshield_confirmation_error(e: dash_sdk::Error) -> TaskError {
     tracing::warn!("Unshield credits broadcast succeeded but confirmation wait failed: {e}");
     TaskError::UnshieldConfirmationUnknown {
-        source: Box::new(e),
+        source: Box::new(platform_wallet::error::PlatformWalletError::Sdk(e)),
     }
 }
 
@@ -704,7 +704,7 @@ fn unshield_confirmation_error(e: dash_sdk::Error) -> TaskError {
 fn shielded_withdrawal_confirmation_error(e: dash_sdk::Error) -> TaskError {
     tracing::warn!("Shielded withdrawal broadcast succeeded but confirmation wait failed: {e}");
     TaskError::ShieldedWithdrawalConfirmationUnknown {
-        source: Box::new(e),
+        source: Box::new(platform_wallet::error::PlatformWalletError::Sdk(e)),
     }
 }
 
@@ -962,7 +962,9 @@ mod tests {
     #[test]
     fn unknown_confirmation_message_is_actionable_and_jargon_free() {
         let err = TaskError::ShieldedConfirmationUnknown {
-            source: Box::new(dash_sdk::Error::Generic("boom".to_string())),
+            source: Box::new(platform_wallet::error::PlatformWalletError::Sdk(
+                dash_sdk::Error::Generic("boom".to_string()),
+            )),
         };
         let msg = err.to_string();
         assert!(
@@ -1020,19 +1022,27 @@ mod tests {
     fn spend_confirmation_messages_are_actionable_and_jargon_free() {
         let messages = [
             TaskError::ShieldCreditsConfirmationUnknown {
-                source: Box::new(dash_sdk::Error::Generic("boom".into())),
+                source: Box::new(platform_wallet::error::PlatformWalletError::Sdk(
+                    dash_sdk::Error::Generic("boom".into()),
+                )),
             }
             .to_string(),
             TaskError::ShieldedTransferConfirmationUnknown {
-                source: Box::new(dash_sdk::Error::Generic("boom".into())),
+                source: Box::new(platform_wallet::error::PlatformWalletError::Sdk(
+                    dash_sdk::Error::Generic("boom".into()),
+                )),
             }
             .to_string(),
             TaskError::UnshieldConfirmationUnknown {
-                source: Box::new(dash_sdk::Error::Generic("boom".into())),
+                source: Box::new(platform_wallet::error::PlatformWalletError::Sdk(
+                    dash_sdk::Error::Generic("boom".into()),
+                )),
             }
             .to_string(),
             TaskError::ShieldedWithdrawalConfirmationUnknown {
-                source: Box::new(dash_sdk::Error::Generic("boom".into())),
+                source: Box::new(platform_wallet::error::PlatformWalletError::Sdk(
+                    dash_sdk::Error::Generic("boom".into()),
+                )),
             }
             .to_string(),
         ];

@@ -2132,9 +2132,6 @@ impl WalletBackend {
     // are unconditionally available.  Consumers are wired in Phase C; until
     // then the `#[allow(dead_code)]` attributes below suppress clippy/rustc
     // lint errors from `-D warnings`.
-    //
-    // Phase B uses `map_shielded_error` for error mapping.  Phase F replaces
-    // it with the fully exhaustive `map_shielded_op_error`.
 
     /// Resolve the network-scoped shielded coordinator.
     ///
@@ -2189,19 +2186,18 @@ impl WalletBackend {
     /// owns the full IS→CL fallback + `consume_asset_lock` path.  A single
     /// `(recipient, None)` entry passes the whole lock value (minus the flat
     /// shielded fee) to `recipient`.
+    ///
+    /// The Orchard prover is created internally via
+    /// `CachedOrchardProver::new()` — callers do not supply a prover.
     #[allow(dead_code, clippy::too_many_arguments)]
-    pub(crate) async fn shield_from_asset_lock<P>(
+    pub(crate) async fn shield_from_asset_lock(
         &self,
         seed_hash: &WalletSeedHash,
         funding: platform_wallet::wallet::asset_lock::AssetLockFunding,
         recipient: dash_sdk::dpp::address_funds::OrchardAddress,
         dummy_outputs: usize,
-        prover: P,
         settings: Option<dash_sdk::platform::transition::put_settings::PutSettings>,
-    ) -> Result<(), TaskError>
-    where
-        P: dash_sdk::dpp::shielded::builder::OrchardProver + Send,
-    {
+    ) -> Result<(), TaskError> {
         let coordinator = self.shielded_coordinator_arc().await?;
         let scope = Self::hd_scope(seed_hash);
         self.inner
@@ -2210,19 +2206,20 @@ impl WalletBackend {
                 let asset_lock_signer =
                     DetSigner::from_held(session.plaintext(), self.inner.network);
                 let wallet = self.resolve_wallet(seed_hash).await?;
+                let prover = platform_wallet::wallet::shielded::CachedOrchardProver::new();
                 wallet
                     .shielded_fund_from_asset_lock(
                         &coordinator,
                         funding,
                         vec![(recipient, None)],
                         &asset_lock_signer,
-                        prover,
+                        &prover,
                         None,
                         dummy_outputs,
                         settings,
                     )
                     .await
-                    .map_err(map_shielded_error)
+                    .map_err(map_shielded_op_error)
             })
             .await
     }
@@ -2233,19 +2230,18 @@ impl WalletBackend {
     /// `DetPlatformSigner` built from the held JIT seed and `path_index`.
     /// Build `path_index` via `PlatformPathIndex::from_wallet` before calling —
     /// the same pattern as `fund_platform_address`.
+    ///
+    /// The Orchard prover is created internally via
+    /// `CachedOrchardProver::new()` — callers do not supply a prover.
     #[allow(dead_code)]
-    pub(crate) async fn shield_from_balance<P>(
+    pub(crate) async fn shield_from_balance(
         &self,
         seed_hash: &WalletSeedHash,
         path_index: &PlatformPathIndex,
         shielded_account: u32,
         payment_account: u32,
         amount: u64,
-        prover: P,
-    ) -> Result<(), TaskError>
-    where
-        P: dash_sdk::dpp::shielded::builder::OrchardProver + Send,
-    {
+    ) -> Result<(), TaskError> {
         let coordinator = self.shielded_coordinator_arc().await?;
         let scope = Self::hd_scope(seed_hash);
         self.inner
@@ -2255,6 +2251,7 @@ impl WalletBackend {
                 let seed = plaintext.expose_hd_seed().ok_or(TaskError::WalletLocked)?;
                 let signer = DetPlatformSigner::from_held(seed, self.inner.network, path_index);
                 let wallet = self.resolve_wallet(seed_hash).await?;
+                let prover = platform_wallet::wallet::shielded::CachedOrchardProver::new();
                 wallet
                     .shielded_shield_from_account(
                         &coordinator,
@@ -2262,10 +2259,10 @@ impl WalletBackend {
                         payment_account,
                         amount,
                         &signer,
-                        prover,
+                        &prover,
                     )
                     .await
-                    .map_err(map_shielded_error)
+                    .map_err(map_shielded_op_error)
             })
             .await
     }
@@ -2274,21 +2271,21 @@ impl WalletBackend {
     ///
     /// No seed scope needed — the Orchard ASK is already resident in the
     /// wallet's bound `shielded_keys` slot from `ensure_shielded_bound`.
+    ///
+    /// The Orchard prover is created internally via
+    /// `CachedOrchardProver::new()` — callers do not supply a prover.
     #[allow(dead_code)]
-    pub(crate) async fn shielded_transfer<P>(
+    pub(crate) async fn shielded_transfer(
         &self,
         seed_hash: &WalletSeedHash,
         account: u32,
         recipient_raw_43: &[u8; 43],
         amount: u64,
         memo: [u8; 36],
-        prover: P,
-    ) -> Result<(), TaskError>
-    where
-        P: dash_sdk::dpp::shielded::builder::OrchardProver + Send,
-    {
+    ) -> Result<(), TaskError> {
         let coordinator = self.shielded_coordinator_arc().await?;
         let wallet = self.resolve_wallet(seed_hash).await?;
+        let prover = platform_wallet::wallet::shielded::CachedOrchardProver::new();
         wallet
             .shielded_transfer_to(
                 &coordinator,
@@ -2296,60 +2293,60 @@ impl WalletBackend {
                 recipient_raw_43,
                 amount,
                 memo,
-                prover,
+                &prover,
             )
             .await
-            .map_err(map_shielded_error)
+            .map_err(map_shielded_op_error)
     }
 
     /// Unshield from `account`'s notes to a transparent platform address
     /// (bech32m `"dash1…"` / `"tdash1…"` string).
     ///
     /// No seed scope needed — keys are already bound.
+    ///
+    /// The Orchard prover is created internally via
+    /// `CachedOrchardProver::new()` — callers do not supply a prover.
     #[allow(dead_code)]
-    pub(crate) async fn shielded_unshield<P>(
+    pub(crate) async fn shielded_unshield(
         &self,
         seed_hash: &WalletSeedHash,
         account: u32,
         to_platform_addr_bech32m: &str,
         amount: u64,
-        prover: P,
-    ) -> Result<(), TaskError>
-    where
-        P: dash_sdk::dpp::shielded::builder::OrchardProver + Send,
-    {
+    ) -> Result<(), TaskError> {
         let coordinator = self.shielded_coordinator_arc().await?;
         let wallet = self.resolve_wallet(seed_hash).await?;
+        let prover = platform_wallet::wallet::shielded::CachedOrchardProver::new();
         wallet
             .shielded_unshield_to(
                 &coordinator,
                 account,
                 to_platform_addr_bech32m,
                 amount,
-                prover,
+                &prover,
             )
             .await
-            .map_err(map_shielded_error)
+            .map_err(map_shielded_op_error)
     }
 
     /// Withdraw from `account`'s notes to a Core L1 address (Base58Check).
     ///
     /// No seed scope needed — keys are already bound.
+    ///
+    /// The Orchard prover is created internally via
+    /// `CachedOrchardProver::new()` — callers do not supply a prover.
     #[allow(dead_code)]
-    pub(crate) async fn shielded_withdraw<P>(
+    pub(crate) async fn shielded_withdraw(
         &self,
         seed_hash: &WalletSeedHash,
         account: u32,
         to_core_address: &str,
         amount: u64,
         core_fee_per_byte: u32,
-        prover: P,
-    ) -> Result<(), TaskError>
-    where
-        P: dash_sdk::dpp::shielded::builder::OrchardProver + Send,
-    {
+    ) -> Result<(), TaskError> {
         let coordinator = self.shielded_coordinator_arc().await?;
         let wallet = self.resolve_wallet(seed_hash).await?;
+        let prover = platform_wallet::wallet::shielded::CachedOrchardProver::new();
         wallet
             .shielded_withdraw_to(
                 &coordinator,
@@ -2357,10 +2354,10 @@ impl WalletBackend {
                 to_core_address,
                 amount,
                 core_fee_per_byte,
-                prover,
+                &prover,
             )
             .await
-            .map_err(map_shielded_error)
+            .map_err(map_shielded_op_error)
     }
 
     /// Per-account unspent shielded balance for `seed_hash`'s wallet.
@@ -2509,31 +2506,108 @@ impl WalletBackend {
     }
 }
 
+/// Map a [`PlatformWalletError`] from any shielded operation to the correct
+/// [`TaskError`] variant.
+///
+/// **Exhaustive — no `_` arm** on the outer match so a future upstream variant
+/// addition forces a review here instead of silently falling through to
+/// [`TaskError::WalletBackend`].
+///
+/// [`ShieldedSpendUnconfirmed`](platform_wallet::error::PlatformWalletError::ShieldedSpendUnconfirmed)
+/// is pre-flighted before the exhaustive match because `operation` is
+/// `&'static str` (not an enum): we copy it out without consuming `e`, then
+/// route to the correct per-op `*ConfirmationUnknown` variant.  Unknown
+/// `operation` values (future upstream ops) fall through to `WalletBackend`.
 #[allow(dead_code)]
-/// Basic shielded-op error mapper (Phase B).
-///
-/// Handles the two cases that need distinct `TaskError` variants before the
-/// full exhaustive `map_shielded_op_error` is wired in Phase F:
-///
-/// - `ShieldedNotBound` → [`TaskError::ShieldedNotBound`] (bind not called).
-/// - Asset-lock finality failures → [`TaskError::AssetLockFinalityTimeout`]
-///   (IS deadline / IS-expired / CL fallback, same as identity ops).
-/// - Everything else → [`TaskError::WalletBackend`].
-///
-/// Phase F replaces this with the full exhaustive mapper that routes
-/// `ShieldedSpendUnconfirmed{operation}` to the correct per-op
-/// `*ConfirmationUnknown` variant.
-fn map_shielded_error(e: platform_wallet::error::PlatformWalletError) -> TaskError {
+fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> TaskError {
     use platform_wallet::error::PlatformWalletError as P;
-    if let P::ShieldedNotBound = e {
-        return TaskError::ShieldedNotBound;
+
+    // Pre-flight: route ShieldedSpendUnconfirmed by operation name.
+    // `operation` is `&'static str` (Copy) — extract without consuming `e`.
+    let maybe_op = match &e {
+        P::ShieldedSpendUnconfirmed { operation, .. } => Some(*operation),
+        _ => None,
+    };
+    if let Some(op) = maybe_op {
+        return match op {
+            "shield" => TaskError::ShieldCreditsConfirmationUnknown {
+                source: Box::new(e),
+            },
+            "transfer" => TaskError::ShieldedTransferConfirmationUnknown {
+                source: Box::new(e),
+            },
+            "unshield" => TaskError::UnshieldConfirmationUnknown {
+                source: Box::new(e),
+            },
+            "withdraw" => TaskError::ShieldedWithdrawalConfirmationUnknown {
+                source: Box::new(e),
+            },
+            // Future operation name from a newer upstream — fall through to
+            // WalletBackend rather than silently discarding the error.
+            _ => TaskError::WalletBackend {
+                source: Box::new(e),
+            },
+        };
     }
-    match identity_op_error_kind(&e) {
-        IdentityOpErrorKind::FinalityTimeout => TaskError::AssetLockFinalityTimeout {
-            source: Box::new(e),
+
+    // Exhaustive match — no `_` arm.
+    match e {
+        P::ShieldedNotBound => TaskError::ShieldedNotBound,
+
+        // Asset-lock finality failures (IS deadline / IS-expired / CL fallback).
+        other @ (P::FinalityTimeout(_)
+        | P::AssetLockProofWait(_)
+        | P::AssetLockExpired(_)
+        | P::AssetLockNotChainLocked(_)) => TaskError::AssetLockFinalityTimeout {
+            source: Box::new(other),
         },
-        IdentityOpErrorKind::Rejected | IdentityOpErrorKind::Other => TaskError::WalletBackend {
-            source: Box::new(e),
+
+        // ShieldedSpendUnconfirmed handled by the pre-flight above — unreachable.
+        P::ShieldedSpendUnconfirmed { .. } => unreachable!("handled by pre-flight"),
+
+        // Every remaining variant → generic WalletBackend wrapper.
+        other @ (P::WalletCreation(_)
+        | P::RehydrationTopologyUnsupported { .. }
+        | P::WalletNotFound(_)
+        | P::WalletAlreadyExists(_)
+        | P::IdentityAlreadyExists(_)
+        | P::IdentityNotFound(_)
+        | P::NoPrimaryIdentity
+        | P::InvalidIdentityData(_)
+        | P::ContactRequestNotFound(_)
+        | P::IdentityIndexNotSet(_)
+        | P::DashpayReceivingAccountAlreadyExists { .. }
+        | P::DashpayExternalAccountAlreadyExists { .. }
+        | P::AssetLockTransaction(_)
+        | P::TransactionBroadcast(_)
+        | P::TransactionBuild(_)
+        | P::NoSpendableInputs { .. }
+        | P::Sdk(_)
+        | P::AddressSync(_)
+        | P::AddressOperation(_)
+        | P::OnlyOutputAddressesFunded { .. }
+        | P::OnlyDustInputs { .. }
+        | P::ChangeBelowMinimumOutput { .. }
+        | P::InputSumOverflow
+        | P::AddressNotFound(_)
+        | P::KeyDerivation(_)
+        | P::WalletLocked
+        | P::SpvAlreadyRunning
+        | P::NoWalletsConfigured
+        | P::SpvNotRunning
+        | P::SpvError(_)
+        | P::TokenError(_)
+        | P::ShieldedNoUnspentNotes
+        | P::ShieldedInsufficientBalance { .. }
+        | P::ShieldedBuildError(_)
+        | P::ShieldedBroadcastFailed(_)
+        | P::ShieldedBroadcastUnconfirmed { .. }
+        | P::ShieldedSyncFailed(_)
+        | P::ShieldedTreeUpdateFailed(_)
+        | P::ShieldedStoreError(_)
+        | P::ShieldedMerkleWitnessUnavailable(_)
+        | P::ShieldedKeyDerivation(_)) => TaskError::WalletBackend {
+            source: Box::new(other),
         },
     }
 }

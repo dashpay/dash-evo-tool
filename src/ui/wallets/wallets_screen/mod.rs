@@ -483,9 +483,10 @@ impl WalletsBalancesScreen {
         if let Ok(wallets_guard) = self.app_context.wallets.read() {
             for wallet in wallets_guard.values() {
                 let guard = wallet.read().unwrap();
-                let core_balance = self.core_balance_duffs(&guard.seed_hash());
-                let platform_balance = Self::platform_balance_duffs(&guard);
-                let shielded_balance = self.shielded_balance_duffs(&guard.seed_hash());
+                let seed_hash = guard.seed_hash();
+                let core_balance = self.core_balance_duffs(&seed_hash);
+                let platform_balance = self.platform_balance_duffs(&seed_hash);
+                let shielded_balance = self.shielded_balance_duffs(&seed_hash);
                 let balance_dash =
                     (core_balance + platform_balance + shielded_balance) as f64 * 1e-8;
                 let label = format!(
@@ -549,9 +550,10 @@ impl WalletsBalancesScreen {
                 .read()
                 .ok()
                 .map(|g| {
-                    let core = self.core_balance_duffs(&g.seed_hash());
-                    let platform = Self::platform_balance_duffs(&g);
-                    let shielded = self.shielded_balance_duffs(&g.seed_hash());
+                    let seed_hash = g.seed_hash();
+                    let core = self.core_balance_duffs(&seed_hash);
+                    let platform = self.platform_balance_duffs(&seed_hash);
+                    let shielded = self.shielded_balance_duffs(&seed_hash);
                     core + platform + shielded
                 })
                 .unwrap_or(0)
@@ -1003,14 +1005,13 @@ impl WalletsBalancesScreen {
             .unwrap_or_else(|| "Unknown".to_string())
     }
 
-    fn platform_balance_duffs(wallet: &Wallet) -> u64 {
-        // Only sum Platform address balances
-        // Identity balances are shown separately on the Identities screen
-        wallet
-            .platform_address_info
-            .values()
-            .map(|info| info.balance / CREDITS_PER_DUFF)
-            .sum()
+    /// Platform-address balance in duffs, read from the coordinator-push snapshot.
+    ///
+    /// The snapshot is written by `on_platform_address_sync_completed` in `EventBridge`
+    /// and contains only OWNED addresses (no orphan inflation). Safe to call from the
+    /// egui frame loop — synchronous, no blocking I/O (Nagatha ruling).
+    fn platform_balance_duffs(&self, seed_hash: &WalletSeedHash) -> u64 {
+        self.app_context.platform_balance_duffs(seed_hash)
     }
 
     fn shielded_balance_duffs(&self, seed_hash: &WalletSeedHash) -> u64 {
@@ -1851,9 +1852,10 @@ impl WalletsBalancesScreen {
     /// Render the total balance label only (used in the left column of the header).
     fn render_balance_total(&self, ui: &mut Ui, wallet: &Wallet) {
         let dark_mode = ui.ctx().style().visuals.dark_mode;
-        let core_balance = self.core_balance_duffs(&wallet.seed_hash());
-        let platform_balance = Self::platform_balance_duffs(wallet);
-        let shielded_balance = self.shielded_balance_duffs(&wallet.seed_hash());
+        let seed_hash = wallet.seed_hash();
+        let core_balance = self.core_balance_duffs(&seed_hash);
+        let platform_balance = self.platform_balance_duffs(&seed_hash);
+        let shielded_balance = self.shielded_balance_duffs(&seed_hash);
         let total = core_balance + platform_balance + shielded_balance;
 
         ui.label(
@@ -1867,9 +1869,10 @@ impl WalletsBalancesScreen {
     /// Render the collapsible breakdown detail (used in the right column of the header).
     fn render_balance_breakdown_detail(&mut self, ui: &mut Ui, wallet: &Wallet) {
         let dark_mode = ui.ctx().style().visuals.dark_mode;
-        let core_balance = self.core_balance_duffs(&wallet.seed_hash());
-        let platform_balance = Self::platform_balance_duffs(wallet);
-        let shielded_balance = self.shielded_balance_duffs(&wallet.seed_hash());
+        let seed_hash = wallet.seed_hash();
+        let core_balance = self.core_balance_duffs(&seed_hash);
+        let platform_balance = self.platform_balance_duffs(&seed_hash);
+        let shielded_balance = self.shielded_balance_duffs(&seed_hash);
 
         let header = egui::CollapsingHeader::new(
             RichText::new("Balance breakdown")

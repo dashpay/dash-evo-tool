@@ -617,6 +617,20 @@ impl WalletTransaction {
 
 pub type WalletSeedHash = [u8; 32];
 
+/// A single per-address entry in a coordinator-push balance update.
+///
+/// `(p2pkh_hash_bytes_20, balance_credits, nonce)` — the raw 20-byte P2PKH
+/// hash is network-agnostic and must be converted to a `dashcore::Address`
+/// by the receiver using the active network before calling
+/// [`Wallet::set_platform_address_info`].
+pub type PlatformAddressEntry = ([u8; 20], u64, u32);
+
+/// Batch of coordinator-push balance updates, grouped by wallet.
+///
+/// Each element is `(seed_hash, entries)` where each `entry` is a
+/// [`PlatformAddressEntry`].
+pub type PlatformAddressUpdates = Vec<(WalletSeedHash, Vec<PlatformAddressEntry>)>;
+
 /// State of a wallet's HD seed.
 ///
 /// Neither variant ever holds the plaintext seed. `Open` means

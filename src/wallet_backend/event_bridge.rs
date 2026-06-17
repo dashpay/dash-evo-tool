@@ -14,7 +14,9 @@ use std::sync::{Arc, Mutex};
 use dash_sdk::dash_spv::network::NetworkEvent;
 use dash_sdk::dash_spv::sync::{SyncEvent, SyncProgress, SyncState};
 use platform_wallet::events::{EventHandler, PlatformEventHandler, WalletEvent};
-use platform_wallet::manager::platform_address_sync::PlatformAddressSyncSummary;
+use platform_wallet::manager::platform_address_sync::{
+    PlatformAddressSyncSummary, WalletSyncOutcome,
+};
 use platform_wallet::manager::shielded_sync::{ShieldedSyncPassSummary, WalletShieldedOutcome};
 
 use super::coordinator_gate::CoordinatorGate;
@@ -26,7 +28,7 @@ use crate::context::connection_status::{
     ConnectionStatus, ShieldedSyncProgress, ShieldedTreeProgress,
 };
 use crate::model::spv_status::SpvStatus;
-use crate::model::wallet::WalletSeedHash;
+use crate::model::wallet::{PlatformAddressEntry, PlatformAddressUpdates, WalletSeedHash};
 use crate::utils::egui_mpsc::SenderAsync;
 use dash_sdk::dpp::key_wallet::managed_account::transaction_record::TransactionRecord;
 
@@ -46,6 +48,13 @@ pub struct EventBridge {
     /// `on_shielded_sync_completed`; read synchronously in the frame loop via
     /// `AppContext::shielded_balance_credits`.
     shielded_balances: Arc<Mutex<HashMap<WalletSeedHash, u64>>>,
+    /// Platform-address push writer: AppContext's frame-safe platform balance snapshot
+    /// (duffs, keyed by `WalletSeedHash`). Written by
+    /// `on_platform_address_sync_completed`; read synchronously in the frame loop via
+    /// `AppContext::platform_balance_duffs`. Only OWNED addresses (those whose
+    /// coordinator wallet-id matches the registered wallet) contribute to the sum —
+    /// no orphan inflation.
+    platform_balances: Arc<Mutex<HashMap<WalletSeedHash, u64>>>,
 }
 
 impl EventBridge {
@@ -55,6 +64,7 @@ impl EventBridge {
         snapshots: Arc<SnapshotStore>,
         coordinator_gate: Arc<CoordinatorGate>,
         shielded_balances: Arc<Mutex<HashMap<WalletSeedHash, u64>>>,
+        platform_balances: Arc<Mutex<HashMap<WalletSeedHash, u64>>>,
     ) -> Self {
         Self {
             connection_status,
@@ -62,6 +72,7 @@ impl EventBridge {
             snapshots,
             coordinator_gate,
             shielded_balances,
+            platform_balances,
         }
     }
 
@@ -273,7 +284,72 @@ impl EventHandler for EventBridge {
 }
 
 impl PlatformEventHandler for EventBridge {
-    fn on_platform_address_sync_completed(&self, _summary: &PlatformAddressSyncSummary) {
+    fn on_platform_address_sync_completed(&self, summary: &PlatformAddressSyncSummary) {
+        // PUSH PRODUCER — two outputs per wallet that synced successfully:
+        //
+        // 1. Frame-safe total-balance snapshot (`platform_balances` Mutex): the
+        //    selector reads this synchronously each frame without blocking.
+        //
+        // 2. `PlatformAddressSyncPushed` task result: `AppState` routes this to
+        //    `AppContext::apply_platform_address_push` which populates per-address
+        //    `wallet.platform_address_info`, keeping the per-address tab current
+        //    without a manual Refresh (fixes the cold-start mismatch).
+        //
+        // Only OWNED addresses appear in the coordinator result (the provider
+        // tracks exactly the wallets registered with the manager), so no orphan
+        // inflation is possible. Errored wallets leave both snapshots untouched.
+        use crate::app::TaskResult;
+        use crate::backend_task::BackendTaskSuccessResult;
+        use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
+
+        // Single pass: resolve `WalletId → WalletSeedHash` once per wallet, drop
+        // any wallet whose id is not registered (no DET mapping) or has no found
+        // addresses. Both outputs below reuse the resolved seed hash — no double
+        // lookup (QA-B2-003).
+        let resolved: PlatformAddressUpdates = summary_ok_platform_entries(summary)
+            .into_iter()
+            .filter_map(|(wallet_id, entries)| {
+                if entries.is_empty() {
+                    return None;
+                }
+                self.snapshots
+                    .seed_hash_for(&wallet_id)
+                    .map(|seed_hash| (seed_hash, entries))
+            })
+            .collect();
+
+        // (1) Update the frame-safe total-balance snapshot.
+        //
+        // Sum ALL credits across owned addresses BEFORE dividing (sum-then-truncate):
+        //   total_duffs = floor( Σ credits_i / 1000 )
+        //
+        // This matches the per-address tab, which accumulates raw `platform_credits`
+        // per `AccountSummary` group and converts to duffs at display time. The
+        // alternative — truncate-then-sum ( Σ floor(credits_i/1000) ) — under-counts
+        // by up to n−1 duffs when individual balances are not whole-duff multiples
+        // (e.g. two addresses × 500 credits → truncate-then-sum = 0 duffs,
+        // sum-then-truncate = 1 duff). (QA-B2-001)
+        //
+        // One duff of sub-duff remainder is accepted for the wallet total; the
+        // precision loss is ≤ 0.001 DASH regardless of address count.
+        if let Ok(mut balances) = self.platform_balances.lock() {
+            for (seed_hash, entries) in &resolved {
+                let total_credits: u64 = entries.iter().map(|(_, credits, _)| credits).sum();
+                balances.insert(*seed_hash, total_credits / CREDITS_PER_DUFF);
+            }
+        }
+
+        // (2) Emit the per-address update so `wallet.platform_address_info` stays
+        // current without a manual Refresh. Non-blocking; a full channel means
+        // the coordinator retries on the next ~15 s pass. The frame-safe total
+        // (step 1) is already written.
+        if !resolved.is_empty() {
+            let result = BackendTaskSuccessResult::PlatformAddressSyncPushed { updates: resolved };
+            let _ = self
+                .task_result_sender
+                .try_send(TaskResult::Success(Box::new(result)));
+        }
+
         self.nudge_refresh();
     }
 
@@ -339,6 +415,32 @@ impl PlatformEventHandler for EventBridge {
     }
 }
 
+/// Collect per-address `(wallet_id, entries)` for every wallet whose sync
+/// completed successfully in `summary`. Each entry carries the raw 20-byte
+/// P2PKH hash, credits balance, and nonce for one found address.
+///
+/// `Err` outcomes are skipped so their cached per-address data is left
+/// untouched. Pure — no I/O — so it is unit-testable without a coordinator.
+fn summary_ok_platform_entries(
+    summary: &PlatformAddressSyncSummary,
+) -> Vec<([u8; 32], Vec<PlatformAddressEntry>)> {
+    summary
+        .wallet_results
+        .iter()
+        .filter_map(|(wallet_id, outcome)| match outcome {
+            WalletSyncOutcome::Ok(result) => {
+                let entries: Vec<PlatformAddressEntry> = result
+                    .found
+                    .iter()
+                    .map(|((_, p2pkh), funds)| (p2pkh.to_bytes(), funds.balance, funds.nonce))
+                    .collect();
+                Some((*wallet_id, entries))
+            }
+            WalletSyncOutcome::Err(_) => None,
+        })
+        .collect()
+}
+
 /// Collect `(wallet_id, balance_credits)` for every wallet that synced
 /// successfully in `summary`. Skipped (no bound shielded sub-wallet) and
 /// errored wallets are excluded so their snapshot balance is left untouched.
@@ -398,6 +500,7 @@ mod tests {
             Arc::new(SnapshotStore::new()),
             Arc::clone(&gate),
             Arc::new(Mutex::new(HashMap::new())),
+            Arc::new(Mutex::new(HashMap::new())),
         );
         (bridge, cs, rx, gate)
     }
@@ -421,8 +524,33 @@ mod tests {
             Arc::new(SnapshotStore::new()),
             gate,
             Arc::clone(&balances),
+            Arc::new(Mutex::new(HashMap::new())),
         );
         (bridge, cs, rx, balances)
+    }
+
+    /// Like [`make_bridge`] but also returns the platform-balances snapshot Arc
+    /// so platform-address-sync-event tests can assert the push writer's effect.
+    fn make_bridge_with_platform_balances() -> (
+        EventBridge,
+        Arc<ConnectionStatus>,
+        tokio::sync::mpsc::Receiver<TaskResult>,
+        ShieldedBalancesHandle, // same type: Arc<Mutex<HashMap<WalletSeedHash, u64>>>
+    ) {
+        let cs = Arc::new(ConnectionStatus::new());
+        let (tx, rx) =
+            tokio::sync::mpsc::channel::<TaskResult>(8).with_egui_ctx(egui::Context::default());
+        let gate = Arc::new(CoordinatorGate::default());
+        let platform_balances = Arc::new(Mutex::new(HashMap::new()));
+        let bridge = EventBridge::new(
+            Arc::clone(&cs),
+            tx,
+            Arc::new(SnapshotStore::new()),
+            gate,
+            Arc::new(Mutex::new(HashMap::new())),
+            Arc::clone(&platform_balances),
+        );
+        (bridge, cs, rx, platform_balances)
     }
 
     fn drained_refresh(rx: &mut tokio::sync::mpsc::Receiver<TaskResult>) -> bool {
@@ -822,5 +950,243 @@ mod tests {
             vec![([1u8; 32], 1_234)],
             "only the Ok wallet contributes its summed balance_total"
         );
+    }
+
+    /// An empty `PlatformAddressSyncSummary` must nudge the refresh loop and not
+    /// write any balance (nothing to resolve in the snapshot registry).
+    #[test]
+    fn platform_address_sync_completed_empty_summary_nudges_only() {
+        use platform_wallet::manager::platform_address_sync::PlatformAddressSyncSummary;
+
+        let (bridge, _cs, mut rx, platform_balances) = make_bridge_with_platform_balances();
+        bridge.on_platform_address_sync_completed(&PlatformAddressSyncSummary::default());
+
+        assert!(
+            platform_balances.lock().unwrap().is_empty(),
+            "an empty summary must not write any balance"
+        );
+        assert!(
+            drained_refresh(&mut rx),
+            "the frame loop must be nudged even on an empty summary"
+        );
+    }
+
+    /// A `WalletSyncOutcome::Err` must not write a balance for the failed wallet,
+    /// but the frame loop must still be nudged.
+    #[test]
+    fn platform_address_sync_completed_error_outcome_skipped() {
+        use platform_wallet::manager::platform_address_sync::{
+            PlatformAddressSyncSummary, WalletSyncOutcome,
+        };
+
+        let (bridge, _cs, mut rx, platform_balances) = make_bridge_with_platform_balances();
+        let mut summary = PlatformAddressSyncSummary::default();
+        summary.wallet_results.insert(
+            [7u8; 32],
+            WalletSyncOutcome::Err("network error".to_string()),
+        );
+        bridge.on_platform_address_sync_completed(&summary);
+
+        assert!(
+            platform_balances.lock().unwrap().is_empty(),
+            "an errored wallet must not write a balance"
+        );
+        assert!(drained_refresh(&mut rx));
+    }
+
+    /// HAPPY PATH (QA-B-002): `summary_ok_platform_entries` extracts the correct
+    /// per-address data for `Ok` outcomes and skips `Err` outcomes entirely.
+    #[test]
+    fn summary_ok_platform_entries_extracts_only_successful_wallets() {
+        use dash_sdk::dpp::key_wallet::PlatformP2PKHAddress;
+        use dash_sdk::platform::address_sync::{AddressFunds, AddressSyncResult};
+        use platform_wallet::manager::platform_address_sync::{
+            PlatformAddressSyncSummary, WalletSyncOutcome,
+        };
+        use platform_wallet::wallet::PlatformAddressTag;
+
+        let wallet_id_ok: [u8; 32] = [1u8; 32];
+        let wallet_id_err: [u8; 32] = [2u8; 32];
+
+        let p2pkh_a = PlatformP2PKHAddress::new([0xAAu8; 20]);
+        let p2pkh_b = PlatformP2PKHAddress::new([0xBBu8; 20]);
+
+        let mut result_ok: AddressSyncResult<PlatformAddressTag, PlatformP2PKHAddress> =
+            AddressSyncResult::default();
+        result_ok.found.insert(
+            ((wallet_id_ok, 0u32, 0u32), p2pkh_a),
+            AddressFunds {
+                nonce: 1,
+                balance: 500_000,
+            },
+        );
+        result_ok.found.insert(
+            ((wallet_id_ok, 0u32, 1u32), p2pkh_b),
+            AddressFunds {
+                nonce: 2,
+                balance: 300_000,
+            },
+        );
+
+        let mut summary = PlatformAddressSyncSummary::default();
+        summary
+            .wallet_results
+            .insert(wallet_id_ok, WalletSyncOutcome::Ok(result_ok));
+        summary.wallet_results.insert(
+            wallet_id_err,
+            WalletSyncOutcome::Err("network timeout".to_string()),
+        );
+
+        let got = summary_ok_platform_entries(&summary);
+
+        // Only the Ok wallet should produce entries.
+        assert_eq!(got.len(), 1, "only one wallet had an Ok outcome");
+        let (got_wallet_id, entries) = &got[0];
+        assert_eq!(got_wallet_id, &wallet_id_ok);
+        assert_eq!(entries.len(), 2);
+
+        // Check both addresses are present (order not guaranteed for BTreeMap).
+        let mut hash_set: Vec<[u8; 20]> = entries.iter().map(|(h, _, _)| *h).collect();
+        hash_set.sort();
+        assert!(hash_set.contains(&[0xAAu8; 20]));
+        assert!(hash_set.contains(&[0xBBu8; 20]));
+
+        // Verify funds are passed through correctly.
+        let entry_a = entries
+            .iter()
+            .find(|(h, _, _)| h == &[0xAAu8; 20])
+            .expect("entry for p2pkh_a");
+        assert_eq!(entry_a.1, 500_000, "balance_credits for p2pkh_a");
+        assert_eq!(entry_a.2, 1, "nonce for p2pkh_a");
+
+        let entry_b = entries
+            .iter()
+            .find(|(h, _, _)| h == &[0xBBu8; 20])
+            .expect("entry for p2pkh_b");
+        assert_eq!(entry_b.1, 300_000, "balance_credits for p2pkh_b");
+        assert_eq!(entry_b.2, 2, "nonce for p2pkh_b");
+    }
+
+    /// Prove the arithmetic is correct for pathological balances (QA-B2-001):
+    /// `sum-then-truncate` must be used, not `truncate-then-sum`.
+    ///
+    /// Two addresses of 500 credits each:
+    /// - `sum-then-truncate`: floor((500+500)/1000) = **1 duff** ✓
+    /// - `truncate-then-sum`: floor(500/1000) + floor(500/1000) = **0 duffs** ✗
+    ///
+    /// The selector and per-address tab must agree on 1 duff.
+    #[test]
+    fn platform_total_duffs_uses_sum_then_truncate_not_truncate_then_sum() {
+        use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
+        use dash_sdk::dpp::key_wallet::PlatformP2PKHAddress;
+        use dash_sdk::platform::address_sync::{AddressFunds, AddressSyncResult};
+        use platform_wallet::manager::platform_address_sync::{
+            PlatformAddressSyncSummary, WalletSyncOutcome,
+        };
+        use platform_wallet::wallet::PlatformAddressTag;
+
+        let wallet_id: [u8; 32] = [1u8; 32];
+        let p2pkh_a = PlatformP2PKHAddress::new([0xAAu8; 20]);
+        let p2pkh_b = PlatformP2PKHAddress::new([0xBBu8; 20]);
+
+        // 500 credits < 1 duff each; individually truncated to 0, but the
+        // wallet holds exactly 1000 credits = 1 duff in total.
+        let mut result: AddressSyncResult<PlatformAddressTag, PlatformP2PKHAddress> =
+            AddressSyncResult::default();
+        result.found.insert(
+            ((wallet_id, 0u32, 0u32), p2pkh_a),
+            AddressFunds {
+                nonce: 1,
+                balance: 500,
+            },
+        );
+        result.found.insert(
+            ((wallet_id, 0u32, 1u32), p2pkh_b),
+            AddressFunds {
+                nonce: 2,
+                balance: 500,
+            },
+        );
+
+        let mut summary = PlatformAddressSyncSummary::default();
+        summary
+            .wallet_results
+            .insert(wallet_id, WalletSyncOutcome::Ok(result));
+
+        let got = summary_ok_platform_entries(&summary);
+        assert_eq!(got.len(), 1);
+        let (_, entries) = &got[0];
+        assert_eq!(entries.len(), 2);
+
+        // sum-then-truncate (correct): 1 duff
+        let total_credits: u64 = entries.iter().map(|(_, c, _)| c).sum();
+        assert_eq!(total_credits, 1000, "total credits = 1000");
+        assert_eq!(
+            total_credits / CREDITS_PER_DUFF,
+            1,
+            "sum-then-truncate gives 1 duff (correct)"
+        );
+
+        // truncate-then-sum (wrong): 0 duffs — demonstrate the bug we fixed
+        let wrong_total: u64 = entries.iter().map(|(_, c, _)| c / CREDITS_PER_DUFF).sum();
+        assert_eq!(
+            wrong_total, 0,
+            "truncate-then-sum gives 0 duffs (this was the bug)"
+        );
+    }
+
+    /// An `Ok` outcome for an UNREGISTERED wallet must not write a balance
+    /// (no entry in the snapshot registry to map `WalletId` → `WalletSeedHash`).
+    #[test]
+    fn platform_address_sync_completed_unregistered_wallet_not_written() {
+        use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
+        use dash_sdk::dpp::key_wallet::PlatformP2PKHAddress;
+        use dash_sdk::platform::address_sync::{AddressFunds, AddressSyncResult};
+        use platform_wallet::manager::platform_address_sync::{
+            PlatformAddressSyncSummary, WalletSyncOutcome,
+        };
+        use platform_wallet::wallet::PlatformAddressTag;
+
+        let (bridge, _cs, mut rx, platform_balances) = make_bridge_with_platform_balances();
+
+        // Build a result with two found addresses (100 + 200 duffs in credits).
+        let wallet_id = [9u8; 32];
+        let mut result: AddressSyncResult<PlatformAddressTag, PlatformP2PKHAddress> =
+            AddressSyncResult::default();
+        result.found.insert(
+            (
+                (wallet_id, 0u32, 0u32),
+                PlatformP2PKHAddress::new([0x11; 20]),
+            ),
+            AddressFunds {
+                nonce: 0,
+                balance: 100 * CREDITS_PER_DUFF,
+            },
+        );
+        result.found.insert(
+            (
+                (wallet_id, 0u32, 1u32),
+                PlatformP2PKHAddress::new([0x22; 20]),
+            ),
+            AddressFunds {
+                nonce: 1,
+                balance: 200 * CREDITS_PER_DUFF,
+            },
+        );
+
+        let mut summary = PlatformAddressSyncSummary::default();
+        summary
+            .wallet_results
+            .insert(wallet_id, WalletSyncOutcome::Ok(result));
+
+        bridge.on_platform_address_sync_completed(&summary);
+
+        // The wallet_id is NOT registered in the snapshot store, so it cannot be
+        // resolved to a WalletSeedHash — nothing should be written.
+        assert!(
+            platform_balances.lock().unwrap().is_empty(),
+            "an unregistered wallet must not write a balance (no seed_hash mapping)"
+        );
+        assert!(drained_refresh(&mut rx));
     }
 }

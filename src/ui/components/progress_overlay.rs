@@ -412,8 +412,61 @@ impl ProgressOverlay {
     }
 
     /// Clear every entry — used on network switch alongside the banner reset.
+    ///
+    /// SEC-007: also clears the pending action queue, so a click queued just
+    /// before a network switch cannot survive into the new context and be
+    /// mis-dispatched there.
     pub fn clear_all_global(ctx: &egui::Context) {
         set_overlay_state(ctx, Vec::new());
+        set_overlay_actions(ctx, Vec::new());
+    }
+
+    /// Claim all keyboard and text input for the active block, at frame start.
+    ///
+    /// Must be called near the top of `AppState::update` — **before** the panels
+    /// and the visible screen run — and the caller MUST skip it while a secret
+    /// prompt is active above the overlay (that modal needs the keyboard).
+    /// Early-outs when no overlay is active.
+    ///
+    /// Why a separate frame-start pass: `render_global`'s own key filter runs at
+    /// the *end* of the frame, one frame too late for a button-less block raised
+    /// over an already-focused field — the field beneath has already consumed the
+    /// keystroke. `claim_input` closes that leak (QA-001) by, while a block is up:
+    /// - releasing text-edit focus from any field beneath (so it stops drawing a
+    ///   caret and consuming text — affects only text widgets, never an overlay
+    ///   button), and
+    /// - stripping `Event::Text` and the navigation/confirm keys (Tab, Enter,
+    ///   Escape, Space, arrows) from `i.events` so nothing beneath observes them.
+    ///
+    /// A hard block is never keyboard-dismissable or keyboard-activatable. The
+    /// buttoned case (post-T7) re-grants its own buttons' navigation via the
+    /// focus-lock filter in `render_buttons`.
+    pub fn claim_input(ctx: &egui::Context) {
+        if !Self::has_global(ctx) {
+            return;
+        }
+        // Only releases text-edit focus, so an overlay button keeps its focus.
+        ctx.memory_mut(|m| m.stop_text_input());
+        ctx.input_mut(|i| {
+            i.events.retain(|e| {
+                !matches!(
+                    e,
+                    egui::Event::Text(_)
+                        | egui::Event::Key {
+                            key: egui::Key::Tab
+                                | egui::Key::Enter
+                                | egui::Key::Escape
+                                | egui::Key::Space
+                                | egui::Key::ArrowUp
+                                | egui::Key::ArrowDown
+                                | egui::Key::ArrowLeft
+                                | egui::Key::ArrowRight,
+                            pressed: true,
+                            ..
+                        }
+                )
+            });
+        });
     }
 
     /// Render the topmost entry. Call once per frame from `AppState::update`,
@@ -425,11 +478,15 @@ impl ProgressOverlay {
             return;
         };
 
-        // Full input block, scoped to the overlay-active branch so global
-        // shortcuts are untouched when idle. Esc/Tab/Enter are swallowed so they
-        // cannot dismiss the overlay, move focus to a widget beneath it, or
-        // activate a focused button. The overlay never implicitly dismisses —
-        // only a handle clear lowers it.
+        // Belt-and-suspenders end-of-frame filter. The primary, gated block is
+        // `claim_input` at frame start (which also yields to an active secret
+        // prompt); this second pass swallows Esc/Tab/Enter so they cannot dismiss
+        // the overlay, move focus beneath it, or activate a focused button.
+        // TODO(QA blocker #2): this pass is NOT gated on an active secret prompt,
+        // so it still swallows Esc while a passphrase modal is up above the
+        // overlay. Once `claim_input` is proven sufficient, remove this filter and
+        // route the keyboard tests through `claim_input` so the gated path is the
+        // only swallow — then a secret prompt's Esc-to-cancel survives.
         ctx.input_mut(|i| {
             i.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
             i.events.retain(|e| {
@@ -898,6 +955,103 @@ mod tests {
         push_overlay_action(&ctx, "second");
         assert_eq!(ProgressOverlay::take_actions(&ctx), vec!["first", "second"]);
         assert!(ProgressOverlay::take_actions(&ctx).is_empty());
+    }
+
+    /// SEC-007 — `clear_all_global` (network switch) drains the action queue too,
+    /// so a click queued just before the switch cannot survive into the new
+    /// context and be mis-dispatched.
+    #[test]
+    fn clear_all_global_clears_action_queue() {
+        let ctx = egui::Context::default();
+        ProgressOverlay::show_global_spinner_only(&ctx);
+        push_overlay_action(&ctx, "shielded:build:cancel");
+
+        ProgressOverlay::clear_all_global(&ctx);
+
+        assert!(!ProgressOverlay::has_global(&ctx), "state stack is cleared");
+        assert!(
+            ProgressOverlay::take_actions(&ctx).is_empty(),
+            "SEC-007: the action queue must be cleared on a network switch"
+        );
+    }
+
+    /// A pressed key-down `Event::Key` with no modifiers, for input tests.
+    fn key_down(key: egui::Key) -> egui::Event {
+        egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        }
+    }
+
+    /// QA-001 — while a block is up, `claim_input` strips typed text and the
+    /// navigation/confirm keys (Tab/Enter/Escape/Space/arrows) so nothing beneath
+    /// the block observes them.
+    #[test]
+    fn claim_input_strips_text_and_nav_keys_when_block_active() {
+        let ctx = egui::Context::default();
+        ProgressOverlay::show_global_spinner_only(&ctx);
+
+        let leaked = std::cell::Cell::new(true);
+        let raw = egui::RawInput {
+            events: vec![
+                egui::Event::Text("hello".to_string()),
+                key_down(egui::Key::Tab),
+                key_down(egui::Key::Enter),
+                key_down(egui::Key::Escape),
+                key_down(egui::Key::Space),
+                key_down(egui::Key::ArrowDown),
+            ],
+            ..Default::default()
+        };
+        let _ = ctx.run(raw, |ctx| {
+            ProgressOverlay::claim_input(ctx);
+            ctx.input(|i| {
+                leaked.set(i.events.iter().any(|e| {
+                    matches!(
+                        e,
+                        egui::Event::Text(_)
+                            | egui::Event::Key {
+                                key: egui::Key::Tab
+                                    | egui::Key::Enter
+                                    | egui::Key::Escape
+                                    | egui::Key::Space
+                                    | egui::Key::ArrowDown,
+                                pressed: true,
+                                ..
+                            }
+                    )
+                }));
+            });
+        });
+        assert!(
+            !leaked.get(),
+            "claim_input must strip all text + nav/confirm key-down events while a block is up"
+        );
+    }
+
+    /// `claim_input` is a no-op when no overlay is active — it must not eat input
+    /// from the rest of the app.
+    #[test]
+    fn claim_input_is_noop_when_idle() {
+        let ctx = egui::Context::default();
+        let kept = std::cell::Cell::new(false);
+        let raw = egui::RawInput {
+            events: vec![egui::Event::Text("hi".to_string())],
+            ..Default::default()
+        };
+        let _ = ctx.run(raw, |ctx| {
+            ProgressOverlay::claim_input(ctx);
+            ctx.input(|i| {
+                kept.set(i.events.iter().any(|e| matches!(e, egui::Event::Text(_))));
+            });
+        });
+        assert!(
+            kept.get(),
+            "claim_input must not strip input when no block is active"
+        );
     }
 
     #[test]

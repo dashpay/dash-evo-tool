@@ -1533,6 +1533,15 @@ impl App for AppState {
             }
         }
 
+        // Total input block at frame start: while a blocking overlay is up, claim
+        // all keyboard + text input BEFORE the panels run, so a button-less block
+        // cannot leak typed characters into a focused field beneath (QA-001).
+        // Gated on no active secret prompt — that modal renders above the overlay
+        // and must keep the keyboard (e.g. Esc to cancel a passphrase entry).
+        if self.active_secret_prompt.is_none() {
+            ProgressOverlay::claim_input(ctx);
+        }
+
         // Show welcome screen if onboarding not completed
         let mut actions = Vec::new();
         if self.show_welcome_screen

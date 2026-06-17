@@ -917,13 +917,11 @@ fn tc_ovl_050_component_instance_show_reports_click() {
 // field that already holds focus (the J-2 broadcast / J-4 migration case) and
 // asserts AC-8.2: typed input must not reach the field beneath.
 //
-// QA-001 (HIGH): currently FAILS — `render_global` filters Tab/Enter/Esc only
-// AFTER the beneath widgets have already consumed input this frame, and a
-// button-less overlay has no first-button to steal focus. Typed characters
-// therefore leak into a focused field beneath. Ignored so the suite stays
-// green; un-ignore once the overlay claims keyboard focus / consumes text
-// while active. TODO(QA-001): fix input blocking for the button-less block.
-#[ignore = "QA-001 (HIGH): button-less overlay leaks typed input to a focused field beneath (FR-8 AC-8.2)"]
+// QA-001 (HIGH), RESOLVED: `ProgressOverlay::claim_input`, called at frame start
+// (before the panels) while a block is up, releases beneath text focus and
+// strips `Event::Text` + nav/confirm keys — so a button-less block no longer
+// leaks typed input into a focused field beneath. This harness mirrors the app
+// loop: `claim_input` runs before the field, `render_global` paints after it.
 #[test]
 fn qa_buttonless_overlay_blocks_typing_into_focused_field_beneath() {
     let text = Rc::new(RefCell::new(String::new()));
@@ -931,6 +929,8 @@ fn qa_buttonless_overlay_blocks_typing_into_focused_field_beneath() {
     let mut harness = Harness::builder()
         .with_size(egui::vec2(420.0, 360.0))
         .build_ui(move |ui| {
+            // Mirrors AppState::update: claim input at frame start, before panels.
+            ProgressOverlay::claim_input(ui.ctx());
             let mut buffer = text_ui.borrow_mut();
             ui.text_edit_singleline(&mut *buffer);
             ProgressOverlay::render_global(ui.ctx());

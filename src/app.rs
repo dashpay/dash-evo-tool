@@ -15,7 +15,10 @@ use crate::logging::initialize_logger;
 use crate::model::feature_gate::FeatureGate;
 use crate::model::settings::AppSettings;
 use crate::ui::components::secret_prompt_host::{ActivePrompt, EguiSecretPromptHost, QueuedPrompt};
-use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt, ProgressOverlay};
+use crate::ui::components::{
+    BannerHandle, MessageBanner, OptionBannerExt, OptionOverlayExt, OverlayConfig, OverlayHandle,
+    ProgressOverlay,
+};
 use crate::ui::contracts_documents::contracts_documents_screen::DocumentQueryScreen;
 use crate::ui::dashpay::{DashPayScreen, DashPaySubscreen, ProfileSearchScreen};
 use crate::ui::dpns::dpns_contested_names_screen::{
@@ -57,6 +60,63 @@ use tokio::sync::mpsc as tokiompsc;
 /// future second migration variant can pick a distinct id without
 /// risking a typo collision. Exposed for kittest coverage.
 pub const MIGRATION_RETRY_ACTION_ID: &str = "migration:retry:finish_unwire";
+
+/// Action id for the SPV-sync block's "Continue in the background" escape button.
+/// SPV sync is unbounded (it can wait indefinitely for peers), so a button-less
+/// hard block would trap the user (violating the overlay's C1/C2 contract). This
+/// escape lowers the block while sync continues safely in the background — a
+/// read-only operation that strands nothing if backgrounded. Colon-namespaced per
+/// the overlay action-id convention. Exposed for kittest coverage.
+pub const SYNC_CONTINUE_BACKGROUND_ACTION: &str = "sync:overlay:continue_background";
+
+/// What the per-frame sync-block driver should do with the overlay this frame,
+/// given whether a startup/Connect sync is being blocked, whether the user chose
+/// to continue in the background, and the current connection state. Pure so the
+/// policy is unit-testable in isolation from `AppState`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SyncBlockStep {
+    /// Raise (or keep) the hard block.
+    Block,
+    /// Sync reached a terminal state (Synced or Error): lower the block and end
+    /// this blocking episode (C1 — clear on every terminal path).
+    Release,
+    /// Not blocking — inactive, or the user chose to continue in the background:
+    /// ensure no block is shown without ending the episode bookkeeping.
+    Idle,
+}
+
+/// Pure sync-block policy (C1/C2): block only while a startup/Connect sync is
+/// active and not user-dismissed and the chain is not yet usable; release on a
+/// terminal state so the block always lowers through the normal path.
+fn sync_block_step(active: bool, dismissed: bool, state: OverallConnectionState) -> SyncBlockStep {
+    use OverallConnectionState as S;
+    if !active {
+        return SyncBlockStep::Idle;
+    }
+    match state {
+        // Usable, or failed (the connection banner surfaces the error): release.
+        S::Synced | S::Error => SyncBlockStep::Release,
+        // Still working: block, unless the user has chosen to wait in background.
+        S::Disconnected | S::Connecting | S::Syncing => {
+            if dismissed {
+                SyncBlockStep::Idle
+            } else {
+                SyncBlockStep::Block
+            }
+        }
+    }
+}
+
+/// Calm, actionable description for the SPV-sync block (the escape button is the
+/// action). One complete sentence per i18n rules.
+fn sync_block_description(state: OverallConnectionState) -> &'static str {
+    match state {
+        OverallConnectionState::Syncing => {
+            "Syncing with the Dash network. This can take a little while."
+        }
+        _ => "Connecting to the Dash network.",
+    }
+}
 
 /// One-sentence user-facing label for an in-progress migration step.
 /// Mirrors Diziet §2.2 D-1 banner copy — single complete sentence per
@@ -177,6 +237,19 @@ pub struct AppState {
     previous_connection_state: Option<OverallConnectionState>,
     /// Handle to the current connection status banner, if one is displayed
     connection_banner_handle: Option<BannerHandle>,
+    /// The blocking progress overlay raised during a startup / Connect SPV sync,
+    /// hard-blocking the UI until the chain reaches a usable (Synced) or failed
+    /// (Error) state. See [`Self::update_sync_overlay`].
+    sync_overlay: Option<OverlayHandle>,
+    /// Whether a startup- or Connect-initiated SPV sync is currently being
+    /// hard-blocked. Set on boot auto-start and on the manual Connect; cleared
+    /// when the sync reaches a terminal state.
+    sync_block_active: bool,
+    /// Set when the user clicks the overlay's "Continue in the background" escape
+    /// (C1/C2 — SPV sync is unbounded, so the block must never trap the user). The
+    /// block stays down for the rest of this sync episode; sync continues in the
+    /// background. Reset when a new sync episode begins.
+    sync_overlay_dismissed: bool,
     /// Handle to the current data-migration banner, if one is displayed.
     /// Kept so per-frame reconciliation can update text in place
     /// (Detecting → SingleKey → Shielded → WalletSeeds → WalletMeta → Finalize → Success/Failed)
@@ -669,6 +742,10 @@ impl AppState {
             welcome_screen: None,
             previous_connection_state: None,
             connection_banner_handle: None,
+            sync_overlay: None,
+            // Hard-block the UI for the boot SPV sync when it auto-starts.
+            sync_block_active: boot_auto_start_spv,
+            sync_overlay_dismissed: false,
             migration_banner_handle: None,
             last_migration_state: None,
             cold_start_migration_dispatched: BTreeSet::new(),
@@ -889,8 +966,12 @@ impl AppState {
         // network context — accepted risk for a local desktop app (cosmetic only).
         MessageBanner::clear_all_global(app_context.egui_ctx());
         // Drop any blocking overlay from the previous context so the new network
-        // is never left behind a stale block.
+        // is never left behind a stale block. Also drop the sync-block bookkeeping
+        // so its handle never goes stale against the cleared `ctx.data`.
         ProgressOverlay::clear_all_global(app_context.egui_ctx());
+        self.sync_overlay = None;
+        self.sync_block_active = false;
+        self.sync_overlay_dismissed = false;
 
         for screen in self.main_screens.values_mut() {
             screen.change_context(app_context.clone())
@@ -1025,6 +1106,59 @@ impl AppState {
             "Dispatching FinishUnwire migration at cold start",
         );
         self.handle_backend_task(BackendTask::MigrationTask(MigrationTask::FinishUnwire));
+    }
+
+    /// Drive the blocking SPV-sync overlay each frame (Task 9): hard-block the UI
+    /// while a startup- or Connect-initiated sync runs, and lower it when the
+    /// chain becomes usable (Synced) or fails (Error).
+    ///
+    /// C1/C2 contract: SPV sync is **unbounded** — it can wait indefinitely for
+    /// peers — so a button-less block would trap the user. The block therefore
+    /// carries a "Continue in the background" escape ([`SYNC_CONTINUE_BACKGROUND_ACTION`]);
+    /// clicking it lowers the block while sync proceeds safely in the background
+    /// (read-only — nothing is stranded). The block also always lowers on its own
+    /// at a terminal state, so it can never strand the user behind a stale block.
+    fn update_sync_overlay(&mut self, ctx: &egui::Context, app_context: &Arc<AppContext>) {
+        let state = app_context.connection_status().overall_state();
+        match sync_block_step(self.sync_block_active, self.sync_overlay_dismissed, state) {
+            SyncBlockStep::Block => {
+                let description = sync_block_description(state);
+                if self.sync_overlay.is_none() {
+                    let config = OverlayConfig::new()
+                        .with_description(description)
+                        .with_button(
+                            SYNC_CONTINUE_BACKGROUND_ACTION,
+                            "Continue in the background",
+                        );
+                    self.sync_overlay.raise(ctx, "", config);
+                } else if let Some(handle) = &self.sync_overlay {
+                    handle.set_description(description);
+                }
+            }
+            SyncBlockStep::Release => {
+                self.sync_overlay.take_and_clear();
+                self.sync_block_active = false;
+                self.sync_overlay_dismissed = false;
+            }
+            SyncBlockStep::Idle => {
+                self.sync_overlay.take_and_clear();
+            }
+        }
+
+        // Drain this overlay's own clicks: the "Continue in the background" escape
+        // lowers the block for the rest of this episode (sync keeps running).
+        let actions = self
+            .sync_overlay
+            .as_ref()
+            .map(|handle| handle.take_actions())
+            .unwrap_or_default();
+        if actions
+            .iter()
+            .any(|id| id == SYNC_CONTINUE_BACKGROUND_ACTION)
+        {
+            self.sync_overlay_dismissed = true;
+            self.sync_overlay.take_and_clear();
+        }
     }
 
     /// Update the migration banner to reflect the current
@@ -1166,6 +1300,24 @@ impl AppState {
     #[cfg(feature = "testing")]
     pub fn test_set_secret_prompt_active(&mut self, active: bool) {
         self.active_secret_prompt = active.then(ActivePrompt::test_stub);
+    }
+
+    /// Test seam (Task 9): arm a startup/Connect SPV-sync block episode.
+    #[cfg(feature = "testing")]
+    pub fn test_activate_sync_block(&mut self) {
+        self.sync_block_active = true;
+        self.sync_overlay_dismissed = false;
+    }
+
+    /// Test seam (Task 9): run the REAL `update_sync_overlay` driver once against
+    /// the active context's (forced) connection state, in isolation from the
+    /// throttled frame loop. Lets a kittest assert the block raises while
+    /// connecting, lowers when usable, and lowers on the "continue in the
+    /// background" escape.
+    #[cfg(feature = "testing")]
+    pub fn test_drive_sync_overlay(&mut self, ctx: &egui::Context) {
+        let app_context = self.current_app_context().clone();
+        self.update_sync_overlay(ctx, &app_context);
     }
 
     /// Sweep orphaned overlay action ids whose owning overlay is gone. Screens own
@@ -1600,6 +1752,7 @@ impl App for AppState {
         );
 
         self.update_connection_banner(ctx, &active_context);
+        self.update_sync_overlay(ctx, &active_context);
         self.dispatch_cold_start_migration();
         self.update_migration_banner(ctx, &active_context);
         self.handle_banner_esc(ctx);
@@ -1657,6 +1810,10 @@ impl App for AppState {
                     self.set_main_screen(root_screen_type);
                 }
                 AppAction::StartSpv => {
+                    // Hard-block the UI for this manual Connect until the chain is
+                    // usable or fails (a fresh episode — re-arm the escape).
+                    self.sync_block_active = true;
+                    self.sync_overlay_dismissed = false;
                     let app_ctx = self.current_app_context().clone();
                     let sender = self.task_result_sender.clone();
                     let egui_ctx = ctx.clone();
@@ -1785,5 +1942,90 @@ mod migration_banner_tests {
     #[test]
     fn migration_retry_action_id_is_stable() {
         assert_eq!(MIGRATION_RETRY_ACTION_ID, "migration:retry:finish_unwire");
+    }
+}
+
+#[cfg(test)]
+mod sync_overlay_tests {
+    use super::*;
+
+    const NOT_USABLE: [OverallConnectionState; 3] = [
+        OverallConnectionState::Disconnected,
+        OverallConnectionState::Connecting,
+        OverallConnectionState::Syncing,
+    ];
+
+    /// No active episode → never block, regardless of state or dismissal.
+    #[test]
+    fn inactive_is_always_idle() {
+        for state in [
+            OverallConnectionState::Disconnected,
+            OverallConnectionState::Connecting,
+            OverallConnectionState::Syncing,
+            OverallConnectionState::Synced,
+            OverallConnectionState::Error,
+        ] {
+            assert_eq!(sync_block_step(false, false, state), SyncBlockStep::Idle);
+            assert_eq!(sync_block_step(false, true, state), SyncBlockStep::Idle);
+        }
+    }
+
+    /// Active + not-yet-usable + not dismissed → hard block.
+    #[test]
+    fn active_blocks_while_not_usable() {
+        for state in NOT_USABLE {
+            assert_eq!(sync_block_step(true, false, state), SyncBlockStep::Block);
+        }
+    }
+
+    /// C1 — a terminal state (usable or failed) always releases the block, even
+    /// if the user had dismissed it: the episode is over.
+    #[test]
+    fn terminal_state_always_releases() {
+        for dismissed in [false, true] {
+            assert_eq!(
+                sync_block_step(true, dismissed, OverallConnectionState::Synced),
+                SyncBlockStep::Release
+            );
+            assert_eq!(
+                sync_block_step(true, dismissed, OverallConnectionState::Error),
+                SyncBlockStep::Release
+            );
+        }
+    }
+
+    /// C2 escape — "continue in the background" stops blocking but does NOT end the
+    /// episode: sync keeps running, the user is just no longer trapped.
+    #[test]
+    fn dismissed_stops_blocking_without_releasing() {
+        for state in NOT_USABLE {
+            assert_eq!(sync_block_step(true, true, state), SyncBlockStep::Idle);
+        }
+    }
+
+    /// The escape action id is stable — production raises it and
+    /// `update_sync_overlay` matches on it; a typo would drop the click.
+    #[test]
+    fn continue_background_action_id_is_stable() {
+        assert_eq!(
+            SYNC_CONTINUE_BACKGROUND_ACTION,
+            "sync:overlay:continue_background"
+        );
+    }
+
+    /// Descriptions are complete sentences (i18n) and Syncing has distinct copy.
+    #[test]
+    fn descriptions_are_sentences_and_state_specific() {
+        for state in NOT_USABLE {
+            assert!(
+                sync_block_description(state).ends_with('.'),
+                "`{}` is not a complete sentence",
+                sync_block_description(state)
+            );
+        }
+        assert_ne!(
+            sync_block_description(OverallConnectionState::Syncing),
+            sync_block_description(OverallConnectionState::Connecting),
+        );
     }
 }

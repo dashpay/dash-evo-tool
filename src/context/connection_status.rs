@@ -412,6 +412,15 @@ impl ConnectionStatus {
         self.overall_state.load(Ordering::Relaxed).into()
     }
 
+    /// Test seam: force the overall connection state directly. Bypasses
+    /// [`Self::refresh_state`] so a test that drives a consumer in isolation (not
+    /// the throttled frame loop) sees a stable state. Compiled only under the
+    /// `testing` feature.
+    #[cfg(feature = "testing")]
+    pub fn set_overall_state(&self, state: OverallConnectionState) {
+        self.overall_state.store(state as u8, Ordering::Relaxed);
+    }
+
     /// Recompute the overall connection state from the individual subsystem
     /// flags.
     ///

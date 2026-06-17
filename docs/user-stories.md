@@ -1135,4 +1135,14 @@ As a user, while a long operation that is unsafe to interrupt is running (broadc
 - A full-window dimming overlay with an indeterminate spinner and an optional "Step N of M" counter and description appears while the operation runs, and lowers automatically when it finishes (success or error).
 - All interaction beneath the block is suppressed: pointer clicks hit a sink, and keyboard/text input is claimed at frame start so nothing reaches a focused field beneath (FR-8 / QA-001). The block is never dismissable by Esc, Enter, Space, or Tab.
 - The block yields to a passphrase prompt: when a secret prompt is shown above the overlay it keeps the keyboard (Enter/Esc/Tab) so the user can still authenticate or cancel (SEC-004).
-- Honest escalation, never a fake exit: after 30 s a calm "This is taking longer than usual." line appears; after 120 s with no progress it escalates to "This is taking much longer than expected…" and logs a one-shot developer warning. There is no background/dismiss button — the safety guarantee is that every blocked operation is bounded and always lowers the block through the normal path.
+- Honest escalation, never a fake exit: after 30 s a calm "This is taking longer than usual." line appears; after 120 s with no progress it escalates to "This is taking much longer than expected…" and logs a one-shot developer warning. For these unsafe-to-interrupt operations there is no background/dismiss button — the safety guarantee is that every blocked operation is bounded and always lowers the block through the normal path. _(Exception: the startup/Connect SPV-sync block of UX-002 is unbounded but read-only, so it ships an always-visible "Continue in the background" escape instead.)_
+
+### UX-002: Blocking SPV-sync overlay with a "continue in the background" escape [Implemented]
+**Persona:** Alex, Priya, Jordan
+
+As a user, while the app connects to and syncs the Dash chain on startup or after I press Connect, I want a clear please-wait block so I know it is working — and because that sync can wait indefinitely for peers, I want an always-visible "Continue in the background" button so I am never trapped behind it.
+
+- While the active network is Connecting or Syncing, a full-window block appears showing the live sync phase (e.g. "Headers: 12345 / 27000 (45%)") and a "Step N of 5" counter (Headers → Masternodes → Filter Headers → Filters → Blocks).
+- The block always offers a secondary "Continue in the background" button. Clicking it lowers the block; sync keeps running in the background (it is read-only and strands nothing), and the block is not re-raised for the rest of that sync episode.
+- The block lowers on its own when the chain becomes usable (Synced), fails (Error), or drops (Disconnected); a fresh sync episode blocks again.
+- This is the overlay's first real adopter (PR #863). Unlike the unsafe-to-interrupt operations in UX-001, SPV sync is **unbounded but safe to background** — so its C2 "never trap the user" guarantee is met by the always-on escape, not by operation boundedness.

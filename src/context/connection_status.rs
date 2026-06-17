@@ -710,6 +710,21 @@ mod tests {
         assert!(status.spv_sync_progress().is_none());
     }
 
+    /// F-SPV-2 — the blocking overlay's "Step N of 5" counter maps to the active
+    /// phase, and the summary reflects the live headers phase.
+    #[test]
+    fn spv_phase_step_and_summary_track_active_phase() {
+        let progress = syncing_progress();
+        assert_eq!(spv_phase_step(&progress), Some(1), "headers phase → step 1");
+        assert!(
+            spv_phase_summary(&progress).starts_with("Headers: 5000 / 10000"),
+            "summary reflects the live headers phase"
+        );
+
+        // No phase actively syncing → no step (the overlay shows the generic line).
+        assert_eq!(spv_phase_step(&SpvSyncProgress::default()), None);
+    }
+
     #[test]
     fn spv_status_snapshot_reflects_live_state() {
         let status = ConnectionStatus::new();

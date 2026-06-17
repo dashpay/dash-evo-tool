@@ -34,6 +34,18 @@ lowers through the normal path, and make a stuck block impossible by constructio
 
 ## 1. Decision 1 — Stuck/hang safety-valve (SEC-003, Diziet F-5)
 
+> **Post-decision update (SPV-sync adopter, F-SPV-1).** The "ship NO dismiss/background button in
+> v1" call below was scoped to the **unsafe-to-interrupt** operations (broadcast, signing, migration)
+> whose safety rests on C1 + C2 *boundedness*. The user has since decided to make the **startup/Connect
+> SPV sync** the overlay's first adopter (Task 9 / PR #863) and to **ship an always-visible
+> "Continue in the background" escape** for it. That does not contradict this decision: SPV sync is
+> **read-only and safe to background** (clicking the escape strands nothing — unlike a broadcast/
+> migration), and it is **unbounded** (no peers ⇒ no terminal signal), so its C2 "never trap the
+> user" guarantee is met by the **always-on escape**, not by boundedness. A future dev must NOT
+> "restore the original docs" by removing that button — it is the load-bearing safety valve for this
+> adopter. See UX-002 (`docs/user-stories.md`), `01-requirements-ux.md` §5, and
+> `AppState::update_spv_overlay`.
+
 ### Decision
 
 **Keep the block total. Ship NO renderer-level dismiss/background button in v1.** The safety valve

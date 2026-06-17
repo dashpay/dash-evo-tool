@@ -244,6 +244,16 @@ trap).
 > ignore (e.g. ambient SPV sync, identity discovery sweeps) stays a non-blocking
 > `MessageBanner::with_elapsed()` progress banner. Blocking the whole UI for ambient sync
 > would punish Priya and Jordan, who legitimately work while syncing.
+>
+> **Superseded for the startup/Connect SPV-sync adopter (user decision).** The user has since
+> chosen to **block** the UI during the initial get-connected SPV sync (startup auto-start and the
+> Connect button — not ambient mid-session reconnect cosmetics), because letting the user act before
+> the chain is usable is confusing. The power-user concern above is mitigated by an **always-visible
+> "Continue in the background" escape**: SPV sync is read-only and safe to background, so Priya/Jordan
+> can dismiss the block and keep working while sync proceeds. This is the overlay's first real adopter
+> — see UX-002 in `docs/user-stories.md` and `AppState::update_spv_overlay` (`src/app.rs`). The
+> escape is what satisfies the overlay's C2 "never trap the user" constraint, since SPV sync is
+> unbounded (no terminal signal with no peers).
 
 ### J-1 — Identity registration (multi-step, counter + Cancel) — Priya / Jordan
 1. User confirms "Register identity."

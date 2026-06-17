@@ -302,6 +302,18 @@ only, so re-running every boot is the mechanism, not a redundancy).
 Residual: per-contact *attribution* into DashPay payment history still depends on the DET sidecar
 address-map (`dashpay_set_address_mapping`); balance/spendability does not.
 
+**FOLLOW-UP 2026-06-17 — QA-025 (HIGH — RESOLVED `d34ffae4`)**: `send_contact_request_with_proof`
+and `accept_contact_request` called `sdk.document_create` but never wrote the sent request to
+`ManagedIdentity.sent_contact_requests` locally. Consequence: the upstream auto-establishment gate in
+`add_incoming_contact_request` only promotes to `established_contacts` when
+`sent_contact_requests[peer]` already exists; since DET never recorded it, `dashpay_sync` never
+auto-populated `established_contacts` → `established_contact_pairs()` always returned `[]` →
+`register_contact_receiving_accounts` silently no-op'd → all users who sent a contact request from
+DET had no addresses watched for incoming DashPay payments. Fix: after `document_create` succeeds,
+call the new `WalletBackend::record_sent_contact_request(seed_hash, owner_id, contact_request)` which
+acquires the wallet-manager write lock and calls `managed.add_sent_contact_request(…, persister)`.
+`accept_contact_request` → `send_contact_request_with_proof` inherits the fix automatically.
+
 - **v0.10-dev:** the ZMQ tx-finality path auto-detected payments to DashPay contact receive
   addresses, credited the UTXO, advanced the receive index, and recorded a "received"
   payment-history row — OLD `src/context/transaction_processing.rs:183` (`insert_utxo`),

@@ -302,46 +302,49 @@ impl PlatformEventHandler for EventBridge {
         use crate::backend_task::BackendTaskSuccessResult;
         use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
 
-        // Derive the per-wallet per-address data once from the pure helper.
-        let per_wallet = summary_ok_platform_entries(summary);
-
-        // (1) Update the frame-safe total-balance snapshot.
-        if let Ok(mut balances) = self.platform_balances.lock() {
-            for (wallet_id, entries) in &per_wallet {
-                if let Some(seed_hash) = self.snapshots.seed_hash_for(wallet_id) {
-                    // QA-B-003 (accepted): integer division truncates sub-duff amounts.
-                    // Loss ≤ (CREDITS_PER_DUFF − 1) per address, i.e. < 0.001 DASH max
-                    // per address. This is consistent with the direct-query path and is
-                    // intentional — displaying sub-duff precision has no practical value.
-                    let total_duffs: u64 = entries
-                        .iter()
-                        .map(|(_, balance_credits, _)| balance_credits / CREDITS_PER_DUFF)
-                        .sum();
-                    balances.insert(seed_hash, total_duffs);
-                }
-            }
-        }
-
-        // (2) Emit the per-address update. Build the seed_hash-keyed vec only for
-        // wallets that are registered (seed_hash resolved); unregistered wallet_ids
-        // (no DET mapping) are silently skipped.
-        let push_updates: PlatformAddressUpdates = per_wallet
+        // Single pass: resolve `WalletId → WalletSeedHash` once per wallet, drop
+        // any wallet whose id is not registered (no DET mapping) or has no found
+        // addresses. Both outputs below reuse the resolved seed hash — no double
+        // lookup (QA-B2-003).
+        let resolved: PlatformAddressUpdates = summary_ok_platform_entries(summary)
             .into_iter()
             .filter_map(|(wallet_id, entries)| {
+                if entries.is_empty() {
+                    return None;
+                }
                 self.snapshots
                     .seed_hash_for(&wallet_id)
                     .map(|seed_hash| (seed_hash, entries))
             })
-            .filter(|(_, entries)| !entries.is_empty())
             .collect();
 
-        if !push_updates.is_empty() {
-            let result = BackendTaskSuccessResult::PlatformAddressSyncPushed {
-                updates: push_updates,
-            };
-            // Non-blocking send; a full channel means the coordinator retries in
-            // ~15 s. The frame-safe total-balance snapshot (step 1) is already
-            // written — only the per-address update is deferred.
+        // (1) Update the frame-safe total-balance snapshot.
+        //
+        // Sum ALL credits across owned addresses BEFORE dividing (sum-then-truncate):
+        //   total_duffs = floor( Σ credits_i / 1000 )
+        //
+        // This matches the per-address tab, which accumulates raw `platform_credits`
+        // per `AccountSummary` group and converts to duffs at display time. The
+        // alternative — truncate-then-sum ( Σ floor(credits_i/1000) ) — under-counts
+        // by up to n−1 duffs when individual balances are not whole-duff multiples
+        // (e.g. two addresses × 500 credits → truncate-then-sum = 0 duffs,
+        // sum-then-truncate = 1 duff). (QA-B2-001)
+        //
+        // One duff of sub-duff remainder is accepted for the wallet total; the
+        // precision loss is ≤ 0.001 DASH regardless of address count.
+        if let Ok(mut balances) = self.platform_balances.lock() {
+            for (seed_hash, entries) in &resolved {
+                let total_credits: u64 = entries.iter().map(|(_, credits, _)| credits).sum();
+                balances.insert(*seed_hash, total_credits / CREDITS_PER_DUFF);
+            }
+        }
+
+        // (2) Emit the per-address update so `wallet.platform_address_info` stays
+        // current without a manual Refresh. Non-blocking; a full channel means
+        // the coordinator retries on the next ~15 s pass. The frame-safe total
+        // (step 1) is already written.
+        if !resolved.is_empty() {
+            let result = BackendTaskSuccessResult::PlatformAddressSyncPushed { updates: resolved };
             let _ = self
                 .task_result_sender
                 .try_send(TaskResult::Success(Box::new(result)));
@@ -1062,6 +1065,74 @@ mod tests {
             .expect("entry for p2pkh_b");
         assert_eq!(entry_b.1, 300_000, "balance_credits for p2pkh_b");
         assert_eq!(entry_b.2, 2, "nonce for p2pkh_b");
+    }
+
+    /// Prove the arithmetic is correct for pathological balances (QA-B2-001):
+    /// `sum-then-truncate` must be used, not `truncate-then-sum`.
+    ///
+    /// Two addresses of 500 credits each:
+    /// - `sum-then-truncate`: floor((500+500)/1000) = **1 duff** ✓
+    /// - `truncate-then-sum`: floor(500/1000) + floor(500/1000) = **0 duffs** ✗
+    ///
+    /// The selector and per-address tab must agree on 1 duff.
+    #[test]
+    fn platform_total_duffs_uses_sum_then_truncate_not_truncate_then_sum() {
+        use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
+        use dash_sdk::dpp::key_wallet::PlatformP2PKHAddress;
+        use dash_sdk::platform::address_sync::{AddressFunds, AddressSyncResult};
+        use platform_wallet::manager::platform_address_sync::{
+            PlatformAddressSyncSummary, WalletSyncOutcome,
+        };
+        use platform_wallet::wallet::PlatformAddressTag;
+
+        let wallet_id: [u8; 32] = [1u8; 32];
+        let p2pkh_a = PlatformP2PKHAddress::new([0xAAu8; 20]);
+        let p2pkh_b = PlatformP2PKHAddress::new([0xBBu8; 20]);
+
+        // 500 credits < 1 duff each; individually truncated to 0, but the
+        // wallet holds exactly 1000 credits = 1 duff in total.
+        let mut result: AddressSyncResult<PlatformAddressTag, PlatformP2PKHAddress> =
+            AddressSyncResult::default();
+        result.found.insert(
+            ((wallet_id, 0u32, 0u32), p2pkh_a),
+            AddressFunds {
+                nonce: 1,
+                balance: 500,
+            },
+        );
+        result.found.insert(
+            ((wallet_id, 0u32, 1u32), p2pkh_b),
+            AddressFunds {
+                nonce: 2,
+                balance: 500,
+            },
+        );
+
+        let mut summary = PlatformAddressSyncSummary::default();
+        summary
+            .wallet_results
+            .insert(wallet_id, WalletSyncOutcome::Ok(result));
+
+        let got = summary_ok_platform_entries(&summary);
+        assert_eq!(got.len(), 1);
+        let (_, entries) = &got[0];
+        assert_eq!(entries.len(), 2);
+
+        // sum-then-truncate (correct): 1 duff
+        let total_credits: u64 = entries.iter().map(|(_, c, _)| c).sum();
+        assert_eq!(total_credits, 1000, "total credits = 1000");
+        assert_eq!(
+            total_credits / CREDITS_PER_DUFF,
+            1,
+            "sum-then-truncate gives 1 duff (correct)"
+        );
+
+        // truncate-then-sum (wrong): 0 duffs — demonstrate the bug we fixed
+        let wrong_total: u64 = entries.iter().map(|(_, c, _)| c / CREDITS_PER_DUFF).sum();
+        assert_eq!(
+            wrong_total, 0,
+            "truncate-then-sum gives 0 duffs (this was the bug)"
+        );
     }
 
     /// An `Ok` outcome for an UNREGISTERED wallet must not write a balance

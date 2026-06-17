@@ -321,3 +321,54 @@ Eight confirmed. Eight candies. I'd be more pleased if there were fewer, which
 tells you something about my expectations. The headline one (QA-001) means the
 feature does not do the one thing its own user-story promises for protected
 wallets — fix that before it ships, and the rest is housekeeping.
+
+---
+
+## Re-verification (delta pass after Bilby's fixes)
+
+Three fix commits on `feat/identity-autodiscovery` (`14b31995`, `4d298fcd`,
+`4271af70`). Focused delta re-check — sound parts already verified, only the
+fixes audited. `cargo test --lib --all-features` → **889 passed, 0 failed, 1
+ignored** (4 new tests, all ran and passed); `cargo clippy --lib --all-features`
+clean.
+
+| Finding | Status | Evidence |
+|---------|--------|----------|
+| **QA-001** (HIGH) | ✅ RESOLVED | `handle_wallet_unlocked` (`wallet_lifecycle.rs:885`) now calls new `queue_unlocked_wallet_identity_discovery` (`:1043-1068`), placed AFTER seed promotion (`:853`) and `drive_unlock_registration` (`:881`). It (a) dispatches `discover_identities_gap_limited(&wallet, 0, true, None)` — not a no-op; (b) never reads `identity_autodiscovery_fired`; (c) early-returns on `!masternodes_ready()`; (d) runs prompt-free off the freshly-promoted session cache; (e) holds no `Wallet` guard across `.await`. Deferred case verified: unlock flips the seed `Open` (`wallet_unlock_popup.rs:114`, guard dropped :116) BEFORE `handle_wallet_unlocked`, so an early unlock is picked up by the upcoming sweep's `open_wallets()` snapshot. User-story IDN-015 and the sweep doc comment are now TRUE. |
+| **QA-002** (MED) | ✅ RESOLVED | New `all_wallets_discovery_latch_is_one_shot_until_stop_spv` test binds: asserts latch sets on first call, second call no-ops, `stop_spv` clears it. Reverting the `swap` latch or the `stop_spv` reset fails it. |
+| **QA-003** (MED) | ✅ RESOLVED (with one caveat) | New `rediscovery_update_preserves_user_alias_and_wallet_binding` binds: inserts `alias=Some("my-id")`+binding `(hash,3)`, simulates re-discovery (fresh QI `alias:None` → carry `existing.alias` → `update_local_qualified_identity`), asserts `alias==Some("my-id")` and `wallet_index==Some(3)`. Removing the carry-over fails it. **Caveat (not a new finding):** the test re-implements the carry-over rather than calling the production `upsert_discovered_identity`, so it guards `update_local_qualified_identity`'s binding-preservation but not a regression *inside* `upsert_discovered_identity`. Acceptable — the production helper is the same 2-line pattern. |
+| **QA-004** (MED) | ✅ RESOLVED | `build_qualified_identity_from_wallet` now returns `Result<_, TaskError>` (`discover_identities.rs:291`); the `.to_string()` hops and the `WalletInfoDeterminationFailed { detail }` flatten are gone; `?` propagation preserves `AuthKeyUnlockRequired` end-to-end. No `Result<_, String>` and no `WalletInfoDeterminationFailed` reference remain in the file. No new `String`-typed error field anywhere in the 3 commits (`error.rs` untouched; `IdentitySearchIndexError::TooLarge { max: u32 }` is typed). |
+| **QA-005** (LOW) | ✅ RESOLVED | Per-index `Progress` now carries `total: soft_total` = `highest_found + GAP + 1` clamped to `IDENTITY_SCAN_HARD_CAP` (`:79-83`), message "of about {soft_total}". No longer `total == current`. UI (`add_existing_identity_screen.rs:1049`) renders `message`, so it shows an honest denominator. |
+| **QA-006** (LOW) | ✅ RESOLVED (literally; see note) | `upsert_discovered_identity` takes `scan_network` (captured at scan start, `:47`) and skips the store on `self.network != scan_network` (`:241`). **Note (not a new finding):** because a network switch swaps to a *different per-network* `AppContext` (`app.rs:831` `finalize_network_switch`) and `network` is an immutable field, the in-flight task's `self.network` always equals `scan_network` — so the guard never actually fires. It satisfies the design's literal "re-check before each store" requirement as harmless defense-in-depth; the real isolation was already structural. Dead-but-correct, not a regression. |
+| **QA-007** (LOW) | ✅ RESOLVED | The false "next refresh tick re-delivers" claim is replaced (`mod.rs:1016-1019`) with an accurate note: a full 256-deep channel would drop the nudge and the sweep would wait for a reconnect, tolerated because the user can run discovery manually. |
+| **QA-008** (LOW) | ✅ RESOLVED | New pure `model/` validator `validate_search_index` with `MAX_IDENTITY_SEARCH_INDEX = 99` and typed `IdentitySearchIndexError::TooLarge` (no String field); applied at the UI dispatch (`add_existing_identity_screen.rs`) with separate out-of-range vs non-numeric messages, both i18n-ready. Test `validate_search_index_accepts_in_range_rejects_beyond_cap` binds (0→Ok, 99→Ok, 100→Err, u32::MAX→Err). |
+
+### New issues introduced by the fixes
+
+**None confirmed.** Benign observations, no candy:
+
+- **Double-dispatch (harmless):** if a wallet is both unlocked-while-Platform-ready
+  *and* covered by the sweep, two `discover_identities_gap_limited` runs can
+  overlap on one wallet → duplicate DAPI fetches + idempotent last-write-wins
+  upsert. No corruption (DB-serialised, update-preserving-alias). In the common
+  deferred flow the latch prevents it (sweep already fired, unlock path is
+  latch-independent and runs once). LOW-impact, acceptable.
+- **Unlock-path prompt on a promotion-failure race (by-design):** if
+  `promote_hd_seed_with_passphrase` fails *after* `open()` succeeded (e.g. a
+  `WalletNotFound` envelope race), `queue_unlocked_wallet_identity_discovery`
+  runs with `allow_prompt = true` and could prompt on a cold miss. This is the
+  *interactive unlock* path where the user just typed their passphrase and is
+  present — a prompt here is consented, not a surprise. **Not an F-2 violation**
+  (F-2 governs the background `allow_prompt = false` sweep, which is untouched).
+- **QA-006 guard is dead code** (detailed above) — correct but never fires.
+
+### Re-verification verdict: **SHIP**
+
+All 8 findings resolved, 4 new tests bind (would fail on revert), full suite
+green (889 pass), clippy clean, no regression to the import path, the F-2
+invariant, the concurrency shape, or the UI Progress consumption. The headline
+QA-001 gap is genuinely closed — protected wallets are now discovered on unlock,
+and the user-story finally tells the truth. I have run out of things to be
+disappointed about, which is itself mildly disappointing.
+
+*(0 new confirmed issues in the fixes → 0 new candy. The original 8 stand.)*

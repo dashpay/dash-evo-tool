@@ -640,28 +640,40 @@ pub fn spv_phase_summary(progress: &SpvSyncProgress) -> String {
     "syncing...".to_string()
 }
 
+/// Number of phases in the SPV sync pipeline — the total in the blocking
+/// overlay's "Step N of {total}" counter. Single source of truth: shared with
+/// the overlay adopter so the displayed total can never drift from the phase
+/// count [`spv_phase_step`] actually walks.
+pub const SPV_SYNC_PHASE_COUNT: u32 = 5;
+
 /// Map the currently-active SPV sync phase to a 1-based step number for the
-/// blocking overlay's "Step N of 5" counter — Headers=1, Masternodes=2,
-/// Filter Headers=3, Filters=4, Blocks=5 — or `None` when no phase is actively
-/// syncing yet. Mirrors the pipeline order of [`spv_phase_summary`].
+/// blocking overlay's "Step N of {total}" counter — Headers=1, Masternodes=2,
+/// Filter Headers=3, Filters=4, Blocks=[`SPV_SYNC_PHASE_COUNT`] — or `None` when
+/// no phase is actively syncing yet. Mirrors the pipeline order of
+/// [`spv_phase_summary`].
 pub fn spv_phase_step(progress: &SpvSyncProgress) -> Option<u32> {
     let is_syncing = |state: SyncState| state == SyncState::Syncing;
-    if progress.headers().is_ok_and(|p| is_syncing(p.state())) {
-        Some(1)
+    let step = if progress.headers().is_ok_and(|p| is_syncing(p.state())) {
+        1
     } else if progress.masternodes().is_ok_and(|p| is_syncing(p.state())) {
-        Some(2)
+        2
     } else if progress
         .filter_headers()
         .is_ok_and(|p| is_syncing(p.state()))
     {
-        Some(3)
+        3
     } else if progress.filters().is_ok_and(|p| is_syncing(p.state())) {
-        Some(4)
+        4
     } else if progress.blocks().is_ok_and(|p| is_syncing(p.state())) {
-        Some(5)
+        SPV_SYNC_PHASE_COUNT
     } else {
-        None
-    }
+        return None;
+    };
+    debug_assert!(
+        step <= SPV_SYNC_PHASE_COUNT,
+        "SPV phase step {step} exceeds SPV_SYNC_PHASE_COUNT {SPV_SYNC_PHASE_COUNT} — bump the constant"
+    );
+    Some(step)
 }
 
 fn pct(current: u32, target: u32) -> u32 {

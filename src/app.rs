@@ -7,7 +7,9 @@ use crate::backend_task::error::TaskError;
 use crate::backend_task::migration::MigrationTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
-use crate::context::connection_status::{ConnectionStatus, OverallConnectionState, spv_phase_step};
+use crate::context::connection_status::{
+    ConnectionStatus, OverallConnectionState, SPV_SYNC_PHASE_COUNT, spv_phase_step,
+};
 use crate::context::migration_status::{MigrationState, MigrationStep};
 use crate::database::Database;
 #[cfg(not(feature = "testing"))]
@@ -1133,7 +1135,7 @@ impl AppState {
     }
 
     /// Drive the blocking SPV-sync overlay each frame (Task 9 — the overlay's
-    /// first real adopter, PR #863 wiring). Hard-block the UI while a **armed**
+    /// first real adopter, PR #863 wiring). Hard-block the UI while an **armed**
     /// (user-initiated: startup auto-start / Connect) sync is getting connected,
     /// showing a plain please-wait sentence and a jargon-free "Step N of 5"
     /// counter, and lower + DISARM it when the chain becomes usable (Synced) or
@@ -1166,6 +1168,10 @@ impl AppState {
                     SPV_CONNECTING_DESCRIPTION
                 };
                 if self.spv_overlay.is_none() {
+                    // TODO(RUST-006): provide a keyboard/assistive-tech exit for the
+                    // UNBOUNDED SPV block (hard blocks are intentionally not
+                    // keyboard-activatable per QA-002, but the unbounded SPV case can
+                    // strand keyboard-only users) — pending product decision.
                     let mut config = OverlayConfig::new()
                         .with_description(description)
                         .with_secondary_button(
@@ -1173,14 +1179,14 @@ impl AppState {
                             "Continue in the background",
                         );
                     if let Some(n) = step {
-                        config = config.with_step(n, 5);
+                        config = config.with_step(n, SPV_SYNC_PHASE_COUNT);
                     }
                     self.spv_overlay.raise(ctx, "", config);
                 } else if let Some(handle) = &self.spv_overlay {
                     handle.set_description(description);
                     match step {
                         Some(n) => {
-                            handle.set_step(n, 5);
+                            handle.set_step(n, SPV_SYNC_PHASE_COUNT);
                         }
                         None => {
                             handle.clear_step();
@@ -1335,13 +1341,6 @@ impl AppState {
         }
     }
 
-    /// Sweep orphaned overlay button-action clicks (A-3): ids whose owning
-    /// overlay entry is no longer on the stack (the owner cleared or dropped its
-    /// handle without draining). Screens own dispatch — they drain **their own**
-    /// clicks at the top of `ui()` via [`OverlayHandle::take_actions`] and match
-    /// their own colon-namespaced ids, including their own cancellation. This loop
-    /// only reclaims truly-orphaned ids so they can't accumulate in `ctx.data`; it
-    /// can never race or pre-empt a live owner, so its position here is safe.
     /// Claim all keyboard + text input for an active blocking overlay at frame
     /// start (QA-001) — UNLESS a secret prompt is active above it. The prompt
     /// renders above the overlay and needs the keyboard (Enter to submit, Esc to
@@ -1890,17 +1889,13 @@ impl App for AppState {
                     let app_ctx = self.current_app_context().clone();
                     let sender = self.task_result_sender.clone();
                     let egui_ctx = ctx.clone();
-                    const CONNECTING_MSG: &str =
-                        "Connecting to the network. This may take a moment.";
                     self.subtasks.spawn_sync("spv_manual_start", async move {
-                        // The chokepoint already flips the SPV indicator to Error
-                        // on failure; here we additionally swap the "Connecting…"
-                        // banner for an actionable one, since the user pressed
-                        // Connect and is waiting for explicit feedback.
+                        // The chokepoint already flips the SPV indicator to Error on
+                        // failure; the user pressed Connect and is waiting, so also
+                        // surface an actionable error banner here.
                         if let Err(e) = app_ctx.ensure_wallet_backend_and_start_spv(sender).await {
-                            MessageBanner::replace_global(
+                            MessageBanner::set_global(
                                 &egui_ctx,
-                                CONNECTING_MSG,
                                 "Could not start network sync. Check your connection and try again.",
                                 MessageType::Error,
                             )

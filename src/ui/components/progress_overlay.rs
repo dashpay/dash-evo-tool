@@ -515,6 +515,13 @@ impl ProgressOverlay {
     /// `ctx.data`. The `description` argument is used unless `config` already
     /// carries one.
     ///
+    /// **Lifecycle (SEC-001):** a button-less app-level block has no automatic
+    /// teardown — the no-progress watchdog only *logs*, it never lowers the block.
+    /// A button-less block MUST therefore either be driven by a frame-driven
+    /// reconcile owner that lowers it when the work ends (the reference pattern is
+    /// the SPV adopter, `AppState::update_spv_overlay`), or carry an escape
+    /// button; a leaked or forgotten handle strands the UI with no way out.
+    ///
     /// SEC-006: the `description` (and any button `label`/`id`) is user-visible
     /// and written to logs on show — never pass secrets, passphrases, or PII.
     pub fn show_global(
@@ -546,6 +553,11 @@ impl ProgressOverlay {
     }
 
     /// Convenience: a spinner-only block with no text, counter, or buttons.
+    ///
+    /// As a button-less block it has no escape, so the SEC-001 lifecycle rule from
+    /// [`show_global`](Self::show_global) applies in full: drive it from a
+    /// frame-driven reconcile owner (e.g. `AppState::update_spv_overlay`) that
+    /// lowers it when the work ends — a leaked handle has no automatic teardown.
     pub fn show_global_spinner_only(ctx: &egui::Context) -> OverlayHandle {
         Self::show_global(ctx, "", OverlayConfig::default())
     }
@@ -604,8 +616,10 @@ impl ProgressOverlay {
     /// - releasing text-edit focus from any field beneath (so it stops drawing a
     ///   caret and consuming text — affects only text widgets, never an overlay
     ///   button), and
-    /// - stripping `Event::Text` and the navigation/confirm keys (Tab, Enter,
-    ///   Escape, Space, arrows) from `i.events` so nothing beneath observes them.
+    /// - stripping `Event::Text`, the clipboard events (Copy/Cut/Paste), and the
+    ///   navigation/confirm/edit keys (Tab, Enter, Escape, Space, arrows,
+    ///   Backspace, Delete, Home, End, PageUp, PageDown) from `i.events` so
+    ///   nothing beneath observes them.
     ///
     /// A hard block is never keyboard-dismissable or keyboard-activatable. The
     /// buttoned case (post-T7) re-grants its own buttons' navigation via the
@@ -629,6 +643,9 @@ impl ProgressOverlay {
                 !matches!(
                     e,
                     egui::Event::Text(_)
+                        | egui::Event::Copy
+                        | egui::Event::Cut
+                        | egui::Event::Paste(_)
                         | egui::Event::Key {
                             key: egui::Key::Tab
                                 | egui::Key::Enter
@@ -637,13 +654,22 @@ impl ProgressOverlay {
                                 | egui::Key::ArrowUp
                                 | egui::Key::ArrowDown
                                 | egui::Key::ArrowLeft
-                                | egui::Key::ArrowRight,
+                                | egui::Key::ArrowRight
+                                | egui::Key::Backspace
+                                | egui::Key::Delete
+                                | egui::Key::Home
+                                | egui::Key::End
+                                | egui::Key::PageUp
+                                | egui::Key::PageDown,
                             pressed: true,
                             ..
                         }
                 )
             });
         });
+        // TODO(SEC-002-pointer): claim pointer press/click/drag at frame start
+        // (analogue of the keyboard QA-001 frame-start claim) to close the
+        // one-frame click-through on the raising frame.
     }
 
     /// Render the topmost entry. Call once per frame from `AppState::update`,
@@ -681,6 +707,10 @@ impl ProgressOverlay {
                 "Blocking overlay has shown no progress for over 2 minutes — \
                  likely a leaked handle or an un-bounded operation"
             );
+            // TODO(SEC-001): make the no-progress watchdog actionable (auto-attach
+            // an escape or enforce a frame-driven reconcile owner for button-less
+            // blocks) — pending product decision; conflicts with the no-built-in-
+            // cancel directive.
         }
 
         let dark_mode = ctx.style().visuals.dark_mode;

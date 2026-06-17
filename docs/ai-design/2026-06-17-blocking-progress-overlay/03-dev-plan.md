@@ -349,6 +349,12 @@ On network switch, clear the overlay alongside banners (mirror `MessageBanner::c
 
 ### 4.2 Layer ordering (R-1) — the decisive part
 
+> **Superseded — `Order::Foreground`, not `Order::Middle`.** The shipped overlay paints its dim,
+> sink, and card on `Order::Foreground` (SEC-002: above Foreground popups like ComboBox/autocomplete
+> that would otherwise float over a `Middle` block); the secret prompt is raised to match and
+> rendered later, so it still wins above the overlay. Treat `progress_overlay.rs` (SEC-002) as the
+> source of truth for layer ordering — the `Order::Middle` references below are the original plan.
+
 egui paints, within one `Order`, in area-creation order; an interacted/focused area is raised
 to the top of its order. The live secret prompt is an `egui::Window` (default `Order::Middle`)
 that `request_focus()`es its input (`passphrase_modal.rs:139-172`).
@@ -369,6 +375,10 @@ that `request_focus()`es its input (`passphrase_modal.rs:139-172`).
   dialogs are *pre-dispatch*, never concurrent with a blocker, so they need no special handling.)
 
 ### 4.3 Dim plane + input-blocking technique (FR-8, NFR-1)
+
+> **Superseded — `Order::Foreground`, not `Order::Middle`.** The dim, pointer sink, and card below
+> ship on `Order::Foreground` (SEC-002), not `Order::Middle`. Treat `progress_overlay.rs` as the
+> source of truth for the layer the dim/sink/card render on.
 
 `Ui::set_enabled(false)` is **deprecated in egui 0.33** (confirmed memory; test-spec AC-8.2).
 Use a top input-capturing layer instead — the same shape the passphrase modal already uses

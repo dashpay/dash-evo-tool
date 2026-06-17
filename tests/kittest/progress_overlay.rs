@@ -16,8 +16,9 @@
 //!   and by the fact these synchronous tests compile and run.
 //! - TC-OVL-031 (render seam): `ProgressOverlay::render_global` is called from
 //!   `AppState::update` after panels, not inside `island_central_panel`.
-//! - TC-OVL-032 (z-order above banners): the overlay paints on `Order::Middle`;
-//!   banners paint on `Order::Background` inside the central panel.
+//! - TC-OVL-032 (z-order above banners): the overlay paints on `Order::Foreground`
+//!   (SEC-002, above Foreground popups); banners paint on `Order::Background`
+//!   inside the central panel.
 //! - TC-OVL-040 / TC-OVL-045 (log-once): covered by the inline unit tests in
 //!   `src/ui/components/progress_overlay.rs` (`render_logs_once_then_marks_logged`);
 //!   the concurrent-request warning is emitted once in `show_global`, never per frame.
@@ -27,6 +28,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+#[cfg(feature = "testing")]
 use std::time::Duration;
 
 use dash_evo_tool::ui::MessageType;
@@ -260,10 +262,14 @@ fn tc_ovl_013a_elapsed_off_by_default() {
 }
 
 /// TC-OVL-013 (Part B) — when enabled the elapsed readout shows and counts up.
+/// Uses the deterministic clock seam (`backdate`) instead of a wall-clock sleep,
+/// mirroring `tc_ovl_047b_threshold_reveals_via_clock_seam`. QA-008: assert the
+/// readout advanced to a concrete 2s, not merely past 0s.
+#[cfg(feature = "testing")]
 #[test]
 fn tc_ovl_013b_elapsed_on_counts_up() {
     let mut harness = overlay_harness();
-    let _handle = ProgressOverlay::show_global(
+    let handle = ProgressOverlay::show_global(
         &harness.ctx,
         "Slow operation.",
         OverlayConfig::new().with_elapsed(),
@@ -271,18 +277,18 @@ fn tc_ovl_013b_elapsed_on_counts_up() {
     harness.step();
     assert!(harness.query_by_label("Elapsed: 0s").is_some());
 
-    // Real wall-clock elapsed (Instant-based) — counts up, never down. QA-008:
-    // assert it advanced to at least 2s, not merely past 0s.
-    std::thread::sleep(Duration::from_millis(2100));
+    // Shift this entry's clock 2s into the past via the test seam, then re-render:
+    // the readout counts up to 2s deterministically, with zero wall-clock waiting.
+    handle.backdate(Duration::from_secs(2));
     harness.step();
+    assert!(
+        harness.query_by_label("Elapsed: 2s").is_some(),
+        "the readout advanced to 2s via the clock seam"
+    );
     assert!(
         harness.query_by_label("Elapsed: 0s").is_none()
             && harness.query_by_label("Elapsed: 1s").is_none(),
-        "the readout advanced to at least 2s"
-    );
-    assert!(
-        harness.query_by_label_contains("Elapsed:").is_some(),
-        "the readout persists and never disappears or counts down"
+        "the readout counts up, never down, and never stalls at 0s"
     );
 }
 
@@ -1043,6 +1049,90 @@ fn qa_buttonless_overlay_blocks_typing_into_focused_field_beneath() {
         text.borrow().is_empty(),
         "FR-8 AC-8.2: typed input reached a focused field beneath a button-less \
          overlay: {:?}",
+        text.borrow()
+    );
+}
+
+// SEC-002 (additive hardening): `claim_input` also strips edit keys
+// (Backspace/Delete/Home/End/PageUp/PageDown) and clipboard events
+// (Copy/Cut/Paste) at frame start, so a focused field beneath a block is neither
+// edited nor pasted into. This locks the new classes via event survival (fails
+// if the strip is removed) plus the field-beneath behavioral contract.
+#[test]
+fn qa_buttonless_overlay_strips_edit_and_clipboard_events() {
+    let text = Rc::new(RefCell::new(String::new()));
+    let text_ui = Rc::clone(&text);
+    let survived = Rc::new(Cell::new(false));
+    let survived_ui = Rc::clone(&survived);
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(420.0, 360.0))
+        .build_ui(move |ui| {
+            ProgressOverlay::claim_input(ui.ctx());
+            let leaked = ui.ctx().input(|i| {
+                i.events.iter().any(|e| {
+                    matches!(
+                        e,
+                        egui::Event::Paste(_)
+                            | egui::Event::Key {
+                                key: egui::Key::Backspace | egui::Key::Delete,
+                                pressed: true,
+                                ..
+                            }
+                    )
+                })
+            });
+            survived_ui.set(leaked);
+            let mut buffer = text_ui.borrow_mut();
+            ui.text_edit_singleline(&mut *buffer);
+            ProgressOverlay::render_global(ui.ctx());
+        });
+
+    // Focus the field and type real content while idle (claim_input is a no-op
+    // with no overlay), so egui holds a live cursor at the end of "keep".
+    harness.step();
+    harness
+        .get_by_role(egui::accesskit::Role::TextInput)
+        .focus();
+    harness.step();
+    harness
+        .input_mut()
+        .events
+        .push(egui::Event::Text("keep".to_string()));
+    harness.step();
+    assert_eq!(
+        text.borrow().as_str(),
+        "keep",
+        "typing must reach the focused field while no overlay is up"
+    );
+
+    // Raise a button-less block over the focused, populated field.
+    let _handle = ProgressOverlay::show_global_spinner_only(&harness.ctx);
+    harness.step();
+
+    // Inject edit + clipboard events; claim_input must strip them all.
+    for key in [egui::Key::Backspace, egui::Key::Delete] {
+        harness.input_mut().events.push(egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+    }
+    harness
+        .input_mut()
+        .events
+        .push(egui::Event::Paste("INJECT".to_string()));
+    harness.step();
+
+    assert!(
+        !survived.get(),
+        "claim_input must strip Backspace/Delete/Paste while a block is up"
+    );
+    assert_eq!(
+        text.borrow().as_str(),
+        "keep",
+        "edit/clipboard events reached a field beneath a button-less overlay: {:?}",
         text.borrow()
     );
 }

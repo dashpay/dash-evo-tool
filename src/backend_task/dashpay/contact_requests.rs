@@ -10,6 +10,8 @@ use crate::backend_task::dashpay::auto_accept_proof::{
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
+// Upstream contact-request type: used to record the sent request in the
+// local wallet-manager so dashpay_sync can auto-establish the contact.
 use bip39::rand::{SeedableRng, rngs::StdRng};
 use dash_sdk::Sdk;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
@@ -25,6 +27,7 @@ use dash_sdk::platform::{
     Document, DocumentQuery, Fetch, FetchMany, FetchUnproved, Identifier, IdentityPublicKey,
 };
 use dash_sdk::query_types::{CurrentQuorumsInfo, NoParamQuery};
+use platform_wallet::ContactRequest as UpstreamContactRequest;
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
@@ -410,6 +413,9 @@ pub async fn send_contact_request_with_proof(
         "accountReference".to_string(),
         Value::U32(account_reference),
     );
+    // Clone before the move so the record we build after document_create
+    // carries the real encrypted xpub (matches upstream behaviour).
+    let encrypted_public_key_record = encrypted_public_key.clone();
     properties.insert(
         "encryptedPublicKey".to_string(),
         Value::Bytes(encrypted_public_key),
@@ -506,15 +512,52 @@ pub async fn send_contact_request_with_proof(
         .document_create(builder, identity_key, &identity)
         .await?;
 
-    // Log the proof-verified document for audit trail
-    match result {
+    // Log the proof-verified document and capture timestamps for the local
+    // wallet-manager record.
+    let (core_height_created_at, created_at_ts) = match result {
         dash_sdk::platform::documents::transitions::DocumentCreateResult::Document(doc) => {
             tracing::info!(
                 "Contact request created: doc_id={}, revision={:?}",
                 doc.id(),
                 doc.revision()
             );
+            (
+                doc.created_at_core_block_height().unwrap_or(0),
+                doc.created_at().unwrap_or(0),
+            )
         }
+    };
+
+    // Mirror the sent request in the local wallet-manager (QA-025 fix).
+    //
+    // `dashpay_sync` auto-establishes a contact only when
+    // `sent_contact_requests[peer]` already exists locally.
+    // DET's custom send path bypasses
+    // `IdentityWallet::send_contact_request_with_external_signer`, so we
+    // must call `add_sent_contact_request` explicitly after the state
+    // transition commits.  Without this, `established_contacts` is never
+    // populated and contact receiving-account registration is silently
+    // skipped for all users who send a contact request from DET.
+    let contact_record = UpstreamContactRequest::new(
+        owner_id,
+        to_identity_id,
+        sender_encryption_key.id(),
+        recipient_key.id(),
+        account_reference,
+        encrypted_public_key_record,
+        core_height_created_at,
+        created_at_ts,
+    );
+    if let Ok(backend) = app_context.wallet_backend()
+        && let Err(err) = backend
+            .record_sent_contact_request(&seed_hash, &owner_id, contact_record)
+            .await
+    {
+        tracing::warn!(
+            %err,
+            "record_sent_contact_request failed; contact was sent but \
+             local wallet-manager state not updated",
+        );
     }
 
     Ok(BackendTaskSuccessResult::DashPayContactRequestSent(

@@ -1531,6 +1531,51 @@ impl WalletBackend {
             .unwrap_or(0)
     }
 
+    /// Record a successfully-sent contact request in the upstream
+    /// wallet-manager's in-memory `sent_contact_requests` map.
+    ///
+    /// After a contact-request state transition is accepted by Platform,
+    /// the local `ManagedIdentity` must be updated so that `dashpay_sync`
+    /// can later auto-establish the contact when the peer's reciprocal
+    /// request arrives.  The upstream auto-establishment gate in
+    /// `add_incoming_contact_request` only promotes an identity to
+    /// `established_contacts` when `sent_contact_requests[peer]` already
+    /// exists locally.  DET's custom `send_contact_request_with_proof`
+    /// bypasses `IdentityWallet::send_contact_request_with_external_signer`
+    /// and therefore never writes to that map without this explicit call.
+    ///
+    /// Non-fatal when the managed identity is not yet in the manager —
+    /// logs a warning and returns `Ok(())` since the state transition was
+    /// already committed to Platform.
+    pub(crate) async fn record_sent_contact_request(
+        &self,
+        seed_hash: &WalletSeedHash,
+        owner_id: &dash_sdk::platform::Identifier,
+        contact_request: platform_wallet::ContactRequest,
+    ) -> Result<(), TaskError> {
+        let wallet = self.resolve_wallet(seed_hash).await?;
+        let wallet_id = wallet.wallet_id();
+        let persister = wallet.persister().clone();
+        let mut wm = wallet.wallet_manager().write().await;
+        let info = wm
+            .get_wallet_info_mut(&wallet_id)
+            .ok_or(TaskError::WalletStateInconsistent)?;
+        match info.identity_manager.managed_identity_mut(owner_id) {
+            Some(managed) => {
+                managed.add_sent_contact_request(contact_request, &persister);
+            }
+            None => {
+                tracing::warn!(
+                    owner_id = %owner_id,
+                    "record_sent_contact_request: managed identity not \
+                     found; state transition committed but local manager \
+                     not updated",
+                );
+            }
+        }
+        Ok(())
+    }
+
     /// Durably flush every registered wallet's buffered changesets to the
     /// upstream persister. Called before the one-time migration's
     /// strictly-last legacy-table DROP so the new persister is durable

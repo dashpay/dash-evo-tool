@@ -1168,6 +1168,19 @@ impl AppState {
         self.active_secret_prompt = active.then(ActivePrompt::test_stub);
     }
 
+    /// Sweep orphaned overlay action ids whose owning overlay is gone. Screens own
+    /// dispatch and cancellation today — they drain their own clicks via
+    /// [`OverlayHandle::take_actions`]; this loop only reclaims orphans so they
+    /// cannot accumulate in `ctx.data`.
+    //
+    // TODO(T7): the BackendTask system has no cooperative cancellation, so an
+    // overlay button can only stop waiting, never abort a running operation. When
+    // T7 lands (thread a per-operation CancellationToken through run_backend_task
+    // and retain the abort handle in handle_backend_task), a screen can wire a
+    // generic overlay button — e.g. one it labels "Cancel" — to a real abort.
+    // Until then no production overlay attaches a button to a running task, and
+    // this loop has no live cancellation role; the 120s watchdog
+    // (see progress_overlay.rs) bounds every block in the meantime.
     fn drain_overlay_actions(&mut self, ctx: &egui::Context) {
         for action_id in ProgressOverlay::sweep_orphan_actions(ctx) {
             tracing::warn!(

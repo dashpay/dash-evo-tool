@@ -43,7 +43,8 @@ This spec defines a **full-screen blocking progress overlay**: a sibling capabil
 beneath it, and shows a "please wait" message with an **indeterminate spinner (no ETA)**, an
 **optional step counter** (`Step {current} of {total}`), and **optional action buttons**
 (at minimum Cancel). It is dismissed programmatically when the operation completes, or by an
-optional Cancel button.
+optional Cancel button. _(Superseded — see top banner: buttons are generic (`with_button`), there
+is no built-in Cancel, and Esc/Tab/Enter/Space are swallowed; dismissal is programmatic.)_
 
 **Critical invariant (learned the hard way — PR860):** the overlay is a *visual + input*
 block only. It must never synchronously wait in the egui frame loop. The real work runs on a
@@ -128,7 +129,7 @@ The overlay MAY show zero or more action buttons. Cancel is the canonical one bu
 mechanism is generic.
 **AC-7.1** Buttons are optional. With none, the overlay is a pure block dismissed only programmatically.
 **AC-7.2** Each button carries a label (i18n unit) and an opaque **action id**. Clicking pushes the action id into an overlay-action queue that the app loop drains and dispatches — exactly mirroring `BannerHandle::with_action` / `MessageBanner::take_action`. The overlay never calls backend code directly (UI-only seam; see NFR-1 and §6).
-**AC-7.3** A Cancel button uses a well-known action id; the app loop maps it to the operation's cancellation path.
+**AC-7.3** A Cancel button uses a well-known action id; the app loop maps it to the operation's cancellation path. _(Superseded — see top banner: buttons are generic with opaque ids keyed to the owning screen; there is no well-known Cancel id and no app-loop cancellation mapping.)_
 **AC-7.4** Buttons follow project button order (Confirm/primary RIGHT, Cancel LEFT) and use `StyledButton`/`ComponentStyles`, never bare `ui.button()`.
 **AC-7.5** Cancel SHOULD be offered only when the operation is genuinely cancelable (see Risk R-3). When it cannot truly cancel, do not show a button that lies.
 
@@ -139,7 +140,7 @@ overlay's own controls.
 **AC-8.1** Pointer clicks/drags on any region outside the overlay's own buttons have no effect on the UI beneath.
 **AC-8.2** Keyboard input (Tab, Enter, typing) does not reach widgets beneath the overlay. (Do not rely on `Ui::set_enabled()` — deprecated in egui 0.33; use a top input-capturing layer instead.)
 **AC-8.3** The block covers the *entire* window, including top and left panels — therefore the overlay renders at the `AppState` level, not inside `island_central_panel()` (which only wraps central content). See §3.
-**AC-8.4** Clicking the dimmed backdrop does **not** dismiss the overlay (unlike a passphrase modal) — a blocking progress overlay is not click-outside-to-cancel; dismissal is programmatic or via an explicit Cancel button only.
+**AC-8.4** Clicking the dimmed backdrop does **not** dismiss the overlay (unlike a passphrase modal) — a blocking progress overlay is not click-outside-to-cancel; dismissal is programmatic or via an explicit Cancel button only. _(Superseded — see top banner: there is no built-in Cancel; dismissal is programmatic. A screen MAY add a generic button (`with_button`) that triggers its own teardown.)_
 
 ### FR-9 — Coexistence with MessageBanner (z-order + hand-off)
 **AC-9.1** The overlay renders **above** all `MessageBanner` banners (banners live inside the island content area at a background layer; the overlay sits on a top layer). The overlay wins z-order.
@@ -348,7 +349,7 @@ The card uses the dialog idiom (rounded corners, shadow, `surface`/`window_fill`
 | State | Behavior |
 |---|---|
 | Visible, no buttons | Pure block. Esc/Enter swallowed. Backdrop click ignored. Dismissed only programmatically. |
-| Visible, cancelable | Esc → Cancel. Cancel button focusable and is the first focus stop. Backdrop click ignored. |
+| Visible, cancelable | _(Superseded — see top banner: Esc never cancels (it is swallowed with Tab/Enter/Space); buttons are generic, not a focusable Cancel. Backdrop click ignored.)_ |
 | Button hover/focus | Standard `StyledButton` hover (pointing-hand) + focus ring (`BORDER_WIDTH_THICK`, ≥3:1). |
 | Counter update | Only the counter line changes; spinner uninterrupted. |
 | Theme switch mid-overlay | Colors re-evaluate next frame; no stale palette. |
@@ -418,7 +419,9 @@ focused copy over a forced shared base; defer to Nagatha.
 - **R-2 — Concurrent blocking operations (FR-10).** Confirm the stack model vs.
   last-writer-replace vs. reject-second. Stack is safest (never unblocks while a task runs);
   simpler models need a product guarantee that blockers don't overlap.
-- **R-3 — Does Cancel actually cancel?** The honesty of the Cancel button depends on the
+- **R-3 — Does Cancel actually cancel?** _(Superseded — see top banner: no built-in Cancel ships;
+  cooperative backend cancellation (T7) is deferred and the 120s watchdog bounds every block
+  instead. The note below records the original concern.)_ The honesty of the Cancel button depends on the
   `BackendTask` system supporting cooperative cancellation (cancel tokens / abortable tasks).
   If a task cannot truly be aborted, Cancel can only *stop waiting* while the work continues —
   which is misleading and unsafe (e.g. a broadcast). **Verify backend cancellation support

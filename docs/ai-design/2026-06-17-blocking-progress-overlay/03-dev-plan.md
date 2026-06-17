@@ -140,26 +140,31 @@ same honesty problem as Cancel (D-5) and waits on the same enabling work.
 behavior: after simulated 30 s, `Elapsed: {seconds}s` and the reassurance label appear. Mark the
 **escape-hatch button** portion **deferred (tracked with T7)**, not BLOCKED.
 
-### D-5 — Cancel semantics: button-less block is the default; Cancel API ships but is unwired ⏸
+### D-5 — Button semantics: button-less block is the default; generic-button API ships, no built-in Cancel ⏸
+
+> **Superseded by the "Design change (post-outage)" section at the top.** There is no
+> built-in Cancel; the redesign wording below replaces the original Cancel-specific framing.
 
 **Finding (decisive):** The `BackendTask` system supports **no cooperative cancellation**
 (see §0.1). `handle_backend_task` discards the abort handle; `run_backend_task` takes no cancel
 token; the operation runs inside `block_on` on a blocking thread.
 
 **Decision:**
-- The overlay **ships the full Cancel/action-id API** (`with_cancel`, `with_action`,
-  `take_actions`, `OVERLAY_CANCEL_ACTION_ID`) — it is UI-only, mirrors the banner, and is fully
-  unit/kittest-testable (TC-OVL-024/025/026/042 verify the *enqueue* path).
+- The overlay **ships a generic button/action-id API** (`OverlayConfig::with_button(id, label)`,
+  `OverlayHandle::with_button(id, label)`, `take_actions`) — it is UI-only, mirrors the banner,
+  and is fully unit/kittest-testable (TC-OVL-024/025/026 verify the *enqueue* path). There is no
+  `with_cancel`/`OVERLAY_CANCEL_ACTION_ID`; "Cancel" is merely one possible caller-chosen label.
 - **The architectural default for every production caller is a button-less block.** No
-  production overlay may attach Cancel/actions to a `BackendTask`-backed operation until real
+  production overlay attaches a button to a `BackendTask`-backed operation until real
   cancellation lands (T7). This keeps the button honest (FR-7 AC-7.5, R-3): we never paint a
-  Cancel that lies.
-- `AppState::drain_overlay_actions` is wired for completeness; for `OVERLAY_CANCEL_ACTION_ID`
-  it logs *"cancel requested but per-operation cancellation is not yet supported"* and does
-  **not** lower the overlay (lowering mid-op is the unsafe behavior). In v1 nothing enqueues it.
+  control that lies.
+- `AppState::drain_overlay_actions` is wired for completeness; it drains any enqueued action ids
+  and (with no registered handler in v1) logs and drops them. It never lowers the overlay — a
+  click is surfaced to the owning screen, which decides what to do. In v1 nothing enqueues an id.
 
-**Guidance to Marvin:** TC-OVL-024 and TC-OVL-042 remain valid as **UI-queue** tests (click/Esc
-→ action id enqueued). The **end-to-end abort** half is untestable until T7; note it as such.
+**Guidance to Marvin:** TC-OVL-024 and TC-OVL-042 remain valid as **UI-queue / input-block**
+tests (button click → action id enqueued; Esc swallowed). Any end-to-end abort a screen builds on
+top stays untestable until T7; note it as such.
 
 ---
 
@@ -502,8 +507,9 @@ TODO so the gap is tracked, not lost.
    the overlay-active branch; verify global shortcuts (and the existing `handle_banner_esc`,
    `app.rs:1089`) still behave when no overlay is up. The banner Esc handler and overlay Esc handler
    must not both fire — overlay consumes Esc first (it renders earlier in the frame).
-3. **No backend cancellation (D-5).** Enforce by review: no production `show_global` call may pass
-   `with_cancel`/`with_action` until T7. Consider a clippy-grep gate in CI.
+3. **No backend cancellation (D-5).** Enforce by review: no production `show_global` call may
+   attach a button (`with_button`) to a `BackendTask`-backed operation until T7. Consider a
+   clippy-grep gate in CI.
 4. **Repaint discipline.** `request_repaint_after(1s)` only when elapsed/threshold is live; the
    `Spinner` already self-repaints. Do not unconditionally wake an idle UI.
 5. **Sink vs. secret prompt.** The Middle-order sink must not eat the secret prompt's input. The

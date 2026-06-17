@@ -28,7 +28,7 @@ use crate::context::connection_status::{
     ConnectionStatus, ShieldedSyncProgress, ShieldedTreeProgress,
 };
 use crate::model::spv_status::SpvStatus;
-use crate::model::wallet::WalletSeedHash;
+use crate::model::wallet::{PlatformAddressEntry, PlatformAddressUpdates, WalletSeedHash};
 use crate::utils::egui_mpsc::SenderAsync;
 use dash_sdk::dpp::key_wallet::managed_account::transaction_record::TransactionRecord;
 
@@ -285,27 +285,68 @@ impl EventHandler for EventBridge {
 
 impl PlatformEventHandler for EventBridge {
     fn on_platform_address_sync_completed(&self, summary: &PlatformAddressSyncSummary) {
-        // PUSH PRODUCER: write each successfully-synced wallet's platform-address balance
-        // into AppContext's frame-safe snapshot. The summary is keyed by upstream `WalletId`;
-        // map through the snapshot registry to DET's `WalletSeedHash`. Only OWNED addresses
-        // appear in the coordinator result (the provider tracks exactly the wallets registered
-        // with the manager), so no orphan inflation is possible. Skipped/errored wallets leave
-        // their prior balance untouched.
+        // PUSH PRODUCER — two outputs per wallet that synced successfully:
+        //
+        // 1. Frame-safe total-balance snapshot (`platform_balances` Mutex): the
+        //    selector reads this synchronously each frame without blocking.
+        //
+        // 2. `PlatformAddressSyncPushed` task result: `AppState` routes this to
+        //    `AppContext::apply_platform_address_push` which populates per-address
+        //    `wallet.platform_address_info`, keeping the per-address tab current
+        //    without a manual Refresh (fixes the cold-start mismatch).
+        //
+        // Only OWNED addresses appear in the coordinator result (the provider
+        // tracks exactly the wallets registered with the manager), so no orphan
+        // inflation is possible. Errored wallets leave both snapshots untouched.
+        use crate::app::TaskResult;
+        use crate::backend_task::BackendTaskSuccessResult;
         use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
+
+        // Derive the per-wallet per-address data once from the pure helper.
+        let per_wallet = summary_ok_platform_entries(summary);
+
+        // (1) Update the frame-safe total-balance snapshot.
         if let Ok(mut balances) = self.platform_balances.lock() {
-            for (wallet_id, outcome) in &summary.wallet_results {
-                if let WalletSyncOutcome::Ok(result) = outcome
-                    && let Some(seed_hash) = self.snapshots.seed_hash_for(wallet_id)
-                {
-                    let total_duffs: u64 = result
-                        .found
-                        .values()
-                        .map(|funds| funds.balance / CREDITS_PER_DUFF)
+            for (wallet_id, entries) in &per_wallet {
+                if let Some(seed_hash) = self.snapshots.seed_hash_for(wallet_id) {
+                    // QA-B-003 (accepted): integer division truncates sub-duff amounts.
+                    // Loss ≤ (CREDITS_PER_DUFF − 1) per address, i.e. < 0.001 DASH max
+                    // per address. This is consistent with the direct-query path and is
+                    // intentional — displaying sub-duff precision has no practical value.
+                    let total_duffs: u64 = entries
+                        .iter()
+                        .map(|(_, balance_credits, _)| balance_credits / CREDITS_PER_DUFF)
                         .sum();
                     balances.insert(seed_hash, total_duffs);
                 }
             }
         }
+
+        // (2) Emit the per-address update. Build the seed_hash-keyed vec only for
+        // wallets that are registered (seed_hash resolved); unregistered wallet_ids
+        // (no DET mapping) are silently skipped.
+        let push_updates: PlatformAddressUpdates = per_wallet
+            .into_iter()
+            .filter_map(|(wallet_id, entries)| {
+                self.snapshots
+                    .seed_hash_for(&wallet_id)
+                    .map(|seed_hash| (seed_hash, entries))
+            })
+            .filter(|(_, entries)| !entries.is_empty())
+            .collect();
+
+        if !push_updates.is_empty() {
+            let result = BackendTaskSuccessResult::PlatformAddressSyncPushed {
+                updates: push_updates,
+            };
+            // Non-blocking send; a full channel means the coordinator retries in
+            // ~15 s. The frame-safe total-balance snapshot (step 1) is already
+            // written — only the per-address update is deferred.
+            let _ = self
+                .task_result_sender
+                .try_send(TaskResult::Success(Box::new(result)));
+        }
+
         self.nudge_refresh();
     }
 
@@ -369,6 +410,32 @@ impl PlatformEventHandler for EventBridge {
         self.connection_status.set_shielded_tree_progress(None);
         self.nudge_refresh();
     }
+}
+
+/// Collect per-address `(wallet_id, entries)` for every wallet whose sync
+/// completed successfully in `summary`. Each entry carries the raw 20-byte
+/// P2PKH hash, credits balance, and nonce for one found address.
+///
+/// `Err` outcomes are skipped so their cached per-address data is left
+/// untouched. Pure — no I/O — so it is unit-testable without a coordinator.
+fn summary_ok_platform_entries(
+    summary: &PlatformAddressSyncSummary,
+) -> Vec<([u8; 32], Vec<PlatformAddressEntry>)> {
+    summary
+        .wallet_results
+        .iter()
+        .filter_map(|(wallet_id, outcome)| match outcome {
+            WalletSyncOutcome::Ok(result) => {
+                let entries: Vec<PlatformAddressEntry> = result
+                    .found
+                    .iter()
+                    .map(|((_, p2pkh), funds)| (p2pkh.to_bytes(), funds.balance, funds.nonce))
+                    .collect();
+                Some((*wallet_id, entries))
+            }
+            WalletSyncOutcome::Err(_) => None,
+        })
+        .collect()
 }
 
 /// Collect `(wallet_id, balance_credits)` for every wallet that synced
@@ -922,6 +989,79 @@ mod tests {
             "an errored wallet must not write a balance"
         );
         assert!(drained_refresh(&mut rx));
+    }
+
+    /// HAPPY PATH (QA-B-002): `summary_ok_platform_entries` extracts the correct
+    /// per-address data for `Ok` outcomes and skips `Err` outcomes entirely.
+    #[test]
+    fn summary_ok_platform_entries_extracts_only_successful_wallets() {
+        use dash_sdk::dpp::key_wallet::PlatformP2PKHAddress;
+        use dash_sdk::platform::address_sync::{AddressFunds, AddressSyncResult};
+        use platform_wallet::manager::platform_address_sync::{
+            PlatformAddressSyncSummary, WalletSyncOutcome,
+        };
+        use platform_wallet::wallet::PlatformAddressTag;
+
+        let wallet_id_ok: [u8; 32] = [1u8; 32];
+        let wallet_id_err: [u8; 32] = [2u8; 32];
+
+        let p2pkh_a = PlatformP2PKHAddress::new([0xAAu8; 20]);
+        let p2pkh_b = PlatformP2PKHAddress::new([0xBBu8; 20]);
+
+        let mut result_ok: AddressSyncResult<PlatformAddressTag, PlatformP2PKHAddress> =
+            AddressSyncResult::default();
+        result_ok.found.insert(
+            ((wallet_id_ok, 0u32, 0u32), p2pkh_a),
+            AddressFunds {
+                nonce: 1,
+                balance: 500_000,
+            },
+        );
+        result_ok.found.insert(
+            ((wallet_id_ok, 0u32, 1u32), p2pkh_b),
+            AddressFunds {
+                nonce: 2,
+                balance: 300_000,
+            },
+        );
+
+        let mut summary = PlatformAddressSyncSummary::default();
+        summary
+            .wallet_results
+            .insert(wallet_id_ok, WalletSyncOutcome::Ok(result_ok));
+        summary.wallet_results.insert(
+            wallet_id_err,
+            WalletSyncOutcome::Err("network timeout".to_string()),
+        );
+
+        let got = summary_ok_platform_entries(&summary);
+
+        // Only the Ok wallet should produce entries.
+        assert_eq!(got.len(), 1, "only one wallet had an Ok outcome");
+        let (got_wallet_id, entries) = &got[0];
+        assert_eq!(got_wallet_id, &wallet_id_ok);
+        assert_eq!(entries.len(), 2);
+
+        // Check both addresses are present (order not guaranteed for BTreeMap).
+        let mut hash_set: Vec<[u8; 20]> = entries.iter().map(|(h, _, _)| *h).collect();
+        hash_set.sort();
+        assert!(hash_set.contains(&[0xAAu8; 20]));
+        assert!(hash_set.contains(&[0xBBu8; 20]));
+
+        // Verify funds are passed through correctly.
+        let entry_a = entries
+            .iter()
+            .find(|(h, _, _)| h == &[0xAAu8; 20])
+            .expect("entry for p2pkh_a");
+        assert_eq!(entry_a.1, 500_000, "balance_credits for p2pkh_a");
+        assert_eq!(entry_a.2, 1, "nonce for p2pkh_a");
+
+        let entry_b = entries
+            .iter()
+            .find(|(h, _, _)| h == &[0xBBu8; 20])
+            .expect("entry for p2pkh_b");
+        assert_eq!(entry_b.1, 300_000, "balance_credits for p2pkh_b");
+        assert_eq!(entry_b.2, 2, "nonce for p2pkh_b");
     }
 
     /// An `Ok` outcome for an UNREGISTERED wallet must not write a balance

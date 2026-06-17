@@ -16,7 +16,7 @@ use crate::model::feature_gate::FeatureGate;
 use crate::model::fee_estimation::PlatformFeeEstimator;
 use crate::model::proof_log_item::RequestType;
 use crate::model::wallet::single_key::{SingleKeyHash, SingleKeyWallet};
-use crate::model::wallet::{Wallet, WalletSeedHash};
+use crate::model::wallet::{PlatformAddressUpdates, Wallet, WalletSeedHash};
 use crate::sdk_wrapper::initialize_sdk;
 use crate::utils::tasks::TaskManager;
 use crate::wallet_backend::{
@@ -137,8 +137,21 @@ pub struct AppContext {
     ///
     /// Written by `on_platform_address_sync_completed` in [`EventBridge`] after each
     /// coordinator pass; read synchronously in the frame loop via
-    /// [`Self::platform_balance_duffs`]. Starts empty — returns 0 until the first pass
-    /// delivers a result. Must never be written from the frame loop (Nagatha ruling).
+    /// [`Self::platform_balance_duffs`].
+    ///
+    /// **Cold-start behaviour (QA-B-005, accepted trade-off):** starts empty, so
+    /// `platform_balance_duffs` returns 0 until the first coordinator pass completes
+    /// (~15 s). The DB-restored `platform_address_info` data is available but not used as
+    /// the selector source of truth — a brief zero is deliberately preferred over
+    /// potentially orphan-inflated data from a prior session.
+    ///
+    /// **Wallet-removal behaviour (QA-B-004, accepted):** removing a wallet does NOT
+    /// evict its entry from this map (consistent with `shielded_balances` — same known
+    /// gap, see SEC-003 in the grumpy review). The stale value is never displayed because
+    /// removed wallets are not iterated in the UI; this is a memory leak, not a display
+    /// bug. A future cleanup pass should mirror `SnapshotStore::forget_wallet`.
+    ///
+    /// Must never be written from the frame loop (Nagatha ruling).
     pub(crate) platform_balances: Arc<Mutex<std::collections::HashMap<WalletSeedHash, u64>>>,
     /// The egui context, stored for use in non-UI code paths (e.g. display_task_result).
     /// Clone is O(1) — egui::Context is Arc-backed and the same instance for the app lifetime.
@@ -558,6 +571,33 @@ impl AppContext {
             .ok()
             .and_then(|map| map.get(seed_hash).copied())
             .unwrap_or(0)
+    }
+
+    /// Populate each wallet's `platform_address_info` from a coordinator-push batch.
+    ///
+    /// Called by `AppState` when a [`BackendTaskSuccessResult::PlatformAddressSyncPushed`]
+    /// result arrives. Converts each raw 20-byte P2PKH hash in `updates` to a
+    /// `dashcore::Address` using the active network, then calls
+    /// [`Wallet::set_platform_address_info`] for each address.
+    ///
+    /// This keeps the per-address tab consistent with the coordinator-push total
+    /// balance without requiring a manual Refresh on cold start.
+    pub fn apply_platform_address_push(&self, updates: PlatformAddressUpdates) {
+        use dash_sdk::dpp::key_wallet::PlatformP2PKHAddress;
+        let network = self.network;
+        if let Ok(wallets) = self.wallets.read() {
+            for (seed_hash, entries) in updates {
+                if let Some(wallet_arc) = wallets.get(&seed_hash)
+                    && let Ok(mut wallet) = wallet_arc.write()
+                {
+                    for (hash_bytes, balance, nonce) in entries {
+                        let addr = PlatformP2PKHAddress::new(hash_bytes).to_address(network);
+                        let canonical = Wallet::canonical_address(&addr, network);
+                        wallet.set_platform_address_info(canonical, balance, nonce);
+                    }
+                }
+            }
+        }
     }
 
     /// Get a fee estimator configured with the cached fee multiplier.

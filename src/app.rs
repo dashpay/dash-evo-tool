@@ -1388,6 +1388,12 @@ impl App for AppState {
                             self.network_switch_banner.take_and_clear();
                             self.finalize_network_switch(network);
                         }
+                        BackendTaskSuccessResult::PlatformAddressSyncPushed { updates } => {
+                            // Coordinator push: populate per-address platform_address_info
+                            // for all loaded wallets so the per-address tab stays current
+                            // without a manual Refresh. No banner — this fires every 15 s.
+                            active_context.apply_platform_address_push(updates);
+                        }
                         _ => {
                             // For all other success results, let the screen decide how to display
                             // the outcome without showing a generic global success banner.

@@ -1013,8 +1013,10 @@ impl WalletBackend {
                 ),
             }
             // Platform is reachable now — ask the frame loop to start the
-            // all-wallets identity discovery sweep. Non-blocking; if the channel
-            // is full the next refresh tick re-delivers readiness state.
+            // all-wallets identity discovery sweep. Non-blocking and fired once
+            // (single-winner gate): a full 256-deep channel would drop this and
+            // the sweep would not run until a reconnect re-arms the gate, but the
+            // user can always run discovery manually, so the drop is tolerated.
             let _ = task_result_sender.try_send(TaskResult::Success(Box::new(
                 BackendTaskSuccessResult::PlatformReadyDiscoverIdentities,
             )));

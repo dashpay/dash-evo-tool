@@ -2,7 +2,9 @@ use crate::app::TaskResult;
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
-use crate::model::identity_discovery::{DiscoverySummary, should_continue_scan};
+use crate::model::identity_discovery::{
+    DiscoverySummary, IDENTITY_GAP_LIMIT, IDENTITY_SCAN_HARD_CAP, should_continue_scan,
+};
 use crate::model::qualified_identity::DPNSNameInfo;
 use crate::model::wallet::Wallet;
 use crate::utils::egui_mpsc::SenderAsync;
@@ -43,6 +45,7 @@ impl AppContext {
         use dash_sdk::platform::types::identity::NonUniquePublicKeyHashQuery;
 
         let sdk = self.sdk.load().as_ref().clone();
+        let scan_network = self.network;
         let seed_hash = wallet.read()?.seed_hash();
 
         // Seed the rolling window from the explicit seed index and from any
@@ -72,12 +75,21 @@ impl AppContext {
         while should_continue_scan(current_index, highest_found) {
             if let Some(sender) = progress {
                 let next = current_index.saturating_add(1);
+                // Soft total: the current rolling-window upper bound (it grows
+                // as identities are found), clamped to the hard cap. A rolling
+                // scan has no fixed end, so this is a best-effort denominator.
+                let soft_total = highest_found
+                    .map_or(IDENTITY_GAP_LIMIT, |h| h.saturating_add(IDENTITY_GAP_LIMIT))
+                    .saturating_add(1)
+                    .min(IDENTITY_SCAN_HARD_CAP);
                 sender
                     .send(TaskResult::Success(Box::new(
                         BackendTaskSuccessResult::Progress {
-                            message: format!("Searching wallet identity index {next}."),
+                            message: format!(
+                                "Searching wallet identity index {next} of about {soft_total}."
+                            ),
                             current: next,
-                            total: next,
+                            total: soft_total,
                         },
                     )))
                     .await
@@ -151,7 +163,14 @@ impl AppContext {
                 highest_found = Some(highest_found.map_or(current_index, |h| h.max(current_index)));
 
                 match self
-                    .upsert_discovered_identity(&sdk, identity, wallet, allow_prompt, current_index)
+                    .upsert_discovered_identity(
+                        &sdk,
+                        identity,
+                        wallet,
+                        scan_network,
+                        allow_prompt,
+                        current_index,
+                    )
                     .await
                 {
                     Ok(()) => summary.stored = summary.stored.saturating_add(1),
@@ -200,14 +219,24 @@ impl AppContext {
     /// wiping a user-assigned alias. Wallet association and top-up history are
     /// preserved by [`AppContext::update_local_qualified_identity`] /
     /// the separate top-up KV key, respectively.
+    ///
+    /// `scan_network` is the network the scan started on. If the active network
+    /// changed mid-scan, the store is skipped — defense-in-depth so an in-flight
+    /// pass never writes a discovered identity under the wrong network scope.
     async fn upsert_discovered_identity(
         self: &Arc<Self>,
         sdk: &dash_sdk::Sdk,
         identity: dash_sdk::platform::Identity,
         wallet: &Arc<RwLock<Wallet>>,
+        scan_network: dash_sdk::dpp::dashcore::Network,
         allow_prompt: bool,
         identity_index: u32,
     ) -> Result<(), TaskError> {
+        if self.network != scan_network {
+            tracing::debug!("Network changed mid-scan; skipping store of discovered identity");
+            return Ok(());
+        }
+
         let identity_id = identity.id();
         let seed_hash = wallet.read()?.seed_hash();
 
@@ -219,8 +248,7 @@ impl AppContext {
                 allow_prompt,
                 identity_index,
             )
-            .await
-            .map_err(|detail| TaskError::WalletInfoDeterminationFailed { detail })?;
+            .await?;
 
         match self.get_identity_by_id(&identity_id)? {
             Some(existing) => {
@@ -260,7 +288,7 @@ impl AppContext {
         wallet: &Arc<RwLock<Wallet>>,
         allow_prompt: bool,
         identity_index: u32,
-    ) -> Result<crate::model::qualified_identity::QualifiedIdentity, String> {
+    ) -> Result<crate::model::qualified_identity::QualifiedIdentity, TaskError> {
         use crate::model::qualified_identity::encrypted_key_storage::{
             PrivateKeyData, WalletDerivationPath,
         };
@@ -273,7 +301,7 @@ impl AppContext {
         use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
         use dash_sdk::dpp::key_wallet::bip32::{DerivationPath, KeyDerivationType};
 
-        let seed_hash = wallet.read().map_err(|e| e.to_string())?.seed_hash();
+        let seed_hash = wallet.read()?.seed_hash();
 
         // Get the highest key ID in the identity to know how many keys to derive
         let highest_key_id = identity.public_keys().keys().max().copied().unwrap_or(0);
@@ -289,8 +317,7 @@ impl AppContext {
                 identity_index,
                 0..derive_up_to.saturating_add(1),
             )
-            .await
-            .map_err(|e| e.to_string())?;
+            .await?;
 
         // Match identity keys with wallet derivation paths
         let private_keys_map: std::collections::BTreeMap<_, _> = identity

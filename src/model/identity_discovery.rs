@@ -23,6 +23,33 @@ pub const IDENTITY_GAP_LIMIT: u32 = 5;
 /// background sweep can never issue unbounded fetches.
 pub const IDENTITY_SCAN_HARD_CAP: u32 = 100;
 
+/// Highest wallet derivation index a user may type into the By-Wallet search to
+/// seed the rolling scan. The scan cannot probe past [`IDENTITY_SCAN_HARD_CAP`]
+/// regardless, so seeding beyond it is always a typo; rejecting it keeps a
+/// fat-finger from launching a full hard-cap-deep scan.
+pub const MAX_IDENTITY_SEARCH_INDEX: u32 = IDENTITY_SCAN_HARD_CAP - 1;
+
+/// Validate a user-typed By-Wallet search index. Pure (no `AppContext`/DB), so
+/// the UI can call it for instant feedback while the single source of truth
+/// lives in `model/`.
+pub fn validate_search_index(index: u32) -> Result<u32, IdentitySearchIndexError> {
+    if index > MAX_IDENTITY_SEARCH_INDEX {
+        Err(IdentitySearchIndexError::TooLarge {
+            max: MAX_IDENTITY_SEARCH_INDEX,
+        })
+    } else {
+        Ok(index)
+    }
+}
+
+/// A By-Wallet search index failed validation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum IdentitySearchIndexError {
+    /// The index exceeds [`MAX_IDENTITY_SEARCH_INDEX`].
+    #[error("Enter an identity index between 0 and {max}, then try again.")]
+    TooLarge { max: u32 },
+}
+
 /// Decide whether the rolling gap-limited scan should probe `current_index`.
 ///
 /// `highest_found` is the highest index that has produced an identity so far in
@@ -171,5 +198,21 @@ mod tests {
             IDENTITY_SCAN_HARD_CAP,
             Some(u32::MAX)
         ));
+    }
+
+    #[test]
+    fn validate_search_index_accepts_in_range_rejects_beyond_cap() {
+        assert_eq!(validate_search_index(0), Ok(0));
+        assert_eq!(
+            validate_search_index(MAX_IDENTITY_SEARCH_INDEX),
+            Ok(MAX_IDENTITY_SEARCH_INDEX)
+        );
+        assert_eq!(
+            validate_search_index(MAX_IDENTITY_SEARCH_INDEX + 1),
+            Err(IdentitySearchIndexError::TooLarge {
+                max: MAX_IDENTITY_SEARCH_INDEX
+            })
+        );
+        assert!(validate_search_index(u32::MAX).is_err());
     }
 }

@@ -2,6 +2,7 @@ use crate::app::AppAction;
 use crate::backend_task::identity::{IdentityInputToLoad, IdentityTask};
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
+use crate::model::identity_discovery::validate_search_index;
 use crate::model::qualified_identity::IdentityType;
 use crate::model::wallet::Wallet;
 use crate::ui::components::info_popup::InfoPopup;
@@ -694,27 +695,44 @@ impl AddExistingIdentityScreen {
             handle.with_elapsed();
             self.refresh_banner = Some(handle);
 
-            // Parse identity index input
-            if let Ok(identity_index) = self.identity_index_input.trim().parse::<u32>() {
-                let wallet_ref = self.selected_wallet.as_ref().unwrap().clone().into();
-                action = AppAction::BackendTask(BackendTask::IdentityTask(
-                    match self.wallet_search_mode {
-                        WalletIdentitySearchMode::SpecificIndex => {
-                            IdentityTask::SearchIdentityFromWallet(wallet_ref, identity_index)
-                        }
-                        WalletIdentitySearchMode::UpToIndex => {
-                            IdentityTask::SearchIdentitiesUpToIndex(wallet_ref, identity_index)
-                        }
-                    },
-                ));
-            } else {
-                // Handle invalid index input
-                self.add_identity_status = AddIdentityStatus::NotStarted;
-                MessageBanner::set_global(
-                    self.app_context.egui_ctx(),
-                    "Invalid identity index",
-                    MessageType::Error,
-                );
+            // Parse and bound-check the identity index (model validator is the
+            // single source of truth for the sane range).
+            match self
+                .identity_index_input
+                .trim()
+                .parse::<u32>()
+                .ok()
+                .map(validate_search_index)
+            {
+                Some(Ok(identity_index)) => {
+                    let wallet_ref = self.selected_wallet.as_ref().unwrap().clone().into();
+                    action = AppAction::BackendTask(BackendTask::IdentityTask(
+                        match self.wallet_search_mode {
+                            WalletIdentitySearchMode::SpecificIndex => {
+                                IdentityTask::SearchIdentityFromWallet(wallet_ref, identity_index)
+                            }
+                            WalletIdentitySearchMode::UpToIndex => {
+                                IdentityTask::SearchIdentitiesUpToIndex(wallet_ref, identity_index)
+                            }
+                        },
+                    ));
+                }
+                Some(Err(error)) => {
+                    self.add_identity_status = AddIdentityStatus::NotStarted;
+                    MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
+                        error.to_string(),
+                        MessageType::Error,
+                    );
+                }
+                None => {
+                    self.add_identity_status = AddIdentityStatus::NotStarted;
+                    MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
+                        "Enter a whole number for the identity index, then try again.",
+                        MessageType::Error,
+                    );
+                }
             }
         }
         action

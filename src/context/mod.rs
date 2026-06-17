@@ -133,6 +133,13 @@ pub struct AppContext {
     /// first completed sync delivers a balance.  Must never be written from the frame
     /// loop (Nagatha ruling: no `block_in_place`/`block_on` on the UI thread).
     pub(crate) shielded_balances: Arc<Mutex<std::collections::HashMap<WalletSeedHash, u64>>>,
+    /// Frame-safe platform-address balance snapshot (duffs, summed across owned addresses).
+    ///
+    /// Written by `on_platform_address_sync_completed` in [`EventBridge`] after each
+    /// coordinator pass; read synchronously in the frame loop via
+    /// [`Self::platform_balance_duffs`]. Starts empty — returns 0 until the first pass
+    /// delivers a result. Must never be written from the frame loop (Nagatha ruling).
+    pub(crate) platform_balances: Arc<Mutex<std::collections::HashMap<WalletSeedHash, u64>>>,
     /// The egui context, stored for use in non-UI code paths (e.g. display_task_result).
     /// Clone is O(1) — egui::Context is Arc-backed and the same instance for the app lifetime.
     egui_ctx: egui::Context,
@@ -363,6 +370,7 @@ impl AppContext {
             ),
             platform_protocol_version: AtomicU32::new(0),
             shielded_balances: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            platform_balances: Arc::new(Mutex::new(std::collections::HashMap::new())),
             egui_ctx,
             wallet_backend: ArcSwapOption::const_empty(),
             wallet_backend_build: tokio::sync::Mutex::new(()),
@@ -530,6 +538,22 @@ impl AppContext {
     /// Shielded in duffs, use [`Self::shielded_balance_duffs`] instead.
     pub fn shielded_balance_credits(&self, seed_hash: &WalletSeedHash) -> u64 {
         self.shielded_balances
+            .lock()
+            .ok()
+            .and_then(|map| map.get(seed_hash).copied())
+            .unwrap_or(0)
+    }
+
+    /// Synchronous read of the frame-safe platform-address balance for `seed_hash`.
+    ///
+    /// Returns the total platform balance in **duffs**, summed across all OWNED platform
+    /// payment addresses for the wallet.  Returns `0` if no sync has completed yet.
+    ///
+    /// This is the **read side** of the coordinator-push snapshot; the write side is
+    /// `on_platform_address_sync_completed` in [`EventBridge`]. Safe to call from
+    /// the egui frame loop — no blocking I/O, no async (Nagatha ruling).
+    pub fn platform_balance_duffs(&self, seed_hash: &WalletSeedHash) -> u64 {
+        self.platform_balances
             .lock()
             .ok()
             .and_then(|map| map.get(seed_hash).copied())

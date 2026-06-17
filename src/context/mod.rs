@@ -587,6 +587,9 @@ impl AppContext {
         let network = self.network;
         if let Ok(wallets) = self.wallets.read() {
             for (seed_hash, entries) in updates {
+                // Wallet write lock is held briefly for a pure BTreeMap update —
+                // no I/O, no network, no await. Consistent with the codebase's
+                // existing frame-loop write pattern (QA-B2-002, intentional).
                 if let Some(wallet_arc) = wallets.get(&seed_hash)
                     && let Ok(mut wallet) = wallet_arc.write()
                 {

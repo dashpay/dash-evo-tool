@@ -177,7 +177,7 @@ top stays untestable until T7; note it as such.
 | `OptionOverlayExt` (handle lifecycle ext) | `progress_overlay.rs` | Mirrors `OptionBannerExt` (`message_banner.rs:915-955`). |
 | `render_global` call site + `drain_overlay_actions` | `src/app.rs` (`AppState::update`) | AppState-level render seam (§3). |
 | kittest suite | `tests/kittest/progress_overlay.rs` (**new**) + `mod progress_overlay;` in `tests/kittest/main.rs` | Mirrors `tests/kittest/message_banner.rs`. |
-| `mod progress_overlay;` + re-exports | `src/ui/components/mod.rs` | Export `ProgressOverlay`, `OverlayHandle`, `OverlayConfig`, `OVERLAY_CANCEL_ACTION_ID`, `OptionOverlayExt` (mirror banner re-exports). |
+| `mod progress_overlay;` + re-exports | `src/ui/components/mod.rs` | Export `ProgressOverlay`, `OverlayHandle`, `OverlayConfig`, `ProgressOverlayResponse`, `OptionOverlayExt` (mirror banner re-exports). _(Superseded: no `OVERLAY_CANCEL_ACTION_ID` — removed in the post-outage redesign.)_ |
 
 **No new crates.** Everything reuses what is already a dependency: `egui::Spinner`
 (idiom already used at `src/ui/wallets/shielded_tab.rs:285` etc.), `ctx.data`, `DashColors`,
@@ -188,8 +188,19 @@ top stays untestable until T7; note it as such.
 
 ## 3. Public API Design
 
-Names are aligned **exactly** to Marvin's assumed surface (test-spec §1.2) so the 49 cases
-compile unchanged. Signatures mirror `BannerHandle`/`MessageBanner`.
+> **Superseded — see the code and the addendum.** The signature block below is the *original*
+> Cancel-era plan, kept for history. The shipped surface differs: there is **no** `with_cancel`,
+> `with_action`, `OVERLAY_CANCEL_ACTION_ID`, or `CANCEL_LABEL`, and `is_primary` is not a public
+> field. The real builders are `with_button(id, label)` and `with_secondary_button(id, label)`
+> (on `OverlayConfig`, `OverlayHandle`, and the instance form), backed by a private
+> `ButtonStyle { Primary, Secondary }`. Clicks are delivered **keyed** to the owner via
+> `OverlayHandle::take_actions()`; the static drain is `sweep_orphan_actions()` (see addendum §2).
+> `OptionOverlayExt::raise` replaces the former `replace`. The watchdog
+> (`STUCK_OVERLAY_WATCHDOG_THRESHOLD`, `claim_input`) is specified in the addendum §1. Treat
+> `progress_overlay.rs` as the source of truth.
+
+Names were aligned to Marvin's assumed surface (test-spec §1.2). Signatures mirror
+`BannerHandle`/`MessageBanner`.
 
 ```rust
 // src/ui/components/progress_overlay.rs
@@ -331,7 +342,7 @@ self.render_secret_prompt(ctx);        // unchanged — stays ABOVE overlay (app
 // … app.rs:1539-1540 …
 self.handle_banner_esc(ctx);
 self.drain_banner_actions(ctx);
-self.drain_overlay_actions(ctx);       // NEW — maps OVERLAY_CANCEL_ACTION_ID per D-5
+self.drain_overlay_actions(ctx);       // sweeps ORPHAN actions only (addendum §2 A-3)
 ```
 
 On network switch, clear the overlay alongside banners (mirror `MessageBanner::clear_all_global`).
@@ -527,8 +538,8 @@ TODO so the gap is tracked, not lost.
 | D-1 | New `ProgressOverlay` component mirroring `MessageBanner`; do not extend the banner | Confirmed |
 | D-2 | Focused copy of `ctx.data` plumbing; no shared base module | Confirmed |
 | D-3 | Concurrent model = **stack** keyed by handle (Group K stands) | Confirmed |
-| D-4 | Stuck threshold = **30 s**, informational reveal; escape-hatch deferred to T7 | Decided |
-| D-5 | Backend has **no** cancellation → button-less block default; Cancel API ships unwired | Decided |
+| D-4 | Stuck threshold = **30 s** soft reveal; **+120 s no-progress watchdog** (addendum §1 A-1) | Superseded by addendum §1 |
+| D-5 | No built-in Cancel; generic `with_button`/`with_secondary_button`; clicks keyed to the owner via `take_actions`, app sweeps orphans (addendum §2) | Superseded (post-outage + addendum §2) |
 
 ---
 

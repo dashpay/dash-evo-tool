@@ -8,6 +8,28 @@
 
 ---
 
+> **Supersession callout (post-outage redesign + QA-wave addendum).** Parts of this spec describe
+> a first-class **Cancel** control that no longer exists. The shipped design replaces it with a
+> **generic button facility** (`with_button` / `with_secondary_button`, clicks delivered keyed to
+> the owning screen), and adds a no-progress **watchdog** and a frame-start **`claim_input`** total
+> block. Where this document and the redesign disagree, **`03-dev-plan.md`'s post-outage note,
+> `04-design-addendum.md`, and the code (`src/ui/components/progress_overlay.rs`) win.** Items known
+> to be superseded:
+> - **FR-7 (buttons & actions), AC-7.3 / AC-7.4** — no built-in Cancel; buttons are generic and
+>   styled Primary (right) / Secondary (left) in insertion order within each tier; clicks are
+>   delivered to the owning screen via `OverlayHandle::take_actions` (keyed), not a Cancel action.
+> - **NFR-3 AC-3b (Esc → Cancel)** — Esc never cancels; a hard block swallows Esc/Tab/Enter/Space.
+>   While a secret prompt is shown above the overlay, the overlay yields the keyboard to it (SEC-004).
+> - **AC-8.4 (backdrop / input)** — input is claimed at frame start (`claim_input`), including
+>   `Event::Text`; a button-less block is genuinely total (QA-001).
+> - **AC-10.5 (concurrent actions)** — only the topmost entry's clicks are reachable, and they are
+>   keyed to that entry's owner; the app loop only sweeps orphaned ids.
+> - **J-1 / J-2 / J-3 (journeys) and §6.3 / §6.4 / §6.5 (cancel UX)** — reframe any "Cancel button"
+>   language to the generic-button + escalation model; the safety valve is the bounded-operation
+>   contract + 30 s / 120 s honest escalation, not a dismiss/background control.
+
+---
+
 ## 0. Executive Summary
 
 Some operations in Dash Evo Tool are not safe to interrupt and are not meaningful to

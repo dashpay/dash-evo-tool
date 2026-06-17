@@ -17,6 +17,7 @@ See [docs/personas/](personas/) for full persona descriptions.
 - [Developer and Power Tools (DEV)](#developer-and-power-tools-dev)
 - [Network and Settings (NET)](#network-and-settings-net)
 - [Programmatic Access (MCP)](#programmatic-access-mcp)
+- [User Experience (UX)](#user-experience-ux)
 
 ---
 
@@ -1121,3 +1122,17 @@ As an AI agent, I want MCP server access so that I can assist users with wallet 
 - Bearer token authentication for HTTP mode.
 - Network verification guard prevents cross-network mistakes.
 - Tools expose wallet, identity, and platform operations.
+
+---
+
+## User Experience (UX)
+
+### UX-001: Blocking progress overlay for unsafe-to-interrupt operations [Implemented]
+**Persona:** Alex, Priya, Jordan
+
+As a user, while a long operation that is unsafe to interrupt is running (broadcasting a state transition, signing, key import, a multi-step registration, a network migration), I want to see a clear please-wait block over the whole window so that I understand the app is busy and cannot accidentally fire a conflicting second action.
+
+- A full-window dimming overlay with an indeterminate spinner and an optional "Step N of M" counter and description appears while the operation runs, and lowers automatically when it finishes (success or error).
+- All interaction beneath the block is suppressed: pointer clicks hit a sink, and keyboard/text input is claimed at frame start so nothing reaches a focused field beneath (FR-8 / QA-001). The block is never dismissable by Esc, Enter, Space, or Tab.
+- The block yields to a passphrase prompt: when a secret prompt is shown above the overlay it keeps the keyboard (Enter/Esc/Tab) so the user can still authenticate or cancel (SEC-004).
+- Honest escalation, never a fake exit: after 30 s a calm "This is taking longer than usual." line appears; after 120 s with no progress it escalates to "This is taking much longer than expected…" and logs a one-shot developer warning. There is no background/dismiss button — the safety guarantee is that every blocked operation is bounded and always lowers the block through the normal path.

@@ -1139,19 +1139,19 @@ impl AppState {
         }
     }
 
-    /// Drain pending overlay button-action clicks queued by
-    /// [`OverlayConfig::with_button`]/[`OverlayHandle::with_button`]. The overlay
-    /// is UI-only and never auto-lowers on a click — the app loop owns dispatch.
-    /// Buttons are a generic facility (no built-in Cancel): a screen that raised
-    /// the overlay via the global path registers its own action ids here. No
-    /// production overlay attaches a button in v1, so there is no registered
-    /// handler yet; unrecognised ids are logged and dropped rather than dispatched.
+    /// Sweep orphaned overlay button-action clicks (A-3): ids whose owning
+    /// overlay entry is no longer on the stack (the owner cleared or dropped its
+    /// handle without draining). Screens own dispatch — they drain **their own**
+    /// clicks at the top of `ui()` via [`OverlayHandle::take_actions`] and match
+    /// their own colon-namespaced ids, including their own cancellation. This loop
+    /// only reclaims truly-orphaned ids so they can't accumulate in `ctx.data`; it
+    /// can never race or pre-empt a live owner, so its position here is safe.
     fn drain_overlay_actions(&mut self, ctx: &egui::Context) {
-        for action_id in ProgressOverlay::take_actions(ctx) {
+        for action_id in ProgressOverlay::sweep_orphan_actions(ctx) {
             tracing::warn!(
                 target = "ui::overlay",
                 action_id = %action_id,
-                "Unhandled overlay action id — dropping (no registered handler)"
+                "Overlay action received for an overlay that is no longer active — dropping"
             );
         }
     }

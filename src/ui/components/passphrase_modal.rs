@@ -139,6 +139,11 @@ pub fn passphrase_modal(
     let window_response = egui::Window::new(config.window_title)
         .collapsible(false)
         .resizable(false)
+        // Render on Order::Foreground so the prompt stays above the blocking
+        // progress overlay (also Foreground, but drawn earlier this frame) — the
+        // overlay must never cover a secret prompt it triggered (R-1, SEC-002).
+        // Created after the overlay and focus-raised, so it wins within Foreground.
+        .order(egui::Order::Foreground)
         .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
         .open(&mut window_is_open)
         .frame(egui::Frame {

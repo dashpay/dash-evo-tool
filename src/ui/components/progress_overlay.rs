@@ -14,12 +14,14 @@
 //! ## Buttons are a generic facility (no built-in Cancel)
 //!
 //! The overlay has **no** Cancel concept. A caller attaches a generic button
-//! with [`OverlayConfig::with_button`] / [`OverlayHandle::with_button`], picking
-//! its own opaque action id and label. Clicking the button enqueues that action
-//! id; the overlay does **not** auto-lower. The owning screen drains action ids
-//! via [`ProgressOverlay::take_actions`] (FIFO) and decides what to do —
-//! including running its own cancellation logic if it chose to label a button
-//! "Cancel".
+//! with [`OverlayConfig::with_button`] / [`OverlayHandle::with_button`] (or the
+//! `*_secondary_button` variants), picking its own opaque action id and label.
+//! Clicking the button enqueues that action id, keyed by the owning entry; the
+//! overlay does **not** auto-lower. The owning screen drains **its own** ids via
+//! [`OverlayHandle::take_actions`] (FIFO) at the top of its `ui()` and decides
+//! what to do — including running its own cancellation logic if it labelled a
+//! button "Cancel". The app loop only sweeps orphaned ids via
+//! [`ProgressOverlay::sweep_orphan_actions`].
 //!
 //! ## Two render paths (mirrors `MessageBanner`)
 //!
@@ -62,6 +64,11 @@ const OVERLAY_CARD_ID: &str = "__global_progress_overlay_card";
 /// elapsed readout and a reassurance line. Visual only — never auto-aborts.
 const STUCK_OVERLAY_THRESHOLD: Duration = Duration::from_secs(30);
 
+/// After this long *without progress* on the topmost request, escalate the
+/// reassurance copy and fire the one-shot developer watchdog (A-1). A leaked
+/// handle (C1) or an un-bounded op (C2) is the usual cause — both are bugs.
+const STUCK_OVERLAY_WATCHDOG_THRESHOLD: Duration = Duration::from_secs(120);
+
 /// Diameter of the indeterminate spinner inside the card.
 const SPINNER_SIZE: f32 = 32.0;
 /// Card minimum width so short content still reads as a deliberate dialog.
@@ -71,8 +78,12 @@ const CARD_MAX_WIDTH: f32 = 420.0;
 /// Description scrolls inside the card past this height (FR-6: never off-screen).
 const DESCRIPTION_MAX_HEIGHT: f32 = 160.0;
 
-/// Reassurance line revealed once the stuck threshold passes.
+/// Reassurance line revealed once the soft 30 s stuck threshold passes.
 const STUCK_REASSURANCE: &str = "This is taking longer than usual.";
+
+/// Escalated reassurance shown once the 120 s no-progress watchdog trips,
+/// replacing (not stacking with) [`STUCK_REASSURANCE`].
+const STUCK_WATCHDOG_REASSURANCE: &str = "This is taking much longer than expected. The operation is still running — please keep the app open.";
 
 /// Monotonic counter for generating unique overlay keys.
 static OVERLAY_KEY_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -83,12 +94,34 @@ fn next_overlay_key() -> u64 {
     OVERLAY_KEY_COUNTER.fetch_add(1, Ordering::Relaxed)
 }
 
+/// Visual tier of an overlay button (F-3/F-4/F-7). Styling and placement only —
+/// both tiers are generic and carry no built-in semantics (there is no Cancel).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ButtonStyle {
+    /// Accent fill; hugs the right edge — the affirmative / continue action.
+    Primary,
+    /// Muted fill; sits to the left of the primary — e.g. a caller's "cancel".
+    Secondary,
+}
+
 /// One generic action button on the overlay card. The caller owns both the
-/// `label` (an i18n unit) and the `action_id` enqueued on click.
+/// `label` (an i18n unit, user-visible and logged) and the opaque `action_id`
+/// enqueued on click. `style` controls appearance and placement only.
 #[derive(Clone)]
 struct OverlayButton {
     label: String,
     action_id: String,
+    style: ButtonStyle,
+}
+
+impl OverlayButton {
+    fn new(id: impl fmt::Display, label: impl fmt::Display, style: ButtonStyle) -> Self {
+        Self {
+            label: label.to_string(),
+            action_id: id.to_string(),
+            style,
+        }
+    }
 }
 
 /// Snapshot of the content fields logged for change-detection: the description
@@ -111,21 +144,31 @@ struct OverlayState {
     logged: bool,
     /// Last content logged, so a description/step update logs exactly once.
     logged_content: Option<LoggedContent>,
+    /// Last time the content (description/step) actually changed. The no-progress
+    /// watchdog (A-1) measures from here, so a legitimately advancing multi-step
+    /// flow never trips it while a genuinely wedged single step does.
+    last_progress_at: Instant,
+    /// Set once the no-progress watchdog has fired its one-shot dev-error (A-1),
+    /// so the error logs exactly once, never per frame (NFR-5).
+    watchdog_logged: bool,
     /// Set once focus has been placed on the first button (focus trap).
     focus_requested: bool,
 }
 
 impl OverlayState {
     fn new(key: u64, description: Option<String>, config: &OverlayConfig) -> Self {
+        let now = Instant::now();
         Self {
             key,
             description,
             step: config.step,
             buttons: config.buttons.clone(),
             show_elapsed: config.show_elapsed,
-            created_at: Instant::now(),
+            created_at: now,
             logged: false,
             logged_content: None,
+            last_progress_at: now,
+            watchdog_logged: false,
             focus_requested: false,
         }
     }
@@ -165,14 +208,31 @@ impl OverlayConfig {
         self
     }
 
-    /// Add a generic action button. The caller owns the opaque `id` enqueued on
-    /// click and the `label` shown on the button; clicking does not lower the
-    /// overlay — the owning screen drains the id and decides what to do.
+    /// Add a **primary** action button (accent fill, hugs the right edge). The
+    /// caller owns the opaque `id` enqueued on click and the `label` shown on the
+    /// button; clicking does not lower the overlay — the owning screen drains the
+    /// id and decides what to do.
+    ///
+    /// Buttons render right-to-left in the order added: primaries hug the right
+    /// edge, secondaries sit to their left. SEC-006: `id` and `label` are
+    /// user-visible and logged — never pass secrets or PII.
     pub fn with_button(mut self, id: impl fmt::Display, label: impl fmt::Display) -> Self {
-        self.buttons.push(OverlayButton {
-            label: label.to_string(),
-            action_id: id.to_string(),
-        });
+        self.buttons
+            .push(OverlayButton::new(id, label, ButtonStyle::Primary));
+        self
+    }
+
+    /// Add a **secondary** action button (muted fill, sits left of the primary).
+    /// Same generic semantics as [`with_button`](Self::with_button) — only the
+    /// styling and placement differ; there is no built-in Cancel. SEC-006: `id`
+    /// and `label` are user-visible and logged — never pass secrets or PII.
+    pub fn with_secondary_button(
+        mut self,
+        id: impl fmt::Display,
+        label: impl fmt::Display,
+    ) -> Self {
+        self.buttons
+            .push(OverlayButton::new(id, label, ButtonStyle::Secondary));
         self
     }
 }
@@ -182,9 +242,14 @@ impl OverlayConfig {
 /// content can be updated without losing the reference. Methods are no-ops
 /// returning `None` once the entry is gone.
 ///
-/// INTENTIONAL(SEC-004): `OverlayHandle` is Send+Sync because `egui::Context` is
-/// Send+Sync with internal locking. Acceptable for a single-threaded UI app;
-/// egui's own thread-safety guarantees apply.
+/// INTENTIONAL(SEC-005): `OverlayHandle` is `Send + Sync` only because it holds
+/// an `egui::Context` (itself `Send + Sync` via internal locking). That does NOT
+/// make handle operations thread-safe to interleave: every method reads-modifies-
+/// writes the global `ctx.data` overlay slot non-atomically, so the real
+/// invariant is that all handle operations run on the single egui UI/update
+/// thread (where the overlay is shown, mutated, and cleared). The `Send + Sync`
+/// derivation is incidental to `egui::Context`'s bounds, not a claim of
+/// cross-thread correctness.
 #[derive(Clone)]
 pub struct OverlayHandle {
     ctx: egui::Context,
@@ -225,17 +290,54 @@ impl OverlayHandle {
         self.mutate(|s| s.step = None)
     }
 
-    /// Attach a generic action button — opaque `id` enqueued on click + `label`
-    /// shown verbatim. Returns `None` if the entry is gone.
+    /// Attach a **primary** action button (accent fill, right edge) — opaque `id`
+    /// enqueued on click + `label` shown verbatim. Buttons render right-to-left in
+    /// the order added. SEC-006: `id`/`label` are user-visible and logged — never
+    /// pass secrets or PII. Returns `None` if the entry is gone.
     pub fn with_button(&self, id: impl fmt::Display, label: impl fmt::Display) -> Option<&Self> {
-        let action_id = id.to_string();
-        let label = label.to_string();
-        self.mutate(|s| {
-            s.buttons.push(OverlayButton { label, action_id });
-        })
+        let button = OverlayButton::new(id, label, ButtonStyle::Primary);
+        self.mutate(|s| s.buttons.push(button))
     }
 
-    /// Dismiss only this handle's entry. The overlay lowers when the stack empties.
+    /// Attach a **secondary** action button (muted fill, left of the primary).
+    /// Same generic semantics as [`with_button`](Self::with_button). SEC-006:
+    /// `id`/`label` are user-visible and logged. Returns `None` if the entry is gone.
+    pub fn with_secondary_button(
+        &self,
+        id: impl fmt::Display,
+        label: impl fmt::Display,
+    ) -> Option<&Self> {
+        let button = OverlayButton::new(id, label, ButtonStyle::Secondary);
+        self.mutate(|s| s.buttons.push(button))
+    }
+
+    /// Drain (FIFO) and remove the action ids enqueued by **this handle's**
+    /// button clicks, leaving other overlay entries' actions untouched (A-3).
+    ///
+    /// The owning screen calls this at the top of its own `ui()` each frame and
+    /// matches its own colon-namespaced ids (e.g. `shielded:build:cancel`),
+    /// running whatever logic it owns — including its own cancellation. Returns
+    /// an empty `Vec` when this handle has no pending clicks (or is already gone).
+    pub fn take_actions(&self) -> Vec<String> {
+        let mut queue = get_overlay_actions(&self.ctx);
+        let mut mine = Vec::new();
+        queue.retain(|a| {
+            if a.key == self.key {
+                mine.push(a.action_id.clone());
+                false
+            } else {
+                true
+            }
+        });
+        if !mine.is_empty() {
+            set_overlay_actions(&self.ctx, queue);
+        }
+        mine
+    }
+
+    /// Dismiss only this handle's entry, and purge any of its still-pending action
+    /// ids so a normal dismiss leaves nothing for the orphan-sweeper (A-3). The
+    /// overlay lowers when the stack empties.
     pub fn clear(self) {
         let mut stack = get_overlay_state(&self.ctx);
         let before = stack.len();
@@ -244,10 +346,20 @@ impl OverlayHandle {
             debug!(key = self.key, "Blocking progress overlay dismissed");
         }
         set_overlay_state(&self.ctx, stack);
+
+        let mut queue = get_overlay_actions(&self.ctx);
+        let kept = queue.len();
+        queue.retain(|a| a.key != self.key);
+        if queue.len() != kept {
+            set_overlay_actions(&self.ctx, queue);
+        }
     }
 
-    /// Find this handle's entry, apply `f`, and write the stack back. Resets the
-    /// content-log marker so the next render logs the change once.
+    /// Find this handle's entry, apply `f`, and write the stack back. The next
+    /// `log_overlay_state` detects the content change (it compares
+    /// `(description, step)`), logs the update once, and bumps `last_progress_at`
+    /// for the no-progress watchdog — so this method intentionally does not touch
+    /// `logged_content` itself.
     fn mutate(&self, f: impl FnOnce(&mut OverlayState)) -> Option<&Self> {
         let mut stack = get_overlay_state(&self.ctx);
         let entry = stack.iter_mut().find(|s| s.key == self.key)?;
@@ -347,16 +459,37 @@ impl ProgressOverlay {
         self
     }
 
-    /// Add a generic action button. The caller owns the opaque `id` surfaced
+    /// Add a **primary** action button. The caller owns the opaque `id` surfaced
     /// through [`ProgressOverlayResponse`] on click and the `label` shown on it.
     pub fn with_button(mut self, id: impl fmt::Display, label: impl fmt::Display) -> Self {
         if let Some(state) = &mut self.state {
-            state.buttons.push(OverlayButton {
-                label: label.to_string(),
-                action_id: id.to_string(),
-            });
+            state
+                .buttons
+                .push(OverlayButton::new(id, label, ButtonStyle::Primary));
         }
         self
+    }
+
+    /// Add a **secondary** action button (left of the primary). Same generic
+    /// semantics as [`with_button`](Self::with_button).
+    pub fn with_secondary_button(
+        mut self,
+        id: impl fmt::Display,
+        label: impl fmt::Display,
+    ) -> Self {
+        if let Some(state) = &mut self.state {
+            state
+                .buttons
+                .push(OverlayButton::new(id, label, ButtonStyle::Secondary));
+        }
+        self
+    }
+
+    /// Clear this instance so [`Component::show`] renders nothing and returns the
+    /// empty response (QA-007: makes the `state == None` path reachable via the
+    /// public API). Idempotent.
+    pub fn clear(&mut self) {
+        self.state = None;
     }
 
     // ── Global (ctx.data) path ──────────────────────────────────────────────
@@ -364,6 +497,9 @@ impl ProgressOverlay {
     /// Raise the overlay and return its handle. Non-blocking: only writes
     /// `ctx.data`. The `description` argument is used unless `config` already
     /// carries one.
+    ///
+    /// SEC-006: the `description` (and any button `label`/`id`) is user-visible
+    /// and written to logs on show — never pass secrets, passphrases, or PII.
     pub fn show_global(
         ctx: &egui::Context,
         description: impl fmt::Display,
@@ -402,13 +538,29 @@ impl ProgressOverlay {
         !get_overlay_state(ctx).is_empty()
     }
 
-    /// Drain the action-id queue (FIFO) for the app loop to dispatch.
-    pub fn take_actions(ctx: &egui::Context) -> Vec<String> {
-        let actions = get_overlay_actions(ctx);
-        if !actions.is_empty() {
-            set_overlay_actions(ctx, Vec::new());
+    /// Orphan-sweeper (A-3): drain and return only action ids whose owning
+    /// overlay entry is **no longer on the stack** — i.e. the owner cleared or
+    /// dropped its handle without draining. Live owners' actions are left
+    /// untouched, so this can never race or pre-empt a screen that owns an active
+    /// overlay, regardless of call order. The app loop calls this and logs each
+    /// truly-orphaned id; screens drain their own via [`OverlayHandle::take_actions`].
+    pub fn sweep_orphan_actions(ctx: &egui::Context) -> Vec<String> {
+        let live: std::collections::HashSet<u64> =
+            get_overlay_state(ctx).iter().map(|s| s.key).collect();
+        let mut queue = get_overlay_actions(ctx);
+        let mut orphans = Vec::new();
+        queue.retain(|a| {
+            if live.contains(&a.key) {
+                true
+            } else {
+                orphans.push(a.action_id.clone());
+                false
+            }
+        });
+        if !orphans.is_empty() {
+            set_overlay_actions(ctx, queue);
         }
-        actions
+        orphans
     }
 
     /// Clear every entry — used on network switch alongside the banner reset.
@@ -442,11 +594,19 @@ impl ProgressOverlay {
     /// buttoned case (post-T7) re-grants its own buttons' navigation via the
     /// focus-lock filter in `render_buttons`.
     pub fn claim_input(ctx: &egui::Context) {
-        if !Self::has_global(ctx) {
+        let stack = get_overlay_state(ctx);
+        let Some(top) = stack.last() else {
             return;
+        };
+        // Release beneath focus ONLY for a button-less block — it has no widget of
+        // its own to hold focus, so a focused field beneath would keep its caret.
+        // A buttoned block keeps its button focused (`render_buttons` manages the
+        // focus + lock), so do NOT clear focus here — `stop_text_input` clears the
+        // *currently focused* widget regardless of type, which would steal the
+        // button's focus every frame.
+        if top.buttons.is_empty() {
+            ctx.memory_mut(|m| m.stop_text_input());
         }
-        // Only releases text-edit focus, so an overlay button keeps its focus.
-        ctx.memory_mut(|m| m.stop_text_input());
         ctx.input_mut(|i| {
             i.events.retain(|e| {
                 !matches!(
@@ -478,46 +638,48 @@ impl ProgressOverlay {
             return;
         };
 
-        // Belt-and-suspenders end-of-frame filter. The primary, gated block is
-        // `claim_input` at frame start (which also yields to an active secret
-        // prompt); this second pass swallows Esc/Tab/Enter so they cannot dismiss
-        // the overlay, move focus beneath it, or activate a focused button.
-        // TODO(QA blocker #2): this pass is NOT gated on an active secret prompt,
-        // so it still swallows Esc while a passphrase modal is up above the
-        // overlay. Once `claim_input` is proven sufficient, remove this filter and
-        // route the keyboard tests through `claim_input` so the gated path is the
-        // only swallow — then a secret prompt's Esc-to-cancel survives.
-        ctx.input_mut(|i| {
-            i.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
-            i.events.retain(|e| {
-                !matches!(
-                    e,
-                    egui::Event::Key {
-                        key: egui::Key::Tab | egui::Key::Enter,
-                        pressed: true,
-                        ..
-                    }
-                )
-            });
-        });
-
+        // NB: render_global does NO keyboard stripping. All key/text claiming
+        // happens in `claim_input` at frame start, which the app loop gates on no
+        // active secret prompt (SEC-004/F-1) — a passphrase modal rendered above
+        // the overlay must keep Enter/Esc/Tab. Stripping here would be both too
+        // late (end-of-frame) and ungated (would re-break the prompt). The buttoned
+        // case additionally relies on the focus-lock filter set in `render_buttons`.
         let elapsed = top.created_at.elapsed();
         let stuck = stuck_reveal(elapsed);
         let show_elapsed = top.show_elapsed || stuck;
+        let key = top.key;
+        // Logs once on show / once per content change, and bumps `last_progress_at`
+        // on a content change so the no-progress watchdog measures true stalls.
         log_overlay_state(top);
+
+        // No-progress watchdog (A-1): once the topmost request has shown no
+        // progress for over two minutes, escalate the reassurance copy and fire a
+        // one-shot dev-error — almost always a leaked handle (C1) or an un-bounded
+        // operation (C2), i.e. a bug. No panic: a time-based assert would be flaky.
+        let watchdog = watchdog_tripped(top.last_progress_at);
+        if watchdog && !top.watchdog_logged {
+            top.watchdog_logged = true;
+            tracing::error!(
+                key,
+                "Blocking overlay has shown no progress for over 2 minutes — \
+                 likely a leaked handle or an un-bounded operation"
+            );
+        }
 
         let dark_mode = ctx.style().visuals.dark_mode;
         let rect = ctx.content_rect();
 
-        // Dim + pointer sink share one Middle-order layer so the dim is always
-        // behind the card (a later Middle area). The sink consumes pointer
-        // events; its own clicks are ignored, so a backdrop click never dismisses.
+        // SEC-002: the dim + pointer sink + card render on Order::Foreground so
+        // they sit above Foreground popups (egui ComboBox, address autocomplete,
+        // SelectionDialog) that would otherwise float over a Middle-order block and
+        // stay clickable. The secret prompt is raised to match and rendered later
+        // (focus-raised), so it still wins above the overlay (R-1, TC-OVL-048).
         let sink_layer =
-            egui::LayerId::new(egui::Order::Middle, egui::Id::new(OVERLAY_DIM_SINK_ID));
+            egui::LayerId::new(egui::Order::Foreground, egui::Id::new(OVERLAY_DIM_SINK_ID));
         ctx.layer_painter(sink_layer)
             .rect_filled(rect, 0.0, DashColors::modal_overlay());
         egui::Area::new(egui::Id::new(OVERLAY_DIM_SINK_ID))
-            .order(egui::Order::Middle)
+            .order(egui::Order::Foreground)
             .fixed_pos(rect.min)
             .show(ctx, |ui| {
                 ui.allocate_response(rect.size(), egui::Sense::click_and_drag());
@@ -525,19 +687,28 @@ impl ProgressOverlay {
 
         let mut clicked = None;
         egui::Area::new(egui::Id::new(OVERLAY_CARD_ID))
-            .order(egui::Order::Middle)
+            .order(egui::Order::Foreground)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .show(ctx, |ui| {
-                clicked = render_card(ui, top, dark_mode, elapsed, show_elapsed, stuck);
+                clicked = render_card(
+                    ui,
+                    top,
+                    dark_mode,
+                    elapsed,
+                    show_elapsed,
+                    stuck,
+                    watchdog,
+                    true,
+                );
             });
 
-        // The click does not lower the overlay — the app loop drains the queue
-        // via `take_actions` and the owning screen decides what to do.
+        // The click does not lower the overlay — the owning screen drains its own
+        // ids via `OverlayHandle::take_actions`; the app loop only sweeps orphans.
         if let Some(action_id) = clicked {
-            push_overlay_action(ctx, &action_id);
+            push_overlay_action(ctx, key, &action_id);
         }
 
-        if show_elapsed {
+        if show_elapsed || watchdog {
             ctx.request_repaint_after(Duration::from_secs(1));
         }
 
@@ -560,8 +731,22 @@ impl Component for ProgressOverlay {
         let elapsed = state.created_at.elapsed();
         let stuck = stuck_reveal(elapsed);
         let show_elapsed = state.show_elapsed || stuck;
+        let watchdog = watchdog_tripped(state.last_progress_at);
 
-        let clicked = render_card(ui, state, dark_mode, elapsed, show_elapsed, stuck);
+        // QA-003: the instance path renders the card WITHOUT seizing global focus
+        // or installing the focus-lock filter (`trap_focus = false`). That trap
+        // belongs to the full-window global block; an inline, non-blocking widget
+        // must leave the host screen's Tab/arrow/Esc navigation intact.
+        let clicked = render_card(
+            ui,
+            state,
+            dark_mode,
+            elapsed,
+            show_elapsed,
+            stuck,
+            watchdog,
+            false,
+        );
         if let Some(action_id) = &clicked {
             self.last_action = Some(action_id.clone());
         }
@@ -593,9 +778,18 @@ fn empty_overlay_response(ui: &mut egui::Ui) -> InnerResponse<ProgressOverlayRes
 }
 
 /// Whether the topmost request has been stuck long enough to reveal the honest
-/// elapsed readout and reassurance line (D-4).
+/// elapsed readout and the soft reassurance line (D-4). Takes `elapsed` as a
+/// parameter (the clock seam) so the threshold logic is unit-testable without a
+/// real wall-clock wait.
 fn stuck_reveal(elapsed: Duration) -> bool {
     elapsed >= STUCK_OVERLAY_THRESHOLD
+}
+
+/// Whether the no-progress watchdog has tripped: over [`STUCK_OVERLAY_WATCHDOG_THRESHOLD`]
+/// has elapsed since the last content change (A-1). Like [`stuck_reveal`], takes
+/// the measured instant as a parameter so it is unit-testable.
+fn watchdog_tripped(last_progress: Instant) -> bool {
+    last_progress.elapsed() >= STUCK_OVERLAY_WATCHDOG_THRESHOLD
 }
 
 /// Whether a `(current, total)` step pair is meaningful enough to render. Hides
@@ -617,6 +811,9 @@ fn log_overlay_state(state: &mut OverlayState) {
         );
     } else if state.logged_content.as_ref() != Some(&content) {
         state.logged_content = Some(content);
+        // Real progress: reset the no-progress watchdog clock (A-1) so a
+        // legitimately advancing flow never trips it.
+        state.last_progress_at = Instant::now();
         debug!(
             description = ?state.description,
             step = ?state.step,
@@ -629,6 +826,7 @@ fn log_overlay_state(state: &mut OverlayState) {
 /// description, optional elapsed/reassurance, optional button row. Returns the
 /// action id of a button clicked this frame, if any. Shared by the instance
 /// [`Component::show`] and the global [`ProgressOverlay::render_global`] paths.
+#[allow(clippy::too_many_arguments)]
 fn render_card(
     ui: &mut egui::Ui,
     state: &mut OverlayState,
@@ -636,6 +834,8 @@ fn render_card(
     elapsed: Duration,
     show_elapsed: bool,
     stuck: bool,
+    watchdog: bool,
+    trap_focus: bool,
 ) -> Option<String> {
     let mut clicked = None;
     egui::Frame::new()
@@ -690,13 +890,22 @@ fn render_card(
 
                 if show_elapsed {
                     ui.add_space(Spacing::XS);
+                    let seconds = elapsed.as_secs();
                     ui.label(
-                        egui::RichText::new(format!("Elapsed: {}s", elapsed.as_secs()))
+                        egui::RichText::new(format!("Elapsed: {seconds}s"))
                             .color(DashColors::text_secondary(dark_mode)),
                     );
                 }
 
-                if stuck {
+                // The 120 s watchdog escalation replaces (never stacks with) the
+                // soft 30 s reassurance line (A-1).
+                if watchdog {
+                    ui.add_space(Spacing::XS);
+                    ui.label(
+                        egui::RichText::new(STUCK_WATCHDOG_REASSURANCE)
+                            .color(DashColors::text_secondary(dark_mode)),
+                    );
+                } else if stuck {
                     ui.add_space(Spacing::XS);
                     ui.label(
                         egui::RichText::new(STUCK_REASSURANCE)
@@ -706,26 +915,53 @@ fn render_card(
 
                 if !state.buttons.is_empty() {
                     ui.add_space(Spacing::MD);
-                    clicked = render_buttons(ui, state);
+                    clicked = render_buttons(ui, state, dark_mode, trap_focus);
                 }
             });
         });
     clicked
 }
 
-/// Render the generic button row left-to-right in insertion order. Returns the
-/// clicked button's action id, if any. The first button is the focus stop on
-/// raise, and a focus lock filter traps Tab/arrows/Esc on it so keyboard
-/// navigation cannot escape to a widget beneath the block. Clicks never lower
-/// the overlay.
-fn render_buttons(ui: &mut egui::Ui, state: &mut OverlayState) -> Option<String> {
-    let want_focus = !state.focus_requested;
+/// Render the action button row. Layout mirrors `ConfirmationDialog`: a
+/// `right_to_left` row so the **primary** action hugs the RIGHT edge and any
+/// **secondary** buttons sit to its LEFT; a single button hugs the right edge.
+/// Within each tier, buttons render in the order they were added. Returns the
+/// clicked button's action id, if any. Clicks never lower the overlay.
+///
+/// `trap_focus` is `true` only for the global full-window block: the first
+/// button is focused on raise and a focus-lock filter traps Tab/arrows/Esc on it
+/// so keyboard navigation cannot escape to a widget beneath the block. The
+/// instance [`Component`] path passes `false` (QA-003) so an inline, non-blocking
+/// widget never seizes the host screen's focus.
+fn render_buttons(
+    ui: &mut egui::Ui,
+    state: &mut OverlayState,
+    dark_mode: bool,
+    trap_focus: bool,
+) -> Option<String> {
+    let want_focus = trap_focus && !state.focus_requested;
     let mut clicked = None;
     let mut focus_stop = None;
 
-    ui.horizontal(|ui| {
-        for button in &state.buttons {
-            let response = ComponentStyles::add_primary_button(ui, &button.label);
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        // Primaries first → rightmost (accent); secondaries after → to their left.
+        let ordered = state
+            .buttons
+            .iter()
+            .filter(|b| b.style == ButtonStyle::Primary)
+            .chain(
+                state
+                    .buttons
+                    .iter()
+                    .filter(|b| b.style == ButtonStyle::Secondary),
+            );
+        for button in ordered {
+            let response = match button.style {
+                ButtonStyle::Primary => ComponentStyles::add_primary_button(ui, &button.label),
+                ButtonStyle::Secondary => {
+                    ComponentStyles::add_secondary_button(ui, &button.label, dark_mode)
+                }
+            };
             if focus_stop.is_none() {
                 focus_stop = Some(response.id);
                 if want_focus {
@@ -738,7 +974,7 @@ fn render_buttons(ui: &mut egui::Ui, state: &mut OverlayState) -> Option<String>
         }
     });
 
-    if let Some(id) = focus_stop {
+    if trap_focus && let Some(id) = focus_stop {
         // Trap keyboard focus on the block. egui resolves Tab/arrow navigation in
         // `begin_pass` (before this code runs), so filtering those key events here
         // is too late — only a focus lock filter on the focused widget keeps
@@ -775,25 +1011,38 @@ fn set_overlay_state(ctx: &egui::Context, stack: Vec<OverlayState>) {
     }
 }
 
+/// A pending button click, scoped to the overlay entry that owns it (A-3). The
+/// `key` lets the owning [`OverlayHandle`] drain only its own ids while the
+/// orphan-sweeper reclaims ids whose owner is gone.
+#[derive(Clone)]
+struct OverlayAction {
+    key: u64,
+    action_id: String,
+}
+
 /// Reads the pending overlay-action queue (FIFO) from egui context data.
-fn get_overlay_actions(ctx: &egui::Context) -> Vec<String> {
-    ctx.data(|d| d.get_temp::<Vec<String>>(egui::Id::new(OVERLAY_ACTIONS_ID)))
+fn get_overlay_actions(ctx: &egui::Context) -> Vec<OverlayAction> {
+    ctx.data(|d| d.get_temp::<Vec<OverlayAction>>(egui::Id::new(OVERLAY_ACTIONS_ID)))
         .unwrap_or_default()
 }
 
 /// Writes the pending overlay-action queue. Removes the slot when empty.
-fn set_overlay_actions(ctx: &egui::Context, actions: Vec<String>) {
+fn set_overlay_actions(ctx: &egui::Context, actions: Vec<OverlayAction>) {
     if actions.is_empty() {
-        ctx.data_mut(|d| d.remove::<Vec<String>>(egui::Id::new(OVERLAY_ACTIONS_ID)));
+        ctx.data_mut(|d| d.remove::<Vec<OverlayAction>>(egui::Id::new(OVERLAY_ACTIONS_ID)));
     } else {
         ctx.data_mut(|d| d.insert_temp(egui::Id::new(OVERLAY_ACTIONS_ID), actions));
     }
 }
 
-/// Appends an action id to the queue. Called from the renderer on a button click.
-fn push_overlay_action(ctx: &egui::Context, action_id: &str) {
+/// Appends an action id (scoped to its owning entry's `key`) to the queue.
+/// Called from `render_global` on a button click.
+fn push_overlay_action(ctx: &egui::Context, key: u64, action_id: &str) {
     let mut queue = get_overlay_actions(ctx);
-    queue.push(action_id.to_string());
+    queue.push(OverlayAction {
+        key,
+        action_id: action_id.to_string(),
+    });
     set_overlay_actions(ctx, queue);
 }
 
@@ -947,14 +1196,62 @@ mod tests {
         assert!(!ProgressOverlay::has_global(&ctx));
     }
 
+    /// A-3 — a handle drains its **own** clicks FIFO then empties, and the
+    /// orphan-sweeper sees nothing while the owner is still live.
     #[test]
-    fn take_actions_drains_fifo_then_empties() {
+    fn handle_take_actions_drains_own_fifo_then_empties() {
         let ctx = egui::Context::default();
-        assert!(ProgressOverlay::take_actions(&ctx).is_empty());
-        push_overlay_action(&ctx, "first");
-        push_overlay_action(&ctx, "second");
-        assert_eq!(ProgressOverlay::take_actions(&ctx), vec!["first", "second"]);
-        assert!(ProgressOverlay::take_actions(&ctx).is_empty());
+        let handle = ProgressOverlay::show_global_spinner_only(&ctx);
+        assert!(handle.take_actions().is_empty());
+
+        push_overlay_action(&ctx, handle.key, "first");
+        push_overlay_action(&ctx, handle.key, "second");
+
+        // The owner is live, so the orphan-sweeper must not touch its ids.
+        assert!(ProgressOverlay::sweep_orphan_actions(&ctx).is_empty());
+
+        assert_eq!(handle.take_actions(), vec!["first", "second"]);
+        assert!(handle.take_actions().is_empty());
+    }
+
+    /// A-3 — two stacked overlays: a click keyed to B is drained only by B; A
+    /// never steals it (no cross-owner theft).
+    #[test]
+    fn keyed_actions_isolate_owners() {
+        let ctx = egui::Context::default();
+        let a = ProgressOverlay::show_global(&ctx, "A.", OverlayConfig::default());
+        let b = ProgressOverlay::show_global(&ctx, "B.", OverlayConfig::default());
+        push_overlay_action(&ctx, b.key, "b:action");
+
+        assert!(a.take_actions().is_empty(), "A must not see B's click");
+        assert_eq!(b.take_actions(), vec!["b:action"]);
+        assert!(b.take_actions().is_empty());
+    }
+
+    /// A-3 — a handle dropped without draining leaves its id reachable only via
+    /// `sweep_orphan_actions`; `clear()` instead leaves nothing for the sweeper.
+    #[test]
+    fn orphan_sweeper_reclaims_only_dead_owner_ids() {
+        let ctx = egui::Context::default();
+
+        // Owner clears normally → its pending id is purged, sweeper finds nothing.
+        let cleared = ProgressOverlay::show_global_spinner_only(&ctx);
+        push_overlay_action(&ctx, cleared.key, "cleared:id");
+        cleared.clear();
+        assert!(ProgressOverlay::sweep_orphan_actions(&ctx).is_empty());
+
+        // Owner dropped without draining → its id is orphaned and swept once.
+        let dropped = ProgressOverlay::show_global_spinner_only(&ctx);
+        let dropped_key = dropped.key;
+        push_overlay_action(&ctx, dropped_key, "dropped:id");
+        ProgressOverlay::clear_all_global(&ctx); // entry gone, id keyed to a dead owner
+        // Re-enqueue against the now-dead key to model the drop-without-drain race.
+        push_overlay_action(&ctx, dropped_key, "dropped:id");
+        assert_eq!(
+            ProgressOverlay::sweep_orphan_actions(&ctx),
+            vec!["dropped:id"]
+        );
+        assert!(ProgressOverlay::sweep_orphan_actions(&ctx).is_empty());
     }
 
     /// SEC-007 — `clear_all_global` (network switch) drains the action queue too,
@@ -963,14 +1260,14 @@ mod tests {
     #[test]
     fn clear_all_global_clears_action_queue() {
         let ctx = egui::Context::default();
-        ProgressOverlay::show_global_spinner_only(&ctx);
-        push_overlay_action(&ctx, "shielded:build:cancel");
+        let handle = ProgressOverlay::show_global_spinner_only(&ctx);
+        push_overlay_action(&ctx, handle.key, "shielded:build:cancel");
 
         ProgressOverlay::clear_all_global(&ctx);
 
         assert!(!ProgressOverlay::has_global(&ctx), "state stack is cleared");
         assert!(
-            ProgressOverlay::take_actions(&ctx).is_empty(),
+            ProgressOverlay::sweep_orphan_actions(&ctx).is_empty(),
             "SEC-007: the action queue must be cleared on a network switch"
         );
     }
@@ -1146,6 +1443,96 @@ mod tests {
 
         // current_value still None — clicks are surfaced via the response and
         // recorded on the instance only when they occur.
+        assert!(overlay.current_value().is_none());
+    }
+
+    /// A-1 — the no-progress watchdog trips only past its threshold (clock seam).
+    #[test]
+    fn watchdog_tripped_only_past_threshold() {
+        let now = Instant::now();
+        assert!(!watchdog_tripped(now));
+        if let Some(old) =
+            now.checked_sub(STUCK_OVERLAY_WATCHDOG_THRESHOLD + Duration::from_secs(1))
+        {
+            assert!(watchdog_tripped(old));
+        }
+        if let Some(recent) =
+            now.checked_sub(STUCK_OVERLAY_WATCHDOG_THRESHOLD - Duration::from_secs(1))
+        {
+            assert!(!watchdog_tripped(recent));
+        }
+    }
+
+    /// A-1 — a real content change resets the no-progress clock (so a progressing
+    /// flow never trips the watchdog); no change leaves it untouched.
+    #[test]
+    fn log_overlay_state_bumps_progress_clock_on_content_change() {
+        let mut state = OverlayState::new(1, Some("a".to_string()), &OverlayConfig::default());
+        state.logged = true;
+        state.logged_content = Some((Some("a".to_string()), None));
+        state.last_progress_at = Instant::now()
+            .checked_sub(STUCK_OVERLAY_WATCHDOG_THRESHOLD + Duration::from_secs(5))
+            .expect("instant underflow");
+        assert!(watchdog_tripped(state.last_progress_at));
+
+        // Content changes → log_overlay_state bumps the clock.
+        state.description = Some("b".to_string());
+        log_overlay_state(&mut state);
+        assert!(
+            !watchdog_tripped(state.last_progress_at),
+            "a content change must reset the no-progress clock"
+        );
+
+        // No change → the clock is left untouched.
+        let before = state.last_progress_at;
+        log_overlay_state(&mut state);
+        assert_eq!(
+            state.last_progress_at, before,
+            "no content change must not touch the clock"
+        );
+    }
+
+    /// A-1 — the watchdog dev-error flag flips once on render and stays set, so the
+    /// error logs exactly once rather than every frame (NFR-5).
+    #[test]
+    fn watchdog_flag_flips_once_via_render() {
+        let ctx = egui::Context::default();
+        let handle = ProgressOverlay::show_global_spinner_only(&ctx);
+        {
+            let mut stack = get_overlay_state(&ctx);
+            let top = stack.iter_mut().find(|s| s.key == handle.key).unwrap();
+            top.last_progress_at = Instant::now()
+                .checked_sub(STUCK_OVERLAY_WATCHDOG_THRESHOLD + Duration::from_secs(5))
+                .expect("instant underflow");
+            set_overlay_state(&ctx, stack);
+        }
+        let logged = |ctx: &egui::Context| {
+            get_overlay_state(ctx)
+                .iter()
+                .find(|s| s.key == handle.key)
+                .map(|s| s.watchdog_logged)
+                .unwrap()
+        };
+        render_once(&ctx);
+        assert!(logged(&ctx), "the watchdog flag flips on render");
+        render_once(&ctx);
+        assert!(logged(&ctx), "and stays set across frames");
+    }
+
+    /// QA-007 — the instance `clear()` makes the empty-response path reachable via
+    /// the public API: after clear, `show()` renders nothing and reports no value.
+    #[test]
+    fn instance_clear_reaches_empty_response() {
+        let ctx = egui::Context::default();
+        let mut overlay = ProgressOverlay::new().with_description("Working.");
+        overlay.clear();
+        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let response = overlay.show(ui).inner;
+                assert!(!response.has_changed());
+                assert!(response.changed_value().is_none());
+            });
+        });
         assert!(overlay.current_value().is_none());
     }
 }

@@ -40,11 +40,13 @@ use egui_kittest::kittest::Queryable;
 
 const SPINNER_ROLE: egui::accesskit::Role = egui::accesskit::Role::ProgressIndicator;
 
-/// Build a harness whose per-frame closure renders only the overlay.
+/// Build a harness whose per-frame closure mirrors `AppState::update`: claim
+/// input at frame start (the sole keyboard/text block), then render the overlay.
 fn overlay_harness() -> Harness<'static> {
     Harness::builder()
         .with_size(egui::vec2(420.0, 360.0))
         .build_ui(|ui| {
+            ProgressOverlay::claim_input(ui.ctx());
             ProgressOverlay::render_global(ui.ctx());
         })
 }
@@ -269,12 +271,14 @@ fn tc_ovl_013b_elapsed_on_counts_up() {
     harness.step();
     assert!(harness.query_by_label("Elapsed: 0s").is_some());
 
-    // Real wall-clock elapsed (Instant-based) — counts up, never down.
-    std::thread::sleep(Duration::from_millis(1100));
+    // Real wall-clock elapsed (Instant-based) — counts up, never down. QA-008:
+    // assert it advanced to at least 2s, not merely past 0s.
+    std::thread::sleep(Duration::from_millis(2100));
     harness.step();
     assert!(
-        harness.query_by_label("Elapsed: 0s").is_none(),
-        "the readout advanced past 0s"
+        harness.query_by_label("Elapsed: 0s").is_none()
+            && harness.query_by_label("Elapsed: 1s").is_none(),
+        "the readout advanced to at least 2s"
     );
     assert!(
         harness.query_by_label_contains("Elapsed:").is_some(),
@@ -376,6 +380,11 @@ fn tc_ovl_021_long_description_within_bounds() {
         rect.min.x >= -1.0 && rect.max.x <= 301.0,
         "description stays within the window horizontally: {rect:?}"
     );
+    // QA-008: also bound it vertically inside the 400px-tall window.
+    assert!(
+        rect.min.y >= -1.0 && rect.max.y <= 401.0,
+        "description stays within the window vertically: {rect:?}"
+    );
 }
 
 /// TC-OVL-022 — spinner-only overlay is valid with no text, counter, or button.
@@ -396,11 +405,11 @@ fn tc_ovl_022_spinner_only_valid() {
 #[test]
 fn tc_ovl_023_no_buttons_pure_block() {
     let mut harness = overlay_harness();
-    let _handle =
+    let handle =
         ProgressOverlay::show_global(&harness.ctx, "Hard block.", OverlayConfig::default());
     harness.step();
     assert!(harness.query_by_label("Cancel").is_none());
-    assert!(ProgressOverlay::take_actions(&harness.ctx).is_empty());
+    assert!(handle.take_actions().is_empty());
     assert!(ProgressOverlay::has_global(&harness.ctx));
 }
 
@@ -410,7 +419,7 @@ fn tc_ovl_023_no_buttons_pure_block() {
 #[test]
 fn tc_ovl_024_button_click_enqueues_action() {
     let mut harness = overlay_harness();
-    let _handle = ProgressOverlay::show_global(
+    let handle = ProgressOverlay::show_global(
         &harness.ctx,
         "Working.",
         OverlayConfig::new().with_button("overlay.cancel", "Cancel"),
@@ -424,10 +433,8 @@ fn tc_ovl_024_button_click_enqueues_action() {
 
     harness.get_by_label("Cancel").click();
     harness.step();
-    assert_eq!(
-        ProgressOverlay::take_actions(&harness.ctx),
-        vec!["overlay.cancel".to_string()]
-    );
+    // A-3: the owning handle drains its own click.
+    assert_eq!(handle.take_actions(), vec!["overlay.cancel".to_string()]);
     // The click does not auto-dismiss — only the app loop lowers it.
     assert!(ProgressOverlay::has_global(&harness.ctx));
 }
@@ -436,7 +443,7 @@ fn tc_ovl_024_button_click_enqueues_action() {
 #[test]
 fn tc_ovl_025_generic_button_click_enqueues_action() {
     let mut harness = overlay_harness();
-    let _handle = ProgressOverlay::show_global(
+    let handle = ProgressOverlay::show_global(
         &harness.ctx,
         "Background-able.",
         OverlayConfig::new().with_button("overlay.run_in_bg", "Run in background"),
@@ -448,23 +455,20 @@ fn tc_ovl_025_generic_button_click_enqueues_action() {
 
     harness.get_by_label("Run in background").click();
     harness.step();
-    assert_eq!(
-        ProgressOverlay::take_actions(&harness.ctx),
-        vec!["overlay.run_in_bg".to_string()]
-    );
+    assert_eq!(handle.take_actions(), vec!["overlay.run_in_bg".to_string()]);
     assert!(ProgressOverlay::has_global(&harness.ctx));
 }
 
-/// TC-OVL-026 — the action queue drains FIFO then empties.
+/// TC-OVL-026 — the owning handle drains its own clicks FIFO then empties (A-3).
 #[test]
 fn tc_ovl_026_action_queue_drains_fifo() {
     let mut harness = overlay_harness();
-    let _handle = ProgressOverlay::show_global(
+    let handle = ProgressOverlay::show_global(
         &harness.ctx,
         "Two buttons.",
         OverlayConfig::new()
-            .with_button("cancel", "Cancel")
-            .with_button("secondary", "Secondary"),
+            .with_button("primary", "Primary")
+            .with_secondary_button("secondary", "Secondary"),
     );
     // Settle the centered card before clicking (anchored CENTER_CENTER moves for
     // a couple of frames until its size is cached).
@@ -472,38 +476,38 @@ fn tc_ovl_026_action_queue_drains_fifo() {
     harness.step();
     harness.step();
 
-    harness.get_by_label("Cancel").click();
+    harness.get_by_label("Primary").click();
     harness.step();
     harness.get_by_label("Secondary").click();
     harness.step();
 
     assert_eq!(
-        ProgressOverlay::take_actions(&harness.ctx),
-        vec!["cancel".to_string(), "secondary".to_string()]
+        handle.take_actions(),
+        vec!["primary".to_string(), "secondary".to_string()]
     );
-    assert!(ProgressOverlay::take_actions(&harness.ctx).is_empty());
+    assert!(handle.take_actions().is_empty());
 }
 
-/// TC-OVL-027 — generic buttons render left-to-right in insertion order. The
-/// renderer uses `ComponentStyles` button helpers, never a bare `ui.button()`
-/// (design-review).
+/// TC-OVL-027 — F-3/F-4/F-7 layout: the primary action hugs the RIGHT edge and a
+/// secondary button sits to its LEFT (mirrors `ConfirmationDialog`). The renderer
+/// uses `ComponentStyles` button helpers, never a bare `ui.button()`.
 #[test]
-fn tc_ovl_027_buttons_render_in_insertion_order() {
+fn tc_ovl_027_secondary_left_primary_right() {
     let mut harness = overlay_harness();
     let _handle = ProgressOverlay::show_global(
         &harness.ctx,
         "Two buttons.",
         OverlayConfig::new()
-            .with_button("first", "First action")
-            .with_button("second", "Second action"),
+            .with_button("primary", "Primary action")
+            .with_secondary_button("secondary", "Secondary action"),
     );
     harness.step();
 
-    let first_x = harness.get_by_label("First action").rect().center().x;
-    let second_x = harness.get_by_label("Second action").rect().center().x;
+    let second_x = harness.get_by_label("Secondary action").rect().center().x;
+    let first_x = harness.get_by_label("Primary action").rect().center().x;
     assert!(
-        first_x < second_x,
-        "the first-added button must be left of the second"
+        second_x < first_x,
+        "the secondary button must sit to the left of the primary action"
     );
 }
 
@@ -522,7 +526,7 @@ fn tc_ovl_028_pointer_click_beneath_blocked() {
             }
             ProgressOverlay::render_global(ui.ctx());
         });
-    let _handle = ProgressOverlay::show_global_spinner_only(&harness.ctx);
+    let handle = ProgressOverlay::show_global_spinner_only(&harness.ctx);
     harness.step();
 
     harness.get_by_label("Increment").click();
@@ -532,7 +536,7 @@ fn tc_ovl_028_pointer_click_beneath_blocked() {
         0,
         "widget beneath the overlay must not receive the click"
     );
-    assert!(ProgressOverlay::take_actions(&harness.ctx).is_empty());
+    assert!(handle.take_actions().is_empty());
 }
 
 /// TC-OVL-029 — keyboard input does not reach widgets beneath the overlay.
@@ -544,6 +548,7 @@ fn tc_ovl_029_keyboard_beneath_blocked() {
     let mut harness = Harness::builder()
         .with_size(egui::vec2(420.0, 360.0))
         .build_ui(move |ui| {
+            ProgressOverlay::claim_input(ui.ctx());
             let mut buffer = text_ui.borrow_mut();
             ui.text_edit_singleline(&mut *buffer);
             ProgressOverlay::render_global(ui.ctx());
@@ -570,7 +575,7 @@ fn tc_ovl_029_keyboard_beneath_blocked() {
 #[test]
 fn tc_ovl_030_backdrop_click_does_not_dismiss() {
     let mut harness = overlay_harness();
-    let _handle = ProgressOverlay::show_global_spinner_only(&harness.ctx);
+    let handle = ProgressOverlay::show_global_spinner_only(&harness.ctx);
     harness.step();
     assert!(ProgressOverlay::has_global(&harness.ctx));
 
@@ -579,7 +584,7 @@ fn tc_ovl_030_backdrop_click_does_not_dismiss() {
     harness.drop_at(corner);
     harness.step();
     assert!(ProgressOverlay::has_global(&harness.ctx));
-    assert!(ProgressOverlay::take_actions(&harness.ctx).is_empty());
+    assert!(handle.take_actions().is_empty());
 }
 
 // ── Group J — Coexistence with MessageBanner ───────────────────────────────
@@ -658,12 +663,12 @@ fn tc_ovl_037_038_handle_dismisses_only_its_own() {
 #[test]
 fn tc_ovl_039_only_topmost_actions_reachable() {
     let mut harness = overlay_harness();
-    let _a = ProgressOverlay::show_global(
+    let a = ProgressOverlay::show_global(
         &harness.ctx,
         "Operation A.",
         OverlayConfig::new().with_button("cancel_a", "Cancel"),
     );
-    let _b = ProgressOverlay::show_global(
+    let b = ProgressOverlay::show_global(
         &harness.ctx,
         "Operation B.",
         OverlayConfig::new().with_button("cancel_b", "Cancel"),
@@ -676,10 +681,12 @@ fn tc_ovl_039_only_topmost_actions_reachable() {
 
     harness.get_by_label("Cancel").click();
     harness.step();
-    assert_eq!(
-        ProgressOverlay::take_actions(&harness.ctx),
-        vec!["cancel_b".to_string()],
-        "only the topmost request's button is reachable"
+    // Only the topmost (B) renders, so the click is keyed to B: B drains it, A
+    // never sees it (A-3 cross-owner isolation).
+    assert_eq!(b.take_actions(), vec!["cancel_b".to_string()]);
+    assert!(
+        a.take_actions().is_empty(),
+        "the lower request's handle drains nothing"
     );
 }
 
@@ -693,6 +700,7 @@ fn tc_ovl_041_tab_focus_trap() {
     let mut harness = Harness::builder()
         .with_size(egui::vec2(420.0, 360.0))
         .build_ui(move |ui| {
+            ProgressOverlay::claim_input(ui.ctx());
             let mut buffer = text_ui.borrow_mut();
             ui.text_edit_singleline(&mut *buffer);
             ProgressOverlay::render_global(ui.ctx());
@@ -723,7 +731,7 @@ fn tc_ovl_041_tab_focus_trap() {
 #[test]
 fn tc_ovl_042_esc_swallowed_with_button() {
     let mut harness = overlay_harness();
-    let _handle = ProgressOverlay::show_global(
+    let handle = ProgressOverlay::show_global(
         &harness.ctx,
         "Working.",
         OverlayConfig::new().with_button("overlay.cancel", "Cancel"),
@@ -733,7 +741,7 @@ fn tc_ovl_042_esc_swallowed_with_button() {
     harness.key_press(egui::Key::Escape);
     harness.step();
     assert!(
-        ProgressOverlay::take_actions(&harness.ctx).is_empty(),
+        handle.take_actions().is_empty(),
         "Esc must never trigger a button action"
     );
     assert!(ProgressOverlay::has_global(&harness.ctx));
@@ -743,7 +751,7 @@ fn tc_ovl_042_esc_swallowed_with_button() {
 #[test]
 fn tc_ovl_043_esc_swallowed_without_button() {
     let mut harness = overlay_harness();
-    let _handle =
+    let handle =
         ProgressOverlay::show_global(&harness.ctx, "Hard block.", OverlayConfig::default());
     harness.step();
 
@@ -753,14 +761,15 @@ fn tc_ovl_043_esc_swallowed_without_button() {
         ProgressOverlay::has_global(&harness.ctx),
         "Esc must not dismiss a hard block"
     );
-    assert!(ProgressOverlay::take_actions(&harness.ctx).is_empty());
+    assert!(handle.take_actions().is_empty());
 }
 
-/// TC-OVL-044 — Enter does not activate a focused button.
+/// TC-OVL-044 — neither Enter nor Space activates a focused button (QA-002): a
+/// hard block is never keyboard-activatable.
 #[test]
-fn tc_ovl_044_enter_does_not_activate_button() {
+fn tc_ovl_044_enter_and_space_do_not_activate_button() {
     let mut harness = overlay_harness();
-    let _handle = ProgressOverlay::show_global(
+    let handle = ProgressOverlay::show_global(
         &harness.ctx,
         "Working.",
         OverlayConfig::new().with_button("overlay.cancel", "Cancel"),
@@ -770,9 +779,11 @@ fn tc_ovl_044_enter_does_not_activate_button() {
 
     harness.key_press(egui::Key::Enter);
     harness.step();
+    harness.key_press(egui::Key::Space);
+    harness.step();
     assert!(
-        ProgressOverlay::take_actions(&harness.ctx).is_empty(),
-        "Enter must never trigger the focused button's action"
+        handle.take_actions().is_empty(),
+        "neither Enter nor Space may trigger the focused button's action"
     );
     assert!(ProgressOverlay::has_global(&harness.ctx));
 }
@@ -850,7 +861,7 @@ fn tc_ovl_047_stuck_threshold_is_informational_only() {
     );
 }
 
-/// TC-OVL-045 (ctx.data portion) — `OptionOverlayExt::replace` swaps the entry
+/// TC-OVL-045 (ctx.data portion) — `OptionOverlayExt::raise` swaps the entry
 /// and `take_and_clear` lowers it; the log-once flag itself is asserted in the
 /// inline unit tests.
 #[test]
@@ -905,8 +916,8 @@ fn tc_ovl_050_component_instance_show_reports_click() {
         "current_value reports the last clicked action id"
     );
     // The instance path does not touch the global action queue — the screen
-    // reads the click from the response, not via take_actions.
-    assert!(ProgressOverlay::take_actions(&harness.ctx).is_empty());
+    // reads the click from the response, not via the handle/sweeper.
+    assert!(ProgressOverlay::sweep_orphan_actions(&harness.ctx).is_empty());
 }
 
 // ── QA probe (Marvin) — FR-8 AC-8.2 for the button-LESS hard block ──────────
@@ -959,5 +970,94 @@ fn qa_buttonless_overlay_blocks_typing_into_focused_field_beneath() {
         "FR-8 AC-8.2: typed input reached a focused field beneath a button-less \
          overlay: {:?}",
         text.borrow()
+    );
+}
+
+// ── Cross-finding reconciliations (lead brief) ──────────────────────────────
+
+/// Reconciliation #1 (SEC-004 / Diziet F-1) — while a secret prompt is active the
+/// app gates `claim_input` OFF, so only `render_global` runs over the overlay. It
+/// must NOT strip keyboard events, or it would eat the prompt's Enter/Esc/Tab.
+/// (TC-OVL-048 separately proves the prompt renders interactively above the
+/// overlay; this proves the overlay does not swallow its keyboard.)
+#[test]
+fn reconciliation_render_global_keeps_keyboard_for_prompt() {
+    let saw_keys = Rc::new(Cell::new(false));
+    let saw_keys_ui = Rc::clone(&saw_keys);
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(420.0, 360.0))
+        .build_ui(move |ui| {
+            // No claim_input — mirrors AppState gating it off while a prompt is up.
+            ProgressOverlay::render_global(ui.ctx());
+            let survived = ui.ctx().input(|i| {
+                i.events.iter().any(|e| {
+                    matches!(
+                        e,
+                        egui::Event::Key {
+                            key: egui::Key::Enter | egui::Key::Escape | egui::Key::Tab,
+                            pressed: true,
+                            ..
+                        }
+                    )
+                })
+            });
+            saw_keys_ui.set(survived);
+        });
+    let _handle = ProgressOverlay::show_global_spinner_only(&harness.ctx);
+    harness.step();
+    assert!(!saw_keys.get(), "no keys injected yet");
+
+    // Inject the prompt's navigation/confirm keys; after render_global they must
+    // still be present (the overlay must not consume them).
+    for key in [egui::Key::Enter, egui::Key::Escape, egui::Key::Tab] {
+        harness.input_mut().events.push(egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+    }
+    harness.step();
+    assert!(
+        saw_keys.get(),
+        "render_global must not swallow Enter/Esc/Tab while an overlay is up — a \
+         secret prompt above it needs them (SEC-004/F-1)"
+    );
+}
+
+/// Reconciliation #3 (QA-003) — the instance `Component::show` must NOT seize the
+/// host screen's focus or install the global focus-lock. A host text field stays
+/// focused after the inline overlay renders, proving the trap is global-only.
+#[test]
+fn reconciliation_instance_show_leaves_host_focus_navigable() {
+    let overlay = Rc::new(RefCell::new(
+        ProgressOverlay::new()
+            .with_description("Inline overlay.")
+            .with_button("inline.act", "Act"),
+    ));
+    let overlay_ui = Rc::clone(&overlay);
+    let text = Rc::new(RefCell::new(String::new()));
+    let text_ui = Rc::clone(&text);
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(420.0, 360.0))
+        .build_ui(move |ui| {
+            let mut buffer = text_ui.borrow_mut();
+            ui.text_edit_singleline(&mut *buffer);
+            overlay_ui.borrow_mut().show(ui);
+        });
+    harness.step();
+    harness
+        .get_by_role(egui::accesskit::Role::TextInput)
+        .focus();
+    harness.step();
+
+    // The inline overlay rendered (trap_focus = false), so the host field keeps
+    // focus — an instance widget never wedges the host screen's navigation.
+    assert!(
+        harness
+            .get_by_role(egui::accesskit::Role::TextInput)
+            .is_focused(),
+        "the instance overlay must leave the host screen's focus alone (QA-003)"
     );
 }

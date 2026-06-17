@@ -8,6 +8,33 @@
 
 ---
 
+## Design change (post-outage) — SUPERSEDES D-5 and the Cancel-specific FR-7
+
+After this plan was written, two user-mandated redesigns landed that **supersede** the
+Cancel-specific decisions below. Where this document and the redesign disagree, the redesign wins:
+
+1. **No first-class Cancel — a generic button facility instead.** The overlay knows nothing about
+   cancellation. `with_cancel`, `OVERLAY_CANCEL_ACTION_ID`, and `CANCEL_LABEL` are **removed**. A
+   caller attaches a generic button via `OverlayConfig::with_button(id, label)` /
+   `OverlayHandle::with_button(id, label)`, choosing its own opaque action id and label. Clicking
+   enqueues the id; the owning screen drains it via `take_actions` and runs whatever logic it wants
+   — including its own cancellation. Esc/Tab/Enter are swallowed (a hard block is never keyboard-
+   dismissable); there is no Esc→Cancel routing. This **supersedes D-5** (the shipped-but-unwired
+   Cancel API) and the Cancel-specific parts of **FR-7** — "Cancel" is now merely one possible
+   caller-chosen label on a generic button, not a built-in concept.
+2. **`Component` trait conformance (placement legitimacy).** `ProgressOverlay` now implements the
+   project `Component` trait: an instance holds `state: Option<OverlayState>`, `show()` renders that
+   instance's card and returns a `ProgressOverlayResponse` (`DomainType = String`, the clicked
+   action id), and `current_value()` reports the last clicked id. The global `render_global` path is
+   unchanged and remains the production entry point — the `Component::show` instance path is
+   additive, mirroring how `MessageBanner` reconciles its global model with `Component`. This is
+   what makes the file legitimately placeable in `src/ui/components/`.
+
+T7 (backend cooperative cancellation) is unaffected, but is no longer tied to a built-in Cancel:
+when real cancellation lands, a screen wires its own generic button to it.
+
+---
+
 ## 0. Reading of the Situation
 
 The requirements are sound and the test spec is thorough. My task is to remove the five

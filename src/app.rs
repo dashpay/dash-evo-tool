@@ -15,7 +15,7 @@ use crate::logging::initialize_logger;
 use crate::model::feature_gate::FeatureGate;
 use crate::model::settings::AppSettings;
 use crate::ui::components::secret_prompt_host::{ActivePrompt, EguiSecretPromptHost, QueuedPrompt};
-use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
+use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt, ProgressOverlay};
 use crate::ui::contracts_documents::contracts_documents_screen::DocumentQueryScreen;
 use crate::ui::dashpay::{DashPayScreen, DashPaySubscreen, ProfileSearchScreen};
 use crate::ui::dpns::dpns_contested_names_screen::{
@@ -888,6 +888,9 @@ impl AppState {
         // A backend task completing after the switch could set a new banner in the new
         // network context — accepted risk for a local desktop app (cosmetic only).
         MessageBanner::clear_all_global(app_context.egui_ctx());
+        // Drop any blocking overlay from the previous context so the new network
+        // is never left behind a stale block.
+        ProgressOverlay::clear_all_global(app_context.egui_ctx());
 
         for screen in self.main_screens.values_mut() {
             screen.change_context(app_context.clone())
@@ -1133,6 +1136,23 @@ impl AppState {
                     "Unknown banner action id — dropping",
                 );
             }
+        }
+    }
+
+    /// Drain pending overlay button-action clicks queued by
+    /// [`OverlayConfig::with_button`]/[`OverlayHandle::with_button`]. The overlay
+    /// is UI-only and never auto-lowers on a click — the app loop owns dispatch.
+    /// Buttons are a generic facility (no built-in Cancel): a screen that raised
+    /// the overlay via the global path registers its own action ids here. No
+    /// production overlay attaches a button in v1, so there is no registered
+    /// handler yet; unrecognised ids are logged and dropped rather than dispatched.
+    fn drain_overlay_actions(&mut self, ctx: &egui::Context) {
+        for action_id in ProgressOverlay::take_actions(ctx) {
+            tracing::warn!(
+                target = "ui::overlay",
+                action_id = %action_id,
+                "Unhandled overlay action id — dropping (no registered handler)"
+            );
         }
     }
 
@@ -1523,6 +1543,12 @@ impl App for AppState {
             actions.push(self.visible_screen_mut().ui(ctx));
         };
 
+        // Blocking progress overlay: above banners, below the secret prompt.
+        // It consumes Esc/Tab/Enter while active, so it must render before the
+        // secret prompt (which is focus-raised and stays interactive above it)
+        // and before `handle_banner_esc` so the overlay wins Esc.
+        ProgressOverlay::render_global(ctx);
+
         // Render any just-in-time passphrase prompt on top of the screen.
         self.render_secret_prompt(ctx);
 
@@ -1538,6 +1564,7 @@ impl App for AppState {
         self.update_migration_banner(ctx, &active_context);
         self.handle_banner_esc(ctx);
         self.drain_banner_actions(ctx);
+        self.drain_overlay_actions(ctx);
 
         for action in actions {
             match action {

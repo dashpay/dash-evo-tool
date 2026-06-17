@@ -19,6 +19,13 @@ Every FR (FR-1 through FR-10) and NFR (NFR-1 through NFR-6) is covered by at lea
 Items that depend on the architecture decision deferred to Nagatha (1d) are marked
 **[depends on 1d]**.
 
+> **Post-outage reframe (generic button).** First-class "Cancel" was removed in favour of a
+> generic button facility: a caller attaches a button with `with_button(id, label)`, the click
+> enqueues the caller's id, the owning screen drains it via `take_actions` and runs its own logic
+> (including cancellation), and Esc does **not** dismiss. The Cancel-specific cases below
+> (TC-OVL-024/025/026/027/042/043/044) are **reframed in place** to the generic-button model —
+> numbers are preserved; each carries a "(reframed post-outage: generic button)" note.
+
 ### 1.1 Test Type Key
 
 | Tag | Meaning |
@@ -43,11 +50,9 @@ illustrative; the architecture phase (1d) may adjust them.
 | `OverlayHandle::set_description(text)` | Updates description; returns `Option<&Self>` |
 | `OverlayHandle::set_step(current, total)` | Updates counter; returns `Option<&Self>` |
 | `OverlayHandle::clear_step()` | Removes counter; returns `Option<&Self>` |
-| `OverlayHandle::with_cancel(action_id)` | Adds Cancel button; returns `Option<&Self>` |
-| `OverlayHandle::with_action(label, action_id)` | Adds generic button; returns `Option<&Self>` |
+| `OverlayConfig::with_button(id, label)` / `OverlayHandle::with_button(id, label)` | Adds a generic button (reframed post-outage: no built-in Cancel); the handle form returns `Option<&Self>` |
 | `OverlayHandle::clear()` | Dismisses this handle's overlay entry |
 | `OverlayHandle::is_active()` | Returns `true` if still on the overlay stack |
-| `OVERLAY_CANCEL_ACTION_ID` | Well-known constant for the Cancel action id |
 
 ---
 
@@ -188,7 +193,7 @@ loop without any risk of yielding.
 2. Call `handle.clear()` to dismiss.
 3. Call `handle.set_description("After clear")`.
 4. Call `handle.set_step(1, 3)`.
-5. Call `handle.with_cancel(OVERLAY_CANCEL_ACTION_ID)`.
+5. Call `handle.with_button("overlay.action", "Continue")`.
 
 **Expected outcome:**
 - All handle method calls return `None`.
@@ -497,7 +502,7 @@ Description is `"Waiting for the funding proof. This operation contacts the Dash
 **Preconditions:** Overlay raised with no buttons in config.
 
 **Steps:**
-1. Show overlay with no `with_cancel` or `with_action` calls.
+1. Show overlay with no `with_button` calls.
 2. Run one frame.
 
 **Expected outcome:**
@@ -508,32 +513,33 @@ Description is `"Waiting for the funding proof. This operation contacts the Dash
 
 ---
 
-#### TC-OVL-024 — Cancel button click enqueues the Cancel action id
+#### TC-OVL-024 — Button click enqueues its action id (reframed post-outage: generic button)
 **Type:** kittest
 **Traceability:** FR-7 (AC-7.2, AC-7.3)
 
-**Preconditions:** Overlay raised with `handle.with_cancel(OVERLAY_CANCEL_ACTION_ID)`.
+**Preconditions:** Overlay raised with `with_button("overlay.cancel", "Cancel")`. There is no
+built-in Cancel — `"Cancel"` is just a caller-chosen label and `"overlay.cancel"` a caller-chosen id.
 
 **Steps:**
-1. Show overlay with Cancel button.
+1. Show overlay with a generic button.
 2. Run one frame; assert a button with label `"Cancel"` is present.
-3. Click the Cancel button (via `harness.get_by_label("Cancel").click()`).
+3. Click the button (via `harness.get_by_label("Cancel").click()`).
 4. Run another frame.
 5. Call `ProgressOverlay::take_actions(ctx)`.
 
 **Expected outcome:**
-- `take_actions` returns a list containing exactly one entry equal to `OVERLAY_CANCEL_ACTION_ID`.
-- The overlay itself is NOT automatically dismissed by the click — it remains until the app loop
-  dispatches the cancel action and explicitly calls `handle.clear()` (the overlay is UI-only;
-  it never calls backend code directly).
+- `take_actions` returns a list containing exactly one entry equal to the caller's id `"overlay.cancel"`.
+- The overlay itself is NOT automatically dismissed by the click — it remains until the owning
+  screen drains the action and explicitly calls `handle.clear()` (the overlay is UI-only and knows
+  nothing about cancellation).
 
 ---
 
-#### TC-OVL-025 — Generic button click enqueues its action id
+#### TC-OVL-025 — Generic button click enqueues its action id (reframed post-outage: generic button)
 **Type:** kittest
 **Traceability:** FR-7 (AC-7.2)
 
-**Preconditions:** Overlay raised with `handle.with_action("Run in background", "overlay.run_in_bg")`.
+**Preconditions:** Overlay raised with `with_button("overlay.run_in_bg", "Run in background")`.
 
 **Steps:**
 1. Show overlay with generic action button labelled `"Run in background"`.
@@ -547,16 +553,16 @@ Description is `"Waiting for the funding proof. This operation contacts the Dash
 
 ---
 
-#### TC-OVL-026 — Action queue drains FIFO
+#### TC-OVL-026 — Action queue drains FIFO (reframed post-outage: generic button)
 **Type:** kittest
 **Traceability:** FR-7 (AC-7.2)
 
-**Preconditions:** Overlay raised with a Cancel button and one generic button.
+**Preconditions:** Overlay raised with two generic buttons (no built-in Cancel).
 
 **Steps:**
-1. Show overlay with `with_cancel("cancel")` and `with_action("Secondary", "secondary")`.
-2. Click Cancel; run one frame.
-3. Click Secondary; run one frame.
+1. Show overlay with `with_button("cancel", "Cancel")` and `with_button("secondary", "Secondary")`.
+2. Click `"Cancel"`; run one frame.
+3. Click `"Secondary"`; run one frame.
 4. Call `ProgressOverlay::take_actions(ctx)` once.
 
 **Expected outcome:**
@@ -565,21 +571,23 @@ Description is `"Waiting for the funding proof. This operation contacts the Dash
 
 ---
 
-#### TC-OVL-027 — Button order: Cancel leftmost, primary action rightmost
+#### TC-OVL-027 — Buttons render in insertion order (reframed post-outage: generic button)
 **Type:** kittest (widget-position assertion) + design-review
 **Traceability:** FR-7 (AC-7.4)
 
-**Preconditions:** Overlay with `with_cancel("cancel")` and `with_action("Run in background", "bg")`.
+**Preconditions:** Overlay with `with_button("first", "First action")` and
+`with_button("second", "Second action")`. There is no Cancel-specific placement — buttons render
+left-to-right in insertion order.
 
 **Steps:**
 1. Show overlay; run one frame.
-2. Query the widget rects for `"Cancel"` and `"Run in background"`.
+2. Query the widget rects for `"First action"` and `"Second action"`.
 
 **Expected outcome:**
-- The X coordinate of the Cancel button's rect is less than the X coordinate of the
-  `"Run in background"` button's rect (Cancel is to the left).
-- Both buttons use `StyledButton` styling, not bare `ui.button()` (design-review: verify no
-  `ui.button()` call in the overlay renderer).
+- The X coordinate of the first-added button's rect is less than that of the second-added button
+  (left-to-right insertion order).
+- Both buttons use `ComponentStyles` button helpers, not bare `ui.button()` (design-review: verify
+  no `ui.button()` call in the overlay renderer).
 
 ---
 
@@ -609,17 +617,17 @@ the overlay. Overlay has no buttons.
 **Type:** kittest
 **Traceability:** FR-8 (AC-8.2)
 
-**Preconditions:** A text input widget is rendered beneath the overlay. Overlay has one Cancel
+**Preconditions:** A text input widget is rendered beneath the overlay. Overlay has one generic
 button.
 
 **Steps:**
-1. Render both the overlay (with Cancel button) and a `TextEdit` widget beneath.
+1. Render both the overlay (with a button) and a `TextEdit` widget beneath.
 2. Type characters `"hello"` via `harness.key_press` or equivalent.
 3. Run one frame.
 
 **Expected outcome:**
 - The `TextEdit` content is unchanged — no characters were forwarded beneath the overlay.
-- The overlay's Cancel button may have received focus (expected — the overlay captures input);
+- The overlay's button may have received focus (expected — the overlay captures input);
   the `TextEdit` must not.
 
 **Implementation note (AC-8.2):** do not use `Ui::set_enabled(false)` (deprecated in egui
@@ -815,13 +823,13 @@ the critical check is that the banner is behind the input-blocking layer).
 **Type:** kittest
 **Traceability:** FR-10 (AC-10.5)
 
-**Preconditions:** handle_a has Cancel button with id `"cancel_a"`; handle_b (on top) has
-Cancel with id `"cancel_b"`.
+**Preconditions:** handle_a has a button with id `"cancel_a"`; handle_b (on top) has a button
+with id `"cancel_b"` (both labelled `"Cancel"`, a caller-chosen label).
 
 **Steps:**
 1. Push handle_a then handle_b.
 2. Run one frame.
-3. Click Cancel button.
+3. Click the button.
 4. Call `take_actions(ctx)`.
 
 **Expected outcome:**
@@ -853,17 +861,17 @@ set on the first duplicate and checked before any `tracing::warn!` call on subse
 **Type:** kittest
 **Traceability:** NFR-3 (AC-3a)
 
-**Preconditions:** Overlay active with one Cancel button. A text input widget exists beneath.
+**Preconditions:** Overlay active with one generic button. A text input widget exists beneath.
 
 **Steps:**
-1. Show overlay with Cancel.
-2. Run one frame; focus starts on Cancel.
+1. Show overlay with a button.
+2. Run one frame; focus starts on the button.
 3. Press Tab.
 4. Run one frame.
 5. Check focused widget.
 
 **Expected outcome:**
-- Focus remains on the Cancel button (or returns to it if there is only one focusable element
+- Focus remains on the button (or returns to it if there is only one focusable element
   in the overlay — Tab wraps within the overlay, not out of it).
 - The `TextEdit` beneath does not receive focus.
 
@@ -874,26 +882,28 @@ events are not forwarded to `pass_events_to_game_while_any_popup_is_open = false
 
 ---
 
-#### TC-OVL-042 — Esc triggers Cancel when the overlay is cancelable
+#### TC-OVL-042 — Esc is swallowed even when a button is present (reframed post-outage: generic button)
 **Type:** kittest
 **Traceability:** NFR-3 (AC-3b)
 
-**Preconditions:** Overlay raised with a Cancel button (`with_cancel(OVERLAY_CANCEL_ACTION_ID)`).
+**Preconditions:** Overlay raised with a generic button (`with_button("overlay.cancel", "Cancel")`).
+There is no built-in Cancel, so Esc has nothing to trigger.
 
 **Steps:**
-1. Show overlay with Cancel.
+1. Show overlay with a button.
 2. Run one frame.
 3. Press Escape (`harness.key_press(egui::Key::Escape)`).
 4. Run another frame.
 5. Call `take_actions(ctx)`.
 
 **Expected outcome:**
-- `take_actions` returns `[OVERLAY_CANCEL_ACTION_ID]`.
+- `take_actions` returns empty — Esc enqueues no action.
+- `has_global(ctx)` is `true` — Esc never dismisses a hard block.
 - The Esc key event is consumed by the overlay (not forwarded further).
 
 ---
 
-#### TC-OVL-043 — Esc is swallowed when the overlay has no Cancel button
+#### TC-OVL-043 — Esc is swallowed when the overlay has no button (reframed post-outage: generic button)
 **Type:** kittest
 **Traceability:** NFR-3 (AC-3b)
 
@@ -913,24 +923,24 @@ events are not forwarded to `pass_events_to_game_while_any_popup_is_open = false
 
 ---
 
-#### TC-OVL-044 — Enter does not activate Cancel
+#### TC-OVL-044 — Enter does not activate a focused button (reframed post-outage: generic button)
 **Type:** kittest
 **Traceability:** NFR-3 (AC-3c)
 
-**Preconditions:** Overlay active with only a Cancel button; Cancel has focus.
+**Preconditions:** Overlay active with a single generic button that holds focus.
 
 **Steps:**
-1. Show overlay with Cancel; run one frame; ensure Cancel is focused.
+1. Show overlay with a button; run one frame; ensure the button is focused.
 2. Press Enter.
 3. Run one frame.
 4. Call `take_actions(ctx)`.
 
 **Expected outcome:**
-- `take_actions` returns empty (Enter did NOT enqueue the cancel action).
+- `take_actions` returns empty (Enter did NOT enqueue the focused button's action).
 - The overlay is still active.
 
-**Rationale:** Enter defaults are reserved for confirm/primary actions. Cancel is a secondary
-action and must never be the Enter default — see AC-3c.
+**Rationale:** A hard block swallows Tab/Enter/Esc, so a focused button can never be activated by
+keyboard — Enter must not trigger it. See AC-3c.
 
 ---
 
@@ -1075,7 +1085,7 @@ loop).
 | NFR-6 (cheap idle) | TC-OVL-001 |
 | R-1 (z-order vs secret-prompt) | TC-OVL-048 |
 | R-2 (concurrent model) | TC-OVL-036 to TC-OVL-040 [depends on 1d] |
-| R-3 (Cancel honesty) | TC-OVL-023 (no button = pure block), TC-OVL-024 (Cancel only when cancelable) |
+| R-3 (button honesty; reframed post-outage) | TC-OVL-023 (no button = pure block), TC-OVL-024 (a generic button enqueues only its caller-chosen id; no implicit dismiss) |
 | R-4 (stuck overlay safety valve) | TC-OVL-047 [partial — BLOCKED pending 1d] |
 | R-7 (kittest coverage checklist) | TC-OVL-028 (input blocked), TC-OVL-042/043 (Esc), TC-OVL-015–017 (counter validation), TC-OVL-024–026 (action id FIFO), TC-OVL-045 (log-once), TC-OVL-034/035 (dismiss+banner hand-off) |
 
@@ -1090,7 +1100,7 @@ implemented:
 |---|---|---|
 | **Concurrent overlay model** (stack vs. replace vs. reject) | TC-OVL-036 to TC-OVL-040 | Confirm stack model (AC-10.1) or choose an alternative. If not stack, TC-OVL-036–040 must be rewritten to match the chosen semantics. |
 | **Stuck-overlay threshold** | TC-OVL-047 | Define the threshold duration after which the elapsed readout auto-activates and the escape hatch appears. Define which operations get an escape hatch. |
-| **Cancel semantics** (R-3) | TC-OVL-024, TC-OVL-042 | Confirm that the BackendTask system supports cooperative cancellation for the operations that will carry a Cancel button. Without this, TC-OVL-024 and TC-OVL-042 verify the UI-only action queue but the end-to-end cancel path is untestable. |
+| **Cancellation semantics** (R-3; reframed post-outage) | TC-OVL-024, TC-OVL-042 | Cancel is no longer a built-in concept — a screen wires its own generic button to cancellation. TC-OVL-024/042 verify the UI-only action queue; the end-to-end cancel path stays untestable until the BackendTask system gains cooperative cancellation (T7). |
 | **Escape hatch button design** | TC-OVL-047 | Is the escape hatch a third button, a replacement for Cancel, or an entirely different mechanism? |
 
 ---

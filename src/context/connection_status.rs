@@ -640,6 +640,30 @@ pub fn spv_phase_summary(progress: &SpvSyncProgress) -> String {
     "syncing...".to_string()
 }
 
+/// Map the currently-active SPV sync phase to a 1-based step number for the
+/// blocking overlay's "Step N of 5" counter — Headers=1, Masternodes=2,
+/// Filter Headers=3, Filters=4, Blocks=5 — or `None` when no phase is actively
+/// syncing yet. Mirrors the pipeline order of [`spv_phase_summary`].
+pub fn spv_phase_step(progress: &SpvSyncProgress) -> Option<u32> {
+    let is_syncing = |state: SyncState| state == SyncState::Syncing;
+    if progress.headers().is_ok_and(|p| is_syncing(p.state())) {
+        Some(1)
+    } else if progress.masternodes().is_ok_and(|p| is_syncing(p.state())) {
+        Some(2)
+    } else if progress
+        .filter_headers()
+        .is_ok_and(|p| is_syncing(p.state()))
+    {
+        Some(3)
+    } else if progress.filters().is_ok_and(|p| is_syncing(p.state())) {
+        Some(4)
+    } else if progress.blocks().is_ok_and(|p| is_syncing(p.state())) {
+        Some(5)
+    } else {
+        None
+    }
+}
+
 fn pct(current: u32, target: u32) -> u32 {
     if target == 0 {
         0

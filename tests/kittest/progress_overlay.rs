@@ -1198,13 +1198,14 @@ fn rq1_appstate_secret_prompt_gate_keeps_prompt_typeable_over_overlay() {
 
 // ── Task 9: SPV-sync blocking overlay (startup + Connect) ────────────────────
 
-/// Task 9 — the SPV-sync block raises while connecting, lowers automatically once
-/// the chain is usable (C1), and lowers on the "Continue in the background"
-/// escape so an unbounded sync never traps the user (C2). Drives the REAL
-/// `AppState::update_sync_overlay` against a forced connection state.
+/// Task 9 — the SPV-sync block raises while Connecting/Syncing, lowers
+/// automatically when the chain becomes usable (C1), lowers on the "Continue in
+/// the background" escape without re-raising in the same episode (C2), and
+/// re-raises for a fresh sync episode. Drives the REAL `AppState::update_spv_overlay`
+/// against a forced connection state.
 #[cfg(feature = "testing")]
 #[test]
-fn task9_sync_overlay_blocks_lowers_on_synced_and_on_escape() {
+fn task9_spv_overlay_blocks_lowers_on_synced_and_on_escape() {
     use dash_evo_tool::context::connection_status::OverallConnectionState;
     crate::support::with_isolated_data_dir(|| {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
@@ -1219,36 +1220,16 @@ fn task9_sync_overlay_blocks_lowers_on_synced_and_on_escape() {
             .expect("Failed to create AppState");
         // Separate Arc clone so we can force connection state without borrowing app.
         let app_context = app.current_app_context().clone();
+        let set_state = |s| app_context.connection_status().set_overall_state(s);
 
-        // Arm a Connect-style block and force "connecting": the block raises.
-        app.test_activate_sync_block();
-        app_context
-            .connection_status()
-            .set_overall_state(OverallConnectionState::Connecting);
-        app.test_drive_sync_overlay(&harness.ctx);
+        // Connecting → the block raises (no separate "armed" flag; it keys off state).
+        set_state(OverallConnectionState::Connecting);
+        app.test_drive_spv_overlay(&harness.ctx);
         assert!(
             ProgressOverlay::has_global(&harness.ctx),
-            "the block is raised while connecting"
+            "the block raises while connecting"
         );
-
-        // C1 — usable: the block lowers on its own.
-        app_context
-            .connection_status()
-            .set_overall_state(OverallConnectionState::Synced);
-        app.test_drive_sync_overlay(&harness.ctx);
-        assert!(
-            !ProgressOverlay::has_global(&harness.ctx),
-            "the block lowers automatically once synced"
-        );
-
-        // C2 — re-arm, connect, and dismiss via the escape: the block lowers even
-        // though sync is still (unbounded) in progress, so the user is never trapped.
-        app.test_activate_sync_block();
-        app_context
-            .connection_status()
-            .set_overall_state(OverallConnectionState::Connecting);
-        app.test_drive_sync_overlay(&harness.ctx);
-        // Settle the centered card before clicking the escape button.
+        // The escape button is a SECONDARY button labelled "Continue in the background".
         harness.step();
         harness.step();
         harness.step();
@@ -1258,13 +1239,50 @@ fn task9_sync_overlay_blocks_lowers_on_synced_and_on_escape() {
                 .is_some(),
             "the escape button renders on the sync block"
         );
-        harness.get_by_label("Continue in the background").click();
-        harness.step();
-        app.test_drive_sync_overlay(&harness.ctx);
-        harness.step();
+
+        // C1 — usable: the block lowers on its own.
+        set_state(OverallConnectionState::Synced);
+        app.test_drive_spv_overlay(&harness.ctx);
         assert!(
             !ProgressOverlay::has_global(&harness.ctx),
-            "the 'continue in the background' escape lowers the block (user never trapped)"
+            "the block lowers automatically once synced"
+        );
+
+        // A fresh episode (back to Connecting) re-raises the block.
+        set_state(OverallConnectionState::Connecting);
+        app.test_drive_spv_overlay(&harness.ctx);
+        harness.step();
+        harness.step();
+        harness.step();
+        assert!(
+            ProgressOverlay::has_global(&harness.ctx),
+            "a fresh sync episode re-raises the block"
+        );
+
+        // C2 — click the escape: the block lowers even though sync is still
+        // (unbounded) in progress, so the user is never trapped...
+        harness.get_by_label("Continue in the background").click();
+        harness.step();
+        app.test_drive_spv_overlay(&harness.ctx);
+        assert!(
+            !ProgressOverlay::has_global(&harness.ctx),
+            "the escape lowers the block (user never trapped)"
+        );
+        // ...and it stays down for the rest of THIS episode (still Connecting).
+        app.test_drive_spv_overlay(&harness.ctx);
+        assert!(
+            !ProgressOverlay::has_global(&harness.ctx),
+            "the block is not re-raised within the dismissed episode"
+        );
+
+        // A new episode (Disconnected resets the dismissal, then Connecting) re-raises.
+        set_state(OverallConnectionState::Disconnected);
+        app.test_drive_spv_overlay(&harness.ctx);
+        set_state(OverallConnectionState::Connecting);
+        app.test_drive_spv_overlay(&harness.ctx);
+        assert!(
+            ProgressOverlay::has_global(&harness.ctx),
+            "after the episode ends and a new sync begins, the block re-raises"
         );
     });
 }

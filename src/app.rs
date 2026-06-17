@@ -7,7 +7,9 @@ use crate::backend_task::error::TaskError;
 use crate::backend_task::migration::MigrationTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
-use crate::context::connection_status::{ConnectionStatus, OverallConnectionState};
+use crate::context::connection_status::{
+    ConnectionStatus, OverallConnectionState, spv_phase_step, spv_phase_summary,
+};
 use crate::context::migration_status::{MigrationState, MigrationStep};
 use crate::database::Database;
 #[cfg(not(feature = "testing"))]
@@ -62,59 +64,51 @@ use tokio::sync::mpsc as tokiompsc;
 pub const MIGRATION_RETRY_ACTION_ID: &str = "migration:retry:finish_unwire";
 
 /// Action id for the SPV-sync block's "Continue in the background" escape button.
-/// SPV sync is unbounded (it can wait indefinitely for peers), so a button-less
-/// hard block would trap the user (violating the overlay's C1/C2 contract). This
-/// escape lowers the block while sync continues safely in the background — a
-/// read-only operation that strands nothing if backgrounded. Colon-namespaced per
-/// the overlay action-id convention. Exposed for kittest coverage.
-pub const SYNC_CONTINUE_BACKGROUND_ACTION: &str = "sync:overlay:continue_background";
+/// SPV sync is **unbounded** — with no peers it stays Connecting/Syncing forever
+/// with no terminal signal — so a button-less hard block would trap the user
+/// (violating the overlay's C1/C2 contract). This escape lowers the block while
+/// sync continues safely in the background — a read-only operation that strands
+/// nothing if backgrounded. Colon-namespaced per the overlay action-id
+/// convention. Exposed for kittest coverage.
+pub const SPV_CONTINUE_BACKGROUND_ACTION: &str = "spv:sync:continue_background";
 
-/// What the per-frame sync-block driver should do with the overlay this frame,
-/// given whether a startup/Connect sync is being blocked, whether the user chose
-/// to continue in the background, and the current connection state. Pure so the
-/// policy is unit-testable in isolation from `AppState`.
+/// Generic description shown while connecting with no per-phase progress yet.
+const SPV_CONNECTING_DESCRIPTION: &str = "Connecting to the Dash network.";
+
+/// What the per-frame SPV-sync block driver should do with the overlay this
+/// frame, given whether the user chose to continue in the background and the
+/// current connection state. Pure so the policy is unit-testable in isolation
+/// from `AppState`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SyncBlockStep {
-    /// Raise (or keep) the hard block.
+enum SpvBlockStep {
+    /// Connecting/Syncing and not dismissed: raise (or keep + update) the block.
     Block,
-    /// Sync reached a terminal state (Synced or Error): lower the block and end
-    /// this blocking episode (C1 — clear on every terminal path).
+    /// Episode ended (Synced, Error, or Disconnected): lower the block and reset
+    /// the per-episode dismissal so a fresh sync blocks again (C1).
     Release,
-    /// Not blocking — inactive, or the user chose to continue in the background:
-    /// ensure no block is shown without ending the episode bookkeeping.
-    Idle,
+    /// Still connecting/syncing but the user chose to continue in the background:
+    /// keep the block lowered without ending the episode (C2 escape).
+    Stand,
 }
 
-/// Pure sync-block policy (C1/C2): block only while a startup/Connect sync is
-/// active and not user-dismissed and the chain is not yet usable; release on a
-/// terminal state so the block always lowers through the normal path.
-fn sync_block_step(active: bool, dismissed: bool, state: OverallConnectionState) -> SyncBlockStep {
+/// Pure SPV-sync block policy (C1/C2). The block is keyed only to the live
+/// connection state and the per-episode dismissal flag — there is no separate
+/// "armed" flag, so any Connecting/Syncing episode (startup, Connect, or a
+/// reconnect) blocks until usable, failed, disconnected, or dismissed.
+fn spv_block_step(dismissed: bool, state: OverallConnectionState) -> SpvBlockStep {
     use OverallConnectionState as S;
-    if !active {
-        return SyncBlockStep::Idle;
-    }
     match state {
-        // Usable, or failed (the connection banner surfaces the error): release.
-        S::Synced | S::Error => SyncBlockStep::Release,
-        // Still working: block, unless the user has chosen to wait in background.
-        S::Disconnected | S::Connecting | S::Syncing => {
+        // Usable, failed (banner surfaces the error), or dropped: the episode is
+        // over — lower and re-arm for the next sync.
+        S::Synced | S::Error | S::Disconnected => SpvBlockStep::Release,
+        // Still working: block unless the user is waiting in the background.
+        S::Connecting | S::Syncing => {
             if dismissed {
-                SyncBlockStep::Idle
+                SpvBlockStep::Stand
             } else {
-                SyncBlockStep::Block
+                SpvBlockStep::Block
             }
         }
-    }
-}
-
-/// Calm, actionable description for the SPV-sync block (the escape button is the
-/// action). One complete sentence per i18n rules.
-fn sync_block_description(state: OverallConnectionState) -> &'static str {
-    match state {
-        OverallConnectionState::Syncing => {
-            "Syncing with the Dash network. This can take a little while."
-        }
-        _ => "Connecting to the Dash network.",
     }
 }
 
@@ -237,19 +231,18 @@ pub struct AppState {
     previous_connection_state: Option<OverallConnectionState>,
     /// Handle to the current connection status banner, if one is displayed
     connection_banner_handle: Option<BannerHandle>,
-    /// The blocking progress overlay raised during a startup / Connect SPV sync,
-    /// hard-blocking the UI until the chain reaches a usable (Synced) or failed
-    /// (Error) state. See [`Self::update_sync_overlay`].
-    sync_overlay: Option<OverlayHandle>,
-    /// Whether a startup- or Connect-initiated SPV sync is currently being
-    /// hard-blocked. Set on boot auto-start and on the manual Connect; cleared
-    /// when the sync reaches a terminal state.
-    sync_block_active: bool,
+    /// The blocking progress overlay raised while SPV chain sync is in progress
+    /// (Connecting/Syncing), hard-blocking the UI until the chain becomes usable
+    /// (Synced) / fails (Error) / drops (Disconnected), or the user dismisses it.
+    /// The overlay's first real adopter (PR #863 wiring). See
+    /// [`Self::update_spv_overlay`].
+    spv_overlay: Option<OverlayHandle>,
     /// Set when the user clicks the overlay's "Continue in the background" escape
     /// (C1/C2 — SPV sync is unbounded, so the block must never trap the user). The
-    /// block stays down for the rest of this sync episode; sync continues in the
-    /// background. Reset when a new sync episode begins.
-    sync_overlay_dismissed: bool,
+    /// block stays down for the rest of *this* sync episode; sync continues in the
+    /// background. Reset when the episode ends (Synced/Error/Disconnected) so a
+    /// fresh sync blocks again.
+    spv_overlay_dismissed: bool,
     /// Handle to the current data-migration banner, if one is displayed.
     /// Kept so per-frame reconciliation can update text in place
     /// (Detecting → SingleKey → Shielded → WalletSeeds → WalletMeta → Finalize → Success/Failed)
@@ -742,10 +735,8 @@ impl AppState {
             welcome_screen: None,
             previous_connection_state: None,
             connection_banner_handle: None,
-            sync_overlay: None,
-            // Hard-block the UI for the boot SPV sync when it auto-starts.
-            sync_block_active: boot_auto_start_spv,
-            sync_overlay_dismissed: false,
+            spv_overlay: None,
+            spv_overlay_dismissed: false,
             migration_banner_handle: None,
             last_migration_state: None,
             cold_start_migration_dispatched: BTreeSet::new(),
@@ -966,12 +957,11 @@ impl AppState {
         // network context — accepted risk for a local desktop app (cosmetic only).
         MessageBanner::clear_all_global(app_context.egui_ctx());
         // Drop any blocking overlay from the previous context so the new network
-        // is never left behind a stale block. Also drop the sync-block bookkeeping
-        // so its handle never goes stale against the cleared `ctx.data`.
+        // is never left behind a stale block. Also drop the SPV-sync overlay
+        // bookkeeping so its handle never goes stale against the cleared `ctx.data`.
         ProgressOverlay::clear_all_global(app_context.egui_ctx());
-        self.sync_overlay = None;
-        self.sync_block_active = false;
-        self.sync_overlay_dismissed = false;
+        self.spv_overlay = None;
+        self.spv_overlay_dismissed = false;
 
         for screen in self.main_screens.values_mut() {
             screen.change_context(app_context.clone())
@@ -1016,6 +1006,23 @@ impl AppState {
         // without a state transition, so we must re-evaluate every frame.
         // For all other states, skip if nothing changed.
         if !state_changed && current_state != OverallConnectionState::Connecting {
+            return;
+        }
+
+        // While the SPV-sync block (`update_spv_overlay`) is up it already conveys
+        // the Connecting/Syncing state with live phase progress, so suppress the
+        // redundant connection-banner text — don't double-shout. The Error /
+        // Disconnected banners still show, since the overlay has lowered by then.
+        if self.spv_overlay.is_some()
+            && matches!(
+                current_state,
+                OverallConnectionState::Connecting | OverallConnectionState::Syncing
+            )
+        {
+            if let Some(handle) = self.connection_banner_handle.take() {
+                handle.clear();
+            }
+            self.previous_connection_state = Some(current_state);
             return;
         }
 
@@ -1108,56 +1115,80 @@ impl AppState {
         self.handle_backend_task(BackendTask::MigrationTask(MigrationTask::FinishUnwire));
     }
 
-    /// Drive the blocking SPV-sync overlay each frame (Task 9): hard-block the UI
-    /// while a startup- or Connect-initiated sync runs, and lower it when the
-    /// chain becomes usable (Synced) or fails (Error).
+    /// Drive the blocking SPV-sync overlay each frame (Task 9 — the overlay's
+    /// first real adopter, PR #863 wiring). Hard-block the UI while the active
+    /// context's chain sync is Connecting/Syncing, showing the live per-phase
+    /// summary and a "Step N of 5" counter, and lower it when the chain becomes
+    /// usable (Synced), fails (Error), or drops (Disconnected).
     ///
-    /// C1/C2 contract: SPV sync is **unbounded** — it can wait indefinitely for
-    /// peers — so a button-less block would trap the user. The block therefore
-    /// carries a "Continue in the background" escape ([`SYNC_CONTINUE_BACKGROUND_ACTION`]);
-    /// clicking it lowers the block while sync proceeds safely in the background
-    /// (read-only — nothing is stranded). The block also always lowers on its own
-    /// at a terminal state, so it can never strand the user behind a stale block.
-    fn update_sync_overlay(&mut self, ctx: &egui::Context, app_context: &Arc<AppContext>) {
-        let state = app_context.connection_status().overall_state();
-        match sync_block_step(self.sync_block_active, self.sync_overlay_dismissed, state) {
-            SyncBlockStep::Block => {
-                let description = sync_block_description(state);
-                if self.sync_overlay.is_none() {
-                    let config = OverlayConfig::new()
-                        .with_description(description)
-                        .with_button(
-                            SYNC_CONTINUE_BACKGROUND_ACTION,
+    /// C1/C2 contract: SPV sync is **unbounded** — with no peers it stays
+    /// Connecting/Syncing forever with no terminal signal — so a button-less block
+    /// would trap the user. The block therefore carries a "Continue in the
+    /// background" escape ([`SPV_CONTINUE_BACKGROUND_ACTION`]); clicking it lowers
+    /// the block while sync proceeds safely in the background (read-only — nothing
+    /// is stranded). It also always lowers on its own when the episode ends.
+    ///
+    /// Raises the overlay at most once per episode (then updates content in place
+    /// via the handle), so it never `show_global`s every frame.
+    fn update_spv_overlay(&mut self, ctx: &egui::Context, app_context: &Arc<AppContext>) {
+        let cs = app_context.connection_status();
+        let state = cs.overall_state();
+        match spv_block_step(self.spv_overlay_dismissed, state) {
+            SpvBlockStep::Block => {
+                let progress = cs.spv_sync_progress();
+                let description = progress
+                    .as_ref()
+                    .map(spv_phase_summary)
+                    .unwrap_or_else(|| SPV_CONNECTING_DESCRIPTION.to_string());
+                let step = progress.as_ref().and_then(spv_phase_step);
+                if self.spv_overlay.is_none() {
+                    let mut config = OverlayConfig::new()
+                        .with_description(&description)
+                        .with_secondary_button(
+                            SPV_CONTINUE_BACKGROUND_ACTION,
                             "Continue in the background",
                         );
-                    self.sync_overlay.raise(ctx, "", config);
-                } else if let Some(handle) = &self.sync_overlay {
-                    handle.set_description(description);
+                    if let Some(n) = step {
+                        config = config.with_step(n, 5);
+                    }
+                    self.spv_overlay.raise(ctx, "", config);
+                } else if let Some(handle) = &self.spv_overlay {
+                    handle.set_description(&description);
+                    match step {
+                        Some(n) => {
+                            handle.set_step(n, 5);
+                        }
+                        None => {
+                            handle.clear_step();
+                        }
+                    }
                 }
             }
-            SyncBlockStep::Release => {
-                self.sync_overlay.take_and_clear();
-                self.sync_block_active = false;
-                self.sync_overlay_dismissed = false;
+            SpvBlockStep::Release => {
+                // Episode over: lower and re-arm so a fresh sync blocks again (C1).
+                self.spv_overlay.take_and_clear();
+                self.spv_overlay_dismissed = false;
             }
-            SyncBlockStep::Idle => {
-                self.sync_overlay.take_and_clear();
+            SpvBlockStep::Stand => {
+                // User chose to continue in the background: stay lowered, but keep
+                // the dismissal so we don't re-raise within this episode (C2).
+                self.spv_overlay.take_and_clear();
             }
         }
 
         // Drain this overlay's own clicks: the "Continue in the background" escape
         // lowers the block for the rest of this episode (sync keeps running).
         let actions = self
-            .sync_overlay
+            .spv_overlay
             .as_ref()
             .map(|handle| handle.take_actions())
             .unwrap_or_default();
         if actions
             .iter()
-            .any(|id| id == SYNC_CONTINUE_BACKGROUND_ACTION)
+            .any(|id| id == SPV_CONTINUE_BACKGROUND_ACTION)
         {
-            self.sync_overlay_dismissed = true;
-            self.sync_overlay.take_and_clear();
+            self.spv_overlay_dismissed = true;
+            self.spv_overlay.take_and_clear();
         }
     }
 
@@ -1302,22 +1333,15 @@ impl AppState {
         self.active_secret_prompt = active.then(ActivePrompt::test_stub);
     }
 
-    /// Test seam (Task 9): arm a startup/Connect SPV-sync block episode.
-    #[cfg(feature = "testing")]
-    pub fn test_activate_sync_block(&mut self) {
-        self.sync_block_active = true;
-        self.sync_overlay_dismissed = false;
-    }
-
-    /// Test seam (Task 9): run the REAL `update_sync_overlay` driver once against
+    /// Test seam (Task 9): run the REAL `update_spv_overlay` driver once against
     /// the active context's (forced) connection state, in isolation from the
     /// throttled frame loop. Lets a kittest assert the block raises while
-    /// connecting, lowers when usable, and lowers on the "continue in the
-    /// background" escape.
+    /// connecting, lowers when usable/failed/disconnected, and lowers on the
+    /// "continue in the background" escape.
     #[cfg(feature = "testing")]
-    pub fn test_drive_sync_overlay(&mut self, ctx: &egui::Context) {
+    pub fn test_drive_spv_overlay(&mut self, ctx: &egui::Context) {
         let app_context = self.current_app_context().clone();
-        self.update_sync_overlay(ctx, &app_context);
+        self.update_spv_overlay(ctx, &app_context);
     }
 
     /// Sweep orphaned overlay action ids whose owning overlay is gone. Screens own
@@ -1751,8 +1775,10 @@ impl App for AppState {
                 .trigger_refresh(active_context.as_ref()),
         );
 
+        // Drive the SPV-sync block first so the connection banner can suppress its
+        // redundant Connecting/Syncing text while the overlay is up.
+        self.update_spv_overlay(ctx, &active_context);
         self.update_connection_banner(ctx, &active_context);
-        self.update_sync_overlay(ctx, &active_context);
         self.dispatch_cold_start_migration();
         self.update_migration_banner(ctx, &active_context);
         self.handle_banner_esc(ctx);
@@ -1810,10 +1836,6 @@ impl App for AppState {
                     self.set_main_screen(root_screen_type);
                 }
                 AppAction::StartSpv => {
-                    // Hard-block the UI for this manual Connect until the chain is
-                    // usable or fails (a fresh episode — re-arm the escape).
-                    self.sync_block_active = true;
-                    self.sync_overlay_dismissed = false;
                     let app_ctx = self.current_app_context().clone();
                     let sender = self.task_result_sender.clone();
                     let egui_ctx = ctx.clone();
@@ -1946,86 +1968,54 @@ mod migration_banner_tests {
 }
 
 #[cfg(test)]
-mod sync_overlay_tests {
+mod spv_overlay_tests {
     use super::*;
 
-    const NOT_USABLE: [OverallConnectionState; 3] = [
-        OverallConnectionState::Disconnected,
-        OverallConnectionState::Connecting,
-        OverallConnectionState::Syncing,
-    ];
-
-    /// No active episode → never block, regardless of state or dismissal.
+    /// Connecting/Syncing and not dismissed → hard block.
     #[test]
-    fn inactive_is_always_idle() {
+    fn connecting_or_syncing_blocks_when_not_dismissed() {
         for state in [
-            OverallConnectionState::Disconnected,
             OverallConnectionState::Connecting,
             OverallConnectionState::Syncing,
-            OverallConnectionState::Synced,
-            OverallConnectionState::Error,
         ] {
-            assert_eq!(sync_block_step(false, false, state), SyncBlockStep::Idle);
-            assert_eq!(sync_block_step(false, true, state), SyncBlockStep::Idle);
+            assert_eq!(spv_block_step(false, state), SpvBlockStep::Block);
         }
     }
 
-    /// Active + not-yet-usable + not dismissed → hard block.
+    /// C2 escape — dismissed during Connecting/Syncing → Stand (no block), but the
+    /// episode is NOT ended (sync keeps running; the user is just not trapped).
     #[test]
-    fn active_blocks_while_not_usable() {
-        for state in NOT_USABLE {
-            assert_eq!(sync_block_step(true, false, state), SyncBlockStep::Block);
+    fn dismissed_stands_down_without_ending_episode() {
+        for state in [
+            OverallConnectionState::Connecting,
+            OverallConnectionState::Syncing,
+        ] {
+            assert_eq!(spv_block_step(true, state), SpvBlockStep::Stand);
         }
     }
 
-    /// C1 — a terminal state (usable or failed) always releases the block, even
-    /// if the user had dismissed it: the episode is over.
+    /// C1 — episode-ending states (usable, failed, disconnected) always release
+    /// and re-arm, regardless of whether the user had dismissed the block.
     #[test]
-    fn terminal_state_always_releases() {
+    fn terminal_states_always_release() {
         for dismissed in [false, true] {
-            assert_eq!(
-                sync_block_step(true, dismissed, OverallConnectionState::Synced),
-                SyncBlockStep::Release
-            );
-            assert_eq!(
-                sync_block_step(true, dismissed, OverallConnectionState::Error),
-                SyncBlockStep::Release
-            );
-        }
-    }
-
-    /// C2 escape — "continue in the background" stops blocking but does NOT end the
-    /// episode: sync keeps running, the user is just no longer trapped.
-    #[test]
-    fn dismissed_stops_blocking_without_releasing() {
-        for state in NOT_USABLE {
-            assert_eq!(sync_block_step(true, true, state), SyncBlockStep::Idle);
+            for state in [
+                OverallConnectionState::Synced,
+                OverallConnectionState::Error,
+                OverallConnectionState::Disconnected,
+            ] {
+                assert_eq!(spv_block_step(dismissed, state), SpvBlockStep::Release);
+            }
         }
     }
 
     /// The escape action id is stable — production raises it and
-    /// `update_sync_overlay` matches on it; a typo would drop the click.
+    /// `update_spv_overlay` matches on it; a typo would drop the click.
     #[test]
     fn continue_background_action_id_is_stable() {
         assert_eq!(
-            SYNC_CONTINUE_BACKGROUND_ACTION,
-            "sync:overlay:continue_background"
-        );
-    }
-
-    /// Descriptions are complete sentences (i18n) and Syncing has distinct copy.
-    #[test]
-    fn descriptions_are_sentences_and_state_specific() {
-        for state in NOT_USABLE {
-            assert!(
-                sync_block_description(state).ends_with('.'),
-                "`{}` is not a complete sentence",
-                sync_block_description(state)
-            );
-        }
-        assert_ne!(
-            sync_block_description(OverallConnectionState::Syncing),
-            sync_block_description(OverallConnectionState::Connecting),
+            SPV_CONTINUE_BACKGROUND_ACTION,
+            "spv:sync:continue_background"
         );
     }
 }

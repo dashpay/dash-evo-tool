@@ -335,6 +335,23 @@ impl OverlayHandle {
         mine
     }
 
+    /// Test clock seam (RQ-2): shift this entry's `created_at` **and**
+    /// `last_progress_at` into the past by `by`, so a kittest can render past the
+    /// 30 s soft-reveal and 120 s no-progress watchdog thresholds without waiting.
+    /// Returns `None` if the entry is gone. Compiled only under the `testing`
+    /// feature — never part of the production surface.
+    #[cfg(feature = "testing")]
+    pub fn backdate(&self, by: Duration) -> Option<&Self> {
+        self.mutate(|s| {
+            if let Some(t) = s.created_at.checked_sub(by) {
+                s.created_at = t;
+            }
+            if let Some(t) = s.last_progress_at.checked_sub(by) {
+                s.last_progress_at = t;
+            }
+        })
+    }
+
     /// Dismiss only this handle's entry, and purge any of its still-pending action
     /// ids so a normal dismiss leaves nothing for the orphan-sweeper (A-3). The
     /// overlay lowers when the stack empties.

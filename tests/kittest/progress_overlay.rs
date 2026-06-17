@@ -831,6 +831,7 @@ fn tc_ovl_048_secret_prompt_renders_above_overlay() {
         });
     let _handle = ProgressOverlay::show_global(&harness.ctx, "Signing.", OverlayConfig::default());
     harness.step();
+    harness.step();
 
     assert!(ProgressOverlay::has_global(&harness.ctx));
     assert!(
@@ -839,13 +840,28 @@ fn tc_ovl_048_secret_prompt_renders_above_overlay() {
             .is_some(),
         "the secret prompt renders above the overlay and remains visible"
     );
+    // RQ-1: the prompt is INTERACTIVE above the overlay, not merely visible — its
+    // submit control renders and its input holds keyboard focus, so the overlay's
+    // Foreground dim/sink does not capture the prompt's interaction.
+    assert!(
+        harness.query_by_label("Unlock").is_some(),
+        "the prompt's submit button renders interactively above the overlay"
+    );
+    assert!(
+        harness.ctx.memory(|m| m.focused()).is_some(),
+        "the prompt input holds keyboard focus above the overlay"
+    );
 }
 
-/// TC-OVL-047 (informational portion) — the stuck-threshold reveal is exercised
-/// by the inline unit test `stuck_reveal_triggers_only_past_threshold` in
-/// `src/ui/components/progress_overlay.rs`; the elapsed readout and reassurance
-/// line are forced on once `created_at` passes 30s. The escape-hatch button is
-/// deferred with backend cancellation (T7).
+/// TC-OVL-047 (informational portion) — below the threshold a default overlay
+/// shows no elapsed readout and no reassurance line. The past-threshold reveals
+/// (soft 30 s line, the 120 s watchdog line replacing it, and the Elapsed
+/// force-reveal) are exercised by `tc_ovl_047b_threshold_reveals_via_clock_seam`
+/// using the test clock seam; the threshold predicates by the inline
+/// `stuck_reveal_*` / `watchdog_tripped_*` unit tests. Per addendum §1 there is NO
+/// escape-hatch button by design — a button-less block stays total and the safety
+/// valve is the bounded-op contract + honest escalation — so that portion of
+/// TC-OVL-047 is closed as "won't build" for v1, not deferred to T7.
 #[test]
 fn tc_ovl_047_stuck_threshold_is_informational_only() {
     // Below the threshold a default overlay shows no elapsed readout and no
@@ -858,6 +874,64 @@ fn tc_ovl_047_stuck_threshold_is_informational_only() {
         harness
             .query_by_label_contains("This is taking longer than usual.")
             .is_none()
+    );
+}
+
+/// TC-OVL-047b (RQ-2) — using the test clock seam, render PAST the thresholds and
+/// assert the addendum's escalation: the soft 30 s line + Elapsed force-reveal,
+/// then the 120 s watchdog line REPLACING the soft line (never stacked).
+#[cfg(feature = "testing")]
+#[test]
+fn tc_ovl_047b_threshold_reveals_via_clock_seam() {
+    let mut harness = overlay_harness();
+    let handle = ProgressOverlay::show_global(&harness.ctx, "Working.", OverlayConfig::default());
+    harness.step();
+    assert!(harness.query_by_label_contains("Elapsed:").is_none());
+    assert!(
+        harness
+            .query_by_label("This is taking longer than usual.")
+            .is_none()
+    );
+
+    // Past 30 s (still making progress recently): soft line + Elapsed force-reveal,
+    // no watchdog yet.
+    handle.backdate(Duration::from_secs(31));
+    harness.step();
+    assert!(
+        harness.query_by_label_contains("Elapsed:").is_some(),
+        "Elapsed is force-revealed once past 30 s, even though with_elapsed was off"
+    );
+    assert!(
+        harness
+            .query_by_label("This is taking longer than usual.")
+            .is_some(),
+        "the soft reassurance line appears past 30 s"
+    );
+    assert!(
+        harness
+            .query_by_label_contains("much longer than expected")
+            .is_none(),
+        "the watchdog line has not tripped yet"
+    );
+
+    // Past 120 s with no progress: the watchdog line REPLACES the soft line.
+    handle.backdate(Duration::from_secs(120));
+    harness.step();
+    assert!(
+        harness
+            .query_by_label_contains("much longer than expected")
+            .is_some(),
+        "the 120 s no-progress watchdog line appears"
+    );
+    assert!(
+        harness
+            .query_by_label("This is taking longer than usual.")
+            .is_none(),
+        "the watchdog line replaces the soft line, never stacks with it"
+    );
+    assert!(
+        harness.query_by_label_contains("Elapsed:").is_some(),
+        "the Elapsed readout persists through the watchdog escalation"
     );
 }
 
@@ -1060,4 +1134,64 @@ fn reconciliation_instance_show_leaves_host_focus_navigable() {
             .is_focused(),
         "the instance overlay must leave the host screen's focus alone (QA-003)"
     );
+}
+
+// ── RQ-1: AppState-level secret-prompt gate ─────────────────────────────────
+
+/// RQ-1 (security) — drives the REAL `AppState::update` loop: a passphrase prompt
+/// active above a button-less blocking overlay stays focusable AND typeable,
+/// because `AppState::claim_overlay_input` suppresses the overlay's frame-start
+/// `claim_input` while a secret prompt is active (SEC-004/F-1). Deleting that gate
+/// makes `claim_input` (button-less → `stop_text_input`) steal the prompt's focus
+/// and strip its keystrokes — which BOTH assertions below detect.
+#[cfg(feature = "testing")]
+#[test]
+fn rq1_appstate_secret_prompt_gate_keeps_prompt_typeable_over_overlay() {
+    crate::support::with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let mut harness = Harness::builder().with_max_steps(100).build_eframe(|ctx| {
+            let mut app = dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
+                .expect("Failed to create AppState")
+                .with_animations(false);
+            // A secret prompt is active (renders above the overlay, needs keyboard).
+            app.test_set_secret_prompt_active(true);
+            app
+        });
+        harness.set_size(egui::vec2(800.0, 600.0));
+
+        // Raise a button-less blocking overlay beneath the active prompt.
+        ProgressOverlay::show_global_spinner_only(&harness.ctx);
+        harness.run_steps(5);
+
+        // The prompt renders above the overlay...
+        assert!(
+            harness.query_by_label_contains("Test prompt").is_some(),
+            "the secret prompt renders above the overlay"
+        );
+        // ...and KEEPS keyboard focus: deleting the gate lets the overlay's
+        // claim_input (stop_text_input, button-less) clear it → focused() == None.
+        assert!(
+            harness.ctx.memory(|m| m.focused()).is_some(),
+            "the prompt input keeps keyboard focus over the overlay — removing the \
+             app.rs secret-prompt gate lets the overlay's claim_input steal it"
+        );
+
+        // ...and ACCEPTS typed text: type a passphrase and submit with Enter; the
+        // prompt resolves and closes. With the gate deleted the keystrokes are
+        // stripped, so the prompt would stay open and this would fail.
+        harness
+            .input_mut()
+            .events
+            .push(egui::Event::Text("pw".to_string()));
+        harness.run_steps(2);
+        harness.key_press(egui::Key::Enter);
+        harness.run_steps(5);
+        assert!(
+            harness.query_by_label_contains("Test prompt").is_none(),
+            "the prompt accepted the typed passphrase and submitted on Enter (it \
+             would stay open if the overlay had stripped its keyboard)"
+        );
+    });
 }

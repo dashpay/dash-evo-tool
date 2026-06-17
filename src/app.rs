@@ -1146,6 +1146,28 @@ impl AppState {
     /// their own colon-namespaced ids, including their own cancellation. This loop
     /// only reclaims truly-orphaned ids so they can't accumulate in `ctx.data`; it
     /// can never race or pre-empt a live owner, so its position here is safe.
+    /// Claim all keyboard + text input for an active blocking overlay at frame
+    /// start (QA-001) — UNLESS a secret prompt is active above it. The prompt
+    /// renders above the overlay and needs the keyboard (Enter to submit, Esc to
+    /// cancel, Tab to navigate; SEC-004/F-1), so the overlay must yield to it.
+    /// Extracted from `update` so the gate is exercised by a kittest (RQ-1):
+    /// removing the `active_secret_prompt.is_none()` guard must fail that test.
+    fn claim_overlay_input(&self, ctx: &egui::Context) {
+        if self.active_secret_prompt.is_none() {
+            ProgressOverlay::claim_input(ctx);
+        }
+    }
+
+    /// Test seam (RQ-1): force a secret prompt to be active (or not) so a kittest
+    /// can drive the REAL `update()` loop — including the
+    /// [`claim_overlay_input`](Self::claim_overlay_input) gate and
+    /// `render_secret_prompt` — and assert that the prompt above an overlay stays
+    /// focusable/typeable. Compiled only under the `testing` feature.
+    #[cfg(feature = "testing")]
+    pub fn test_set_secret_prompt_active(&mut self, active: bool) {
+        self.active_secret_prompt = active.then(ActivePrompt::test_stub);
+    }
+
     fn drain_overlay_actions(&mut self, ctx: &egui::Context) {
         for action_id in ProgressOverlay::sweep_orphan_actions(ctx) {
             tracing::warn!(
@@ -1534,13 +1556,9 @@ impl App for AppState {
         }
 
         // Total input block at frame start: while a blocking overlay is up, claim
-        // all keyboard + text input BEFORE the panels run, so a button-less block
-        // cannot leak typed characters into a focused field beneath (QA-001).
-        // Gated on no active secret prompt — that modal renders above the overlay
-        // and must keep the keyboard (e.g. Esc to cancel a passphrase entry).
-        if self.active_secret_prompt.is_none() {
-            ProgressOverlay::claim_input(ctx);
-        }
+        // all keyboard + text input BEFORE the panels run (QA-001) — unless a
+        // secret prompt is active above the overlay (it needs the keyboard).
+        self.claim_overlay_input(ctx);
 
         // Show welcome screen if onboarding not completed
         let mut actions = Vec::new();

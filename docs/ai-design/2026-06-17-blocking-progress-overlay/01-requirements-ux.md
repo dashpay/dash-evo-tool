@@ -382,10 +382,14 @@ The overlay should **copy the proven *patterns***, keeping its own type:
 1. **Global state in egui `ctx.data` temp storage**, keyed by a dedicated id (e.g.
    `__global_progress_overlay`) — same mechanism as `BANNER_STATE_ID`.
 2. **A lifecycle `OverlayHandle`** mirroring `BannerHandle` (`set_description`, `set_step`,
-   `with_cancel`, `clear`), all returning `Option` and no-op on a dismissed overlay.
-3. **An action-id queue** drained by the app loop, mirroring `with_action` / `take_action`
-   (`push_action`/`get_actions`/`set_actions`) — keeps the overlay UI-only; backend dispatch
-   stays in `AppState`. This is the i18n-clean, `ctx.data`-friendly equivalent of "callbacks":
+   `with_button` / `with_secondary_button`, `clear`), all returning `Option` and no-op on a
+   dismissed overlay. _(Superseded: no `with_cancel` — buttons are generic; see the dev-plan
+   post-outage note and the code.)_
+3. **An action-id queue** drained by the app loop. As shipped (addendum §2) the queue is **keyed**
+   per overlay entry: a click enqueues against the owner's key, the owner drains its own ids via
+   `OverlayHandle::take_actions`, and the app loop only `sweep_orphan_actions` — keeps the overlay
+   UI-only; backend dispatch stays in `AppState`. This is the i18n-clean, `ctx.data`-friendly
+   equivalent of "callbacks":
    storing closures in temp storage is awkward (not `Clone`); an opaque action id is the
    established seam.
 4. **Log-once discipline** via a `logged` flag (NFR-5).

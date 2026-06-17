@@ -722,6 +722,15 @@ impl AppContext {
                             "Shielded bind deferred; will retry on next unlock"
                         );
                     }
+                    // Register every established contact's DIP-15 receiving
+                    // account so SPV watches the addresses each contact pays us
+                    // at. Seed-bearing (the receiving path is hardened) and
+                    // reachable only here where the seed is already open, so a
+                    // locked wallet is skipped, never prompted. Best-effort;
+                    // re-runs every boot/unlock because upstream keeps contact
+                    // accounts in runtime state only.
+                    self.register_established_contact_accounts(&backend, &seed_hash, seed)
+                        .await;
                     // D4b lazy warm: populate the identity-auth public-key
                     // cache for the identities this wallet already knows, in
                     // the same prompt-free seed scope, so the steady-state
@@ -741,6 +750,72 @@ impl AppContext {
                 "JIT address bootstrap skipped"
             );
         }
+    }
+
+    /// Register the DIP-15 receiving accounts of every established contact of
+    /// every identity on `seed_hash`, so SPV watches the addresses each contact
+    /// pays us at. Best-effort — a failure is logged and retried next unlock.
+    ///
+    /// Called inside [`Self::bootstrap_wallet_addresses_jit`]'s seed scope, so
+    /// the seed is already open and a locked wallet is never reached.
+    async fn register_established_contact_accounts(
+        &self,
+        backend: &WalletBackend,
+        seed_hash: &WalletSeedHash,
+        seed: &[u8; 64],
+    ) {
+        let pairs = self.established_contact_pairs(backend, seed_hash).await;
+        match backend
+            .register_contact_receiving_accounts(seed_hash, seed, &pairs)
+            .await
+        {
+            Ok(0) => {}
+            Ok(count) => tracing::info!(
+                wallet = %hex::encode(seed_hash),
+                count,
+                "Registered contact receiving accounts for watching"
+            ),
+            Err(error) => tracing::debug!(
+                wallet = %hex::encode(seed_hash),
+                %error,
+                "Contact receiving-account registration deferred; will retry next unlock"
+            ),
+        }
+    }
+
+    /// Collect `(owner, contact)` identity-id pairs for every accepted contact
+    /// of each local identity whose DashPay wallet is `seed_hash`.
+    async fn established_contact_pairs(
+        &self,
+        backend: &WalletBackend,
+        seed_hash: &WalletSeedHash,
+    ) -> Vec<(
+        dash_sdk::platform::Identifier,
+        dash_sdk::platform::Identifier,
+    )> {
+        use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+        use dash_sdk::platform::Identifier;
+
+        let Ok(identities) = self.load_local_qualified_identities() else {
+            return Vec::new();
+        };
+        let view = backend.dashpay_view();
+        let mut pairs = Vec::new();
+        for identity in &identities {
+            if identity.dashpay_wallet_seed_hash().as_ref() != Some(seed_hash) {
+                continue;
+            }
+            let owner = identity.identity.id();
+            for contact in view.contacts(&owner).await {
+                if contact.contact_status != "accepted" {
+                    continue;
+                }
+                if let Ok(contact_id) = Identifier::from_bytes(&contact.contact_identity_id) {
+                    pairs.push((owner, contact_id));
+                }
+            }
+        }
+        pairs
     }
 
     /// Warm the identity-authentication public-key cache (D4b) for the

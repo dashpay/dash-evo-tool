@@ -284,20 +284,18 @@ context provider; the previously-ignored `network` field is now used.
 
 **FOLLOW-UP 2026-06-17** (watch-registration faucet): the 2026-06-11 fix wired only the
 *detection* half (`EventBridge` -> `detect_incoming_contact_payments`); the *watch-registration*
-half it depends on was left unwired — `register_dashpay_contact` still had **zero callers** (see
-the 2026-06-10 note flagging PROJ-009 incomplete for the same reason). With the receiving account
-never registered upstream, SPV never watched a contact's pay-to-us addresses, so no
-`TransactionDetected` ever fired for a real incoming contact payment and the detection path stayed
-dormant on a live wallet — `tc_045` passed only because it injects the sidecar mapping and feeds
-synthetic outputs. Now wired: `load_contacts`
-(`src/backend_task/dashpay/contacts.rs`) registers every established (mutual) contact's
-`DashpayReceivingFunds` account via `watch_established_contact_accounts` ->
-`WalletBackend::register_dashpay_contact` on every contact-list load/sync — xpub-only (no seed, no
-passphrase prompt), idempotent, best-effort. Incoming contact funds are now watched and credited to
-the balance. Residual: per-contact *attribution* into DashPay payment history still depends on the
-DET sidecar address-map (`dashpay_set_address_mapping`), whose only populator
-(`register_dashpay_addresses_for_identity`) is seed-bearing and so is not auto-run from a background
-path (F-2 locked-wallet prompt hazard); balance/spendability does not depend on it.
+half it depends on was left unwired. `register_dashpay_contact` cannot be the mechanism: the DIP-15
+receiving path `m/9'/coin'/15'/0'/owner/friend` is hardened, so upstream
+`IdentityWallet::register_contact_account` -> `derive_extended_public_key` requires `can_sign()`
+and fails on the **watch-only** wallets DET loads at boot. Registration must derive the account
+xpub from the JIT seed and insert the managed `DashpayReceivingFunds` account directly (contained
+seed-bearing dual-insert, sibling to `provision_identity_funding_account`), then bump the account's
+`monitor_revision` so the dash-spv mempool sync rebuilds the peer bloom filter and watches the new
+addresses in-session. Wired into `bootstrap_wallet_addresses_jit` (every cold boot / unlock, inside
+the existing seed scope — locked wallets skipped, never prompts; idempotent; upstream stores the
+account in runtime state only, so re-running every boot is the mechanism, not a redundancy).
+Residual: per-contact *attribution* into DashPay payment history still depends on the DET sidecar
+address-map (`dashpay_set_address_mapping`); balance/spendability does not.
 
 - **v0.10-dev:** the ZMQ tx-finality path auto-detected payments to DashPay contact receive
   addresses, credited the UTXO, advanced the receive index, and recorded a "received"

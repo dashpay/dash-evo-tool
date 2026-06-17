@@ -500,6 +500,77 @@ async fn step_register_dashpay_addresses(
     }
 }
 
+/// Exercise the real seed-bearing contact receiving-account registration path
+/// against a live (seeded) wallet, idempotently.
+///
+/// `tc_045` injects a sidecar mapping and feeds synthetic outputs, so it proves
+/// match/record only. This drives `bootstrap_wallet_addresses_jit` — the boot /
+/// unlock path that calls `register_contact_receiving_accounts` for every
+/// established contact — which derives and registers the hardened DIP-15
+/// receiving account so SPV watches the addresses the contact pays us at.
+///
+/// Requires `dashpay_sync` to run first so the upstream wallet-manager's
+/// `established_contacts` is populated; without it `established_contact_pairs`
+/// returns an empty slice and the step is a silent no-op. Asserts that at least
+/// one account was wired after the first pass. The second pass must also succeed
+/// without newly wiring additional accounts (idempotency check: `bump_monitor_revision`
+/// is skipped on re-registration so no spurious bloom-filter rebuilds occur).
+async fn step_register_contact_receiving_accounts(
+    ctx: &crate::framework::harness::BackendTestContext,
+    pair: &fixtures::SharedDashPayPair,
+) {
+    tracing::info!("=== Step: register contact receiving accounts (watch faucet) ===");
+
+    let owner_id = pair.identity_b.identity.id();
+    let seed_hash = pair
+        .identity_b
+        .dashpay_wallet_seed_hash()
+        .expect("identity_b must have a DashPay wallet");
+    let backend = ctx
+        .app_context
+        .wallet_backend()
+        .expect("wallet backend wired");
+
+    // Populate upstream established_contacts via dashpay_sync so
+    // established_contact_pairs returns the mutual contact with identity_a.
+    // Without this, the view reads an empty in-memory map and the step no-ops.
+    backend
+        .dashpay_sync(&owner_id)
+        .await
+        .expect("dashpay_sync must succeed before registration");
+
+    // First pass: bootstrap should register at least one DashpayReceivingFunds
+    // account (the mutual contact with identity_a).
+    ctx.app_context
+        .bootstrap_wallet_addresses_jit(&pair.wallet_b)
+        .await;
+
+    let count_after_first = backend.dashpay_receiving_account_count(&seed_hash).await;
+    assert!(
+        count_after_first > 0,
+        "Expected at least one DashpayReceivingFunds account after first registration, got 0. \
+         Check that dashpay_sync populated established_contacts before the bootstrap."
+    );
+    tracing::info!(
+        count = count_after_first,
+        "First registration: {} DashpayReceivingFunds account(s) wired",
+        count_after_first
+    );
+
+    // Second pass: idempotent re-run must not panic, must not add new accounts
+    // (same contacts → same keys → len unchanged), and must not bump
+    // monitor_revision (which would cause a spurious bloom-filter rebuild).
+    ctx.app_context
+        .bootstrap_wallet_addresses_jit(&pair.wallet_b)
+        .await;
+
+    let count_after_second = backend.dashpay_receiving_account_count(&seed_hash).await;
+    assert_eq!(
+        count_after_second, count_after_first,
+        "Re-registration must not add new accounts (idempotent re-run changed the count)"
+    );
+}
+
 async fn step_update_contact_info(
     ctx: &crate::framework::harness::BackendTestContext,
     pair: &fixtures::SharedDashPayPair,
@@ -682,6 +753,8 @@ async fn tc_037_dashpay_contact_lifecycle() {
     }
 
     step_register_dashpay_addresses(ctx, pair).await;
+
+    step_register_contact_receiving_accounts(ctx, pair).await;
 
     step_update_contact_info(ctx, pair).await;
 }

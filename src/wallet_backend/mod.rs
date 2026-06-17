@@ -279,6 +279,9 @@ impl WalletBackend {
             // Phase E push writer: the shielded sync-completed callback writes
             // per-wallet balances into AppContext's frame-safe snapshot.
             Arc::clone(&ctx.shielded_balances),
+            // Platform-address push writer: the platform address sync-completed callback
+            // writes per-wallet owned-only balances into AppContext's frame-safe snapshot.
+            Arc::clone(&ctx.platform_balances),
         ));
 
         let pwm = PlatformWalletManager::new(sdk, Arc::clone(&persister), bridge);
@@ -1380,43 +1383,248 @@ impl WalletBackend {
         Ok(addresses)
     }
 
-    /// Re-establish a DashPay contact on UPSTREAM derivation only.
+    /// Register every established contact's DIP-15 receiving account so the SPV
+    /// layer watches the addresses each contact pays us at.
     ///
-    /// Derives the `DashpayReceivingFunds` account via the upstream engine and
-    /// registers it so the SPV adapter monitors incoming payments. Upstream is
-    /// authoritative — no DET re-derivation, no comparison. Idempotent:
-    /// upstream no-ops if the contact account already exists.
+    /// The receiving-account path `m/9'/coin'/15'/0'/owner/friend` is hardened,
+    /// so the upstream `IdentityWallet::register_contact_account` — which derives
+    /// from the live wallet — returns a watch-only error on the wallets DET
+    /// rehydrates at boot (they cannot do hardened derivation). This derives the
+    /// account xpub from a seed-built (signable) wallet instead and inserts the
+    /// managed `DashpayReceivingFunds` account directly: the contained
+    /// seed-bearing dual-insert exception, sibling to
+    /// [`Self::provision_identity_funding_account`].
     ///
-    /// Legacy DET derived contact addresses at the same path upstream uses
-    /// now — `m/9'/coin'/15'/0'/(owner)/(contact)`, account index fixed at 0,
-    /// coin type per network (5' mainnet, 1' otherwise) — so existing on-chain
-    /// contact addresses re-register byte-identically here; nothing is lost.
-    //
-    // TODO: A separate watch-only re-derivation of a non-zero contact account
-    // index is deliberately NOT wired. Upstream
-    // `AccountType::DashpayReceivingFunds::derivation_path` hardcodes account
-    // 0', and DET never persisted a per-contact HD account index (the legacy
-    // `dashpay_contacts` schema keys only on owner/contact/network, and every
-    // historical and current call site passes account 0). No non-zero-account
-    // legacy address ever held funds, so re-deriving one would only invent
-    // addresses that were never used — the exact wrong-address hazard to
-    // avoid. Wire it only if a future upstream change parameterises the
-    // account index AND a real index source exists to re-derive from.
-    pub async fn register_dashpay_contact(
+    /// Upstream keeps the managed account in runtime state only, so this re-runs
+    /// on every cold boot / unlock and is idempotent (the account-map insert
+    /// overwrites in place). Only **newly-added** accounts trigger a
+    /// `bump_monitor_revision`: the `dash-spv` mempool sync manager (shared via
+    /// one `Arc`) checks the aggregate revision on each 100ms tick and rebuilds
+    /// the peer bloom filter when it changes. The tick only runs when the mempool
+    /// manager is in `SyncState::Synced`; if registration happens before SPV sync
+    /// completes, the accounts are already in the wallet when `activate_all_peers`
+    /// sends the initial `FilterLoad` at `SyncEvent::FiltersSyncComplete`, so
+    /// the addresses are watched regardless of sync phase.
+    ///
+    /// The caller must already hold the wallet's JIT seed (this runs inside
+    /// `bootstrap_wallet_addresses_jit`'s secret scope), so a locked wallet is
+    /// never reached and never prompted. `contacts` are `(owner, contact)`
+    /// identity-id pairs. Returns the number of **newly-inserted** accounts
+    /// (0 on idempotent re-registration).
+    pub(crate) async fn register_contact_receiving_accounts(
         &self,
         seed_hash: &WalletSeedHash,
-        owner_identity_id: &dash_sdk::platform::Identifier,
-        contact_identity_id: &dash_sdk::platform::Identifier,
-        account_index: u32,
+        seed: &[u8; 64],
+        contacts: &[(
+            dash_sdk::platform::Identifier,
+            dash_sdk::platform::Identifier,
+        )],
+    ) -> Result<usize, TaskError> {
+        use dash_sdk::dpp::key_wallet::Account;
+        use dash_sdk::dpp::key_wallet::AccountType;
+        use dash_sdk::dpp::key_wallet::managed_account::ManagedCoreFundsAccount;
+        use dash_sdk::dpp::key_wallet::managed_account::managed_account_trait::ManagedAccountTrait;
+        use dash_sdk::dpp::key_wallet::managed_account::managed_account_type::ManagedAccountType;
+        use dash_sdk::dpp::key_wallet::wallet::Wallet as UpstreamWallet;
+        use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOptions;
+        use platform_wallet::error::PlatformWalletError;
+
+        if contacts.is_empty() {
+            return Ok(0);
+        }
+        let network = self.inner.network;
+        let wallet = self.resolve_wallet(seed_hash).await?;
+        let wallet_id = wallet.wallet_id();
+
+        // The DIP-15 receiving path is hardened, so derive the account xpubs
+        // from a signable seed-built wallet — the live wallet is watch-only and
+        // cannot derive hardened paths. Built once, reused for every contact.
+        let seed_wallet =
+            UpstreamWallet::from_seed_bytes(*seed, network, WalletAccountCreationOptions::Default)
+                .map_err(|e| TaskError::WalletBackend {
+                    source: Box::new(PlatformWalletError::WalletCreation(e.to_string())),
+                })?;
+
+        let mut accounts = Vec::with_capacity(contacts.len());
+        for (owner, contact) in contacts {
+            // Account 0': upstream `DashpayReceivingFunds` hardcodes account 0'
+            // and every DET caller has only ever used account 0.
+            let account_type = AccountType::DashpayReceivingFunds {
+                index: 0,
+                user_identity_id: owner.to_buffer(),
+                friend_identity_id: contact.to_buffer(),
+            };
+            let path = match account_type.derivation_path(network) {
+                Ok(path) => path,
+                Err(error) => {
+                    tracing::debug!(%error, "Skipping contact account: derivation path failed");
+                    continue;
+                }
+            };
+            match seed_wallet.derive_extended_public_key(&path) {
+                Ok(account_xpub) => accounts.push(Account {
+                    parent_wallet_id: Some(wallet_id),
+                    account_type,
+                    network,
+                    account_xpub,
+                    is_watch_only: false,
+                }),
+                Err(error) => {
+                    tracing::debug!(%error, "Skipping contact account: xpub derivation failed");
+                }
+            }
+        }
+        if accounts.is_empty() {
+            return Ok(0);
+        }
+
+        // Insert under the manager write lock — purely synchronous, no await
+        // held. Track accounts that are genuinely new (map len growth) so we
+        // only bump monitor_revision — and thus trigger a bloom-filter rebuild
+        // — when the set actually changes, not on every idempotent re-run.
+        let mut wm = wallet.wallet_manager().write().await;
+        let info = wm
+            .get_wallet_info_mut(&wallet_id)
+            .ok_or(TaskError::WalletStateInconsistent)?;
+        let before = info.core_wallet.accounts.dashpay_receival_accounts.len();
+        for account in &accounts {
+            let managed = ManagedCoreFundsAccount::from_account(account);
+            if let Err(error) = info
+                .core_wallet
+                .accounts
+                .insert_funds_bearing_account(managed)
+            {
+                tracing::debug!(%error, "Skipping contact account: managed insert failed");
+            }
+        }
+        let newly_inserted = info
+            .core_wallet
+            .accounts
+            .dashpay_receival_accounts
+            .len()
+            .saturating_sub(before);
+        // Only bump the monitor revision when new accounts were added: a
+        // revision bump on every unlock would cause a spurious bloom-filter
+        // rebuild on each boot even when the contact set is unchanged.
+        if newly_inserted > 0 {
+            for account in info.core_wallet.accounts.all_funding_accounts_mut() {
+                if matches!(
+                    account.managed_account_type(),
+                    ManagedAccountType::DashpayReceivingFunds { .. }
+                ) {
+                    account.bump_monitor_revision();
+                }
+            }
+        }
+        Ok(newly_inserted)
+    }
+
+    /// Count `DashpayReceivingFunds` accounts currently registered in the
+    /// wallet-manager for `seed_hash`. Used in integration tests to assert that
+    /// [`Self::register_contact_receiving_accounts`] actually wired contacts
+    /// into the live wallet-manager state.
+    pub async fn dashpay_receiving_account_count(&self, seed_hash: &WalletSeedHash) -> usize {
+        let Ok(wallet) = self.resolve_wallet(seed_hash).await else {
+            return 0;
+        };
+        let wallet_id = wallet.wallet_id();
+        let wm = wallet.wallet_manager().read().await;
+        wm.get_wallet_info(&wallet_id)
+            .map(|info| info.core_wallet.accounts.dashpay_receival_accounts.len())
+            .unwrap_or(0)
+    }
+
+    /// Record a successfully-sent contact request in the upstream
+    /// wallet-manager's in-memory `sent_contact_requests` map.
+    ///
+    /// After a contact-request state transition is accepted by Platform,
+    /// the local `ManagedIdentity` must be updated so that `dashpay_sync`
+    /// can later auto-establish the contact when the peer's reciprocal
+    /// request arrives.  The upstream auto-establishment gate in
+    /// `add_incoming_contact_request` only promotes an identity to
+    /// `established_contacts` when `sent_contact_requests[peer]` already
+    /// exists locally.  DET's custom `send_contact_request_with_proof`
+    /// bypasses `IdentityWallet::send_contact_request_with_external_signer`
+    /// and therefore never writes to that map without this explicit call.
+    ///
+    /// Non-fatal when the managed identity is not yet in the manager —
+    /// logs a warning and returns `Ok(())` since the state transition was
+    /// already committed to Platform.
+    pub(crate) async fn record_sent_contact_request(
+        &self,
+        seed_hash: &WalletSeedHash,
+        owner_id: &dash_sdk::platform::Identifier,
+        contact_request: platform_wallet::ContactRequest,
     ) -> Result<(), TaskError> {
         let wallet = self.resolve_wallet(seed_hash).await?;
-        wallet
-            .identity()
-            .register_contact_account(owner_identity_id, contact_identity_id, account_index)
-            .await
-            .map_err(|e| TaskError::WalletBackend {
-                source: Box::new(e),
-            })
+        let wallet_id = wallet.wallet_id();
+        let persister = wallet.persister().clone();
+        let mut wm = wallet.wallet_manager().write().await;
+        let info = wm
+            .get_wallet_info_mut(&wallet_id)
+            .ok_or(TaskError::WalletStateInconsistent)?;
+        match info.identity_manager.managed_identity_mut(owner_id) {
+            Some(managed) => {
+                managed.add_sent_contact_request(contact_request, &persister);
+            }
+            None => {
+                tracing::warn!(
+                    owner_id = %owner_id,
+                    "record_sent_contact_request: managed identity not \
+                     found; state transition committed but local manager \
+                     not updated",
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Record a peer's incoming contact request in the accepter's local
+    /// wallet-manager **before** sending the reciprocal request.
+    ///
+    /// Called by `accept_contact_request` with the sender's CR document
+    /// that was just fetched from Platform.  Pre-populating
+    /// `incoming_contact_requests[sender]` means that when
+    /// `record_sent_contact_request` fires for the accepter's outgoing
+    /// CR immediately afterwards, `add_sent_contact_request` finds the
+    /// matching incoming entry and auto-establishes the contact
+    /// in-process — no `dashpay_sync` round-trip required.
+    ///
+    /// Without this call the accept path has a dead-end: after
+    /// `record_sent_contact_request` populates `sent[A]`,
+    /// `sync_contact_requests` sees `sent[A]` and skips A's incoming
+    /// document (its skip guard is `sent || incoming || established`),
+    /// so `add_incoming_contact_request` is never called and
+    /// `established_contacts` stays empty.
+    ///
+    /// Non-fatal when the managed identity is absent — logs a warning
+    /// and returns `Ok(())`.
+    pub(crate) async fn record_incoming_contact_request(
+        &self,
+        seed_hash: &WalletSeedHash,
+        owner_id: &dash_sdk::platform::Identifier,
+        contact_request: platform_wallet::ContactRequest,
+    ) -> Result<(), TaskError> {
+        let wallet = self.resolve_wallet(seed_hash).await?;
+        let wallet_id = wallet.wallet_id();
+        let persister = wallet.persister().clone();
+        let mut wm = wallet.wallet_manager().write().await;
+        let info = wm
+            .get_wallet_info_mut(&wallet_id)
+            .ok_or(TaskError::WalletStateInconsistent)?;
+        match info.identity_manager.managed_identity_mut(owner_id) {
+            Some(managed) => {
+                managed.add_incoming_contact_request(contact_request, &persister);
+            }
+            None => {
+                tracing::warn!(
+                    owner_id = %owner_id,
+                    "record_incoming_contact_request: managed identity not \
+                     found; auto-establishment will depend on dashpay_sync",
+                );
+            }
+        }
+        Ok(())
     }
 
     /// Durably flush every registered wallet's buffered changesets to the

@@ -244,9 +244,11 @@ impl AccountSummaryBuilder {
 /// Build per-account summaries from the wallet's watched-address derivation
 /// metadata plus the display-only chain balances from the `WalletBackend`
 /// snapshot (`address_balances`, P4a — replaces the dropped
-/// `Wallet.address_balances`). Platform credits still come off the
-/// DET-retained `Wallet.platform_address_info` (out of `platform-wallet`
-/// scope).
+/// `Wallet.address_balances`). Platform credits come from
+/// `Wallet.platform_address_info`, which is kept current by both the
+/// coordinator-push path (`AppContext::apply_platform_address_push`, fires
+/// every 15 s automatically) and the manual `FetchPlatformAddressBalances`
+/// backend task.
 pub fn collect_account_summaries(
     wallet: &Wallet,
     network: Network,

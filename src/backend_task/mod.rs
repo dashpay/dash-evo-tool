@@ -17,7 +17,7 @@ use dash_sdk::dpp::dashcore::bls_sig_utils::BLSSignature;
 use dash_sdk::dpp::dashcore::network::message_qrinfo::QRInfo;
 use dash_sdk::dpp::dashcore::BlockHash;
 use crate::model::qualified_identity::QualifiedIdentity;
-use crate::model::wallet::WalletSeedHash;
+use crate::model::wallet::{PlatformAddressUpdates, WalletSeedHash};
 use crate::model::grovestark_prover::ProofDataOutput;
 use crate::ui::tokens::tokens_screen::{
     ContractDescriptionInfo, IdentityTokenIdentifier, TokenInfo,
@@ -282,6 +282,20 @@ pub enum BackendTaskSuccessResult {
         balances: BTreeMap<PlatformAddress, (u64, u32)>,
         /// Network the balances were fetched from
         network: Network,
+    },
+    /// Pushed by the coordinator after each automatic platform-address sync pass.
+    ///
+    /// Carries per-wallet per-address funds as raw 20-byte P2PKH hashes so
+    /// `EventBridge` (which does not know the network) can populate the result
+    /// without coupling to the wallet model. `AppState` routes this to
+    /// `AppContext::apply_platform_address_push` which converts the hashes to
+    /// `dashcore::Address` and writes them into each wallet's
+    /// `platform_address_info`, keeping the per-address tab current
+    /// without a manual Refresh.
+    PlatformAddressSyncPushed {
+        /// Per-wallet owned-address balance updates.
+        /// See [`PlatformAddressUpdates`] for the entry layout.
+        updates: PlatformAddressUpdates,
     },
     /// Platform credits transferred between addresses
     PlatformCreditsTransferred {

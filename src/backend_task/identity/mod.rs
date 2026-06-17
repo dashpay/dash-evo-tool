@@ -778,7 +778,7 @@ impl AppContext {
     }
 
     pub async fn run_identity_task(
-        &self,
+        self: &Arc<Self>,
         task: IdentityTask,
         sdk: &Sdk,
         sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
@@ -810,7 +810,7 @@ impl AppContext {
                 .load_user_identity_from_wallet(sdk, wallet, identity_index, sender)
                 .await?),
             IdentityTask::SearchIdentitiesUpToIndex(wallet, max_identity_index) => Ok(self
-                .load_user_identities_up_to_index(sdk, wallet, max_identity_index, sender)
+                .load_user_identities_up_to_index(wallet, max_identity_index, sender)
                 .await?),
             IdentityTask::SearchIdentityByDpnsName(dpns_name, wallet_seed_hash) => Ok(self
                 .load_identity_by_dpns_name(sdk, dpns_name, wallet_seed_hash)

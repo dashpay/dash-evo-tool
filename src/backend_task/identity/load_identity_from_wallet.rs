@@ -22,6 +22,7 @@ use dash_sdk::drive::query::{SelectProjection, WhereClause, WhereOperator};
 use dash_sdk::platform::types::identity::NonUniquePublicKeyHashQuery;
 use dash_sdk::platform::{Document, DocumentQuery, Fetch, FetchMany, Identity};
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 impl AppContext {
     pub(super) async fn load_user_identity_from_wallet(
@@ -39,7 +40,12 @@ impl AppContext {
 
         for key_index in 0..AUTH_KEY_LOOKUP_WINDOW {
             let public_key = self
-                .resolve_identity_auth_pubkey(&wallet_arc_ref.wallet, identity_index, key_index)
+                .resolve_identity_auth_pubkey(
+                    &wallet_arc_ref.wallet,
+                    true,
+                    identity_index,
+                    key_index,
+                )
                 .await?;
 
             let key_hash = public_key.pubkey_hash().into();
@@ -156,6 +162,7 @@ impl AppContext {
             .resolve_identity_auth_pubkeys_data_map(
                 &wallet_arc_ref.wallet,
                 true,
+                true,
                 identity_index,
                 0..top_bound,
             )
@@ -240,10 +247,17 @@ impl AppContext {
         qualified_identity.status = IdentityStatus::Active;
         qualified_identity.network = self.network;
 
-        self.insert_local_qualified_identity(
-            &qualified_identity,
-            &Some((wallet_seed_hash, identity_index)),
-        )?;
+        // Carry the user-assigned alias from any existing record so a re-load
+        // refreshes keys/DPNS without wiping DET-only metadata.
+        if let Some(existing) = self.get_identity_by_id(&identity_id)? {
+            qualified_identity.alias = existing.alias;
+            self.update_local_qualified_identity(&qualified_identity)?;
+        } else {
+            self.insert_local_qualified_identity(
+                &qualified_identity,
+                &Some((wallet_seed_hash, identity_index)),
+            )?;
+        }
 
         {
             let mut wallet = wallet_arc_ref.wallet.write()?;
@@ -258,77 +272,37 @@ impl AppContext {
     }
 
     pub(super) async fn load_user_identities_up_to_index(
-        &self,
-        sdk: &Sdk,
+        self: &Arc<Self>,
         wallet_arc_ref: WalletArcRef,
-        max_identity_index: IdentityIndex,
+        seed_identity_index: IdentityIndex,
         sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
-        let wallet_ref = wallet_arc_ref;
+        // The interactive search seeds the rolling window from the user-supplied
+        // index and may prompt for the passphrase on a cold cache.
+        let summary = self
+            .discover_identities_gap_limited(
+                &wallet_arc_ref.wallet,
+                seed_identity_index,
+                true,
+                Some(&sender),
+            )
+            .await?;
 
-        let mut loaded_indices = Vec::new();
-
-        for identity_index in 0..=max_identity_index {
-            sender
-                .send(TaskResult::Success(Box::new(
-                    BackendTaskSuccessResult::Progress {
-                        message: format!(
-                            "Searching wallet identity index {current} of {total}.",
-                            current = identity_index + 1,
-                            total = max_identity_index + 1,
-                        ),
-                        current: identity_index + 1,
-                        total: max_identity_index + 1,
-                    },
-                )))
-                .await
-                .map_err(|_| TaskError::InternalSendError)?;
-
-            match self
-                .load_user_identity_from_wallet(
-                    sdk,
-                    wallet_ref.clone(),
-                    identity_index,
-                    sender.clone(),
-                )
-                .await
-            {
-                Ok(_) => {
-                    loaded_indices.push(identity_index);
-                }
-                Err(TaskError::WalletIdentityNotFound { .. }) => {
-                    continue;
-                }
-                Err(error) => {
-                    return Err(error);
-                }
-            }
-        }
-
-        if loaded_indices.is_empty() {
+        if summary.found == 0 {
             return Err(TaskError::NoWalletIdentitiesFound {
-                max_index: max_identity_index,
+                max_index: seed_identity_index,
             });
         }
 
-        let summary = if loaded_indices.len() == 1 {
-            format!(
-                "Successfully loaded 1 identity at index {}.",
-                loaded_indices[0]
-            )
+        let message = if summary.found == 1 {
+            "Successfully loaded 1 identity from your wallet.".to_string()
         } else {
-            let loaded_display = loaded_indices
-                .iter()
-                .map(|idx| idx.to_string())
-                .collect::<Vec<_>>()
-                .join(", ");
             format!(
-                "Successfully loaded {} identities at indexes {}.",
-                loaded_indices.len(),
-                loaded_display
+                "Successfully loaded {count} identities from your wallet.",
+                count = summary.found,
             )
         };
 
-        Ok(BackendTaskSuccessResult::Message(summary))
+        Ok(BackendTaskSuccessResult::Message(message))
     }
 }

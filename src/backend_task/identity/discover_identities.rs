@@ -1,51 +1,113 @@
+use crate::app::TaskResult;
+use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
+use crate::model::identity_discovery::{DiscoverySummary, should_continue_scan};
 use crate::model::qualified_identity::DPNSNameInfo;
 use crate::model::wallet::Wallet;
+use crate::utils::egui_mpsc::SenderAsync;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use std::sync::{Arc, RwLock};
 
+/// Number of authentication-key indices probed per identity index before
+/// concluding no identity is registered there.
+const AUTH_KEY_LOOKUP_WINDOW: u32 = 12;
+
 impl AppContext {
-    /// Discover and load identities derived from a wallet by checking the network.
-    /// This is called automatically on wallet unlock to find any identities that
-    /// were registered using keys from the wallet.
-    pub(crate) async fn discover_identities_from_wallet(
+    /// Discover and load identities derived from a wallet by checking the
+    /// network, with a rolling gap-limited lookahead.
+    ///
+    /// The scan starts at index 0 and keeps probing while it is within
+    /// [`IDENTITY_GAP_LIMIT`](crate::model::identity_discovery::IDENTITY_GAP_LIMIT)
+    /// indices of the highest index that produced an identity, so each new
+    /// discovery extends the window. `seed_from_index`, together with the
+    /// wallet's already-known identity indices, seeds that window so a
+    /// prior-session high index is never missed even if the early indices are
+    /// empty.
+    ///
+    /// `allow_prompt` controls the secret path: with `true` (the interactive
+    /// search) a cold auth-key cache miss prompts for the passphrase; with
+    /// `false` (the background sweep) a locked, protected wallet is skipped
+    /// instead of prompting.
+    ///
+    /// When `progress` is `Some`, a [`BackendTaskSuccessResult::Progress`] event
+    /// is sent before each probed index.
+    pub(crate) async fn discover_identities_gap_limited(
         self: &Arc<Self>,
         wallet: &Arc<RwLock<Wallet>>,
-        max_identity_index: u32,
-    ) -> Result<(), String> {
+        seed_from_index: u32,
+        allow_prompt: bool,
+        progress: Option<&SenderAsync<TaskResult>>,
+    ) -> Result<DiscoverySummary, TaskError> {
         use dash_sdk::platform::Fetch;
         use dash_sdk::platform::types::identity::NonUniquePublicKeyHashQuery;
 
-        const AUTH_KEY_LOOKUP_WINDOW: u32 = 12;
-
         let sdk = self.sdk.load().as_ref().clone();
-        let seed_hash = wallet.read().map_err(|e| e.to_string())?.seed_hash();
+        let seed_hash = wallet.read()?.seed_hash();
+
+        // Seed the rolling window from the explicit seed index and from any
+        // identity already known to this wallet, so a high prior-session index
+        // keeps the scan open long enough to re-reach it.
+        let highest_known_index = {
+            let guard = wallet.read()?;
+            guard.identities.keys().copied().max()
+        };
+        let seed_window = match highest_known_index {
+            Some(known) => Some(known.max(seed_from_index)),
+            None if seed_from_index > 0 => Some(seed_from_index),
+            None => None,
+        };
 
         tracing::info!(
             seed = %hex::encode(seed_hash),
-            "Starting identity discovery for wallet (checking indices 0..{})",
-            max_identity_index
+            seed_window = ?seed_window,
+            allow_prompt,
+            "Starting gap-limited identity discovery for wallet"
         );
 
-        let mut found_count = 0;
+        let mut summary = DiscoverySummary::default();
+        let mut highest_found = seed_window;
+        let mut current_index = 0u32;
 
-        for identity_index in 0..=max_identity_index {
-            // Try to find an identity at this index by checking authentication keys
+        while should_continue_scan(current_index, highest_found) {
+            if let Some(sender) = progress {
+                let next = current_index.saturating_add(1);
+                sender
+                    .send(TaskResult::Success(Box::new(
+                        BackendTaskSuccessResult::Progress {
+                            message: format!("Searching wallet identity index {next}."),
+                            current: next,
+                            total: next,
+                        },
+                    )))
+                    .await
+                    .map_err(|_| TaskError::InternalSendError)?;
+            }
+
             let mut fetched_identity = None;
             let mut matched_key_index = None;
 
             for key_index in 0..AUTH_KEY_LOOKUP_WINDOW {
                 let public_key = match self
-                    .resolve_identity_auth_pubkey(wallet, identity_index, key_index)
+                    .resolve_identity_auth_pubkey(wallet, allow_prompt, current_index, key_index)
                     .await
                 {
                     Ok(key) => key,
+                    // A locked, protected wallet in the no-prompt path: skip the
+                    // whole wallet — every later index needs the same seed.
+                    Err(TaskError::AuthKeyUnlockRequired) => {
+                        tracing::debug!(
+                            seed = %hex::encode(seed_hash),
+                            "Skipping locked wallet during background identity discovery"
+                        );
+                        return Ok(summary);
+                    }
                     Err(e) => {
                         tracing::debug!(
-                            "Could not derive key at index {}/{}: {}",
-                            identity_index,
+                            error = %e,
+                            current_index,
                             key_index,
-                            e
+                            "Could not derive auth key during discovery"
                         );
                         continue;
                     }
@@ -66,84 +128,126 @@ impl AppContext {
                     Ok(None) => continue,
                     Err(e) => {
                         tracing::debug!(
-                            "Error querying identity at index {}/{}: {}",
-                            identity_index,
+                            error = %e,
+                            current_index,
                             key_index,
-                            e
+                            "Error querying identity during discovery"
                         );
                         continue;
                     }
                 }
             }
 
-            // If we found an identity, process and store it
             if let Some(identity) = fetched_identity {
                 let identity_id = identity.id();
                 tracing::info!(
                     identity_id = %identity_id,
-                    identity_index,
+                    current_index,
                     key_index = ?matched_key_index,
                     "Discovered identity from wallet"
                 );
 
-                // Check if we already have this identity stored
-                let already_exists = matches!(self.get_identity_by_id(&identity_id), Ok(Some(_)));
+                summary.found = summary.found.saturating_add(1);
+                highest_found = Some(highest_found.map_or(current_index, |h| h.max(current_index)));
 
-                if already_exists {
-                    tracing::info!(
-                        identity_id = %identity_id,
-                        "Identity already loaded, skipping"
-                    );
-                    continue;
-                }
-
-                // Build qualified identity with wallet key derivation paths
                 match self
-                    .build_qualified_identity_from_wallet(&sdk, identity, wallet, identity_index)
+                    .upsert_discovered_identity(&sdk, identity, wallet, allow_prompt, current_index)
                     .await
                 {
-                    Ok(qualified_identity) => {
-                        // Store the identity
-                        if let Err(e) = self.insert_local_qualified_identity(
-                            &qualified_identity,
-                            &Some((seed_hash, identity_index)),
-                        ) {
-                            tracing::warn!(
-                                identity_id = %identity_id,
-                                error = %e,
-                                "Failed to store discovered identity"
-                            );
-                        } else {
-                            // Add to wallet's identities map
-                            if let Ok(mut wallet_guard) = wallet.write() {
-                                wallet_guard
-                                    .identities
-                                    .insert(identity_index, qualified_identity.identity.clone());
-                            }
-                            found_count += 1;
-                            tracing::info!(
-                                identity_id = %identity_id,
-                                "Successfully loaded discovered identity"
-                            );
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            identity_id = %identity_id,
-                            error = %e,
-                            "Failed to build qualified identity"
-                        );
-                    }
+                    Ok(()) => summary.stored = summary.stored.saturating_add(1),
+                    Err(e) => tracing::warn!(
+                        identity_id = %identity_id,
+                        error = %e,
+                        "Failed to store discovered identity"
+                    ),
                 }
             }
+
+            current_index = current_index.saturating_add(1);
         }
 
         tracing::info!(
             seed = %hex::encode(seed_hash),
-            found_count,
-            "Identity discovery complete"
+            found = summary.found,
+            stored = summary.stored,
+            "Gap-limited identity discovery complete"
         );
 
+        Ok(summary)
+    }
+
+    /// Discover and load identities derived from a wallet on wallet unlock.
+    ///
+    /// Thin wrapper over [`Self::discover_identities_gap_limited`] that prompts
+    /// for the seed if needed (the unlock gesture already implies user consent)
+    /// and seeds the rolling window from `max_identity_index`.
+    pub(crate) async fn discover_identities_from_wallet(
+        self: &Arc<Self>,
+        wallet: &Arc<RwLock<Wallet>>,
+        max_identity_index: u32,
+    ) -> Result<(), TaskError> {
+        self.discover_identities_gap_limited(wallet, max_identity_index, true, None)
+            .await?;
+        Ok(())
+    }
+
+    /// Fetch, build, and store one discovered identity, preserving DET-only
+    /// metadata (the user alias) from any existing stored record.
+    ///
+    /// The freshly-built [`QualifiedIdentity`](crate::model::qualified_identity::QualifiedIdentity)
+    /// carries `alias: None`; before storing, the existing record's alias is
+    /// copied onto it so a re-discovery refreshes keys and DPNS names without
+    /// wiping a user-assigned alias. Wallet association and top-up history are
+    /// preserved by [`AppContext::update_local_qualified_identity`] /
+    /// the separate top-up KV key, respectively.
+    async fn upsert_discovered_identity(
+        self: &Arc<Self>,
+        sdk: &dash_sdk::Sdk,
+        identity: dash_sdk::platform::Identity,
+        wallet: &Arc<RwLock<Wallet>>,
+        allow_prompt: bool,
+        identity_index: u32,
+    ) -> Result<(), TaskError> {
+        let identity_id = identity.id();
+        let seed_hash = wallet.read()?.seed_hash();
+
+        let mut qualified_identity = self
+            .build_qualified_identity_from_wallet(
+                sdk,
+                identity,
+                wallet,
+                allow_prompt,
+                identity_index,
+            )
+            .await
+            .map_err(|detail| TaskError::WalletInfoDeterminationFailed { detail })?;
+
+        match self.get_identity_by_id(&identity_id)? {
+            Some(existing) => {
+                // Carry DET-only metadata onto the refreshed identity, then
+                // update in place — `update_local_qualified_identity` keeps the
+                // stored wallet association, and top-ups live under a separate
+                // KV key untouched by this write.
+                qualified_identity.alias = existing.alias;
+                self.update_local_qualified_identity(&qualified_identity)?;
+            }
+            None => {
+                self.insert_local_qualified_identity(
+                    &qualified_identity,
+                    &Some((seed_hash, identity_index)),
+                )?;
+            }
+        }
+
+        if let Ok(mut wallet_guard) = wallet.write() {
+            wallet_guard
+                .identities
+                .insert(identity_index, qualified_identity.identity.clone());
+        }
+        tracing::info!(
+            identity_id = %identity_id,
+            "Successfully loaded discovered identity"
+        );
         Ok(())
     }
 
@@ -154,6 +258,7 @@ impl AppContext {
         sdk: &dash_sdk::Sdk,
         identity: dash_sdk::platform::Identity,
         wallet: &Arc<RwLock<Wallet>>,
+        allow_prompt: bool,
         identity_index: u32,
     ) -> Result<crate::model::qualified_identity::QualifiedIdentity, String> {
         use crate::model::qualified_identity::encrypted_key_storage::{
@@ -180,6 +285,7 @@ impl AppContext {
             .resolve_identity_auth_pubkeys_data_map(
                 wallet,
                 false,
+                allow_prompt,
                 identity_index,
                 0..derive_up_to.saturating_add(1),
             )

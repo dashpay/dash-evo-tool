@@ -472,7 +472,13 @@ impl AppContext {
 
         if let Some(identity_index) = existing_index {
             let (public_key_map, public_key_hash_map) = self
-                .resolve_identity_auth_pubkeys_data_map(wallet, true, identity_index, 0..top_bound)
+                .resolve_identity_auth_pubkeys_data_map(
+                    wallet,
+                    true,
+                    true,
+                    identity_index,
+                    0..top_bound,
+                )
                 .await?;
             let wallet_private_keys = self.build_wallet_private_key_map(
                 identity,
@@ -492,6 +498,7 @@ impl AppContext {
                 .resolve_identity_auth_pubkeys_data_map(
                     wallet,
                     false,
+                    true,
                     candidate_index,
                     0..top_bound,
                 )
@@ -506,7 +513,13 @@ impl AppContext {
             }
 
             let (public_key_map, public_key_hash_map) = self
-                .resolve_identity_auth_pubkeys_data_map(wallet, true, candidate_index, 0..top_bound)
+                .resolve_identity_auth_pubkeys_data_map(
+                    wallet,
+                    true,
+                    true,
+                    candidate_index,
+                    0..top_bound,
+                )
                 .await?;
 
             let wallet_private_keys = self.build_wallet_private_key_map(

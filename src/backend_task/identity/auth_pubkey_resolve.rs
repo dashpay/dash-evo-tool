@@ -35,9 +35,16 @@ impl AppContext {
     /// for `(network, identity_index, key_index)`; on a hit returns it with
     /// no seed access. On a miss, opens one `with_secret` scope, derives
     /// the key from the seed, writes it back to the cache, and returns it.
+    ///
+    /// `allow_prompt` controls the cold-cache path: when `false`, a miss on a
+    /// passphrase-protected wallet that is not session-unlocked returns
+    /// [`TaskError::AuthKeyUnlockRequired`] instead of opening a `with_secret`
+    /// scope — so the background sweep skips a locked wallet rather than popping
+    /// a passphrase modal. The interactive search passes `true`.
     pub(super) async fn resolve_identity_auth_pubkey(
         &self,
         wallet: &Arc<RwLock<Wallet>>,
+        allow_prompt: bool,
         identity_index: u32,
         key_index: u32,
     ) -> Result<PublicKey, TaskError> {
@@ -57,6 +64,14 @@ impl AppContext {
             )
         {
             return Ok(public_key);
+        }
+
+        if !allow_prompt
+            && !backend
+                .secret_access()
+                .can_resolve_without_prompt(&SecretScope::HdSeed { seed_hash })
+        {
+            return Err(TaskError::AuthKeyUnlockRequired);
         }
 
         let wallet = Arc::clone(wallet);
@@ -98,10 +113,17 @@ impl AppContext {
     /// `register_addresses` mirrors the legacy data-map flag: when set,
     /// each key's P2PKH address is registered on the wallet regardless of
     /// whether the key came from the cache or a cold derivation.
+    ///
+    /// `allow_prompt` controls the cold-cache path exactly as in
+    /// [`Self::resolve_identity_auth_pubkey`]: when `false`, any cache miss on a
+    /// passphrase-protected wallet that is not session-unlocked returns
+    /// [`TaskError::AuthKeyUnlockRequired`] before opening a `with_secret`
+    /// scope, so the background sweep never triggers a passphrase modal.
     pub(super) async fn resolve_identity_auth_pubkeys_data_map(
         &self,
         wallet: &Arc<RwLock<Wallet>>,
         register_addresses: bool,
+        allow_prompt: bool,
         identity_index: u32,
         key_index_range: Range<u32>,
     ) -> Result<AuthPubkeyDataMaps, TaskError> {
@@ -130,6 +152,14 @@ impl AppContext {
 
         if misses.is_empty() {
             return Ok((public_key_map, public_key_hash_map));
+        }
+
+        if !allow_prompt
+            && !backend
+                .secret_access()
+                .can_resolve_without_prompt(&SecretScope::HdSeed { seed_hash })
+        {
+            return Err(TaskError::AuthKeyUnlockRequired);
         }
 
         let wallet = Arc::clone(wallet);

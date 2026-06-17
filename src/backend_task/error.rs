@@ -1272,6 +1272,13 @@ pub enum TaskError {
     #[error("No identities found up to wallet index {max_index}. Try a higher search range.")]
     NoWalletIdentitiesFound { max_index: u32 },
 
+    /// An identity-authentication key could not be derived without unlocking the
+    /// wallet, and the caller asked not to prompt. The background identity sweep
+    /// uses this to skip a locked wallet's index instead of popping a passphrase
+    /// modal; the interactive search prompts instead, so users never see this.
+    #[error("Unlock this wallet to search it for identities, then try again.")]
+    AuthKeyUnlockRequired,
+
     // ──────────────────────────────────────────────────────────────────────────
     // Key input validation errors
     // ──────────────────────────────────────────────────────────────────────────

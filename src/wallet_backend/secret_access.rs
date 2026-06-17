@@ -424,6 +424,23 @@ impl SecretAccess {
     /// expired. Test/diagnostic helper — does not extend the TTL.
     #[cfg(test)]
     pub(crate) fn is_session_cached(&self, scope: &SecretScope) -> bool {
+        self.session_cache_hit(scope)
+    }
+
+    /// `true` when [`Self::with_secret`] could resolve `scope` without ever
+    /// prompting — either the plaintext is already in the session cache or the
+    /// secret is unprotected (decrypts with no passphrase).
+    ///
+    /// Lets a non-interactive caller (the background identity sweep) decide up
+    /// front whether to attempt a derivation or skip the wallet, so it never
+    /// triggers a passphrase modal. A `false` here is conservative: the resolve
+    /// would prompt, so the caller should skip.
+    pub fn can_resolve_without_prompt(&self, scope: &SecretScope) -> bool {
+        self.session_cache_hit(scope) || !self.scope_has_passphrase(scope).unwrap_or(true)
+    }
+
+    /// Whether `scope`'s plaintext is in the session cache and not expired.
+    fn session_cache_hit(&self, scope: &SecretScope) -> bool {
         let now = Instant::now();
         self.inner
             .session
@@ -890,6 +907,52 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(prompt.ask_count(), 0, "unprotected ⇒ no prompt");
+    }
+
+    #[tokio::test]
+    async fn can_resolve_without_prompt_tracks_protection_and_cache() {
+        // The background identity sweep keys off this: an unprotected wallet or
+        // a session-unlocked protected wallet resolves without a prompt; a
+        // locked protected wallet does not, so the sweep skips it (F-2).
+        let dir = tempfile::tempdir().unwrap();
+        let store = fresh_store(dir.path());
+
+        let unprotected: WalletSeedHash = [0x10; 32];
+        store_unprotected_hd(&store, &unprotected, &SENTINEL_SEED);
+        let protected: WalletSeedHash = [0x11; 32];
+        store_protected_hd(&store, &protected, &SENTINEL_SEED, SENTINEL_PASSPHRASE);
+
+        // The prompt is never consulted — `can_resolve_without_prompt` must
+        // decide purely from at-rest protection and the session cache.
+        let prompt = Arc::new(TestPrompt::never());
+        let sa = access(store, prompt.clone());
+
+        assert!(
+            sa.can_resolve_without_prompt(&SecretScope::HdSeed {
+                seed_hash: unprotected
+            }),
+            "unprotected scope resolves with no prompt"
+        );
+        let protected_scope = SecretScope::HdSeed {
+            seed_hash: protected,
+        };
+        assert!(
+            !sa.can_resolve_without_prompt(&protected_scope),
+            "locked protected scope would prompt"
+        );
+
+        // Once the seed is session-cached (the user unlocked it), it resolves
+        // without a prompt.
+        sa.remember_session(
+            &protected_scope,
+            SecretPlaintext::HdSeed(&Zeroizing::new(SENTINEL_SEED)),
+            RememberPolicy::UntilAppClose,
+        );
+        assert!(
+            sa.can_resolve_without_prompt(&protected_scope),
+            "session-unlocked protected scope resolves with no prompt"
+        );
+        assert_eq!(prompt.ask_count(), 0, "decision never prompts");
     }
 
     #[tokio::test]

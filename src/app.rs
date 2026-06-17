@@ -7,9 +7,7 @@ use crate::backend_task::error::TaskError;
 use crate::backend_task::migration::MigrationTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
-use crate::context::connection_status::{
-    ConnectionStatus, OverallConnectionState, spv_phase_step, spv_phase_summary,
-};
+use crate::context::connection_status::{ConnectionStatus, OverallConnectionState, spv_phase_step};
 use crate::context::migration_status::{MigrationState, MigrationStep};
 use crate::database::Database;
 #[cfg(not(feature = "testing"))]
@@ -72,37 +70,48 @@ pub const MIGRATION_RETRY_ACTION_ID: &str = "migration:retry:finish_unwire";
 /// convention. Exposed for kittest coverage.
 pub const SPV_CONTINUE_BACKGROUND_ACTION: &str = "spv:sync:continue_background";
 
-/// Generic description shown while connecting with no per-phase progress yet.
+/// Plain, jargon-free descriptions for the SPV-sync block (Everyday-User rule:
+/// no "SPV"/"headers"/"masternodes"/raw heights/percentages — the jargon-free
+/// "Step N of 5" counter carries the granularity). Complete sentences (NFR-2).
 const SPV_CONNECTING_DESCRIPTION: &str = "Connecting to the Dash network.";
+const SPV_SYNCING_DESCRIPTION: &str = "Syncing with the Dash network.";
 
 /// What the per-frame SPV-sync block driver should do with the overlay this
-/// frame, given whether the user chose to continue in the background and the
-/// current connection state. Pure so the policy is unit-testable in isolation
-/// from `AppState`.
+/// frame, given whether a startup/Connect sync is **armed**, whether the user
+/// chose to continue in the background, and the current connection state. Pure so
+/// the policy is unit-testable in isolation from `AppState`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SpvBlockStep {
-    /// Connecting/Syncing and not dismissed: raise (or keep + update) the block.
+    /// Armed, not dismissed, still connecting/syncing: raise (or keep + update).
     Block,
-    /// Episode ended (Synced, Error, or Disconnected): lower the block and reset
-    /// the per-episode dismissal so a fresh sync blocks again (C1).
-    Release,
-    /// Still connecting/syncing but the user chose to continue in the background:
-    /// keep the block lowered without ending the episode (C2 escape).
+    /// Armed episode reached a terminal state (Synced/Error): lower the block and
+    /// DISARM, so subsequent ambient Connecting/Syncing (reconnect, per-block
+    /// catch-up) never re-blocks (F-SPV-A).
+    Disarm,
+    /// Armed but the user chose to continue in the background: keep the block
+    /// lowered without ending the episode (C2 escape).
     Stand,
+    /// Not armed (ambient sync, or already disarmed): ensure no block is shown.
+    Idle,
 }
 
-/// Pure SPV-sync block policy (C1/C2). The block is keyed only to the live
-/// connection state and the per-episode dismissal flag — there is no separate
-/// "armed" flag, so any Connecting/Syncing episode (startup, Connect, or a
-/// reconnect) blocks until usable, failed, disconnected, or dismissed.
-fn spv_block_step(dismissed: bool, state: OverallConnectionState) -> SpvBlockStep {
+/// Pure SPV-sync block policy (F-SPV-A scope gate + C1/C2). The block is **scoped
+/// to user-initiated sync** — armed only on startup auto-start and the Connect
+/// button — so an ambient reconnect or the SPV engine flipping Synced→Syncing on
+/// each new block never hard-blocks a working user. Once an armed episode reaches
+/// a terminal state it disarms and stays disarmed until the next Connect/startup.
+fn spv_block_step(armed: bool, dismissed: bool, state: OverallConnectionState) -> SpvBlockStep {
     use OverallConnectionState as S;
+    if !armed {
+        return SpvBlockStep::Idle;
+    }
     match state {
-        // Usable, failed (banner surfaces the error), or dropped: the episode is
-        // over — lower and re-arm for the next sync.
-        S::Synced | S::Error | S::Disconnected => SpvBlockStep::Release,
-        // Still working: block unless the user is waiting in the background.
-        S::Connecting | S::Syncing => {
+        // Terminal for an armed episode: lower and disarm (banner surfaces Error).
+        S::Synced | S::Error => SpvBlockStep::Disarm,
+        // Still getting connected/synced for this episode: block unless the user
+        // is waiting in the background. Disconnected stays blocking while armed —
+        // it just means we are still trying to connect.
+        S::Connecting | S::Syncing | S::Disconnected => {
             if dismissed {
                 SpvBlockStep::Stand
             } else {
@@ -231,17 +240,21 @@ pub struct AppState {
     previous_connection_state: Option<OverallConnectionState>,
     /// Handle to the current connection status banner, if one is displayed
     connection_banner_handle: Option<BannerHandle>,
-    /// The blocking progress overlay raised while SPV chain sync is in progress
-    /// (Connecting/Syncing), hard-blocking the UI until the chain becomes usable
-    /// (Synced) / fails (Error) / drops (Disconnected), or the user dismisses it.
-    /// The overlay's first real adopter (PR #863 wiring). See
+    /// The blocking progress overlay raised while a **user-initiated** SPV sync
+    /// (startup auto-start / Connect) is getting connected, hard-blocking the UI
+    /// until the chain becomes usable (Synced) or fails (Error), or the user
+    /// dismisses it. The overlay's first real adopter (PR #863 wiring). See
     /// [`Self::update_spv_overlay`].
     spv_overlay: Option<OverlayHandle>,
+    /// Whether a startup/Connect sync episode is **armed** for blocking (F-SPV-A
+    /// scope gate). Armed on boot auto-start and on the Connect button; disarmed
+    /// when the episode reaches a terminal state. Ambient reconnects / per-block
+    /// catch-up are not armed, so they never hard-block a working user.
+    spv_block_armed: bool,
     /// Set when the user clicks the overlay's "Continue in the background" escape
     /// (C1/C2 — SPV sync is unbounded, so the block must never trap the user). The
-    /// block stays down for the rest of *this* sync episode; sync continues in the
-    /// background. Reset when the episode ends (Synced/Error/Disconnected) so a
-    /// fresh sync blocks again.
+    /// block stays down for the rest of *this* armed episode; sync continues in
+    /// the background. Reset when the episode disarms (Synced/Error).
     spv_overlay_dismissed: bool,
     /// Handle to the current data-migration banner, if one is displayed.
     /// Kept so per-frame reconciliation can update text in place
@@ -736,6 +749,9 @@ impl AppState {
             previous_connection_state: None,
             connection_banner_handle: None,
             spv_overlay: None,
+            // Arm the block for the boot SPV sync when it auto-starts (F-SPV-A:
+            // scoped to user-initiated sync, not ambient reconnect).
+            spv_block_armed: boot_auto_start_spv,
             spv_overlay_dismissed: false,
             migration_banner_handle: None,
             last_migration_state: None,
@@ -961,6 +977,7 @@ impl AppState {
         // bookkeeping so its handle never goes stale against the cleared `ctx.data`.
         ProgressOverlay::clear_all_global(app_context.egui_ctx());
         self.spv_overlay = None;
+        self.spv_block_armed = false;
         self.spv_overlay_dismissed = false;
 
         for screen in self.main_screens.values_mut() {
@@ -1116,34 +1133,41 @@ impl AppState {
     }
 
     /// Drive the blocking SPV-sync overlay each frame (Task 9 — the overlay's
-    /// first real adopter, PR #863 wiring). Hard-block the UI while the active
-    /// context's chain sync is Connecting/Syncing, showing the live per-phase
-    /// summary and a "Step N of 5" counter, and lower it when the chain becomes
-    /// usable (Synced), fails (Error), or drops (Disconnected).
+    /// first real adopter, PR #863 wiring). Hard-block the UI while a **armed**
+    /// (user-initiated: startup auto-start / Connect) sync is getting connected,
+    /// showing a plain please-wait sentence and a jargon-free "Step N of 5"
+    /// counter, and lower + DISARM it when the chain becomes usable (Synced) or
+    /// fails (Error).
     ///
-    /// C1/C2 contract: SPV sync is **unbounded** — with no peers it stays
+    /// F-SPV-A: the block is scoped to user-initiated sync, so an ambient
+    /// reconnect or the SPV engine flipping Synced→Syncing on each new block never
+    /// hard-blocks a working user — once disarmed it stays disarmed.
+    ///
+    /// C2 contract: SPV sync is **unbounded** — with no peers it stays
     /// Connecting/Syncing forever with no terminal signal — so a button-less block
     /// would trap the user. The block therefore carries a "Continue in the
     /// background" escape ([`SPV_CONTINUE_BACKGROUND_ACTION`]); clicking it lowers
     /// the block while sync proceeds safely in the background (read-only — nothing
-    /// is stranded). It also always lowers on its own when the episode ends.
+    /// is stranded).
     ///
     /// Raises the overlay at most once per episode (then updates content in place
     /// via the handle), so it never `show_global`s every frame.
     fn update_spv_overlay(&mut self, ctx: &egui::Context, app_context: &Arc<AppContext>) {
         let cs = app_context.connection_status();
         let state = cs.overall_state();
-        match spv_block_step(self.spv_overlay_dismissed, state) {
+        match spv_block_step(self.spv_block_armed, self.spv_overlay_dismissed, state) {
             SpvBlockStep::Block => {
-                let progress = cs.spv_sync_progress();
-                let description = progress
-                    .as_ref()
-                    .map(spv_phase_summary)
-                    .unwrap_or_else(|| SPV_CONNECTING_DESCRIPTION.to_string());
-                let step = progress.as_ref().and_then(spv_phase_step);
+                // F-SPV-B: plain, jargon-free copy — the determinate granularity is
+                // the "Step N of 5" counter, NOT raw phase names / heights / %.
+                let step = cs.spv_sync_progress().as_ref().and_then(spv_phase_step);
+                let description = if step.is_some() {
+                    SPV_SYNCING_DESCRIPTION
+                } else {
+                    SPV_CONNECTING_DESCRIPTION
+                };
                 if self.spv_overlay.is_none() {
                     let mut config = OverlayConfig::new()
-                        .with_description(&description)
+                        .with_description(description)
                         .with_secondary_button(
                             SPV_CONTINUE_BACKGROUND_ACTION,
                             "Continue in the background",
@@ -1153,7 +1177,7 @@ impl AppState {
                     }
                     self.spv_overlay.raise(ctx, "", config);
                 } else if let Some(handle) = &self.spv_overlay {
-                    handle.set_description(&description);
+                    handle.set_description(description);
                     match step {
                         Some(n) => {
                             handle.set_step(n, 5);
@@ -1164,14 +1188,21 @@ impl AppState {
                     }
                 }
             }
-            SpvBlockStep::Release => {
-                // Episode over: lower and re-arm so a fresh sync blocks again (C1).
+            SpvBlockStep::Disarm => {
+                // Armed episode ended (Synced/Error): lower and disarm so ambient
+                // Connecting/Syncing never re-blocks (F-SPV-A). Re-arm the escape
+                // for the next user-initiated sync.
                 self.spv_overlay.take_and_clear();
+                self.spv_block_armed = false;
                 self.spv_overlay_dismissed = false;
             }
             SpvBlockStep::Stand => {
                 // User chose to continue in the background: stay lowered, but keep
-                // the dismissal so we don't re-raise within this episode (C2).
+                // the episode armed + dismissed so we don't re-raise within it (C2).
+                self.spv_overlay.take_and_clear();
+            }
+            SpvBlockStep::Idle => {
+                // Not armed (ambient sync, or already disarmed): never block.
                 self.spv_overlay.take_and_clear();
             }
         }
@@ -1333,11 +1364,18 @@ impl AppState {
         self.active_secret_prompt = active.then(ActivePrompt::test_stub);
     }
 
+    /// Test seam (Task 9 / F-SPV-A): arm a user-initiated SPV-sync block episode,
+    /// as the boot auto-start and the Connect button do.
+    #[cfg(feature = "testing")]
+    pub fn test_arm_spv_block(&mut self) {
+        self.spv_block_armed = true;
+        self.spv_overlay_dismissed = false;
+    }
+
     /// Test seam (Task 9): run the REAL `update_spv_overlay` driver once against
     /// the active context's (forced) connection state, in isolation from the
-    /// throttled frame loop. Lets a kittest assert the block raises while
-    /// connecting, lowers when usable/failed/disconnected, and lowers on the
-    /// "continue in the background" escape.
+    /// throttled frame loop. Lets a kittest assert that an armed episode blocks,
+    /// disarms on a terminal state, and that ambient (un-armed) sync never blocks.
     #[cfg(feature = "testing")]
     pub fn test_drive_spv_overlay(&mut self, ctx: &egui::Context) {
         let app_context = self.current_app_context().clone();
@@ -1836,12 +1874,18 @@ impl App for AppState {
                     self.set_main_screen(root_screen_type);
                 }
                 AppAction::StartSpv => {
+                    // Arm the SPV-sync block for this user-initiated Connect (a
+                    // fresh episode — re-arm the escape). The block conveys the
+                    // "connecting" state, so no separate Info banner is set here
+                    // (F-SPV-E: a dropped Info-banner handle could not be cleared
+                    // by the overlay's banner suppression).
+                    self.spv_block_armed = true;
+                    self.spv_overlay_dismissed = false;
                     let app_ctx = self.current_app_context().clone();
                     let sender = self.task_result_sender.clone();
                     let egui_ctx = ctx.clone();
                     const CONNECTING_MSG: &str =
                         "Connecting to the network. This may take a moment.";
-                    MessageBanner::set_global(ctx, CONNECTING_MSG, MessageType::Info);
                     self.subtasks.spawn_sync("spv_manual_start", async move {
                         // The chokepoint already flips the SPV indicator to Error
                         // on failure; here we additionally swap the "Connecting…"
@@ -1971,40 +2015,66 @@ mod migration_banner_tests {
 mod spv_overlay_tests {
     use super::*;
 
-    /// Connecting/Syncing and not dismissed → hard block.
+    const ALL_STATES: [OverallConnectionState; 5] = [
+        OverallConnectionState::Disconnected,
+        OverallConnectionState::Connecting,
+        OverallConnectionState::Syncing,
+        OverallConnectionState::Synced,
+        OverallConnectionState::Error,
+    ];
+
+    /// F-SPV-A — UN-armed (ambient sync, or already disarmed): NEVER block, for
+    /// every state and dismissal. This is the regression guard: a mid-session
+    /// reconnect or per-block Synced→Syncing flip must not hard-block.
     #[test]
-    fn connecting_or_syncing_blocks_when_not_dismissed() {
-        for state in [
-            OverallConnectionState::Connecting,
-            OverallConnectionState::Syncing,
-        ] {
-            assert_eq!(spv_block_step(false, state), SpvBlockStep::Block);
+    fn unarmed_never_blocks() {
+        for dismissed in [false, true] {
+            for state in ALL_STATES {
+                assert_eq!(
+                    spv_block_step(false, dismissed, state),
+                    SpvBlockStep::Idle,
+                    "un-armed {state:?} (dismissed={dismissed}) must not block"
+                );
+            }
         }
     }
 
-    /// C2 escape — dismissed during Connecting/Syncing → Stand (no block), but the
-    /// episode is NOT ended (sync keeps running; the user is just not trapped).
+    /// Armed + getting-connected (Connecting/Syncing/Disconnected) + not dismissed
+    /// → hard block.
     #[test]
-    fn dismissed_stands_down_without_ending_episode() {
+    fn armed_blocks_while_getting_connected() {
         for state in [
+            OverallConnectionState::Disconnected,
             OverallConnectionState::Connecting,
             OverallConnectionState::Syncing,
         ] {
-            assert_eq!(spv_block_step(true, state), SpvBlockStep::Stand);
+            assert_eq!(spv_block_step(true, false, state), SpvBlockStep::Block);
         }
     }
 
-    /// C1 — episode-ending states (usable, failed, disconnected) always release
-    /// and re-arm, regardless of whether the user had dismissed the block.
+    /// C2 escape — armed + dismissed + getting-connected → Stand (no block, episode
+    /// kept armed so sync keeps running and the user is just not trapped).
     #[test]
-    fn terminal_states_always_release() {
+    fn armed_dismissed_stands_down_without_disarming() {
+        for state in [
+            OverallConnectionState::Disconnected,
+            OverallConnectionState::Connecting,
+            OverallConnectionState::Syncing,
+        ] {
+            assert_eq!(spv_block_step(true, true, state), SpvBlockStep::Stand);
+        }
+    }
+
+    /// C1 / F-SPV-A — armed + terminal (Synced/Error) → Disarm, regardless of
+    /// dismissal: lower and disarm so ambient sync afterwards never re-blocks.
+    #[test]
+    fn armed_terminal_state_disarms() {
         for dismissed in [false, true] {
             for state in [
                 OverallConnectionState::Synced,
                 OverallConnectionState::Error,
-                OverallConnectionState::Disconnected,
             ] {
-                assert_eq!(spv_block_step(dismissed, state), SpvBlockStep::Release);
+                assert_eq!(spv_block_step(true, dismissed, state), SpvBlockStep::Disarm);
             }
         }
     }
@@ -2017,5 +2087,21 @@ mod spv_overlay_tests {
             SPV_CONTINUE_BACKGROUND_ACTION,
             "spv:sync:continue_background"
         );
+    }
+
+    /// F-SPV-B — the block descriptions are jargon-free complete sentences (no
+    /// "SPV"/"headers"/"masternodes"/raw heights/percentages).
+    #[test]
+    fn descriptions_are_jargon_free_sentences() {
+        for desc in [SPV_CONNECTING_DESCRIPTION, SPV_SYNCING_DESCRIPTION] {
+            assert!(desc.ends_with('.'), "`{desc}` must be a complete sentence");
+            let lower = desc.to_lowercase();
+            for jargon in ["header", "masternode", "filter", "spv", "rpc", "%", "/"] {
+                assert!(
+                    !lower.contains(jargon),
+                    "`{desc}` leaks blockchain jargon `{jargon}` to the Everyday User"
+                );
+            }
+        }
     }
 }

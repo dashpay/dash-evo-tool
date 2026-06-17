@@ -1142,7 +1142,7 @@ As a user, while a long operation that is unsafe to interrupt is running (broadc
 
 As a user, while the app connects to and syncs the Dash chain on startup or after I press Connect, I want a clear please-wait block so I know it is working — and because that sync can wait indefinitely for peers, I want an always-visible "Continue in the background" button so I am never trapped behind it.
 
-- While the active network is Connecting or Syncing, a full-window block appears showing the live sync phase (e.g. "Headers: 12345 / 27000 (45%)") and a "Step N of 5" counter (Headers → Masternodes → Filter Headers → Filters → Blocks).
+- While that startup/Connect sync is getting connected, a full-window block appears with a plain please-wait sentence ("Connecting to the Dash network." / "Syncing with the Dash network.") and a friendly progress indicator ("Step N of 5") — no blockchain jargon, raw heights, or percentages.
 - The block always offers a secondary "Continue in the background" button. Clicking it lowers the block; sync keeps running in the background (it is read-only and strands nothing), and the block is not re-raised for the rest of that sync episode.
-- The block lowers on its own when the chain becomes usable (Synced), fails (Error), or drops (Disconnected); a fresh sync episode blocks again.
+- The block is scoped to *user-initiated* sync (startup auto-start / Connect): it lowers on its own when the chain becomes usable (Synced) or fails (Error), and an **ambient** reconnect or per-block catch-up afterward does not block a working user. Pressing Connect (or a fresh startup) blocks again.
 - This is the overlay's first real adopter (PR #863). Unlike the unsafe-to-interrupt operations in UX-001, SPV sync is **unbounded but safe to background** — so its C2 "never trap the user" guarantee is met by the always-on escape, not by operation boundedness.

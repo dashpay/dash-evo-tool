@@ -1198,14 +1198,15 @@ fn rq1_appstate_secret_prompt_gate_keeps_prompt_typeable_over_overlay() {
 
 // ── Task 9: SPV-sync blocking overlay (startup + Connect) ────────────────────
 
-/// Task 9 — the SPV-sync block raises while Connecting/Syncing, lowers
-/// automatically when the chain becomes usable (C1), lowers on the "Continue in
-/// the background" escape without re-raising in the same episode (C2), and
-/// re-raises for a fresh sync episode. Drives the REAL `AppState::update_spv_overlay`
-/// against a forced connection state.
+/// Task 9 / F-SPV-A — the SPV-sync block is SCOPED to a user-initiated (armed)
+/// episode: an armed Connecting/Syncing blocks; an UN-armed (ambient) reconnect or
+/// per-block Synced→Syncing flip does NOT block; an armed episode disarms on a
+/// terminal state and stays disarmed; the escape lowers it without re-raising; and
+/// only a fresh armed episode re-blocks. Jargon-free copy (F-SPV-B). Drives the
+/// REAL `AppState::update_spv_overlay` against a forced connection state.
 #[cfg(feature = "testing")]
 #[test]
-fn task9_spv_overlay_blocks_lowers_on_synced_and_on_escape() {
+fn task9_spv_overlay_armed_scope_disarm_and_escape() {
     use dash_evo_tool::context::connection_status::OverallConnectionState;
     crate::support::with_isolated_data_dir(|| {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
@@ -1222,14 +1223,21 @@ fn task9_spv_overlay_blocks_lowers_on_synced_and_on_escape() {
         let app_context = app.current_app_context().clone();
         let set_state = |s| app_context.connection_status().set_overall_state(s);
 
-        // Connecting → the block raises (no separate "armed" flag; it keys off state).
+        // F-SPV-A regression guard: an UN-armed Connecting must NOT block (ambient).
         set_state(OverallConnectionState::Connecting);
         app.test_drive_spv_overlay(&harness.ctx);
         assert!(
-            ProgressOverlay::has_global(&harness.ctx),
-            "the block raises while connecting"
+            !ProgressOverlay::has_global(&harness.ctx),
+            "an un-armed (ambient) connecting sync must NOT hard-block the user"
         );
-        // The escape button is a SECONDARY button labelled "Continue in the background".
+
+        // Arm a user-initiated episode (startup / Connect) → Connecting blocks.
+        app.test_arm_spv_block();
+        app.test_drive_spv_overlay(&harness.ctx);
+        assert!(
+            ProgressOverlay::has_global(&harness.ctx),
+            "an armed connecting sync raises the block"
+        );
         harness.step();
         harness.step();
         harness.step();
@@ -1237,30 +1245,41 @@ fn task9_spv_overlay_blocks_lowers_on_synced_and_on_escape() {
             harness
                 .query_by_label("Continue in the background")
                 .is_some(),
-            "the escape button renders on the sync block"
+            "the secondary 'Continue in the background' escape button renders"
+        );
+        // F-SPV-B: no blockchain jargon leaks into the description.
+        assert!(
+            harness.query_by_label_contains("Headers:").is_none()
+                && harness.query_by_label_contains("Masternodes:").is_none(),
+            "the block description must be jargon-free"
         );
 
-        // C1 — usable: the block lowers on its own.
+        // C1 / F-SPV-A: Synced → lowers AND DISARMS.
         set_state(OverallConnectionState::Synced);
         app.test_drive_spv_overlay(&harness.ctx);
         assert!(
             !ProgressOverlay::has_global(&harness.ctx),
-            "the block lowers automatically once synced"
+            "the block lowers when synced"
         );
 
-        // A fresh episode (back to Connecting) re-raises the block.
+        // After disarm, ambient Connecting/Syncing (reconnect, per-block catch-up)
+        // must NOT re-block — the core F-SPV-A fix.
+        set_state(OverallConnectionState::Syncing);
+        app.test_drive_spv_overlay(&harness.ctx);
+        assert!(
+            !ProgressOverlay::has_global(&harness.ctx),
+            "ambient syncing after the episode disarmed must NOT re-block"
+        );
+
+        // C2 escape: arm a fresh episode, block, click escape → lowers and stays
+        // down for the rest of THIS episode even though sync is still in progress.
+        app.test_arm_spv_block();
         set_state(OverallConnectionState::Connecting);
         app.test_drive_spv_overlay(&harness.ctx);
         harness.step();
         harness.step();
         harness.step();
-        assert!(
-            ProgressOverlay::has_global(&harness.ctx),
-            "a fresh sync episode re-raises the block"
-        );
-
-        // C2 — click the escape: the block lowers even though sync is still
-        // (unbounded) in progress, so the user is never trapped...
+        assert!(ProgressOverlay::has_global(&harness.ctx));
         harness.get_by_label("Continue in the background").click();
         harness.step();
         app.test_drive_spv_overlay(&harness.ctx);
@@ -1268,21 +1287,26 @@ fn task9_spv_overlay_blocks_lowers_on_synced_and_on_escape() {
             !ProgressOverlay::has_global(&harness.ctx),
             "the escape lowers the block (user never trapped)"
         );
-        // ...and it stays down for the rest of THIS episode (still Connecting).
         app.test_drive_spv_overlay(&harness.ctx);
         assert!(
             !ProgressOverlay::has_global(&harness.ctx),
             "the block is not re-raised within the dismissed episode"
         );
 
-        // A new episode (Disconnected resets the dismissal, then Connecting) re-raises.
+        // Only a fresh ARMED episode re-blocks; an ambient one still does not.
         set_state(OverallConnectionState::Disconnected);
         app.test_drive_spv_overlay(&harness.ctx);
         set_state(OverallConnectionState::Connecting);
         app.test_drive_spv_overlay(&harness.ctx);
         assert!(
+            !ProgressOverlay::has_global(&harness.ctx),
+            "ambient connecting (no fresh arm) must NOT block"
+        );
+        app.test_arm_spv_block();
+        app.test_drive_spv_overlay(&harness.ctx);
+        assert!(
             ProgressOverlay::has_global(&harness.ctx),
-            "after the episode ends and a new sync begins, the block re-raises"
+            "a fresh armed episode re-blocks"
         );
     });
 }

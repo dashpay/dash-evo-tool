@@ -1311,6 +1311,12 @@ impl App for AppState {
                                 DashPayTask::DetectIncomingContactPayments { outputs },
                             )));
                         }
+                        BackendTaskSuccessResult::PlatformReadyDiscoverIdentities => {
+                            // Platform is reachable: run the automatic all-wallets
+                            // identity discovery sweep. The latch inside makes it a
+                            // no-op if it already ran this session.
+                            active_context.queue_all_wallets_identity_discovery();
+                        }
                         BackendTaskSuccessResult::Message(ref msg) => {
                             // TODO(RUST-002): Some screens inspect Message text for error
                             // keywords and may override with an Error banner, causing a

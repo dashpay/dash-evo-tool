@@ -514,6 +514,16 @@ As a user, I want to register or top up an identity by scanning a QR code or sup
 
 **Rationale:** No upstream funding-outpoint API exists in `platform-wallet` at PR #3625 head. The capability cannot be preserved or emulated; all asset-lock funding is upstream-authoritative wallet-managed selection. Superseded by funding from wallet balance (`WalletBackend::create_asset_lock_proof`). Disclosed via the one-time post-migration informational notice shown to all migrated users.
 
+### IDN-015: Automatic identity discovery after sync [Implemented]
+**Persona:** Alex, Priya
+
+As a user, I want my wallet's identities to be found and loaded automatically once the app finishes connecting, so that I do not have to open the "Load Identity → By Wallet" screen and search manually.
+
+- After the network is ready, every unlocked wallet is searched automatically once per session.
+- The search uses a rolling five-index lookahead, going deeper each time an identity is found, so identities at non-contiguous indices are discovered.
+- Already-loaded identities are refreshed (new keys, new DPNS names) while any alias the user assigned is preserved.
+- Locked, password-protected wallets are skipped without prompting; they are searched after the user unlocks them.
+
 ---
 
 ## DPNS (DPN)

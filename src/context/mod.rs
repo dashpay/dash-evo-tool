@@ -75,6 +75,11 @@ pub struct AppContext {
     pub(crate) keyword_search_contract: Arc<DataContract>,
     pub(crate) core_client: RwLock<Client>,
     pub(crate) has_wallet: AtomicBool,
+    /// One-shot-per-session latch for the automatic all-wallets identity sweep.
+    /// Set the first time Platform becomes reachable (masternode list `Synced`)
+    /// so the sweep runs once; cleared in
+    /// [`stop_spv`](Self::stop_spv) so a reconnect re-arms it.
+    identity_autodiscovery_fired: AtomicBool,
     pub(crate) wallets: RwLock<BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>>>,
     pub(crate) single_key_wallets: RwLock<BTreeMap<SingleKeyHash, Arc<RwLock<SingleKeyWallet>>>>,
     /// Whether to animate the UI elements.
@@ -340,6 +345,7 @@ impl AppContext {
             keyword_search_contract: Arc::new(keyword_search_contract),
             core_client: core_client.into(),
             has_wallet: (!wallets.is_empty() || !single_key_wallets.is_empty()).into(),
+            identity_autodiscovery_fired: AtomicBool::new(false),
             wallets: RwLock::new(wallets),
             single_key_wallets: RwLock::new(single_key_wallets),
             animate,

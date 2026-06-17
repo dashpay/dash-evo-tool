@@ -99,6 +99,7 @@ use platform_wallet_storage::secrets::SecretStore;
 use platform_wallet_storage::{SqlitePersister, SqlitePersisterConfig};
 
 use crate::app::TaskResult;
+use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::context::connection_status::ConnectionStatus;
@@ -212,6 +213,10 @@ struct Inner {
     /// Shared with the `EventBridge`: `start` arms it, the bridge fires it when
     /// the masternode list reaches `Synced`. See [`CoordinatorGate`].
     coordinator_gate: Arc<CoordinatorGate>,
+    /// Frame-loop result channel, used by [`WalletBackend::start`] to nudge
+    /// `AppState` to run the all-wallets identity sweep once Platform is ready.
+    /// A cheap owned clone of the same sender the `EventBridge` holds.
+    task_result_sender: SenderAsync<TaskResult>,
 }
 
 /// The single wallet entry point. See module docs.
@@ -268,7 +273,7 @@ impl WalletBackend {
 
         let bridge = Arc::new(EventBridge::new(
             connection_status,
-            task_result_sender,
+            task_result_sender.clone(),
             Arc::clone(&snapshots),
             Arc::clone(&coordinator_gate),
             // Phase E push writer: the shielded sync-completed callback writes
@@ -321,6 +326,7 @@ impl WalletBackend {
                 secret_access,
                 start_latch: StartLatch::default(),
                 coordinator_gate,
+                task_result_sender,
             }),
         };
 
@@ -978,6 +984,12 @@ impl WalletBackend {
         // If no wallets have called `bind_shielded` yet, each pass produces
         // an empty summary and returns immediately — safe no-op.
         let shielded_sync = Arc::downgrade(&self.inner.pwm.shielded_sync_arc());
+        // Owned clone of the frame-loop sender: the gate closure fires exactly
+        // once per session (single-winner `fired`), so this nudges `AppState` to
+        // run the all-wallets identity sweep at most once, right when Platform
+        // is provably reachable. Cloning the sender avoids capturing any
+        // `Weak<AppContext>` in this run-loop closure.
+        let task_result_sender = self.inner.task_result_sender.clone();
         self.inner.coordinator_gate.arm(Box::new(move || {
             match platform_address_sync.upgrade() {
                 Some(coordinator) => coordinator.start(),
@@ -1000,6 +1012,12 @@ impl WalletBackend {
                     "Coordinator start skipped: backend torn down before the quorum gate fired"
                 ),
             }
+            // Platform is reachable now — ask the frame loop to start the
+            // all-wallets identity discovery sweep. Non-blocking; if the channel
+            // is full the next refresh tick re-delivers readiness state.
+            let _ = task_result_sender.try_send(TaskResult::Success(Box::new(
+                BackendTaskSuccessResult::PlatformReadyDiscoverIdentities,
+            )));
         }));
 
         Ok(())

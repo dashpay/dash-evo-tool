@@ -253,6 +253,12 @@ pub enum BackendTaskSuccessResult {
     /// address map and records the ones that match a contact. Non-DashPay
     /// outputs are silently ignored, so this carries every received output.
     DashPayIncomingDetected(Vec<crate::model::dashpay::DetectedIncomingOutput>),
+    /// Platform became reachable (masternode list `Synced`), so the wallet
+    /// backend asked the frame loop to start the automatic all-wallets identity
+    /// discovery sweep. Emitted once per SPV session from the `CoordinatorGate`
+    /// fire; the app responds by calling
+    /// [`queue_all_wallets_identity_discovery`](crate::context::AppContext::queue_all_wallets_identity_discovery).
+    PlatformReadyDiscoverIdentities,
     /// Auto-accept contact QR payload, ready to render. The proof is built
     /// through the JIT chokepoint in the backend so the UI never touches a seed.
     DashPayAutoAcceptQrCode(String),

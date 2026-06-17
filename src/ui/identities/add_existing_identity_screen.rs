@@ -642,9 +642,7 @@ impl AddExistingIdentityScreen {
 
             let identity_index_label = match self.wallet_search_mode {
                 WalletIdentitySearchMode::SpecificIndex => "Identity index:",
-                WalletIdentitySearchMode::UpToIndex => {
-                    "Highest identity index to search (inclusive, max 29):"
-                }
+                WalletIdentitySearchMode::UpToIndex => "Search depth to start from:",
             };
 
             ui.horizontal(|ui| {
@@ -658,7 +656,7 @@ impl AddExistingIdentityScreen {
                 }
                 WalletIdentitySearchMode::UpToIndex => {
                     ui.label(
-                        "Searches each derivation index starting at 0 up to the provided index (inclusive).",
+                        "Searches from index 0 with a rolling five-index lookahead, going deeper each time an identity is found. The number sets the minimum depth to search.",
                     );
                 }
             }

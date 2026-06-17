@@ -390,6 +390,9 @@ impl AppContext {
         // set would let early proof calls through before quorums exist again,
         // re-triggering the DAPI self-ban storm.
         self.connection_status.set_masternodes_ready(false);
+        // Re-arm the automatic identity sweep so it runs once per session.
+        self.identity_autodiscovery_fired
+            .store(false, std::sync::atomic::Ordering::SeqCst);
         self.connection_status.refresh_state();
     }
 
@@ -954,6 +957,75 @@ impl AppContext {
             self.subtasks
                 .spawn_sync("shielded_bind_after_protocol_update", async move {
                     ctx.bootstrap_wallet_addresses_jit(&wallet).await;
+                });
+        }
+    }
+
+    /// Queue automatic, gap-limited identity discovery for every open wallet,
+    /// once per SPV session.
+    ///
+    /// Fired when Platform becomes reachable (masternode list `Synced`). A
+    /// single [`AtomicBool`](std::sync::atomic::AtomicBool) latch makes it run at
+    /// most once per session — a re-entrant nudge (e.g. a repeated readiness
+    /// event) is a no-op until [`stop_spv`](Self::stop_spv) clears the latch on
+    /// the next reconnect.
+    ///
+    /// Locked, password-protected wallets are skipped here: the sweep runs with
+    /// `allow_prompt = false`, so it never pops a passphrase modal for a wallet
+    /// the user has not unlocked. Such a wallet is picked up later, with the
+    /// user's consent, when it is unlocked
+    /// (see [`Self::queue_wallet_identity_discovery`]).
+    pub fn queue_all_wallets_identity_discovery(self: &Arc<Self>) {
+        use std::sync::atomic::Ordering;
+
+        // One-shot per session: skip if already fired.
+        if self
+            .identity_autodiscovery_fired
+            .swap(true, Ordering::SeqCst)
+        {
+            tracing::debug!("All-wallets identity discovery already ran this session; skipping");
+            return;
+        }
+
+        // Snapshot only open wallets — a locked protected wallet hydrates closed
+        // (`is_open() == false`) and is skipped so the background sweep cannot
+        // trigger a passphrase prompt.
+        let open_wallets: Vec<Arc<RwLock<Wallet>>> = self
+            .wallets
+            .read()
+            .ok()
+            .map(|wallets| {
+                wallets
+                    .values()
+                    .filter(|w| w.read().ok().map(|g| g.is_open()).unwrap_or(false))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        if open_wallets.is_empty() {
+            tracing::debug!("No open wallets to run automatic identity discovery for");
+            return;
+        }
+
+        tracing::info!(
+            wallet_count = open_wallets.len(),
+            "Starting automatic identity discovery for all open wallets"
+        );
+
+        for wallet in open_wallets {
+            let ctx = Arc::clone(self);
+            self.subtasks
+                .spawn_sync("all_wallets_identity_discovery", async move {
+                    if let Err(error) = ctx
+                        .discover_identities_gap_limited(&wallet, 0, false, None)
+                        .await
+                    {
+                        tracing::warn!(
+                            %error,
+                            "Automatic identity discovery failed for a wallet"
+                        );
+                    }
                 });
         }
     }

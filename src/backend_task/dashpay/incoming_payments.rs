@@ -3,11 +3,12 @@ use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::dashpay::ContactAddressIndex;
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::wallet::WalletSeedHash;
 use dash_sdk::dpp::dashcore::{Address, Network};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::Identifier;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
 /// Default gap limit for DashPay address derivation
@@ -232,6 +233,57 @@ pub async fn register_dashpay_addresses_for_identity(
     }
 
     Ok(result)
+}
+
+/// Register each established contact's upstream DIP-15 receiving account so the
+/// SPV layer watches the addresses that contact pays us at.
+///
+/// This is the "open the faucet" counterpart to
+/// [`detect_incoming_contact_payments`]: with no receiving account registered, a
+/// contact's pay-to-us addresses are never watched, so the wallet emits no
+/// transaction event for a real incoming contact payment and the detection path
+/// stays dormant. Registration derives the account extended public key only — it
+/// needs no seed and never prompts for a passphrase — and is idempotent
+/// (re-registering overwrites with an identical account).
+///
+/// Best-effort: a per-contact failure is logged and skipped so loading the
+/// contact list still completes. Funds remain derivable from the seed, so a
+/// transient failure here only delays visibility until the next refresh.
+pub(super) async fn watch_established_contact_accounts(
+    app_context: &Arc<AppContext>,
+    seed_hash: WalletSeedHash,
+    owner_id: &Identifier,
+    contacts: &HashSet<Identifier>,
+) {
+    if contacts.is_empty() {
+        return;
+    }
+    let backend = match app_context.wallet_backend() {
+        Ok(backend) => backend,
+        Err(e) => {
+            tracing::debug!(
+                error = ?e,
+                "Wallet backend unavailable; skipping contact receiving-account registration"
+            );
+            return;
+        }
+    };
+
+    for contact_id in contacts {
+        // Account 0: upstream `DashpayReceivingFunds` hardcodes account 0' in its
+        // derivation path, and every DET caller has only ever used account 0.
+        if let Err(e) = backend
+            .register_dashpay_contact(&seed_hash, owner_id, contact_id, 0)
+            .await
+        {
+            tracing::debug!(
+                contact = %contact_id.to_string(Encoding::Base58),
+                error = ?e,
+                "Could not register a contact's receiving account for watching; \
+                 incoming payments from this contact may stay invisible until the next refresh"
+            );
+        }
+    }
 }
 
 /// Helper: stamp `bloom_registered_count = count` onto the persisted

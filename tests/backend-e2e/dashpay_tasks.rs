@@ -500,6 +500,47 @@ async fn step_register_dashpay_addresses(
     }
 }
 
+/// Verify the SPV-watch faucet against a real wallet: registering a contact's
+/// upstream DIP-15 receiving account succeeds and is idempotent.
+///
+/// This is the half of PROJ-027 that `tc_045` cannot prove — `tc_045` injects an
+/// address mapping into the sidecar and feeds synthetic outputs, so it exercises
+/// match/record only. This step drives the actual `register_dashpay_contact`
+/// seam that `load_contacts` now calls for every established contact, which is
+/// what makes the wallet watch the addresses the contact pays us at.
+async fn step_register_contact_account_for_watching(
+    ctx: &crate::framework::harness::BackendTestContext,
+    pair: &fixtures::SharedDashPayPair,
+) {
+    tracing::info!("=== Step: register contact receiving account for watching ===");
+
+    let owner_id = pair.identity_b.identity.id();
+    let contact_id = pair.identity_a.identity.id();
+    let seed_hash = pair
+        .identity_b
+        .dashpay_wallet_seed_hash()
+        .expect("identity B must have a DashPay wallet");
+
+    let backend = ctx
+        .app_context
+        .wallet_backend()
+        .expect("wallet backend wired");
+
+    // First registration must succeed against the live wallet (xpub-only —
+    // no seed, no passphrase prompt).
+    backend
+        .register_dashpay_contact(&seed_hash, &owner_id, &contact_id, 0)
+        .await
+        .expect("registering a contact receiving account should succeed");
+
+    // Idempotent: a second registration re-derives the same account and
+    // overwrites in place, so it must also succeed.
+    backend
+        .register_dashpay_contact(&seed_hash, &owner_id, &contact_id, 0)
+        .await
+        .expect("re-registering the same contact account should be idempotent");
+}
+
 async fn step_update_contact_info(
     ctx: &crate::framework::harness::BackendTestContext,
     pair: &fixtures::SharedDashPayPair,
@@ -680,6 +721,8 @@ async fn tc_037_dashpay_contact_lifecycle() {
             other => panic!("TC-037: expected DashPayContacts*, got: {:?}", other),
         }
     }
+
+    step_register_contact_account_for_watching(ctx, pair).await;
 
     step_register_dashpay_addresses(ctx, pair).await;
 

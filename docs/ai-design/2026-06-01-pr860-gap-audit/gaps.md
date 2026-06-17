@@ -282,6 +282,23 @@ context provider; the previously-ignored `network` field is now used.
 
 **RESOLVED 2026-06-11** (`910f8833` + `dc94bba6`): incoming contact payment detection wired and recording implemented; per-output payment keying and related QA fixes in `dc94bba6`. Original finding follows.
 
+**FOLLOW-UP 2026-06-17** (watch-registration faucet): the 2026-06-11 fix wired only the
+*detection* half (`EventBridge` -> `detect_incoming_contact_payments`); the *watch-registration*
+half it depends on was left unwired — `register_dashpay_contact` still had **zero callers** (see
+the 2026-06-10 note flagging PROJ-009 incomplete for the same reason). With the receiving account
+never registered upstream, SPV never watched a contact's pay-to-us addresses, so no
+`TransactionDetected` ever fired for a real incoming contact payment and the detection path stayed
+dormant on a live wallet — `tc_045` passed only because it injects the sidecar mapping and feeds
+synthetic outputs. Now wired: `load_contacts`
+(`src/backend_task/dashpay/contacts.rs`) registers every established (mutual) contact's
+`DashpayReceivingFunds` account via `watch_established_contact_accounts` ->
+`WalletBackend::register_dashpay_contact` on every contact-list load/sync — xpub-only (no seed, no
+passphrase prompt), idempotent, best-effort. Incoming contact funds are now watched and credited to
+the balance. Residual: per-contact *attribution* into DashPay payment history still depends on the
+DET sidecar address-map (`dashpay_set_address_mapping`), whose only populator
+(`register_dashpay_addresses_for_identity`) is seed-bearing and so is not auto-run from a background
+path (F-2 locked-wallet prompt hazard); balance/spendability does not depend on it.
+
 - **v0.10-dev:** the ZMQ tx-finality path auto-detected payments to DashPay contact receive
   addresses, credited the UTXO, advanced the receive index, and recorded a "received"
   payment-history row — OLD `src/context/transaction_processing.rs:183` (`insert_utxo`),

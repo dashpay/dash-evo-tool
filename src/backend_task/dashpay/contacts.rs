@@ -354,6 +354,21 @@ pub async fn load_contacts(
         }
     }
 
+    // Open the SPV faucet for incoming contact payments: register every
+    // established (mutual) contact's receiving account upstream so the wallet
+    // watches the addresses they pay us at. Without this the detection path
+    // (`EventBridge` -> `detect_incoming_contact_payments`) never sees a real
+    // incoming contact payment. xpub-only, idempotent, best-effort.
+    if let Some(seed_hash) = identity.dashpay_wallet_seed_hash() {
+        super::incoming_payments::watch_established_contact_accounts(
+            app_context,
+            seed_hash,
+            &identity_id,
+            &contacts,
+        )
+        .await;
+    }
+
     // Build enriched contact list with basic data
     let mut contact_list: Vec<ContactData> = contacts
         .into_iter()

@@ -289,11 +289,16 @@ receiving path `m/9'/coin'/15'/0'/owner/friend` is hardened, so upstream
 `IdentityWallet::register_contact_account` -> `derive_extended_public_key` requires `can_sign()`
 and fails on the **watch-only** wallets DET loads at boot. Registration must derive the account
 xpub from the JIT seed and insert the managed `DashpayReceivingFunds` account directly (contained
-seed-bearing dual-insert, sibling to `provision_identity_funding_account`), then bump the account's
-`monitor_revision` so the dash-spv mempool sync rebuilds the peer bloom filter and watches the new
-addresses in-session. Wired into `bootstrap_wallet_addresses_jit` (every cold boot / unlock, inside
-the existing seed scope — locked wallets skipped, never prompts; idempotent; upstream stores the
-account in runtime state only, so re-running every boot is the mechanism, not a redundancy).
+seed-bearing dual-insert, sibling to `provision_identity_funding_account`). Only newly-added
+accounts trigger `bump_monitor_revision` to avoid spurious bloom-filter rebuilds on idempotent
+re-runs. SPV watching caveat: `monitor_revision` bumps cause the dash-spv mempool sync manager to
+rebuild the peer bloom filter on its next 100ms tick — but only when the manager is in
+`SyncState::Synced`. If registration occurs *before* SPV sync completes, the accounts are already
+in the wallet when `activate_all_peers` fires the initial `FilterLoad` at
+`SyncEvent::FiltersSyncComplete`, so the addresses are watched regardless of sync phase. Wired into
+`bootstrap_wallet_addresses_jit` (every cold boot / unlock, inside the existing seed scope —
+locked wallets skipped, never prompts; idempotent; upstream stores the account in runtime state
+only, so re-running every boot is the mechanism, not a redundancy).
 Residual: per-contact *attribution* into DashPay payment history still depends on the DET sidecar
 address-map (`dashpay_set_address_mapping`); balance/spendability does not.
 

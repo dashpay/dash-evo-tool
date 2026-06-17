@@ -1394,15 +1394,20 @@ impl WalletBackend {
     ///
     /// Upstream keeps the managed account in runtime state only, so this re-runs
     /// on every cold boot / unlock and is idempotent (the account-map insert
-    /// overwrites in place). After inserting, each receiving account's monitor
-    /// revision is bumped: the SPV manager is shared with `dash-spv` (one
-    /// `Arc`), whose mempool sync rebuilds the peer bloom filter when the
-    /// revision changes, so the new addresses are watched without a reconnect.
+    /// overwrites in place). Only **newly-added** accounts trigger a
+    /// `bump_monitor_revision`: the `dash-spv` mempool sync manager (shared via
+    /// one `Arc`) checks the aggregate revision on each 100ms tick and rebuilds
+    /// the peer bloom filter when it changes. The tick only runs when the mempool
+    /// manager is in `SyncState::Synced`; if registration happens before SPV sync
+    /// completes, the accounts are already in the wallet when `activate_all_peers`
+    /// sends the initial `FilterLoad` at `SyncEvent::FiltersSyncComplete`, so
+    /// the addresses are watched regardless of sync phase.
     ///
     /// The caller must already hold the wallet's JIT seed (this runs inside
     /// `bootstrap_wallet_addresses_jit`'s secret scope), so a locked wallet is
     /// never reached and never prompted. `contacts` are `(owner, contact)`
-    /// identity-id pairs. Returns the number of accounts registered.
+    /// identity-id pairs. Returns the number of **newly-inserted** accounts
+    /// (0 on idempotent re-registration).
     pub(crate) async fn register_contact_receiving_accounts(
         &self,
         seed_hash: &WalletSeedHash,
@@ -1471,35 +1476,59 @@ impl WalletBackend {
         }
 
         // Insert under the manager write lock — purely synchronous, no await
-        // held — then bump every receiving account's monitor revision so the
-        // shared SPV manager rebuilds its peer filter on the next mempool tick.
+        // held. Track accounts that are genuinely new (map len growth) so we
+        // only bump monitor_revision — and thus trigger a bloom-filter rebuild
+        // — when the set actually changes, not on every idempotent re-run.
         let mut wm = wallet.wallet_manager().write().await;
         let info = wm
             .get_wallet_info_mut(&wallet_id)
             .ok_or(TaskError::WalletStateInconsistent)?;
-        let mut registered = 0usize;
+        let before = info.core_wallet.accounts.dashpay_receival_accounts.len();
         for account in &accounts {
             let managed = ManagedCoreFundsAccount::from_account(account);
-            match info
+            if let Err(error) = info
                 .core_wallet
                 .accounts
                 .insert_funds_bearing_account(managed)
             {
-                Ok(()) => registered += 1,
-                Err(error) => {
-                    tracing::debug!(%error, "Skipping contact account: managed insert failed");
+                tracing::debug!(%error, "Skipping contact account: managed insert failed");
+            }
+        }
+        let newly_inserted = info
+            .core_wallet
+            .accounts
+            .dashpay_receival_accounts
+            .len()
+            .saturating_sub(before);
+        // Only bump the monitor revision when new accounts were added: a
+        // revision bump on every unlock would cause a spurious bloom-filter
+        // rebuild on each boot even when the contact set is unchanged.
+        if newly_inserted > 0 {
+            for account in info.core_wallet.accounts.all_funding_accounts_mut() {
+                if matches!(
+                    account.managed_account_type(),
+                    ManagedAccountType::DashpayReceivingFunds { .. }
+                ) {
+                    account.bump_monitor_revision();
                 }
             }
         }
-        for account in info.core_wallet.accounts.all_funding_accounts_mut() {
-            if matches!(
-                account.managed_account_type(),
-                ManagedAccountType::DashpayReceivingFunds { .. }
-            ) {
-                account.bump_monitor_revision();
-            }
-        }
-        Ok(registered)
+        Ok(newly_inserted)
+    }
+
+    /// Count `DashpayReceivingFunds` accounts currently registered in the
+    /// wallet-manager for `seed_hash`. Used in integration tests to assert that
+    /// [`Self::register_contact_receiving_accounts`] actually wired contacts
+    /// into the live wallet-manager state.
+    pub async fn dashpay_receiving_account_count(&self, seed_hash: &WalletSeedHash) -> usize {
+        let Ok(wallet) = self.resolve_wallet(seed_hash).await else {
+            return 0;
+        };
+        let wallet_id = wallet.wallet_id();
+        let wm = wallet.wallet_manager().read().await;
+        wm.get_wallet_info(&wallet_id)
+            .map(|info| info.core_wallet.accounts.dashpay_receival_accounts.len())
+            .unwrap_or(0)
     }
 
     /// Durably flush every registered wallet's buffered changesets to the

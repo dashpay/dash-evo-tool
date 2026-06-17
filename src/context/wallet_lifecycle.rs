@@ -879,6 +879,11 @@ impl AppContext {
         // session cache. The in-memory wallet is already flipped `Open` by the
         // unlock callsite before this runs, so the JIT `is_open()` gate passes.
         self.drive_unlock_registration(wallet);
+
+        // The background all-wallets sweep skips a wallet that is locked at
+        // Platform-ready time, so a just-unlocked wallet is searched here. This
+        // is the "searched after unlock" path the all-wallets sweep documents.
+        self.queue_unlocked_wallet_identity_discovery(wallet);
     }
 
     /// Spawn the unlock-triggered JIT bootstrap/registration for a wallet whose
@@ -937,10 +942,12 @@ impl AppContext {
     /// calls `ensure_shielded_bound`) so the logic is not duplicated.
     /// The upstream 60 s `ShieldedSyncManager` loop picks up any newly bound
     /// wallets automatically — no manual sync trigger needed.
-    pub(crate) fn init_missing_shielded_wallets(self: &Arc<Self>) {
-        // Collect open wallet arcs while holding the read lock, then release.
-        let candidates: Vec<Arc<RwLock<Wallet>>> = self
-            .wallets
+    /// Snapshot the currently-open wallet arcs, dropping the read lock before
+    /// returning. A locked protected wallet hydrates `WalletSeed::Closed`, so
+    /// `is_open()` excludes it — the single source of truth for "which wallets a
+    /// background pass may touch without a passphrase prompt."
+    fn open_wallets(self: &Arc<Self>) -> Vec<Arc<RwLock<Wallet>>> {
+        self.wallets
             .read()
             .ok()
             .map(|wallets| {
@@ -950,9 +957,11 @@ impl AppContext {
                     .cloned()
                     .collect()
             })
-            .unwrap_or_default();
+            .unwrap_or_default()
+    }
 
-        for wallet in candidates {
+    pub(crate) fn init_missing_shielded_wallets(self: &Arc<Self>) {
+        for wallet in self.open_wallets() {
             let ctx = Arc::clone(self);
             self.subtasks
                 .spawn_sync("shielded_bind_after_protocol_update", async move {
@@ -990,18 +999,7 @@ impl AppContext {
         // Snapshot only open wallets — a locked protected wallet hydrates closed
         // (`is_open() == false`) and is skipped so the background sweep cannot
         // trigger a passphrase prompt.
-        let open_wallets: Vec<Arc<RwLock<Wallet>>> = self
-            .wallets
-            .read()
-            .ok()
-            .map(|wallets| {
-                wallets
-                    .values()
-                    .filter(|w| w.read().ok().map(|g| g.is_open()).unwrap_or(false))
-                    .cloned()
-                    .collect()
-            })
-            .unwrap_or_default();
+        let open_wallets = self.open_wallets();
 
         if open_wallets.is_empty() {
             tracing::debug!("No open wallets to run automatic identity discovery for");
@@ -1028,6 +1026,45 @@ impl AppContext {
                     }
                 });
         }
+    }
+
+    /// Queue gap-limited identity discovery for a single wallet the user just
+    /// unlocked, so a wallet that was locked during the all-wallets sweep still
+    /// gets discovered this session.
+    ///
+    /// Independent of the once-per-session `identity_autodiscovery_fired` latch
+    /// (that guards the all-wallets sweep, not per-wallet unlock). Gated on
+    /// Platform readiness: if the masternode list is not yet `Synced`, this is a
+    /// no-op — the wallet is now open, so the upcoming all-wallets sweep covers
+    /// it. The user is present for the unlock, so `allow_prompt = true`; no
+    /// prompt occurs anyway because the unlock just promoted the seed to the
+    /// session cache. Idempotent with the sweep: discovery is
+    /// update-preserving-alias, so a double-run is harmless.
+    pub fn queue_unlocked_wallet_identity_discovery(
+        self: &Arc<Self>,
+        wallet: &Arc<RwLock<Wallet>>,
+    ) {
+        if !self.connection_status.masternodes_ready() {
+            tracing::debug!(
+                "Platform not ready yet; deferring unlocked-wallet identity discovery to the all-wallets sweep"
+            );
+            return;
+        }
+
+        let ctx = Arc::clone(self);
+        let wallet = Arc::clone(wallet);
+        self.subtasks
+            .spawn_sync("unlocked_wallet_identity_discovery", async move {
+                if let Err(error) = ctx
+                    .discover_identities_gap_limited(&wallet, 0, true, None)
+                    .await
+                {
+                    tracing::warn!(
+                        %error,
+                        "Identity discovery failed for the just-unlocked wallet"
+                    );
+                }
+            });
     }
 
     /// Queue automatic discovery of identities derived from a wallet.
@@ -3438,5 +3475,174 @@ mod tests {
             ),
             "the map entry must remain the Closed (encrypted) variant after unlock"
         );
+    }
+
+    // ──────────────────────────────────────────────────────────────────────
+    // Automatic identity-discovery trigger / latch / re-arm (QA-002, QA-003)
+    // ──────────────────────────────────────────────────────────────────────
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn all_wallets_discovery_latch_is_one_shot_until_stop_spv() {
+        let (ctx, sender, _tmp) = offline_testnet_context();
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("ensure_wallet_backend should succeed offline");
+
+        assert!(
+            !ctx.identity_autodiscovery_fired.load(Ordering::SeqCst),
+            "latch starts unfired"
+        );
+
+        // First fire latches; a second fire is swallowed (no second sweep).
+        ctx.queue_all_wallets_identity_discovery();
+        assert!(
+            ctx.identity_autodiscovery_fired.load(Ordering::SeqCst),
+            "first call must set the one-shot latch"
+        );
+        ctx.queue_all_wallets_identity_discovery();
+        assert!(
+            ctx.identity_autodiscovery_fired.load(Ordering::SeqCst),
+            "latch stays set; the second call is a no-op"
+        );
+
+        // stop_spv re-arms the latch so the next reconnect runs discovery again.
+        ctx.stop_spv().await;
+        assert!(
+            !ctx.identity_autodiscovery_fired.load(Ordering::SeqCst),
+            "stop_spv must clear the latch to re-arm discovery on reconnect"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn open_wallets_snapshot_excludes_locked_wallets() {
+        use crate::database::test_helpers::seed_legacy_protected_hd_wallet_row;
+        use crate::model::wallet::encryption::encrypt_message;
+
+        let (ctx, sender, _tmp) = offline_testnet_context();
+
+        // A locked, password-protected wallet staged via the legacy migration
+        // row: it hydrates `WalletSeed::Closed` and must be excluded.
+        let locked_seed = [0x77u8; 64];
+        let locked_hash: WalletSeedHash =
+            crate::model::wallet::ClosedKeyItem::compute_seed_hash(&locked_seed);
+        let epk = legacy_master_epk_bytes(&locked_seed);
+        let (encrypted_seed, salt, nonce) =
+            encrypt_message(&locked_seed, "a-passphrase-never-fed-back").expect("encrypt seed");
+        seed_legacy_protected_hd_wallet_row(
+            &ctx.db,
+            &locked_hash,
+            &encrypted_seed,
+            &salt,
+            &nonce,
+            &epk,
+            "locked-wallet",
+            None,
+            Network::Testnet,
+        )
+        .expect("insert legacy protected wallet row");
+
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("ensure_wallet_backend should succeed offline");
+        let backend = ctx.wallet_backend().expect("backend wired");
+
+        // An open, no-password wallet registered alongside it.
+        let open_seed = [0x66u8; 64];
+        let open_wallet =
+            crate::model::wallet::Wallet::new_from_seed(open_seed, Network::Testnet, None, None)
+                .expect("build open wallet");
+        let open_hash = open_wallet.seed_hash();
+        ctx.register_wallet(open_wallet, &open_seed, WalletOrigin::Fresh)
+            .expect("register open wallet");
+
+        let snapshot: Vec<WalletSeedHash> = ctx
+            .open_wallets()
+            .iter()
+            .map(|w| w.read().unwrap().seed_hash())
+            .collect();
+
+        assert!(
+            snapshot.contains(&open_hash),
+            "the open wallet must be in the snapshot"
+        );
+        assert!(
+            !snapshot.contains(&locked_hash),
+            "the locked protected wallet must be excluded from the snapshot"
+        );
+
+        backend.shutdown().await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn rediscovery_update_preserves_user_alias_and_wallet_binding() {
+        use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
+        use crate::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
+        use dash_sdk::dpp::identity::Identity;
+        use dash_sdk::platform::Identifier;
+        use std::collections::BTreeMap;
+
+        let (ctx, sender, _tmp) = offline_testnet_context();
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("ensure_wallet_backend should succeed offline");
+        let backend = ctx.wallet_backend().expect("backend wired");
+
+        let identity_id = Identifier::from([7u8; 32]);
+        let make_qi = |alias: Option<&str>| {
+            let identity = Identity::create_basic_identity(identity_id, ctx.platform_version())
+                .expect("basic identity");
+            QualifiedIdentity {
+                identity,
+                associated_voter_identity: None,
+                associated_operator_identity: None,
+                associated_owner_key_id: None,
+                identity_type: IdentityType::User,
+                alias: alias.map(str::to_string),
+                private_keys: KeyStorage {
+                    private_keys: BTreeMap::new(),
+                },
+                dpns_names: vec![],
+                associated_wallets: BTreeMap::new(),
+                secret_access: None,
+                wallet_index: None,
+                top_ups: BTreeMap::new(),
+                status: IdentityStatus::Active,
+                network: Network::Testnet,
+            }
+        };
+
+        // Initial store with a user alias and a wallet binding.
+        let wallet_hash: WalletSeedHash = [0x09u8; 32];
+        ctx.insert_local_qualified_identity(&make_qi(Some("my-id")), &Some((wallet_hash, 3)))
+            .expect("insert identity with alias");
+
+        // Simulate re-discovery: build a FRESH QI with no alias, carry the
+        // existing alias (the carry-over under test), then update in place.
+        let mut refreshed = make_qi(None);
+        let existing = ctx
+            .get_identity_by_id(&identity_id)
+            .expect("load existing")
+            .expect("identity present");
+        refreshed.alias = existing.alias;
+        ctx.update_local_qualified_identity(&refreshed)
+            .expect("update preserving alias");
+
+        // The alias survives, and the wallet binding is preserved by the update.
+        let reloaded = ctx
+            .get_identity_by_id(&identity_id)
+            .expect("reload identity")
+            .expect("identity present after update");
+        assert_eq!(
+            reloaded.alias.as_deref(),
+            Some("my-id"),
+            "the user alias must survive a re-discovery update (F-1 regression guard)"
+        );
+        assert_eq!(
+            reloaded.wallet_index,
+            Some(3),
+            "the wallet binding index must be preserved across the update"
+        );
+
+        backend.shutdown().await;
     }
 }

@@ -908,3 +908,56 @@ fn tc_ovl_050_component_instance_show_reports_click() {
     // reads the click from the response, not via take_actions.
     assert!(ProgressOverlay::take_actions(&harness.ctx).is_empty());
 }
+
+// ── QA probe (Marvin) — FR-8 AC-8.2 for the button-LESS hard block ──────────
+//
+// TC-OVL-029 only covers a *with-button* overlay, where the first button
+// steals focus on raise — so typing is blocked incidentally, not by the
+// overlay's input handling. This probe raises a *button-less* block over a
+// field that already holds focus (the J-2 broadcast / J-4 migration case) and
+// asserts AC-8.2: typed input must not reach the field beneath.
+//
+// QA-001 (HIGH): currently FAILS — `render_global` filters Tab/Enter/Esc only
+// AFTER the beneath widgets have already consumed input this frame, and a
+// button-less overlay has no first-button to steal focus. Typed characters
+// therefore leak into a focused field beneath. Ignored so the suite stays
+// green; un-ignore once the overlay claims keyboard focus / consumes text
+// while active. TODO(QA-001): fix input blocking for the button-less block.
+#[ignore = "QA-001 (HIGH): button-less overlay leaks typed input to a focused field beneath (FR-8 AC-8.2)"]
+#[test]
+fn qa_buttonless_overlay_blocks_typing_into_focused_field_beneath() {
+    let text = Rc::new(RefCell::new(String::new()));
+    let text_ui = Rc::clone(&text);
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(420.0, 360.0))
+        .build_ui(move |ui| {
+            let mut buffer = text_ui.borrow_mut();
+            ui.text_edit_singleline(&mut *buffer);
+            ProgressOverlay::render_global(ui.ctx());
+        });
+
+    // Focus the field beneath, before any overlay exists.
+    harness.step();
+    harness
+        .get_by_role(egui::accesskit::Role::TextInput)
+        .focus();
+    harness.step();
+
+    // Raise a pure (button-less) block over the already-focused field.
+    let _handle = ProgressOverlay::show_global_spinner_only(&harness.ctx);
+    harness.step();
+
+    // Type. AC-8.2: keyboard input must not reach widgets beneath the overlay.
+    harness
+        .input_mut()
+        .events
+        .push(egui::Event::Text("hello".to_string()));
+    harness.step();
+
+    assert!(
+        text.borrow().is_empty(),
+        "FR-8 AC-8.2: typed input reached a focused field beneath a button-less \
+         overlay: {:?}",
+        text.borrow()
+    );
+}

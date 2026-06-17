@@ -1576,6 +1576,54 @@ impl WalletBackend {
         Ok(())
     }
 
+    /// Record a peer's incoming contact request in the accepter's local
+    /// wallet-manager **before** sending the reciprocal request.
+    ///
+    /// Called by `accept_contact_request` with the sender's CR document
+    /// that was just fetched from Platform.  Pre-populating
+    /// `incoming_contact_requests[sender]` means that when
+    /// `record_sent_contact_request` fires for the accepter's outgoing
+    /// CR immediately afterwards, `add_sent_contact_request` finds the
+    /// matching incoming entry and auto-establishes the contact
+    /// in-process — no `dashpay_sync` round-trip required.
+    ///
+    /// Without this call the accept path has a dead-end: after
+    /// `record_sent_contact_request` populates `sent[A]`,
+    /// `sync_contact_requests` sees `sent[A]` and skips A's incoming
+    /// document (its skip guard is `sent || incoming || established`),
+    /// so `add_incoming_contact_request` is never called and
+    /// `established_contacts` stays empty.
+    ///
+    /// Non-fatal when the managed identity is absent — logs a warning
+    /// and returns `Ok(())`.
+    pub(crate) async fn record_incoming_contact_request(
+        &self,
+        seed_hash: &WalletSeedHash,
+        owner_id: &dash_sdk::platform::Identifier,
+        contact_request: platform_wallet::ContactRequest,
+    ) -> Result<(), TaskError> {
+        let wallet = self.resolve_wallet(seed_hash).await?;
+        let wallet_id = wallet.wallet_id();
+        let persister = wallet.persister().clone();
+        let mut wm = wallet.wallet_manager().write().await;
+        let info = wm
+            .get_wallet_info_mut(&wallet_id)
+            .ok_or(TaskError::WalletStateInconsistent)?;
+        match info.identity_manager.managed_identity_mut(owner_id) {
+            Some(managed) => {
+                managed.add_incoming_contact_request(contact_request, &persister);
+            }
+            None => {
+                tracing::warn!(
+                    owner_id = %owner_id,
+                    "record_incoming_contact_request: managed identity not \
+                     found; auto-establishment will depend on dashpay_sync",
+                );
+            }
+        }
+        Ok(())
+    }
+
     /// Durably flush every registered wallet's buffered changesets to the
     /// upstream persister. Called before the one-time migration's
     /// strictly-last legacy-table DROP so the new persister is durable

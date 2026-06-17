@@ -694,6 +694,63 @@ pub async fn accept_contact_request(
         .ok_or_else(|| TaskError::DashPay(DashPayError::MissingAuthenticationKey))?
         .clone();
 
+    // Option A fix (QA-025): record A's incoming CR into B's wallet-manager
+    // BEFORE sending the reciprocal.
+    //
+    // After record_sent_contact_request populates sent[A], upstream
+    // sync_contact_requests skips A's document (skip guard:
+    //   sent[A] || incoming[A] || established[A] → continue)
+    // so dashpay_sync can never call add_incoming_contact_request and
+    // established_contacts stays empty.
+    //
+    // By pre-populating incoming[A] here, add_sent_contact_request for
+    // B's outgoing CR (fired by record_sent_contact_request at the end of
+    // send_contact_request_with_proof) finds incoming[A] and auto-establishes
+    // established_contacts[A] in-process — no dashpay_sync round-trip needed.
+    if let Some(seed_hash) = identity.dashpay_wallet_seed_hash() {
+        let owner_id = identity.identity.id();
+        let props = doc.properties();
+        let maybe_incoming_cr = (|| -> Option<UpstreamContactRequest> {
+            let sender_key_index = props.get("senderKeyIndex")?.to_integer::<u32>().ok()?;
+            let recipient_key_index = props.get("recipientKeyIndex")?.to_integer::<u32>().ok()?;
+            let account_reference = props.get("accountReference")?.to_integer::<u32>().ok()?;
+            let encrypted_public_key = props.get("encryptedPublicKey")?.as_bytes()?.clone();
+            Some(UpstreamContactRequest::new(
+                from_identity_id, // sender = A
+                owner_id,         // recipient = B
+                sender_key_index,
+                recipient_key_index,
+                account_reference,
+                encrypted_public_key,
+                doc.created_at_core_block_height().unwrap_or(0),
+                doc.created_at().unwrap_or(0),
+            ))
+        })();
+
+        match maybe_incoming_cr {
+            Some(incoming_cr) => {
+                if let Ok(backend) = app_context.wallet_backend()
+                    && let Err(err) = backend
+                        .record_incoming_contact_request(&seed_hash, &owner_id, incoming_cr)
+                        .await
+                {
+                    tracing::warn!(
+                        %err,
+                        "record_incoming_contact_request failed; \
+                         auto-establishment will depend on dashpay_sync",
+                    );
+                }
+            }
+            None => {
+                tracing::warn!(
+                    sender_id = %from_identity_id,
+                    "accept_contact_request: incoming CR document missing required \
+                     fields; auto-establishment will depend on dashpay_sync",
+                );
+            }
+        }
+    }
+
     let result = send_contact_request(
         app_context,
         sdk,

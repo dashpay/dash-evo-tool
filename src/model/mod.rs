@@ -6,6 +6,7 @@ pub mod dpns;
 pub mod feature_gate;
 pub mod fee_estimation;
 pub mod grovestark_prover;
+pub mod identity_discovery;
 pub mod proof_log_item;
 pub mod qualified_contract;
 pub mod qualified_identity;

@@ -399,4 +399,28 @@ mod tests {
     fn detect_garbage_returns_none() {
         assert_eq!(AddressKind::detect("not-an-address"), None);
     }
+
+    // --- is_platform_address_string pitfall guard (TC-MN-031) ---
+    //
+    // The masternode withdraw tool rejects Platform destinations with this
+    // guard, NOT the weaker first-char `resolve::validate_address`. A `dash1…`
+    // / `tdash1…` string must be flagged as Platform so it cannot slip through
+    // as a Core address.
+
+    #[test]
+    fn platform_address_string_detects_bech32m_hrp() {
+        assert!(is_platform_address_string("dash1qwer1234"));
+        assert!(is_platform_address_string("tdash1qwer1234"));
+    }
+
+    #[test]
+    fn platform_address_string_rejects_core_addresses() {
+        // Mainnet (X) and testnet (y) Core addresses are not Platform addresses.
+        assert!(!is_platform_address_string(
+            "XqHiz9VVXfjBnET2z6aZ9j5LKyuGNv3byP"
+        ));
+        assert!(!is_platform_address_string(
+            "yQ9JNCT4S9zVHaKYbr1FUY4YkUMYxSzWAj"
+        ));
+    }
 }

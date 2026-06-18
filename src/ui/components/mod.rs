@@ -13,6 +13,7 @@ pub mod left_wallet_panel;
 pub mod message_banner;
 pub mod passphrase_modal;
 pub mod password_input;
+pub mod progress_overlay;
 pub mod secret_prompt_host;
 pub mod selection_dialog;
 pub mod styled;
@@ -26,5 +27,8 @@ pub use component_trait::{Component, ComponentResponse};
 pub use message_banner::{
     BannerHandle, BannerStatus, MessageBanner, MessageBannerResponse, OptionBannerExt,
     OptionBannerShowExt, ResultBannerExt,
+};
+pub use progress_overlay::{
+    OptionOverlayExt, OverlayConfig, OverlayHandle, ProgressOverlay, ProgressOverlayResponse,
 };
 pub use secret_prompt_host::{ActivePrompt, EguiSecretPromptHost, QueuedPrompt};

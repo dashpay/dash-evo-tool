@@ -863,6 +863,8 @@ impl ProgressOverlay {
                 ui.allocate_response(rect.size(), egui::Sense::click_and_drag());
             });
 
+        let card_layer =
+            egui::LayerId::new(egui::Order::Foreground, egui::Id::new(OVERLAY_CARD_ID));
         let mut clicked = None;
         egui::Area::new(egui::Id::new(OVERLAY_CARD_ID))
             .order(egui::Order::Foreground)
@@ -880,6 +882,14 @@ impl ProgressOverlay {
                     secret_prompt_active,
                 );
             });
+
+        // Pin the card directly above the sink. egui auto-raises any interactable
+        // Area to the top of its Order on a pointer press (`area.rs` bring-to-front),
+        // so a backdrop press over the sink would otherwise float it above the card
+        // and bury the buttons beneath the click-absorbing sink — trapping the SPV
+        // escape. A sublayer is placed above its parent after that sort each frame,
+        // making the card-above-sink z-order hold by construction.
+        ctx.set_sublayer(sink_layer, card_layer);
 
         // The click does not lower the overlay — the owning screen drains its own
         // ids via `OverlayHandle::take_actions`; the app loop only sweeps orphans.

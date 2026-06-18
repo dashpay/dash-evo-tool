@@ -976,6 +976,55 @@ fn sec002_escape_block_strips_enter_from_focus_independent_handler_beneath() {
     assert_eq!(handle.take_actions(), vec!["spv:escape".to_string()]);
 }
 
+/// TC-OVL-054 — the escape button stays mouse-clickable after a backdrop press.
+///
+/// Regression guard for the SPV trap: egui auto-raises any interactable `Area` to
+/// the top of its `Order` on a pointer press (`area.rs` bring-to-front). When the
+/// dim/pointer sink and the card were peer `Order::Foreground` areas, pressing the
+/// backdrop raised the sink ABOVE the card, permanently burying the escape button
+/// beneath the click-absorbing sink — the unbounded SPV block then had no mouse
+/// exit. A real mouse click on the button after such a press must still reach it
+/// and enqueue the escape action. TC-OVL-024/025 never press the backdrop first,
+/// so they passed while this path was broken.
+#[test]
+fn tc_ovl_054_escape_clickable_after_backdrop_press() {
+    let mut harness = overlay_harness();
+    let handle = ProgressOverlay::set_global(
+        &harness.ctx,
+        "Syncing with the Dash network.",
+        OverlayConfig::new()
+            .with_secondary_action("Continue in the background", "spv:escape")
+            .with_keyboard_escape("spv:escape"),
+    );
+    // Settle the centered card (anchored CENTER_CENTER moves for a couple of frames
+    // until its size is cached) so the button lands where we click.
+    harness.step();
+    harness.step();
+    harness.step();
+    assert!(
+        harness
+            .query_by_label("Continue in the background")
+            .is_some()
+    );
+
+    // Press the dim backdrop, well outside the card. This is what trapped the
+    // button: the sink area auto-raises to the top of Foreground on the press.
+    let backdrop = egui::pos2(8.0, 8.0);
+    harness.drag_at(backdrop);
+    harness.drop_at(backdrop);
+    harness.step();
+
+    // A real mouse click at the escape button's own position must still reach it.
+    harness.get_by_label("Continue in the background").click();
+    harness.step();
+    assert_eq!(
+        handle.take_actions(),
+        vec!["spv:escape".to_string()],
+        "the escape button must receive the mouse click even after a backdrop press"
+    );
+    assert!(ProgressOverlay::has_global(&harness.ctx));
+}
+
 // ── Group M — Non-Functional ───────────────────────────────────────────────
 
 /// TC-OVL-046 — switching theme mid-overlay re-renders without panic.

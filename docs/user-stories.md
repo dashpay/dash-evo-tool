@@ -536,6 +536,7 @@ As a user, I want to register a human-readable username on DPNS so that others c
 
 - Choose identity, enter desired name.
 - Cost estimate displayed before confirmation.
+- While registration runs, a full-window blocking overlay (UX-001) is shown so the same name cannot be submitted twice; it lowers automatically on success or error.
 
 ### DPN-002: View owned usernames [Implemented]
 **Persona:** Alex, Priya

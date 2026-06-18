@@ -3,18 +3,25 @@
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 
+use dash_sdk::dpp::identity::Purpose;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use rmcp::handler::server::router::tool::{AsyncTool, ToolBase};
 use rmcp::model::ToolAnnotations;
 use rmcp::schemars;
 use serde::{Deserialize, Serialize};
 
-use crate::backend_task::identity::{IdentityTask, IdentityTopUpInfo, TopUpIdentityFundingMethod};
+use crate::backend_task::identity::{
+    IdentityInputToLoad, IdentityTask, IdentityTopUpInfo, TopUpIdentityFundingMethod,
+};
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::mcp::dispatch::dispatch_task;
 use crate::mcp::error::McpToolError;
 use crate::mcp::resolve;
 use crate::mcp::server::DashMcpService;
+use crate::model::masternode_input;
+use crate::model::secret::Secret;
 
 // ---------------------------------------------------------------------------
 // IdentityCreditsTopup (Core -> Identity via asset lock)
@@ -678,6 +685,117 @@ pub struct IdentityMasternodeLoadOutput {
     dpns_names: Vec<String>,
 }
 
+impl ToolBase for IdentityMasternodeLoad {
+    type Parameter = IdentityMasternodeLoadParams;
+    type Output = IdentityMasternodeLoadOutput;
+    type Error = McpToolError;
+
+    fn name() -> Cow<'static, str> {
+        "identity_masternode_load".into()
+    }
+
+    fn description() -> Option<Cow<'static, str>> {
+        Some(
+            "Load a masternode or evonode identity by ProTxHash, binding its \
+             owner/voting/payout private keys (WIF or hex) and persisting it \
+             locally for the withdraw tool. The output reports which keys \
+             loaded, the available withdrawal modes, and the registered payout \
+             address. The 'network' parameter is required."
+                .into(),
+        )
+    }
+
+    fn annotations() -> Option<ToolAnnotations> {
+        Some(
+            ToolAnnotations::default()
+                .read_only(false)
+                .destructive(false)
+                .idempotent(false)
+                .open_world(true),
+        )
+    }
+}
+
+impl AsyncTool<DashMcpService> for IdentityMasternodeLoad {
+    async fn invoke(
+        service: &DashMcpService,
+        param: IdentityMasternodeLoadParams,
+    ) -> Result<IdentityMasternodeLoadOutput, McpToolError> {
+        let ctx = service
+            .ctx()
+            .await
+            .map_err(|e| McpToolError::Internal(e.to_string()))?;
+
+        // Cheap validation first, before the SPV wait: network match, node type,
+        // and the at-least-one-signing-key rule all reject without touching the
+        // network (TC-MN-012/013/014).
+        resolve::require_network(&ctx, Some(&param.network))?;
+        let identity_type = masternode_input::parse_node_type(&param.node_type)?;
+        masternode_input::require_at_least_one_signing_key(
+            &param.owner_private_key,
+            &param.payout_private_key,
+        )?;
+
+        // Load fetches the identity (and, with a voting key, the voter identity)
+        // over DAPI; proof verification needs a synced chain.
+        resolve::ensure_spv_synced(&ctx).await?;
+
+        let input = IdentityInputToLoad {
+            identity_id_input: param.pro_tx_hash,
+            identity_type,
+            alias_input: param.alias.trim().to_owned(),
+            voting_private_key_input: Secret::new(param.voting_private_key),
+            owner_private_key_input: Secret::new(param.owner_private_key),
+            payout_address_private_key_input: Secret::new(param.payout_private_key),
+            keys_input: vec![],
+            derive_keys_from_wallets: false,
+            selected_wallet_seed_hash: None,
+        };
+
+        let task = BackendTask::IdentityTask(IdentityTask::LoadIdentity(input));
+        let result = dispatch_task(&ctx, task)
+            .await
+            .map_err(McpToolError::TaskFailed)?;
+
+        let BackendTaskSuccessResult::LoadedIdentity(qi) = result else {
+            return Err(McpToolError::Internal(format!(
+                "Unexpected task result: {result:?}"
+            )));
+        };
+
+        let mut owner_key_loaded = false;
+        let mut payout_key_loaded = false;
+        let mut available_withdrawal_keys = Vec::new();
+        for key in qi.available_withdrawal_keys() {
+            match key.identity_public_key.purpose() {
+                Purpose::OWNER => {
+                    owner_key_loaded = true;
+                    available_withdrawal_keys.push("owner".to_owned());
+                }
+                Purpose::TRANSFER => {
+                    payout_key_loaded = true;
+                    available_withdrawal_keys.push("transfer".to_owned());
+                }
+                _ => {}
+            }
+        }
+
+        Ok(IdentityMasternodeLoadOutput {
+            identity_id: qi.identity.id().to_string(Encoding::Base58),
+            node_type: identity_type.to_string().to_ascii_lowercase(),
+            alias: qi.alias.clone(),
+            owner_key_loaded,
+            voting_key_loaded: qi.associated_voter_identity.is_some(),
+            payout_key_loaded,
+            available_withdrawal_keys,
+            payout_address: qi
+                .masternode_payout_address(ctx.network())
+                .map(|addr| addr.to_string()),
+            dpns_names: qi.dpns_names.iter().map(|d| d.name.clone()).collect(),
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -753,6 +871,52 @@ mod tests {
             };
             // Construction never validates key length — that is verify_key_input's job.
             assert_eq!(params.owner_private_key, key);
+        }
+    }
+
+    // ── Discoverability & schema (TC-MN-015) ──────────────────────────────
+    //
+    // The router is built without an AppContext, so tool registration,
+    // annotations, and the input schema are assertable with no network.
+
+    fn schema_property_names(tool: &rmcp::model::Tool) -> Vec<String> {
+        tool.input_schema
+            .get("properties")
+            .and_then(|p| p.as_object())
+            .map(|m| m.keys().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn load_tool_registered_with_expected_annotations_and_schema() {
+        let router = DashMcpService::tool_router();
+        let tool = router
+            .get("identity_masternode_load")
+            .expect("identity_masternode_load must be registered in tool_router");
+
+        let ann = tool
+            .annotations
+            .as_ref()
+            .expect("tool must carry annotations");
+        assert_eq!(ann.read_only_hint, Some(false));
+        assert_eq!(ann.destructive_hint, Some(false));
+        assert_eq!(ann.idempotent_hint, Some(false));
+        assert_eq!(ann.open_world_hint, Some(true));
+
+        let props = schema_property_names(tool);
+        for expected in [
+            "pro_tx_hash",
+            "node_type",
+            "owner_private_key",
+            "voting_private_key",
+            "payout_private_key",
+            "alias",
+            "network",
+        ] {
+            assert!(
+                props.iter().any(|p| p == expected),
+                "schema must expose '{expected}', got {props:?}"
+            );
         }
     }
 }

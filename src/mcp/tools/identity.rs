@@ -1035,13 +1035,13 @@ impl AsyncTool<DashMcpService> for IdentityMasternodeCreditsWithdraw {
         let key_mode = masternode_input::parse_key_mode(&param.key_mode)?;
 
         // Surface the owner+address contradiction before resolving the identity
-        // so it fires even for a not-yet-loaded identity (TC-MN-033/042).
+        // so it fires even for a not-yet-loaded identity.
         if key_mode == KeyMode::Owner {
             reject_owner_address_contradiction(&param.to_address)?;
         }
 
-        // Resolve the loaded identity. A not-found points at the load tool
-        // (FR-B5, TC-MN-040); a malformed ID is reported separately.
+        // Resolve the loaded identity. A not-found points at the load tool; a
+        // malformed ID is reported separately.
         let identity_id = masternode_input::decode_identity_id(&param.identity_id)?;
         let qi = ctx
             .get_identity_by_id(&identity_id)
@@ -1218,7 +1218,7 @@ mod tests {
         }
     }
 
-    // ── Blank-network guard (QA-004 / TC-MN-013) ──────────────────────────
+    // ── Blank-network guard (TC-MN-013) ──────────────────────────────────
 
     #[test]
     fn blank_network_rejected_with_required_message() {

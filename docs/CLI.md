@@ -146,34 +146,38 @@ Withdraw a masternode/evonode identity's Platform credits without the GUI:
 first load the identity by ProTxHash + keys, then withdraw in either key mode.
 The keys are accepted as inline `key=value` arguments (WIF or 64-char hex) — see
 the private-key handling note in `MCP.md` and keep the HTTP endpoint loopback-only
-for key-bearing calls.
+for key-bearing calls. Inline `key=value` arguments are visible to other local
+users (`ps`, `/proc/<pid>/cmdline`) and are saved to shell history. On a shared or
+untrusted host, prefer the deferred env-var/stdin entry path once available, or
+clear your shell history afterward. In transfer mode, `to-address` must be a Core
+address — Platform (bech32m `dash1…`/`tdash1…`) addresses are rejected.
 
 ```bash
 # 1. Load an evonode identity (testnet). Provide at least one of the owner or
 #    payout key; voting key and alias are optional.
 det-cli identity-masternode-load \
-  pro_tx_hash=<64-hex protx> \
-  node_type=evonode \
-  owner_private_key=<WIF> \
-  payout_private_key=<WIF> \
+  pro-tx-hash=<64-hex protx> \
+  node-type=evonode \
+  owner-private-key=<WIF> \
+  payout-private-key=<WIF> \
   network=testnet
 # -> { "identity_id": "...", "available_withdrawal_keys": ["owner","transfer"],
 #      "payout_address": "y...", ... }
 
 # 2a. Owner key — destination is forced to the registered payout address.
-#     Supplying to_address is rejected.
+#     Supplying to-address is rejected.
 det-cli identity-masternode-credits-withdraw \
-  identity_id=<base58> \
-  key_mode=owner \
-  amount_credits=100000 \
+  identity-id=<base58> \
+  key-mode=owner \
+  amount-credits=100000 \
   network=testnet
 
 # 2b. Payout/transfer key — withdraw to any Core address.
 det-cli identity-masternode-credits-withdraw \
-  identity_id=<base58> \
-  key_mode=transfer \
-  to_address=y... \
-  amount_credits=100000 \
+  identity-id=<base58> \
+  key-mode=transfer \
+  to-address=y... \
+  amount-credits=100000 \
   network=testnet
 ```
 

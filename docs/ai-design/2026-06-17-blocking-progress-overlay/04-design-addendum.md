@@ -70,9 +70,14 @@ unblocks the UI while an unsafe operation is still running. Three layers:
    - **Watchdog, 120 s with no progress** (`STUCK_OVERLAY_WATCHDOG_THRESHOLD`, new): the
      reassurance line escalates to *"This is taking much longer than expected. The operation is
      still running — please keep the app open."* "No progress" is measured from a new
-     `last_progress_at: Instant`, bumped whenever the description or step actually changes — so a
-     legitimately-advancing multi-step flow (J-1, four ~minute steps) **never** trips it, while a
-     genuinely wedged single step does.
+     `last_progress_at: Instant`, reset on real progress — either a shown `(description, step)`
+     change **or** an advance of the hidden `progress_token` (a liveness signal the owner feeds from
+     an advancing underlying operation, e.g. a climbing SPV height while the shown "Step N of 5"
+     stays constant for minutes). The `progress_token` is **never rendered**, and its reset is
+     intentionally decoupled from the once-per-shown-content-change log (NFR-5): a per-frame token
+     advance resets the clock but emits no log. So a legitimately-advancing flow — multi-step (J-1,
+     four ~minute steps) **or** a single slow-but-advancing phase — **never** trips it, while a
+     genuinely wedged step does.
 
 3. **Developer watchdog (the leak detector for C1/C2 violations):** when the watchdog threshold is
    crossed, fire a **one-shot** `tracing::error!` (guarded by a `watchdog_logged` flag, logged
@@ -101,19 +106,23 @@ currently `#[ignore]`). Fix: add `ProgressOverlay::claim_input(ctx)`, called **n
      buttons (post-T7), `claim_input` still strips text and beneath-navigation, and the overlay's
      own button area re-grants only its buttons' navigation via the existing
      `set_focus_lock_filter`.
-   - **QA-002 refinement — one opt-in keyboard escape.** A hard block is never keyboard-activatable
+   - **QA-002 refinement — one opt-in keyboard escape (mechanism superseded by SEC-001/SEC-002 —
+     `progress_overlay.rs` is the source of truth).** A hard block is never keyboard-activatable
      (Enter/Space stripped every frame), so a focused button cannot be triggered by keyboard. The
      one exception is a block that opts in via `OverlayConfig::with_keyboard_escape(action_id)`: it
      designates a single action as a keyboard-reachable escape, for **unbounded** blocks that would
-     otherwise strand a keyboard-only / assistive-tech user. `claim_input` then keeps Enter/Space —
-     but **only while that escape button is confirmed to hold focus** (its egui id was recorded by
-     the previous frame's `render_buttons` and still matches the focused widget). Because the escape
-     is focus-pinned (re-requested every frame + locked), Enter/Space can never reach a widget
-     beneath; on the raise frame, where focus is not yet confirmed, they are still stripped. The
+     otherwise strand a keyboard-only / assistive-tech user. `claim_input` activates it **at frame
+     start, before the beneath `ui()` runs**: a press of Enter/Space enqueues the designated action
+     directly (the same queue a click feeds), and the key is then stripped like every other one.
+     The activation needs no focus (SEC-001 — the earlier "keep Enter/Space only while the escape is
+     *confirmed focused*" scheme re-requested the button's focus every frame and ran before the
+     secret-prompt render, stealing focus from a passphrase modal above the block, so it was
+     removed) and the key never survives to a widget beneath, focus-dependent or not (SEC-002).
+     Focus on the escape is now purely visual and is suppressed while a secret prompt is up. The
      reference adopter is the unbounded SPV-sync block (`update_spv_overlay`), whose "Continue in
      the background" escape is so designated. Every OTHER hard block stays fully keyboard-blocked
-     (`TC-OVL-044` is the guard that the general rule is intact; `TC-OVL-051/052/053` cover the
-     opt-in escape).
+     (`TC-OVL-044` guards the general rule; `TC-OVL-051/052/053` cover the opt-in escape;
+     `sec001_*` / `sec002_*` cover the focus-steal and beneath-leak fixes).
 
 ### Rationale
 
@@ -150,10 +159,11 @@ currently `#[ignore]`). Fix: add `ProgressOverlay::claim_input(ctx)`, called **n
   const STUCK_OVERLAY_WATCHDOG_THRESHOLD: Duration = Duration::from_secs(120);
   ```
 - `OverlayState`: add `last_progress_at: Instant` (init `Instant::now()` in `OverlayState::new`)
-  and `watchdog_logged: bool` (init `false`). In `OverlayHandle::mutate` (and the instance
-  builders that change content), set `last_progress_at = Instant::now()` **only when content
-  actually changes** — reuse the content-change detection already in `log_overlay_state`
-  (compare `(description, step)`); bump `last_progress_at` on the same edge that logs an update.
+  and `watchdog_logged: bool` (init `false`), plus a hidden `progress_token: Option<u64>` and its
+  `last_progress_token` shadow. In `log_overlay_state`, reset `last_progress_at = Instant::now()`
+  when **either** the shown `(description, step)` changes **or** the `progress_token` advances — but
+  emit the content-update log **only** on a shown change (a token advance is a hidden liveness
+  signal, not a user-visible update — NFR-5). The token is never rendered.
 - New helpers, mirroring `stuck_reveal`:
   ```rust
   fn watchdog_tripped(last_progress: Instant) -> bool {
@@ -208,8 +218,10 @@ to make — flagging it rather than burying it.
   pass once `claim_input` lands. This is the acceptance test for "the block is genuinely total."
 - TC-OVL-047 (informational portion) stays green; **add** an inline unit test
   `watchdog_tripped_only_past_threshold` mirroring `stuck_reveal_triggers_only_past_threshold`.
-- New inline test: a content update via `set_step`/`set_description` resets `last_progress_at`
-  (the watchdog does not fire on a progressing flow).
+- New inline tests: a shown content update via `set_step`/`set_description` resets
+  `last_progress_at`; and a hidden `progress_token` advance ALSO resets it (without emitting a
+  content-update log), while an unchanged token leaves the clock alone so a true stall still trips
+  the watchdog.
 - New inline test: `watchdog_logged` flips once and stays set (no per-frame log spam — NFR-5).
 - kittest: button-less overlay with an injected long elapse renders `STUCK_WATCHDOG_REASSURANCE`,
   not the soft line, and still exposes no dismiss control.

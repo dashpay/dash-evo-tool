@@ -722,7 +722,7 @@ impl Default for ConnectionStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dash_sdk::dash_spv::sync::BlockHeadersProgress;
+    use dash_sdk::dash_spv::sync::{BlockHeadersProgress, MasternodesProgress};
     use std::time::Duration;
 
     /// A `SyncProgress` mid-headers-download: 5000 / 10000 (50%).
@@ -794,6 +794,34 @@ mod tests {
         // The step lives in the high 32 bits, so a later phase always out-ranks an
         // earlier one regardless of height — the token is monotonic across phases.
         assert_eq!(t1 >> 32, 1, "headers maps to step 1 in the high bits");
+
+        // Cross-phase, high-bits-dominate: a LATER phase at the LOWEST height must
+        // out-rank an EARLIER phase at a near-maximal height. Headers (step 1) near
+        // the top of the u32 range still loses to masternodes (step 2) at height 0,
+        // because the step in the high 32 bits dominates the height in the low bits —
+        // the exact invariant this test's name claims.
+        let mut headers_high = BlockHeadersProgress::default();
+        headers_high.set_state(SyncState::Syncing);
+        headers_high.update_target_height(4_000_000_000);
+        headers_high.update_tip_height(4_000_000_000);
+        let mut early_high = SpvSyncProgress::default();
+        early_high.update_headers(headers_high);
+        let early_high_token = spv_progress_token(&early_high).expect("syncing → token");
+        assert_eq!(early_high_token >> 32, 1, "headers is step 1");
+
+        let mut masternodes_low = MasternodesProgress::default();
+        masternodes_low.set_state(SyncState::Syncing);
+        // current_height stays at its default 0 — the lowest possible.
+        let mut late_low = SpvSyncProgress::default();
+        late_low.update_masternodes(masternodes_low);
+        let late_low_token = spv_progress_token(&late_low).expect("syncing → token");
+        assert_eq!(late_low_token >> 32, 2, "masternodes is step 2");
+
+        assert!(
+            late_low_token > early_high_token,
+            "a later phase at height 0 out-ranks an earlier phase near the u32 ceiling \
+             — the high-bit step dominates the low-bit height"
+        );
     }
 
     #[test]

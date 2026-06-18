@@ -611,3 +611,148 @@ impl AsyncTool<DashMcpService> for IdentityCreditsToAddress {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// IdentityMasternodeLoad (load a masternode/evonode identity by ProTxHash)
+// ---------------------------------------------------------------------------
+
+/// Load a masternode/evonode identity headlessly from its ProTxHash and keys.
+pub struct IdentityMasternodeLoad;
+
+#[derive(Deserialize, schemars::JsonSchema, Default)]
+pub struct IdentityMasternodeLoadParams {
+    /// ProTxHash of the masternode/evonode (its identity ID). Accepts hex (the
+    /// canonical encoding) or Base58.
+    pub pro_tx_hash: String,
+    /// Node type: "masternode" or "evonode".
+    pub node_type: String,
+    /// Owner private key (WIF or 64-char hex). Bound as the OWNER key. At least
+    /// one of the owner or payout private key is required.
+    #[serde(default)]
+    pub owner_private_key: String,
+    /// Voting private key (WIF or 64-char hex). Optional; binds the voter
+    /// identity. Does not enable a withdrawal on its own.
+    #[serde(default)]
+    pub voting_private_key: String,
+    /// Payout/transfer private key (WIF or 64-char hex). Bound as the TRANSFER
+    /// key. At least one of the owner or payout private key is required.
+    #[serde(default)]
+    pub payout_private_key: String,
+    /// Optional human-readable name; trimmed, empty falls back to a DPNS name.
+    #[serde(default)]
+    pub alias: String,
+    /// Expected network (required so keys and addresses bind to the right chain).
+    pub network: String,
+}
+
+// Hand-written so the three private keys can never reach a log sink or an MCP
+// error `data` payload. A derived `Debug` would print the key material verbatim
+// — these keys can move the node's full Platform credit balance. Mirrors
+// `ImportWalletParams` (wallet.rs). The non-secret fields stay readable.
+impl std::fmt::Debug for IdentityMasternodeLoadParams {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("IdentityMasternodeLoadParams")
+            .field("pro_tx_hash", &self.pro_tx_hash)
+            .field("node_type", &self.node_type)
+            .field("owner_private_key", &"<redacted>")
+            .field("voting_private_key", &"<redacted>")
+            .field("payout_private_key", &"<redacted>")
+            .field("alias", &self.alias)
+            .field("network", &self.network)
+            .finish()
+    }
+}
+
+#[derive(Serialize, schemars::JsonSchema)]
+pub struct IdentityMasternodeLoadOutput {
+    identity_id: String,
+    node_type: String,
+    alias: Option<String>,
+    owner_key_loaded: bool,
+    voting_key_loaded: bool,
+    payout_key_loaded: bool,
+    /// Withdrawal key modes this identity supports ("owner" / "transfer").
+    available_withdrawal_keys: Vec<String>,
+    /// Registered payout address (the OWNER-mode withdrawal destination), if any.
+    payout_address: Option<String>,
+    dpns_names: Vec<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── Tool A param Debug redaction (TC-MN-010) ──────────────────────────
+    //
+    // The single most important security test: the params `Debug` must never
+    // surface any of the three private keys, because `McpToolError::TaskFailed`
+    // serializes `{task_err:?}` into the MCP error `data` payload.
+
+    #[test]
+    fn load_params_debug_redacts_every_private_key() {
+        let params = IdentityMasternodeLoadParams {
+            pro_tx_hash: "PROTX_HASH_VALUE".to_owned(),
+            node_type: "evonode".to_owned(),
+            owner_private_key: "OWNER_SECRET_VALUE".to_owned(),
+            voting_private_key: "VOTING_SECRET_VALUE".to_owned(),
+            payout_private_key: "PAYOUT_SECRET_VALUE".to_owned(),
+            alias: "my-node".to_owned(),
+            network: "testnet".to_owned(),
+        };
+
+        let debug = format!("{params:?}");
+
+        // No key sentinel may appear.
+        assert!(
+            !debug.contains("OWNER_SECRET_VALUE"),
+            "owner key leaked: {debug}"
+        );
+        assert!(
+            !debug.contains("VOTING_SECRET_VALUE"),
+            "voting key leaked: {debug}"
+        );
+        assert!(
+            !debug.contains("PAYOUT_SECRET_VALUE"),
+            "payout key leaked: {debug}"
+        );
+        // Each key field renders as the redaction marker.
+        assert_eq!(
+            debug.matches("<redacted>").count(),
+            3,
+            "all three key fields redacted: {debug}"
+        );
+        // Non-secret fields stay readable.
+        assert!(
+            debug.contains("PROTX_HASH_VALUE"),
+            "pro_tx_hash visible: {debug}"
+        );
+        assert!(debug.contains("evonode"), "node_type visible: {debug}");
+        assert!(debug.contains("my-node"), "alias visible: {debug}");
+        assert!(debug.contains("testnet"), "network visible: {debug}");
+    }
+
+    // ── Key-format policy delegation (TC-MN-011) ──────────────────────────
+    //
+    // The tool feeds raw key strings straight into `Secret` -> `IdentityInputToLoad`
+    // -> the backend `verify_key_input`, which is the single source of truth for
+    // the length policy (64-hex, 51/52-WIF, 0 -> none, else error). The tool adds
+    // no competing length check of its own, so wrong-length keys are rejected by
+    // the backend as `KeyInputValidationFailed`, role-named, value never echoed.
+    //
+    // This is a table-of-record assertion: the params struct accepts any string
+    // for the key fields without pre-validating its length.
+    #[test]
+    fn load_params_accept_any_key_length_without_local_check() {
+        for key in ["", "tooshort", &"a".repeat(63), &"f".repeat(64)] {
+            let params = IdentityMasternodeLoadParams {
+                pro_tx_hash: "x".to_owned(),
+                node_type: "masternode".to_owned(),
+                owner_private_key: key.to_owned(),
+                network: "testnet".to_owned(),
+                ..Default::default()
+            };
+            // Construction never validates key length — that is verify_key_input's job.
+            assert_eq!(params.owner_private_key, key);
+        }
+    }
+}

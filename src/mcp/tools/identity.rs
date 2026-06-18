@@ -667,10 +667,9 @@ pub struct IdentityMasternodeLoadParams {
     pub network: String,
 }
 
-// Hand-written so the three private keys can never reach a log sink or an MCP
-// error `data` payload. A derived `Debug` would print the key material verbatim
-// — these keys can move the node's full Platform credit balance. Mirrors
-// `ImportWalletParams` (wallet.rs). The non-secret fields stay readable.
+// Hand-written so the three private keys never reach a log sink or the MCP error
+// `data` payload — a derived `Debug` would print them verbatim. Mirrors
+// `ImportWalletParams`; non-secret fields stay readable.
 impl std::fmt::Debug for IdentityMasternodeLoadParams {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("IdentityMasternodeLoadParams")

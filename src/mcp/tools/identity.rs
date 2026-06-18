@@ -20,7 +20,7 @@ use crate::mcp::dispatch::dispatch_task;
 use crate::mcp::error::McpToolError;
 use crate::mcp::resolve;
 use crate::mcp::server::DashMcpService;
-use crate::model::masternode_input;
+use crate::model::masternode_input::{self, KeyMode};
 use crate::model::secret::Secret;
 
 // ---------------------------------------------------------------------------
@@ -796,6 +796,249 @@ impl AsyncTool<DashMcpService> for IdentityMasternodeLoad {
     }
 }
 
+// ---------------------------------------------------------------------------
+// IdentityMasternodeCreditsWithdraw (masternode-aware Identity -> Core)
+// ---------------------------------------------------------------------------
+
+/// Withdraw a masternode/evonode identity's Platform credits, honoring the
+/// two key modes (owner -> payout-forced, transfer -> any Core address).
+pub struct IdentityMasternodeCreditsWithdraw;
+
+#[derive(Debug, Deserialize, schemars::JsonSchema, Default)]
+pub struct IdentityMasternodeWithdrawParams {
+    /// Base58 identity ID of the loaded masternode/evonode identity.
+    pub identity_id: String,
+    /// Key mode: "owner" (destination forced to the payout address) or
+    /// "transfer" (withdraw to any Core address).
+    pub key_mode: String,
+    /// Core address to receive the withdrawal. Required for "transfer" mode;
+    /// forbidden for "owner" mode (the destination is the registered payout
+    /// address).
+    #[serde(default)]
+    pub to_address: String,
+    /// Amount in credits to withdraw (must be greater than zero).
+    pub amount_credits: u64,
+    /// Expected network (required for destructive operations).
+    pub network: String,
+}
+
+#[derive(Serialize, schemars::JsonSchema)]
+pub struct IdentityMasternodeWithdrawOutput {
+    identity_id: String,
+    key_mode: String,
+    /// The Core address the funds were actually sent to (the payout address in
+    /// owner mode, the caller's address in transfer mode).
+    to_address: String,
+    amount_credits: u64,
+    estimated_fee: u64,
+    actual_fee: u64,
+}
+
+/// Reject a caller-supplied address in owner mode (TC-MN-033).
+///
+/// An owner-key withdrawal always goes to the registered payout address, so a
+/// supplied `to_address` is a contradiction surfaced as an error rather than
+/// silently ignored.
+fn reject_owner_address_contradiction(to_address: &str) -> Result<(), McpToolError> {
+    if !to_address.trim().is_empty() {
+        return Err(McpToolError::InvalidParam {
+            message: "An owner-key withdrawal always goes to the registered payout address. \
+                      Remove 'to_address', or use key_mode=transfer to choose an address."
+                .to_owned(),
+        });
+    }
+    Ok(())
+}
+
+/// Parse and validate a transfer-mode destination address (format only).
+///
+/// Rejects an empty address (TC-MN-034), a Platform bech32m address via
+/// `is_platform_address_string` — NOT the weaker first-char check (TC-MN-031 /
+/// TC-MN-046) — and an address that does not parse as Core (TC-MN-035). The
+/// network match is enforced by the caller via `require_network` on the
+/// returned `NetworkUnchecked` address (TC-MN-047).
+fn parse_transfer_core_address(
+    to_address: &str,
+) -> Result<
+    dash_sdk::dashcore_rpc::dashcore::Address<
+        dash_sdk::dashcore_rpc::dashcore::address::NetworkUnchecked,
+    >,
+    McpToolError,
+> {
+    let trimmed = to_address.trim();
+    if trimmed.is_empty() {
+        return Err(McpToolError::InvalidParam {
+            message: "A transfer withdrawal needs a Core address. \
+                      Provide 'to_address' with a Core address."
+                .to_owned(),
+        });
+    }
+    if crate::model::address::is_platform_address_string(trimmed) {
+        return Err(McpToolError::InvalidParam {
+            message: "Enter a valid Core address — Platform addresses cannot receive withdrawals."
+                .to_owned(),
+        });
+    }
+    trimmed
+        .parse::<dash_sdk::dashcore_rpc::dashcore::Address<
+            dash_sdk::dashcore_rpc::dashcore::address::NetworkUnchecked,
+        >>()
+        .map_err(|_| McpToolError::InvalidParam {
+            message: "Enter a valid Core address — that address could not be read.".to_owned(),
+        })
+}
+
+impl ToolBase for IdentityMasternodeCreditsWithdraw {
+    type Parameter = IdentityMasternodeWithdrawParams;
+    type Output = IdentityMasternodeWithdrawOutput;
+    type Error = McpToolError;
+
+    fn name() -> Cow<'static, str> {
+        "identity_masternode_credits_withdraw".into()
+    }
+
+    fn description() -> Option<Cow<'static, str>> {
+        Some(
+            "Withdraw a loaded masternode/evonode identity's Platform credits to \
+             Core. With key_mode=owner the destination is forced to the \
+             registered payout address; with key_mode=transfer you choose any \
+             Core address. The 'network' parameter is required."
+                .into(),
+        )
+    }
+
+    fn annotations() -> Option<ToolAnnotations> {
+        Some(
+            ToolAnnotations::default()
+                .read_only(false)
+                .destructive(true)
+                .idempotent(false)
+                .open_world(true),
+        )
+    }
+}
+
+impl AsyncTool<DashMcpService> for IdentityMasternodeCreditsWithdraw {
+    async fn invoke(
+        service: &DashMcpService,
+        param: IdentityMasternodeWithdrawParams,
+    ) -> Result<IdentityMasternodeWithdrawOutput, McpToolError> {
+        let ctx = service
+            .ctx()
+            .await
+            .map_err(|e| McpToolError::Internal(e.to_string()))?;
+
+        // Cheap validation first, before the SPV wait.
+        resolve::require_network(&ctx, Some(&param.network))?;
+        resolve::validate_credits(param.amount_credits)?;
+        let key_mode = masternode_input::parse_key_mode(&param.key_mode)?;
+
+        // Surface the owner+address contradiction before resolving the identity
+        // so it fires even for a not-yet-loaded identity (TC-MN-033/042).
+        if key_mode == KeyMode::Owner {
+            reject_owner_address_contradiction(&param.to_address)?;
+        }
+
+        // Resolve the loaded identity. A not-found points at the load tool
+        // (FR-B5, TC-MN-040); a malformed ID is reported separately.
+        let identity_id = masternode_input::decode_identity_id(&param.identity_id)?;
+        let qi = ctx
+            .get_identity_by_id(&identity_id)
+            .map_err(|e| McpToolError::Internal(e.to_string()))?
+            .ok_or_else(|| McpToolError::InvalidParam {
+                message: format!(
+                    "This identity is not loaded yet: {}. \
+                     Run identity-masternode-load with the ProTxHash and keys first.",
+                    param.identity_id
+                ),
+            })?;
+
+        // Resolve the signing key for the requested mode from the identity's
+        // available withdrawal keys (TC-MN-044/054).
+        let purpose = match key_mode {
+            KeyMode::Owner => Purpose::OWNER,
+            KeyMode::Transfer => Purpose::TRANSFER,
+        };
+        let key_id = qi
+            .available_withdrawal_keys()
+            .into_iter()
+            .find(|k| k.identity_public_key.purpose() == purpose)
+            .map(|k| k.identity_public_key.id())
+            .ok_or_else(|| McpToolError::InvalidParam {
+                message: format!(
+                    "The {} key needed for this withdrawal is not loaded. \
+                     Re-run identity-masternode-load and include it.",
+                    match key_mode {
+                        KeyMode::Owner => "owner",
+                        KeyMode::Transfer => "payout",
+                    }
+                ),
+            })?;
+
+        // Resolve the destination per mode.
+        let to_address = match key_mode {
+            KeyMode::Owner => {
+                Some(qi.masternode_payout_address(ctx.network()).ok_or_else(|| {
+                    McpToolError::InvalidParam {
+                        message: "This identity has no registered payout address, so an owner-key \
+                         withdrawal has no destination. Use key_mode=transfer with a Core address."
+                            .to_owned(),
+                    }
+                })?)
+            }
+            KeyMode::Transfer => {
+                let parsed = parse_transfer_core_address(&param.to_address)?;
+                let checked = parsed.require_network(ctx.network()).map_err(|_| {
+                    McpToolError::InvalidParam {
+                        message: "The Core address does not match the active network. \
+                                  Use an address for the active network."
+                            .to_owned(),
+                    }
+                })?;
+                Some(checked)
+            }
+        };
+
+        // A withdrawal does proof-verified Platform reads — gate on SPV (NFR-P2,
+        // OQ-4 option b: add the gate, diverging from the sibling
+        // identity_credits_withdraw which historically skips it).
+        resolve::ensure_spv_synced(&ctx).await?;
+
+        let dispatched_address = to_address.clone();
+        let task = BackendTask::IdentityTask(IdentityTask::WithdrawFromIdentity(
+            qi,
+            to_address,
+            param.amount_credits,
+            Some(key_id),
+        ));
+        let result = dispatch_task(&ctx, task)
+            .await
+            .map_err(McpToolError::TaskFailed)?;
+
+        let BackendTaskSuccessResult::WithdrewFromIdentity(fee_result) = result else {
+            return Err(McpToolError::Internal(format!(
+                "Unexpected task result: {result:?}"
+            )));
+        };
+
+        Ok(IdentityMasternodeWithdrawOutput {
+            identity_id: param.identity_id,
+            key_mode: match key_mode {
+                KeyMode::Owner => "owner".to_owned(),
+                KeyMode::Transfer => "transfer".to_owned(),
+            },
+            // Echo the address actually used (the resolved payout address in
+            // owner mode), so the caller always learns where the funds went.
+            to_address: dispatched_address
+                .map(|a| a.to_string())
+                .unwrap_or_default(),
+            amount_credits: param.amount_credits,
+            estimated_fee: fee_result.estimated_fee,
+            actual_fee: fee_result.actual_fee,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -911,6 +1154,122 @@ mod tests {
             "voting_private_key",
             "payout_private_key",
             "alias",
+            "network",
+        ] {
+            assert!(
+                props.iter().any(|p| p == expected),
+                "schema must expose '{expected}', got {props:?}"
+            );
+        }
+    }
+
+    // ── Tool B pure pre-flight checks (TC-MN-031/032/033/034/035) ─────────
+
+    #[test]
+    fn withdraw_amount_zero_rejected() {
+        // TC-MN-032 — delegated to the shared resolve::validate_credits.
+        let err = resolve::validate_credits(0).unwrap_err();
+        assert!(err.to_string().contains("greater than zero"), "got: {err}");
+        assert!(resolve::validate_credits(1).is_ok());
+    }
+
+    #[test]
+    fn owner_mode_supplied_address_rejected() {
+        // TC-MN-033 — a non-empty address in owner mode is a contradiction.
+        let err =
+            reject_owner_address_contradiction("yQ9JNCT4S9zVHaKYbr1FUY4YkUMYxSzWAj").unwrap_err();
+        assert!(matches!(err, McpToolError::InvalidParam { .. }));
+        assert!(
+            err.to_string().contains("registered payout address"),
+            "got: {err}"
+        );
+        // Empty / whitespace-only address is the expected owner-mode input.
+        assert!(reject_owner_address_contradiction("").is_ok());
+        assert!(reject_owner_address_contradiction("   ").is_ok());
+    }
+
+    #[test]
+    fn transfer_mode_missing_address_rejected() {
+        // TC-MN-034 — transfer mode requires an address.
+        for empty in ["", "   "] {
+            let err = parse_transfer_core_address(empty).unwrap_err();
+            assert!(matches!(err, McpToolError::InvalidParam { .. }));
+            assert!(err.to_string().contains("Core address"), "got: {err}");
+        }
+    }
+
+    #[test]
+    fn transfer_mode_invalid_address_rejected() {
+        // TC-MN-035 — the address is actually parsed, not first-char checked.
+        let err = parse_transfer_core_address("not-an-address").unwrap_err();
+        assert!(matches!(err, McpToolError::InvalidParam { .. }));
+        assert!(err.to_string().contains("could not be read"), "got: {err}");
+    }
+
+    #[test]
+    fn transfer_mode_platform_address_rejected_via_guard() {
+        // TC-MN-031 / TC-MN-046 — Platform bech32m addresses are rejected by
+        // is_platform_address_string, NOT the weaker first-char check. A
+        // dash1…/tdash1… string must never slip through as Core.
+        for platform in ["dash1qwer1234", "tdash1qwer1234"] {
+            let err = parse_transfer_core_address(platform).unwrap_err();
+            assert!(matches!(err, McpToolError::InvalidParam { .. }));
+            assert!(
+                err.to_string()
+                    .contains("Platform addresses cannot receive"),
+                "for {platform}: {err}"
+            );
+        }
+    }
+
+    /// Derive a real, checksum-valid testnet P2PKH address from a fixed key.
+    fn sample_core_address() -> String {
+        use dash_sdk::dashcore_rpc::dashcore::secp256k1::{Secp256k1, SecretKey};
+        use dash_sdk::dashcore_rpc::dashcore::{Address, Network, PrivateKey, PublicKey};
+
+        let secp = Secp256k1::new();
+        let sk = SecretKey::from_slice(&[7u8; 32]).expect("valid secret key");
+        let privkey = PrivateKey::new(sk, Network::Testnet);
+        let pubkey = PublicKey::from_private_key(&secp, &privkey);
+        Address::p2pkh(&pubkey, Network::Testnet).to_string()
+    }
+
+    #[test]
+    fn transfer_mode_valid_core_address_accepted() {
+        // A well-formed Core address parses (network match is enforced later
+        // via require_network on the NetworkUnchecked address).
+        let addr = sample_core_address();
+        assert!(
+            parse_transfer_core_address(&addr).is_ok(),
+            "derived address {addr} should parse"
+        );
+    }
+
+    // ── Tool B discoverability & schema (TC-MN-043) ───────────────────────
+
+    #[test]
+    fn withdraw_tool_registered_with_expected_annotations_and_schema() {
+        let router = DashMcpService::tool_router();
+        let tool = router
+            .get("identity_masternode_credits_withdraw")
+            .expect("identity_masternode_credits_withdraw must be registered in tool_router");
+
+        let ann = tool
+            .annotations
+            .as_ref()
+            .expect("tool must carry annotations");
+        // Identical to identity_credits_withdraw: a fund-moving, destructive op.
+        assert_eq!(ann.read_only_hint, Some(false));
+        assert_eq!(ann.destructive_hint, Some(true));
+        assert_eq!(ann.idempotent_hint, Some(false));
+        assert_eq!(ann.open_world_hint, Some(true));
+
+        let props = schema_property_names(tool);
+        for expected in [
+            "identity_id",
+            "key_mode",
+            "to_address",
+            "amount_credits",
             "network",
         ] {
             assert!(

@@ -148,6 +148,7 @@ impl DashMcpService {
             .with_async_tool::<tools::identity::IdentityCreditsWithdraw>()
             .with_async_tool::<tools::identity::IdentityCreditsToAddress>()
             .with_async_tool::<tools::identity::IdentityMasternodeLoad>()
+            .with_async_tool::<tools::identity::IdentityMasternodeCreditsWithdraw>()
             // Shielded tools
             .with_async_tool::<tools::shielded::ShieldedShieldFromCore>()
             .with_async_tool::<tools::shielded::ShieldedShieldFromPlatform>()

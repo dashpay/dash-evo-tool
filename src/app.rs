@@ -29,7 +29,6 @@ use crate::ui::tools::address_balance_screen::AddressBalanceScreen;
 use crate::ui::tools::contract_visualizer_screen::ContractVisualizerScreen;
 use crate::ui::tools::document_visualizer_screen::DocumentVisualizerScreen;
 use crate::ui::tools::grovestark_screen::GroveSTARKScreen;
-use crate::ui::tools::masternode_list_diff_screen::MasternodeListDiffScreen;
 use crate::ui::tools::platform_info_screen::PlatformInfoScreen;
 use crate::ui::tools::proof_visualizer_screen::ProofVisualizerScreen;
 use crate::ui::tools::transition_visualizer_screen::TransitionVisualizerScreen;
@@ -470,8 +469,6 @@ impl AppState {
 
         let network_chooser_screen = NetworkChooserScreen::new(&network_contexts, chosen_network);
 
-        let masternode_list_diff_screen = MasternodeListDiffScreen::new(&active_context);
-
         let wallets_balances_screen = WalletsBalancesScreen::new(&active_context);
 
         let selected_main_screen = settings.root_screen_type;
@@ -617,10 +614,6 @@ impl AppState {
                 (
                     RootScreenType::RootScreenNetworkChooser,
                     Screen::NetworkChooserScreen(network_chooser_screen),
-                ),
-                (
-                    RootScreenType::RootScreenToolsMasternodeListDiffScreen,
-                    Screen::MasternodeListDiffScreen(masternode_list_diff_screen),
                 ),
                 (
                     RootScreenType::RootScreenMyTokenBalances,

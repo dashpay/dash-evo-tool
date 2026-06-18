@@ -13,17 +13,7 @@ pub enum ToolsSubscreen {
     ProofViewer,
     ContractViewer,
     GroveSTARK,
-    MasternodeListDiff,
     DPNS,
-}
-
-impl ToolsSubscreen {
-    /// Returns `true` when the tool only works with an RPC connection to a
-    /// local Dash Core node and must be disabled while the app is running on
-    /// its built-in SPV backend.
-    fn requires_core_rpc(&self) -> bool {
-        matches!(self, Self::MasternodeListDiff)
-    }
 }
 
 impl ToolsSubscreen {
@@ -36,7 +26,6 @@ impl ToolsSubscreen {
             Self::DocumentViewer => "Document deserializer",
             Self::ContractViewer => "Contract deserializer",
             Self::GroveSTARK => "ZK Proofs",
-            Self::MasternodeListDiff => "Masternode list diff inspector",
             Self::DPNS => "DPNS",
         }
     }
@@ -45,8 +34,6 @@ impl ToolsSubscreen {
 pub fn add_tools_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext) -> AppAction {
     let mut action = AppAction::None;
     let dark_mode = ctx.style().visuals.dark_mode;
-    // Chain sync is SPV-only; the RPC wallet backend was removed.
-    let is_rpc_mode = false;
 
     let subscreens = vec![
         ToolsSubscreen::PlatformInfo,
@@ -56,7 +43,6 @@ pub fn add_tools_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext
         ToolsSubscreen::DocumentViewer,
         ToolsSubscreen::ContractViewer,
         ToolsSubscreen::GroveSTARK,
-        ToolsSubscreen::MasternodeListDiff,
         ToolsSubscreen::DPNS,
     ];
 
@@ -72,9 +58,6 @@ pub fn add_tools_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext
         }
         ui::RootScreenType::RootScreenToolsContractVisualizerScreen => {
             ToolsSubscreen::ContractViewer
-        }
-        ui::RootScreenType::RootScreenToolsMasternodeListDiffScreen => {
-            ToolsSubscreen::MasternodeListDiff
         }
         ui::RootScreenType::RootScreenToolsGroveSTARKScreen => ToolsSubscreen::GroveSTARK,
         ui::RootScreenType::RootScreenDPNSActiveContests
@@ -107,8 +90,6 @@ pub fn add_tools_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext
 
                         for subscreen in subscreens {
                             let is_active = active_screen == subscreen;
-                            let requires_core_rpc = subscreen.requires_core_rpc();
-                            let is_enabled = is_rpc_mode || !requires_core_rpc;
 
                             let button = if is_active {
                                 egui::Button::new(
@@ -132,15 +113,7 @@ pub fn add_tools_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext
                                 .min_size(egui::Vec2::new(150.0, 28.0))
                             };
 
-                            // Show the subscreen name as a clickable option. Disable
-                            // tools that require a Core RPC connection while running
-                            // on the built-in SPV backend.
-                            let mut response = ui.add_enabled(is_enabled, button);
-                            if !is_enabled {
-                                response = response.on_disabled_hover_text(
-                                    "This tool requires a local Dash Core node. Open Settings, switch to Expert mode, and select Local Dash Core node to enable it.",
-                                );
-                            }
+                            let response = ui.add(button);
                             if response.clicked() {
                                 // Handle navigation based on which subscreen is selected
                                 match subscreen {
@@ -174,10 +147,6 @@ pub fn add_tools_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext
                                             RootScreenType::RootScreenToolsContractVisualizerScreen,
                                         )
                                     }
-                                    ToolsSubscreen::MasternodeListDiff => {
-                                        action = AppAction::SetMainScreen(
-                                            RootScreenType::RootScreenToolsMasternodeListDiffScreen)
-                                    }
                                     ToolsSubscreen::GroveSTARK => {
                                         action = AppAction::SetMainScreen(
                                             RootScreenType::RootScreenToolsGroveSTARKScreen)
@@ -195,34 +164,4 @@ pub fn add_tools_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext
         });
 
     action
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn masternode_list_diff_requires_core_rpc() {
-        assert!(ToolsSubscreen::MasternodeListDiff.requires_core_rpc());
-    }
-
-    #[test]
-    fn spv_safe_tools_do_not_require_core_rpc() {
-        for tool in [
-            ToolsSubscreen::PlatformInfo,
-            ToolsSubscreen::AddressBalance,
-            ToolsSubscreen::TransactionViewer,
-            ToolsSubscreen::DocumentViewer,
-            ToolsSubscreen::ProofViewer,
-            ToolsSubscreen::ContractViewer,
-            ToolsSubscreen::GroveSTARK,
-            ToolsSubscreen::DPNS,
-        ] {
-            assert!(
-                !tool.requires_core_rpc(),
-                "Tool {} should be available in SPV mode",
-                tool.display_name()
-            );
-        }
-    }
 }

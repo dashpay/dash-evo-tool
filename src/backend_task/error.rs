@@ -542,10 +542,6 @@ pub enum TaskError {
     )]
     ConfirmationTimeout,
 
-    /// Dash Core peer-to-peer communication failed.
-    #[error(transparent)]
-    P2P(#[from] crate::components::core_p2p_handler::P2PError),
-
     /// The operation's prerequisite was auto-fixed (e.g., Core wallet detected).
     /// Callers should retry the failed operation.
     #[error("{0}")]

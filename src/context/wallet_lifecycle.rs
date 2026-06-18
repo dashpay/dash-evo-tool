@@ -378,7 +378,18 @@ impl AppContext {
         self.connection_status.refresh_state();
 
         if let Some(backend) = self.take_wallet_backend() {
+            // Capture the exact persister path this backend opened, so the
+            // release barrier below probes the same file `WalletBackend::new`
+            // reopens on reconnect — no hardcoded path, no drift.
+            let persister_path = backend.spv_storage_dir().join("platform-wallet.sqlite");
             backend.shutdown().await;
+            // Drop the last in-scope `Arc<WalletBackend>` so `Inner` (and the
+            // persister `Arc`s it owns directly) release synchronously, then
+            // wait out the detached upstream coordinator threads that may still
+            // hold transitive persister `Arc`s for a short while — see
+            // `await_persister_released`.
+            drop(backend);
+            self.await_persister_released(&persister_path).await;
         }
 
         self.connection_status.set_spv_status(SpvStatus::Stopped);
@@ -394,6 +405,93 @@ impl AppContext {
         self.identity_autodiscovery_fired
             .store(false, std::sync::atomic::Ordering::SeqCst);
         self.connection_status.refresh_state();
+    }
+
+    /// Bounded barrier that blocks [`Self::stop_spv`] until the upstream
+    /// platform-wallet persister at `persister_path` is fully released back to
+    /// the process-global open-path registry, so the next reconnect can reopen
+    /// it.
+    ///
+    /// ## Why this exists
+    ///
+    /// `SqlitePersister` refuses a second in-process open of the same path with
+    /// `WalletStorageError::AlreadyOpen`, tracked in a process-global registry
+    /// that is cleared **only** by `impl Drop for SqlitePersister`. On
+    /// disconnect we drop the [`WalletBackend`] (releasing the persister `Arc`s
+    /// it owns directly), and [`WalletBackend::shutdown`] joins the SPV run
+    /// loop — but `PlatformWalletManager::shutdown` only `quiesce()`s the three
+    /// sync coordinators (`identity_sync`, `platform_address_sync`,
+    /// `shielded_sync`). `quiesce()` is cancel-and-drain, **not** join: each
+    /// coordinator runs on a detached `std::thread` that is never joined and
+    /// transitively holds an `Arc<SqlitePersister>`. So the persister's `Drop`
+    /// (and the registry release) is deferred until those threads wind down —
+    /// shortly *after* `shutdown()` returns. Without this barrier an immediate
+    /// reconnect calls `WalletBackend::new` → `SqlitePersister::open` on the
+    /// still-registered path and fails with `AlreadyOpen` (the user's
+    /// Disconnect → Connect bug).
+    ///
+    /// ## What it does
+    ///
+    /// Probe the path by opening it ourselves: a successful open proves the
+    /// registry entry is gone (the last coordinator thread dropped its
+    /// persister `Arc`), so we drop the probe **immediately** — re-freeing the
+    /// path — and return. While the coordinator threads are still winding down
+    /// the open returns `AlreadyOpen`; we back off and retry. The loop is
+    /// bounded so a stuck thread or an unrelated open failure can never block
+    /// disconnect forever; on timeout or any non-`AlreadyOpen` error we log and
+    /// return (best-effort — a later reconnect surfaces a real open error to
+    /// the user, which is strictly better than hanging the disconnect path).
+    ///
+    /// Runs on the disconnect path only and never touches the connect path.
+    ///
+    // TODO(upstream rs-platform-wallet): this barrier is a workaround for the
+    // three sync coordinators (`manager/identity_sync.rs`,
+    // `manager/platform_address_sync.rs`, `manager/shielded_sync.rs`) running
+    // on detached, non-joinable `std::thread`s whose `quiesce()` is
+    // cancel-and-drain, not join. The durable fix is upstream: make `quiesce()`
+    // await actual thread exit (keep the `JoinHandle` / signal a oneshot at
+    // thread end) so `PlatformWalletManager::shutdown()` returns only after
+    // every coordinator has dropped its `Arc<SqlitePersister>`. Once that lands
+    // upstream this poll loop can be removed.
+    async fn await_persister_released(&self, persister_path: &Path) {
+        use platform_wallet_storage::{SqlitePersister, SqlitePersisterConfig, WalletStorageError};
+
+        const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(20);
+        const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+        let deadline = std::time::Instant::now() + TIMEOUT;
+        loop {
+            match SqlitePersister::open(SqlitePersisterConfig::new(persister_path)) {
+                Ok(probe) => {
+                    // Path is free. Drop the probe IMMEDIATELY so it re-frees
+                    // the registry entry before the reconnect reopens the path.
+                    drop(probe);
+                    return;
+                }
+                Err(WalletStorageError::AlreadyOpen { .. }) => {
+                    if std::time::Instant::now() >= deadline {
+                        tracing::warn!(
+                            path = %persister_path.display(),
+                            "Platform-wallet persister was not released within the disconnect timeout; \
+                             proceeding anyway — a reconnect may briefly fail to reopen it"
+                        );
+                        return;
+                    }
+                    tokio::time::sleep(POLL_INTERVAL).await;
+                }
+                Err(other) => {
+                    // An unrelated open failure (forward-version db, IO, etc.).
+                    // Not this barrier's concern — don't spin on it; the
+                    // reconnect path surfaces such errors to the user properly.
+                    tracing::warn!(
+                        path = %persister_path.display(),
+                        error = ?other,
+                        "Probe open during the disconnect barrier failed for an unrelated reason; proceeding"
+                    );
+                    return;
+                }
+            }
+        }
     }
 
     /// Persist a wallet to the database and register it in the in-memory map.
@@ -1515,10 +1613,13 @@ mod tests {
     /// new instance (its fresh latch fired).  The `Syncing`/`Running` indicator
     /// transition is network-driven and tested by the backend-e2e suite.
     ///
-    /// Limitation: offline, the SPV task may exit on its own fast enough to
-    /// pass even without the fix.  The authoritative guard is the online
-    /// reconnect test in the backend-e2e suite; this test exercises the
-    /// synchronous-release *path* and acts as a quick smoke-check.
+    /// Limitation: offline, the SPV task and the upstream sync-coordinator
+    /// threads may exit on their own fast enough that the path is free even
+    /// without the barrier, so this end-to-end test is a smoke-check, not a
+    /// deterministic gate.  The deterministic gate on the release mechanism
+    /// itself is `await_persister_released_waits_for_registry_release` below;
+    /// the authoritative end-to-end guard is the online reconnect test in the
+    /// backend-e2e suite.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn reconnect_after_stop_rebuilds_fresh_backend_and_restarts() {
         use crate::context::connection_status::OverallConnectionState;
@@ -1553,13 +1654,11 @@ mod tests {
             "precondition: disconnected before reconnect"
         );
 
-        // With the fix, `shutdown()` calls `spv().stop().await` which joins the
-        // SPV background task before returning.  That releases the task's
-        // `Arc<SpvRuntime>`, which was the last ref keeping the transitive
-        // `Arc<SqlitePersister>` alive outside of `Inner` itself.  When
-        // `stop_spv()` then drops the backend local, `Inner` drops
-        // synchronously, releasing all remaining `Arc<SqlitePersister>` refs and
-        // clearing the REGISTRY entry.  No polling band-aid is needed.
+        // After `stop_spv()` returns the persister path must be free: the
+        // B-fix `shutdown()` joins the SPV run loop, then `stop_spv` drops the
+        // backend and runs `await_persister_released`, which blocks until the
+        // detached upstream coordinator threads have dropped their transitive
+        // `Arc<SqlitePersister>` and the process-global REGISTRY entry is gone.
         //
         // Assert the path is free *immediately* after `stop_spv()` returns.
         let reopen = SqlitePersister::open(SqlitePersisterConfig::new(&persister_path));
@@ -1589,6 +1688,74 @@ mod tests {
         );
 
         second.shutdown().await;
+    }
+
+    /// Deterministic gate for the B-2 reconnect fix: `await_persister_released`
+    /// must BLOCK while the persister path is still held in the process-global
+    /// open-path REGISTRY, and return only once the holder drops it — at which
+    /// point the path is reopenable.
+    ///
+    /// This watches the RIGHT object — the `SqlitePersister` registry — and is
+    /// deterministic (no reliance on coordinator-thread exit timing): we hold
+    /// the persister ourselves, prove a concurrent open is refused with
+    /// `AlreadyOpen`, prove the barrier is still waiting while we hold it, then
+    /// release and prove the barrier unblocks and the path is free. A barrier
+    /// that returned eagerly (the pre-fix behaviour) would fail the
+    /// "still-waiting-while-held" assertion.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn await_persister_released_waits_for_registry_release() {
+        use platform_wallet_storage::{SqlitePersister, SqlitePersisterConfig, WalletStorageError};
+
+        // Serialize against any sibling that races on the upstream single-open
+        // registry; the path here is unique to a fresh tempdir, but the global
+        // REGISTRY mutex is shared process-wide.
+        let _reopen_guard = backend_reopen_lock().await;
+
+        let (ctx, _sender, _tmp) = offline_testnet_context();
+
+        let probe_dir = tempfile::tempdir().expect("create probe tempdir");
+        let path = probe_dir.path().join("platform-wallet.sqlite");
+
+        // Hold the persister open: the path is now registered, so any second
+        // in-process open of it is refused with `AlreadyOpen`.
+        let held = SqlitePersister::open(SqlitePersisterConfig::new(&path))
+            .expect("first open should succeed and register the path");
+        assert!(
+            matches!(
+                SqlitePersister::open(SqlitePersisterConfig::new(&path)),
+                Err(WalletStorageError::AlreadyOpen { .. })
+            ),
+            "precondition: a held path must refuse a second open with AlreadyOpen"
+        );
+
+        // Run the barrier concurrently. It must NOT complete while `held` keeps
+        // the path registered.
+        let barrier_ctx = Arc::clone(&ctx);
+        let barrier_path = path.clone();
+        let barrier =
+            tokio::spawn(async move { barrier_ctx.await_persister_released(&barrier_path).await });
+
+        // Give the barrier several poll cycles (POLL_INTERVAL is 20ms). Because
+        // `held` still pins the path, every probe open returns AlreadyOpen, so
+        // the barrier must still be looping — never finished.
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        assert!(
+            !barrier.is_finished(),
+            "barrier must keep waiting while the persister path is still held"
+        );
+
+        // Release the path. The barrier's next probe open succeeds, it drops
+        // the probe, and returns.
+        drop(held);
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), barrier)
+            .await
+            .expect("barrier must return promptly once the path is released")
+            .expect("barrier task must not panic");
+
+        // The barrier dropped its probe before returning, so the path is free.
+        SqlitePersister::open(SqlitePersisterConfig::new(&path))
+            .expect("path must be reopenable after the barrier returns");
     }
 
     /// QA-007: a failure at the (fallible) wiring step must surface — the

@@ -792,6 +792,146 @@ fn tc_ovl_044_enter_and_space_do_not_activate_button() {
     assert!(ProgressOverlay::has_global(&harness.ctx));
 }
 
+/// TC-OVL-051 — a block that opts into a keyboard escape via `with_keyboard_escape`
+/// (QA-002 refinement) CAN be activated with **Enter**: the focus-pinned escape
+/// button fires and enqueues its action — the keyboard exit the unbounded SPV
+/// block relies on. The general rule (TC-OVL-044) is unchanged for non-opted blocks.
+#[test]
+fn tc_ovl_051_designated_escape_activates_on_enter() {
+    let mut harness = overlay_harness();
+    let handle = ProgressOverlay::set_global(
+        &harness.ctx,
+        "Syncing with the Dash network.",
+        OverlayConfig::new()
+            .with_secondary_action("Continue in the background", "spv:escape")
+            .with_keyboard_escape("spv:escape"),
+    );
+    // Settle: focus the escape and let the focus lock take effect (it is a no-op
+    // until the button has held focus for a frame).
+    harness.step();
+    harness.step();
+    harness.step();
+    assert!(
+        harness
+            .get_by_label("Continue in the background")
+            .is_focused(),
+        "the designated escape button holds focus"
+    );
+
+    harness.key_press(egui::Key::Enter);
+    harness.step();
+    assert_eq!(
+        handle.take_actions(),
+        vec!["spv:escape".to_string()],
+        "Enter activates the focus-pinned escape and enqueues its action"
+    );
+    assert!(
+        ProgressOverlay::has_global(&harness.ctx),
+        "activating the escape does not itself lower the overlay — the owner does"
+    );
+}
+
+/// TC-OVL-052 — the opted-in keyboard escape also activates with **Space** (egui
+/// fires a fake primary click on Space OR Enter for the focused widget).
+#[test]
+fn tc_ovl_052_designated_escape_activates_on_space() {
+    let mut harness = overlay_harness();
+    let handle = ProgressOverlay::set_global(
+        &harness.ctx,
+        "Syncing with the Dash network.",
+        OverlayConfig::new()
+            .with_secondary_action("Continue in the background", "spv:escape")
+            .with_keyboard_escape("spv:escape"),
+    );
+    harness.step();
+    harness.step();
+    harness.step();
+    assert!(
+        harness
+            .get_by_label("Continue in the background")
+            .is_focused()
+    );
+
+    harness.key_press(egui::Key::Space);
+    harness.step();
+    assert_eq!(
+        handle.take_actions(),
+        vec!["spv:escape".to_string()],
+        "Space activates the focus-pinned escape and enqueues its action"
+    );
+}
+
+/// TC-OVL-053 — the keyboard escape is focus-pinned: a `TextEdit` placed beneath
+/// the block never receives the Enter (it activates the escape, not the field), and
+/// neither Tab nor a backdrop click can move focus off the escape to a beneath
+/// widget. The opt-in carves out Enter/Space ONLY for the escape; everything
+/// beneath stays fully keyboard-blocked.
+#[test]
+fn tc_ovl_053_designated_escape_is_focus_pinned() {
+    let text = Rc::new(RefCell::new(String::new()));
+    let text_ui = Rc::clone(&text);
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(420.0, 360.0))
+        .build_ui(move |ui| {
+            ProgressOverlay::claim_input(ui.ctx());
+            let mut buffer = text_ui.borrow_mut();
+            ui.text_edit_singleline(&mut *buffer);
+            ProgressOverlay::render_global(ui.ctx());
+        });
+    let handle = ProgressOverlay::set_global(
+        &harness.ctx,
+        "Syncing with the Dash network.",
+        OverlayConfig::new()
+            .with_secondary_action("Continue in the background", "spv:escape")
+            .with_keyboard_escape("spv:escape"),
+    );
+    harness.step();
+    harness.step();
+    harness.step();
+    assert!(
+        harness
+            .get_by_label("Continue in the background")
+            .is_focused(),
+        "focus is pinned to the escape, not the field beneath"
+    );
+
+    // Tab cannot move focus off the escape (claim_input strips it; the lock backs it).
+    harness.key_press(egui::Key::Tab);
+    harness.step();
+    assert!(
+        harness
+            .get_by_label("Continue in the background")
+            .is_focused(),
+        "Tab cannot move focus to the field beneath"
+    );
+
+    // A click over the field beneath is absorbed by the sink and cannot move focus;
+    // the per-frame focus pin keeps the escape focused.
+    let over_field = egui::pos2(20.0, 20.0);
+    harness.drag_at(over_field);
+    harness.drop_at(over_field);
+    harness.step();
+    assert!(
+        harness
+            .get_by_label("Continue in the background")
+            .is_focused(),
+        "a click over the field beneath cannot move focus off the escape"
+    );
+
+    // Enter activates the escape — and never reaches the field beneath.
+    harness.key_press(egui::Key::Enter);
+    harness.step();
+    assert_eq!(
+        handle.take_actions(),
+        vec!["spv:escape".to_string()],
+        "Enter activates the escape"
+    );
+    assert!(
+        text.borrow().is_empty(),
+        "the field beneath the block never received the Enter"
+    );
+}
+
 // ── Group M — Non-Functional ───────────────────────────────────────────────
 
 /// TC-OVL-046 — switching theme mid-overlay re-renders without panic.
@@ -1395,6 +1535,65 @@ fn task9_spv_overlay_armed_scope_disarm_and_escape() {
         assert!(
             ProgressOverlay::has_global(&harness.ctx),
             "a fresh armed episode re-blocks"
+        );
+    });
+}
+
+/// Task 9 / QA-002 refinement — the REAL SPV block's "Continue in the background"
+/// escape is keyboard-activatable: pressing **Enter** while it holds focus enqueues
+/// its action, which the driver drains to lower the block. Guards the app.rs wiring
+/// (`with_keyboard_escape(SPV_CONTINUE_BACKGROUND_ACTION)`) so a keyboard-only /
+/// assistive-tech user is never stranded behind the unbounded SPV block.
+#[cfg(feature = "testing")]
+#[test]
+fn task9_spv_escape_is_keyboard_activatable() {
+    use dash_evo_tool::context::connection_status::OverallConnectionState;
+    crate::support::with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        // Mirror AppState::update: claim input at frame start, then render.
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(640.0, 480.0))
+            .build_ui(|ui| {
+                ProgressOverlay::claim_input(ui.ctx());
+                ProgressOverlay::render_global(ui.ctx());
+            });
+        let mut app = dash_evo_tool::app::AppState::new(harness.ctx.clone())
+            .expect("Failed to create AppState");
+        let app_context = app.current_app_context().clone();
+        app_context
+            .connection_status()
+            .set_overall_state(OverallConnectionState::Connecting);
+
+        // Arm a user-initiated episode and raise the block.
+        app.test_arm_spv_block();
+        app.test_drive_spv_overlay(&harness.ctx);
+        // Settle focus on the escape button (the focus lock is a no-op until the
+        // button has held focus for a frame).
+        harness.step();
+        harness.step();
+        harness.step();
+        assert!(
+            harness
+                .get_by_label("Continue in the background")
+                .is_focused(),
+            "the SPV escape button holds focus"
+        );
+
+        // Enter activates the escape; the next driver pass drains it and lowers the
+        // block for the rest of the episode (sync keeps running in the background).
+        harness.key_press(egui::Key::Enter);
+        harness.step();
+        app.test_drive_spv_overlay(&harness.ctx);
+        assert!(
+            !ProgressOverlay::has_global(&harness.ctx),
+            "Enter on the SPV escape lowers the block — a keyboard-only user is never trapped"
+        );
+        app.test_drive_spv_overlay(&harness.ctx);
+        assert!(
+            !ProgressOverlay::has_global(&harness.ctx),
+            "the block stays lowered within the dismissed episode"
         );
     });
 }

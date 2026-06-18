@@ -939,8 +939,65 @@ There is no built-in Cancel, so Esc has nothing to trigger.
 - `take_actions` returns empty (Enter did NOT enqueue the focused button's action).
 - The overlay is still active.
 
-**Rationale:** A hard block swallows Tab/Enter/Esc, so a focused button can never be activated by
-keyboard — Enter must not trigger it. See AC-3c.
+**Rationale:** A hard block swallows Tab/Enter/Esc/Space, so a focused button can never be
+activated by keyboard — Enter/Space must not trigger it. This is the guard that the general rule
+stays intact; the single opt-in exception is covered by TC-OVL-051/052/053. See AC-3c.
+
+---
+
+#### TC-OVL-051 — Opt-in keyboard escape activates on Enter
+**Type:** kittest
+**Traceability:** NFR-3 (AC-3c)
+
+**Preconditions:** Overlay active with a secondary action also designated via
+`with_keyboard_escape(action_id)`; settle frames so the escape button holds focus.
+
+**Steps:**
+1. Show the overlay with the designated escape; run frames until the escape button is focused.
+2. Press Enter; run one frame.
+3. Call `take_actions`.
+
+**Expected outcome:**
+- `take_actions` returns the escape's action id (Enter activated the focus-pinned escape).
+- The overlay is still active (activation enqueues the id; the owner lowers the block).
+
+**Rationale:** An unbounded block that opts into a keyboard escape must be activatable by Enter so
+a keyboard-only / assistive-tech user is not stranded. See AC-3c.
+
+---
+
+#### TC-OVL-052 — Opt-in keyboard escape activates on Space
+**Type:** kittest
+**Traceability:** NFR-3 (AC-3c)
+
+**Preconditions:** As TC-OVL-051.
+
+**Steps:** As TC-OVL-051, pressing **Space** instead of Enter.
+
+**Expected outcome:** `take_actions` returns the escape's action id (egui fires a fake primary
+click on Space OR Enter for the focused widget).
+
+---
+
+#### TC-OVL-053 — Opt-in keyboard escape is focus-pinned (no leak beneath)
+**Type:** kittest
+**Traceability:** NFR-3 (AC-3a, AC-3c)
+
+**Preconditions:** A `TextEdit` rendered beneath; overlay active with a designated keyboard escape;
+settle frames so the escape holds focus.
+
+**Steps:**
+1. Assert the escape button is focused (not the field beneath).
+2. Press Tab; assert focus stays on the escape.
+3. Click over the field beneath; assert focus stays on the escape (the click is absorbed by the
+   sink and the per-frame focus pin restores it).
+4. Press Enter; assert `take_actions` returns the escape id AND the field beneath is still empty.
+
+**Expected outcome:** Neither Tab nor a click can move focus off the escape, and Enter/Space reach
+only the escape — never a widget beneath. The opt-in carves out Enter/Space for the escape alone.
+
+**Rationale:** The Enter/Space passthrough is safe only because focus is guaranteed pinned to the
+escape. See AC-3a, AC-3c.
 
 ---
 
@@ -1079,7 +1136,7 @@ loop).
 | FR-10 (concurrent operations) | TC-OVL-036, TC-OVL-037, TC-OVL-038, TC-OVL-039, TC-OVL-040 |
 | NFR-1 (no frame blocking) | TC-OVL-004, TC-OVL-049 |
 | NFR-2 (i18n-ready strings) | TC-OVL-014 (counter format), TC-OVL-020 (description), TC-OVL-013 (elapsed) |
-| NFR-3 (accessibility) | TC-OVL-041, TC-OVL-042, TC-OVL-043, TC-OVL-044 |
+| NFR-3 (accessibility) | TC-OVL-041, TC-OVL-042, TC-OVL-043, TC-OVL-044, TC-OVL-051, TC-OVL-052, TC-OVL-053 |
 | NFR-4 (theme) | TC-OVL-046 |
 | NFR-5 (log-once) | TC-OVL-045, TC-OVL-040 |
 | NFR-6 (cheap idle) | TC-OVL-001 |

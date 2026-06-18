@@ -206,12 +206,21 @@ project's i18n convention (Rust `{name}` specifiers today, Fluent `{ $name }` la
 
 ### NFR-3 — Accessibility (within egui's constraints)
 **AC-3a (focus trap):** while the overlay is up, keyboard focus is confined to its own
-controls; Tab does not cycle into widgets beneath.
+controls; Tab does not cycle into widgets beneath. When a block opts into a keyboard escape
+(AC-3c), focus is *pinned* to that escape button — re-requested every frame and locked — so
+neither Tab nor a click can move focus to a widget beneath.
 **AC-3b (Esc):** Esc triggers Cancel **only when the overlay is cancelable** (a Cancel action
 is present). With no Cancel, Esc is swallowed (does nothing) — it must not dismiss a
-non-cancelable block.
-**AC-3c (Enter):** Enter does not auto-confirm anything destructive; if a single primary
-action exists, Enter MAY activate it, but Cancel is never the Enter default.
+non-cancelable block. Esc never dismisses, even on an opt-in keyboard-escape block.
+**AC-3c (Enter/Space — opt-in keyboard escape):** A hard block is **not** keyboard-activatable
+by default: Enter/Space are stripped every frame, so a focused button cannot be triggered by
+keyboard. The single exception is a block that opts in via `OverlayConfig::with_keyboard_escape`,
+which designates one action as a keyboard-reachable escape. For that block — and only while its
+escape button is confirmed to hold focus — Enter or Space activates the escape (egui fires a
+fake primary click on either). This is for **unbounded** blocks that would otherwise strand a
+keyboard-only / assistive-tech user; the reference adopter is the SPV-sync block, whose
+"Continue in the background" escape is so designated. Every other hard block, and everything
+beneath any block, stays fully keyboard-blocked.
 **AC-3d (not color-only):** "busy" is signalled by the moving spinner + text, not color alone.
 **AC-3e (contrast):** text/buttons meet WCAG 2.1 AA (4.5:1 text, 3:1 UI) on the dimmed plane in both themes.
 **AC-3f (known limitation):** egui has no screen-reader annotation support (per

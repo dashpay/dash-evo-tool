@@ -101,6 +101,19 @@ currently `#[ignore]`). Fix: add `ProgressOverlay::claim_input(ctx)`, called **n
      buttons (post-T7), `claim_input` still strips text and beneath-navigation, and the overlay's
      own button area re-grants only its buttons' navigation via the existing
      `set_focus_lock_filter`.
+   - **QA-002 refinement — one opt-in keyboard escape.** A hard block is never keyboard-activatable
+     (Enter/Space stripped every frame), so a focused button cannot be triggered by keyboard. The
+     one exception is a block that opts in via `OverlayConfig::with_keyboard_escape(action_id)`: it
+     designates a single action as a keyboard-reachable escape, for **unbounded** blocks that would
+     otherwise strand a keyboard-only / assistive-tech user. `claim_input` then keeps Enter/Space —
+     but **only while that escape button is confirmed to hold focus** (its egui id was recorded by
+     the previous frame's `render_buttons` and still matches the focused widget). Because the escape
+     is focus-pinned (re-requested every frame + locked), Enter/Space can never reach a widget
+     beneath; on the raise frame, where focus is not yet confirmed, they are still stripped. The
+     reference adopter is the unbounded SPV-sync block (`update_spv_overlay`), whose "Continue in
+     the background" escape is so designated. Every OTHER hard block stays fully keyboard-blocked
+     (`TC-OVL-044` is the guard that the general rule is intact; `TC-OVL-051/052/053` cover the
+     opt-in escape).
 
 ### Rationale
 

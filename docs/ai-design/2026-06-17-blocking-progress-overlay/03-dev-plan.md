@@ -18,8 +18,11 @@ Cancel-specific decisions below. Where this document and the redesign disagree, 
    caller attaches a generic button via `OverlayConfig::with_action(label, id)` /
    `OverlayHandle::with_action(label, id)`, choosing its own opaque action id and label. Clicking
    enqueues the id; the owning screen drains it via `take_actions` and runs whatever logic it wants
-   — including its own cancellation. Esc/Tab/Enter are swallowed (a hard block is never keyboard-
-   dismissable); there is no Esc→Cancel routing. This **supersedes D-5** (the shipped-but-unwired
+   — including its own cancellation. Esc/Tab/Enter/Space are swallowed (a hard block is never
+   keyboard-dismissable or keyboard-activatable), with one opt-in exception: a block may designate a
+   single keyboard-reachable escape via `with_keyboard_escape(id)`, after which Enter/Space activate
+   that focus-pinned button (the unbounded SPV block uses this — see QA-002 below). There is no
+   Esc→Cancel routing. This **supersedes D-5** (the shipped-but-unwired
    Cancel API) and the Cancel-specific parts of **FR-7** — "Cancel" is now merely one possible
    caller-chosen label on a generic button, not a built-in concept.
 2. **`Component` trait conformance (placement legitimacy).** `ProgressOverlay` now implements the
@@ -399,12 +402,16 @@ Use a top input-capturing layer instead — the same shape the passphrase modal 
    - **Esc:** if the topmost entry has a Cancel button → enqueue its action id and consume
      (TC-OVL-042); otherwise consume-and-swallow (TC-OVL-043). Never dismisses a non-cancelable
      block.
-   - **Enter:** never activates Cancel (TC-OVL-044). If a single primary action exists, Enter MAY
-     activate it (AC-3c).
+   - **Enter/Space:** stripped every frame, so a focused button is never keyboard-activatable
+     (TC-OVL-044) — EXCEPT on a block that opts in via `with_keyboard_escape(id)`. For that block,
+     and only while its escape button is confirmed to hold focus, Enter/Space pass through and
+     activate the focus-pinned escape (TC-OVL-051/052/053, AC-3c). The unbounded SPV block uses this
+     so keyboard-only users are not stranded.
    - **Tab:** consumed at the overlay layer (focus trap, TC-OVL-041); focus is requested onto the
-     first overlay button on raise so it cannot escape beneath. Implemented via
-     `ctx.input_mut(|i| i.events.retain(...))` filtering Tab/Esc/Enter while active — scoped to the
-     overlay-active branch so global shortcuts are untouched when idle.
+     overlay's focus target on raise — the designated escape when one is opted in, else the first
+     button — so it cannot escape beneath. Implemented via `ctx.input_mut(|i| i.events.retain(...))`
+     filtering Tab/Esc/Enter/Space while active (carving out Enter/Space for a confirmed escape) —
+     scoped to the overlay-active branch so global shortcuts are untouched when idle.
 4. **Card:** `egui::Area::new(Id::new("__overlay_card")).order(Order::Middle)
    .anchor(Align2::CENTER_CENTER, Vec2::ZERO)` → `egui::Frame` (fill `surface`/`window_fill`,
    `Shadow::elevated()`, `RADIUS_LG`) with a min width and a vertical layout. Long descriptions

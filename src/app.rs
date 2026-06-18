@@ -69,8 +69,11 @@ pub const MIGRATION_RETRY_ACTION_ID: &str = "migration:retry:finish_unwire";
 /// with no terminal signal — so a button-less hard block would trap the user
 /// (violating the overlay's C1/C2 contract). This escape lowers the block while
 /// sync continues safely in the background — a read-only operation that strands
-/// nothing if backgrounded. Colon-namespaced per the overlay action-id
-/// convention. Exposed for kittest coverage.
+/// nothing if backgrounded. It is also designated the block's single
+/// keyboard-reachable escape (`with_keyboard_escape`), so a keyboard-only /
+/// assistive-tech user can activate it with Enter or Space (QA-002 refinement).
+/// Colon-namespaced per the overlay action-id convention. Exposed for kittest
+/// coverage.
 pub const SPV_CONTINUE_BACKGROUND_ACTION: &str = "spv:sync:continue_background";
 
 /// Plain, jargon-free descriptions for the SPV-sync block (Everyday-User rule:
@@ -1149,9 +1152,10 @@ impl AppState {
     /// C2 contract: SPV sync is **unbounded** — with no peers it stays
     /// Connecting/Syncing forever with no terminal signal — so a button-less block
     /// would trap the user. The block therefore carries a "Continue in the
-    /// background" escape ([`SPV_CONTINUE_BACKGROUND_ACTION`]); clicking it lowers
-    /// the block while sync proceeds safely in the background (read-only — nothing
-    /// is stranded).
+    /// background" escape ([`SPV_CONTINUE_BACKGROUND_ACTION`]); clicking it — or
+    /// activating it by keyboard, as it is the block's designated
+    /// `with_keyboard_escape` (QA-002 refinement) — lowers the block while sync
+    /// proceeds safely in the background (read-only — nothing is stranded).
     ///
     /// Raises the overlay at most once per episode (then updates content in place
     /// via the handle), so it never `set_global`s every frame.
@@ -1175,16 +1179,18 @@ impl AppState {
                     SPV_CONNECTING_DESCRIPTION
                 };
                 if self.spv_overlay.is_none() {
-                    // TODO(RUST-006): provide a keyboard/assistive-tech exit for the
-                    // UNBOUNDED SPV block (hard blocks are intentionally not
-                    // keyboard-activatable per QA-002, but the unbounded SPV case can
-                    // strand keyboard-only users) — pending product decision.
+                    // The escape is the single keyboard-reachable exit (QA-002
+                    // refinement): the overlay focus-pins this button and lets
+                    // Enter/Space activate it, so a keyboard-only / assistive-tech
+                    // user is never stranded behind the UNBOUNDED SPV block while
+                    // every other hard block stays fully keyboard-blocked.
                     let mut config = OverlayConfig::new()
                         .with_description(description)
                         .with_secondary_action(
                             "Continue in the background",
                             SPV_CONTINUE_BACKGROUND_ACTION,
-                        );
+                        )
+                        .with_keyboard_escape(SPV_CONTINUE_BACKGROUND_ACTION);
                     if let Some(n) = step {
                         config = config.with_step(n, SPV_SYNC_PHASE_COUNT);
                     }

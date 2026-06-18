@@ -3728,78 +3728,149 @@ mod tests {
         backend.shutdown().await;
     }
 
-    /// C.7 regression guard: `ensure_identity_funding_accounts` must succeed
-    /// on a watch-only reloaded HD wallet for BOTH `IdentityRegistration` AND
-    /// `IdentityTopUp{index}`.
+    /// C.7 regression guard: `ensure_identity_funding_accounts` must succeed on
+    /// a cold-booted (watch-only) wallet for a fresh `IdentityTopUp{index}`.
     ///
-    /// The live wallet is ALWAYS watch-only in DET — wallets are loaded
-    /// seedless from the persistor; the seed is only held JIT inside a
-    /// `with_secret_session` scope.  Before the fix,
-    /// `provision_identity_funding_account` called
-    /// `kw.add_account(account_type, None)`, which internally reaches
-    /// `root_extended_keys.rs:428` to derive a hardened path from the absent
-    /// private key and fails:
+    /// # Background
+    ///
+    /// DET always reloads wallets **seedless** from the upstream persister.
+    /// `WalletBackend::new` → `load_from_persistor_seedless` → upstream
+    /// `load_from_persistor()` → `Wallet::new_watch_only(…)`.  The wallet has
+    /// the BIP44/BIP32 accounts it was persisted with, but **no root private
+    /// key**.
+    ///
+    /// `WalletAccountCreationOptions::Default` (used by
+    /// `register_wallet_from_seed`) creates `IdentityRegistration` by default
+    /// and persists it in the account manifest.  `IdentityTopUp{n}` is NOT
+    /// created by default — it is added only after a register/top-up, so on
+    /// every cold boot the manifest lacks it.
+    ///
+    /// Before the fix, `provision_identity_funding_account` called
+    /// `kw.add_account(account_type, None)`.  On a cold-boot wallet that path
+    /// reaches `root_extended_keys.rs:428` and fails:
     ///
     ///   `WalletBackend { source: AssetLockTransaction("Invalid parameter:
     ///    Watch-only wallet has no private key") }`
     ///
-    /// After the fix it builds a short-lived signable `UpstreamWallet` from the
-    /// provided seed bytes, derives the hardened account xpub, and calls
-    /// `kw.add_account(account_type, Some(xpub))`, which succeeds on any wallet
-    /// regardless of private-key availability.
+    /// After the fix it builds a short-lived signable wallet from the provided
+    /// seed bytes, derives the account xpub, and calls
+    /// `kw.add_account(account_type, Some(xpub))` — succeeds regardless of
+    /// private-key availability.
     ///
-    /// Deterministic: the live wallet is unconditionally watch-only — there is
-    /// no timing dependency and no network required.
+    /// # Why deterministic
+    ///
+    /// The cold-booted wallet unconditionally has no root private key; the
+    /// failure path is hit every time regardless of timing or network state.
+    ///
+    /// # Test structure
+    ///
+    /// Two-boot scenario to match production:
+    ///   1. **Boot 1**: wire backend, write both sidecars (wallet-meta + upstream
+    ///      persister) from seed.
+    ///   2. **Boot 2 (cold)**: `WalletBackend::new` over a copy of the same
+    ///      data dir runs `load_from_persistor_seedless` — the upstream wallet is
+    ///      loaded watch-only.  Then `ensure_identity_funding_accounts` for a
+    ///      fresh `IdentityTopUp{3}` must return `Ok`.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn ensure_identity_funding_accounts_succeeds_on_watch_only_wallet() {
-        let (ctx, sender, _tmp) = offline_testnet_context();
-        ctx.ensure_wallet_backend(sender)
-            .await
-            .expect("ensure_wallet_backend should succeed offline");
-        let backend = ctx.wallet_backend().expect("backend wired");
+    async fn ensure_identity_funding_accounts_succeeds_on_cold_booted_watch_only_wallet() {
+        // ── Boot 1: write wallet-meta sidecar + upstream persister from seed ──
 
-        // Build and upstream-register the wallet synchronously so
-        // `resolve_wallet` inside `provision_identity_funding_account` can
-        // find it.  `register_wallet_from_seed` creates the upstream watch-only
-        // `PlatformWallet` — the same state that every cold-boot reload
-        // produces.
+        let temp_dir = tempfile::tempdir().expect("tempdir");
         let seed = [0xC7u8; 64];
-        let wallet = crate::model::wallet::Wallet::new_from_seed(
-            seed,
-            Network::Testnet,
-            None,
-            None, // no password
-        )
-        .expect("build wallet");
-        let seed_hash = wallet.seed_hash();
-        backend
-            .register_wallet_from_seed(&seed_hash, &seed, Some(0))
+        let seed_hash = {
+            let wallet = crate::model::wallet::Wallet::new_from_seed(
+                seed,
+                Network::Testnet,
+                None,
+                None, // no password
+            )
+            .expect("build wallet");
+            let h = wallet.seed_hash();
+
+            let (ctx, sender) = offline_testnet_context_at(temp_dir.path());
+            // Backend must be wired before register_wallet so the upstream
+            // registration subtask is not silently deferred.
+            ctx.ensure_wallet_backend(sender)
+                .await
+                .expect("boot 1: ensure_wallet_backend offline");
+
+            // Write the wallet-meta sidecar (xpub_encoded → seed_hash bridge
+            // used by the cold-boot fund-routing gate in
+            // load_from_persistor_seedless).
+            ctx.register_wallet(wallet, &seed, WalletOrigin::Fresh)
+                .expect("boot 1: ctx.register_wallet");
+
+            // Synchronously write the upstream persister so we don't race the
+            // background subtask.  Idempotent with the subtask.
+            let backend1 = ctx.wallet_backend().expect("boot 1 backend");
+            backend1
+                .register_wallet_from_seed(&h, &seed, Some(0))
+                .await
+                .expect("boot 1: upstream register");
+            backend1.shutdown().await;
+
+            h
+        };
+        // ctx is dropped here, releasing app_kv / secret_store file handles.
+
+        // ── Cold-boot copy: avoid file-lock conflicts with lingering subtasks ──
+        //
+        // The background registration subtask may still hold an Arc<WalletBackend>
+        // (and thus an open SqlitePersister handle on temp_dir).  We copy the
+        // on-disk state to a fresh path so Boot 2's SqlitePersister::open does
+        // not collide with the old one.  Identical on-disk bytes — the fund-
+        // routing gate and the persisted manifest are preserved.
+        let cold_dir = tempfile::tempdir().expect("cold tempdir");
+        fn copy_dir_rec(src: &std::path::Path, dst: &std::path::Path) {
+            std::fs::create_dir_all(dst).expect("mkdir");
+            for entry in std::fs::read_dir(src).expect("read_dir") {
+                let entry = entry.expect("entry");
+                let to = dst.join(entry.file_name());
+                if entry.path().is_dir() {
+                    copy_dir_rec(&entry.path(), &to);
+                } else {
+                    std::fs::copy(entry.path(), to).expect("copy file");
+                }
+            }
+        }
+        copy_dir_rec(temp_dir.path(), cold_dir.path());
+
+        // ── Boot 2 (cold): load from persister → watch-only upstream wallet ──
+
+        let (ctx2, sender2) = offline_testnet_context_at(cold_dir.path());
+        ctx2.ensure_wallet_backend(sender2)
             .await
-            .expect("upstream wallet registration must succeed offline");
+            .expect("boot 2 (cold): ensure_wallet_backend offline");
+        let backend2 = ctx2.wallet_backend().expect("boot 2 backend");
 
-        // Use a non-zero registration index so `IdentityTopUp{3}` is
-        // genuinely novel.  The upstream persistor never pre-creates
-        // `IdentityTopUp{…}` — it only enters the manifest after a
-        // register/top-up call, so a reloaded wallet ALWAYS hits the
-        // provisioning branch on its first use.
+        assert!(
+            backend2.is_wallet_registered(&seed_hash),
+            "cold boot must load the wallet from the persisted sidecars"
+        );
+
+        // `IdentityTopUp{3}` is absent from the account manifest (it is never
+        // created by WalletAccountCreationOptions::Default) — so the cold-booted
+        // watch-only wallet triggers the provisioning branch.
+        //
+        // Before the fix: kw.add_account(IdentityTopUp{3}, None)
+        //   → "Watch-only wallet has no private key" → Err
+        // After the fix: builds a seed wallet, derives the account xpub,
+        //   calls kw.add_account(IdentityTopUp{3}, Some(xpub)) → Ok
         let registration_index = 3u32;
-
-        backend
+        backend2
             .ensure_identity_funding_accounts(&seed_hash, &seed, registration_index)
             .await
             .expect(
-                "watch-only wallet: funding account provisioning must succeed \
-                 via seed-derived xpub; if this is 'Watch-only wallet has no \
-                 private key' the fix has been reverted",
+                "cold-booted watch-only wallet: IdentityTopUp{3} provisioning must succeed; \
+                 if 'Watch-only wallet has no private key' appears the fix has been reverted",
             );
 
-        // Idempotent: both accounts already present — second call must be a
-        // no-op (direct membership checks, no error-string parsing).
-        backend
+        // Idempotent: both accounts now present — second call is a no-op.
+        backend2
             .ensure_identity_funding_accounts(&seed_hash, &seed, registration_index)
             .await
-            .expect("second provisioning call must be idempotent");
+            .expect("second call must be idempotent (both accounts already present)");
 
-        backend.shutdown().await;
+        backend2.shutdown().await;
     }
 }

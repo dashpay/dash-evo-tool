@@ -230,7 +230,10 @@ funds went.
     address field entirely in this mode; headless can't hide a field, so it rejects.)
   - If the identity has no payout address, reject with a clear message — there is
     nowhere for an OWNER-key withdrawal to go.
-  - Dispatch with `address = Some(payout_address)`, `key_id = Some(owner_key_id)`.
+  - Dispatch with `address = None`, `key_id = Some(owner_key_id)` — Platform
+    consensus forces the registered payout address (matching the GUI). The
+    resolved payout address is used only to validate one exists and to echo it
+    back in the output, never as the dispatched destination.
 
 - **FR-B3 — TRANSFER mode, free destination.** When `key_mode = "transfer"`:
   - `to_address` is **required**; validate format (`resolve::validate_address`) and

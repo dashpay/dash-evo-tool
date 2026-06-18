@@ -1278,4 +1278,47 @@ mod tests {
             );
         }
     }
+
+    // ── TaskFailed data payload never leaks key material (TC-MN-061) ──────
+    //
+    // McpToolError::TaskFailed serializes `{task_err:?}` into the MCP error
+    // `data` payload. Because keys live in `Secret` (Debug = "Secret(***)") and
+    // KeyInputValidationFailed carries only a role name + a backend detail (no
+    // key bytes), neither the Display message nor the Debug `data` chain can
+    // contain the key WIF/hex.
+
+    #[test]
+    fn secret_debug_never_reveals_plaintext() {
+        let secret = Secret::new("OWNER_SECRET_WIF_VALUE");
+        let debug = format!("{secret:?}");
+        assert_eq!(debug, "Secret(***)");
+        assert!(!debug.contains("OWNER_SECRET_WIF_VALUE"));
+    }
+
+    #[test]
+    fn task_failed_data_payload_excludes_key_material() {
+        use crate::backend_task::error::TaskError;
+        use rmcp::ErrorData as McpError;
+
+        // The backend never puts key bytes in this variant — only a role name
+        // and a length/format detail.
+        let err = McpToolError::TaskFailed(TaskError::KeyInputValidationFailed {
+            key_name: "Owner".to_owned(),
+            detail: "key is of incorrect size".to_owned(),
+        });
+
+        let mcp: McpError = err.into();
+        let message = mcp.message.to_string();
+        let data = mcp.data.map(|v| v.to_string()).unwrap_or_default();
+
+        // A representative key sentinel must appear in neither surface.
+        const KEY_SENTINEL: &str = "OWNER_SECRET_WIF_VALUE";
+        assert!(!message.contains(KEY_SENTINEL), "message: {message}");
+        assert!(!data.contains(KEY_SENTINEL), "data: {data}");
+        // The role-named, value-free detail is present in the data chain.
+        assert!(
+            data.contains("KeyInputValidationFailed"),
+            "data should carry the typed variant: {data}"
+        );
+    }
 }

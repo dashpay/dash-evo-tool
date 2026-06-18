@@ -1708,6 +1708,61 @@ fn task9_spv_overlay_armed_scope_disarm_and_escape() {
     });
 }
 
+/// F-SPV-A regression — completing onboarding with auto-start enabled must ARM the
+/// SPV-sync block, exactly like the boot auto-start and the Connect button. Drives
+/// the REAL post-onboarding path (`AppState::try_auto_start_spv`, the method
+/// `AppAction::OnboardingComplete` invokes) and asserts both the armed flag flips
+/// and that an armed Connecting sync then hard-blocks. Without the arm, a fresh
+/// user who opted into auto-start during onboarding would sync with no overlay.
+#[cfg(feature = "testing")]
+#[test]
+fn fspv_a_onboarding_auto_start_arms_spv_block() {
+    use dash_evo_tool::context::connection_status::OverallConnectionState;
+    crate::support::with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let harness = Harness::builder()
+            .with_size(egui::vec2(640.0, 480.0))
+            .build_ui(|ui| {
+                ProgressOverlay::render_global(ui.ctx(), false);
+            });
+        let mut app = dash_evo_tool::app::AppState::new(harness.ctx.clone())
+            .expect("Failed to create AppState");
+        let app_context = app.current_app_context().clone();
+
+        // Fresh boot before onboarding completes: the block is NOT armed (boot
+        // auto-start only arms when onboarding was ALREADY done at startup).
+        assert!(
+            !app.test_spv_block_armed(),
+            "the SPV block must not be armed before onboarding completes"
+        );
+
+        // The user opted into auto-start, then finishes onboarding → the
+        // OnboardingComplete handler runs the real auto-start path.
+        app_context
+            .update_auto_start_spv(true)
+            .expect("persist auto_start_spv");
+        app.test_run_auto_start_spv();
+
+        // The post-onboarding auto-start is user-initiated → it must arm the block.
+        assert!(
+            app.test_spv_block_armed(),
+            "completing onboarding with auto-start enabled must ARM the SPV-sync block"
+        );
+
+        // And an armed Connecting sync then hard-blocks (the overlay actually shows).
+        app_context
+            .connection_status()
+            .set_overall_state(OverallConnectionState::Connecting);
+        app.test_drive_spv_overlay(&harness.ctx);
+        assert!(
+            ProgressOverlay::has_global(&harness.ctx),
+            "the armed post-onboarding sync raises the blocking overlay"
+        );
+    });
+}
+
 /// Task 9 / QA-002 refinement — the REAL SPV block's "Continue in the background"
 /// escape is keyboard-activatable: pressing **Enter** while it holds focus enqueues
 /// its action, which the driver drains to lower the block. Guards the app.rs wiring

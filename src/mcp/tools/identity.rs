@@ -24,6 +24,20 @@ use crate::model::masternode_input::{self, KeyMode};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::secret::Secret;
 
+/// Reject a blank `network` with a friendly message before `require_network`.
+///
+/// `require_network` would compare an empty string against the active network
+/// and report a confusing `NetworkMismatch { expected: "" }`. A blank value
+/// means "not provided", so it gets the clear "required" message instead.
+fn require_nonblank_network(network: &str) -> Result<(), McpToolError> {
+    if network.trim().is_empty() {
+        return Err(McpToolError::InvalidParam {
+            message: "The network parameter is required.".to_owned(),
+        });
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // IdentityCreditsTopup (Core -> Identity via asset lock)
 // ---------------------------------------------------------------------------
@@ -727,9 +741,10 @@ impl AsyncTool<DashMcpService> for IdentityMasternodeLoad {
             .await
             .map_err(|e| McpToolError::Internal(e.to_string()))?;
 
-        // Cheap validation first, before the SPV wait: network match, node type,
-        // and the at-least-one-signing-key rule all reject without touching the
-        // network (TC-MN-012/013/014).
+        // Cheap validation first, before the SPV wait: network presence/match,
+        // node type, and the at-least-one-signing-key rule all reject without
+        // touching the network.
+        require_nonblank_network(&param.network)?;
         resolve::require_network(&ctx, Some(&param.network))?;
         let identity_type = masternode_input::parse_node_type(&param.node_type)?;
         masternode_input::require_at_least_one_signing_key(
@@ -1014,6 +1029,7 @@ impl AsyncTool<DashMcpService> for IdentityMasternodeCreditsWithdraw {
             .map_err(|e| McpToolError::Internal(e.to_string()))?;
 
         // Cheap validation first, before the SPV wait.
+        require_nonblank_network(&param.network)?;
         resolve::require_network(&ctx, Some(&param.network))?;
         resolve::validate_credits(param.amount_credits)?;
         let key_mode = masternode_input::parse_key_mode(&param.key_mode)?;
@@ -1200,6 +1216,21 @@ mod tests {
                 "schema must expose '{expected}', got {props:?}"
             );
         }
+    }
+
+    // ── Blank-network guard (QA-004 / TC-MN-013) ──────────────────────────
+
+    #[test]
+    fn blank_network_rejected_with_required_message() {
+        for blank in ["", "   "] {
+            let err = require_nonblank_network(blank).unwrap_err();
+            assert!(matches!(err, McpToolError::InvalidParam { .. }));
+            assert_eq!(
+                err.to_string(),
+                "Invalid parameter: The network parameter is required."
+            );
+        }
+        assert!(require_nonblank_network("testnet").is_ok());
     }
 
     // ── Tool B pure pre-flight checks (TC-MN-031/032/033/034/035) ─────────

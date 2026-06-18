@@ -184,12 +184,16 @@ absence — they are `#[ignore]` anyway).
   no-side-effect assertion if observable.)
 - **Traces:** FR-3.3, NFR-N1, AC-A6, Error-UX row "Network missing/mismatch".
 
-#### TC-MN-013 — network param missing → InvalidParam
+#### TC-MN-013 — network param missing/blank → InvalidParam
 - **Layer:** tool-level
 - **Preconditions:** any active network.
-- **Steps:** Omit `network` (or empty string).
-- **Expected:** `InvalidParam` (the `require_network` "network is required" message);
-  not a panic, not `NetworkMismatch`.
+- **Steps:** Omit `network`, or pass an empty/whitespace string.
+- **Expected:** `InvalidParam`, not a panic, not `NetworkMismatch`. Note the two
+  distinct paths: an **omitted** `network` is a schema-required deserialization
+  error (the field has no `#[serde(default)]`); an **empty/blank** string is caught
+  by the tool's `require_nonblank_network` guard, which runs before
+  `require_network` and returns "The network parameter is required." rather than a
+  confusing `NetworkMismatch { expected: "" }`.
 - **Traces:** FR-3.3, Error-UX row "Network missing/mismatch".
 
 #### TC-MN-014 — node_type/key-requirement checks run before SPV gate

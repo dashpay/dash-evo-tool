@@ -102,7 +102,11 @@ pub fn decode_identity_id(input: &str) -> Result<Identifier, McpToolError> {
     Identifier::from_string(input, Encoding::Base58)
         .or_else(|_| Identifier::from_string(input, Encoding::Hex))
         .map_err(|_| McpToolError::InvalidParam {
-            message: format!("Could not read the identity ID: {input}"),
+            message: format!(
+                "Could not read the identity ID: {input}. \
+                 Provide a 64-character hex ProTxHash or the Base58 identity ID \
+                 from identity-masternode-load."
+            ),
         })
 }
 
@@ -209,7 +213,11 @@ mod tests {
         assert!(require_at_least_one_signing_key("", "PAYOUT_WIF").is_ok());
     }
 
-    // ── decode_identity_id (TC-MN-005/006/007) ────────────────────────────
+    // ── decode_identity_id — Base58/hex identifier parse (TC-MN-005/006/007) ──
+    //
+    // Used by the withdraw tool for `identity_id`. The load tool passes
+    // `pro_tx_hash` straight to the backend, which parses it identically; these
+    // pin the shared Base58-then-hex contract.
 
     #[test]
     fn identity_id_hex_accepted() {
@@ -243,5 +251,15 @@ mod tests {
                 "expected {bad:?} to be rejected"
             );
         }
+    }
+
+    #[test]
+    fn identity_id_error_states_what_to_do() {
+        // M-01 — the error must carry a concrete self-resolution action: the two
+        // accepted formats and the tool that produces the canonical Base58 form.
+        let err = decode_identity_id("not-a-hash").unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("64-character hex ProTxHash"), "got: {msg}");
+        assert!(msg.contains("identity-masternode-load"), "got: {msg}");
     }
 }

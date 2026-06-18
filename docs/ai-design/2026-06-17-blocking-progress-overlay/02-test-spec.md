@@ -20,7 +20,7 @@ Items that depend on the architecture decision deferred to Nagatha (1d) are mark
 **[depends on 1d]**.
 
 > **Post-outage reframe (generic button).** First-class "Cancel" was removed in favour of a
-> generic button facility: a caller attaches a button with `with_button(id, label)`, the click
+> generic button facility: a caller attaches a button with `with_action(label, id)`, the click
 > enqueues the caller's id, the owning screen drains it via `take_actions` and runs its own logic
 > (including cancellation), and Esc does **not** dismiss. The Cancel-specific cases below
 > (TC-OVL-024/025/026/027/042/043/044) are **reframed in place** to the generic-button model —
@@ -42,15 +42,15 @@ illustrative; the architecture phase (1d) may adjust them.
 
 | Assumed name | Purpose |
 |---|---|
-| `ProgressOverlay::show_global(ctx, description, config)` | Raises the overlay; returns `OverlayHandle` |
+| `ProgressOverlay::set_global(ctx, description, config)` | Raises the overlay; returns `OverlayHandle` |
 | `ProgressOverlay::has_global(ctx)` | Returns `true` when an overlay is active |
-| `ProgressOverlay::show_global_spinner_only(ctx)` | Convenience: spinner-only, no text |
+| `ProgressOverlay::set_global_spinner_only(ctx)` | Convenience: spinner-only, no text |
 | `ProgressOverlay::render_global(ctx)` | Render call from `AppState::update()` |
 | `ProgressOverlay::take_actions(ctx)` | Drains the action-id queue (FIFO) |
 | `OverlayHandle::set_description(text)` | Updates description; returns `Option<&Self>` |
 | `OverlayHandle::set_step(current, total)` | Updates counter; returns `Option<&Self>` |
 | `OverlayHandle::clear_step()` | Removes counter; returns `Option<&Self>` |
-| `OverlayConfig::with_button(id, label)` / `OverlayHandle::with_button(id, label)` | Adds a generic button (reframed post-outage: no built-in Cancel); the handle form returns `Option<&Self>` |
+| `OverlayConfig::with_action(label, id)` / `OverlayHandle::with_action(label, id)` | Adds a generic button (reframed post-outage: no built-in Cancel); the handle form returns `Option<&Self>` |
 | `OverlayHandle::clear()` | Dismisses this handle's overlay entry |
 | `OverlayHandle::is_active()` | Returns `true` if still on the overlay stack |
 
@@ -92,7 +92,7 @@ illustrative; the architecture phase (1d) may adjust them.
 **Preconditions:** Fresh context; no overlay active.
 
 **Steps:**
-1. Inside `build_ui`, call `ProgressOverlay::show_global(ctx, "Registering your identity.", config_default())`.
+1. Inside `build_ui`, call `ProgressOverlay::set_global(ctx, "Registering your identity.", config_default())`.
 2. Also call `ProgressOverlay::render_global(ctx)`.
 3. Call `harness.run()`.
 
@@ -112,7 +112,7 @@ illustrative; the architecture phase (1d) may adjust them.
 **Preconditions:** Fresh context.
 
 **Steps:**
-1. Call `let handle = ProgressOverlay::show_global(&ctx, "Loading.", config_default())`.
+1. Call `let handle = ProgressOverlay::set_global(&ctx, "Loading.", config_default())`.
 2. Assert `handle.is_active()` returns `true`.
 3. Call `handle.set_description("Updated text.")` and assert it returns `Some(&handle)`.
 4. Assert `ProgressOverlay::has_global(&ctx)` returns `true`.
@@ -127,7 +127,7 @@ All assertions pass. The handle is non-null and addresses a live overlay entry.
 **Traceability:** FR-1 (AC-1.3), NFR-1
 
 **Invariant to verify during code review:**
-`ProgressOverlay::show_global()` must not acquire any async lock, call `.await`, or issue a
+`ProgressOverlay::set_global()` must not acquire any async lock, call `.await`, or issue a
 `std::thread::sleep`. It must only write to `egui::ctx.data` (a synchronous, lock-guarded
 `TypeMap`). The implementation must be callable safely from `Screen::ui()` or from the app
 loop without any risk of yielding.
@@ -193,7 +193,7 @@ loop without any risk of yielding.
 2. Call `handle.clear()` to dismiss.
 3. Call `handle.set_description("After clear")`.
 4. Call `handle.set_step(1, 3)`.
-5. Call `handle.with_button("overlay.action", "Continue")`.
+5. Call `handle.with_action("Continue", "overlay.action")`.
 
 **Expected outcome:**
 - All handle method calls return `None`.
@@ -276,7 +276,7 @@ overlay raised at dispatch time.
 **Preconditions:** Overlay raised in each of the three configurations: spinner-only,
 spinner+counter, spinner+counter+description+button.
 
-**Steps:** For each configuration, call `show_global`, run one frame, query the rendered tree.
+**Steps:** For each configuration, call `set_global`, run one frame, query the rendered tree.
 
 **Expected outcome:**
 An `egui::Spinner` widget (or widget with the spinner accessibility label, per implementation)
@@ -476,7 +476,7 @@ Description is `"Waiting for the funding proof. This operation contacts the Dash
 **Type:** kittest
 **Traceability:** FR-6 (AC-6.3), FR-5 (AC-5.4)
 
-**Preconditions:** Overlay raised via `show_global_spinner_only(ctx)`.
+**Preconditions:** Overlay raised via `set_global_spinner_only(ctx)`.
 
 **Steps:**
 1. Raise spinner-only overlay.
@@ -502,7 +502,7 @@ Description is `"Waiting for the funding proof. This operation contacts the Dash
 **Preconditions:** Overlay raised with no buttons in config.
 
 **Steps:**
-1. Show overlay with no `with_button` calls.
+1. Show overlay with no `with_action` calls.
 2. Run one frame.
 
 **Expected outcome:**
@@ -517,7 +517,7 @@ Description is `"Waiting for the funding proof. This operation contacts the Dash
 **Type:** kittest
 **Traceability:** FR-7 (AC-7.2, AC-7.3)
 
-**Preconditions:** Overlay raised with `with_button("overlay.cancel", "Cancel")`. There is no
+**Preconditions:** Overlay raised with `with_action("Cancel", "overlay.cancel")`. There is no
 built-in Cancel — `"Cancel"` is just a caller-chosen label and `"overlay.cancel"` a caller-chosen id.
 
 **Steps:**
@@ -539,7 +539,7 @@ built-in Cancel — `"Cancel"` is just a caller-chosen label and `"overlay.cance
 **Type:** kittest
 **Traceability:** FR-7 (AC-7.2)
 
-**Preconditions:** Overlay raised with `with_button("overlay.run_in_bg", "Run in background")`.
+**Preconditions:** Overlay raised with `with_action("Run in background", "overlay.run_in_bg")`.
 
 **Steps:**
 1. Show overlay with generic action button labelled `"Run in background"`.
@@ -560,7 +560,7 @@ built-in Cancel — `"Cancel"` is just a caller-chosen label and `"overlay.cance
 **Preconditions:** Overlay raised with two generic buttons (no built-in Cancel).
 
 **Steps:**
-1. Show overlay with `with_button("cancel", "Cancel")` and `with_button("secondary", "Secondary")`.
+1. Show overlay with `with_action("Cancel", "cancel")` and `with_action("Secondary", "secondary")`.
 2. Click `"Cancel"`; run one frame.
 3. Click `"Secondary"`; run one frame.
 4. Call `ProgressOverlay::take_actions(ctx)` once.
@@ -575,8 +575,8 @@ built-in Cancel — `"Cancel"` is just a caller-chosen label and `"overlay.cance
 **Type:** kittest (widget-position assertion) + design-review
 **Traceability:** FR-7 (AC-7.4)
 
-**Preconditions:** Overlay with `with_button("first", "First action")` and
-`with_button("second", "Second action")`. There is no Cancel-specific placement — buttons render
+**Preconditions:** Overlay with `with_action("First action", "first")` and
+`with_action("Second action", "second")`. There is no Cancel-specific placement — buttons render
 left-to-right in insertion order.
 
 **Steps:**
@@ -773,8 +773,8 @@ the critical check is that the banner is behind the input-blocking layer).
 **Preconditions:** Two overlay requests pushed.
 
 **Steps:**
-1. Call `show_global(ctx, "Operation A.", cfg_a)` — capture `handle_a`.
-2. Call `show_global(ctx, "Operation B.", cfg_b)` — capture `handle_b`.
+1. Call `set_global(ctx, "Operation A.", cfg_a)` — capture `handle_a`.
+2. Call `set_global(ctx, "Operation B.", cfg_b)` — capture `handle_b`.
 3. Run one frame.
 
 **Expected outcome (stack model):**
@@ -843,7 +843,7 @@ with id `"cancel_b"` (both labelled `"Cancel"`, a caller-chosen label).
 **Traceability:** FR-10 (AC-10.4)
 
 **Invariant:**
-When a second `show_global` call is made while an overlay is already active, a single log
+When a second `set_global` call is made while an overlay is already active, a single log
 entry noting the concurrent request is emitted. Across subsequent frames where both remain on
 the stack, no further log entry is emitted for the concurrency (log-once, guarded by flag —
 mirrors `BannerState.logged`).
@@ -886,7 +886,7 @@ events are not forwarded to `pass_events_to_game_while_any_popup_is_open = false
 **Type:** kittest
 **Traceability:** NFR-3 (AC-3b)
 
-**Preconditions:** Overlay raised with a generic button (`with_button("overlay.cancel", "Cancel")`).
+**Preconditions:** Overlay raised with a generic button (`with_action("Cancel", "overlay.cancel")`).
 There is no built-in Cancel, so Esc has nothing to trigger.
 
 **Steps:**
@@ -953,7 +953,7 @@ keyboard — Enter must not trigger it. See AC-3c.
 **Traceability:** NFR-5
 
 **Invariant:**
-1. On `show_global`: exactly one log entry at `debug` or `info` level noting overlay raised.
+1. On `set_global`: exactly one log entry at `debug` or `info` level noting overlay raised.
    On subsequent frames with no state change, no further log entry for the overlay.
 2. On `set_description` / `set_step` (content change): exactly one log entry.
 3. On `handle.clear()`: exactly one log entry noting dismissal.
@@ -1050,7 +1050,7 @@ present but not blocking the prompt.
 
 **Invariant:**
 The entire call path of `ProgressOverlay::render_global(ctx)` and
-`ProgressOverlay::show_global(ctx, ...)` must be synchronous and non-blocking:
+`ProgressOverlay::set_global(ctx, ...)` must be synchronous and non-blocking:
 - No `.await`, no `async fn`, no `tokio::block_on`, no `std::thread::sleep` in the render or
   show path.
 - No `Mutex::lock().await` or `RwLock::write().await`.

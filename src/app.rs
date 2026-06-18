@@ -9,6 +9,7 @@ use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::context::connection_status::{
     ConnectionStatus, OverallConnectionState, SPV_SYNC_PHASE_COUNT, spv_phase_step,
+    spv_progress_token,
 };
 use crate::context::migration_status::{MigrationState, MigrationStep};
 use crate::database::Database;
@@ -1153,7 +1154,7 @@ impl AppState {
     /// is stranded).
     ///
     /// Raises the overlay at most once per episode (then updates content in place
-    /// via the handle), so it never `show_global`s every frame.
+    /// via the handle), so it never `set_global`s every frame.
     fn update_spv_overlay(&mut self, ctx: &egui::Context, app_context: &Arc<AppContext>) {
         let cs = app_context.connection_status();
         let state = cs.overall_state();
@@ -1161,7 +1162,13 @@ impl AppState {
             SpvBlockStep::Block => {
                 // F-SPV-B: plain, jargon-free copy — the determinate granularity is
                 // the "Step N of 5" counter, NOT raw phase names / heights / %.
-                let step = cs.spv_sync_progress().as_ref().and_then(spv_phase_step);
+                let progress = cs.spv_sync_progress();
+                let step = progress.as_ref().and_then(spv_phase_step);
+                // A-1 (Item B): the hidden liveness token tracks the advancing
+                // height so a slow-but-advancing phase (whose "Step N of 5" stays
+                // constant for minutes) never trips the no-progress watchdog. It is
+                // never rendered — no height/number leaks into the shown copy.
+                let token = progress.as_ref().and_then(spv_progress_token);
                 let description = if step.is_some() {
                     SPV_SYNCING_DESCRIPTION
                 } else {
@@ -1174,12 +1181,15 @@ impl AppState {
                     // strand keyboard-only users) — pending product decision.
                     let mut config = OverlayConfig::new()
                         .with_description(description)
-                        .with_secondary_button(
-                            SPV_CONTINUE_BACKGROUND_ACTION,
+                        .with_secondary_action(
                             "Continue in the background",
+                            SPV_CONTINUE_BACKGROUND_ACTION,
                         );
                     if let Some(n) = step {
                         config = config.with_step(n, SPV_SYNC_PHASE_COUNT);
+                    }
+                    if let Some(t) = token {
+                        config = config.with_progress_token(t);
                     }
                     self.spv_overlay.raise(ctx, "", config);
                 } else if let Some(handle) = &self.spv_overlay {
@@ -1191,6 +1201,9 @@ impl AppState {
                         None => {
                             handle.clear_step();
                         }
+                    }
+                    if let Some(t) = token {
+                        handle.set_progress_token(t);
                     }
                 }
             }
@@ -1787,6 +1800,15 @@ impl App for AppState {
             }
         }
 
+        // Drive the SPV-sync block BEFORE claiming input and running the screen, so
+        // a freshly-armed episode RAISES the overlay in time for THIS frame's input
+        // claim + global render. Otherwise (raising after the claim + screen) the
+        // frame right after Connect/arming is fully interactive and the block only
+        // takes effect a frame later — the one-frame interactive gap. The connection
+        // banner still reads the block state afterwards (it suppresses its redundant
+        // Connecting/Syncing copy while the block is up).
+        self.update_spv_overlay(ctx, &active_context);
+
         // Total input block at frame start: while a blocking overlay is up, claim
         // all keyboard + text input BEFORE the panels run (QA-001) — unless a
         // secret prompt is active above the overlay (it needs the keyboard).
@@ -1818,9 +1840,10 @@ impl App for AppState {
                 .trigger_refresh(active_context.as_ref()),
         );
 
-        // Drive the SPV-sync block first so the connection banner can suppress its
-        // redundant Connecting/Syncing text while the overlay is up.
-        self.update_spv_overlay(ctx, &active_context);
+        // The SPV-sync block was already driven at frame start (above), before the
+        // input claim + screen, to close the one-frame interactive gap. It still
+        // runs before the connection banner, which suppresses its redundant
+        // Connecting/Syncing text while the overlay is up.
         self.update_connection_banner(ctx, &active_context);
         self.dispatch_cold_start_migration();
         self.update_migration_banner(ctx, &active_context);

@@ -5,7 +5,7 @@
 //! renders an animated `egui::Spinner`, which self-requests an immediate repaint
 //! every frame — so these tests drive frames with `harness.step()` (one frame
 //! per queued event) instead of `harness.run()` (which would spin to the step
-//! cap). `show_global` is called once via `harness.ctx`, not inside the
+//! cap). `set_global` is called once via `harness.ctx`, not inside the
 //! per-frame closure, so the stack is not re-pushed each frame.
 //!
 //! Test ids map to `docs/ai-design/2026-06-17-blocking-progress-overlay/02-test-spec.md`.
@@ -21,7 +21,7 @@
 //!   inside the central panel.
 //! - TC-OVL-040 / TC-OVL-045 (log-once): covered by the inline unit tests in
 //!   `src/ui/components/progress_overlay.rs` (`render_logs_once_then_marks_logged`);
-//!   the concurrent-request warning is emitted once in `show_global`, never per frame.
+//!   the concurrent-request warning is emitted once in `set_global`, never per frame.
 //! - TC-OVL-027 (no bare `ui.button()`) / TC-OVL-029 (no `set_enabled`): the
 //!   renderer uses `ComponentStyles` button helpers and a top input-capturing
 //!   layer, never `ui.button()` or the deprecated `Ui::set_enabled`.
@@ -71,7 +71,7 @@ fn tc_ovl_001_idle_renders_nothing() {
 #[test]
 fn tc_ovl_002_overlay_appears_after_show() {
     let mut harness = overlay_harness();
-    let _handle = ProgressOverlay::show_global(
+    let _handle = ProgressOverlay::set_global(
         &harness.ctx,
         "Registering your identity.",
         OverlayConfig::default(),
@@ -90,7 +90,7 @@ fn tc_ovl_002_overlay_appears_after_show() {
 #[test]
 fn tc_ovl_003_show_returns_usable_handle() {
     let ctx = egui::Context::default();
-    let handle = ProgressOverlay::show_global(&ctx, "Loading.", OverlayConfig::default());
+    let handle = ProgressOverlay::set_global(&ctx, "Loading.", OverlayConfig::default());
     assert!(handle.is_active());
     assert!(handle.set_description("Updated text.").is_some());
     assert!(ProgressOverlay::has_global(&ctx));
@@ -102,7 +102,7 @@ fn tc_ovl_003_show_returns_usable_handle() {
 #[test]
 fn tc_ovl_005_description_update_keeps_spinner() {
     let mut harness = overlay_harness();
-    let handle = ProgressOverlay::show_global(
+    let handle = ProgressOverlay::set_global(
         &harness.ctx,
         "Preparing the funding lock.",
         OverlayConfig::default(),
@@ -135,7 +135,7 @@ fn tc_ovl_005_description_update_keeps_spinner() {
 #[test]
 fn tc_ovl_006_counter_update_changes_only_counter() {
     let mut harness = overlay_harness();
-    let handle = ProgressOverlay::show_global(
+    let handle = ProgressOverlay::set_global(
         &harness.ctx,
         "Processing.",
         OverlayConfig::new().with_step(2, 5),
@@ -155,13 +155,13 @@ fn tc_ovl_006_counter_update_changes_only_counter() {
 #[test]
 fn tc_ovl_007_stale_handle_updates_are_none() {
     let ctx = egui::Context::default();
-    let handle = ProgressOverlay::show_global(&ctx, "Soon gone.", OverlayConfig::default());
+    let handle = ProgressOverlay::set_global(&ctx, "Soon gone.", OverlayConfig::default());
     handle.clone().clear();
     assert!(handle.set_description("After clear").is_none());
     assert!(handle.set_step(1, 3).is_none());
     assert!(
         handle
-            .with_button("overlay.bg", "Run in background")
+            .with_action("Run in background", "overlay.bg")
             .is_none()
     );
     assert!(!ProgressOverlay::has_global(&ctx));
@@ -173,7 +173,7 @@ fn tc_ovl_007_stale_handle_updates_are_none() {
 #[test]
 fn tc_ovl_008_programmatic_dismiss_removes_overlay() {
     let mut harness = overlay_harness();
-    let handle = ProgressOverlay::show_global(&harness.ctx, "Working.", OverlayConfig::default());
+    let handle = ProgressOverlay::set_global(&harness.ctx, "Working.", OverlayConfig::default());
     harness.step();
     assert!(ProgressOverlay::has_global(&harness.ctx));
 
@@ -188,7 +188,7 @@ fn tc_ovl_008_programmatic_dismiss_removes_overlay() {
 #[test]
 fn tc_ovl_009_double_dismiss_is_noop() {
     let ctx = egui::Context::default();
-    let handle = ProgressOverlay::show_global(&ctx, "Once.", OverlayConfig::default());
+    let handle = ProgressOverlay::set_global(&ctx, "Once.", OverlayConfig::default());
     handle.clone().clear();
     handle.clear();
     assert!(!ProgressOverlay::has_global(&ctx));
@@ -199,7 +199,7 @@ fn tc_ovl_009_double_dismiss_is_noop() {
 #[test]
 fn tc_ovl_010_dismiss_before_error_banner() {
     let ctx = egui::Context::default();
-    let overlay = ProgressOverlay::show_global(&ctx, "Registering.", OverlayConfig::default());
+    let overlay = ProgressOverlay::set_global(&ctx, "Registering.", OverlayConfig::default());
     assert!(overlay.is_active());
 
     // Result arrives: lower the overlay, then show the banner — never both.
@@ -221,11 +221,11 @@ fn tc_ovl_011_spinner_present_in_all_configs() {
         OverlayConfig::new().with_step(1, 3),
         OverlayConfig::new()
             .with_step(1, 3)
-            .with_button("overlay.bg", "Run in background"),
+            .with_action("Run in background", "overlay.bg"),
     ];
     for config in configs {
         let mut harness = overlay_harness();
-        let _handle = ProgressOverlay::show_global(&harness.ctx, "Busy.", config);
+        let _handle = ProgressOverlay::set_global(&harness.ctx, "Busy.", config);
         harness.step();
         assert!(
             harness.query_by_role(SPINNER_ROLE).is_some(),
@@ -239,7 +239,7 @@ fn tc_ovl_011_spinner_present_in_all_configs() {
 #[test]
 fn tc_ovl_012_no_eta_or_percentage() {
     let mut harness = overlay_harness();
-    let _handle = ProgressOverlay::show_global(
+    let _handle = ProgressOverlay::set_global(
         &harness.ctx,
         "Building the shielded transaction.",
         OverlayConfig::new().with_step(2, 5),
@@ -256,7 +256,7 @@ fn tc_ovl_012_no_eta_or_percentage() {
 #[test]
 fn tc_ovl_013a_elapsed_off_by_default() {
     let mut harness = overlay_harness();
-    let _handle = ProgressOverlay::show_global(&harness.ctx, "Working.", OverlayConfig::default());
+    let _handle = ProgressOverlay::set_global(&harness.ctx, "Working.", OverlayConfig::default());
     harness.step();
     assert!(harness.query_by_label_contains("Elapsed:").is_none());
 }
@@ -269,7 +269,7 @@ fn tc_ovl_013a_elapsed_off_by_default() {
 #[test]
 fn tc_ovl_013b_elapsed_on_counts_up() {
     let mut harness = overlay_harness();
-    let handle = ProgressOverlay::show_global(
+    let handle = ProgressOverlay::set_global(
         &harness.ctx,
         "Slow operation.",
         OverlayConfig::new().with_elapsed(),
@@ -298,7 +298,7 @@ fn tc_ovl_013b_elapsed_on_counts_up() {
 #[test]
 fn tc_ovl_014_valid_counter_renders() {
     let mut harness = overlay_harness();
-    let _handle = ProgressOverlay::show_global(
+    let _handle = ProgressOverlay::set_global(
         &harness.ctx,
         "Working.",
         OverlayConfig::new().with_step(3, 5),
@@ -312,7 +312,7 @@ fn tc_ovl_014_valid_counter_renders() {
 fn tc_ovl_015_017_invalid_counter_hidden() {
     for (current, total) in [(0, 0), (4, 3), (0, 5)] {
         let mut harness = overlay_harness();
-        let _handle = ProgressOverlay::show_global(
+        let _handle = ProgressOverlay::set_global(
             &harness.ctx,
             "Working.",
             OverlayConfig::new().with_step(current, total),
@@ -330,7 +330,7 @@ fn tc_ovl_015_017_invalid_counter_hidden() {
 #[test]
 fn tc_ovl_019_no_counter_when_unset() {
     let mut harness = overlay_harness();
-    let _handle = ProgressOverlay::show_global(
+    let _handle = ProgressOverlay::set_global(
         &harness.ctx,
         "Sending your transaction to the network.",
         OverlayConfig::default(),
@@ -351,7 +351,7 @@ fn tc_ovl_019_no_counter_when_unset() {
 #[test]
 fn tc_ovl_020_description_full_sentence() {
     let mut harness = overlay_harness();
-    let _handle = ProgressOverlay::show_global(
+    let _handle = ProgressOverlay::set_global(
         &harness.ctx,
         "Registering your identity on the network.",
         OverlayConfig::default(),
@@ -373,7 +373,7 @@ fn tc_ovl_021_long_description_within_bounds() {
         .build_ui(|ui| {
             ProgressOverlay::render_global(ui.ctx());
         });
-    let _handle = ProgressOverlay::show_global(&harness.ctx, long, OverlayConfig::default());
+    let _handle = ProgressOverlay::set_global(&harness.ctx, long, OverlayConfig::default());
     harness.step();
 
     let node = harness.query_by_label(long);
@@ -397,7 +397,7 @@ fn tc_ovl_021_long_description_within_bounds() {
 #[test]
 fn tc_ovl_022_spinner_only_valid() {
     let mut harness = overlay_harness();
-    let _handle = ProgressOverlay::show_global_spinner_only(&harness.ctx);
+    let _handle = ProgressOverlay::set_global_spinner_only(&harness.ctx);
     harness.step();
     assert!(ProgressOverlay::has_global(&harness.ctx));
     assert!(harness.query_by_role(SPINNER_ROLE).is_some());
@@ -411,8 +411,7 @@ fn tc_ovl_022_spinner_only_valid() {
 #[test]
 fn tc_ovl_023_no_buttons_pure_block() {
     let mut harness = overlay_harness();
-    let handle =
-        ProgressOverlay::show_global(&harness.ctx, "Hard block.", OverlayConfig::default());
+    let handle = ProgressOverlay::set_global(&harness.ctx, "Hard block.", OverlayConfig::default());
     harness.step();
     assert!(harness.query_by_label("Cancel").is_none());
     assert!(handle.take_actions().is_empty());
@@ -425,10 +424,10 @@ fn tc_ovl_023_no_buttons_pure_block() {
 #[test]
 fn tc_ovl_024_button_click_enqueues_action() {
     let mut harness = overlay_harness();
-    let handle = ProgressOverlay::show_global(
+    let handle = ProgressOverlay::set_global(
         &harness.ctx,
         "Working.",
-        OverlayConfig::new().with_button("overlay.cancel", "Cancel"),
+        OverlayConfig::new().with_action("Cancel", "overlay.cancel"),
     );
     // The centered card (anchored CENTER_CENTER) needs a few frames to cache its
     // size before it stops moving; settle before clicking so the click lands.
@@ -449,10 +448,10 @@ fn tc_ovl_024_button_click_enqueues_action() {
 #[test]
 fn tc_ovl_025_generic_button_click_enqueues_action() {
     let mut harness = overlay_harness();
-    let handle = ProgressOverlay::show_global(
+    let handle = ProgressOverlay::set_global(
         &harness.ctx,
         "Background-able.",
-        OverlayConfig::new().with_button("overlay.run_in_bg", "Run in background"),
+        OverlayConfig::new().with_action("Run in background", "overlay.run_in_bg"),
     );
     harness.step();
     harness.step();
@@ -469,12 +468,12 @@ fn tc_ovl_025_generic_button_click_enqueues_action() {
 #[test]
 fn tc_ovl_026_action_queue_drains_fifo() {
     let mut harness = overlay_harness();
-    let handle = ProgressOverlay::show_global(
+    let handle = ProgressOverlay::set_global(
         &harness.ctx,
         "Two buttons.",
         OverlayConfig::new()
-            .with_button("primary", "Primary")
-            .with_secondary_button("secondary", "Secondary"),
+            .with_action("Primary", "primary")
+            .with_secondary_action("Secondary", "secondary"),
     );
     // Settle the centered card before clicking (anchored CENTER_CENTER moves for
     // a couple of frames until its size is cached).
@@ -500,12 +499,12 @@ fn tc_ovl_026_action_queue_drains_fifo() {
 #[test]
 fn tc_ovl_027_secondary_left_primary_right() {
     let mut harness = overlay_harness();
-    let _handle = ProgressOverlay::show_global(
+    let _handle = ProgressOverlay::set_global(
         &harness.ctx,
         "Two buttons.",
         OverlayConfig::new()
-            .with_button("primary", "Primary action")
-            .with_secondary_button("secondary", "Secondary action"),
+            .with_action("Primary action", "primary")
+            .with_secondary_action("Secondary action", "secondary"),
     );
     harness.step();
 
@@ -532,7 +531,7 @@ fn tc_ovl_028_pointer_click_beneath_blocked() {
             }
             ProgressOverlay::render_global(ui.ctx());
         });
-    let handle = ProgressOverlay::show_global_spinner_only(&harness.ctx);
+    let handle = ProgressOverlay::set_global_spinner_only(&harness.ctx);
     harness.step();
 
     harness.get_by_label("Increment").click();
@@ -559,10 +558,10 @@ fn tc_ovl_029_keyboard_beneath_blocked() {
             ui.text_edit_singleline(&mut *buffer);
             ProgressOverlay::render_global(ui.ctx());
         });
-    let _handle = ProgressOverlay::show_global(
+    let _handle = ProgressOverlay::set_global(
         &harness.ctx,
         "Working.",
-        OverlayConfig::new().with_button("overlay.cancel", "Cancel"),
+        OverlayConfig::new().with_action("Cancel", "overlay.cancel"),
     );
     harness.step();
 
@@ -581,7 +580,7 @@ fn tc_ovl_029_keyboard_beneath_blocked() {
 #[test]
 fn tc_ovl_030_backdrop_click_does_not_dismiss() {
     let mut harness = overlay_harness();
-    let handle = ProgressOverlay::show_global_spinner_only(&harness.ctx);
+    let handle = ProgressOverlay::set_global_spinner_only(&harness.ctx);
     harness.step();
     assert!(ProgressOverlay::has_global(&harness.ctx));
 
@@ -603,7 +602,7 @@ fn tc_ovl_032_033_banner_persists_under_overlay() {
     MessageBanner::set_global(&ctx, "Banner A", MessageType::Error);
     MessageBanner::set_global(&ctx, "Banner B", MessageType::Warning);
 
-    let overlay = ProgressOverlay::show_global(&ctx, "Blocking.", OverlayConfig::default());
+    let overlay = ProgressOverlay::set_global(&ctx, "Blocking.", OverlayConfig::default());
     assert!(MessageBanner::has_global(&ctx));
     assert!(ProgressOverlay::has_global(&ctx));
 
@@ -618,7 +617,7 @@ fn tc_ovl_032_033_banner_persists_under_overlay() {
 #[test]
 fn tc_ovl_034_dismiss_before_success_banner() {
     let ctx = egui::Context::default();
-    let overlay = ProgressOverlay::show_global(&ctx, "Registering.", OverlayConfig::default());
+    let overlay = ProgressOverlay::set_global(&ctx, "Registering.", OverlayConfig::default());
 
     overlay.clear();
     assert!(!ProgressOverlay::has_global(&ctx));
@@ -638,8 +637,8 @@ fn tc_ovl_034_dismiss_before_success_banner() {
 #[test]
 fn tc_ovl_036_topmost_entry_rendered() {
     let mut harness = overlay_harness();
-    let a = ProgressOverlay::show_global(&harness.ctx, "Operation A.", OverlayConfig::default());
-    let b = ProgressOverlay::show_global(&harness.ctx, "Operation B.", OverlayConfig::default());
+    let a = ProgressOverlay::set_global(&harness.ctx, "Operation A.", OverlayConfig::default());
+    let b = ProgressOverlay::set_global(&harness.ctx, "Operation B.", OverlayConfig::default());
     harness.step();
 
     assert!(ProgressOverlay::has_global(&harness.ctx));
@@ -654,8 +653,8 @@ fn tc_ovl_036_topmost_entry_rendered() {
 #[test]
 fn tc_ovl_037_038_handle_dismisses_only_its_own() {
     let ctx = egui::Context::default();
-    let a = ProgressOverlay::show_global(&ctx, "Operation A.", OverlayConfig::default());
-    let b = ProgressOverlay::show_global(&ctx, "Operation B.", OverlayConfig::default());
+    let a = ProgressOverlay::set_global(&ctx, "Operation A.", OverlayConfig::default());
+    let b = ProgressOverlay::set_global(&ctx, "Operation B.", OverlayConfig::default());
 
     b.clear();
     assert!(a.is_active());
@@ -669,15 +668,15 @@ fn tc_ovl_037_038_handle_dismisses_only_its_own() {
 #[test]
 fn tc_ovl_039_only_topmost_actions_reachable() {
     let mut harness = overlay_harness();
-    let a = ProgressOverlay::show_global(
+    let a = ProgressOverlay::set_global(
         &harness.ctx,
         "Operation A.",
-        OverlayConfig::new().with_button("cancel_a", "Cancel"),
+        OverlayConfig::new().with_action("Cancel", "cancel_a"),
     );
-    let b = ProgressOverlay::show_global(
+    let b = ProgressOverlay::set_global(
         &harness.ctx,
         "Operation B.",
-        OverlayConfig::new().with_button("cancel_b", "Cancel"),
+        OverlayConfig::new().with_action("Cancel", "cancel_b"),
     );
     // Settle the centered card before clicking (anchored CENTER_CENTER moves for
     // a couple of frames until its size is cached).
@@ -711,10 +710,10 @@ fn tc_ovl_041_tab_focus_trap() {
             ui.text_edit_singleline(&mut *buffer);
             ProgressOverlay::render_global(ui.ctx());
         });
-    let _handle = ProgressOverlay::show_global(
+    let _handle = ProgressOverlay::set_global(
         &harness.ctx,
         "Working.",
-        OverlayConfig::new().with_button("overlay.cancel", "Cancel"),
+        OverlayConfig::new().with_action("Cancel", "overlay.cancel"),
     );
     harness.step();
     harness.step();
@@ -737,10 +736,10 @@ fn tc_ovl_041_tab_focus_trap() {
 #[test]
 fn tc_ovl_042_esc_swallowed_with_button() {
     let mut harness = overlay_harness();
-    let handle = ProgressOverlay::show_global(
+    let handle = ProgressOverlay::set_global(
         &harness.ctx,
         "Working.",
-        OverlayConfig::new().with_button("overlay.cancel", "Cancel"),
+        OverlayConfig::new().with_action("Cancel", "overlay.cancel"),
     );
     harness.step();
 
@@ -757,8 +756,7 @@ fn tc_ovl_042_esc_swallowed_with_button() {
 #[test]
 fn tc_ovl_043_esc_swallowed_without_button() {
     let mut harness = overlay_harness();
-    let handle =
-        ProgressOverlay::show_global(&harness.ctx, "Hard block.", OverlayConfig::default());
+    let handle = ProgressOverlay::set_global(&harness.ctx, "Hard block.", OverlayConfig::default());
     harness.step();
 
     harness.key_press(egui::Key::Escape);
@@ -775,10 +773,10 @@ fn tc_ovl_043_esc_swallowed_without_button() {
 #[test]
 fn tc_ovl_044_enter_and_space_do_not_activate_button() {
     let mut harness = overlay_harness();
-    let handle = ProgressOverlay::show_global(
+    let handle = ProgressOverlay::set_global(
         &harness.ctx,
         "Working.",
-        OverlayConfig::new().with_button("overlay.cancel", "Cancel"),
+        OverlayConfig::new().with_action("Cancel", "overlay.cancel"),
     );
     harness.step();
     harness.step();
@@ -801,7 +799,7 @@ fn tc_ovl_044_enter_and_space_do_not_activate_button() {
 fn tc_ovl_046_theme_switch_mid_overlay() {
     let mut harness = overlay_harness();
     harness.ctx.set_visuals(egui::Visuals::dark());
-    let _handle = ProgressOverlay::show_global(
+    let _handle = ProgressOverlay::set_global(
         &harness.ctx,
         "Switching networks.",
         OverlayConfig::default(),
@@ -835,7 +833,7 @@ fn tc_ovl_048_secret_prompt_renders_above_overlay() {
             };
             passphrase_modal(ui.ctx(), &config, |_| {});
         });
-    let _handle = ProgressOverlay::show_global(&harness.ctx, "Signing.", OverlayConfig::default());
+    let _handle = ProgressOverlay::set_global(&harness.ctx, "Signing.", OverlayConfig::default());
     harness.step();
     harness.step();
 
@@ -873,7 +871,7 @@ fn tc_ovl_047_stuck_threshold_is_informational_only() {
     // Below the threshold a default overlay shows no elapsed readout and no
     // reassurance line — the reveal is purely time-driven and benign.
     let mut harness = overlay_harness();
-    let _handle = ProgressOverlay::show_global(&harness.ctx, "Working.", OverlayConfig::default());
+    let _handle = ProgressOverlay::set_global(&harness.ctx, "Working.", OverlayConfig::default());
     harness.step();
     assert!(harness.query_by_label_contains("Elapsed:").is_none());
     assert!(
@@ -890,7 +888,7 @@ fn tc_ovl_047_stuck_threshold_is_informational_only() {
 #[test]
 fn tc_ovl_047b_threshold_reveals_via_clock_seam() {
     let mut harness = overlay_harness();
-    let handle = ProgressOverlay::show_global(&harness.ctx, "Working.", OverlayConfig::default());
+    let handle = ProgressOverlay::set_global(&harness.ctx, "Working.", OverlayConfig::default());
     harness.step();
     assert!(harness.query_by_label_contains("Elapsed:").is_none());
     assert!(
@@ -968,7 +966,7 @@ fn tc_ovl_050_component_instance_show_reports_click() {
     let overlay = Rc::new(RefCell::new(
         ProgressOverlay::new()
             .with_description("Instance overlay.")
-            .with_button("overlay.bg", "Run in background"),
+            .with_action("Run in background", "overlay.bg"),
     ));
     let overlay_ui = Rc::clone(&overlay);
 
@@ -1035,7 +1033,7 @@ fn qa_buttonless_overlay_blocks_typing_into_focused_field_beneath() {
     harness.step();
 
     // Raise a pure (button-less) block over the already-focused field.
-    let _handle = ProgressOverlay::show_global_spinner_only(&harness.ctx);
+    let _handle = ProgressOverlay::set_global_spinner_only(&harness.ctx);
     harness.step();
 
     // Type. AC-8.2: keyboard input must not reach widgets beneath the overlay.
@@ -1106,7 +1104,7 @@ fn qa_buttonless_overlay_strips_edit_and_clipboard_events() {
     );
 
     // Raise a button-less block over the focused, populated field.
-    let _handle = ProgressOverlay::show_global_spinner_only(&harness.ctx);
+    let _handle = ProgressOverlay::set_global_spinner_only(&harness.ctx);
     harness.step();
 
     // Inject edit + clipboard events; claim_input must strip them all.
@@ -1167,7 +1165,7 @@ fn reconciliation_render_global_keeps_keyboard_for_prompt() {
             });
             saw_keys_ui.set(survived);
         });
-    let _handle = ProgressOverlay::show_global_spinner_only(&harness.ctx);
+    let _handle = ProgressOverlay::set_global_spinner_only(&harness.ctx);
     harness.step();
     assert!(!saw_keys.get(), "no keys injected yet");
 
@@ -1198,7 +1196,7 @@ fn reconciliation_instance_show_leaves_host_focus_navigable() {
     let overlay = Rc::new(RefCell::new(
         ProgressOverlay::new()
             .with_description("Inline overlay.")
-            .with_button("inline.act", "Act"),
+            .with_action("Act", "inline.act"),
     ));
     let overlay_ui = Rc::clone(&overlay);
     let text = Rc::new(RefCell::new(String::new()));
@@ -1252,7 +1250,7 @@ fn rq1_appstate_secret_prompt_gate_keeps_prompt_typeable_over_overlay() {
         harness.set_size(egui::vec2(800.0, 600.0));
 
         // Raise a button-less blocking overlay beneath the active prompt.
-        ProgressOverlay::show_global_spinner_only(&harness.ctx);
+        ProgressOverlay::set_global_spinner_only(&harness.ctx);
         harness.run_steps(5);
 
         // The prompt renders above the overlay...
@@ -1399,4 +1397,102 @@ fn task9_spv_overlay_armed_scope_disarm_and_escape() {
             "a fresh armed episode re-blocks"
         );
     });
+}
+
+/// Item A (one-frame interactive gap) — driving the REAL `AppState::update` loop,
+/// an armed SPV episode RAISES **and PAINTS** the block on the SAME frame it is
+/// first observed, because `update_spv_overlay` now runs before `claim_input`, the
+/// screen `ui()`, and `render_global`. Under the pre-fix order the block was raised
+/// only after `render_global`, so it painted a frame late — leaving that frame
+/// fully interactive. This test would need two `step()`s under the old order: the
+/// single-frame paint assertion is the regression guard for the gap.
+#[cfg(feature = "testing")]
+#[test]
+fn item_a_armed_episode_blocks_and_paints_same_frame() {
+    use dash_evo_tool::context::connection_status::OverallConnectionState;
+    crate::support::with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let mut harness = Harness::builder().with_max_steps(100).build_eframe(|ctx| {
+            let mut app = dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
+                .expect("Failed to create AppState")
+                .with_animations(false);
+            // Arm a user-initiated episode and force Connecting, exactly as the
+            // Connect button / boot auto-start do — but BEFORE the first frame runs.
+            let app_context = app.current_app_context().clone();
+            app_context
+                .connection_status()
+                .set_overall_state(OverallConnectionState::Connecting);
+            app.test_arm_spv_block();
+            app
+        });
+        harness.set_size(egui::vec2(800.0, 600.0));
+
+        // Exactly ONE frame. `update_spv_overlay` runs at frame start (before the
+        // input claim, the screen, and `render_global`), so the block is both raised
+        // and painted this same frame.
+        harness.step();
+        assert!(
+            ProgressOverlay::has_global(&harness.ctx),
+            "the armed episode raises the block"
+        );
+        assert!(
+            harness
+                .query_by_label("Continue in the background")
+                .is_some(),
+            "the block is PAINTED on the same frame it is armed+observed — under the \
+             pre-fix order (raise after render_global) it would only paint next frame, \
+             leaving this frame interactive (the one-frame gap)"
+        );
+    });
+}
+
+/// Item B (watchdog liveness) — using the `backdate` clock seam: a phase whose
+/// elapsed exceeds the 120 s no-progress watchdog but whose hidden `progress_token`
+/// ADVANCES must NOT trip the watchdog (a slow-but-advancing phase is real
+/// progress); the same elapsed WITHOUT an advancing token MUST still trip it (a
+/// genuine stall). The shown copy never changes, so the existing `(description,
+/// step)` change-detection alone could not tell the two apart.
+#[cfg(feature = "testing")]
+#[test]
+fn item_b_advancing_progress_token_resets_watchdog() {
+    let mut harness = overlay_harness();
+    // Raise with a seed token; render once to log "shown" and record the token.
+    let handle = ProgressOverlay::set_global(
+        &harness.ctx,
+        "Syncing with the Dash network.",
+        OverlayConfig::new().with_progress_token(100),
+    );
+    harness.step();
+    assert!(
+        harness
+            .query_by_label_contains("much longer than expected")
+            .is_none(),
+        "no watchdog at the start"
+    );
+
+    // Age past the 120 s watchdog, but ADVANCE the hidden token before the next
+    // render — the shown description/step is untouched.
+    handle.backdate(Duration::from_secs(200));
+    handle.set_progress_token(200);
+    harness.step();
+    assert!(
+        harness
+            .query_by_label_contains("much longer than expected")
+            .is_none(),
+        "an advancing progress token resets the watchdog — no false-stall escalation \
+         even though the shown copy is unchanged"
+    );
+
+    // Age past the watchdog again WITHOUT advancing the token: a genuine stall must
+    // still trip it.
+    handle.backdate(Duration::from_secs(200));
+    harness.step();
+    assert!(
+        harness
+            .query_by_label_contains("much longer than expected")
+            .is_some(),
+        "a real stall (token unchanged) still trips the watchdog"
+    );
 }

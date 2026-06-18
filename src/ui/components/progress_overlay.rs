@@ -14,8 +14,8 @@
 //! ## Buttons are a generic facility (no built-in Cancel)
 //!
 //! The overlay has **no** Cancel concept. A caller attaches a generic button
-//! with [`OverlayConfig::with_button`] / [`OverlayHandle::with_button`] (or the
-//! `*_secondary_button` variants), picking its own opaque action id and label.
+//! with [`OverlayConfig::with_action`] / [`OverlayHandle::with_action`] (or the
+//! `*_secondary_action` variants), picking its own opaque action id and label.
 //! Clicking the button enqueues that action id, keyed by the owning entry; the
 //! overlay does **not** auto-lower. The owning screen drains **its own** ids via
 //! [`OverlayHandle::take_actions`] (FIFO) at the top of its `ui()` and decides
@@ -28,7 +28,7 @@
 //! Like `MessageBanner`, this type has both an instance [`Component`] path and a
 //! global path, sharing one layout helper ([`render_card`]):
 //!
-//! - **Global** — state lives in egui `ctx.data`; [`ProgressOverlay::show_global`]
+//! - **Global** — state lives in egui `ctx.data`; [`ProgressOverlay::set_global`]
 //!   raises it, [`ProgressOverlay::render_global`] paints the full-window dim +
 //!   input sink + centered card once per frame from `AppState::update`. This is
 //!   the app-level blocking path the application depends on.
@@ -144,9 +144,18 @@ struct OverlayState {
     logged: bool,
     /// Last content logged, so a description/step update logs exactly once.
     logged_content: Option<LoggedContent>,
-    /// Last time the content (description/step) actually changed. The no-progress
-    /// watchdog (A-1) measures from here, so a legitimately advancing multi-step
-    /// flow never trips it while a genuinely wedged single step does.
+    /// Hidden, monotonic liveness token (A-1). Never rendered. An owner that drives
+    /// a long phase whose shown `(description, step)` is constant (e.g. SPV headers)
+    /// advances this from the underlying progress (a climbing height) so the
+    /// watchdog can tell a slow-but-advancing phase from a genuine stall.
+    progress_token: Option<u64>,
+    /// The `progress_token` value at the last watchdog reset, for change detection.
+    last_progress_token: Option<u64>,
+    /// Last time real progress was seen — either the shown `(description, step)`
+    /// changed OR the hidden `progress_token` advanced. The no-progress watchdog
+    /// (A-1) measures from here, so a legitimately advancing flow (multi-step or a
+    /// single slow-but-advancing phase) never trips it while a genuinely wedged
+    /// operation does.
     last_progress_at: Instant,
     /// Set once the no-progress watchdog has fired its one-shot dev-error (A-1),
     /// so the error logs exactly once, never per frame (NFR-5).
@@ -167,6 +176,8 @@ impl OverlayState {
             created_at: now,
             logged: false,
             logged_content: None,
+            progress_token: config.progress_token,
+            last_progress_token: config.progress_token,
             last_progress_at: now,
             watchdog_logged: false,
             focus_requested: false,
@@ -174,7 +185,7 @@ impl OverlayState {
     }
 }
 
-/// Builder/config for [`ProgressOverlay::show_global`]. `OverlayConfig::default()`
+/// Builder/config for [`ProgressOverlay::set_global`]. `OverlayConfig::default()`
 /// is a spinner-only block: no counter, no buttons, elapsed off.
 #[derive(Clone, Default)]
 pub struct OverlayConfig {
@@ -182,6 +193,10 @@ pub struct OverlayConfig {
     step: Option<(u32, u32)>,
     show_elapsed: bool,
     buttons: Vec<OverlayButton>,
+    /// Hidden liveness token (A-1). Never rendered; see [`with_progress_token`].
+    ///
+    /// [`with_progress_token`]: Self::with_progress_token
+    progress_token: Option<u64>,
 }
 
 impl OverlayConfig {
@@ -189,7 +204,7 @@ impl OverlayConfig {
         Self::default()
     }
 
-    /// Set the description. The `description` argument of `show_global` wins when
+    /// Set the description. The `description` argument of `set_global` wins when
     /// this is unset, so most callers pass the text there instead.
     pub fn with_description(mut self, text: impl fmt::Display) -> Self {
         let text = text.to_string();
@@ -208,37 +223,49 @@ impl OverlayConfig {
         self
     }
 
-    /// Add a **primary** action button (accent fill, hugs the right edge). The
-    /// caller owns the opaque `id` enqueued on click and the `label` shown on the
-    /// button; clicking does not lower the overlay — the owning screen drains the
+    /// Seed the **hidden** liveness token (A-1). NOT rendered to the user — it only
+    /// feeds the no-progress watchdog: a change in the token between frames counts
+    /// as progress and resets the watchdog clock, so a slow-but-still-advancing
+    /// operation (e.g. SPV headers on a slow link, where the shown "Step N of 5"
+    /// stays constant for minutes) never trips the false-stall escalation. Most
+    /// callers update it each frame via [`OverlayHandle::set_progress_token`].
+    pub fn with_progress_token(mut self, token: u64) -> Self {
+        self.progress_token = Some(token);
+        self
+    }
+
+    /// Add a **primary** action button (accent fill, hugs the right edge). Mirrors
+    /// [`MessageBanner::with_action`](super::message_banner::MessageBanner::with_action):
+    /// the displayed `label` comes first, the opaque `action_id` enqueued on click
+    /// second. Clicking does not lower the overlay — the owning screen drains the
     /// id and decides what to do.
     ///
     /// Buttons render right-to-left in the order added: primaries hug the right
-    /// edge, secondaries sit to their left. SEC-006: `id` and `label` are
+    /// edge, secondaries sit to their left. SEC-006: `label` and `action_id` are
     /// user-visible and logged — never pass secrets or PII.
-    pub fn with_button(mut self, id: impl fmt::Display, label: impl fmt::Display) -> Self {
+    pub fn with_action(mut self, label: impl fmt::Display, action_id: impl fmt::Display) -> Self {
         self.buttons
-            .push(OverlayButton::new(id, label, ButtonStyle::Primary));
+            .push(OverlayButton::new(action_id, label, ButtonStyle::Primary));
         self
     }
 
     /// Add a **secondary** action button (muted fill, sits left of the primary).
-    /// Same generic semantics as [`with_button`](Self::with_button) — only the
-    /// styling and placement differ; there is no built-in Cancel. SEC-006: `id`
-    /// and `label` are user-visible and logged — never pass secrets or PII.
-    pub fn with_secondary_button(
+    /// Same generic semantics as [`with_action`](Self::with_action) — only the
+    /// styling and placement differ; there is no built-in Cancel. SEC-006: `label`
+    /// and `action_id` are user-visible and logged — never pass secrets or PII.
+    pub fn with_secondary_action(
         mut self,
-        id: impl fmt::Display,
         label: impl fmt::Display,
+        action_id: impl fmt::Display,
     ) -> Self {
         self.buttons
-            .push(OverlayButton::new(id, label, ButtonStyle::Secondary));
+            .push(OverlayButton::new(action_id, label, ButtonStyle::Secondary));
         self
     }
 }
 
 /// Lifecycle handle for a raised overlay, returned by
-/// [`ProgressOverlay::show_global`]. Identifies its entry by an internal key, so
+/// [`ProgressOverlay::set_global`]. Identifies its entry by an internal key, so
 /// content can be updated without losing the reference. Methods are no-ops
 /// returning `None` once the entry is gone.
 ///
@@ -290,25 +317,40 @@ impl OverlayHandle {
         self.mutate(|s| s.step = None)
     }
 
-    /// Attach a **primary** action button (accent fill, right edge) — opaque `id`
-    /// enqueued on click + `label` shown verbatim. Buttons render right-to-left in
-    /// the order added. SEC-006: `id`/`label` are user-visible and logged — never
-    /// pass secrets or PII. Returns `None` if the entry is gone.
-    pub fn with_button(&self, id: impl fmt::Display, label: impl fmt::Display) -> Option<&Self> {
-        let button = OverlayButton::new(id, label, ButtonStyle::Primary);
+    /// Attach a **primary** action button (accent fill, right edge). Mirrors
+    /// [`MessageBanner::with_action`](super::message_banner::MessageBanner::with_action):
+    /// `label` shown verbatim first, opaque `action_id` enqueued on click second.
+    /// Buttons render right-to-left in the order added. SEC-006: `label`/`action_id`
+    /// are user-visible and logged — never pass secrets or PII. Returns `None` if
+    /// the entry is gone.
+    pub fn with_action(
+        &self,
+        label: impl fmt::Display,
+        action_id: impl fmt::Display,
+    ) -> Option<&Self> {
+        let button = OverlayButton::new(action_id, label, ButtonStyle::Primary);
         self.mutate(|s| s.buttons.push(button))
     }
 
     /// Attach a **secondary** action button (muted fill, left of the primary).
-    /// Same generic semantics as [`with_button`](Self::with_button). SEC-006:
-    /// `id`/`label` are user-visible and logged. Returns `None` if the entry is gone.
-    pub fn with_secondary_button(
+    /// Same generic semantics as [`with_action`](Self::with_action). SEC-006:
+    /// `label`/`action_id` are user-visible and logged. Returns `None` if the entry
+    /// is gone.
+    pub fn with_secondary_action(
         &self,
-        id: impl fmt::Display,
         label: impl fmt::Display,
+        action_id: impl fmt::Display,
     ) -> Option<&Self> {
-        let button = OverlayButton::new(id, label, ButtonStyle::Secondary);
+        let button = OverlayButton::new(action_id, label, ButtonStyle::Secondary);
         self.mutate(|s| s.buttons.push(button))
+    }
+
+    /// Update the **hidden** liveness token in place (A-1). NOT rendered — it only
+    /// feeds the no-progress watchdog so an advancing underlying operation (e.g. an
+    /// SPV phase whose height climbs while the shown "Step N of 5" stays constant)
+    /// resets the watchdog clock. Returns `None` if the entry is gone.
+    pub fn set_progress_token(&self, token: u64) -> Option<&Self> {
+        self.mutate(|s| s.progress_token = Some(token))
     }
 
     /// Drain (FIFO) and remove the action ids enqueued by **this handle's**
@@ -421,7 +463,7 @@ impl ComponentResponse for ProgressOverlayResponse {
 /// The blocking progress overlay.
 ///
 /// Two paths share the [`render_card`] layout helper (mirrors `MessageBanner`):
-/// the global `ctx.data` path ([`show_global`](Self::show_global) /
+/// the global `ctx.data` path ([`set_global`](Self::set_global) /
 /// [`render_global`](Self::render_global)), driven once per frame from
 /// `AppState::update`, and the instance [`Component`] path configured by the
 /// builder methods and rendered by [`Component::show`].
@@ -476,28 +518,30 @@ impl ProgressOverlay {
         self
     }
 
-    /// Add a **primary** action button. The caller owns the opaque `id` surfaced
-    /// through [`ProgressOverlayResponse`] on click and the `label` shown on it.
-    pub fn with_button(mut self, id: impl fmt::Display, label: impl fmt::Display) -> Self {
+    /// Add a **primary** action button. Mirrors
+    /// [`MessageBanner::with_action`](super::message_banner::MessageBanner::with_action):
+    /// the `label` shown on the button comes first, the opaque `action_id` surfaced
+    /// through [`ProgressOverlayResponse`] on click second.
+    pub fn with_action(mut self, label: impl fmt::Display, action_id: impl fmt::Display) -> Self {
         if let Some(state) = &mut self.state {
             state
                 .buttons
-                .push(OverlayButton::new(id, label, ButtonStyle::Primary));
+                .push(OverlayButton::new(action_id, label, ButtonStyle::Primary));
         }
         self
     }
 
     /// Add a **secondary** action button (left of the primary). Same generic
-    /// semantics as [`with_button`](Self::with_button).
-    pub fn with_secondary_button(
+    /// semantics as [`with_action`](Self::with_action).
+    pub fn with_secondary_action(
         mut self,
-        id: impl fmt::Display,
         label: impl fmt::Display,
+        action_id: impl fmt::Display,
     ) -> Self {
         if let Some(state) = &mut self.state {
             state
                 .buttons
-                .push(OverlayButton::new(id, label, ButtonStyle::Secondary));
+                .push(OverlayButton::new(action_id, label, ButtonStyle::Secondary));
         }
         self
     }
@@ -524,7 +568,7 @@ impl ProgressOverlay {
     ///
     /// SEC-006: the `description` (and any button `label`/`id`) is user-visible
     /// and written to logs on show — never pass secrets, passphrases, or PII.
-    pub fn show_global(
+    pub fn set_global(
         ctx: &egui::Context,
         description: impl fmt::Display,
         config: OverlayConfig,
@@ -555,11 +599,11 @@ impl ProgressOverlay {
     /// Convenience: a spinner-only block with no text, counter, or buttons.
     ///
     /// As a button-less block it has no escape, so the SEC-001 lifecycle rule from
-    /// [`show_global`](Self::show_global) applies in full: drive it from a
+    /// [`set_global`](Self::set_global) applies in full: drive it from a
     /// frame-driven reconcile owner (e.g. `AppState::update_spv_overlay`) that
     /// lowers it when the work ends — a leaked handle has no automatic teardown.
-    pub fn show_global_spinner_only(ctx: &egui::Context) -> OverlayHandle {
-        Self::show_global(ctx, "", OverlayConfig::default())
+    pub fn set_global_spinner_only(ctx: &egui::Context) -> OverlayHandle {
+        Self::set_global(ctx, "", OverlayConfig::default())
     }
 
     /// Whether any overlay is active. Cheap one-slot read (NFR-6).
@@ -845,22 +889,43 @@ fn step_is_renderable(current: u32, total: u32) -> bool {
     current >= 1 && total >= 1 && current <= total
 }
 
-/// Log the overlay once on show and once per content change (NFR-5).
+/// Log the overlay once on show and once per *visible* content change (NFR-5),
+/// and reset the no-progress watchdog clock on any real progress — a change in the
+/// shown `(description, step)` OR an advance of the hidden `progress_token` (A-1).
+///
+/// The two signals are deliberately separated: the debug log fires only on a shown
+/// content change (so a per-frame token advance never spams the log), while the
+/// watchdog reset also honours the token (so a slow-but-advancing phase whose shown
+/// copy is constant — e.g. SPV headers on a slow link — never trips a false stall).
 fn log_overlay_state(state: &mut OverlayState) {
     let content = (state.description.clone(), state.step);
     if !state.logged {
         state.logged = true;
         state.logged_content = Some(content);
+        state.last_progress_token = state.progress_token;
         debug!(
             description = ?state.description,
             step = ?state.step,
             "Blocking progress overlay shown"
         );
-    } else if state.logged_content.as_ref() != Some(&content) {
-        state.logged_content = Some(content);
-        // Real progress: reset the no-progress watchdog clock (A-1) so a
-        // legitimately advancing flow never trips it.
+        return;
+    }
+
+    let content_changed = state.logged_content.as_ref() != Some(&content);
+    let token_advanced = state.progress_token != state.last_progress_token;
+
+    if content_changed || token_advanced {
+        // Real progress (shown copy changed, or the hidden token advanced): reset
+        // the no-progress watchdog clock (A-1) so a legitimately advancing flow
+        // never trips it.
         state.last_progress_at = Instant::now();
+        state.last_progress_token = state.progress_token;
+    }
+
+    if content_changed {
+        // Only a *shown* change is logged, exactly once (NFR-5) — a per-frame token
+        // advance is a hidden liveness signal, not a user-visible update.
+        state.logged_content = Some(content);
         debug!(
             description = ?state.description,
             step = ?state.step,
@@ -1102,8 +1167,12 @@ pub trait OptionOverlayExt {
     /// Take the handle (leaving `None`) and dismiss its overlay entry.
     fn take_and_clear(&mut self);
 
-    /// Clear any existing overlay, raise a new one, and store the handle. Named
-    /// `raise` (not `replace`) to avoid shadowing the inherent `Option::replace`.
+    /// Clear any existing overlay, raise a new one, and store the handle. The
+    /// banner analogue is [`OptionBannerExt::replace`](super::message_banner::OptionBannerExt::replace),
+    /// but this stays named `raise`: an inherent `Option::replace(value)` already
+    /// exists and wins method resolution, so naming this `replace` would shadow it
+    /// and make every `slot.replace(ctx, desc, config)` call fail to compile
+    /// (arity mismatch against the inherent one-arg method).
     fn raise(&mut self, ctx: &egui::Context, description: impl fmt::Display, config: OverlayConfig);
 }
 
@@ -1121,7 +1190,7 @@ impl OptionOverlayExt for Option<OverlayHandle> {
         config: OverlayConfig,
     ) {
         self.take_and_clear();
-        *self = Some(ProgressOverlay::show_global(ctx, description, config));
+        *self = Some(ProgressOverlay::set_global(ctx, description, config));
     }
 }
 
@@ -1161,7 +1230,7 @@ mod tests {
     fn show_pushes_entry_and_has_global_reports_it() {
         let ctx = egui::Context::default();
         assert!(!ProgressOverlay::has_global(&ctx));
-        let handle = ProgressOverlay::show_global(&ctx, "Loading.", OverlayConfig::default());
+        let handle = ProgressOverlay::set_global(&ctx, "Loading.", OverlayConfig::default());
         assert!(ProgressOverlay::has_global(&ctx));
         assert!(handle.is_active());
         assert!(handle.elapsed().is_some());
@@ -1170,7 +1239,7 @@ mod tests {
     #[test]
     fn config_with_description_wins_over_argument() {
         let ctx = egui::Context::default();
-        let handle = ProgressOverlay::show_global(
+        let handle = ProgressOverlay::set_global(
             &ctx,
             "",
             OverlayConfig::new().with_description("From config."),
@@ -1183,7 +1252,7 @@ mod tests {
     #[test]
     fn spinner_only_has_no_text() {
         let ctx = egui::Context::default();
-        let handle = ProgressOverlay::show_global_spinner_only(&ctx);
+        let handle = ProgressOverlay::set_global_spinner_only(&ctx);
         let stack = get_overlay_state(&ctx);
         let entry = stack.iter().find(|s| s.key == handle.key).unwrap();
         assert!(entry.description.is_none());
@@ -1194,14 +1263,14 @@ mod tests {
     #[test]
     fn stale_handle_updates_are_none_and_do_not_panic() {
         let ctx = egui::Context::default();
-        let handle = ProgressOverlay::show_global(&ctx, "Gone soon.", OverlayConfig::default());
+        let handle = ProgressOverlay::set_global(&ctx, "Gone soon.", OverlayConfig::default());
         handle.clone().clear();
         assert!(handle.set_description("After clear").is_none());
         assert!(handle.set_step(1, 3).is_none());
         assert!(handle.clear_step().is_none());
         assert!(
             handle
-                .with_button("overlay.bg", "Run in background")
+                .with_action("Run in background", "overlay.bg")
                 .is_none()
         );
         assert!(!ProgressOverlay::has_global(&ctx));
@@ -1210,7 +1279,7 @@ mod tests {
     #[test]
     fn double_clear_is_a_noop() {
         let ctx = egui::Context::default();
-        let handle = ProgressOverlay::show_global(&ctx, "Once.", OverlayConfig::default());
+        let handle = ProgressOverlay::set_global(&ctx, "Once.", OverlayConfig::default());
         handle.clone().clear();
         handle.clear();
         assert!(!ProgressOverlay::has_global(&ctx));
@@ -1219,8 +1288,8 @@ mod tests {
     #[test]
     fn stack_renders_topmost_and_each_handle_clears_only_itself() {
         let ctx = egui::Context::default();
-        let a = ProgressOverlay::show_global(&ctx, "Operation A.", OverlayConfig::default());
-        let b = ProgressOverlay::show_global(&ctx, "Operation B.", OverlayConfig::default());
+        let a = ProgressOverlay::set_global(&ctx, "Operation A.", OverlayConfig::default());
+        let b = ProgressOverlay::set_global(&ctx, "Operation B.", OverlayConfig::default());
         assert!(a.is_active());
         assert!(b.is_active());
 
@@ -1248,7 +1317,7 @@ mod tests {
     #[test]
     fn handle_take_actions_drains_own_fifo_then_empties() {
         let ctx = egui::Context::default();
-        let handle = ProgressOverlay::show_global_spinner_only(&ctx);
+        let handle = ProgressOverlay::set_global_spinner_only(&ctx);
         assert!(handle.take_actions().is_empty());
 
         push_overlay_action(&ctx, handle.key, "first");
@@ -1266,8 +1335,8 @@ mod tests {
     #[test]
     fn keyed_actions_isolate_owners() {
         let ctx = egui::Context::default();
-        let a = ProgressOverlay::show_global(&ctx, "A.", OverlayConfig::default());
-        let b = ProgressOverlay::show_global(&ctx, "B.", OverlayConfig::default());
+        let a = ProgressOverlay::set_global(&ctx, "A.", OverlayConfig::default());
+        let b = ProgressOverlay::set_global(&ctx, "B.", OverlayConfig::default());
         push_overlay_action(&ctx, b.key, "b:action");
 
         assert!(a.take_actions().is_empty(), "A must not see B's click");
@@ -1282,13 +1351,13 @@ mod tests {
         let ctx = egui::Context::default();
 
         // Owner clears normally → its pending id is purged, sweeper finds nothing.
-        let cleared = ProgressOverlay::show_global_spinner_only(&ctx);
+        let cleared = ProgressOverlay::set_global_spinner_only(&ctx);
         push_overlay_action(&ctx, cleared.key, "cleared:id");
         cleared.clear();
         assert!(ProgressOverlay::sweep_orphan_actions(&ctx).is_empty());
 
         // Owner dropped without draining → its id is orphaned and swept once.
-        let dropped = ProgressOverlay::show_global_spinner_only(&ctx);
+        let dropped = ProgressOverlay::set_global_spinner_only(&ctx);
         let dropped_key = dropped.key;
         push_overlay_action(&ctx, dropped_key, "dropped:id");
         ProgressOverlay::clear_all_global(&ctx); // entry gone, id keyed to a dead owner
@@ -1307,7 +1376,7 @@ mod tests {
     #[test]
     fn clear_all_global_clears_action_queue() {
         let ctx = egui::Context::default();
-        let handle = ProgressOverlay::show_global_spinner_only(&ctx);
+        let handle = ProgressOverlay::set_global_spinner_only(&ctx);
         push_overlay_action(&ctx, handle.key, "shielded:build:cancel");
 
         ProgressOverlay::clear_all_global(&ctx);
@@ -1336,7 +1405,7 @@ mod tests {
     #[test]
     fn claim_input_strips_text_and_nav_keys_when_block_active() {
         let ctx = egui::Context::default();
-        ProgressOverlay::show_global_spinner_only(&ctx);
+        ProgressOverlay::set_global_spinner_only(&ctx);
 
         let leaked = std::cell::Cell::new(true);
         let raw = egui::RawInput {
@@ -1401,7 +1470,7 @@ mod tests {
     #[test]
     fn render_logs_once_then_marks_logged() {
         let ctx = egui::Context::default();
-        ProgressOverlay::show_global(&ctx, "Working.", OverlayConfig::default());
+        ProgressOverlay::set_global(&ctx, "Working.", OverlayConfig::default());
         render_once(&ctx);
         let stack = get_overlay_state(&ctx);
         let entry = stack.last().unwrap();
@@ -1420,7 +1489,7 @@ mod tests {
     fn elapsed_counts_up_monotonically() {
         let ctx = egui::Context::default();
         let handle =
-            ProgressOverlay::show_global(&ctx, "Slow.", OverlayConfig::new().with_elapsed());
+            ProgressOverlay::set_global(&ctx, "Slow.", OverlayConfig::new().with_elapsed());
         let first = handle.elapsed().unwrap();
         std::thread::sleep(Duration::from_millis(20));
         let second = handle.elapsed().unwrap();
@@ -1474,7 +1543,7 @@ mod tests {
         let mut overlay = ProgressOverlay::new()
             .with_description("Instance overlay.")
             .with_step(2, 5)
-            .with_button("overlay.bg", "Run in background");
+            .with_action("Run in background", "overlay.bg");
         // No interaction has happened yet.
         assert!(overlay.current_value().is_none());
 
@@ -1539,12 +1608,60 @@ mod tests {
         );
     }
 
+    /// A-1 (Item B) — an advancing hidden `progress_token` resets the no-progress
+    /// clock even when the shown `(description, step)` is unchanged (a slow-but-
+    /// advancing phase), but it must NOT emit a content-update log; an unchanged
+    /// token (a genuine stall) leaves the clock alone so the watchdog still trips.
+    #[test]
+    fn log_overlay_state_token_advance_resets_clock_without_content_change() {
+        let mut state = OverlayState::new(
+            1,
+            Some("Syncing with the Dash network.".to_string()),
+            &OverlayConfig::new().with_progress_token(10),
+        );
+        // Prime as already-shown at token 10 (the `!logged` path records the token).
+        log_overlay_state(&mut state);
+        assert_eq!(state.last_progress_token, Some(10));
+
+        // Age the clock past the watchdog with NO visible content change.
+        state.last_progress_at = Instant::now()
+            .checked_sub(STUCK_OVERLAY_WATCHDOG_THRESHOLD + Duration::from_secs(5))
+            .expect("instant underflow");
+        assert!(watchdog_tripped(state.last_progress_at));
+
+        // Token advances (height climbed) → clock resets, watchdog cleared — with
+        // the shown copy untouched.
+        let logged_before = state.logged_content.clone();
+        state.progress_token = Some(20);
+        log_overlay_state(&mut state);
+        assert!(
+            !watchdog_tripped(state.last_progress_at),
+            "an advancing hidden token must reset the no-progress clock"
+        );
+        assert_eq!(
+            state.logged_content, logged_before,
+            "a hidden token advance is NOT a shown content change (NFR-5)"
+        );
+
+        // Same token again (a true stall) → clock NOT reset, watchdog stays tripped.
+        state.last_progress_at = Instant::now()
+            .checked_sub(STUCK_OVERLAY_WATCHDOG_THRESHOLD + Duration::from_secs(5))
+            .expect("instant underflow");
+        let before = state.last_progress_at;
+        log_overlay_state(&mut state);
+        assert_eq!(
+            state.last_progress_at, before,
+            "an unchanged token must not reset the clock"
+        );
+        assert!(watchdog_tripped(state.last_progress_at));
+    }
+
     /// A-1 — the watchdog dev-error flag flips once on render and stays set, so the
     /// error logs exactly once rather than every frame (NFR-5).
     #[test]
     fn watchdog_flag_flips_once_via_render() {
         let ctx = egui::Context::default();
-        let handle = ProgressOverlay::show_global_spinner_only(&ctx);
+        let handle = ProgressOverlay::set_global_spinner_only(&ctx);
         {
             let mut stack = get_overlay_state(&ctx);
             let top = stack.iter_mut().find(|s| s.key == handle.key).unwrap();

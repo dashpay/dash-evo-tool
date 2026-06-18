@@ -15,8 +15,8 @@ Cancel-specific decisions below. Where this document and the redesign disagree, 
 
 1. **No first-class Cancel — a generic button facility instead.** The overlay knows nothing about
    cancellation. `with_cancel`, `OVERLAY_CANCEL_ACTION_ID`, and `CANCEL_LABEL` are **removed**. A
-   caller attaches a generic button via `OverlayConfig::with_button(id, label)` /
-   `OverlayHandle::with_button(id, label)`, choosing its own opaque action id and label. Clicking
+   caller attaches a generic button via `OverlayConfig::with_action(label, id)` /
+   `OverlayHandle::with_action(label, id)`, choosing its own opaque action id and label. Clicking
    enqueues the id; the owning screen drains it via `take_actions` and runs whatever logic it wants
    — including its own cancellation. Esc/Tab/Enter are swallowed (a hard block is never keyboard-
    dismissable); there is no Esc→Cancel routing. This **supersedes D-5** (the shipped-but-unwired
@@ -150,8 +150,8 @@ behavior: after simulated 30 s, `Elapsed: {seconds}s` and the reassurance label 
 token; the operation runs inside `block_on` on a blocking thread.
 
 **Decision:**
-- The overlay **ships a generic button/action-id API** (`OverlayConfig::with_button(id, label)`,
-  `OverlayHandle::with_button(id, label)`, `take_actions`) — it is UI-only, mirrors the banner,
+- The overlay **ships a generic button/action-id API** (`OverlayConfig::with_action(label, id)`,
+  `OverlayHandle::with_action(label, id)`, `take_actions`) — it is UI-only, mirrors the banner,
   and is fully unit/kittest-testable (TC-OVL-024/025/026 verify the *enqueue* path). There is no
   `with_cancel`/`OVERLAY_CANCEL_ACTION_ID`; "Cancel" is merely one possible caller-chosen label.
 - **The architectural default for every production caller is a button-less block.** No
@@ -191,7 +191,7 @@ top stays untestable until T7; note it as such.
 > **Superseded — see the code and the addendum.** The signature block below is the *original*
 > Cancel-era plan, kept for history. The shipped surface differs: there is **no** `with_cancel`,
 > `with_action`, `OVERLAY_CANCEL_ACTION_ID`, or `CANCEL_LABEL`, and `is_primary` is not a public
-> field. The real builders are `with_button(id, label)` and `with_secondary_button(id, label)`
+> field. The real builders are `with_action(label, id)` and `with_secondary_action(label, id)`
 > (on `OverlayConfig`, `OverlayHandle`, and the instance form), backed by a private
 > `ButtonStyle { Primary, Secondary }`. Clicks are delivered **keyed** to the owner via
 > `OverlayHandle::take_actions()`; the static drain is `sweep_orphan_actions()` (see addendum §2).
@@ -249,7 +249,7 @@ struct OverlayButton {
     is_primary: bool,
 }
 
-/// Builder/config for `show_global`. `OverlayConfig::default()` == the test
+/// Builder/config for `set_global`. `OverlayConfig::default()` == the test
 /// spec's `config_default()` (spinner only, no counter, no buttons, elapsed off).
 #[derive(Clone, Default)]
 pub struct OverlayConfig { /* description, step, show_elapsed, buttons */ }
@@ -285,10 +285,10 @@ pub struct ProgressOverlay;
 
 impl ProgressOverlay {
     /// Push a request; returns its handle. Non-blocking; only writes `ctx.data`.
-    pub fn show_global(ctx: &egui::Context,
+    pub fn set_global(ctx: &egui::Context,
                        description: impl std::fmt::Display,
                        config: OverlayConfig) -> OverlayHandle;
-    pub fn show_global_spinner_only(ctx: &egui::Context) -> OverlayHandle;
+    pub fn set_global_spinner_only(ctx: &egui::Context) -> OverlayHandle;
     pub fn has_global(ctx: &egui::Context) -> bool;                     // cheap one-slot read
     /// Called once per frame from `AppState::update` (§4). Renders the topmost
     /// entry; no-op early-out when the stack is empty (NFR-6).
@@ -308,7 +308,7 @@ pub trait OptionOverlayExt {
 impl OptionOverlayExt for Option<OverlayHandle> { /* … */ }
 ```
 
-**Stack/key semantics (D-3):** `show_global` allocates a key via `OVERLAY_KEY_COUNTER`, pushes
+**Stack/key semantics (D-3):** `set_global` allocates a key via `OVERLAY_KEY_COUNTER`, pushes
 an `OverlayState`, and (when the stack was already non-empty) logs the concurrency exactly once.
 Handle methods `find` by key and return `None` on a missing key (stale handle → no-op, never
 panic; TC-OVL-007/009). `clear(self)` `retain`s out its own key (TC-OVL-037/038).
@@ -467,8 +467,8 @@ component; T6 is tests; T7 is the deferred backend enabler.
 ### T1 — State, `ctx.data` plumbing, handle + stack (no rendering) (~250 LOC)
 Define `OverlayState`, `OverlayButton`, `OverlayConfig` (+ builders), `OverlayHandle`,
 `OVERLAY_KEY_COUNTER`, `OVERLAY_CANCEL_ACTION_ID`, `STUCK_OVERLAY_THRESHOLD`. Implement
-`get/set_overlay_state`, `get/set/push_overlay_action`, `take_actions`; `show_global`,
-`show_global_spinner_only`, `has_global`, `clear_all_global`; all handle methods with stack
+`get/set_overlay_state`, `get/set/push_overlay_action`, `take_actions`; `set_global`,
+`set_global_spinner_only`, `has_global`, `clear_all_global`; all handle methods with stack
 semantics (push on show, `retain` own key on clear, topmost lookup), log-once flags, and
 `step_is_renderable`. Inline unit tests for stack push/dismiss, FIFO queue, `step_is_renderable`.
 **Satisfies (ctx.data-level):** TC-OVL-003, 007, 009, 023(empty queue), 036, 037, 038, 040, 045,
@@ -528,8 +528,8 @@ TODO so the gap is tracked, not lost.
    the overlay-active branch; verify global shortcuts (and the existing `handle_banner_esc`,
    `app.rs:1089`) still behave when no overlay is up. The banner Esc handler and overlay Esc handler
    must not both fire — overlay consumes Esc first (it renders earlier in the frame).
-3. **No backend cancellation (D-5).** Enforce by review: no production `show_global` call may
-   attach a button (`with_button`) to a `BackendTask`-backed operation until T7. Consider a
+3. **No backend cancellation (D-5).** Enforce by review: no production `set_global` call may
+   attach a button (`with_action`) to a `BackendTask`-backed operation until T7. Consider a
    clippy-grep gate in CI.
 4. **Repaint discipline.** `request_repaint_after(1s)` only when elapsed/threshold is live; the
    `Spinner` already self-repaints. Do not unconditionally wake an idle UI.
@@ -549,7 +549,7 @@ TODO so the gap is tracked, not lost.
 | D-2 | Focused copy of `ctx.data` plumbing; no shared base module | Confirmed |
 | D-3 | Concurrent model = **stack** keyed by handle (Group K stands) | Confirmed |
 | D-4 | Stuck threshold = **30 s** soft reveal; **+120 s no-progress watchdog** (addendum §1 A-1) | Superseded by addendum §1 |
-| D-5 | No built-in Cancel; generic `with_button`/`with_secondary_button`; clicks keyed to the owner via `take_actions`, app sweeps orphans (addendum §2) | Superseded (post-outage + addendum §2) |
+| D-5 | No built-in Cancel; generic `with_action`/`with_secondary_action`; clicks keyed to the owner via `take_actions`, app sweeps orphans (addendum §2) | Superseded (post-outage + addendum §2) |
 
 ---
 

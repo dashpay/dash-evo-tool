@@ -10,7 +10,7 @@
 
 > **Supersession callout (post-outage redesign + QA-wave addendum).** Parts of this spec describe
 > a first-class **Cancel** control that no longer exists. The shipped design replaces it with a
-> **generic button facility** (`with_button` / `with_secondary_button`, clicks delivered keyed to
+> **generic button facility** (`with_action` / `with_secondary_action`, clicks delivered keyed to
 > the owning screen), and adds a no-progress **watchdog** and a frame-start **`claim_input`** total
 > block. Where this document and the redesign disagree, **`03-dev-plan.md`'s post-outage note,
 > `04-design-addendum.md`, and the code (`src/ui/components/progress_overlay.rs`) win.** Items known
@@ -43,7 +43,7 @@ This spec defines a **full-screen blocking progress overlay**: a sibling capabil
 beneath it, and shows a "please wait" message with an **indeterminate spinner (no ETA)**, an
 **optional step counter** (`Step {current} of {total}`), and **optional action buttons**
 (at minimum Cancel). It is dismissed programmatically when the operation completes, or by an
-optional Cancel button. _(Superseded — see top banner: buttons are generic (`with_button`), there
+optional Cancel button. _(Superseded — see top banner: buttons are generic (`with_action`), there
 is no built-in Cancel, and Esc/Tab/Enter/Space are swallowed; dismissal is programmatic.)_
 
 **Critical invariant (learned the hard way — PR860):** the overlay is a *visual + input*
@@ -140,7 +140,7 @@ overlay's own controls.
 **AC-8.1** Pointer clicks/drags on any region outside the overlay's own buttons have no effect on the UI beneath.
 **AC-8.2** Keyboard input (Tab, Enter, typing) does not reach widgets beneath the overlay. (Do not rely on `Ui::set_enabled()` — deprecated in egui 0.33; use a top input-capturing layer instead.)
 **AC-8.3** The block covers the *entire* window, including top and left panels — therefore the overlay renders at the `AppState` level, not inside `island_central_panel()` (which only wraps central content). See §3.
-**AC-8.4** Clicking the dimmed backdrop does **not** dismiss the overlay (unlike a passphrase modal) — a blocking progress overlay is not click-outside-to-cancel; dismissal is programmatic or via an explicit Cancel button only. _(Superseded — see top banner: there is no built-in Cancel; dismissal is programmatic. A screen MAY add a generic button (`with_button`) that triggers its own teardown.)_
+**AC-8.4** Clicking the dimmed backdrop does **not** dismiss the overlay (unlike a passphrase modal) — a blocking progress overlay is not click-outside-to-cancel; dismissal is programmatic or via an explicit Cancel button only. _(Superseded — see top banner: there is no built-in Cancel; dismissal is programmatic. A screen MAY add a generic button (`with_action`) that triggers its own teardown.)_
 
 ### FR-9 — Coexistence with MessageBanner (z-order + hand-off)
 **AC-9.1** The overlay renders **above** all `MessageBanner` banners (banners live inside the island content area at a background layer; the overlay sits on a top layer). The overlay wins z-order.
@@ -233,7 +233,7 @@ trap).
 
 ### NFR-6 — Cheap render
 **AC:** When no overlay is active, the render call is an early-out reading one `ctx.data` slot
-(mirroring `show_global`'s empty check). No allocation on the idle path.
+(mirroring `set_global`'s empty check). No allocation on the idle path.
 
 ---
 
@@ -393,7 +393,7 @@ The overlay should **copy the proven *patterns***, keeping its own type:
 1. **Global state in egui `ctx.data` temp storage**, keyed by a dedicated id (e.g.
    `__global_progress_overlay`) — same mechanism as `BANNER_STATE_ID`.
 2. **A lifecycle `OverlayHandle`** mirroring `BannerHandle` (`set_description`, `set_step`,
-   `with_button` / `with_secondary_button`, `clear`), all returning `Option` and no-op on a
+   `with_action` / `with_secondary_action`, `clear`), all returning `Option` and no-op on a
    dismissed overlay. _(Superseded: no `with_cancel` — buttons are generic; see the dev-plan
    post-outage note and the code.)_
 3. **An action-id queue** drained by the app loop. As shipped (addendum §2) the queue is **keyed**
@@ -408,7 +408,7 @@ The overlay should **copy the proven *patterns***, keeping its own type:
 
 ### Placement
 Per the DET module-placement policy, it renders egui → it is a **component** in
-`src/ui/components/` (e.g. `progress_overlay.rs`), with its `show_global(ctx)` invoked from
+`src/ui/components/` (e.g. `progress_overlay.rs`), with its `set_global(ctx)` invoked from
 `AppState::update()` near `render_secret_prompt`. Non-rendering helpers stay out of it.
 
 A thin shared helper for the `ctx.data` get/set/clear plumbing *could* be factored out and

@@ -646,34 +646,63 @@ pub fn spv_phase_summary(progress: &SpvSyncProgress) -> String {
 /// count [`spv_phase_step`] actually walks.
 pub const SPV_SYNC_PHASE_COUNT: u32 = 5;
 
+/// The currently-active SPV sync phase as `(1-based step, current height)`, or
+/// `None` when no phase is actively syncing yet. Mirrors the pipeline order of
+/// [`spv_phase_summary`]; the height is the phase's processed tip (Blocks reports
+/// `last_processed`, every other phase its `current_height`). Shared by
+/// [`spv_phase_step`] (the shown counter) and [`spv_progress_token`] (the hidden
+/// watchdog liveness signal) so the two can never disagree on which phase is live.
+fn active_spv_phase(progress: &SpvSyncProgress) -> Option<(u32, u32)> {
+    let is_syncing = |state: SyncState| state == SyncState::Syncing;
+    if let Ok(p) = progress.headers()
+        && is_syncing(p.state())
+    {
+        Some((1, p.current_height()))
+    } else if let Ok(p) = progress.masternodes()
+        && is_syncing(p.state())
+    {
+        Some((2, p.current_height()))
+    } else if let Ok(p) = progress.filter_headers()
+        && is_syncing(p.state())
+    {
+        Some((3, p.current_height()))
+    } else if let Ok(p) = progress.filters()
+        && is_syncing(p.state())
+    {
+        Some((4, p.current_height()))
+    } else if let Ok(p) = progress.blocks()
+        && is_syncing(p.state())
+    {
+        Some((SPV_SYNC_PHASE_COUNT, p.last_processed()))
+    } else {
+        None
+    }
+}
+
 /// Map the currently-active SPV sync phase to a 1-based step number for the
 /// blocking overlay's "Step N of {total}" counter — Headers=1, Masternodes=2,
 /// Filter Headers=3, Filters=4, Blocks=[`SPV_SYNC_PHASE_COUNT`] — or `None` when
 /// no phase is actively syncing yet. Mirrors the pipeline order of
 /// [`spv_phase_summary`].
 pub fn spv_phase_step(progress: &SpvSyncProgress) -> Option<u32> {
-    let is_syncing = |state: SyncState| state == SyncState::Syncing;
-    let step = if progress.headers().is_ok_and(|p| is_syncing(p.state())) {
-        1
-    } else if progress.masternodes().is_ok_and(|p| is_syncing(p.state())) {
-        2
-    } else if progress
-        .filter_headers()
-        .is_ok_and(|p| is_syncing(p.state()))
-    {
-        3
-    } else if progress.filters().is_ok_and(|p| is_syncing(p.state())) {
-        4
-    } else if progress.blocks().is_ok_and(|p| is_syncing(p.state())) {
-        SPV_SYNC_PHASE_COUNT
-    } else {
-        return None;
-    };
+    let step = active_spv_phase(progress)?.0;
     debug_assert!(
         step <= SPV_SYNC_PHASE_COUNT,
         "SPV phase step {step} exceeds SPV_SYNC_PHASE_COUNT {SPV_SYNC_PHASE_COUNT} — bump the constant"
     );
     Some(step)
+}
+
+/// A **hidden, monotonic** liveness token for the blocking overlay's no-progress
+/// watchdog (A-1). It strictly increases as SPV sync advances — within a phase the
+/// active phase's height climbs (low 32 bits), and across phases the 1-based step
+/// climbs (high 32 bits) — so a slow-but-advancing phase (e.g. Headers on a slow
+/// link) keeps resetting the watchdog even though the shown "Step N of 5" copy is
+/// unchanged. NEVER rendered; no height or number leaks into user-facing copy.
+/// `None` when no phase is actively syncing yet.
+pub fn spv_progress_token(progress: &SpvSyncProgress) -> Option<u64> {
+    let (step, height) = active_spv_phase(progress)?;
+    Some(((step as u64) << 32) | height as u64)
 }
 
 fn pct(current: u32, target: u32) -> u32 {
@@ -735,6 +764,36 @@ mod tests {
 
         // No phase actively syncing → no step (the overlay shows the generic line).
         assert_eq!(spv_phase_step(&SpvSyncProgress::default()), None);
+    }
+
+    /// Item B — the hidden watchdog liveness token advances as the active phase's
+    /// height climbs (so a slow-but-advancing phase resets the no-progress
+    /// watchdog), is monotonic across the step transition, and is `None` when idle.
+    #[test]
+    fn spv_progress_token_advances_with_height_and_is_monotonic() {
+        // Idle progress → no token.
+        assert_eq!(spv_progress_token(&SpvSyncProgress::default()), None);
+
+        // Headers at 5000: a token exists.
+        let progress = syncing_progress();
+        let t1 = spv_progress_token(&progress).expect("syncing → token");
+
+        // Same phase, higher tip (7000) → strictly larger token.
+        let mut headers = BlockHeadersProgress::default();
+        headers.set_state(SyncState::Syncing);
+        headers.update_target_height(10_000);
+        headers.update_tip_height(7_000);
+        let mut advanced = SpvSyncProgress::default();
+        advanced.update_headers(headers);
+        let t2 = spv_progress_token(&advanced).expect("syncing → token");
+        assert!(
+            t2 > t1,
+            "an advancing height yields a strictly larger token"
+        );
+
+        // The step lives in the high 32 bits, so a later phase always out-ranks an
+        // earlier one regardless of height — the token is monotonic across phases.
+        assert_eq!(t1 >> 32, 1, "headers maps to step 1 in the high bits");
     }
 
     #[test]

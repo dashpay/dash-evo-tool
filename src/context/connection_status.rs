@@ -8,6 +8,7 @@ use dash_sdk::dpp::dashcore::{ChainLock, Network};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, Ordering};
 use std::time::{Duration, Instant};
+use tokio::sync::watch;
 
 const REFRESH_CONNECTED: Duration = Duration::from_secs(4);
 const REFRESH_DISCONNECTED: Duration = Duration::from_secs(1);
@@ -50,6 +51,13 @@ impl From<u8> for OverallConnectionState {
 pub struct ConnectionStatus {
     rpc_online: AtomicBool,
     spv_status: AtomicU8,
+    /// Event-driven mirror of `spv_status` for async waiters. Every transition
+    /// funnelled through [`Self::set_spv_status`] is broadcast here.
+    /// [`Self::begin_spv_stop`] bypasses this (it writes the atomic directly) —
+    /// `Stopping` is not a waited-on state, so that is intentional.
+    /// [`Self::reset`] explicitly sends `Idle` to keep the watch coherent across
+    /// network switches.
+    spv_status_tx: watch::Sender<SpvStatus>,
     overall_state: AtomicU8,
     /// `true` once the SPV masternode list has finished syncing, so quorum
     /// public keys are resolvable. Platform/identity sync must wait on this:
@@ -114,9 +122,11 @@ pub struct ShieldedTreeProgress {
 
 impl ConnectionStatus {
     pub fn new() -> Self {
+        let (spv_status_tx, _) = watch::channel(SpvStatus::Idle);
         Self {
             rpc_online: AtomicBool::new(false),
             spv_status: AtomicU8::new(SpvStatus::Idle as u8),
+            spv_status_tx,
             overall_state: AtomicU8::new(OverallConnectionState::Disconnected as u8),
             masternodes_ready: AtomicBool::new(false),
             spv_last_error: Mutex::new(None),
@@ -138,6 +148,16 @@ impl ConnectionStatus {
         self.rpc_online.store(false, Ordering::Relaxed);
         self.spv_status
             .store(SpvStatus::Idle as u8, Ordering::Relaxed);
+        // Keep the watch coherent: any waiter sleeping across a network switch
+        // sees `Idle` and continues to wait for the next `Running`/`Error`.
+        let _ = self.spv_status_tx.send_if_modified(|cur| {
+            if *cur != SpvStatus::Idle {
+                *cur = SpvStatus::Idle;
+                true
+            } else {
+                false
+            }
+        });
         self.masternodes_ready.store(false, Ordering::Relaxed);
         self.spv_connected_peers.store(0, Ordering::Relaxed);
         *self
@@ -202,6 +222,17 @@ impl ConnectionStatus {
 
     pub fn set_spv_status(&self, status: SpvStatus) {
         self.spv_status.store(status as u8, Ordering::Relaxed);
+        // Notify async waiters (e.g. ensure_spv_synced in mcp/resolve.rs).
+        // send_if_modified avoids a spurious wakeup when the caller sets the
+        // same status twice in a row (common during steady-state Running).
+        let _ = self.spv_status_tx.send_if_modified(|cur| {
+            if *cur != status {
+                *cur = status;
+                true
+            } else {
+                false
+            }
+        });
         // Clear the "no peers" timer when SPV leaves an active state to avoid
         // stale peer-degraded warnings in tooltips.
         if !status.is_active() {
@@ -211,6 +242,16 @@ impl ConnectionStatus {
                 .unwrap_or_else(|e| e.into_inner());
             *since = None;
         }
+    }
+
+    /// Subscribe to SPV-status changes. Each call creates a new
+    /// [`watch::Receiver`] that receives the current value immediately via
+    /// [`watch::Receiver::borrow_and_update`] and then wakes on every
+    /// [`set_spv_status`] transition (deduped — same-value writes are
+    /// suppressed). The sender is app-lifetime, so `changed()` never returns
+    /// `Err` during normal operation.
+    pub fn subscribe_spv_status(&self) -> watch::Receiver<SpvStatus> {
+        self.spv_status_tx.subscribe()
     }
 
     /// Atomically claim a disconnect: transition the SPV indicator to
@@ -723,6 +764,7 @@ impl Default for ConnectionStatus {
 mod tests {
     use super::*;
     use dash_sdk::dash_spv::sync::{BlockHeadersProgress, MasternodesProgress};
+    use std::sync::Arc;
     use std::time::Duration;
 
     /// A `SyncProgress` mid-headers-download: 5000 / 10000 (50%).
@@ -1030,6 +1072,77 @@ mod tests {
 
         status.set_shielded_tree_progress(None);
         assert!(status.shielded_tree_progress().is_none());
+    }
+
+    // ── watch channel tests ───────────────────────────────────────────────────
+
+    /// subscribe_spv_status() returns a receiver whose first borrow yields the
+    /// current (Idle) value, and a subsequent set_spv_status(Running) wakes it.
+    #[tokio::test]
+    async fn subscribe_spv_status_wakes_on_running() {
+        let status = ConnectionStatus::new();
+        let mut rx = status.subscribe_spv_status();
+
+        // First borrow: current value is Idle (channel was created at Idle).
+        assert_eq!(*rx.borrow_and_update(), SpvStatus::Idle);
+
+        // Drive a transition from a separate task.
+        let status_arc = Arc::new(status);
+        let status_clone = Arc::clone(&status_arc);
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            status_clone.set_spv_status(SpvStatus::Running);
+        });
+
+        // changed() must wake when Running is set.
+        rx.changed().await.expect("sender is alive");
+        assert_eq!(*rx.borrow_and_update(), SpvStatus::Running);
+    }
+
+    /// Lost-wakeup guard: if Running is set BEFORE subscribing, the first
+    /// borrow_and_update() reads Running immediately (no wait needed).
+    #[test]
+    fn subscribe_after_running_reads_immediately() {
+        let status = ConnectionStatus::new();
+        status.set_spv_status(SpvStatus::Running);
+
+        let mut rx = status.subscribe_spv_status();
+        // borrow_and_update on a freshly subscribed receiver returns the
+        // current (Running) value even though we subscribed after the set.
+        assert_eq!(*rx.borrow_and_update(), SpvStatus::Running);
+    }
+
+    /// set_spv_status(Error) wakes a waiter and the value is Error.
+    #[tokio::test]
+    async fn subscribe_spv_status_wakes_on_error() {
+        let status = ConnectionStatus::new();
+        let mut rx = status.subscribe_spv_status();
+        assert_eq!(*rx.borrow_and_update(), SpvStatus::Idle);
+
+        let status_arc = Arc::new(status);
+        let status_clone = Arc::clone(&status_arc);
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            status_clone.set_spv_status(SpvStatus::Error);
+        });
+
+        rx.changed().await.expect("sender is alive");
+        assert_eq!(*rx.borrow_and_update(), SpvStatus::Error);
+    }
+
+    /// reset() mirrors Idle into the watch; a waiter sleeping across a network
+    /// switch sees Idle and resumes waiting (it does not spuriously return Ok).
+    #[tokio::test]
+    async fn reset_mirrors_idle_to_watch() {
+        let status = ConnectionStatus::new();
+        status.set_spv_status(SpvStatus::Running);
+
+        let mut rx = status.subscribe_spv_status();
+        assert_eq!(*rx.borrow_and_update(), SpvStatus::Running);
+
+        status.reset();
+        rx.changed().await.expect("sender is alive");
+        assert_eq!(*rx.borrow_and_update(), SpvStatus::Idle);
     }
 
     #[test]

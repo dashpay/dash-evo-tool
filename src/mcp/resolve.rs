@@ -1,17 +1,15 @@
 //! Parameter resolution helpers for MCP tools.
 
 use crate::context::AppContext;
-use crate::context::connection_status::OverallConnectionState;
 use crate::mcp::error::McpToolError;
 use crate::mcp::server::network_display_name;
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::spv_status::SpvStatus;
 use crate::model::wallet::WalletSeedHash;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::prelude::Identifier;
 use std::sync::{Arc, RwLock};
 
-/// Poll interval for waiting on SPV connection -- matches ConnectionStatus throttle.
-const SPV_WAIT_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 /// Initial SPV sync (headers, masternodes, filters, blocks) can take several minutes.
 const SPV_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
 
@@ -104,7 +102,7 @@ pub(crate) fn wallet_arc(
         })
 }
 
-/// Wait for SPV to reach fully-synced (green) state.
+/// Wait for SPV to reach the `Running` state (chain headers + filters synced).
 ///
 /// Required for **all wallet-facing tools** — both core-chain (UTXOs, sending
 /// Dash) and platform queries (address balances, withdrawals).  Even DAPI-only
@@ -115,11 +113,22 @@ pub(crate) fn wallet_arc(
 /// Only tools that make no network calls (e.g. `core_wallets_list`,
 /// `network_info`, `tool_describe`) skip this gate.
 ///
-/// Wires the wallet backend and starts chain sync on first call before
-/// polling — neither standalone (stdio) boot, the HTTP context swap, nor the
+/// Wires the wallet backend and starts chain sync on first call before waiting —
+/// neither standalone (stdio) boot, the HTTP context swap, nor the
 /// post-network-switch path eagerly wires the backend the way the GUI does, so
 /// this is the single chokepoint that makes SPV actually start for every gated
 /// tool. Both steps are idempotent, so repeated tool calls are cheap.
+///
+/// ## Why `SpvStatus::Running`, not `OverallConnectionState::Synced`
+///
+/// `OverallConnectionState::Synced` requires both SPV running **and**
+/// `dapi_available == true`. In headless / MCP mode the DAPI availability
+/// counter is only refreshed by the frame-loop `trigger_refresh` call, which
+/// does not run here. Waiting for `Synced` would therefore block indefinitely
+/// in headless mode even after the chain is fully synced — the symptom that
+/// motivated this fix. `SpvStatus::Running` is push-based and sufficient: all
+/// proof-verifying SDK calls only require a synced chain, not a live DAPI
+/// counter at the `ensure_spv_synced` callsite.
 pub(crate) async fn ensure_spv_synced(ctx: &Arc<AppContext>) -> Result<(), McpToolError> {
     // A throwaway `TaskResult` sender: MCP/CLI has no GUI event loop consuming
     // it, so the receiver is dropped. The `EventBridge` only does non-blocking
@@ -130,24 +139,40 @@ pub(crate) async fn ensure_spv_synced(ctx: &Arc<AppContext>) -> Result<(), McpTo
         tracing::warn!(error = %e, "wallet backend wiring / SPV start failed before sync wait");
     }
 
-    let deadline = tokio::time::Instant::now() + SPV_WAIT_TIMEOUT;
-    loop {
-        let _ = ctx.connection_status.trigger_refresh(ctx.as_ref());
-        let state = ctx.connection_status.overall_state();
-        if state == OverallConnectionState::Synced {
-            return Ok(());
+    // Subscribe BEFORE reading the current value so no transition is lost
+    // between the `ensure_wallet_backend_and_start_spv` call above and the
+    // first `borrow_and_update` below. borrow_and_update marks the current
+    // value "seen", so the loop never spins — each iteration always sleeps on
+    // a real change.
+    let mut rx = ctx.connection_status().subscribe_spv_status();
+
+    let wait = async {
+        loop {
+            let status = *rx.borrow_and_update();
+            match status {
+                SpvStatus::Running => return Ok(()),
+                SpvStatus::Error => return Err(McpToolError::SpvSyncFailed),
+                // Idle / Starting / Syncing / Stopping / Stopped — keep waiting.
+                _ => {}
+            }
+            // changed() returns Err only if the sender is dropped, which is
+            // app-lifetime, so this is effectively unreachable in practice.
+            if rx.changed().await.is_err() {
+                return Err(McpToolError::SpvSyncFailed);
+            }
         }
-        if state == OverallConnectionState::Error {
-            return Err(McpToolError::SpvSyncFailed);
-        }
-        if tokio::time::Instant::now() >= deadline {
+    };
+
+    match tokio::time::timeout(SPV_WAIT_TIMEOUT, wait).await {
+        Ok(result) => result,
+        Err(_elapsed) => {
             tracing::warn!(
-                "SPV sync timed out after {} seconds (state: {state:?})",
-                SPV_WAIT_TIMEOUT.as_secs()
+                "SPV sync timed out after {} seconds (status: {:?})",
+                SPV_WAIT_TIMEOUT.as_secs(),
+                ctx.connection_status().spv_status()
             );
-            return Err(McpToolError::SpvSyncFailed);
+            Err(McpToolError::SpvSyncFailed)
         }
-        tokio::time::sleep(SPV_WAIT_POLL_INTERVAL).await;
     }
 }
 

@@ -27,7 +27,6 @@ mod core_tasks;
 mod dashpay_tasks;
 mod event_bridge_live;
 mod identity_tasks;
-mod mnlist_tasks;
 mod shielded_tasks;
 mod token_tasks;
 mod wallet_reregistration;

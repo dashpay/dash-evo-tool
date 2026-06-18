@@ -1503,18 +1503,26 @@ mod tests {
         );
     }
 
-    /// Reconnect round trip: start → `stop_spv` → restart must rebuild a *fresh*
-    /// backend and restart chain sync, proving the disconnect leaves the system
-    /// in a reconnectable state (the one-shot start latch does not strand it).
+    /// Regression guard for the Connect → Disconnect → Connect bug:
+    /// `WalletBackend::shutdown` must stop the SPV background task so the
+    /// transitive `Arc<SqlitePersister>` it holds is released *synchronously*
+    /// before `shutdown()` returns.  Without that, the upstream process-global
+    /// `REGISTRY` keeps the persister path registered and the reconnect's
+    /// `SqlitePersister::open` fails with `WalletStorageError::AlreadyOpen`.
     ///
-    /// Offline scope: this asserts the deterministic rebuild + rewire + restart
-    /// — a new backend instance, wired again, with `is_started()` set on the new
-    /// instance (its fresh latch fired). The indicator's onward transition to
-    /// `Syncing`/`Running` is network-driven (pushed by the `EventBridge` from
-    /// live SPV events) and so is exercised by the backend-e2e suite, not here.
+    /// Offline scope: asserts deterministic rebuild + rewire + restart —
+    /// a fresh backend instance, wired again, with `is_started()` set on the
+    /// new instance (its fresh latch fired).  The `Syncing`/`Running` indicator
+    /// transition is network-driven and tested by the backend-e2e suite.
+    ///
+    /// Limitation: offline, the SPV task may exit on its own fast enough to
+    /// pass even without the fix.  The authoritative guard is the online
+    /// reconnect test in the backend-e2e suite; this test exercises the
+    /// synchronous-release *path* and acts as a quick smoke-check.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn reconnect_after_stop_rebuilds_fresh_backend_and_restarts() {
         use crate::context::connection_status::OverallConnectionState;
+        use platform_wallet_storage::{SqlitePersister, SqlitePersisterConfig};
 
         // Serialize this reopen-same-path test against any sibling that races on
         // the upstream single-open advisory lock; see `backend_reopen_lock`.
@@ -1527,17 +1535,11 @@ mod tests {
             .expect("initial start should wire then start offline");
         let first = ctx.wallet_backend().expect("backend wired after start");
         assert!(first.is_started(), "initial start must latch the backend");
-        // Capture the old backend's identity (raw pointer) and a weak handle,
-        // then release the strong ref before reconnecting. The upstream
-        // persister enforces a single open per path
-        // (WalletStorageError::AlreadyOpen); a lingering strong ref — `first`
-        // here, or a clone held by the upstream run-loop subtask — keeps the old
-        // handle's advisory lock alive, so the reconnect's open of the same path
-        // would be refused. The fresh-backend identity check below uses the raw
-        // pointer; the weak handle lets us prove the old backend is fully torn
-        // down before reopening.
+
+        // Capture the raw pointer for the fresh-backend identity check below,
+        // and the persister path to assert the REGISTRY entry is cleared.
         let first_ptr = Arc::as_ptr(&first);
-        let first_weak = Arc::downgrade(&first);
+        let persister_path = first.spv_storage_dir().join("platform-wallet.sqlite");
         drop(first);
 
         ctx.stop_spv().await;
@@ -1551,19 +1553,24 @@ mod tests {
             "precondition: disconnected before reconnect"
         );
 
-        // Deterministically wait for the last strong ref to drop: `stop_spv`
-        // awaits the backend's own shutdown, but a background subtask (the
-        // upstream run loop) may briefly outlive that await still holding a
-        // backend clone, and with it the SQLite advisory lock. Block the reopen
-        // until that clone is gone so the reconnect never races into AlreadyOpen.
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
-        while first_weak.strong_count() > 0 {
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "old backend was not torn down within the timeout; a subtask still holds it"
-            );
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
+        // With the fix, `shutdown()` calls `spv().stop().await` which joins the
+        // SPV background task before returning.  That releases the task's
+        // `Arc<SpvRuntime>`, which was the last ref keeping the transitive
+        // `Arc<SqlitePersister>` alive outside of `Inner` itself.  When
+        // `stop_spv()` then drops the backend local, `Inner` drops
+        // synchronously, releasing all remaining `Arc<SqlitePersister>` refs and
+        // clearing the REGISTRY entry.  No polling band-aid is needed.
+        //
+        // Assert the path is free *immediately* after `stop_spv()` returns.
+        let reopen = SqlitePersister::open(SqlitePersisterConfig::new(&persister_path));
+        assert!(
+            reopen.is_ok(),
+            "persister path must be released synchronously after stop_spv() — \
+             if this is AlreadyOpen the SPV task still holds the path open: {:?}",
+            reopen.err()
+        );
+        // Drop the probe handle before the reconnect re-opens the same path.
+        drop(reopen);
 
         ctx.ensure_wallet_backend_and_start_spv(sender)
             .await
@@ -3719,5 +3726,151 @@ mod tests {
         );
 
         backend.shutdown().await;
+    }
+
+    /// C.7 regression guard: `ensure_identity_funding_accounts` must succeed on
+    /// a cold-booted (watch-only) wallet for a fresh `IdentityTopUp{index}`.
+    ///
+    /// # Background
+    ///
+    /// DET always reloads wallets **seedless** from the upstream persister.
+    /// `WalletBackend::new` → `load_from_persistor_seedless` → upstream
+    /// `load_from_persistor()` → `Wallet::new_watch_only(…)`.  The wallet has
+    /// the BIP44/BIP32 accounts it was persisted with, but **no root private
+    /// key**.
+    ///
+    /// `WalletAccountCreationOptions::Default` (used by
+    /// `register_wallet_from_seed`) creates `IdentityRegistration` by default
+    /// and persists it in the account manifest.  `IdentityTopUp{n}` is NOT
+    /// created by default — it is added only after a register/top-up, so on
+    /// every cold boot the manifest lacks it.
+    ///
+    /// Before the fix, `provision_identity_funding_account` called
+    /// `kw.add_account(account_type, None)`.  On a cold-boot wallet that path
+    /// reaches `root_extended_keys.rs:428` and fails:
+    ///
+    ///   `WalletBackend { source: AssetLockTransaction("Invalid parameter:
+    ///    Watch-only wallet has no private key") }`
+    ///
+    /// After the fix it builds a short-lived signable wallet from the provided
+    /// seed bytes, derives the account xpub, and calls
+    /// `kw.add_account(account_type, Some(xpub))` — succeeds regardless of
+    /// private-key availability.
+    ///
+    /// # Why deterministic
+    ///
+    /// The cold-booted wallet unconditionally has no root private key; the
+    /// failure path is hit every time regardless of timing or network state.
+    ///
+    /// # Test structure
+    ///
+    /// Two-boot scenario to match production:
+    ///   1. **Boot 1**: wire backend, write both sidecars (wallet-meta + upstream
+    ///      persister) from seed.
+    ///   2. **Boot 2 (cold)**: `WalletBackend::new` over a copy of the same
+    ///      data dir runs `load_from_persistor_seedless` — the upstream wallet is
+    ///      loaded watch-only.  Then `ensure_identity_funding_accounts` for a
+    ///      fresh `IdentityTopUp{3}` must return `Ok`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn ensure_identity_funding_accounts_succeeds_on_cold_booted_watch_only_wallet() {
+        // ── Boot 1: write wallet-meta sidecar + upstream persister from seed ──
+
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let seed = [0xC7u8; 64];
+        let seed_hash = {
+            let wallet = crate::model::wallet::Wallet::new_from_seed(
+                seed,
+                Network::Testnet,
+                None,
+                None, // no password
+            )
+            .expect("build wallet");
+            let h = wallet.seed_hash();
+
+            let (ctx, sender) = offline_testnet_context_at(temp_dir.path());
+            // Backend must be wired before register_wallet so the upstream
+            // registration subtask is not silently deferred.
+            ctx.ensure_wallet_backend(sender)
+                .await
+                .expect("boot 1: ensure_wallet_backend offline");
+
+            // Write the wallet-meta sidecar (xpub_encoded → seed_hash bridge
+            // used by the cold-boot fund-routing gate in
+            // load_from_persistor_seedless).
+            ctx.register_wallet(wallet, &seed, WalletOrigin::Fresh)
+                .expect("boot 1: ctx.register_wallet");
+
+            // Synchronously write the upstream persister so we don't race the
+            // background subtask.  Idempotent with the subtask.
+            let backend1 = ctx.wallet_backend().expect("boot 1 backend");
+            backend1
+                .register_wallet_from_seed(&h, &seed, Some(0))
+                .await
+                .expect("boot 1: upstream register");
+            backend1.shutdown().await;
+
+            h
+        };
+        // ctx is dropped here, releasing app_kv / secret_store file handles.
+
+        // ── Cold-boot copy: avoid file-lock conflicts with lingering subtasks ──
+        //
+        // The background registration subtask may still hold an Arc<WalletBackend>
+        // (and thus an open SqlitePersister handle on temp_dir).  We copy the
+        // on-disk state to a fresh path so Boot 2's SqlitePersister::open does
+        // not collide with the old one.  Identical on-disk bytes — the fund-
+        // routing gate and the persisted manifest are preserved.
+        let cold_dir = tempfile::tempdir().expect("cold tempdir");
+        fn copy_dir_rec(src: &std::path::Path, dst: &std::path::Path) {
+            std::fs::create_dir_all(dst).expect("mkdir");
+            for entry in std::fs::read_dir(src).expect("read_dir") {
+                let entry = entry.expect("entry");
+                let to = dst.join(entry.file_name());
+                if entry.path().is_dir() {
+                    copy_dir_rec(&entry.path(), &to);
+                } else {
+                    std::fs::copy(entry.path(), to).expect("copy file");
+                }
+            }
+        }
+        copy_dir_rec(temp_dir.path(), cold_dir.path());
+
+        // ── Boot 2 (cold): load from persister → watch-only upstream wallet ──
+
+        let (ctx2, sender2) = offline_testnet_context_at(cold_dir.path());
+        ctx2.ensure_wallet_backend(sender2)
+            .await
+            .expect("boot 2 (cold): ensure_wallet_backend offline");
+        let backend2 = ctx2.wallet_backend().expect("boot 2 backend");
+
+        assert!(
+            backend2.is_wallet_registered(&seed_hash),
+            "cold boot must load the wallet from the persisted sidecars"
+        );
+
+        // `IdentityTopUp{3}` is absent from the account manifest (it is never
+        // created by WalletAccountCreationOptions::Default) — so the cold-booted
+        // watch-only wallet triggers the provisioning branch.
+        //
+        // Before the fix: kw.add_account(IdentityTopUp{3}, None)
+        //   → "Watch-only wallet has no private key" → Err
+        // After the fix: builds a seed wallet, derives the account xpub,
+        //   calls kw.add_account(IdentityTopUp{3}, Some(xpub)) → Ok
+        let registration_index = 3u32;
+        backend2
+            .ensure_identity_funding_accounts(&seed_hash, &seed, registration_index)
+            .await
+            .expect(
+                "cold-booted watch-only wallet: IdentityTopUp{3} provisioning must succeed; \
+                 if 'Watch-only wallet has no private key' appears the fix has been reverted",
+            );
+
+        // Idempotent: both accounts now present — second call is a no-op.
+        backend2
+            .ensure_identity_funding_accounts(&seed_hash, &seed, registration_index)
+            .await
+            .expect("second call must be idempotent (both accounts already present)");
+
+        backend2.shutdown().await;
     }
 }

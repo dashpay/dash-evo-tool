@@ -13,9 +13,6 @@ use crate::context::AppContext;
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
-use dash_sdk::dpp::dashcore::bls_sig_utils::BLSSignature;
-use dash_sdk::dpp::dashcore::network::message_qrinfo::QRInfo;
-use dash_sdk::dpp::dashcore::BlockHash;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::{PlatformAddressUpdates, WalletSeedHash};
 use crate::model::grovestark_prover::ProofDataOutput;
@@ -25,7 +22,6 @@ use crate::ui::tokens::tokens_screen::{
 use crate::utils::egui_mpsc::SenderAsync;
 use contested_names::ScheduledDPNSVote;
 use dash_sdk::dpp::balances::credits::TokenAmount;
-use dash_sdk::dpp::dashcore::network::message_sml::MnListDiff;
 use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_function::evaluate_interval::IntervalEvaluationExplanation;
 use dash_sdk::dpp::group::group_action::GroupAction;
 use dash_sdk::dpp::prelude::DataContract;
@@ -55,7 +51,6 @@ pub mod error;
 pub mod grovestark;
 pub mod identity;
 pub mod migration;
-pub mod mnlist;
 pub mod platform_info;
 pub mod register_contract;
 pub mod shielded;
@@ -137,7 +132,6 @@ pub enum BackendTask {
     BroadcastStateTransition(StateTransition),
     TokenTask(Box<TokenTask>),
     SystemTask(SystemTask),
-    MnListTask(mnlist::MnListTask),
     PlatformInfo(PlatformInfoTaskRequestType),
     GroveSTARKTask(GroveSTARKTask),
     WalletTask(WalletTask),
@@ -341,22 +335,6 @@ pub enum BackendTaskSuccessResult {
         derivation_path: DerivationPath,
         /// The Base64-encoded signature (a public artifact, not a secret).
         signature: String,
-    },
-
-    // MNList-specific results
-    MnListFetchedDiff {
-        base_height: u32,
-        height: u32,
-        diff: MnListDiff,
-    },
-    MnListFetchedQrInfo {
-        qr_info: QRInfo,
-    },
-    MnListChainLockSigs {
-        entries: Vec<((u32, BlockHash), Option<BLSSignature>)>,
-    },
-    MnListFetchedDiffs {
-        items: Vec<((u32, u32), MnListDiff)>,
     },
 
     // Token operation results (replacing string messages)
@@ -573,9 +551,6 @@ impl AppContext {
             }
             BackendTask::SystemTask(system_task) => {
                 Ok(self.run_system_task(system_task, sender).await?)
-            }
-            BackendTask::MnListTask(mnlist_task) => {
-                Ok(mnlist::run_mnlist_task(self, mnlist_task).await?)
             }
             BackendTask::PlatformInfo(platform_info_task) => Ok(self
                 .run_platform_info_task(platform_info_task, &sdk)

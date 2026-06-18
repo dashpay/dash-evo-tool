@@ -2017,31 +2017,37 @@ impl WalletBackend {
     > {
         use platform_wallet::AssetLockFundingType;
 
-        // Identity asset locks fund from the IdentityRegistration /
-        // IdentityTopUp HD accounts, which the upstream persister never
-        // reconstructs (a5538dc8). Provision them here — the single
-        // chokepoint every asset-lock caller funnels through — so no call
-        // site can bypass it. Idempotent. Non-identity funding types are
-        // no-ops. Exhaustive — a new upstream variant must force a
-        // review here instead of silently falling through.
-        match funding_type {
-            AssetLockFundingType::IdentityRegistration | AssetLockFundingType::IdentityTopUp => {
-                self.ensure_identity_funding_accounts(seed_hash, identity_index)
-                    .await?;
-            }
-            AssetLockFundingType::IdentityTopUpNotBound
-            | AssetLockFundingType::IdentityInvitation
-            | AssetLockFundingType::AssetLockAddressTopUp
-            | AssetLockFundingType::AssetLockShieldedAddressTopUp => {}
-        }
-
-        // One held-seed scope covers both the funding-input signer and the
-        // credit-output key derivation, so the whole asset-lock build prompts
-        // at most once and the seed zeroizes when the scope ends.
+        // One held-seed scope covers account provisioning, the funding-input
+        // signer, and the credit-output key derivation, so the whole operation
+        // prompts at most once and the seed zeroizes when the scope ends.
         let scope = Self::hd_scope(seed_hash);
         self.inner
             .secret_access
             .with_secret_session(&scope, async |session| {
+                // Identity asset locks fund from the IdentityRegistration /
+                // IdentityTopUp HD accounts, which the upstream persister never
+                // reconstructs (a5538dc8). Provision them here — the single
+                // chokepoint every asset-lock caller funnels through — so no
+                // call site can bypass it. Idempotent. Non-identity funding
+                // types are no-ops. Exhaustive — a new upstream variant must
+                // force a review here instead of silently falling through.
+                // Must run inside the session so the seed is available for
+                // hardened xpub derivation (the live wallet is watch-only).
+                match funding_type {
+                    AssetLockFundingType::IdentityRegistration
+                    | AssetLockFundingType::IdentityTopUp => {
+                        let plaintext = session.plaintext();
+                        let seed = plaintext
+                            .expose_hd_seed()
+                            .ok_or(TaskError::WalletStateInconsistent)?;
+                        self.ensure_identity_funding_accounts(seed_hash, seed, identity_index)
+                            .await?;
+                    }
+                    AssetLockFundingType::IdentityTopUpNotBound
+                    | AssetLockFundingType::IdentityInvitation
+                    | AssetLockFundingType::AssetLockAddressTopUp
+                    | AssetLockFundingType::AssetLockShieldedAddressTopUp => {}
+                }
                 let signer = DetSigner::from_held(session.plaintext(), self.inner.network);
                 let wallet = self.resolve_wallet(seed_hash).await?;
                 let (proof, credit_output_path, out_point) = wallet
@@ -2088,15 +2094,19 @@ impl WalletBackend {
         identity_signer: &crate::model::qualified_identity::QualifiedIdentity,
         settings: Option<dash_sdk::platform::transition::put_settings::PutSettings>,
     ) -> Result<dash_sdk::platform::Identity, TaskError> {
-        // Re-provisioning idempotent. Run here so the chokepoint protection
-        // applies to upstream's signer-driven flow too.
-        self.ensure_identity_funding_accounts(seed_hash, identity_index)
-            .await?;
-
         let scope = Self::hd_scope(seed_hash);
         self.inner
             .secret_access
             .with_secret_session(&scope, async |session| {
+                // Re-provisioning idempotent. Run inside the session so the
+                // seed is available for hardened xpub derivation (the live
+                // wallet is watch-only).
+                let plaintext = session.plaintext();
+                let seed = plaintext
+                    .expose_hd_seed()
+                    .ok_or(TaskError::WalletStateInconsistent)?;
+                self.ensure_identity_funding_accounts(seed_hash, seed, identity_index)
+                    .await?;
                 let asset_lock_signer =
                     DetSigner::from_held(session.plaintext(), self.inner.network);
                 let wallet = self.resolve_wallet(seed_hash).await?;
@@ -2136,13 +2146,18 @@ impl WalletBackend {
         identity_index: u32,
         settings: Option<dash_sdk::platform::transition::put_settings::PutSettings>,
     ) -> Result<u64, TaskError> {
-        self.ensure_identity_funding_accounts(seed_hash, identity_index)
-            .await?;
-
         let scope = Self::hd_scope(seed_hash);
         self.inner
             .secret_access
             .with_secret_session(&scope, async |session| {
+                // Run inside the session so the seed is available for
+                // hardened xpub derivation (the live wallet is watch-only).
+                let plaintext = session.plaintext();
+                let seed = plaintext
+                    .expose_hd_seed()
+                    .ok_or(TaskError::WalletStateInconsistent)?;
+                self.ensure_identity_funding_accounts(seed_hash, seed, identity_index)
+                    .await?;
                 let asset_lock_signer =
                     DetSigner::from_held(session.plaintext(), self.inner.network);
                 let wallet = self.resolve_wallet(seed_hash).await?;
@@ -2271,13 +2286,21 @@ impl WalletBackend {
     // register/top-up, so a reloaded already-registered identity needs this
     // re-provision. Idempotent: probes both collections and no-ops if present
     // (no error-string parsing — direct membership checks).
+    //
+    // `seed` must be the wallet's HD seed so the hardened account xpub can be
+    // derived — the live wallet is watch-only and cannot derive hardened paths
+    // itself. Mirrors the pattern in `register_contact_receiving_accounts`.
     async fn provision_identity_funding_account(
         &self,
         seed_hash: &WalletSeedHash,
+        seed: &[u8; 64],
         account_type: dash_sdk::dpp::key_wallet::AccountType,
     ) -> Result<(), TaskError> {
         use dash_sdk::dpp::key_wallet::AccountType;
         use dash_sdk::dpp::key_wallet::managed_account::ManagedCoreKeysAccount;
+        use dash_sdk::dpp::key_wallet::wallet::Wallet as UpstreamWallet;
+        use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOptions;
+        use platform_wallet::error::PlatformWalletError;
 
         // Restrict to the two identity-funding flavours; everything else is a
         // misuse — keeping the match exhaustive forces a review if a new
@@ -2317,13 +2340,34 @@ impl WalletBackend {
         }
 
         if !in_wallet {
-            kw.add_account(account_type, None)
+            // The live wallet is watch-only: calling `add_account(…, None)` would
+            // try to derive a hardened path from an absent private key and fail
+            // with "Watch-only wallet has no private key". Derive the xpub from a
+            // short-lived seed wallet instead and pass it as `Some(xpub)`.
+            let seed_wallet = UpstreamWallet::from_seed_bytes(
+                *seed,
+                self.inner.network,
+                WalletAccountCreationOptions::Default,
+            )
+            .map_err(|e| TaskError::WalletBackend {
+                source: Box::new(PlatformWalletError::WalletCreation(e.to_string())),
+            })?;
+
+            let path = account_type
+                .derivation_path(self.inner.network)
                 .map_err(|e| TaskError::WalletBackend {
-                    source: Box::new(
-                        platform_wallet::error::PlatformWalletError::AssetLockTransaction(
-                            e.to_string(),
-                        ),
-                    ),
+                    source: Box::new(PlatformWalletError::WalletCreation(e.to_string())),
+                })?;
+
+            let account_xpub = seed_wallet.derive_extended_public_key(&path).map_err(|e| {
+                TaskError::WalletBackend {
+                    source: Box::new(PlatformWalletError::WalletCreation(e.to_string())),
+                }
+            })?;
+
+            kw.add_account(account_type, Some(account_xpub))
+                .map_err(|e| TaskError::WalletBackend {
+                    source: Box::new(PlatformWalletError::AssetLockTransaction(e.to_string())),
                 })?;
         }
 
@@ -2353,16 +2397,21 @@ impl WalletBackend {
     /// Provision the identity-registration funding account and the per-
     /// identity top-up funding account for the given wallet identity index.
     /// Idempotent; safe to call before every asset-lock and on every reload.
+    ///
+    /// `seed` must be held for the duration of this call (obtained from
+    /// `SecretPlaintext::expose_hd_seed` inside a `with_secret_session` scope).
     pub async fn ensure_identity_funding_accounts(
         &self,
         seed_hash: &WalletSeedHash,
+        seed: &[u8; 64],
         registration_index: u32,
     ) -> Result<(), TaskError> {
         use dash_sdk::dpp::key_wallet::AccountType;
-        self.provision_identity_funding_account(seed_hash, AccountType::IdentityRegistration)
+        self.provision_identity_funding_account(seed_hash, seed, AccountType::IdentityRegistration)
             .await?;
         self.provision_identity_funding_account(
             seed_hash,
+            seed,
             AccountType::IdentityTopUp { registration_index },
         )
         .await

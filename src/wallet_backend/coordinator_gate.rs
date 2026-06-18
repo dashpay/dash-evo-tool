@@ -14,10 +14,12 @@
 //! * not ready yet → the `EventBridge` calls [`CoordinatorGate::on_masternodes_ready`]
 //!   when the masternode list reaches `Synced`, which fires the armed action.
 //!
-//! A fresh backend (and a fresh gate) is built on every reconnect, so the latch
-//! re-arms naturally — there is no cross-reconnect state to clear here.
+//! The drop+rebuild reconnect path builds a fresh backend (and a fresh gate)
+//! each time, so the latch re-arms naturally. The restart-in-place reconnect
+//! path reuses the same backend and gate instead; it calls
+//! [`CoordinatorGate::reset`] to re-arm the gate for the next `start()`.
 
-use std::sync::OnceLock;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// The one-shot start action: starts the platform-address and identity sync
@@ -32,8 +34,11 @@ pub(super) struct CoordinatorGate {
     /// Whether the SPV masternode list has finished syncing. Set by the
     /// `EventBridge`; mirrors `ConnectionStatus::masternodes_ready`.
     masternodes_ready: AtomicBool,
-    /// The start action, installed once by `WalletBackend::start`.
-    action: OnceLock<StartAction>,
+    /// The start action, installed by `WalletBackend::start`. Held in a
+    /// `Mutex<Option<…>>` (not a `OnceLock`) so [`Self::reset`] can clear it
+    /// for a restart-in-place reconnect, which re-arms this same gate rather
+    /// than building a fresh one.
+    action: Mutex<Option<StartAction>>,
     /// Single-winner guard so the action runs exactly once across the two
     /// concurrent fire paths (`arm` and `on_masternodes_ready`).
     fired: AtomicBool,
@@ -43,7 +48,7 @@ impl std::fmt::Debug for CoordinatorGate {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CoordinatorGate")
             .field("masternodes_ready", &self.masternodes_ready())
-            .field("armed", &self.action.get().is_some())
+            .field("armed", &self.action.lock().is_ok_and(|a| a.is_some()))
             .field("fired", &self.fired.load(Ordering::SeqCst))
             .finish()
     }
@@ -67,9 +72,16 @@ impl CoordinatorGate {
     /// [`Self::on_masternodes_ready`] (case (b)). A second arm is ignored — the
     /// action slot is write-once.
     pub(super) fn arm(&self, action: StartAction) {
-        if self.action.set(action).is_err() {
-            tracing::debug!("CoordinatorGate already armed; ignoring second arm");
-            return;
+        {
+            let mut slot = self
+                .action
+                .lock()
+                .expect("coordinator gate action mutex poisoned");
+            if slot.is_some() {
+                tracing::debug!("CoordinatorGate already armed; ignoring second arm");
+                return;
+            }
+            *slot = Some(action);
         }
         self.try_fire();
     }
@@ -95,7 +107,11 @@ impl CoordinatorGate {
         if self.fired.swap(true, Ordering::SeqCst) {
             return;
         }
-        if let Some(action) = self.action.get() {
+        let slot = self
+            .action
+            .lock()
+            .expect("coordinator gate action mutex poisoned");
+        if let Some(action) = slot.as_ref() {
             tracing::info!("Masternode list synced; starting Platform sync coordinators");
             action();
         }
@@ -104,7 +120,26 @@ impl CoordinatorGate {
     /// Pure decision: the action may fire when masternodes are ready, an action
     /// is armed, and it has not fired yet. Side-effect-free, unit-testable.
     fn should_fire(&self) -> bool {
-        self.masternodes_ready() && self.action.get().is_some() && !self.has_fired()
+        self.masternodes_ready()
+            && self.action.lock().is_ok_and(|a| a.is_some())
+            && !self.has_fired()
+    }
+
+    /// Clear the gate so a restart-in-place reconnect can re-arm it.
+    ///
+    /// Drops the installed action, clears the single-winner `fired` flag, and
+    /// resets `masternodes_ready` to `false`. The last is mandatory: a restart
+    /// rebuilds the SPV session, which re-syncs the masternode list from
+    /// scratch, so the coordinators must wait for a fresh `Synced` signal
+    /// before firing — starting them against a not-yet-synced masternode list
+    /// fires proof-verifying DAPI calls that get every queried node banned.
+    pub(super) fn reset(&self) {
+        *self
+            .action
+            .lock()
+            .expect("coordinator gate action mutex poisoned") = None;
+        self.fired.store(false, Ordering::SeqCst);
+        self.masternodes_ready.store(false, Ordering::SeqCst);
     }
 }
 
@@ -199,7 +234,7 @@ mod tests {
         // Armed, not ready → no.
         let calls = Arc::new(AtomicUsize::new(0));
         let gate = CoordinatorGate::default();
-        let _ = gate.action.set(counting_action(&calls));
+        *gate.action.lock().unwrap() = Some(counting_action(&calls));
         assert!(!gate.should_fire());
 
         // Armed and ready, not fired → yes.
@@ -231,6 +266,47 @@ mod tests {
             calls.load(Ordering::SeqCst),
             1,
             "concurrent ready signals must still fire the action exactly once"
+        );
+    }
+
+    /// Restart-in-place: [`CoordinatorGate::reset`] must re-arm the gate so the
+    /// SAME instance fires the coordinators again on a reconnect — clearing the
+    /// installed action, the `fired` latch, and `masternodes_ready`.
+    #[test]
+    fn reset_re_arms_gate_for_restart_in_place() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let gate = CoordinatorGate::default();
+
+        // First arm + ready → fires once.
+        gate.arm(counting_action(&calls));
+        gate.on_masternodes_ready();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(gate.has_fired());
+        assert!(gate.masternodes_ready());
+
+        // Reset clears action, the fired latch, and masternodes_ready.
+        gate.reset();
+        assert!(!gate.has_fired(), "reset must clear the fired latch");
+        assert!(
+            !gate.masternodes_ready(),
+            "reset must clear masternodes_ready so coordinators re-wait for a fresh sync"
+        );
+
+        // A ready signal after reset with nothing re-armed must not fire.
+        gate.on_masternodes_ready();
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "ready with no action armed after reset must not fire"
+        );
+
+        // Re-arm: masternodes are ready again, so the action fires a SECOND
+        // time — the gate is reusable across a restart-in-place reconnect.
+        gate.arm(counting_action(&calls));
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "re-arming a reset gate must fire the coordinators again"
         );
     }
 

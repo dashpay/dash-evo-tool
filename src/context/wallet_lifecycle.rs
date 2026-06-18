@@ -377,6 +377,28 @@ impl AppContext {
         self.connection_status.set_spv_status(SpvStatus::Stopping);
         self.connection_status.refresh_state();
 
+        // CURRENT (Q3-safe) reconnect model: drop + rebuild. `take_wallet_backend`
+        // unwires the backend, `shutdown()` stops SPV + coordinators, the
+        // backend is dropped, and `await_persister_released` waits out the
+        // detached coordinator threads before the next reconnect reopens the
+        // persister. Each reconnect builds FRESH coordinator instances, so the
+        // upstream `platform_address_sync` restart race (Q3) cannot occur.
+        //
+        // TODO: enable restart-in-place once dashpay/platform#3828 lands the
+        // `platform_address_sync` `background_generation` guard in the pinned
+        // `fix/wallet-core-derived-rehydration` branch and we `cargo update`
+        // the platform crates to a rev that contains it. The flip is:
+        //   - replace this `take_wallet_backend()` + `shutdown()` + drop +
+        //     `await_persister_released` block with
+        //     `if let Ok(backend) = self.wallet_backend() { backend.stop_in_place().await; }`
+        //     (keeps the backend + persister wired; reconnect reuses the SAME
+        //     instance via `ensure_wallet_backend`'s populated-slot fast path),
+        //   - delete `await_persister_released` and its offline test,
+        //   - keep the `set_masternodes_ready(false)` + indicator flips below.
+        // The machinery (`WalletBackend::stop_in_place`, `CoordinatorGate::reset`,
+        // `StartLatch::reset`) is already implemented and unit-tested; it is NOT
+        // wired here yet because restart-in-place is unsafe against the
+        // guard-less pinned rev (see `WalletBackend::stop_in_place` SAFETY note).
         if let Some(backend) = self.take_wallet_backend() {
             // Capture the exact persister path this backend opened, so the
             // release barrier below probes the same file `WalletBackend::new`
@@ -1685,6 +1707,76 @@ mod tests {
         assert!(
             second.is_started(),
             "reconnect must restart chain sync on the fresh backend's latch"
+        );
+
+        second.shutdown().await;
+    }
+
+    /// Restart-in-place reconnect: `WalletBackend::stop_in_place()` keeps the
+    /// backend (and its `Arc<SqlitePersister>`) wired, so the reconnect reuses
+    /// the SAME instance — the persister DB is never closed/reopened, so
+    /// `AlreadyOpen` is impossible by construction (no barrier needed).
+    ///
+    /// Asserts: same backend pointer across disconnect→connect (reuse, not
+    /// rebuild); `is_started()` cleared by `stop_in_place()` then re-set by the
+    /// reconnect's `start()` (latch + gate re-armed); reconnect returns `Ok`
+    /// with no `AlreadyOpen`.
+    ///
+    /// IGNORED: restart-in-place re-`start()`s the SAME `platform_address_sync`
+    /// instance, which is race-free only once the upstream
+    /// `background_generation` guard lands there (dashpay/platform#3828, branch
+    /// `fix/wallet-core-derived-rehydration`). Against the guard-less pinned rev
+    /// this can leak an uncancellable / duplicate platform-address loop, so this
+    /// test must run only after that fix is in the pinned rev. Un-ignore it
+    /// together with wiring `stop_in_place` into `stop_spv` (see the TODO in
+    /// `stop_spv`).
+    #[ignore = "restart-in-place is safe only against a platform rev that carries the \
+                platform_address_sync background_generation guard (dashpay/platform#3828); \
+                un-ignore when stop_spv is flipped to restart-in-place"]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn reconnect_restart_in_place_reuses_backend() {
+        let _reopen_guard = backend_reopen_lock().await;
+
+        let (ctx, sender, _tmp) = offline_testnet_context();
+
+        ctx.ensure_wallet_backend_and_start_spv(sender.clone())
+            .await
+            .expect("initial start should wire then start offline");
+        let first = ctx.wallet_backend().expect("backend wired after start");
+        assert!(first.is_started(), "initial start must latch the backend");
+        let first_ptr = Arc::as_ptr(&first);
+        drop(first);
+
+        // Stop IN PLACE: the backend stays wired (slot not taken).
+        let backend = ctx.wallet_backend().expect("backend still wired");
+        backend.stop_in_place().await;
+        assert!(
+            !backend.is_started(),
+            "stop_in_place must re-arm the start latch (is_started == false)"
+        );
+        assert!(
+            ctx.wallet_backend().is_ok(),
+            "stop_in_place must keep the backend wired (NOT take it)"
+        );
+        drop(backend);
+
+        // Reconnect: `ensure_wallet_backend` fast-paths on the populated slot
+        // (no `WalletBackend::new`, no `SqlitePersister::open`), so the same
+        // instance restarts — structurally immune to `AlreadyOpen`.
+        ctx.ensure_wallet_backend_and_start_spv(sender)
+            .await
+            .expect("reconnect should restart the SAME backend in place");
+        let second = ctx
+            .wallet_backend()
+            .expect("backend still wired after reconnect");
+        assert_eq!(
+            first_ptr,
+            Arc::as_ptr(&second),
+            "restart-in-place must REUSE the same backend, not rebuild it"
+        );
+        assert!(
+            second.is_started(),
+            "reconnect must restart chain sync on the reused backend's re-armed latch"
         );
 
         second.shutdown().await;

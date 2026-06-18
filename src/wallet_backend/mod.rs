@@ -132,6 +132,14 @@ impl StartLatch {
     fn is_started(&self) -> bool {
         self.0.load(Ordering::SeqCst)
     }
+
+    /// Re-arm the latch so [`WalletBackend::start`] can spawn the run loop
+    /// again on a reused backend. Used by the restart-in-place teardown
+    /// ([`WalletBackend::stop_in_place`]); without it the one-shot
+    /// `try_begin` would refuse the reconnect's start.
+    fn reset(&self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
 }
 
 /// Default BIP-44 account index for wallet receive/send operations. DET has
@@ -1074,6 +1082,58 @@ impl WalletBackend {
             );
         }
         self.inner.pwm.shutdown().await;
+    }
+
+    /// Stop chain sync **in place**, keeping this backend (and its
+    /// `Arc<SqlitePersister>`) alive so a same-network reconnect can restart
+    /// on the SAME instance via [`Self::start`] — the persister DB is never
+    /// closed/reopened, so the reconnect cannot hit
+    /// `WalletStorageError::AlreadyOpen` (the root of the B-2 bug) by
+    /// construction.
+    ///
+    /// Unlike [`Self::shutdown`], this deliberately does **not** call
+    /// `pwm.shutdown()`: that cancels and joins the wallet-event adapter task,
+    /// which has no re-create path, so a subsequent restart would lose event
+    /// processing. Instead it stops the restartable pieces only:
+    ///
+    /// 1. `pwm.spv().stop()` — stops/joins the SPV run loop (releasing the SPV
+    ///    storage advisory lock) while leaving the `SpvRuntime` and its
+    ///    `PlatformEventManager` in place for the next `spawn_in_background`.
+    /// 2. `quiesce()` the three sync coordinators (cancel + drain the in-flight
+    ///    pass) via their `Arc` accessors — NOT `pwm.shutdown()` — so the event
+    ///    adapter keeps running.
+    /// 3. Re-arm the DET start gates ([`StartLatch::reset`] +
+    ///    [`CoordinatorGate::reset`]) so the reconnect's `start()` spawns the
+    ///    run loop again and re-fires the coordinators once masternodes re-sync.
+    ///
+    /// SPV is stopped before the coordinators (producer before consumers),
+    /// mirroring [`Self::shutdown`]'s ordering.
+    ///
+    /// SAFETY (restart-in-place vs the upstream coordinators): restarting the
+    /// SAME coordinator instance is only race-free once every coordinator
+    /// clears its cancel slot under a generation guard. `identity_sync` and
+    /// `shielded_sync` already do; `platform_address_sync` does NOT in the
+    /// pinned platform rev, so a rapid reconnect can leak an uncancellable /
+    /// duplicate platform-address loop. This method is therefore NOT yet the
+    /// live reconnect path — see the activation TODO in
+    /// [`AppContext::stop_spv`](crate::context::AppContext::stop_spv).
+    pub async fn stop_in_place(&self) {
+        // 1. Stop the SPV run loop first (producer), keeping the SpvRuntime.
+        if let Err(e) = self.inner.pwm.spv().stop().await {
+            tracing::warn!(
+                error = ?e,
+                "SPV run loop did not stop cleanly during stop_in_place; continuing"
+            );
+        }
+        // 2. Quiesce the coordinators (consumers) directly — do NOT call
+        //    `pwm.shutdown()`, which would also tear down the non-restartable
+        //    wallet-event adapter.
+        self.inner.pwm.platform_address_sync_arc().quiesce().await;
+        self.inner.pwm.identity_sync_arc().quiesce().await;
+        self.inner.pwm.shielded_sync_arc().quiesce().await;
+        // 3. Re-arm the DET start gates for the next start() on this backend.
+        self.inner.start_latch.reset();
+        self.inner.coordinator_gate.reset();
     }
 
     /// Number of wallets currently registered with the backend.
@@ -3121,6 +3181,21 @@ mod tests {
         assert!(!latch.try_begin(), "second try_begin must lose");
         assert!(!latch.try_begin(), "third try_begin must lose");
         assert!(latch.is_started(), "latch stays started");
+    }
+
+    /// Restart-in-place: `reset()` re-arms the one-shot latch so `try_begin`
+    /// wins again on a reused backend (the reconnect's `start()`).
+    #[test]
+    fn start_latch_reset_allows_restart() {
+        let latch = StartLatch::default();
+        assert!(latch.try_begin(), "first begin wins");
+        assert!(!latch.try_begin(), "second begin refused while latched");
+        assert!(latch.is_started());
+
+        latch.reset();
+        assert!(!latch.is_started(), "reset must clear the latch");
+        assert!(latch.try_begin(), "begin wins again after reset");
+        assert!(!latch.try_begin(), "and re-latches one-shot after reset");
     }
 
     /// Concurrent callers race to a single winner — exactly one thread sees

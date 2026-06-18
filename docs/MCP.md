@@ -82,6 +82,8 @@ Set these in the app's `.env` file (see `.env.example`) or as environment variab
 | `identity_credits_transfer` | `wallet_id`, `from_identity_id`, `to_identity_id`, `amount_credits`, `network` | `det-cli identity-credits-transfer` | Transfer credits between identities |
 | `identity_credits_withdraw` | `wallet_id`, `identity_id`, `to_address`, `amount_credits`, `network` | `det-cli identity-credits-withdraw` | Withdraw identity credits to a Core address |
 | `identity_credits_to_address` | `wallet_id`, `identity_id`, `to_address`, `amount_credits`, `network` | `det-cli identity-credits-to-address` | Transfer identity credits to a Platform address |
+| `identity_masternode_load` | `pro_tx_hash`, `node_type`, `owner_private_key`?, `voting_private_key`?, `payout_private_key`?, `alias`?, `network` | `det-cli identity-masternode-load` | Load a masternode/evonode identity by ProTxHash and bind its owner/voting/payout keys. Returns which keys loaded, the available withdrawal modes, and the payout address. Requires at least one of the owner or payout key |
+| `identity_masternode_credits_withdraw` | `identity_id`, `key_mode`, `to_address`?, `amount_credits`, `network` | `det-cli identity-masternode-credits-withdraw` | Withdraw a masternode/evonode identity's credits. `key_mode=owner` forces the registered payout address (no `to_address`); `key_mode=transfer` withdraws to any Core address |
 | `shielded_shield_from_core` | `wallet_id`, `amount_duffs`, `network` | `det-cli shielded-shield-from-core` | Shield DASH from Core wallet into shielded pool (via asset lock, ~30s) |
 | `shielded_shield_from_platform` | `wallet_id`, `amount_credits`, `network` | `det-cli shielded-shield-from-platform` | Shield credits from Platform address into shielded pool |
 | `shielded_transfer` | `wallet_id`, `to_address`, `amount_credits`, `network` | `det-cli shielded-transfer` | Private shielded-to-shielded transfer |
@@ -100,6 +102,14 @@ Parameters marked `?` are optional. The `det-cli` column shows the equivalent CL
 All wallet-facing tools wait for SPV to fully sync before executing. This includes both core-chain tools (`core_address_create`, `core_balances_get`, `core_funds_send`) and platform tools (`platform_addresses_list`, `identity_credits_topup`, `shielded_shield_from_core`). Even DAPI-only operations need SPV because the SDK verifies DAPI proofs against quorum and masternode list data from the synced chain. When another DET instance is already running, SPV falls back to a temporary directory and must sync from scratch.
 
 Tools that make no network calls skip the SPV gate: the metadata tools (`core_wallets_list`, `network_info`, `tool_describe`), the local wallet import (`core_wallet_import`), and the shielded snapshot read `shielded_balance_get` (a pure in-memory read of the last synced balance). `shielded_address_get` also skips the SPV gate, but it reads through the wallet backend, so the backend must already be wired — run `shielded_init` (or any SPV-gated tool) first in standalone mode. `shielded_init` and `shielded_sync` still wait for SPV — they wire the wallet backend and drive a coordinator sync.
+
+`identity_masternode_credits_withdraw` waits for SPV before dispatching: a withdrawal does proof-verified Platform reads, so it gates like every other proof-verifying tool. (`identity_credits_withdraw` historically skipped this gate; the masternode tool deliberately adds it.)
+
+### Private-key handling
+
+`identity_masternode_load` accepts the masternode owner/voting/payout private keys as plain string parameters (WIF or 64-char hex), mirroring `core_wallet_import`. The keys are moved into a zeroizing, page-locked `Secret` on receipt and are never echoed back: the tool output reports only which keys loaded (booleans), validation errors name the key by role and never its value, and the parameter struct's `Debug` renders each key as `<redacted>` so it cannot leak into logs or the MCP error `data` payload.
+
+Over the MCP **HTTP** transport these keys traverse the request body. The HTTP endpoint is bearer-authenticated and binds to loopback by default; do not send live mainnet masternode keys over a non-loopback MCP HTTP endpoint. (HTTP transport-layer key handling is not separately enforced in code — keep the endpoint loopback-only for key-bearing calls.)
 
 ## CLI interface (det-cli)
 

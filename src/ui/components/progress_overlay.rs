@@ -163,16 +163,12 @@ struct OverlayState {
     /// Set once focus has been placed on the first button (focus trap).
     focus_requested: bool,
     /// Opt-in action id designated as the single keyboard-reachable escape (QA-002
-    /// refinement). When set, `claim_input` lets Enter/Space through to its focused
-    /// button while still stripping every other key; every other hard block stays
-    /// fully keyboard-blocked. `None` by default — a block is keyboard-blocked
-    /// unless it opts in.
+    /// refinement). When set, `claim_input` activates it at frame start: a press of
+    /// Enter/Space enqueues this action directly (the same queue a click feeds) and
+    /// is stripped like every other key, so the escape needs no focus and the key
+    /// never reaches a widget beneath. `None` by default — a block is fully
+    /// keyboard-blocked unless it opts in.
     keyboard_escape_action: Option<String>,
-    /// The egui id of the rendered escape button, recorded by `render_buttons` each
-    /// frame the block paints. `claim_input` reads it the following frame to confirm
-    /// focus is pinned to the escape before allowing Enter/Space through, so the
-    /// passthrough can never reach a widget beneath.
-    escape_focus_id: Option<egui::Id>,
 }
 
 impl OverlayState {
@@ -193,7 +189,6 @@ impl OverlayState {
             watchdog_logged: false,
             focus_requested: false,
             keyboard_escape_action: config.keyboard_escape_action.clone(),
-            escape_focus_id: None,
         }
     }
 }
@@ -712,14 +707,12 @@ impl ProgressOverlay {
     ///
     /// A hard block is never keyboard-dismissable or keyboard-activatable, with one
     /// opt-in exception: a block that designates a single keyboard escape via
-    /// [`OverlayConfig::with_keyboard_escape`] keeps **Enter and Space** so its
-    /// focused escape button can be activated (egui fires a fake primary click on
-    /// either for the focused widget). Even then this only happens once the escape
-    /// button is *confirmed* to hold focus (its id was recorded by `render_buttons`
-    /// the previous frame and still matches the focused widget) — so Enter/Space can
-    /// never reach a widget beneath; every other key, and every non-opted block,
-    /// stays fully blocked. The buttoned case re-grants its own button's navigation
-    /// via the focus-lock filter in `render_buttons`.
+    /// [`OverlayConfig::with_keyboard_escape`]. For such a block, a frame-start press
+    /// of **Enter or Space** enqueues the designated action directly — the same queue
+    /// a click feeds — and the key is then stripped along with every other one. The
+    /// activation happens here, before the beneath `ui()` runs, so it needs no focus
+    /// (SEC-001) and the key never survives to a widget beneath (SEC-002). Every
+    /// other key, and every non-opted block, stays fully blocked.
     pub fn claim_input(ctx: &egui::Context) {
         let stack = get_overlay_state(ctx);
         let Some(top) = stack.last() else {
@@ -734,14 +727,15 @@ impl ProgressOverlay {
         if top.buttons.is_empty() {
             ctx.memory_mut(|m| m.stop_text_input());
         }
-        // Let Enter/Space through ONLY while a designated escape button is confirmed
-        // to hold focus. `escape_focus_id` is recorded by last frame's render and the
-        // focus check rejects the raise frame (id not yet recorded) and any frame
-        // where focus has drifted — so the passthrough can never reach a beneath
-        // widget. Everything else is stripped exactly as for a plain hard block.
-        let escape_confirmed = top.keyboard_escape_action.is_some()
-            && top.escape_focus_id.is_some()
-            && ctx.memory(|m| m.focused()) == top.escape_focus_id;
+        // A designated keyboard escape is activated HERE, at frame start: a press of
+        // Enter/Space enqueues its action directly (the same queue a click feeds) and
+        // is then stripped like every other key. Doing it before the beneath `ui()`
+        // runs means the activation needs no focus (SEC-001) and the key never
+        // survives to a focus-independent handler beneath (SEC-002). A non-opted block
+        // enqueues nothing and strips Enter/Space exactly the same.
+        let escape_action = top.keyboard_escape_action.clone();
+        let key = top.key;
+        let mut activate_escape = false;
         ctx.input_mut(|i| {
             i.events.retain(|e| {
                 if matches!(
@@ -753,25 +747,24 @@ impl ProgressOverlay {
                 ) {
                     return false;
                 }
-                if escape_confirmed
-                    && matches!(
-                        e,
-                        egui::Event::Key {
-                            key: egui::Key::Enter | egui::Key::Space,
-                            pressed: true,
-                            ..
-                        }
-                    )
+                if let egui::Event::Key {
+                    key: egui::Key::Enter | egui::Key::Space,
+                    pressed: true,
+                    repeat,
+                    ..
+                } = e
                 {
-                    return true;
+                    // Enqueue once per real press (ignore key-repeat); always strip.
+                    if escape_action.is_some() && !*repeat {
+                        activate_escape = true;
+                    }
+                    return false;
                 }
                 !matches!(
                     e,
                     egui::Event::Key {
                         key: egui::Key::Tab
-                            | egui::Key::Enter
                             | egui::Key::Escape
-                            | egui::Key::Space
                             | egui::Key::ArrowUp
                             | egui::Key::ArrowDown
                             | egui::Key::ArrowLeft
@@ -788,6 +781,11 @@ impl ProgressOverlay {
                 )
             });
         });
+        // Enqueue after releasing the input lock — `push_overlay_action` takes the
+        // `ctx.data` lock, which must not nest inside `ctx.input_mut`.
+        if activate_escape && let Some(action_id) = escape_action {
+            push_overlay_action(ctx, key, &action_id);
+        }
         // TODO(SEC-002-pointer): claim pointer press/click/drag at frame start
         // (analogue of the keyboard QA-001 frame-start claim) to close the
         // one-frame click-through on the raising frame.
@@ -796,7 +794,18 @@ impl ProgressOverlay {
     /// Render the topmost entry. Call once per frame from `AppState::update`,
     /// after the panels and before the secret prompt. Early-outs to a single
     /// `ctx.data` read when no overlay is active (NFR-6).
-    pub fn render_global(ctx: &egui::Context) {
+    ///
+    /// `secret_prompt_active` mirrors the [`claim_input`](Self::claim_input)
+    /// secret-prompt gate: when `true` the block suppresses its own focus management
+    /// so the passphrase modal rendered above it keeps the keyboard (SEC-001).
+    ///
+    /// Unlike [`MessageBanner`](super::message_banner::MessageBanner), whose global
+    /// path pairs `set_global` with [`show_global`](super::message_banner::MessageBanner::show_global)
+    /// (rendered lazily inside `island_central_panel`), the overlay pairs
+    /// [`set_global`](Self::set_global) with `render_global`: it owns a full-window
+    /// dim, input sink, and focus trap that must be painted every frame from the app
+    /// loop on `Order::Foreground`, not lazily from within a panel.
+    pub fn render_global(ctx: &egui::Context, secret_prompt_active: bool) {
         let mut stack = get_overlay_state(ctx);
         let Some(top) = stack.last_mut() else {
             return;
@@ -812,8 +821,9 @@ impl ProgressOverlay {
         let stuck = stuck_reveal(elapsed);
         let show_elapsed = top.show_elapsed || stuck;
         let key = top.key;
-        // Logs once on show / once per content change, and bumps `last_progress_at`
-        // on a content change so the no-progress watchdog measures true stalls.
+        // Logs once on show / once per shown content change, and resets the
+        // no-progress watchdog clock on real progress — a shown (description, step)
+        // change OR a hidden `progress_token` advance (see `log_overlay_state`).
         log_overlay_state(top);
 
         // No-progress watchdog (A-1): once the topmost request has shown no
@@ -867,6 +877,7 @@ impl ProgressOverlay {
                     stuck,
                     watchdog,
                     true,
+                    secret_prompt_active,
                 );
             });
 
@@ -913,6 +924,7 @@ impl Component for ProgressOverlay {
             show_elapsed,
             stuck,
             watchdog,
+            false,
             false,
         );
         if let Some(action_id) = &clicked {
@@ -1025,6 +1037,7 @@ fn render_card(
     stuck: bool,
     watchdog: bool,
     trap_focus: bool,
+    secret_prompt_active: bool,
 ) -> Option<String> {
     let mut clicked = None;
     egui::Frame::new()
@@ -1104,7 +1117,8 @@ fn render_card(
 
                 if !state.buttons.is_empty() {
                     ui.add_space(Spacing::MD);
-                    clicked = render_buttons(ui, state, dark_mode, trap_focus);
+                    clicked =
+                        render_buttons(ui, state, dark_mode, trap_focus, secret_prompt_active);
                 }
             });
         });
@@ -1119,22 +1133,24 @@ fn render_card(
 ///
 /// `trap_focus` is `true` only for the global full-window block: a button is
 /// focused on raise and a focus-lock filter traps Tab/arrows/Esc on it so keyboard
-/// navigation cannot escape to a widget beneath the block. The focused button is
-/// the **designated keyboard escape** when the block opts into one (QA-002
-/// refinement) — so Enter/Space, which `claim_input` lets through only for an
-/// opted-in block, activate the escape and nothing else — otherwise the first
-/// button. The instance [`Component`] path passes `false` (QA-003) so an inline,
+/// navigation cannot escape to a widget beneath the block. The focused button is the
+/// **designated keyboard escape** when the block opts into one (QA-002 refinement),
+/// otherwise the first button — but the focus is purely visual: keyboard activation
+/// of the escape happens at frame start in [`ProgressOverlay::claim_input`], not via
+/// this focused button. `secret_prompt_active` suppresses all focus management so a
+/// passphrase modal rendered above the block keeps the keyboard (SEC-001). The
+/// instance [`Component`] path passes `false` for both (QA-003) so an inline,
 /// non-blocking widget never seizes the host screen's focus.
 fn render_buttons(
     ui: &mut egui::Ui,
     state: &mut OverlayState,
     dark_mode: bool,
     trap_focus: bool,
+    secret_prompt_active: bool,
 ) -> Option<String> {
-    let escape_action = state.keyboard_escape_action.clone();
-    // Re-request focus every frame for an opt-in escape so the escape can never be
-    // left un-focused (which would silently disable the keyboard exit); a non-escape
-    // block requests once and relies on the lock, as before.
+    let escape_action = state.keyboard_escape_action.as_deref();
+    // Re-request focus every frame for an opt-in escape so a click/Tab can never
+    // leave it un-focused; a non-escape block requests once and relies on the lock.
     let want_focus = trap_focus && (!state.focus_requested || escape_action.is_some());
     let mut clicked = None;
     let mut first_id = None;
@@ -1162,7 +1178,7 @@ fn render_buttons(
             if first_id.is_none() {
                 first_id = Some(response.id);
             }
-            if escape_action.as_deref() == Some(button.action_id.as_str()) {
+            if escape_action == Some(button.action_id.as_str()) {
                 escape_id = Some(response.id);
             }
             if response.clicked() {
@@ -1171,9 +1187,15 @@ fn render_buttons(
         }
     });
 
-    // Pin focus to the designated escape if present, else the first button.
+    // Pin focus to the designated escape if present, else the first button — but
+    // never while a secret prompt is up: the prompt is rendered above the overlay and
+    // owns the keyboard (SEC-001), and keyboard activation of the escape no longer
+    // needs focus (it fires at frame start in `claim_input`).
     let focus_target = escape_id.or(first_id);
-    if trap_focus && let Some(id) = focus_target {
+    if trap_focus
+        && !secret_prompt_active
+        && let Some(id) = focus_target
+    {
         if want_focus {
             ui.memory_mut(|m| m.request_focus(id));
         }
@@ -1195,10 +1217,6 @@ fn render_buttons(
         });
         state.focus_requested = true;
     }
-    // Record the escape button's id so the next frame's `claim_input` can confirm
-    // focus is pinned to it before letting Enter/Space through. `None` (no opt-in or
-    // instance path) keeps the passthrough closed.
-    state.escape_focus_id = escape_id;
     clicked
 }
 
@@ -1296,7 +1314,7 @@ mod tests {
     /// (log-once, focus) can be inspected without a kittest harness.
     fn render_once(ctx: &egui::Context) {
         let _ = ctx.run(egui::RawInput::default(), |ctx| {
-            ProgressOverlay::render_global(ctx);
+            ProgressOverlay::render_global(ctx, false);
         });
     }
 
@@ -1570,15 +1588,15 @@ mod tests {
         assert_eq!(read(plain.key).as_deref(), Some("later"));
     }
 
-    /// QA-002 refinement (safety gate) — even with an escape designated,
-    /// `claim_input` STILL strips Enter/Space until the escape button is confirmed
-    /// to hold focus. Here no render has run, so `escape_focus_id` is unset and the
-    /// passthrough must stay closed — the keyboard exit can never reach a beneath
-    /// widget on the raise frame.
+    /// SEC-001/SEC-002 — a designated keyboard escape is activated at FRAME START:
+    /// `claim_input` enqueues its action (focus-independent — no render has run, so
+    /// no button is focused) and STRIPS Enter/Space so the key can never reach the
+    /// focused button or a focus-independent handler beneath. The activation does not
+    /// depend on, or wait for, the escape button holding focus.
     #[test]
-    fn claim_input_strips_enter_space_until_escape_focus_confirmed() {
+    fn claim_input_escape_block_enqueues_action_and_strips_keys() {
         let ctx = egui::Context::default();
-        ProgressOverlay::set_global(
+        let handle = ProgressOverlay::set_global(
             &ctx,
             "Syncing.",
             OverlayConfig::new()
@@ -1607,7 +1625,12 @@ mod tests {
         });
         assert!(
             !leaked.get(),
-            "Enter/Space must stay stripped until the escape button is confirmed focused"
+            "Enter/Space are stripped at frame start — never reach the button or a widget beneath"
+        );
+        assert_eq!(
+            handle.take_actions(),
+            vec!["spv:escape".to_string()],
+            "the escape action is enqueued directly at frame start, focus-independent"
         );
     }
 

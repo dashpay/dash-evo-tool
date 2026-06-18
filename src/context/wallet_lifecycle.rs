@@ -377,41 +377,26 @@ impl AppContext {
         self.connection_status.set_spv_status(SpvStatus::Stopping);
         self.connection_status.refresh_state();
 
-        // CURRENT (Q3-safe) reconnect model: drop + rebuild. `take_wallet_backend`
-        // unwires the backend, `shutdown()` stops SPV + coordinators, the
-        // backend is dropped, and `await_persister_released` waits out the
-        // detached coordinator threads before the next reconnect reopens the
-        // persister. Each reconnect builds FRESH coordinator instances, so the
-        // upstream `platform_address_sync` restart race (Q3) cannot occur.
+        // Restart-in-place disconnect: keep the `WalletBackend` (and its
+        // `Arc<SqlitePersister>`) wired in the AppContext slot — do NOT unwire
+        // or drop it. `stop_in_place` stops the SPV run loop and
+        // quiesces the three coordinators while leaving the backend + persister
+        // alive, and re-arms the start latch + coordinator gate so the next
+        // same-network Connect restarts on the SAME instance (the reconnect
+        // reuses it via `ensure_wallet_backend`'s populated-slot fast path).
+        // Because the persister DB is never closed/reopened, the reconnect
+        // cannot hit `WalletStorageError::AlreadyOpen` — by construction, so no
+        // release barrier is needed. (A network SWITCH is a different path: it
+        // uses a per-network context with a different persister and is
+        // unaffected by this.)
         //
-        // TODO: enable restart-in-place once dashpay/platform#3828 lands the
-        // `platform_address_sync` `background_generation` guard in the pinned
-        // `fix/wallet-core-derived-rehydration` branch and we `cargo update`
-        // the platform crates to a rev that contains it. The flip is:
-        //   - replace this `take_wallet_backend()` + `shutdown()` + drop +
-        //     `await_persister_released` block with
-        //     `if let Ok(backend) = self.wallet_backend() { backend.stop_in_place().await; }`
-        //     (keeps the backend + persister wired; reconnect reuses the SAME
-        //     instance via `ensure_wallet_backend`'s populated-slot fast path),
-        //   - delete `await_persister_released` and its offline test,
-        //   - keep the `set_masternodes_ready(false)` + indicator flips below.
-        // The machinery (`WalletBackend::stop_in_place`, `CoordinatorGate::reset`,
-        // `StartLatch::reset`) is already implemented and unit-tested; it is NOT
-        // wired here yet because restart-in-place is unsafe against the
-        // guard-less pinned rev (see `WalletBackend::stop_in_place` SAFETY note).
-        if let Some(backend) = self.take_wallet_backend() {
-            // Capture the exact persister path this backend opened, so the
-            // release barrier below probes the same file `WalletBackend::new`
-            // reopens on reconnect — no hardcoded path, no drift.
-            let persister_path = backend.spv_storage_dir().join("platform-wallet.sqlite");
-            backend.shutdown().await;
-            // Drop the last in-scope `Arc<WalletBackend>` so `Inner` (and the
-            // persister `Arc`s it owns directly) release synchronously, then
-            // wait out the detached upstream coordinator threads that may still
-            // hold transitive persister `Arc`s for a short while — see
-            // `await_persister_released`.
-            drop(backend);
-            self.await_persister_released(&persister_path).await;
+        // TODO(dashpay/platform#3828): restart-in-place runtime safety depends on the
+        // platform_address_sync background_generation guard being in the pinned rev.
+        // Until that lands + we cargo update, a rapid reconnect can leak an uncancellable
+        // platform-address sync loop (Q3). Finalize = cargo update -p platform-wallet
+        // -p platform-wallet-storage -p dash-sdk, then re-run live reconnect validation.
+        if let Ok(backend) = self.wallet_backend() {
+            backend.stop_in_place().await;
         }
 
         self.connection_status.set_spv_status(SpvStatus::Stopped);
@@ -427,93 +412,6 @@ impl AppContext {
         self.identity_autodiscovery_fired
             .store(false, std::sync::atomic::Ordering::SeqCst);
         self.connection_status.refresh_state();
-    }
-
-    /// Bounded barrier that blocks [`Self::stop_spv`] until the upstream
-    /// platform-wallet persister at `persister_path` is fully released back to
-    /// the process-global open-path registry, so the next reconnect can reopen
-    /// it.
-    ///
-    /// ## Why this exists
-    ///
-    /// `SqlitePersister` refuses a second in-process open of the same path with
-    /// `WalletStorageError::AlreadyOpen`, tracked in a process-global registry
-    /// that is cleared **only** by `impl Drop for SqlitePersister`. On
-    /// disconnect we drop the [`WalletBackend`] (releasing the persister `Arc`s
-    /// it owns directly), and [`WalletBackend::shutdown`] joins the SPV run
-    /// loop — but `PlatformWalletManager::shutdown` only `quiesce()`s the three
-    /// sync coordinators (`identity_sync`, `platform_address_sync`,
-    /// `shielded_sync`). `quiesce()` is cancel-and-drain, **not** join: each
-    /// coordinator runs on a detached `std::thread` that is never joined and
-    /// transitively holds an `Arc<SqlitePersister>`. So the persister's `Drop`
-    /// (and the registry release) is deferred until those threads wind down —
-    /// shortly *after* `shutdown()` returns. Without this barrier an immediate
-    /// reconnect calls `WalletBackend::new` → `SqlitePersister::open` on the
-    /// still-registered path and fails with `AlreadyOpen` (the user's
-    /// Disconnect → Connect bug).
-    ///
-    /// ## What it does
-    ///
-    /// Probe the path by opening it ourselves: a successful open proves the
-    /// registry entry is gone (the last coordinator thread dropped its
-    /// persister `Arc`), so we drop the probe **immediately** — re-freeing the
-    /// path — and return. While the coordinator threads are still winding down
-    /// the open returns `AlreadyOpen`; we back off and retry. The loop is
-    /// bounded so a stuck thread or an unrelated open failure can never block
-    /// disconnect forever; on timeout or any non-`AlreadyOpen` error we log and
-    /// return (best-effort — a later reconnect surfaces a real open error to
-    /// the user, which is strictly better than hanging the disconnect path).
-    ///
-    /// Runs on the disconnect path only and never touches the connect path.
-    ///
-    // TODO(upstream rs-platform-wallet): this barrier is a workaround for the
-    // three sync coordinators (`manager/identity_sync.rs`,
-    // `manager/platform_address_sync.rs`, `manager/shielded_sync.rs`) running
-    // on detached, non-joinable `std::thread`s whose `quiesce()` is
-    // cancel-and-drain, not join. The durable fix is upstream: make `quiesce()`
-    // await actual thread exit (keep the `JoinHandle` / signal a oneshot at
-    // thread end) so `PlatformWalletManager::shutdown()` returns only after
-    // every coordinator has dropped its `Arc<SqlitePersister>`. Once that lands
-    // upstream this poll loop can be removed.
-    async fn await_persister_released(&self, persister_path: &Path) {
-        use platform_wallet_storage::{SqlitePersister, SqlitePersisterConfig, WalletStorageError};
-
-        const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(20);
-        const TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
-
-        let deadline = std::time::Instant::now() + TIMEOUT;
-        loop {
-            match SqlitePersister::open(SqlitePersisterConfig::new(persister_path)) {
-                Ok(probe) => {
-                    // Path is free. Drop the probe IMMEDIATELY so it re-frees
-                    // the registry entry before the reconnect reopens the path.
-                    drop(probe);
-                    return;
-                }
-                Err(WalletStorageError::AlreadyOpen { .. }) => {
-                    if std::time::Instant::now() >= deadline {
-                        tracing::warn!(
-                            path = %persister_path.display(),
-                            "Platform-wallet persister was not released within the disconnect timeout; \
-                             proceeding anyway — a reconnect may briefly fail to reopen it"
-                        );
-                        return;
-                    }
-                    tokio::time::sleep(POLL_INTERVAL).await;
-                }
-                Err(other) => {
-                    // An unrelated open failure (forward-version db, IO, etc.).
-                    // Not this barrier's concern — don't spin on it; the
-                    // reconnect path surfaces such errors to the user properly.
-                    tracing::warn!(
-                        path = %persister_path.display(),
-                        error = ?other,
-                        "Probe open during the disconnect barrier failed for an unrelated reason; proceeding"
-                    );
-                    return;
-                }
-            }
-        }
     }
 
     /// Persist a wallet to the database and register it in the in-memory map.
@@ -1555,11 +1453,12 @@ mod tests {
     }
 
     /// The Disconnect chokepoint must produce a *visible* state change: after a
-    /// successful start, `stop_spv` unwires the backend and settles the
-    /// indicator on `Stopped` / `Disconnected`. Regression guard ensuring the
-    /// Disconnect button drives the overall state out of its active value.
+    /// successful start, `stop_spv` stops chain sync IN PLACE — keeping the
+    /// backend wired for a restart — and settles the indicator on `Stopped` /
+    /// `Disconnected`. Regression guard ensuring the Disconnect button drives
+    /// the overall state out of its active value while preserving the backend.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn stop_spv_unwires_backend_and_disconnects_indicator() {
+    async fn stop_spv_in_place_keeps_backend_and_disconnects_indicator() {
         use crate::context::connection_status::OverallConnectionState;
 
         let (ctx, sender, _tmp) = offline_testnet_context();
@@ -1577,9 +1476,12 @@ mod tests {
 
         ctx.stop_spv().await;
 
+        let backend = ctx
+            .wallet_backend()
+            .expect("stop_spv must KEEP the backend wired for restart-in-place (NOT unwire it)");
         assert!(
-            ctx.wallet_backend().is_err(),
-            "stop_spv must unwire the backend so the next Connect rebuilds it"
+            !backend.is_started(),
+            "stop_spv must re-arm the start latch so the next Connect can restart"
         );
         assert!(
             !ctx.connection_status().masternodes_ready(),
@@ -1623,32 +1525,28 @@ mod tests {
         );
     }
 
-    /// Regression guard for the Connect → Disconnect → Connect bug:
-    /// `WalletBackend::shutdown` must stop the SPV background task so the
-    /// transitive `Arc<SqlitePersister>` it holds is released *synchronously*
-    /// before `shutdown()` returns.  Without that, the upstream process-global
-    /// `REGISTRY` keeps the persister path registered and the reconnect's
-    /// `SqlitePersister::open` fails with `WalletStorageError::AlreadyOpen`.
+    /// Restart-in-place reconnect: a same-network Disconnect → Connect keeps the
+    /// SAME `WalletBackend` (and its `Arc<SqlitePersister>`) wired, so the
+    /// persister DB is never closed/reopened and `AlreadyOpen` is impossible by
+    /// construction — no release barrier needed. Drives the real production
+    /// path: `stop_spv()` (in-place) then `ensure_wallet_backend_and_start_spv()`.
     ///
-    /// Offline scope: asserts deterministic rebuild + rewire + restart —
-    /// a fresh backend instance, wired again, with `is_started()` set on the
-    /// new instance (its fresh latch fired).  The `Syncing`/`Running` indicator
-    /// transition is network-driven and tested by the backend-e2e suite.
+    /// Validated offline (passes now): the backend pointer is identical across
+    /// disconnect→connect (reuse, not rebuild); `is_started()` is cleared by
+    /// `stop_spv` and re-set by the reconnect (latch + gate re-armed); the
+    /// reconnect returns `Ok` with no `AlreadyOpen`.
     ///
-    /// Limitation: offline, the SPV task and the upstream sync-coordinator
-    /// threads may exit on their own fast enough that the path is free even
-    /// without the barrier, so this end-to-end test is a smoke-check, not a
-    /// deterministic gate.  The deterministic gate on the release mechanism
-    /// itself is `await_persister_released_waits_for_registry_release` below;
-    /// the authoritative end-to-end guard is the online reconnect test in the
-    /// backend-e2e suite.
+    /// NOT validated here (needs the upstream guard): the Q3 timing race — a
+    /// rapid restart of the SAME `platform_address_sync` instance can leak an
+    /// uncancellable / duplicate platform-address loop until the
+    /// `background_generation` guard lands in the pinned rev
+    /// (dashpay/platform#3828). This test asserts the DET-level reuse/restart
+    /// contract, not the absence of that upstream race; live reconnect
+    /// validation against the guarded rev covers the latter.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn reconnect_after_stop_rebuilds_fresh_backend_and_restarts() {
+    async fn reconnect_restart_in_place_reuses_backend() {
         use crate::context::connection_status::OverallConnectionState;
-        use platform_wallet_storage::{SqlitePersister, SqlitePersisterConfig};
 
-        // Serialize this reopen-same-path test against any sibling that races on
-        // the upstream single-open advisory lock; see `backend_reopen_lock`.
         let _reopen_guard = backend_reopen_lock().await;
 
         let (ctx, sender, _tmp) = offline_testnet_context();
@@ -1658,110 +1556,33 @@ mod tests {
             .expect("initial start should wire then start offline");
         let first = ctx.wallet_backend().expect("backend wired after start");
         assert!(first.is_started(), "initial start must latch the backend");
-
-        // Capture the raw pointer for the fresh-backend identity check below,
-        // and the persister path to assert the REGISTRY entry is cleared.
         let first_ptr = Arc::as_ptr(&first);
-        let persister_path = first.spv_storage_dir().join("platform-wallet.sqlite");
         drop(first);
 
+        // Disconnect IN PLACE via the production chokepoint: the backend stays
+        // wired (slot not taken), the start latch is re-armed, the indicator
+        // settles on Disconnected.
         ctx.stop_spv().await;
+        let after_stop = ctx
+            .wallet_backend()
+            .expect("stop_spv must KEEP the backend wired for restart-in-place");
         assert!(
-            ctx.wallet_backend().is_err(),
-            "precondition: stop_spv unwired the backend"
+            !after_stop.is_started(),
+            "stop_spv must re-arm the start latch (is_started == false)"
         );
         assert_eq!(
             ctx.connection_status().overall_state(),
             OverallConnectionState::Disconnected,
-            "precondition: disconnected before reconnect"
-        );
-
-        // After `stop_spv()` returns the persister path must be free: the
-        // B-fix `shutdown()` joins the SPV run loop, then `stop_spv` drops the
-        // backend and runs `await_persister_released`, which blocks until the
-        // detached upstream coordinator threads have dropped their transitive
-        // `Arc<SqlitePersister>` and the process-global REGISTRY entry is gone.
-        //
-        // Assert the path is free *immediately* after `stop_spv()` returns.
-        let reopen = SqlitePersister::open(SqlitePersisterConfig::new(&persister_path));
-        assert!(
-            reopen.is_ok(),
-            "persister path must be released synchronously after stop_spv() — \
-             if this is AlreadyOpen the SPV task still holds the path open: {:?}",
-            reopen.err()
-        );
-        // Drop the probe handle before the reconnect re-opens the same path.
-        drop(reopen);
-
-        ctx.ensure_wallet_backend_and_start_spv(sender)
-            .await
-            .expect("reconnect should wire then start a fresh backend offline");
-
-        let second = ctx
-            .wallet_backend()
-            .expect("backend must be wired again after reconnect");
-        assert!(
-            first_ptr != Arc::as_ptr(&second),
-            "reconnect must rebuild a fresh backend, not revive the dropped one"
+            "stop_spv must settle the indicator on Disconnected"
         );
         assert!(
-            second.is_started(),
-            "reconnect must restart chain sync on the fresh backend's latch"
+            !ctx.connection_status().masternodes_ready(),
+            "stop_spv must re-arm the quorum gate (masternodes_ready == false)"
         );
-
-        second.shutdown().await;
-    }
-
-    /// Restart-in-place reconnect: `WalletBackend::stop_in_place()` keeps the
-    /// backend (and its `Arc<SqlitePersister>`) wired, so the reconnect reuses
-    /// the SAME instance — the persister DB is never closed/reopened, so
-    /// `AlreadyOpen` is impossible by construction (no barrier needed).
-    ///
-    /// Asserts: same backend pointer across disconnect→connect (reuse, not
-    /// rebuild); `is_started()` cleared by `stop_in_place()` then re-set by the
-    /// reconnect's `start()` (latch + gate re-armed); reconnect returns `Ok`
-    /// with no `AlreadyOpen`.
-    ///
-    /// IGNORED: restart-in-place re-`start()`s the SAME `platform_address_sync`
-    /// instance, which is race-free only once the upstream
-    /// `background_generation` guard lands there (dashpay/platform#3828, branch
-    /// `fix/wallet-core-derived-rehydration`). Against the guard-less pinned rev
-    /// this can leak an uncancellable / duplicate platform-address loop, so this
-    /// test must run only after that fix is in the pinned rev. Un-ignore it
-    /// together with wiring `stop_in_place` into `stop_spv` (see the TODO in
-    /// `stop_spv`).
-    #[ignore = "restart-in-place is safe only against a platform rev that carries the \
-                platform_address_sync background_generation guard (dashpay/platform#3828); \
-                un-ignore when stop_spv is flipped to restart-in-place"]
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn reconnect_restart_in_place_reuses_backend() {
-        let _reopen_guard = backend_reopen_lock().await;
-
-        let (ctx, sender, _tmp) = offline_testnet_context();
-
-        ctx.ensure_wallet_backend_and_start_spv(sender.clone())
-            .await
-            .expect("initial start should wire then start offline");
-        let first = ctx.wallet_backend().expect("backend wired after start");
-        assert!(first.is_started(), "initial start must latch the backend");
-        let first_ptr = Arc::as_ptr(&first);
-        drop(first);
-
-        // Stop IN PLACE: the backend stays wired (slot not taken).
-        let backend = ctx.wallet_backend().expect("backend still wired");
-        backend.stop_in_place().await;
-        assert!(
-            !backend.is_started(),
-            "stop_in_place must re-arm the start latch (is_started == false)"
-        );
-        assert!(
-            ctx.wallet_backend().is_ok(),
-            "stop_in_place must keep the backend wired (NOT take it)"
-        );
-        drop(backend);
+        drop(after_stop);
 
         // Reconnect: `ensure_wallet_backend` fast-paths on the populated slot
-        // (no `WalletBackend::new`, no `SqlitePersister::open`), so the same
+        // (no `WalletBackend::new`, no `SqlitePersister::open`), so the SAME
         // instance restarts — structurally immune to `AlreadyOpen`.
         ctx.ensure_wallet_backend_and_start_spv(sender)
             .await
@@ -1780,74 +1601,6 @@ mod tests {
         );
 
         second.shutdown().await;
-    }
-
-    /// Deterministic gate for the B-2 reconnect fix: `await_persister_released`
-    /// must BLOCK while the persister path is still held in the process-global
-    /// open-path REGISTRY, and return only once the holder drops it — at which
-    /// point the path is reopenable.
-    ///
-    /// This watches the RIGHT object — the `SqlitePersister` registry — and is
-    /// deterministic (no reliance on coordinator-thread exit timing): we hold
-    /// the persister ourselves, prove a concurrent open is refused with
-    /// `AlreadyOpen`, prove the barrier is still waiting while we hold it, then
-    /// release and prove the barrier unblocks and the path is free. A barrier
-    /// that returned eagerly (the pre-fix behaviour) would fail the
-    /// "still-waiting-while-held" assertion.
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn await_persister_released_waits_for_registry_release() {
-        use platform_wallet_storage::{SqlitePersister, SqlitePersisterConfig, WalletStorageError};
-
-        // Serialize against any sibling that races on the upstream single-open
-        // registry; the path here is unique to a fresh tempdir, but the global
-        // REGISTRY mutex is shared process-wide.
-        let _reopen_guard = backend_reopen_lock().await;
-
-        let (ctx, _sender, _tmp) = offline_testnet_context();
-
-        let probe_dir = tempfile::tempdir().expect("create probe tempdir");
-        let path = probe_dir.path().join("platform-wallet.sqlite");
-
-        // Hold the persister open: the path is now registered, so any second
-        // in-process open of it is refused with `AlreadyOpen`.
-        let held = SqlitePersister::open(SqlitePersisterConfig::new(&path))
-            .expect("first open should succeed and register the path");
-        assert!(
-            matches!(
-                SqlitePersister::open(SqlitePersisterConfig::new(&path)),
-                Err(WalletStorageError::AlreadyOpen { .. })
-            ),
-            "precondition: a held path must refuse a second open with AlreadyOpen"
-        );
-
-        // Run the barrier concurrently. It must NOT complete while `held` keeps
-        // the path registered.
-        let barrier_ctx = Arc::clone(&ctx);
-        let barrier_path = path.clone();
-        let barrier =
-            tokio::spawn(async move { barrier_ctx.await_persister_released(&barrier_path).await });
-
-        // Give the barrier several poll cycles (POLL_INTERVAL is 20ms). Because
-        // `held` still pins the path, every probe open returns AlreadyOpen, so
-        // the barrier must still be looping — never finished.
-        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-        assert!(
-            !barrier.is_finished(),
-            "barrier must keep waiting while the persister path is still held"
-        );
-
-        // Release the path. The barrier's next probe open succeeds, it drops
-        // the probe, and returns.
-        drop(held);
-
-        tokio::time::timeout(std::time::Duration::from_secs(2), barrier)
-            .await
-            .expect("barrier must return promptly once the path is released")
-            .expect("barrier task must not panic");
-
-        // The barrier dropped its probe before returning, so the path is free.
-        SqlitePersister::open(SqlitePersisterConfig::new(&path))
-            .expect("path must be reopenable after the barrier returns");
     }
 
     /// QA-007: a failure at the (fallible) wiring step must surface — the

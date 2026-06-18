@@ -862,15 +862,6 @@ impl AppContext {
             .ok_or(TaskError::WalletBackendNotYetWired)
     }
 
-    /// Unwire the wallet seam, returning the previously wired backend if any.
-    ///
-    /// The next [`Self::ensure_wallet_backend`] call rebuilds a fresh backend.
-    /// Used by the disconnect chokepoint ([`Self::stop_spv`]) to tear the seam
-    /// down so a subsequent Connect starts from a clean, restartable state.
-    pub(crate) fn take_wallet_backend(&self) -> Option<Arc<WalletBackend>> {
-        self.wallet_backend.swap(None)
-    }
-
     /// Install the interactive secret-prompt host (the egui host in the GUI).
     ///
     /// Must be called **before** [`Self::ensure_wallet_backend`] builds the

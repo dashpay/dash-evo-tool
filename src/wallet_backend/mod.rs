@@ -1113,14 +1113,13 @@ impl WalletBackend {
     /// ([`AppContext::stop_spv`](crate::context::AppContext::stop_spv) calls it).
     ///
     /// SAFETY (restart-in-place vs the upstream coordinators): restarting the
-    /// SAME coordinator instance is only race-free once every coordinator
-    /// clears its cancel slot under a generation guard. `identity_sync` and
-    /// `shielded_sync` already do; `platform_address_sync` does NOT in the
-    /// pinned platform rev, so until the upstream guard lands
-    /// (dashpay/platform#3828) a rapid reconnect can leak an uncancellable /
-    /// duplicate platform-address loop — see the `TODO(dashpay/platform#3828)`
-    /// at the `stop_spv` call site for the finalize step (`cargo update` the
-    /// platform crates once the guard is in the pinned rev).
+    /// SAME coordinator instance is race-free because every coordinator clears
+    /// its cancel slot under a `background_generation` guard in the pinned
+    /// platform rev — `identity_sync`, `shielded_sync`, and (since b4506492)
+    /// `platform_address_sync`. Without that guard a lagging old thread could
+    /// clobber a freshly-installed cancel token, leaking an uncancellable /
+    /// duplicate loop; the guard makes the stale thread observe the bumped
+    /// generation and stand down.
     pub async fn stop_in_place(&self) {
         // 1. Stop the SPV run loop first (producer), keeping the SpvRuntime.
         if let Err(e) = self.inner.pwm.spv().stop().await {

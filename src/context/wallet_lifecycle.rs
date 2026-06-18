@@ -390,11 +390,11 @@ impl AppContext {
         // uses a per-network context with a different persister and is
         // unaffected by this.)
         //
-        // TODO(dashpay/platform#3828): restart-in-place runtime safety depends on the
-        // platform_address_sync background_generation guard being in the pinned rev.
-        // Until that lands + we cargo update, a rapid reconnect can leak an uncancellable
-        // platform-address sync loop (Q3). Finalize = cargo update -p platform-wallet
-        // -p platform-wallet-storage -p dash-sdk, then re-run live reconnect validation.
+        // Restart-in-place runtime safety: all three upstream coordinators clear
+        // their cancel slot under a `background_generation` guard in the pinned
+        // platform rev (`platform_address_sync` gained it in b4506492, matching
+        // `identity_sync`/`shielded_sync`), so a rapid reconnect cannot leak an
+        // uncancellable / duplicate sync loop (Q3).
         if let Ok(backend) = self.wallet_backend() {
             backend.stop_in_place().await;
         }
@@ -1536,13 +1536,13 @@ mod tests {
     /// `stop_spv` and re-set by the reconnect (latch + gate re-armed); the
     /// reconnect returns `Ok` with no `AlreadyOpen`.
     ///
-    /// NOT validated here (needs the upstream guard): the Q3 timing race — a
-    /// rapid restart of the SAME `platform_address_sync` instance can leak an
-    /// uncancellable / duplicate platform-address loop until the
-    /// `background_generation` guard lands in the pinned rev
-    /// (dashpay/platform#3828). This test asserts the DET-level reuse/restart
-    /// contract, not the absence of that upstream race; live reconnect
-    /// validation against the guarded rev covers the latter.
+    /// Upstream Q3 race protection now lives in the pinned platform rev: all
+    /// three coordinators (incl. `platform_address_sync` since b4506492) gate
+    /// their cancel-slot clear on `background_generation`, so a rapid restart of
+    /// the SAME instance cannot leak an uncancellable / duplicate loop. This
+    /// offline test asserts the DET-level reuse/restart contract; it does not
+    /// itself force the timing race — full live behavior is covered by the
+    /// network-gated (`#[ignore]`d) backend-e2e B-reconnect test.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn reconnect_restart_in_place_reuses_backend() {
         use crate::context::connection_status::OverallConnectionState;

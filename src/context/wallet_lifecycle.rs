@@ -3727,4 +3727,79 @@ mod tests {
 
         backend.shutdown().await;
     }
+
+    /// C.7 regression guard: `ensure_identity_funding_accounts` must succeed
+    /// on a watch-only reloaded HD wallet for BOTH `IdentityRegistration` AND
+    /// `IdentityTopUp{index}`.
+    ///
+    /// The live wallet is ALWAYS watch-only in DET — wallets are loaded
+    /// seedless from the persistor; the seed is only held JIT inside a
+    /// `with_secret_session` scope.  Before the fix,
+    /// `provision_identity_funding_account` called
+    /// `kw.add_account(account_type, None)`, which internally reaches
+    /// `root_extended_keys.rs:428` to derive a hardened path from the absent
+    /// private key and fails:
+    ///
+    ///   `WalletBackend { source: AssetLockTransaction("Invalid parameter:
+    ///    Watch-only wallet has no private key") }`
+    ///
+    /// After the fix it builds a short-lived signable `UpstreamWallet` from the
+    /// provided seed bytes, derives the hardened account xpub, and calls
+    /// `kw.add_account(account_type, Some(xpub))`, which succeeds on any wallet
+    /// regardless of private-key availability.
+    ///
+    /// Deterministic: the live wallet is unconditionally watch-only — there is
+    /// no timing dependency and no network required.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn ensure_identity_funding_accounts_succeeds_on_watch_only_wallet() {
+        let (ctx, sender, _tmp) = offline_testnet_context();
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("ensure_wallet_backend should succeed offline");
+        let backend = ctx.wallet_backend().expect("backend wired");
+
+        // Build and upstream-register the wallet synchronously so
+        // `resolve_wallet` inside `provision_identity_funding_account` can
+        // find it.  `register_wallet_from_seed` creates the upstream watch-only
+        // `PlatformWallet` — the same state that every cold-boot reload
+        // produces.
+        let seed = [0xC7u8; 64];
+        let wallet = crate::model::wallet::Wallet::new_from_seed(
+            seed,
+            Network::Testnet,
+            None,
+            None, // no password
+        )
+        .expect("build wallet");
+        let seed_hash = wallet.seed_hash();
+        backend
+            .register_wallet_from_seed(&seed_hash, &seed, Some(0))
+            .await
+            .expect("upstream wallet registration must succeed offline");
+
+        // Use a non-zero registration index so `IdentityTopUp{3}` is
+        // genuinely novel.  The upstream persistor never pre-creates
+        // `IdentityTopUp{…}` — it only enters the manifest after a
+        // register/top-up call, so a reloaded wallet ALWAYS hits the
+        // provisioning branch on its first use.
+        let registration_index = 3u32;
+
+        backend
+            .ensure_identity_funding_accounts(&seed_hash, &seed, registration_index)
+            .await
+            .expect(
+                "watch-only wallet: funding account provisioning must succeed \
+                 via seed-derived xpub; if this is 'Watch-only wallet has no \
+                 private key' the fix has been reverted",
+            );
+
+        // Idempotent: both accounts already present — second call must be a
+        // no-op (direct membership checks, no error-string parsing).
+        backend
+            .ensure_identity_funding_accounts(&seed_hash, &seed, registration_index)
+            .await
+            .expect("second provisioning call must be idempotent");
+
+        backend.shutdown().await;
+    }
 }

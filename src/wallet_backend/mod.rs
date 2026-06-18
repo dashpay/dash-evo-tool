@@ -1037,7 +1037,42 @@ impl WalletBackend {
     }
 
     /// Stop all upstream background tasks. Idempotent.
+    ///
+    /// Stops the SPV run-loop task **first**, then quiesces the sync-manager
+    /// coordinators.  Ordering matters for the platform-open registry:
+    ///
+    /// The spawned SPV background task holds `Arc<SpvRuntime>`, which
+    /// transitively keeps `Arc<SqlitePersister>` alive via the chain
+    /// `SpvRuntime → event_manager → BalanceUpdateHandler → wallets →
+    /// Arc<PlatformWallet> → WalletPersister::inner`.  The upstream
+    /// `platform-wallet-storage` crate uses a process-global `REGISTRY`
+    /// (`OnceLock<Mutex<HashSet<PathBuf>>>`) to enforce a single open per
+    /// path; a path is removed from the registry only in
+    /// `Drop<SqlitePersister>`.  A still-running SPV task prevents the last
+    /// `Arc<SqlitePersister>` from dropping, so the path stays registered and
+    /// the next `WalletBackend::new` (reconnect) fails with
+    /// `WalletStorageError::AlreadyOpen`.
+    ///
+    /// Calling `SpvRuntime::stop()` here joins the background task
+    /// (abort-with-15 s timeout), releasing those transitive refs.  Once the
+    /// task is gone, the remaining refs are all structural (inside
+    /// `PlatformWalletManager`) and are released synchronously when the
+    /// `WalletBackend` itself is dropped by the caller.
+    ///
+    /// Coordinator ordering: stopping the SPV *producer* before the
+    /// *consumers* is safe — no new events can arrive, and any in-flight
+    /// `sync_now` pass will complete before the subsequent `quiesce()` returns.
     pub async fn shutdown(&self) {
+        // Stop the SPV run-loop first: joins/aborts the background task so the
+        // transitive Arc<SqlitePersister> it holds is released before the
+        // manager tears down its coordinators.  Errors here are non-fatal —
+        // teardown must proceed regardless.
+        if let Err(e) = self.inner.pwm.spv().stop().await {
+            tracing::warn!(
+                error = ?e,
+                "SPV run loop did not stop cleanly during shutdown; continuing teardown"
+            );
+        }
         self.inner.pwm.shutdown().await;
     }
 

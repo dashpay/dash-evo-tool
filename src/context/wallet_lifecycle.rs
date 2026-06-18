@@ -1503,18 +1503,26 @@ mod tests {
         );
     }
 
-    /// Reconnect round trip: start → `stop_spv` → restart must rebuild a *fresh*
-    /// backend and restart chain sync, proving the disconnect leaves the system
-    /// in a reconnectable state (the one-shot start latch does not strand it).
+    /// Regression guard for the Connect → Disconnect → Connect bug:
+    /// `WalletBackend::shutdown` must stop the SPV background task so the
+    /// transitive `Arc<SqlitePersister>` it holds is released *synchronously*
+    /// before `shutdown()` returns.  Without that, the upstream process-global
+    /// `REGISTRY` keeps the persister path registered and the reconnect's
+    /// `SqlitePersister::open` fails with `WalletStorageError::AlreadyOpen`.
     ///
-    /// Offline scope: this asserts the deterministic rebuild + rewire + restart
-    /// — a new backend instance, wired again, with `is_started()` set on the new
-    /// instance (its fresh latch fired). The indicator's onward transition to
-    /// `Syncing`/`Running` is network-driven (pushed by the `EventBridge` from
-    /// live SPV events) and so is exercised by the backend-e2e suite, not here.
+    /// Offline scope: asserts deterministic rebuild + rewire + restart —
+    /// a fresh backend instance, wired again, with `is_started()` set on the
+    /// new instance (its fresh latch fired).  The `Syncing`/`Running` indicator
+    /// transition is network-driven and tested by the backend-e2e suite.
+    ///
+    /// Limitation: offline, the SPV task may exit on its own fast enough to
+    /// pass even without the fix.  The authoritative guard is the online
+    /// reconnect test in the backend-e2e suite; this test exercises the
+    /// synchronous-release *path* and acts as a quick smoke-check.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn reconnect_after_stop_rebuilds_fresh_backend_and_restarts() {
         use crate::context::connection_status::OverallConnectionState;
+        use platform_wallet_storage::{SqlitePersister, SqlitePersisterConfig};
 
         // Serialize this reopen-same-path test against any sibling that races on
         // the upstream single-open advisory lock; see `backend_reopen_lock`.
@@ -1527,17 +1535,11 @@ mod tests {
             .expect("initial start should wire then start offline");
         let first = ctx.wallet_backend().expect("backend wired after start");
         assert!(first.is_started(), "initial start must latch the backend");
-        // Capture the old backend's identity (raw pointer) and a weak handle,
-        // then release the strong ref before reconnecting. The upstream
-        // persister enforces a single open per path
-        // (WalletStorageError::AlreadyOpen); a lingering strong ref — `first`
-        // here, or a clone held by the upstream run-loop subtask — keeps the old
-        // handle's advisory lock alive, so the reconnect's open of the same path
-        // would be refused. The fresh-backend identity check below uses the raw
-        // pointer; the weak handle lets us prove the old backend is fully torn
-        // down before reopening.
+
+        // Capture the raw pointer for the fresh-backend identity check below,
+        // and the persister path to assert the REGISTRY entry is cleared.
         let first_ptr = Arc::as_ptr(&first);
-        let first_weak = Arc::downgrade(&first);
+        let persister_path = first.spv_storage_dir().join("platform-wallet.sqlite");
         drop(first);
 
         ctx.stop_spv().await;
@@ -1551,19 +1553,24 @@ mod tests {
             "precondition: disconnected before reconnect"
         );
 
-        // Deterministically wait for the last strong ref to drop: `stop_spv`
-        // awaits the backend's own shutdown, but a background subtask (the
-        // upstream run loop) may briefly outlive that await still holding a
-        // backend clone, and with it the SQLite advisory lock. Block the reopen
-        // until that clone is gone so the reconnect never races into AlreadyOpen.
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
-        while first_weak.strong_count() > 0 {
-            assert!(
-                tokio::time::Instant::now() < deadline,
-                "old backend was not torn down within the timeout; a subtask still holds it"
-            );
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        }
+        // With the fix, `shutdown()` calls `spv().stop().await` which joins the
+        // SPV background task before returning.  That releases the task's
+        // `Arc<SpvRuntime>`, which was the last ref keeping the transitive
+        // `Arc<SqlitePersister>` alive outside of `Inner` itself.  When
+        // `stop_spv()` then drops the backend local, `Inner` drops
+        // synchronously, releasing all remaining `Arc<SqlitePersister>` refs and
+        // clearing the REGISTRY entry.  No polling band-aid is needed.
+        //
+        // Assert the path is free *immediately* after `stop_spv()` returns.
+        let reopen = SqlitePersister::open(SqlitePersisterConfig::new(&persister_path));
+        assert!(
+            reopen.is_ok(),
+            "persister path must be released synchronously after stop_spv() — \
+             if this is AlreadyOpen the SPV task still holds the path open: {:?}",
+            reopen.err()
+        );
+        // Drop the probe handle before the reconnect re-opens the same path.
+        drop(reopen);
 
         ctx.ensure_wallet_backend_and_start_spv(sender)
             .await

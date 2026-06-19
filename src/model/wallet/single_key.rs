@@ -68,7 +68,7 @@ impl std::fmt::Debug for OpenSingleKey {
 }
 
 /// A closed (encrypted) single key
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct ClosedSingleKey {
     /// SHA-256 hash of the private key
     pub key_hash: SingleKeyHash,
@@ -78,6 +78,23 @@ pub struct ClosedSingleKey {
     pub salt: Vec<u8>,
     /// Nonce used for encryption
     pub nonce: Vec<u8>,
+}
+
+impl std::fmt::Debug for ClosedSingleKey {
+    /// Redacting `Debug`: `encrypted_private_key` may hold raw 32 key bytes
+    /// (the no-password / pre-migration shape), so a derived `Debug` would
+    /// leak them as a decimal byte array (finding `6a2818cd`). Mirrors
+    /// `ClosedKeyItem` / `PrivateKeyData`: prints lengths and the non-secret
+    /// `key_hash`, never the protected bytes. Parents `SingleKeyData` /
+    /// `SingleKeyWallet` are safe by delegation.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClosedSingleKey")
+            .field("key_hash", &hex::encode(self.key_hash))
+            .field("encrypted_private_key", &"[redacted]")
+            .field("salt_len", &self.salt.len())
+            .field("nonce_len", &self.nonce.len())
+            .finish()
+    }
 }
 
 impl SingleKeyData {
@@ -433,5 +450,56 @@ mod tests {
 
         assert!(wallet.is_open());
         assert!(!wallet.address.to_string().is_empty());
+    }
+
+    /// TS-DBG-01 (6a2818cd) — `ClosedSingleKey`'s `{:?}` exposes no raw 32
+    /// bytes, in neither hex nor decimal-array form (the latter is the shape
+    /// the pre-fix derived `Debug` actually leaked), and the guarantee holds
+    /// transitively through `SingleKeyData::Closed` and a `SingleKeyWallet`
+    /// that holds it.
+    #[test]
+    fn ts_dbg_01_closed_single_key_debug_redacts_raw_bytes() {
+        use crate::wallet_backend::leak_test_support::{assert_no_leak_bytes, distinctive_secret_32};
+
+        let secret = distinctive_secret_32();
+        // A no-password / pre-migration closed key holds the raw 32 bytes in
+        // `encrypted_private_key` — exactly the leak the fix guards.
+        let closed = ClosedSingleKey {
+            key_hash: ClosedSingleKey::compute_key_hash(&secret),
+            encrypted_private_key: secret.to_vec(),
+            salt: Vec::new(),
+            nonce: Vec::new(),
+        };
+        let rendered = format!("{closed:?}");
+        assert_no_leak_bytes(&rendered, &secret, "ClosedSingleKey Debug");
+        assert!(
+            rendered.contains("[redacted]"),
+            "expected a redaction marker: {rendered}"
+        );
+
+        // Through SingleKeyData::Closed (derives Debug, holds the variant).
+        let data = SingleKeyData::Closed(closed.clone());
+        assert_no_leak_bytes(&format!("{data:?}"), &secret, "SingleKeyData::Closed Debug");
+
+        // Through a SingleKeyWallet that holds the closed key.
+        let priv_key =
+            PrivateKey::from_byte_array(&secret, Network::Testnet).expect("valid key bytes");
+        let secp = Secp256k1::new();
+        let public_key = priv_key.public_key(&secp);
+        let address = Address::p2pkh(&public_key, Network::Testnet);
+        let wallet = SingleKeyWallet {
+            private_key_data: data,
+            uses_password: true,
+            public_key,
+            address,
+            alias: None,
+            key_hash: closed.key_hash,
+            confirmed_balance: 0,
+            unconfirmed_balance: 0,
+            total_balance: 0,
+            utxos: HashMap::new(),
+            core_wallet_name: None,
+        };
+        assert_no_leak_bytes(&format!("{wallet:?}"), &secret, "SingleKeyWallet Debug");
     }
 }

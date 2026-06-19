@@ -20,7 +20,27 @@ const AUTH_PUBKEY_WARM_KEY_COUNT: u32 = 12;
 /// Copy D — the shared, opt-in technical detail attached to the one-time
 /// at-rest disclosure notice (jargon-free per the persona spec). Surfaced via
 /// `with_details`, so it lives in the collapsible panel and the log.
-const INTERIM_AT_REST_DETAILS: &str = "This wallet's secrets are now stored in a shared protected location on this device, guarded by your computer's account and file permissions rather than by your wallet password. This is a temporary step while a stronger, built-in protection is being finished. Your keys never leave this device. To keep this wallet extra safe in the meantime, make sure your computer account is password-protected and not shared.";
+pub const INTERIM_AT_REST_DETAILS: &str = "This wallet's secrets are now stored in a shared protected location on this device, guarded by your computer's account and file permissions rather than by your wallet password. This is a temporary step while a stronger, built-in protection is being finished. Your keys never leave this device. To keep this wallet extra safe in the meantime, make sure your computer account is password-protected and not shared.";
+
+/// Copy A — the one-time disclosure shown when a password-protected HD wallet
+/// finishes its lazy migration. `wallet` is the wallet alias (or a default).
+/// Distinct text from [`single_key_migration_notice`] so `MessageBanner`'s
+/// text-dedup never collapses the two when both migrate in one session.
+pub fn wallet_migration_notice(wallet: &str) -> String {
+    let wallet = if wallet.is_empty() { "Your wallet" } else { wallet };
+    format!(
+        "\"{wallet}\" no longer needs its password to open. Your wallet stays on this device, protected by your computer's account. Full password protection will return in a future update."
+    )
+}
+
+/// Copy B — the one-time disclosure shown when a protected imported key
+/// finishes its lazy migration. `key` is the key's user-facing label. Distinct
+/// text from [`wallet_migration_notice`] (see that fn's note).
+pub fn single_key_migration_notice(key: &str) -> String {
+    format!(
+        "The imported key \"{key}\" no longer needs its passphrase to use. It stays on this device, protected by your computer's account. Full passphrase protection will return in a future update."
+    )
+}
 
 /// The upstream `dash-spv` `DiskStorageManager` chain-cache entries under the
 /// per-network SPV directory. Each is a subfolder except `peers.dat`. The
@@ -287,9 +307,7 @@ impl AppContext {
         use crate::ui::MessageType;
         use crate::ui::components::message_banner::MessageBanner;
 
-        let message = format!(
-            "The imported key \"{label}\" no longer needs its passphrase to use. It stays on this device, protected by your computer's account. Full passphrase protection will return in a future update."
-        );
+        let message = single_key_migration_notice(label);
         MessageBanner::set_global(self.egui_ctx(), &message, MessageType::Warning)
             .with_details(INTERIM_AT_REST_DETAILS);
     }
@@ -1061,13 +1079,8 @@ impl AppContext {
             }
         }
 
-        // Copy A (wallet) — Warning so it does not auto-dismiss before read.
-        // Distinct text from the imported-key notice so `set_global`'s dedup
-        // does not collapse them when both migrate in one session.
-        let wallet = alias.filter(|a| !a.is_empty()).unwrap_or("Your wallet");
-        let message = format!(
-            "\"{wallet}\" no longer needs its password to open. Your wallet stays on this device, protected by your computer's account. Full password protection will return in a future update."
-        );
+        // Copy A — Warning so it does not auto-dismiss before read.
+        let message = wallet_migration_notice(alias.unwrap_or_default());
         MessageBanner::set_global(self.egui_ctx(), &message, MessageType::Warning)
             .with_details(INTERIM_AT_REST_DETAILS);
     }

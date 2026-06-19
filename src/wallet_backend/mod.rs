@@ -34,6 +34,7 @@ mod event_bridge;
 pub mod hydration;
 #[cfg(not(any(test, feature = "bench")))]
 pub(crate) mod hydration;
+pub mod identity_key_store;
 mod kv;
 #[cfg(test)]
 pub(crate) mod leak_test_support;
@@ -68,6 +69,7 @@ pub use secret_prompt::{
     NullSecretPrompt, RememberPolicy, SecretPrompt, SecretPromptCancelled, SecretPromptReply,
     SecretPromptRequest, SecretPromptRetry, SecretScope,
 };
+pub use identity_key_store::IdentityKeyView;
 pub use secret_seam::SecretSeam;
 
 use coordinator_gate::CoordinatorGate;

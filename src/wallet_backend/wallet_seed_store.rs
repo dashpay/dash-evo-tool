@@ -29,10 +29,13 @@ use std::sync::Arc;
 use platform_wallet_storage::secrets::{
     SecretBytes, SecretStore, SecretStoreError, WalletId as SecretWalletId,
 };
+use zeroize::Zeroizing;
 
 use crate::backend_task::error::TaskError;
 use crate::model::wallet::WalletSeedHash;
 use crate::model::wallet::seed_envelope::{STORED_SEED_ENVELOPE_VERSION, StoredSeedEnvelope};
+use crate::wallet_backend::secret_access::SEED_RAW_LABEL;
+use crate::wallet_backend::secret_seam::SecretSeam;
 
 /// Label under which the bincode-encoded envelope is stored. Versioned
 /// so a future shape change (e.g. an additional field that breaks
@@ -135,6 +138,54 @@ impl<'a> WalletSeedView<'a> {
         self.secret_store
             .delete(&scope_for(seed_hash), ENVELOPE_LABEL)
             .map_err(map_err)
+    }
+
+    /// Retained decode-only legacy reader: read the `envelope.v1` row. Alias
+    /// for [`Self::get`] under the migration-reader name — the loader and the
+    /// chokepoint reach for it explicitly when the raw seed is absent.
+    pub fn legacy_envelope_get(
+        &self,
+        seed_hash: &WalletSeedHash,
+    ) -> Result<Option<StoredSeedEnvelope>, TaskError> {
+        self.get(seed_hash)
+    }
+
+    /// Store the RAW 64-byte BIP-39 seed under `seed.raw.v1` via the seam.
+    /// No DET-side encryption — the seam writes the bytes verbatim. The
+    /// non-secret metadata (`uses_password`, hint, xpub) lives in `WalletMeta`.
+    pub fn set_raw(&self, seed_hash: &WalletSeedHash, seed: &[u8; 64]) -> Result<(), TaskError> {
+        SecretSeam::new(self.secret_store).put_secret(
+            &scope_for(seed_hash),
+            SEED_RAW_LABEL,
+            &SecretBytes::from_slice(seed),
+        )
+    }
+
+    /// Read the RAW 64-byte seed under `seed.raw.v1`, or `None` if it has not
+    /// been migrated to the raw label yet.
+    pub fn get_raw(
+        &self,
+        seed_hash: &WalletSeedHash,
+    ) -> Result<Option<Zeroizing<[u8; 64]>>, TaskError> {
+        let Some(bytes) =
+            SecretSeam::new(self.secret_store).get_secret(&scope_for(seed_hash), SEED_RAW_LABEL)?
+        else {
+            return Ok(None);
+        };
+        let seed: [u8; 64] = bytes.expose_secret().try_into().map_err(|_| {
+            tracing::warn!(
+                target = "wallet_backend::wallet_seed_store",
+                blob_len = bytes.expose_secret().len(),
+                "Raw seam seed has wrong length",
+            );
+            map_err(SecretStoreError::MalformedVault)
+        })?;
+        Ok(Some(Zeroizing::new(seed)))
+    }
+
+    /// Idempotent delete of the raw `seed.raw.v1` row.
+    pub fn delete_raw(&self, seed_hash: &WalletSeedHash) -> Result<(), TaskError> {
+        SecretSeam::new(self.secret_store).delete_secret(&scope_for(seed_hash), SEED_RAW_LABEL)
     }
 }
 
@@ -344,5 +395,34 @@ mod tests {
 
         assert_eq!(view.get(&a).unwrap().unwrap(), envelope_a);
         assert_eq!(view.get(&b).unwrap().unwrap(), envelope_b);
+    }
+
+    /// The raw seam path round-trips the exact 64-byte seed and is independent
+    /// of the legacy `envelope.v1` row (distinct labels). `get_raw` on a hash
+    /// with only a legacy envelope returns `None`.
+    #[test]
+    fn raw_seed_round_trips_independent_of_legacy() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = fresh_store(dir.path());
+        let view = WalletSeedView::new(&store);
+        let seed_hash: WalletSeedHash = [0xB1; 32];
+        let mut seed = [0u8; 64];
+        for (i, b) in seed.iter_mut().enumerate() {
+            *b = (i as u8).wrapping_mul(9).wrapping_add(1);
+        }
+
+        view.set_raw(&seed_hash, &seed).expect("set_raw");
+        assert_eq!(*view.get_raw(&seed_hash).unwrap().unwrap(), seed);
+        // The legacy reader sees nothing under this hash.
+        assert!(view.legacy_envelope_get(&seed_hash).unwrap().is_none());
+
+        view.delete_raw(&seed_hash).expect("delete_raw");
+        assert!(view.get_raw(&seed_hash).unwrap().is_none());
+
+        // A legacy-only hash returns None from the raw reader.
+        let legacy_only: WalletSeedHash = [0xB2; 32];
+        view.set(&legacy_only, &sample_non_password_envelope())
+            .unwrap();
+        assert!(view.get_raw(&legacy_only).unwrap().is_none());
     }
 }

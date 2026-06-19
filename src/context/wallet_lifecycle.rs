@@ -552,6 +552,25 @@ impl AppContext {
     /// the backend, once built, reuses the very same vault handle.
     fn write_seed_envelope(&self, wallet: &Wallet) -> Result<(), TaskError> {
         let seed_hash = wallet.seed_hash();
+        let view = WalletSeedView::new(&self.secret_store);
+        // No-password wallets store the raw 64-byte seed directly through the
+        // seam: `encrypted_seed_slice()` is the verbatim seed (no DET AES-GCM).
+        // The non-secret metadata rides in `WalletMeta` (write_wallet_meta).
+        if !wallet.uses_password {
+            let seed: [u8; 64] =
+                wallet
+                    .encrypted_seed_slice()
+                    .try_into()
+                    .map_err(|_| TaskError::WalletSeedStorage {
+                        source: Box::new(
+                            platform_wallet_storage::secrets::SecretStoreError::MalformedVault,
+                        ),
+                    })?;
+            return view.set_raw(&seed_hash, &seed);
+        }
+        // Password wallets keep the legacy AES-GCM envelope at creation; they
+        // migrate to the raw seam lazily at the next unlock (one prompt the
+        // user already does).
         let envelope = StoredSeedEnvelope {
             encrypted_seed: wallet.encrypted_seed_slice().to_vec(),
             salt: wallet.salt().to_vec(),
@@ -563,7 +582,7 @@ impl AppContext {
                 .encode()
                 .to_vec(),
         };
-        WalletSeedView::new(&self.secret_store).set(&seed_hash, &envelope)
+        view.set(&seed_hash, &envelope)
     }
 
     /// Persist a newly-registered wallet's metadata (alias / is_main /

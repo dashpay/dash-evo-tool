@@ -209,35 +209,57 @@ impl<'a> SingleKeyView<'a> {
                 .map_err(|_| TaskError::SingleKeyCryptoFailure)?,
         );
 
-        let entry = match passphrase.passphrase.as_ref().map(|p| p.as_str()) {
-            Some(p) if !p.is_empty() => {
-                if p.chars().count() < MIN_SINGLE_KEY_PASSPHRASE_LEN {
-                    return Err(TaskError::SingleKeyPassphraseTooShort {
-                        min: MIN_SINGLE_KEY_PASSPHRASE_LEN as u32,
-                    });
-                }
-                let pub_bytes = pub_key.inner.serialize().to_vec();
-                SingleKeyEntry::protected(&raw, p, passphrase.hint.clone(), pub_bytes)?
-            }
-            _ => SingleKeyEntry::unprotected(*raw),
-        };
-        let payload = entry.encode()?;
-
+        let pub_bytes = pub_key.inner.serialize().to_vec();
         let label = label_for_address(&address_str);
-        let bytes = SecretBytes::from_slice(&payload);
-        self.secret_store
-            .set(&single_key_namespace_id(), &label, &bytes)
-            .map_err(|source| TaskError::SecretStore {
-                source: Box::new(source),
-            })?;
+
+        // Unprotected keys store the RAW 32 bytes via the seam under the
+        // existing label — no `SingleKeyEntry` framing. Protected keys keep the
+        // legacy AES-GCM `SingleKeyEntry` at import and migrate to raw lazily on
+        // the next unlock through the chokepoint. The locked-render pubkey lives
+        // in the `ImportedKey` sidecar either way.
+        let (has_passphrase, passphrase_hint) =
+            match passphrase.passphrase.as_ref().map(|p| p.as_str()) {
+                Some(p) if !p.is_empty() => {
+                    if p.chars().count() < MIN_SINGLE_KEY_PASSPHRASE_LEN {
+                        return Err(TaskError::SingleKeyPassphraseTooShort {
+                            min: MIN_SINGLE_KEY_PASSPHRASE_LEN as u32,
+                        });
+                    }
+                    let entry =
+                        SingleKeyEntry::protected(&raw, p, passphrase.hint.clone(), pub_bytes.clone())?;
+                    let payload = entry.encode()?;
+                    self.secret_store
+                        .set(
+                            &single_key_namespace_id(),
+                            &label,
+                            &SecretBytes::from_slice(&payload),
+                        )
+                        .map_err(|source| TaskError::SecretStore {
+                            source: Box::new(source),
+                        })?;
+                    (true, passphrase.hint.clone())
+                }
+                _ => {
+                    self.secret_store
+                        .set(
+                            &single_key_namespace_id(),
+                            &label,
+                            &SecretBytes::from_slice(&*raw),
+                        )
+                        .map_err(|source| TaskError::SecretStore {
+                            source: Box::new(source),
+                        })?;
+                    (false, None)
+                }
+            };
 
         let imported = ImportedKey {
             address: address_str.clone(),
             alias,
             network: self.network,
-            has_passphrase: entry.has_passphrase,
-            passphrase_hint: entry.passphrase_hint.clone(),
-            public_key_bytes: pub_key.inner.serialize().to_vec(),
+            has_passphrase,
+            passphrase_hint,
+            public_key_bytes: pub_bytes,
         };
 
         if let Some(kv) = self.app_kv {
@@ -1526,5 +1548,45 @@ mod tests {
         // No passphrase needed, signing works.
         view.sign_with(&address, &[0x11u8; 32])
             .expect("legacy sign without passphrase");
+    }
+
+    /// TS-RT-02 / TS-EAGER-02 (import half) — an unprotected import writes the
+    /// RAW 32 bytes under the canonical label (no `SingleKeyEntry` framing),
+    /// the sidecar carries the public key for locked render, and the key signs.
+    #[test]
+    fn unprotected_import_writes_raw_32_bytes_not_framed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ViewFixture {
+            store,
+            index,
+            kv,
+            network,
+        } = fresh_view_with_kv(dir.path(), Network::Testnet);
+        let view = SingleKeyView {
+            secret_store: &store,
+            index: &index,
+            network,
+            app_kv: Some(&kv),
+        };
+        let imported = view.import_wif(known_wif(), Some("raw".into())).expect("import");
+        assert!(!imported.has_passphrase);
+        assert!(
+            !imported.public_key_bytes.is_empty(),
+            "sidecar carries the locked-render public key"
+        );
+
+        // Vault payload is exactly the raw 32 bytes — no version-tag framing.
+        let label = label_for_address(&imported.address);
+        let raw = store
+            .get(&single_key_namespace_id(), &label)
+            .expect("get")
+            .expect("present");
+        assert_eq!(raw.expose_secret().len(), 32, "raw, not a versioned envelope");
+        let priv_key = PrivateKey::from_wif(known_wif()).unwrap();
+        assert_eq!(raw.expose_secret(), &priv_key.inner[..]);
+
+        // Signs with no passphrase.
+        view.sign_with(&imported.address, &[0x42u8; 32])
+            .expect("raw key signs");
     }
 }

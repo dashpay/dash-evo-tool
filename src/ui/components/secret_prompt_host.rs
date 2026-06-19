@@ -100,6 +100,25 @@ impl ActivePrompt {
         }
     }
 
+    /// Build a stub active prompt for tests (RQ-1): no real secret, a reply
+    /// channel whose receiver is dropped immediately. Lets a test put
+    /// `AppState::active_secret_prompt` into the `Some` state to exercise the
+    /// overlay input-claim gate. Compiled only under the `testing` feature.
+    #[cfg(feature = "testing")]
+    pub fn test_stub() -> Self {
+        let (reply, _rx) = oneshot::channel();
+        Self {
+            request: SecretPromptRequest::new(
+                crate::wallet_backend::secret_prompt::SecretScope::SingleKey {
+                    address: "test".to_string(),
+                },
+                "Test prompt",
+            ),
+            reply: Some(reply),
+            remember: false,
+        }
+    }
+
     /// Render the modal for this frame. Returns `true` when the prompt has
     /// resolved (the caller should drop it and drain the next request).
     pub fn show(&mut self, ctx: &egui::Context) -> bool {

@@ -23,8 +23,10 @@
 use std::time::Duration;
 
 use async_trait::async_trait;
+use dash_sdk::dpp::identity::KeyID;
 use platform_wallet_storage::secrets::SecretString;
 
+use crate::model::qualified_identity::PrivateKeyTarget;
 use crate::model::wallet::WalletSeedHash;
 
 /// Which secret an operation needs. DET-opaque: carries no upstream type
@@ -44,6 +46,36 @@ pub enum SecretScope {
         /// Base58 P2PKH address — the stable per-key identifier.
         address: String,
     },
+    /// An identity private key stored raw in the vault, resolved per-use
+    /// (the `InVault` placeholder). Unprotected — resolves prompt-free, so
+    /// headless/MCP identity signing keeps working.
+    IdentityKey {
+        /// 32-byte identity id (`Identifier::to_buffer()`), the vault scope.
+        identity_id: [u8; 32],
+        /// Which associated identity the key belongs to.
+        target: PrivateKeyTarget,
+        /// The key's `KeyID` within the identity.
+        key_id: KeyID,
+    },
+}
+
+impl SecretScope {
+    /// The vault label for an identity-key scope:
+    /// `identity_key_priv.<target_tag>.<key_id>`. The target is a stable
+    /// single-char tag so the label stays inside the upstream allowlist
+    /// `^[A-Za-z0-9._-]{1,64}$`.
+    pub fn identity_key_label(target: &PrivateKeyTarget, key_id: KeyID) -> String {
+        format!("identity_key_priv.{}.{key_id}", target_tag(target))
+    }
+}
+
+/// Stable one-char tag for a [`PrivateKeyTarget`] used in vault labels.
+fn target_tag(target: &PrivateKeyTarget) -> char {
+    match target {
+        PrivateKeyTarget::PrivateKeyOnMainIdentity => 'm',
+        PrivateKeyTarget::PrivateKeyOnVoterIdentity => 'v',
+        PrivateKeyTarget::PrivateKeyOnOperatorIdentity => 'o',
+    }
 }
 
 /// How long a decrypted secret may be remembered after the operation that

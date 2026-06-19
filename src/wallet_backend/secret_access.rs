@@ -42,8 +42,7 @@ use std::time::Instant;
 use aes_gcm::aead::Aead;
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
 use dash_sdk::dpp::dashcore::Network;
-use platform_wallet_storage::secrets::SecretStore;
-use platform_wallet_storage::secrets::SecretString;
+use platform_wallet_storage::secrets::{SecretStore, SecretString, WalletId as SecretWalletId};
 use zeroize::Zeroizing;
 
 use crate::backend_task::error::TaskError;
@@ -54,6 +53,7 @@ use crate::model::wallet::seed_envelope::StoredSeedEnvelope;
 use crate::wallet_backend::secret_prompt::{
     RememberPolicy, SecretPrompt, SecretPromptRequest, SecretPromptRetry, SecretScope,
 };
+use crate::wallet_backend::secret_seam::SecretSeam;
 use crate::wallet_backend::single_key::{label_for_address, single_key_namespace_id};
 use crate::wallet_backend::single_key_entry::SingleKeyEntry;
 use crate::wallet_backend::wallet_seed_store::WalletSeedView;
@@ -62,6 +62,15 @@ use crate::wallet_backend::wallet_seed_store::WalletSeedView;
 const HD_SEED_LEN: usize = 64;
 /// Length of an imported single-key secret.
 const SINGLE_KEY_LEN: usize = 32;
+/// Vault label for a raw (migrated) HD seed, distinct from the legacy
+/// `envelope.v1` so the loader can tell raw from legacy by label presence.
+pub(crate) const SEED_RAW_LABEL: &str = "seed.raw.v1";
+
+/// The vault scope for an HD seed — the 32-byte seed hash reused as the
+/// upstream `WalletId`.
+fn seed_scope(seed_hash: &WalletSeedHash) -> SecretWalletId {
+    SecretWalletId::from(*seed_hash)
+}
 
 /// Borrowed, kind-tagged plaintext handed to a [`SecretAccess::with_secret`]
 /// closure. Lives only for the closure call. No `Clone`, no `Deref` to raw
@@ -73,6 +82,8 @@ pub enum SecretPlaintext<'a> {
     HdSeed(&'a Zeroizing<[u8; HD_SEED_LEN]>),
     /// A 32-byte imported single-key secret.
     SingleKey(&'a Zeroizing<[u8; SINGLE_KEY_LEN]>),
+    /// A 32-byte identity private key, read raw from the vault per-use.
+    IdentityKey(&'a Zeroizing<[u8; SINGLE_KEY_LEN]>),
 }
 
 impl SecretPlaintext<'_> {
@@ -84,7 +95,7 @@ impl SecretPlaintext<'_> {
             // implements `AsRef<PushBytes>` (dashcore), which makes a bare
             // `.as_ref()` ambiguous.
             SecretPlaintext::HdSeed(s) => Some(&***s),
-            SecretPlaintext::SingleKey(_) => None,
+            _ => None,
         }
     }
 
@@ -93,7 +104,17 @@ impl SecretPlaintext<'_> {
     pub fn expose_single_key(&self) -> Option<&[u8; SINGLE_KEY_LEN]> {
         match self {
             SecretPlaintext::SingleKey(k) => Some(&***k),
-            SecretPlaintext::HdSeed(_) => None,
+            _ => None,
+        }
+    }
+
+    /// Borrow the 32-byte identity private key, or `None` for the other
+    /// kinds. The plaintext is borrowed for the closure only and zeroizes
+    /// on return — it is never resident.
+    pub fn expose_identity_key(&self) -> Option<&[u8; SINGLE_KEY_LEN]> {
+        match self {
+            SecretPlaintext::IdentityKey(k) => Some(&***k),
+            _ => None,
         }
     }
 }
@@ -121,6 +142,7 @@ impl SecretSession<'_> {
 enum Plaintext {
     HdSeed(Zeroizing<[u8; HD_SEED_LEN]>),
     SingleKey(Zeroizing<[u8; SINGLE_KEY_LEN]>),
+    IdentityKey(Zeroizing<[u8; SINGLE_KEY_LEN]>),
 }
 
 impl Plaintext {
@@ -128,6 +150,7 @@ impl Plaintext {
         match self {
             Plaintext::HdSeed(s) => SecretPlaintext::HdSeed(s),
             Plaintext::SingleKey(k) => SecretPlaintext::SingleKey(k),
+            Plaintext::IdentityKey(k) => SecretPlaintext::IdentityKey(k),
         }
     }
 
@@ -138,6 +161,7 @@ impl Plaintext {
         match self {
             Plaintext::HdSeed(s) => Plaintext::HdSeed(Zeroizing::new(**s)),
             Plaintext::SingleKey(k) => Plaintext::SingleKey(Zeroizing::new(**k)),
+            Plaintext::IdentityKey(k) => Plaintext::IdentityKey(Zeroizing::new(**k)),
         }
     }
 }
@@ -369,6 +393,7 @@ impl SecretAccess {
         let owned = match plaintext {
             SecretPlaintext::HdSeed(s) => Plaintext::HdSeed(Zeroizing::new(**s)),
             SecretPlaintext::SingleKey(k) => Plaintext::SingleKey(Zeroizing::new(**k)),
+            SecretPlaintext::IdentityKey(k) => Plaintext::IdentityKey(Zeroizing::new(**k)),
         };
         self.maybe_remember(scope, &owned, policy);
     }
@@ -464,6 +489,7 @@ impl SecretAccess {
         let boxed = match plaintext {
             Plaintext::HdSeed(s) => Box::new(Plaintext::HdSeed(Zeroizing::new(**s))),
             Plaintext::SingleKey(k) => Box::new(Plaintext::SingleKey(Zeroizing::new(**k))),
+            Plaintext::IdentityKey(k) => Box::new(Plaintext::IdentityKey(Zeroizing::new(**k))),
         };
         if let Ok(mut guard) = self.inner.session.write() {
             guard.insert(
@@ -491,16 +517,28 @@ impl SecretAccess {
     }
 
     /// Whether `scope`'s stored secret is passphrase-protected. Drives the
-    /// unprotected fast-path (Smythe must-fix #4). Reads the in-memory
-    /// index/meta where possible; falls back to the stored envelope.
+    /// unprotected fast-path (Smythe must-fix #4).
+    ///
+    /// Seam-first: a secret already migrated to its raw label has no
+    /// passphrase (the user password no longer gates it). Only a not-yet-
+    /// migrated legacy entry can still be protected. Identity keys are always
+    /// unprotected (prompt-free → headless/MCP signing works).
     fn scope_has_passphrase(&self, scope: &SecretScope) -> Result<bool, TaskError> {
         match scope {
             SecretScope::HdSeed { seed_hash } => {
+                // Raw seed present ⇒ migrated ⇒ no passphrase.
+                if self.seam().get_secret(&seed_scope(seed_hash), SEED_RAW_LABEL)?.is_some() {
+                    return Ok(false);
+                }
                 let view = WalletSeedView::new(&self.inner.secret_store);
                 let envelope = view.get(seed_hash)?.ok_or(TaskError::WalletNotFound)?;
                 Ok(envelope.uses_password)
             }
             SecretScope::SingleKey { address } => {
+                // Raw 32-byte key present ⇒ migrated ⇒ no passphrase.
+                if self.single_key_raw(address)?.is_some() {
+                    return Ok(false);
+                }
                 if let Ok(index) = self.inner.single_key_index.read()
                     && let Some(meta) = index.get(address)
                 {
@@ -509,12 +547,17 @@ impl SecretAccess {
                 let entry = self.load_single_key_entry(address)?;
                 Ok(entry.has_passphrase)
             }
+            // Identity keys are stored raw, unprotected — always prompt-free.
+            SecretScope::IdentityKey { .. } => Ok(false),
         }
     }
 
     /// Decrypt the stored secret for `scope` with `passphrase`
     /// (`None` for unprotected scopes). The only place the vault is read
     /// for plaintext. Returns the kind-tagged owned plaintext.
+    ///
+    /// Seam-first for all three classes: the raw label wins; the retained
+    /// legacy reader is the migration fallback for HD seeds and single keys.
     fn decrypt_jit(
         &self,
         scope: &SecretScope,
@@ -522,16 +565,77 @@ impl SecretAccess {
     ) -> Result<Plaintext, TaskError> {
         match scope {
             SecretScope::HdSeed { seed_hash } => {
+                if let Some(raw) =
+                    self.seam().get_secret(&seed_scope(seed_hash), SEED_RAW_LABEL)?
+                {
+                    let seed: [u8; HD_SEED_LEN] =
+                        raw.expose_secret().try_into().map_err(|_| {
+                            tracing::warn!(
+                                target = "wallet_backend::secret_access",
+                                blob_len = raw.expose_secret().len(),
+                                "Raw seam seed has wrong length",
+                            );
+                            TaskError::SecretDecryptFailed
+                        })?;
+                    return Ok(Plaintext::HdSeed(Zeroizing::new(seed)));
+                }
+                // Legacy fallback (migration reader).
                 let view = WalletSeedView::new(&self.inner.secret_store);
                 let envelope = view.get(seed_hash)?.ok_or(TaskError::WalletNotFound)?;
                 let seed = decrypt_hd_seed(&envelope, passphrase)?;
                 Ok(Plaintext::HdSeed(seed))
             }
             SecretScope::SingleKey { address } => {
+                if let Some(raw) = self.single_key_raw(address)? {
+                    return Ok(Plaintext::SingleKey(raw));
+                }
+                // Legacy fallback (migration reader).
                 let entry = self.load_single_key_entry(address)?;
                 let raw = entry.decrypt(passphrase.map(|p| p.expose_secret()))?;
                 Ok(Plaintext::SingleKey(raw))
             }
+            SecretScope::IdentityKey {
+                identity_id,
+                target,
+                key_id,
+            } => {
+                let label = SecretScope::identity_key_label(target, *key_id);
+                let raw = self
+                    .seam()
+                    .get_secret(&SecretWalletId::from(*identity_id), &label)?
+                    .ok_or(TaskError::IdentityKeyMissing)?;
+                let key: [u8; SINGLE_KEY_LEN] =
+                    raw.expose_secret().try_into().map_err(|_| {
+                        tracing::warn!(
+                            target = "wallet_backend::secret_access",
+                            blob_len = raw.expose_secret().len(),
+                            "Raw identity key has wrong length",
+                        );
+                        TaskError::SecretDecryptFailed
+                    })?;
+                Ok(Plaintext::IdentityKey(Zeroizing::new(key)))
+            }
+        }
+    }
+
+    /// Borrow the secret store as a [`SecretSeam`].
+    fn seam(&self) -> SecretSeam<'_> {
+        SecretSeam::new(&self.inner.secret_store)
+    }
+
+    /// Read the raw 32-byte single-key secret for `address` if the entry has
+    /// already been migrated to its raw label, else `None`. A legacy
+    /// `SingleKeyEntry`-framed value (length != 32) is left for the legacy
+    /// reader and reported as `None` here.
+    fn single_key_raw(&self, address: &str) -> Result<Option<Zeroizing<[u8; SINGLE_KEY_LEN]>>, TaskError> {
+        let label = label_for_address(address);
+        let Some(payload) = self.seam().get_secret(&single_key_namespace_id(), &label)? else {
+            return Ok(None);
+        };
+        match <[u8; SINGLE_KEY_LEN]>::try_from(payload.expose_secret()) {
+            Ok(raw) => Ok(Some(Zeroizing::new(raw))),
+            // Not 32 bytes ⇒ a legacy framed entry, not yet migrated.
+            Err(_) => Ok(None),
         }
     }
 
@@ -582,6 +686,10 @@ impl SecretAccess {
                 let hint = meta.and_then(|m| m.passphrase_hint);
                 (label, hint)
             }
+            // Identity keys are prompt-free (unprotected fast-path), so this
+            // request is never built for them — a generic label keeps the
+            // match exhaustive without inventing copy that cannot surface.
+            SecretScope::IdentityKey { .. } => ("this identity key".to_string(), None),
         };
         let mut request = SecretPromptRequest::new(scope.clone(), label).with_hint(hint);
         if let Some(reason) = retry {
@@ -1258,5 +1366,147 @@ mod tests {
             .unwrap();
         assert_eq!(count, 3, "held secret borrowed N times");
         assert_eq!(prompt.ask_count(), 1, "one prompt for the whole operation");
+    }
+
+    // --- identity-key scope (raw seam, prompt-free) -----------------------
+
+    use crate::model::qualified_identity::PrivateKeyTarget;
+    use platform_wallet_storage::secrets::{SecretBytes, WalletId as SecretWalletId};
+
+    /// Store a raw identity key in the vault under the seam label, the way the
+    /// migration does.
+    fn store_identity_key(
+        store: &Arc<SecretStore>,
+        identity_id: [u8; 32],
+        target: &PrivateKeyTarget,
+        key_id: u32,
+        key: &[u8; 32],
+    ) {
+        let label = SecretScope::identity_key_label(target, key_id);
+        SecretSeam::new(store)
+            .put_secret(
+                &SecretWalletId::from(identity_id),
+                &label,
+                &SecretBytes::from_slice(key),
+            )
+            .expect("store identity key");
+    }
+
+    /// TS-FAST-01 — an identity-key scope resolves prompt-free under a
+    /// never-prompt host (the unprotected fast-path), returns the exact 32
+    /// bytes, and never asks. Proves headless/MCP identity signing works.
+    #[tokio::test]
+    async fn ts_fast_01_identity_key_resolves_prompt_free() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = fresh_store(dir.path());
+        let identity_id = [0x33u8; 32];
+        let key = [0xC7u8; 32];
+        store_identity_key(
+            &store,
+            identity_id,
+            &PrivateKeyTarget::PrivateKeyOnMainIdentity,
+            7,
+            &key,
+        );
+
+        // never() panics if asked — proves no prompt fires.
+        let prompt = Arc::new(TestPrompt::never());
+        let sa = access(store, prompt.clone());
+        let scope = SecretScope::IdentityKey {
+            identity_id,
+            target: PrivateKeyTarget::PrivateKeyOnMainIdentity,
+            key_id: 7,
+        };
+
+        let matched = sa
+            .with_secret(&scope, |pt| {
+                Ok(pt.expose_identity_key().copied() == Some(key))
+            })
+            .await
+            .expect("identity key resolves prompt-free");
+        assert!(matched, "closure saw the raw identity key");
+        assert_eq!(prompt.ask_count(), 0, "identity key never prompts");
+        assert!(
+            sa.can_resolve_without_prompt(&scope),
+            "identity key is always resolvable without a prompt"
+        );
+    }
+
+    /// A missing identity key surfaces the loud typed `IdentityKeyMissing`,
+    /// never a silent miss.
+    #[tokio::test]
+    async fn identity_key_missing_is_loud() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = fresh_store(dir.path());
+        let sa = access(store, Arc::new(TestPrompt::never()));
+        let scope = SecretScope::IdentityKey {
+            identity_id: [0x44u8; 32],
+            target: PrivateKeyTarget::PrivateKeyOnVoterIdentity,
+            key_id: 1,
+        };
+        let err = sa
+            .with_secret(&scope, |_pt| Ok(()))
+            .await
+            .expect_err("missing identity key");
+        assert!(
+            matches!(err, TaskError::IdentityKeyMissing),
+            "expected IdentityKeyMissing, got {err:?}"
+        );
+    }
+
+    /// TS-LEGACY-01 — with only a legacy unprotected envelope present (no raw
+    /// `seed.raw.v1`), the seam-first reader falls through to the retained
+    /// legacy decoder and recovers the exact seed, prompt-free.
+    #[tokio::test]
+    async fn ts_legacy_01_hd_legacy_envelope_served_when_raw_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = fresh_store(dir.path());
+        let seed_hash: WalletSeedHash = [0x4E; 32];
+        store_unprotected_hd(&store, &seed_hash, &SENTINEL_SEED);
+
+        let prompt = Arc::new(TestPrompt::never());
+        let sa = access(store, prompt.clone());
+        let scope = SecretScope::HdSeed { seed_hash };
+        sa.with_secret(&scope, |pt| {
+            assert_eq!(pt.expose_hd_seed().copied(), Some(SENTINEL_SEED));
+            Ok(())
+        })
+        .await
+        .expect("legacy envelope served via fallback");
+        assert_eq!(prompt.ask_count(), 0, "unprotected legacy ⇒ no prompt");
+    }
+
+    /// Seam-first precedence: when BOTH a raw `seed.raw.v1` and a legacy
+    /// envelope exist (the legal mid-migration state, TS-CRASH-01 read half),
+    /// the raw value wins and the legacy is not consulted.
+    #[tokio::test]
+    async fn raw_seed_wins_over_legacy_when_both_present() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = fresh_store(dir.path());
+        let seed_hash: WalletSeedHash = [0x5E; 32];
+        // Legacy holds one seed; raw holds a DIFFERENT one — proving which won.
+        let legacy_seed = [0x11u8; 64];
+        store_unprotected_hd(&store, &seed_hash, &legacy_seed);
+        let raw_seed = [0x99u8; 64];
+        SecretSeam::new(&store)
+            .put_secret(
+                &super::seed_scope(&seed_hash),
+                super::SEED_RAW_LABEL,
+                &SecretBytes::from_slice(&raw_seed),
+            )
+            .unwrap();
+
+        let sa = access(store, Arc::new(TestPrompt::never()));
+        let scope = SecretScope::HdSeed { seed_hash };
+        sa.with_secret(&scope, |pt| {
+            assert_eq!(
+                pt.expose_hd_seed().copied(),
+                Some(raw_seed),
+                "raw seam value must win over the legacy envelope"
+            );
+            Ok(())
+        })
+        .await
+        .expect("raw wins");
     }
 }

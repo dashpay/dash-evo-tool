@@ -92,7 +92,13 @@ impl<'a> DetSigner<'a> {
     pub(crate) fn from_held(plaintext: SecretPlaintext<'a>, network: Network) -> Self {
         let secret = match plaintext {
             SecretPlaintext::HdSeed(seed) => HeldSecret::HdSeed(seed),
-            SecretPlaintext::SingleKey(key) => HeldSecret::SingleKey(key),
+            // An identity key is a raw secp256k1 secret, same shape as a
+            // single key (no derivation tree) — `DetSigner` treats them
+            // identically. Identity-platform signing normally goes straight
+            // through the resolver, not here.
+            SecretPlaintext::SingleKey(key) | SecretPlaintext::IdentityKey(key) => {
+                HeldSecret::SingleKey(key)
+            }
         };
         Self {
             secret,

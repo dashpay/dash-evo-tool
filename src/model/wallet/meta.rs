@@ -205,7 +205,10 @@ mod tests {
             password_hint: Some("hint".into()),
         };
         let framed = encode_versioned(&v2).expect("encode v2");
-        assert_eq!(framed[0], WALLET_META_VERSION, "frame starts with the version tag");
+        assert_eq!(
+            framed[0], WALLET_META_VERSION,
+            "frame starts with the version tag"
+        );
         assert_eq!(decode_versioned(&framed).expect("decode v2"), v2);
 
         // A v1 blob: framed with version byte 1 over the old shape.
@@ -222,7 +225,10 @@ mod tests {
         let migrated = decode_versioned(&v1_framed).expect("decode + migrate v1");
         assert_eq!(migrated.alias, "legacy");
         assert_eq!(migrated.xpub_encoded, vec![0x22; 78]);
-        assert!(!migrated.uses_password, "v1 migrates with uses_password defaulted false");
+        assert!(
+            !migrated.uses_password,
+            "v1 migrates with uses_password defaulted false"
+        );
         assert!(migrated.password_hint.is_none());
 
         // A pre-version-byte legacy blob (bare v1 bincode) also migrates.

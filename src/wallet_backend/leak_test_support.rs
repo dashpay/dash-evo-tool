@@ -9,8 +9,6 @@
 //! leaks the `[160, 167, …]` decimal form, and finding `6a2818cd` leaked
 //! exactly that. Hex alone would falsely pass against that bug.
 
-#![cfg(test)]
-
 /// Assert `rendered` exposes `secret` in NONE of the forms a sink could leak
 /// it: lowercase hex and the `[160, 167, …]` decimal-array form. Works for any
 /// secret length (32-byte keys, 64-byte seeds).

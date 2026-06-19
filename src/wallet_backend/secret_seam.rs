@@ -168,7 +168,10 @@ mod tests {
 
         seam.put_secret(&scope, label, &SecretBytes::from_slice(&key))
             .expect("put");
-        let got = seam.get_secret(&scope, label).expect("get").expect("present");
+        let got = seam
+            .get_secret(&scope, label)
+            .expect("get")
+            .expect("present");
         assert_eq!(got.expose_secret(), &key[..]);
         assert_eq!(
             got.expose_secret().len(),

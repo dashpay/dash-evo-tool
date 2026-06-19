@@ -20,6 +20,11 @@ use zeroize::Zeroizing;
 /// dropped.
 pub type ResolvedPrivateKey = (QualifiedIdentityPublicKey, Zeroizing<[u8; 32]>);
 
+/// A `(target, key_id)` map key paired with the raw 32-byte private key the
+/// migration must store in the vault — see
+/// [`KeyStorage::take_plaintext_for_vault`]. Bytes are [`Zeroizing`].
+pub type VaultBoundKey = ((PrivateKeyTarget, KeyID), Zeroizing<[u8; 32]>);
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct WalletDerivationPath {
     pub(crate) wallet_seed_hash: WalletSeedHash,
@@ -554,9 +559,7 @@ impl KeyStorage {
     /// Wallet-derived ([`PrivateKeyData::AtWalletDerivationPath`]) and already
     /// vault-backed / encrypted keys are left untouched — they were never
     /// plaintext-at-rest.
-    pub fn take_plaintext_for_vault(
-        &mut self,
-    ) -> Vec<((PrivateKeyTarget, KeyID), Zeroizing<[u8; 32]>)> {
+    pub fn take_plaintext_for_vault(&mut self) -> Vec<VaultBoundKey> {
         let mut out = Vec::new();
         for (map_key, (_pub_key, data)) in self.private_keys.iter_mut() {
             let raw = match data {
@@ -711,7 +714,10 @@ mod tests {
             let bytes = bincode::encode_to_vec(&original, cfg).expect("encode");
             let (decoded, _): (PrivateKeyData, _) =
                 bincode::decode_from_slice(&bytes, cfg).expect("decode old variant");
-            assert!(decoded == original, "pre-InVault variant must decode unchanged");
+            assert!(
+                decoded == original,
+                "pre-InVault variant must decode unchanged"
+            );
         }
         // The new variant round-trips too.
         let bytes = bincode::encode_to_vec(PrivateKeyData::InVault, cfg).expect("encode");
@@ -770,7 +776,10 @@ mod tests {
         // The two plaintext keys are now InVault; the derived one is not.
         let mut in_vault_count = 0;
         for k in &keys {
-            assert!(ks.public_key_for(k).is_some(), "public key always available");
+            assert!(
+                ks.public_key_for(k).is_some(),
+                "public key always available"
+            );
             if ks.is_in_vault(k) {
                 in_vault_count += 1;
             }

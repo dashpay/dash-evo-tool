@@ -447,8 +447,10 @@ impl ScreenLike for KeyInfoScreen {
                             // WalletTasks (T8 follow-up); until those land, the
                             // key is shown as securely stored.
                             ui.label(
-                                RichText::new("This signing key is stored securely on this device.")
-                                    .color(text_primary),
+                                RichText::new(
+                                    "This signing key is stored securely on this device.",
+                                )
+                                .color(text_primary),
                             );
                             ui.add_space(10.0);
                         }

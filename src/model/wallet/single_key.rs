@@ -459,7 +459,9 @@ mod tests {
     /// that holds it.
     #[test]
     fn ts_dbg_01_closed_single_key_debug_redacts_raw_bytes() {
-        use crate::wallet_backend::leak_test_support::{assert_no_leak_bytes, distinctive_secret_32};
+        use crate::wallet_backend::leak_test_support::{
+            assert_no_leak_bytes, distinctive_secret_32,
+        };
 
         let secret = distinctive_secret_32();
         // A no-password / pre-migration closed key holds the raw 32 bytes in

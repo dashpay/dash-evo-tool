@@ -1459,8 +1459,8 @@ mod tests {
     use crate::model::qualified_identity::encrypted_key_storage::{
         KeyStorage, PrivateKeyData, WalletDerivationPath,
     };
-    use crate::model::qualified_identity::{IdentityType, PrivateKeyTarget};
     use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
+    use crate::model::qualified_identity::{IdentityType, PrivateKeyTarget};
     use crate::wallet_backend::IdentityKeyView;
     use dash_sdk::dpp::identity::Identity;
     use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
@@ -1470,9 +1470,7 @@ mod tests {
 
     fn fresh_vault(dir: &std::path::Path) -> Arc<platform_wallet_storage::secrets::SecretStore> {
         let path = dir.join("secrets.pwsvault");
-        Arc::new(
-            crate::wallet_backend::single_key::open_secret_store(&path).expect("open vault"),
-        )
+        Arc::new(crate::wallet_backend::single_key::open_secret_store(&path).expect("open vault"))
     }
 
     /// A `QualifiedIdentity` carrying one `Clear` (HIGH), one `AlwaysClear`
@@ -1647,7 +1645,10 @@ mod tests {
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).ok();
 
         assert_eq!(outcome, KeystoreMigration::VaultWriteFailed);
-        assert!(!persisted, "persist must NOT run when the vault write failed");
+        assert!(
+            !persisted,
+            "persist must NOT run when the vault write failed"
+        );
         assert_eq!(
             qi.private_keys, before,
             "the resident plaintext keystore must be restored on vault failure"
@@ -1680,7 +1681,10 @@ mod tests {
         let pk = IdentityPublicKey::random_key(0, Some(0), pv);
         ks.private_keys.insert(
             (PrivateKeyTarget::PrivateKeyOnMainIdentity, 0),
-            (QualifiedIdentityPublicKey::from(pk), PrivateKeyData::InVault),
+            (
+                QualifiedIdentityPublicKey::from(pk),
+                PrivateKeyData::InVault,
+            ),
         );
         IdentityKeyView::new(&store, victim)
             .delete_all(ks.keys_set())

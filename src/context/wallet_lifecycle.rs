@@ -27,7 +27,11 @@ pub const INTERIM_AT_REST_DETAILS: &str = "This wallet's secrets are now stored 
 /// Distinct text from [`single_key_migration_notice`] so `MessageBanner`'s
 /// text-dedup never collapses the two when both migrate in one session.
 pub fn wallet_migration_notice(wallet: &str) -> String {
-    let wallet = if wallet.is_empty() { "Your wallet" } else { wallet };
+    let wallet = if wallet.is_empty() {
+        "Your wallet"
+    } else {
+        wallet
+    };
     format!(
         "\"{wallet}\" no longer needs its password to open. Your wallet stays on this device, protected by your computer's account. Full password protection will return in a future update."
     )

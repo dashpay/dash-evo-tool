@@ -30,10 +30,7 @@ fn qa_007_wallet_migration_notice_renders_as_warning() {
         harness.query_by_label(&copy).is_some(),
         "Copy A must render verbatim",
     );
-    assert!(
-        copy.contains("paycheque"),
-        "Copy A names the wallet alias",
-    );
+    assert!(copy.contains("paycheque"), "Copy A names the wallet alias",);
     // Warning glyph present.
     assert!(
         harness.query_by_label("\u{26A0}").is_some(),
@@ -68,7 +65,10 @@ fn qa_007_single_key_migration_notice_renders() {
 fn qa_007_wallet_and_single_key_copies_are_distinct() {
     let a = wallet_migration_notice("paycheque");
     let b = single_key_migration_notice("paycheque");
-    assert_ne!(a, b, "Copy A and Copy B must differ so set_global keeps both");
+    assert_ne!(
+        a, b,
+        "Copy A and Copy B must differ so set_global keeps both"
+    );
 
     // Both surface in one harness without collapsing.
     let (a_ui, b_ui) = (a.clone(), b.clone());
@@ -80,7 +80,10 @@ fn qa_007_wallet_and_single_key_copies_are_distinct() {
             MessageBanner::show_global(ui);
         });
     harness.run();
-    assert!(harness.query_by_label(&a).is_some(), "wallet notice present");
+    assert!(
+        harness.query_by_label(&a).is_some(),
+        "wallet notice present"
+    );
     assert!(harness.query_by_label(&b).is_some(), "key notice present");
 }
 

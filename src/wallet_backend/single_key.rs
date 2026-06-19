@@ -1721,11 +1721,15 @@ mod tests {
         assert_eq!(got.alias.as_deref(), Some("legacy key"));
         assert!(got.has_passphrase);
         assert_eq!(got.passphrase_hint.as_deref(), Some("the usual"));
-        assert!(got.public_key_bytes.is_empty(), "no stored pubkey pre-migration");
+        assert!(
+            got.public_key_bytes.is_empty(),
+            "no stored pubkey pre-migration"
+        );
 
         // It was re-stored in the new shape: a direct new-shape decode succeeds.
-        let direct: Option<ImportedKey> =
-            kv.get(DetScope::Global, &key).expect("direct new-shape read");
+        let direct: Option<ImportedKey> = kv
+            .get(DetScope::Global, &key)
+            .expect("direct new-shape read");
         assert_eq!(direct.expect("present").address, address);
     }
 }

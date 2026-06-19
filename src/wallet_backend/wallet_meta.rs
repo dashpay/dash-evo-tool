@@ -445,8 +445,9 @@ mod tests {
 
             // It was re-stored in the new shape: a direct new-shape decode now
             // succeeds (no more legacy fallback needed).
-            let direct: Option<WalletMeta> =
-                kv.get(DetScope::Global, &key).expect("direct new-shape read");
+            let direct: Option<WalletMeta> = kv
+                .get(DetScope::Global, &key)
+                .expect("direct new-shape read");
             assert_eq!(direct.expect("present").alias, alias);
         }
     }

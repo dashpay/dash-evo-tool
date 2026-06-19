@@ -70,10 +70,7 @@ async fn ts_sign_e2e_01_in_vault_identity_signs_and_broadcasts() {
         qi.private_keys
             .private_keys
             .values()
-            .all(|(_, d)| !matches!(
-                d,
-                PrivateKeyData::Clear(_) | PrivateKeyData::AlwaysClear(_)
-            )),
+            .all(|(_, d)| !matches!(d, PrivateKeyData::Clear(_) | PrivateKeyData::AlwaysClear(_))),
         "no plaintext identity key may remain resident after migration"
     );
     assert!(

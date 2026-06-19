@@ -325,7 +325,8 @@ mod tests {
         // (`ciphertext`/`encrypted_seed`/`encrypted_private_key` are NOT here —
         // they hold AES-GCM ciphertext or migration-reader bytes, not plaintext;
         // the no-serialization invariant is about embedding live plaintext.)
-        const PLAINTEXT_NEEDLES: &[&str] = &["SecretBytes", "Zeroizing<[u8", ": [u8; 32]", ": [u8; 64]"];
+        const PLAINTEXT_NEEDLES: &[&str] =
+            &["SecretBytes", "Zeroizing<[u8", ": [u8; 32]", ": [u8; 64]"];
 
         let manifest = env!("CARGO_MANIFEST_DIR");
         let mut offenders = Vec::new();

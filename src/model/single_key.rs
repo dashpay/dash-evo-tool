@@ -97,3 +97,49 @@ impl From<ImportedKeyV1> for ImportedKey {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::wallet_backend::leak_test_support::{assert_no_leak_bytes, distinctive_secret_32};
+
+    /// TS-NOLEAK-02 (ImportedKey) — the encoded sidecar blob carries NO private
+    /// key, and the PUBLIC key (needed for locked render) IS present. The
+    /// sidecar holds only the public key, never the secret; this is the canary.
+    #[test]
+    fn ts_noleak_02_imported_key_blob_has_no_private_key_but_has_public() {
+        let private = distinctive_secret_32();
+        // A distinctive PUBLIC-key placeholder we DO expect to find.
+        let public = vec![0x02u8; 33];
+        let imported = ImportedKey {
+            address: "yTestAddr".into(),
+            alias: Some("savings".into()),
+            network: Network::Testnet,
+            has_passphrase: true,
+            passphrase_hint: Some("hint".into()),
+            public_key_bytes: public.clone(),
+        };
+        let blob =
+            bincode::serde::encode_to_vec(&imported, bincode::config::standard()).expect("encode");
+
+        // The private key appears in neither hex nor decimal-array form.
+        let rendered = format!("{blob:?}");
+        assert_no_leak_bytes(&rendered, &private, "ImportedKey sidecar blob");
+
+        // The public key IS present (locked render reads it back).
+        let decimal = format!(
+            "[{}]",
+            public
+                .iter()
+                .map(|b| b.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        // The 33-byte pubkey is embedded as a Vec — its bytes are in the blob.
+        let blob_contains_pubkey = blob.windows(public.len()).any(|w| w == public.as_slice());
+        assert!(
+            blob_contains_pubkey || rendered.contains(&decimal),
+            "the public key must be present in the sidecar for locked render"
+        );
+    }
+}

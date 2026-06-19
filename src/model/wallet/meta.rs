@@ -199,4 +199,30 @@ mod tests {
             bincode::serde::decode_from_slice(&new_blob, cfg).expect("decode v2");
         assert_eq!(decoded, v2);
     }
+
+    /// TS-NOLEAK-02 (WalletMeta) — the encoded sidecar blob carries NO secret.
+    /// `WalletMeta` structurally cannot hold a key (no secret field); this is
+    /// canary coverage that a future field never smuggles one in. Asserted in
+    /// both hex and decimal-array form via the shared helper.
+    #[test]
+    fn ts_noleak_02_wallet_meta_blob_has_no_secret() {
+        use crate::wallet_backend::leak_test_support::{
+            assert_no_leak_bytes, distinctive_secret_64,
+        };
+        // A distinctive seed that must NOT appear in the sidecar bytes.
+        let secret = distinctive_secret_64();
+        let meta = WalletMeta {
+            alias: "paycheque".into(),
+            is_main: true,
+            core_wallet_name: Some("dev".into()),
+            // The xpub is PUBLIC material, not the seed — unrelated bytes.
+            xpub_encoded: vec![0xCD; 78],
+            uses_password: true,
+            password_hint: Some("hint".into()),
+        };
+        let blob =
+            bincode::serde::encode_to_vec(&meta, bincode::config::standard()).expect("encode");
+        let rendered = format!("{blob:?}");
+        assert_no_leak_bytes(&rendered, &secret, "WalletMeta sidecar blob");
+    }
 }

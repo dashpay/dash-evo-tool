@@ -93,6 +93,8 @@ impl<'a> SecretSeam<'a> {
     }
 
     /// Idempotent delete of `(scope, label)`. A missing entry is `Ok(())`.
+    // No `TODO(per-secret-encryption)` here — delete is metadata-free, there is
+    // no secret to (de)crypt.
     pub fn delete_secret(&self, scope: &SecretWalletId, label: &str) -> Result<(), TaskError> {
         self.secret_store.delete(scope, label).map_err(map_err)
     }
@@ -295,6 +297,83 @@ mod tests {
             &rendered,
             &secret,
             "seam on-disk vault",
+        );
+    }
+
+    /// TS-INV-03 — source-text audit over the changed secret-path modules: no
+    /// `#[derive(...Serialize...)]` / `Encode` struct may name a plaintext-key
+    /// field. Catches the bare-`Vec<u8>`/`[u8; 32]` plaintext bypass the
+    /// `compile_fail` doctests (which only catch an embedded `SecretBytes`)
+    /// cannot. The module list must track the blast-radius table — a stale list
+    /// silently shrinks the surface, itself a finding.
+    #[test]
+    fn ts_inv_03_no_serializable_struct_embeds_a_plaintext_field() {
+        // Files under the secret-path blast radius.
+        const MODULES: &[&str] = &[
+            "src/wallet_backend/secret_seam.rs",
+            "src/wallet_backend/secret_access.rs",
+            "src/wallet_backend/identity_key_store.rs",
+            "src/wallet_backend/wallet_seed_store.rs",
+            "src/wallet_backend/single_key.rs",
+            "src/wallet_backend/single_key_entry.rs",
+            "src/model/qualified_identity/encrypted_key_storage.rs",
+            "src/model/wallet/meta.rs",
+            "src/model/single_key.rs",
+            "src/model/wallet/seed_envelope.rs",
+        ];
+        // Field-shape needles that name plaintext key/seed material by type.
+        // (`ciphertext`/`encrypted_seed`/`encrypted_private_key` are NOT here —
+        // they hold AES-GCM ciphertext or migration-reader bytes, not plaintext;
+        // the no-serialization invariant is about embedding live plaintext.)
+        const PLAINTEXT_NEEDLES: &[&str] = &["SecretBytes", "Zeroizing<[u8", ": [u8; 32]", ": [u8; 64]"];
+
+        let manifest = env!("CARGO_MANIFEST_DIR");
+        let mut offenders = Vec::new();
+        for rel in MODULES {
+            let path = std::path::Path::new(manifest).join(rel);
+            let src = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("audit must read {rel}: {e} (stale module list?)"));
+
+            // Track whether the most recent derive line opted into a serializer.
+            let mut in_serializable_struct = false;
+            let mut brace_depth_at_struct: Option<usize> = None;
+            let mut depth = 0usize;
+            for line in src.lines() {
+                let trimmed = line.trim_start();
+                if trimmed.starts_with("#[derive(")
+                    && (trimmed.contains("Serialize") || trimmed.contains("Encode"))
+                {
+                    in_serializable_struct = true;
+                    brace_depth_at_struct = None;
+                    continue;
+                }
+                if in_serializable_struct && brace_depth_at_struct.is_none() {
+                    // The struct opener for the pending derive.
+                    if line.contains('{') {
+                        brace_depth_at_struct = Some(depth);
+                    }
+                }
+                // Inside the serializable struct body, look for plaintext fields.
+                if in_serializable_struct
+                    && brace_depth_at_struct.is_some()
+                    && PLAINTEXT_NEEDLES.iter().any(|n| line.contains(n))
+                {
+                    offenders.push(format!("{rel}: {}", line.trim()));
+                }
+                depth += line.matches('{').count();
+                depth = depth.saturating_sub(line.matches('}').count());
+                if let Some(start) = brace_depth_at_struct
+                    && depth <= start
+                    && line.contains('}')
+                {
+                    in_serializable_struct = false;
+                    brace_depth_at_struct = None;
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "a Serialize/Encode struct names a plaintext-key field (no-serialization invariant): {offenders:#?}",
         );
     }
 }

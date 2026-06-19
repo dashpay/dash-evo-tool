@@ -1165,6 +1165,17 @@ impl AppState {
                 // height so a slow-but-advancing phase (whose "Step N of 5" stays
                 // constant for minutes) never trips the no-progress watchdog. It is
                 // never rendered — no height/number leaks into the shown copy.
+                //
+                // TODO(SEC-003-constant-height): the narrow residual is a phase that
+                // stays Syncing at a CONSTANT height for >120s (e.g. a single large
+                // masternode-list diff, step 2) — its height never moves, so the
+                // token never advances and the generic 120s watchdog still trips its
+                // one-shot dev-error + "much longer than expected" copy. It does NOT
+                // abort (SPV is known-unbounded and carries the keyboard escape), and
+                // the copy is accurate, so this is a benign false alarm. A clean fix
+                // needs a coarser SDK liveness signal (bytes/diffs processed) folded
+                // into the token without breaking its documented monotonicity; the
+                // SDK does not expose one today. Tracked as a follow-up.
                 let token = progress.as_ref().and_then(spv_progress_token);
                 let description = if step.is_some() {
                     SPV_SYNCING_DESCRIPTION

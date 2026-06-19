@@ -628,9 +628,17 @@ impl SecretAccess {
                 if let Some(raw) = self.single_key_raw(address)? {
                     return Ok(Plaintext::SingleKey(raw));
                 }
-                // Legacy fallback (migration reader).
+                // Legacy fallback (migration reader). A protected entry was just
+                // decrypted with the user's passphrase — LAZY-migrate it to raw
+                // here (the upsert under the SAME label replaces the AES-GCM
+                // framing with the raw 32 bytes, so no separate delete is
+                // needed) and flip the in-memory index so the next resolve takes
+                // the prompt-free fast-path. Idempotent.
                 let entry = self.load_single_key_entry(address)?;
                 let raw = entry.decrypt(passphrase.map(|p| p.expose_secret()))?;
+                if entry.has_passphrase {
+                    self.migrate_single_key_to_raw(address, &raw);
+                }
                 Ok(Plaintext::SingleKey(raw))
             }
             SecretScope::IdentityKey {
@@ -660,6 +668,33 @@ impl SecretAccess {
     /// Borrow the secret store as a [`SecretSeam`].
     fn seam(&self) -> SecretSeam<'_> {
         SecretSeam::new(&self.inner.secret_store)
+    }
+
+    /// LAZY-migrate a just-decrypted protected single key to raw bytes under
+    /// the same label (the upsert replaces the AES-GCM framing) and flip the
+    /// in-memory index so the next resolve takes the prompt-free fast-path.
+    /// Best-effort: a vault-write failure is logged and the key keeps working
+    /// via the legacy reader. The persistent `ImportedKey.has_passphrase` flip
+    /// + the user notice are driven by the screen that owns the app k/v.
+    fn migrate_single_key_to_raw(&self, address: &str, raw: &[u8; SINGLE_KEY_LEN]) {
+        let label = label_for_address(address);
+        if let Err(e) = self.seam().put_secret(
+            &single_key_namespace_id(),
+            &label,
+            &platform_wallet_storage::secrets::SecretBytes::from_slice(raw),
+        ) {
+            tracing::warn!(
+                target = "wallet_backend::secret_access",
+                error = ?e,
+                "Single-key lazy raw migration deferred (vault write failed)",
+            );
+            return;
+        }
+        if let Ok(mut index) = self.inner.single_key_index.write()
+            && let Some(meta) = index.get_mut(address)
+        {
+            meta.has_passphrase = false;
+        }
     }
 
     /// Read the raw 32-byte single-key secret for `address` if the entry has
@@ -1269,6 +1304,57 @@ mod tests {
         let scope = SecretScope::SingleKey { address };
         sa.with_secret(&scope, |_pt| Ok(())).await.unwrap();
         assert_eq!(prompt.ask_count(), 2);
+    }
+
+    /// TS-LAZY-03 — a protected single key lazy-migrates through the chokepoint:
+    /// the first `with_secret` decrypts with the passphrase AND re-stores the
+    /// raw 32 bytes; a second `with_secret` with a never-prompt host then
+    /// resolves the SAME bytes prompt-free, and the recovered bytes equal the
+    /// WIF plaintext.
+    #[tokio::test]
+    async fn ts_lazy_03_protected_single_key_migrates_via_chokepoint() {
+        use dash_sdk::dpp::dashcore::PrivateKey;
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = fresh_store(dir.path());
+        let address = import_protected_key(&store, SENTINEL_PASSPHRASE);
+        let expected: [u8; 32] = PrivateKey::from_wif(&known_testnet_wif())
+            .unwrap()
+            .inner[..]
+            .try_into()
+            .unwrap();
+
+        // First resolve: one passphrase, migrates to raw.
+        let prompt = Arc::new(TestPrompt::new([ScriptedAnswer::once(SENTINEL_PASSPHRASE)]));
+        let sa = access(Arc::clone(&store), prompt.clone());
+        let scope = SecretScope::SingleKey {
+            address: address.clone(),
+        };
+        let first = sa
+            .with_secret(&scope, |pt| Ok(pt.expose_single_key().copied()))
+            .await
+            .unwrap();
+        assert_eq!(first, Some(expected));
+        assert_eq!(prompt.ask_count(), 1);
+
+        // The vault now holds the raw 32 bytes (migration replaced the framing).
+        let label = label_for_address(&address);
+        let stored = store
+            .get(&single_key_namespace_id(), &label)
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.expose_secret().len(), 32, "migrated to raw");
+        assert_eq!(stored.expose_secret(), &expected[..]);
+
+        // Second resolve under a fresh never-prompt chokepoint is prompt-free.
+        let never = Arc::new(TestPrompt::never());
+        let sa2 = access(Arc::clone(&store), never.clone());
+        let second = sa2
+            .with_secret(&scope, |pt| Ok(pt.expose_single_key().copied()))
+            .await
+            .expect("prompt-free after migration");
+        assert_eq!(second, Some(expected));
+        assert_eq!(never.ask_count(), 0, "migrated key resolves prompt-free");
     }
 
     // --- secret confinement (Smythe must-fix #5) --------------------------

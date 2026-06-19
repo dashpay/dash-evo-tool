@@ -2,7 +2,7 @@ use crate::app::AppAction;
 use crate::backend_task::wallet::WalletTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
-use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::qualified_identity::{PrivateKeyTarget, QualifiedIdentity};
 use crate::model::qualified_identity::encrypted_key_storage::{
     PrivateKeyData, WalletDerivationPath,
 };
@@ -28,6 +28,7 @@ use dash_sdk::dpp::dashcore::sign_message::{MessageSignature, signed_msg_hash};
 use dash_sdk::dpp::dashcore::{Address, PrivateKey, PubkeyHash, ScriptHash};
 use dash_sdk::dpp::identity::KeyType;
 use dash_sdk::dpp::identity::KeyType::BIP13_SCRIPT_HASH;
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::hash::IdentityPublicKeyHashMethodsV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
@@ -66,6 +67,12 @@ pub struct KeyInfoScreen {
     /// end of `ui()` into a `WalletTask::SignMessageWithKey` backend task — the
     /// seed is fetched just-in-time and only the public signature returns.
     pending_sign_request: Option<DerivationPath>,
+    /// A queued "derive for display" request for a vault-backed (`InVault`)
+    /// identity key. Drained into `WalletTask::DeriveIdentityKeyForDisplay`.
+    pending_identity_key_display: bool,
+    /// A queued "sign message" request for a vault-backed identity key. Drained
+    /// into `WalletTask::SignMessageWithIdentityKey`.
+    pending_identity_sign: bool,
 }
 
 impl ScreenLike for KeyInfoScreen {
@@ -91,6 +98,23 @@ impl ScreenLike for KeyInfoScreen {
                 }
             }
             BackendTaskSuccessResult::WalletMessageSigned { signature, .. } => {
+                self.signed_message = Some(signature);
+            }
+            BackendTaskSuccessResult::IdentityKeyForDisplay { wif, .. } => {
+                match RPCPrivateKey::from_wif(wif.expose_secret()) {
+                    Ok(private_key) => self.decrypted_private_key = Some(private_key),
+                    Err(e) => {
+                        self.key_display_requested = false;
+                        MessageBanner::set_global(
+                            self.app_context.egui_ctx(),
+                            "Could not display the private key. Please retry.",
+                            MessageType::Error,
+                        )
+                        .with_details(e);
+                    }
+                }
+            }
+            BackendTaskSuccessResult::IdentityMessageSigned { signature, .. } => {
                 self.signed_message = Some(signature);
             }
             _ => {}
@@ -441,18 +465,21 @@ impl ScreenLike for KeyInfoScreen {
                             }
                         }
                         PrivateKeyData::InVault => {
-                            // The key's bytes live in the secret vault, fetched
-                            // per-use through the seam. The full view / sign
-                            // flow runs through dedicated identity-key
-                            // WalletTasks (T8 follow-up); until those land, the
-                            // key is shown as securely stored.
+                            // Vault-backed identity key: the raw bytes are
+                            // fetched just-in-time by a backend task. The UI
+                            // only ever sees the derived WIF for display.
                             ui.label(
-                                RichText::new(
-                                    "This signing key is stored securely on this device.",
-                                )
-                                .color(text_primary),
+                                RichText::new("This signing key is stored securely on this device.")
+                                    .color(text_primary),
                             );
                             ui.add_space(10.0);
+                            if let Some(private_key) = self.decrypted_private_key {
+                                Self::render_decrypted_key_grid(ui, &private_key);
+                            } else if ui.button("View Private Key").clicked() {
+                                self.pending_identity_key_display = true;
+                                self.key_display_requested = true;
+                            }
+                            self.render_sign_input(ui);
                         }
                     }
                 } else {
@@ -548,6 +575,32 @@ impl ScreenLike for KeyInfoScreen {
             }
         }
 
+        // Vault-backed (InVault) identity-key requests: the raw key is fetched
+        // JIT in the backend and only the public WIF / signature returns.
+        let identity_id = self.identity.identity.id();
+        let target: PrivateKeyTarget = self.key.purpose().into();
+        let key_id = self.key.id();
+        if std::mem::take(&mut self.pending_identity_key_display) {
+            action |= AppAction::BackendTask(BackendTask::WalletTask(
+                WalletTask::DeriveIdentityKeyForDisplay {
+                    identity_id,
+                    target: target.clone(),
+                    key_id,
+                },
+            ));
+        }
+        if std::mem::take(&mut self.pending_identity_sign) {
+            action |= AppAction::BackendTask(BackendTask::WalletTask(
+                WalletTask::SignMessageWithIdentityKey {
+                    identity_id,
+                    target,
+                    key_id,
+                    message: self.message_input.clone(),
+                    key_type: self.key.key_type(),
+                },
+            ));
+        }
+
         action
     }
 }
@@ -590,6 +643,8 @@ impl KeyInfoScreen {
             pending_key_display_request: None,
             key_display_requested: false,
             pending_sign_request: None,
+            pending_identity_key_display: false,
+            pending_identity_sign: false,
         }
     }
 
@@ -746,15 +801,10 @@ impl KeyInfoScreen {
                     MessageType::Error,
                 );
             }
-            // Vault-backed identity key: signing routes through a dedicated
-            // identity-key WalletTask (T8 follow-up). Until that lands, surface
-            // a calm, actionable message rather than silently doing nothing.
+            // Vault-backed identity key: signs in the backend via the JIT
+            // chokepoint (InVault route). Queue the request; `ui()` dispatches it.
             PrivateKeyData::InVault => {
-                MessageBanner::set_global(
-                    self.app_context.egui_ctx(),
-                    "Signing with this securely-stored key is not available yet. Try a different key.",
-                    MessageType::Error,
-                );
+                self.pending_identity_sign = true;
             }
         }
     }

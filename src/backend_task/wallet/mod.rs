@@ -1,21 +1,25 @@
+mod derive_identity_key_for_display;
 mod derive_key_for_display;
 mod fetch_platform_address_balances;
 mod fund_platform_address_from_asset_lock;
 mod fund_platform_address_from_wallet_utxos;
 mod generate_platform_receive_address;
 mod generate_receive_address;
+mod sign_message_with_identity_key;
 mod sign_message_with_key;
 mod transfer_platform_credits;
 mod warm_identity_auth_pubkeys;
 mod withdraw_from_platform_address;
 
+use crate::model::qualified_identity::PrivateKeyTarget;
 use crate::model::wallet::WalletSeedHash;
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::balances::credits::Credits;
 use dash_sdk::dpp::dashcore::OutPoint;
-use dash_sdk::dpp::identity::KeyType;
+use dash_sdk::dpp::identity::{KeyID, KeyType};
 use dash_sdk::dpp::identity::core_script::CoreScript;
 use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
+use dash_sdk::platform::Identifier;
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -59,6 +63,28 @@ pub enum WalletTask {
     SignMessageWithKey {
         seed_hash: WalletSeedHash,
         derivation_path: DerivationPath,
+        /// The message to sign (the user-entered plaintext, not a secret).
+        message: String,
+        /// The key type that determines the signing scheme.
+        key_type: KeyType,
+    },
+    /// Derive an identity private key for on-screen display/export. The raw
+    /// key is fetched just-in-time from the vault through the JIT chokepoint
+    /// (`InVault` route) and only the WIF (wrapped in `Secret`) crosses back to
+    /// the UI — the key bytes never become resident.
+    DeriveIdentityKeyForDisplay {
+        identity_id: Identifier,
+        target: PrivateKeyTarget,
+        key_id: KeyID,
+    },
+    /// Sign a message with a vault-backed identity key. The raw key is fetched
+    /// just-in-time through the chokepoint, the message signed in the backend,
+    /// and only the public Base64 signature crosses back — the key never
+    /// becomes resident.
+    SignMessageWithIdentityKey {
+        identity_id: Identifier,
+        target: PrivateKeyTarget,
+        key_id: KeyID,
         /// The message to sign (the user-entered plaintext, not a secret).
         message: String,
         /// The key type that determines the signing scheme.

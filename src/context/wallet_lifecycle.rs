@@ -256,13 +256,40 @@ impl AppContext {
     /// confirmation that their passphrase is correct. Returns
     /// [`TaskError::SingleKeyPassphraseIncorrect`] on a wrong passphrase.
     pub fn verify_single_key_passphrase(
-        &self,
+        self: &Arc<Self>,
         address: &str,
         passphrase: &str,
     ) -> Result<(), TaskError> {
-        self.wallet_backend()?
+        // The unlock gesture also lazy-migrates a protected entry to raw
+        // (verify_passphrase re-stores it). On migration, surface the one-time
+        // per-key disclosure (Copy B). The alias is read BEFORE the flag flip.
+        let backend = self.wallet_backend()?;
+        let label = backend
             .single_key()
-            .verify_passphrase(address, passphrase)
+            .list()
+            .into_iter()
+            .find(|k| k.address == address)
+            .and_then(|k| k.alias)
+            .unwrap_or_else(|| address.to_string());
+        let migrated = backend.single_key().verify_passphrase(address, passphrase)?;
+        if migrated {
+            self.show_single_key_migration_notice(&label);
+        }
+        Ok(())
+    }
+
+    /// Show the one-time per-key disclosure (Copy B) after an imported key's
+    /// vault secret was lazy-migrated to raw. Distinct copy from the wallet
+    /// notice so `set_global`'s text-dedup does not collapse them.
+    fn show_single_key_migration_notice(&self, label: &str) {
+        use crate::ui::MessageType;
+        use crate::ui::components::message_banner::MessageBanner;
+
+        let message = format!(
+            "The imported key \"{label}\" no longer needs its passphrase to use. It stays on this device, protected by your computer's account. Full passphrase protection will return in a future update."
+        );
+        MessageBanner::set_global(self.egui_ctx(), &message, MessageType::Warning)
+            .with_details(INTERIM_AT_REST_DETAILS);
     }
 
     /// Start chain sync against an already-wired wallet backend.

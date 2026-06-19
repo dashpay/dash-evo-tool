@@ -440,6 +440,18 @@ impl ScreenLike for KeyInfoScreen {
                                 }
                             }
                         }
+                        PrivateKeyData::InVault => {
+                            // The key's bytes live in the secret vault, fetched
+                            // per-use through the seam. The full view / sign
+                            // flow runs through dedicated identity-key
+                            // WalletTasks (T8 follow-up); until those land, the
+                            // key is shown as securely stored.
+                            ui.label(
+                                RichText::new("This signing key is stored securely on this device.")
+                                    .color(text_primary),
+                            );
+                            ui.add_space(10.0);
+                        }
                     }
                 } else {
                     ui.label(RichText::new("Enter Private Key:").color(text_primary));
@@ -729,6 +741,16 @@ impl KeyInfoScreen {
                 MessageBanner::set_global(
                     self.app_context.egui_ctx(),
                     "Private key is not available.",
+                    MessageType::Error,
+                );
+            }
+            // Vault-backed identity key: signing routes through a dedicated
+            // identity-key WalletTask (T8 follow-up). Until that lands, surface
+            // a calm, actionable message rather than silently doing nothing.
+            PrivateKeyData::InVault => {
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    "Signing with this securely-stored key is not available yet. Try a different key.",
                     MessageType::Error,
                 );
             }

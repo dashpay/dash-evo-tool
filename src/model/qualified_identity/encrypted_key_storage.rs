@@ -144,6 +144,15 @@ pub enum PrivateKeyData {
     Clear([u8; 32]),
     Encrypted(Vec<u8>),
     AtWalletDerivationPath(WalletDerivationPath),
+    /// The key's raw bytes live in the secret vault, fetched per-use through
+    /// the seam — never resident in this blob. A permanent in-memory
+    /// placeholder: the resolver reads the vault at sign time keyed by the
+    /// identity scope + the `(target, key_id)` BTreeMap key, so this variant
+    /// carries no bytes.
+    ///
+    /// Appended at the highest bincode index so blobs written before it
+    /// (discriminants 0–3) still decode unchanged (TS-RESID-02).
+    InVault,
 }
 
 impl fmt::Debug for PrivateKeyData {
@@ -172,6 +181,7 @@ impl fmt::Debug for PrivateKeyData {
             PrivateKeyData::AtWalletDerivationPath(path) => {
                 f.debug_tuple("AtWalletDerivationPath").field(path).finish()
             }
+            PrivateKeyData::InVault => f.debug_tuple("InVault").finish(),
         }
     }
 }
@@ -210,6 +220,7 @@ impl fmt::Display for PrivateKeyData {
                     derivation_path
                 )
             }
+            PrivateKeyData::InVault => write!(f, "InVault"),
         }
     }
 }
@@ -318,6 +329,9 @@ impl KeyStorage {
                     PrivateKeyData::AtWalletDerivationPath(_) => {
                         Err("Key is not resolved, please enter password".to_string())
                     }
+                    PrivateKeyData::InVault => {
+                        Err("Key is stored securely, resolve it through the vault".to_string())
+                    }
                 },
             )
             .transpose()
@@ -350,6 +364,9 @@ impl KeyStorage {
                     }
                     PrivateKeyData::AtWalletDerivationPath(_) => {
                         Err("Key is not resolved, please unlock the wallet".to_string())
+                    }
+                    PrivateKeyData::InVault => {
+                        Err("Key is stored securely, resolve it through the vault".to_string())
                     }
                 },
             )
@@ -507,6 +524,50 @@ impl KeyStorage {
             }
         }
     }
+
+    /// Whether the key at `key` is a vault placeholder
+    /// ([`PrivateKeyData::InVault`]) — its bytes live in the secret vault and
+    /// are fetched per-use, never resident here.
+    pub fn is_in_vault(&self, key: &(PrivateKeyTarget, KeyID)) -> bool {
+        matches!(
+            self.private_keys.get(key),
+            Some((_, PrivateKeyData::InVault))
+        )
+    }
+
+    /// The public-key metadata for `key`, regardless of how its private bytes
+    /// are stored. Lets a vault-placeholder key still surface its public key
+    /// for display and signing-key selection without touching the secret.
+    pub fn public_key_for(
+        &self,
+        key: &(PrivateKeyTarget, KeyID),
+    ) -> Option<&QualifiedIdentityPublicKey> {
+        self.private_keys.get(key).map(|(pub_key, _)| pub_key)
+    }
+
+    /// Rewrite every plaintext-carrying identity key
+    /// ([`PrivateKeyData::Clear`] / [`PrivateKeyData::AlwaysClear`]) to an
+    /// [`PrivateKeyData::InVault`] placeholder, returning the raw bytes that
+    /// must be stored in the vault under each `(target, key_id)` BEFORE the
+    /// blob is persisted (migration order: vault first, then blob rewrite).
+    ///
+    /// Wallet-derived ([`PrivateKeyData::AtWalletDerivationPath`]) and already
+    /// vault-backed / encrypted keys are left untouched — they were never
+    /// plaintext-at-rest.
+    pub fn take_plaintext_for_vault(
+        &mut self,
+    ) -> Vec<((PrivateKeyTarget, KeyID), Zeroizing<[u8; 32]>)> {
+        let mut out = Vec::new();
+        for (map_key, (_pub_key, data)) in self.private_keys.iter_mut() {
+            let raw = match data {
+                PrivateKeyData::Clear(bytes) | PrivateKeyData::AlwaysClear(bytes) => *bytes,
+                _ => continue,
+            };
+            out.push((map_key.clone(), Zeroizing::new(raw)));
+            *data = PrivateKeyData::InVault;
+        }
+        out
+    }
 }
 
 #[cfg(test)]
@@ -518,40 +579,20 @@ mod tests {
     use dash_sdk::platform::{Identifier, IdentityPublicKey};
     use std::collections::BTreeMap;
 
-    /// A recognizable 32-byte secret. A full 32-byte collision with random
-    /// public-key bytes is astronomically improbable, so finding it anywhere
-    /// in a rendering means the raw key bytes leaked.
+    use crate::wallet_backend::leak_test_support::{assert_no_leak_bytes, distinctive_secret_32};
+
+    /// A recognizable 32-byte secret. Delegates to the shared
+    /// [`distinctive_secret_32`] so the seam / sidecar / QI-blob leak cases
+    /// share one definition rather than forking it.
     fn distinctive_secret() -> [u8; 32] {
-        let mut bytes = [0u8; 32];
-        for (i, b) in bytes.iter_mut().enumerate() {
-            *b = 0xA0 ^ (i as u8).wrapping_mul(7);
-        }
-        bytes
+        distinctive_secret_32()
     }
 
     /// Assert `rendered` exposes the secret in none of the forms a sink could
-    /// leak it: lowercase hex (a hex-printing sink) and the `[160, 167, …]`
-    /// decimal-array form a `#[derive(Debug)]` on `[u8; 32]` would emit. The
-    /// decimal form is the shape the pre-fix derived `Debug` actually leaked,
-    /// so checking only hex would falsely pass against the original bug.
+    /// leak it. Thin wrapper over the shared [`assert_no_leak_bytes`] so the
+    /// existing call sites keep their `&[u8; 32]` ergonomics.
     fn assert_no_leak(rendered: &str, secret: &[u8; 32], context: &str) {
-        let hex = hex::encode(secret);
-        let decimal_array = format!(
-            "[{}]",
-            secret
-                .iter()
-                .map(|b| b.to_string())
-                .collect::<Vec<_>>()
-                .join(", ")
-        );
-        assert!(
-            !rendered.contains(&hex),
-            "{context} leaked the raw private key (hex): {rendered}"
-        );
-        assert!(
-            !rendered.contains(&decimal_array),
-            "{context} leaked the raw private key (byte array): {rendered}"
-        );
+        assert_no_leak_bytes(rendered, secret, context);
     }
 
     /// QA-001 — the redacting `Debug` (and `Display`) on `PrivateKeyData` must
@@ -608,5 +649,132 @@ mod tests {
             &secret,
             "QualifiedIdentity Debug",
         );
+    }
+
+    /// Helper: a `KeyStorage` carrying one `Clear` (HIGH) and one `AlwaysClear`
+    /// (MEDIUM) plaintext key plus one `AtWalletDerivationPath` key, used by
+    /// the migration / residency cases.
+    fn storage_with_plaintext_and_derived(
+        secret_high: [u8; 32],
+        secret_medium: [u8; 32],
+    ) -> KeyStorage {
+        let pv = PlatformVersion::latest();
+        let mut ks = KeyStorage::default();
+
+        let high = IdentityPublicKey::random_key(1, Some(1), pv);
+        ks.private_keys.insert(
+            (PrivateKeyTarget::PrivateKeyOnMainIdentity, high.id()),
+            (
+                QualifiedIdentityPublicKey::from(high),
+                PrivateKeyData::Clear(secret_high),
+            ),
+        );
+        let medium = IdentityPublicKey::random_key(2, Some(2), pv);
+        ks.private_keys.insert(
+            (PrivateKeyTarget::PrivateKeyOnMainIdentity, medium.id()),
+            (
+                QualifiedIdentityPublicKey::from(medium),
+                PrivateKeyData::AlwaysClear(secret_medium),
+            ),
+        );
+        let derived = IdentityPublicKey::random_key(3, Some(3), pv);
+        ks.private_keys.insert(
+            (PrivateKeyTarget::PrivateKeyOnMainIdentity, derived.id()),
+            (
+                QualifiedIdentityPublicKey::from(derived),
+                PrivateKeyData::AtWalletDerivationPath(WalletDerivationPath {
+                    wallet_seed_hash: [0x07; 32],
+                    derivation_path: DerivationPath::from(vec![]),
+                }),
+            ),
+        );
+        ks
+    }
+
+    /// TS-RESID-02 — a bincode blob written BEFORE `InVault` was appended
+    /// (discriminants 0–3 only) still decodes into the extended enum, and the
+    /// new highest-index variant round-trips. Guards the bincode-discriminant
+    /// trap: appending at index 4 must not shift 0–3.
+    #[test]
+    fn ts_resid_02_old_blob_decodes_after_appending_in_vault() {
+        let cfg = bincode::config::standard();
+        // Each of the four pre-existing variants must round-trip unchanged.
+        for original in [
+            PrivateKeyData::AlwaysClear([0x11; 32]),
+            PrivateKeyData::Clear([0x22; 32]),
+            PrivateKeyData::Encrypted(vec![0x33; 48]),
+            PrivateKeyData::AtWalletDerivationPath(WalletDerivationPath {
+                wallet_seed_hash: [0x44; 32],
+                derivation_path: DerivationPath::from(vec![]),
+            }),
+        ] {
+            let bytes = bincode::encode_to_vec(&original, cfg).expect("encode");
+            let (decoded, _): (PrivateKeyData, _) =
+                bincode::decode_from_slice(&bytes, cfg).expect("decode old variant");
+            assert!(decoded == original, "pre-InVault variant must decode unchanged");
+        }
+        // The new variant round-trips too.
+        let bytes = bincode::encode_to_vec(PrivateKeyData::InVault, cfg).expect("encode");
+        let (decoded, _): (PrivateKeyData, _) =
+            bincode::decode_from_slice(&bytes, cfg).expect("decode InVault");
+        assert!(decoded == PrivateKeyData::InVault);
+    }
+
+    /// TS-RESID-01 / TS-NOLEAK-03 — after `take_plaintext_for_vault`, every
+    /// plaintext-carrying key is an `InVault` placeholder (zero Clear /
+    /// AlwaysClear remain), the wallet-derived key is untouched, and the
+    /// returned raw bytes match the originals. The re-encoded blob leaks
+    /// neither secret in hex nor decimal-array form.
+    #[test]
+    fn ts_resid_01_migration_leaves_only_in_vault_and_blob_has_no_plaintext() {
+        let high = distinctive_secret_32();
+        let mut medium = high;
+        medium[0] ^= 0xFF; // distinct from `high`
+        let mut ks = storage_with_plaintext_and_derived(high, medium);
+
+        let taken = ks.take_plaintext_for_vault();
+        assert_eq!(taken.len(), 2, "both plaintext keys are extracted");
+        let taken_bytes: Vec<[u8; 32]> = taken.iter().map(|(_, b)| **b).collect();
+        assert!(taken_bytes.contains(&high) && taken_bytes.contains(&medium));
+
+        let mut in_vault = 0;
+        let mut derived = 0;
+        for (_, data) in ks.private_keys.values() {
+            match data {
+                PrivateKeyData::InVault => in_vault += 1,
+                PrivateKeyData::AtWalletDerivationPath(_) => derived += 1,
+                PrivateKeyData::Clear(_) | PrivateKeyData::AlwaysClear(_) => {
+                    panic!("plaintext key survived migration")
+                }
+                PrivateKeyData::Encrypted(_) => {}
+            }
+        }
+        assert_eq!(in_vault, 2, "both plaintext keys became InVault");
+        assert_eq!(derived, 1, "wallet-derived key untouched");
+
+        // The persisted blob carries InVault markers, never plaintext.
+        let blob = bincode::encode_to_vec(&ks, bincode::config::standard()).expect("encode");
+        let rendered = format!("{blob:?}");
+        assert_no_leak_bytes(&rendered, &high, "migrated KeyStorage blob (high)");
+        assert_no_leak_bytes(&rendered, &medium, "migrated KeyStorage blob (medium)");
+    }
+
+    /// `is_in_vault` and `public_key_for` probes: a vault placeholder reports
+    /// `true` and still surfaces its public key; a plaintext key reports
+    /// `false`.
+    #[test]
+    fn in_vault_and_public_key_probes() {
+        let mut ks = storage_with_plaintext_and_derived([0x01; 32], [0x02; 32]);
+        let keys: Vec<_> = ks.private_keys.keys().cloned().collect();
+        ks.take_plaintext_for_vault();
+        // The two plaintext keys are now InVault; the derived one is not.
+        let mut in_vault_count = 0;
+        for k in &keys {
+            assert!(ks.public_key_for(k).is_some(), "public key always available");
+            if ks.is_in_vault(k) {
+                in_vault_count += 1;
+            }
+        }
+        assert_eq!(in_vault_count, 2);
     }
 }

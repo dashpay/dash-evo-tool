@@ -19,23 +19,18 @@
 
 use serde::{Deserialize, Serialize};
 
-/// On-disk version tag for the bincode-encoded [`WalletMeta`] payload, framed
-/// by [`WalletMetaView`](crate::wallet_backend::WalletMetaView) as
-/// `[ WALLET_META_VERSION (1B) | bincode(WalletMeta) ]`.
+/// The original (pre-`uses_password`) [`WalletMeta`] on-disk shape, decode-only.
 ///
-/// `WalletMeta` is positional bincode, so adding a field is format-breaking for
-/// already-stored blobs — `#[serde(default)]` alone does NOT make a stored blob
-/// forward-compatible (it only supplies a value at the Rust layer when a field
-/// is genuinely absent from the encoded stream, which positional bincode never
-/// reports). This explicit version byte is the gate: v1 is the original shape
-/// (no `uses_password` / `password_hint`); v2 adds them. The reader detects the
-/// version and migrates a v1 blob to v2 with the new fields defaulted, rather
-/// than positionally misparsing it.
-pub const WALLET_META_VERSION: u8 = 2;
-
-/// The original (pre-`uses_password`) [`WalletMeta`] on-disk shape. Retained
-/// decode-only so a v1 blob (or a pre-version-byte legacy blob) migrates into
-/// the current shape instead of being misread.
+/// `WalletMeta` is a positional-bincode `DetKv` value, so appending the
+/// `uses_password` / `password_hint` fields is format-breaking for blobs
+/// already written in the 4-field shape — `#[serde(default)]` does NOT rescue
+/// them (positional bincode never reports an absent trailing field; it reads
+/// past the end and errors). The dual-format reader
+/// ([`WalletMetaView::get`](crate::wallet_backend::WalletMetaView)) tries the
+/// current shape first, then falls back to decoding this legacy shape, and
+/// re-stores in the new shape. No version byte: the two shapes are told apart
+/// by which one decodes, leaning on the `DetKv` schema envelope rather than a
+/// hand-rolled tag that could collide with a bincode length varint.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WalletMetaV1 {
     /// See [`WalletMeta::alias`].
@@ -97,9 +92,9 @@ pub struct WalletMeta {
     /// NOT make this blob forward-compatible. `WalletMeta` is stored as a
     /// positional `bincode::config::standard()` blob behind the `DetKv`
     /// schema envelope, so adding, removing, or reordering any field here is
-    /// a format-breaking change for already-stored blobs. Evolve the shape
-    /// only by bumping [`WALLET_META_VERSION`] and migrating old blobs (see
-    /// [`WalletMetaV1`]).
+    /// a format-breaking change for already-stored blobs. Evolve the shape by
+    /// adding a decode-only legacy shape (see [`WalletMetaV1`]) and a
+    /// dual-format reader, never by relying on `#[serde(default)]` alone.
     #[serde(default)]
     pub xpub_encoded: Vec<u8>,
     /// `true` when the wallet's seed was stored under a user password. Moved
@@ -112,44 +107,6 @@ pub struct WalletMeta {
     /// Shown next to the unlock prompt for a not-yet-migrated password wallet.
     #[serde(default)]
     pub password_hint: Option<String>,
-}
-
-/// Encode a [`WalletMeta`] for storage as `[ WALLET_META_VERSION | bincode ]`.
-/// The leading version byte lets the reader migrate older shapes instead of
-/// positionally misparsing them.
-pub fn encode_versioned(meta: &WalletMeta) -> Result<Vec<u8>, bincode::error::EncodeError> {
-    let body = bincode::serde::encode_to_vec(meta, bincode::config::standard())?;
-    let mut out = Vec::with_capacity(body.len() + 1);
-    out.push(WALLET_META_VERSION);
-    out.extend_from_slice(&body);
-    Ok(out)
-}
-
-/// Decode a stored [`WalletMeta`] payload, handling every on-disk shape:
-///
-/// * leading [`WALLET_META_VERSION`] (current v2) → decode directly;
-/// * leading version byte `1` → decode as [`WalletMetaV1`] and migrate;
-/// * no recognised version byte (pre-version-byte legacy blob) → try v1 bare
-///   bincode and migrate.
-///
-/// A blob that matches none of these is a decode error — never a positional
-/// misparse.
-pub fn decode_versioned(bytes: &[u8]) -> Result<WalletMeta, bincode::error::DecodeError> {
-    let cfg = bincode::config::standard();
-    if let Some((&tag, rest)) = bytes.split_first() {
-        if tag == WALLET_META_VERSION {
-            let (meta, _) = bincode::serde::decode_from_slice::<WalletMeta, _>(rest, cfg)?;
-            return Ok(meta);
-        }
-        if tag == 1
-            && let Ok((v1, _)) = bincode::serde::decode_from_slice::<WalletMetaV1, _>(rest, cfg)
-        {
-            return Ok(v1.into());
-        }
-    }
-    // Pre-version-byte legacy blob: bare v1 bincode.
-    let (v1, _) = bincode::serde::decode_from_slice::<WalletMetaV1, _>(bytes, cfg)?;
-    Ok(v1.into())
 }
 
 #[cfg(test)]
@@ -190,12 +147,45 @@ mod tests {
         assert!(m.password_hint.is_none());
     }
 
-    /// TS-META-01 — the new v2 shape round-trips through the versioned framing
-    /// field-for-field, and an OLD v1 blob is detected by its version byte and
-    /// migrated (NOT positionally misparsed). The migrated meta defaults
-    /// `uses_password=false` / `password_hint=None` and carries every v1 field.
+    /// TS-META-01 (model leg) — the dual-format decode contract the view's
+    /// `read_meta` relies on: a legacy 4-field blob FAILS to decode as the new
+    /// 6-field `WalletMeta` (runs out of bytes) but decodes as `WalletMetaV1`;
+    /// a 6-field blob decodes as `WalletMeta`. This is why "try new, then V1"
+    /// is correct and order-sensitive. Includes the SEC-003 collision case (a
+    /// 1-char alias, whose bincode length varint is `1`) — the old leading-byte
+    /// dispatch would have mis-routed it; the try-both reader does not.
     #[test]
-    fn ts_meta_01_versioned_frame_round_trip_and_v1_migration() {
+    fn ts_meta_01_dual_format_decode_is_order_sensitive() {
+        let cfg = bincode::config::standard();
+
+        for alias in ["paycheque", "a", "ab"] {
+            let v1 = WalletMetaV1 {
+                alias: alias.into(),
+                is_main: true,
+                core_wallet_name: Some("dev".into()),
+                xpub_encoded: vec![0x22; 78],
+            };
+            let old_blob = bincode::serde::encode_to_vec(&v1, cfg).expect("encode v1");
+
+            // The new 6-field struct cannot decode the 4-field blob.
+            assert!(
+                bincode::serde::decode_from_slice::<WalletMeta, _>(&old_blob, cfg).is_err(),
+                "legacy blob (alias {alias:?}) must NOT decode as the new shape",
+            );
+            // The legacy struct does.
+            let (decoded, _): (WalletMetaV1, _) =
+                bincode::serde::decode_from_slice(&old_blob, cfg).expect("decode v1");
+            assert_eq!(decoded, v1);
+
+            // Migration preserves the v1 fields, defaults the new ones.
+            let migrated: WalletMeta = decoded.into();
+            assert_eq!(migrated.alias, alias);
+            assert_eq!(migrated.xpub_encoded, vec![0x22; 78]);
+            assert!(!migrated.uses_password);
+            assert!(migrated.password_hint.is_none());
+        }
+
+        // A new 6-field blob decodes as WalletMeta (and re-stores identically).
         let v2 = WalletMeta {
             alias: "paycheque".into(),
             is_main: true,
@@ -204,36 +194,9 @@ mod tests {
             uses_password: true,
             password_hint: Some("hint".into()),
         };
-        let framed = encode_versioned(&v2).expect("encode v2");
-        assert_eq!(
-            framed[0], WALLET_META_VERSION,
-            "frame starts with the version tag"
-        );
-        assert_eq!(decode_versioned(&framed).expect("decode v2"), v2);
-
-        // A v1 blob: framed with version byte 1 over the old shape.
-        let v1 = WalletMetaV1 {
-            alias: "legacy".into(),
-            is_main: false,
-            core_wallet_name: None,
-            xpub_encoded: vec![0x22; 78],
-        };
-        let v1_body =
-            bincode::serde::encode_to_vec(&v1, bincode::config::standard()).expect("encode v1");
-        let mut v1_framed = vec![1u8];
-        v1_framed.extend_from_slice(&v1_body);
-        let migrated = decode_versioned(&v1_framed).expect("decode + migrate v1");
-        assert_eq!(migrated.alias, "legacy");
-        assert_eq!(migrated.xpub_encoded, vec![0x22; 78]);
-        assert!(
-            !migrated.uses_password,
-            "v1 migrates with uses_password defaulted false"
-        );
-        assert!(migrated.password_hint.is_none());
-
-        // A pre-version-byte legacy blob (bare v1 bincode) also migrates.
-        let bare = decode_versioned(&v1_body).expect("decode + migrate bare v1");
-        assert_eq!(bare.alias, "legacy");
-        assert_eq!(WalletMeta::from(v1), bare);
+        let new_blob = bincode::serde::encode_to_vec(&v2, cfg).expect("encode v2");
+        let (decoded, _): (WalletMeta, _) =
+            bincode::serde::decode_from_slice(&new_blob, cfg).expect("decode v2");
+        assert_eq!(decoded, v2);
     }
 }

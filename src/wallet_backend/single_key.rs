@@ -482,7 +482,7 @@ impl<'a> SingleKeyView<'a> {
         };
         let mut out = Vec::with_capacity(keys.len());
         for key in keys {
-            match kv.get::<ImportedKey>(DetScope::Global, &key) {
+            match self.read_imported_key(kv, &key) {
                 Ok(Some(meta)) => out.push(meta),
                 Ok(None) => {}
                 Err(e) => {
@@ -496,6 +496,39 @@ impl<'a> SingleKeyView<'a> {
             }
         }
         out
+    }
+
+    /// Read one `ImportedKey` sidecar blob with a dual-format fallback. Tries
+    /// the current shape first; on a decode failure (an old blob lacks the
+    /// appended `public_key_bytes`) falls back to the legacy [`ImportedKeyV1`]
+    /// shape and RE-STORES it in the current shape — so an imported key created
+    /// before that field still appears in the picker instead of vanishing.
+    /// Mirrors the `WalletMeta` dual-format reader.
+    fn read_imported_key(
+        &self,
+        kv: &Arc<DetKv>,
+        key: &str,
+    ) -> Result<Option<ImportedKey>, crate::wallet_backend::KvAdapterError> {
+        use crate::wallet_backend::KvAdapterError;
+        match kv.get::<ImportedKey>(DetScope::Global, key) {
+            Ok(opt) => return Ok(opt),
+            Err(KvAdapterError::Decode(_)) => {}
+            Err(e) => return Err(e),
+        }
+        let Some(v1) = kv.get::<crate::model::single_key::ImportedKeyV1>(DetScope::Global, key)?
+        else {
+            return Ok(None);
+        };
+        let migrated: ImportedKey = v1.into();
+        if let Err(e) = kv.put(DetScope::Global, key, &migrated) {
+            tracing::warn!(
+                target = "wallet_backend::single_key",
+                key = %key,
+                error = ?e,
+                "Could not re-store migrated single-key sidecar; will retry next read",
+            );
+        }
+        Ok(Some(migrated))
     }
 
     /// Reconstruct DET-side [`SingleKeyWallet`] rows from the k/v sidecar
@@ -1644,5 +1677,55 @@ mod tests {
         // Signs with no passphrase.
         view.sign_with(&imported.address, &[0x42u8; 32])
             .expect("raw key signs");
+    }
+
+    /// PROJ-003 — an OLD `ImportedKey` sidecar blob written WITHOUT the
+    /// appended `public_key_bytes` (the pre-this-PR 5-field shape) is read back
+    /// through the view's dual-format fallback: it does NOT vanish from the
+    /// picker, its fields are preserved, and it is re-stored in the new shape.
+    #[test]
+    fn old_imported_key_blob_decodes_and_restores() {
+        use crate::model::single_key::ImportedKeyV1;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ViewFixture {
+            store,
+            index,
+            kv,
+            network,
+        } = fresh_view_with_kv(dir.path(), Network::Testnet);
+        let view = SingleKeyView {
+            secret_store: &store,
+            index: &index,
+            network,
+            app_kv: Some(&kv),
+        };
+
+        // Write the OLD 5-field shape directly, the way the base branch did.
+        let address = "yTestImportedAddr".to_string();
+        let key = meta_key_for(network, &address);
+        let v1 = ImportedKeyV1 {
+            address: address.clone(),
+            alias: Some("legacy key".into()),
+            network,
+            has_passphrase: true,
+            passphrase_hint: Some("the usual".into()),
+        };
+        kv.put(DetScope::Global, &key, &v1).expect("write old blob");
+
+        // The view lists it (dual-format fallback) — not skipped.
+        let listed = view.list_persisted();
+        assert_eq!(listed.len(), 1, "old key must not vanish from the picker");
+        let got = &listed[0];
+        assert_eq!(got.address, address);
+        assert_eq!(got.alias.as_deref(), Some("legacy key"));
+        assert!(got.has_passphrase);
+        assert_eq!(got.passphrase_hint.as_deref(), Some("the usual"));
+        assert!(got.public_key_bytes.is_empty(), "no stored pubkey pre-migration");
+
+        // It was re-stored in the new shape: a direct new-shape decode succeeds.
+        let direct: Option<ImportedKey> =
+            kv.get(DetScope::Global, &key).expect("direct new-shape read");
+        assert_eq!(direct.expect("present").address, address);
     }
 }

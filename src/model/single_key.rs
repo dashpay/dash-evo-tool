@@ -58,3 +58,42 @@ pub struct ImportedKey {
     #[serde(default)]
     pub public_key_bytes: Vec<u8>,
 }
+
+/// The pre-`public_key_bytes` [`ImportedKey`] on-disk shape, decode-only.
+///
+/// `ImportedKey` is a positional-bincode `DetKv` value; appending
+/// `public_key_bytes` is format-breaking for blobs already written without it
+/// (`#[serde(default)]` does not rescue a trailing positional field). The
+/// single-key read path tries the current shape first, then falls back to this
+/// legacy shape and re-stores in the new shape — the same dual-format treatment
+/// `WalletMeta` gets, so the two sibling sidecars share one policy.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImportedKeyV1 {
+    /// See [`ImportedKey::address`].
+    pub address: String,
+    /// See [`ImportedKey::alias`].
+    pub alias: Option<String>,
+    /// See [`ImportedKey::network`].
+    pub network: Network,
+    /// See [`ImportedKey::has_passphrase`].
+    #[serde(default)]
+    pub has_passphrase: bool,
+    /// See [`ImportedKey::passphrase_hint`].
+    #[serde(default)]
+    pub passphrase_hint: Option<String>,
+}
+
+impl From<ImportedKeyV1> for ImportedKey {
+    fn from(v1: ImportedKeyV1) -> Self {
+        ImportedKey {
+            address: v1.address,
+            alias: v1.alias,
+            network: v1.network,
+            has_passphrase: v1.has_passphrase,
+            passphrase_hint: v1.passphrase_hint,
+            // Pre-this-field blobs have no stored pubkey; locked render falls
+            // back to deriving from plaintext when the key is unlocked.
+            public_key_bytes: Vec::new(),
+        }
+    }
+}

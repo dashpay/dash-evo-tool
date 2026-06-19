@@ -30,7 +30,7 @@ use dash_sdk::dpp::dashcore::base58;
 
 use crate::backend_task::error::TaskError;
 use crate::model::wallet::WalletSeedHash;
-use crate::model::wallet::meta::{WalletMeta, decode_versioned, encode_versioned};
+use crate::model::wallet::meta::{WalletMeta, WalletMetaV1};
 use crate::wallet_backend::kv::KvAdapterError;
 use crate::wallet_backend::{DetKv, DetScope};
 
@@ -146,7 +146,8 @@ impl<'a> WalletMetaView<'a> {
     }
 
     /// Upsert the metadata for a single wallet. Re-writing the same
-    /// value is a no-op-effective write (DetKv upserts by key).
+    /// value is a no-op-effective write (DetKv upserts by key). Written in the
+    /// current `WalletMeta` shape directly through the `DetKv` schema envelope.
     pub fn set(
         &self,
         network: Network,
@@ -154,23 +155,40 @@ impl<'a> WalletMetaView<'a> {
         meta: &WalletMeta,
     ) -> Result<(), TaskError> {
         let key = key_for(network, seed_hash);
-        let framed = encode_versioned(meta)
-            .map_err(|e| map_kv_error_to_task_error(KvAdapterError::Encode(e)))?;
         self.kv
-            .put(DetScope::Global, &key, &framed)
+            .put(DetScope::Global, &key, meta)
             .map_err(map_kv_error_to_task_error)
     }
 
-    /// Read and version-decode a single wallet-meta blob, migrating a v1 (or
-    /// pre-version-byte legacy) shape into the current [`WalletMeta`].
-    /// `Ok(None)` when the key is absent.
+    /// Read a single wallet-meta blob with a dual-format fallback. Tries the
+    /// current 6-field [`WalletMeta`] shape first; on a decode failure (an old
+    /// 4-field blob runs out of bytes for the appended fields) falls back to the
+    /// legacy [`WalletMetaV1`] shape and RE-STORES it in the current shape
+    /// (one-shot migration). `Ok(None)` when the key is absent.
     fn read_meta(&self, key: &str) -> Result<Option<WalletMeta>, KvAdapterError> {
-        let Some(framed) = self.kv.get::<Vec<u8>>(DetScope::Global, key)? else {
+        // New shape first. The DetKv schema-version mismatch is a hard error
+        // (propagate); only a bincode *decode* failure means "try legacy".
+        match self.kv.get::<WalletMeta>(DetScope::Global, key) {
+            Ok(opt) => return Ok(opt),
+            Err(KvAdapterError::Decode(_)) => {}
+            Err(e) => return Err(e),
+        }
+        // Legacy 4-field shape. A success here is an old blob: migrate it.
+        let Some(v1) = self.kv.get::<WalletMetaV1>(DetScope::Global, key)? else {
             return Ok(None);
         };
-        decode_versioned(&framed)
-            .map(Some)
-            .map_err(KvAdapterError::Decode)
+        let migrated: WalletMeta = v1.into();
+        if let Err(e) = self.kv.put(DetScope::Global, key, &migrated) {
+            // Re-store is best-effort: the in-memory value is correct this
+            // session; the next read retries the migration.
+            tracing::warn!(
+                target = "wallet_backend::wallet_meta",
+                key = %key,
+                error = ?e,
+                "Could not re-store migrated wallet meta; will retry next read",
+            );
+        }
+        Ok(Some(migrated))
     }
 
     /// Delete the metadata for a single wallet. Idempotent — a
@@ -389,5 +407,47 @@ mod tests {
         let suffix = key.trim_start_matches("mainnet:wallet_meta:");
         let decoded = base58::decode(suffix).expect("base58 decodes");
         assert_eq!(decoded.as_slice(), seed.as_slice());
+    }
+
+    /// PROJ-001/002/003 (WalletMeta leg) — an OLD 4-field blob, written exactly
+    /// as the base branch did (`kv.put::<WalletMetaV1>`), is read back through
+    /// the view: its `alias`/`is_main`/`core_wallet_name`/`xpub` are preserved
+    /// (NOT silently lost to a `Vec<u8>` type-confusion), the new fields default,
+    /// and the entry is RE-STORED in the new 6-field shape (a subsequent
+    /// `get::<WalletMeta>` succeeds directly). Covers a 1-char alias (the
+    /// SEC-003 leading-byte-collision case). Makes the `WalletMetaV1` legacy
+    /// path live + tested end-to-end.
+    #[test]
+    fn old_wallet_meta_blob_decodes_preserves_fields_and_restores() {
+        for alias in ["paycheque", "a", "ab"] {
+            let kv = kv();
+            let view = WalletMetaView::new(&kv);
+            let seed: WalletSeedHash = [0x5A; 32];
+            let key = key_for(Network::Testnet, &seed);
+
+            // Write the OLD shape directly, the way the base branch did.
+            let v1 = WalletMetaV1 {
+                alias: alias.into(),
+                is_main: true,
+                core_wallet_name: Some("local-dashd".into()),
+                xpub_encoded: vec![0x22; 78],
+            };
+            kv.put(DetScope::Global, &key, &v1).expect("write old blob");
+
+            // The view reads it (dual-format fallback), preserving every field.
+            let got = view.get(Network::Testnet, &seed).expect("old blob decodes");
+            assert_eq!(got.alias, alias, "alias preserved");
+            assert!(got.is_main, "is_main preserved");
+            assert_eq!(got.core_wallet_name.as_deref(), Some("local-dashd"));
+            assert_eq!(got.xpub_encoded, vec![0x22; 78]);
+            assert!(!got.uses_password, "new field defaults false");
+            assert!(got.password_hint.is_none());
+
+            // It was re-stored in the new shape: a direct new-shape decode now
+            // succeeds (no more legacy fallback needed).
+            let direct: Option<WalletMeta> =
+                kv.get(DetScope::Global, &key).expect("direct new-shape read");
+            assert_eq!(direct.expect("present").alias, alias);
+        }
     }
 }

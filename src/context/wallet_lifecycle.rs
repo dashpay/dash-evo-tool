@@ -3264,6 +3264,46 @@ mod tests {
             "exactly one wallet must be watched after the unlock reconciliation"
         );
 
+        // QA-004 — lazy-migration secret post-conditions. The unlock decrypted
+        // the legacy envelope and re-stored the seed raw, vault-first.
+        let store = ctx.secret_store();
+        let seed_view = WalletSeedView::new(&store);
+        let raw = seed_view
+            .get_raw(&seed_hash)
+            .expect("raw read")
+            .expect("the seed must be re-stored raw after the migrating unlock");
+        assert_eq!(&*raw, &seed, "raw seed must equal the true 64-byte seed");
+        assert!(
+            seed_view
+                .legacy_envelope_get(&seed_hash)
+                .expect("legacy read")
+                .is_none(),
+            "the legacy envelope must be deleted after migration"
+        );
+        // The sidecar password flag is flipped, so the next unlock is prompt-free.
+        let meta = WalletMetaView::new(&ctx.app_kv())
+            .get(Network::Testnet, &seed_hash)
+            .expect("wallet meta present");
+        assert!(
+            !meta.uses_password,
+            "WalletMeta.uses_password must flip false after migration"
+        );
+
+        // A SECOND secret resolve for this seed is prompt-free: a never-prompt
+        // chokepoint over the now-raw vault resolves the true seed with zero asks.
+        use crate::wallet_backend::secret_prompt::test_support::TestPrompt;
+        use crate::wallet_backend::{SecretAccess, SecretScope};
+        let never = std::sync::Arc::new(TestPrompt::never());
+        let sa = SecretAccess::new(ctx.secret_store(), never.clone(), Network::Testnet);
+        let resolved = sa
+            .with_secret(&SecretScope::HdSeed { seed_hash }, |pt| {
+                Ok(pt.expose_hd_seed().copied())
+            })
+            .await
+            .expect("second resolve is prompt-free");
+        assert_eq!(resolved, Some(seed), "prompt-free resolve returns the seed");
+        assert_eq!(never.ask_count(), 0, "the second unlock never prompts");
+
         backend.shutdown().await;
     }
 

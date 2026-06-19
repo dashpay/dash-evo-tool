@@ -55,10 +55,20 @@ async fn ts_sign_e2e_01_in_vault_identity_signs_and_broadcasts() {
     let mut qi = si.qualified_identity.clone();
     qi.identity = identity.clone();
 
+    // The fixture registers from an HD wallet, so its keys are stored
+    // `AtWalletDerivationPath` (never plaintext-at-rest) and the migration would
+    // find nothing. Materialize the MASTER signing key to `Clear` first —
+    // mirroring the non-wallet load path (`load_identity.rs`) that yields
+    // `PrivateKeyData::Clear` — by deriving its raw bytes from the HD seed at
+    // the same identity-auth path production registered it at (index 0, key 0).
+    // Those bytes match the on-chain MASTER key, so the InVault signature
+    // verifies after migration.
+    materialize_master_key_as_clear(ctx, &si.wallet_seed_hash, &mut qi).await;
+
     let taken = qi.private_keys.take_plaintext_for_vault();
     assert!(
         !taken.is_empty(),
-        "the shared identity must have carried plaintext signing keys to migrate"
+        "the migrated MASTER key must have been materialized as plaintext to carry into the vault"
     );
     IdentityKeyView::new(&ctx.app_context.secret_store(), identity_id.to_buffer())
         .store_all(&taken)
@@ -174,4 +184,68 @@ async fn ts_sign_e2e_01_in_vault_identity_signs_and_broadcasts() {
             .any(|k| k.data() == new_ipk.data()),
         "the new key must be visible on Platform — the InVault MASTER key signed the ST"
     );
+}
+
+/// Rewrite the MASTER AUTHENTICATION key of `qi` from `AtWalletDerivationPath`
+/// to a resident `PrivateKeyData::Clear`, deriving its raw bytes from the HD
+/// seed at the same identity-auth path production registered it at.
+///
+/// The fixture identity is wallet-derived, so the migration under test
+/// (`take_plaintext_for_vault`) only acts on `Clear`/`AlwaysClear` keys. This
+/// reproduces the load-path state in which a MASTER key is plaintext-at-rest,
+/// so the migration → InVault → JIT-sign chain has a key to operate on. The
+/// derived bytes are byte-identical to the on-chain MASTER key (same BIP-32
+/// path), so the signature it later produces verifies.
+async fn materialize_master_key_as_clear(
+    ctx: &crate::framework::harness::BackendTestContext,
+    wallet_seed_hash: &dash_evo_tool::model::wallet::WalletSeedHash,
+    qi: &mut dash_evo_tool::model::qualified_identity::QualifiedIdentity,
+) {
+    use dash_evo_tool::model::qualified_identity::PrivateKeyTarget;
+    use dash_evo_tool::wallet_backend::SecretScope;
+    use dash_sdk::dpp::key_wallet::bip32::{DerivationPath, KeyDerivationType};
+
+    let network = ctx.app_context.network();
+
+    let (map_key, master_pub) = qi
+        .private_keys
+        .private_keys
+        .iter()
+        .find_map(|(map_key, (pub_key, _))| {
+            let ipk = &pub_key.identity_public_key;
+            (map_key.0 == PrivateKeyTarget::PrivateKeyOnMainIdentity
+                && ipk.purpose() == Purpose::AUTHENTICATION
+                && ipk.security_level() == SecurityLevel::MASTER)
+                .then(|| (map_key.clone(), pub_key.clone()))
+        })
+        .expect("qualified identity must carry a MASTER AUTHENTICATION key");
+
+    // Production registers the MASTER key at identity index 0, key index 0.
+    let master_path =
+        DerivationPath::identity_authentication_path(network, KeyDerivationType::ECDSA, 0, 0);
+
+    let master_bytes = ctx
+        .app_context
+        .wallet_backend()
+        .expect("wallet backend wired")
+        .secret_access()
+        .with_secret(
+            &SecretScope::HdSeed {
+                seed_hash: *wallet_seed_hash,
+            },
+            |plaintext| {
+                let seed = plaintext
+                    .expose_hd_seed()
+                    .ok_or(dash_evo_tool::backend_task::error::TaskError::WalletLocked)?;
+                let xprv = master_path
+                    .derive_priv_ecdsa_for_master_seed(seed, network)
+                    .expect("derive master private key from seed");
+                Ok(xprv.to_priv().inner.secret_bytes())
+            },
+        )
+        .await
+        .expect("resolve HD seed and derive MASTER private key");
+
+    qi.private_keys
+        .insert_non_encrypted(map_key, (master_pub, master_bytes));
 }

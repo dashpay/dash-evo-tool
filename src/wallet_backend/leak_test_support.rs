@@ -1,13 +1,9 @@
-//! Shared no-leak assertion for secret-path tests.
-//!
-//! Promoted from the private `assert_no_leak` in
-//! `model/qualified_identity/encrypted_key_storage.rs::tests` so the seam,
-//! sidecar, QI-blob, and `ClosedSingleKey`-Debug leak cases share one
-//! implementation rather than copy-pasting it.
+//! Shared no-leak assertion for secret-path tests — the seam, sidecar, QI-blob,
+//! and `ClosedSingleKey`-Debug leak cases call one implementation.
 //!
 //! The decimal-array check is load-bearing: a `#[derive(Debug)]` on `[u8; N]`
-//! leaks the `[160, 167, …]` decimal form, and finding `6a2818cd` leaked
-//! exactly that. Hex alone would falsely pass against that bug.
+//! leaks the `[160, 167, …]` decimal form. Hex alone would falsely pass against
+//! a derived-Debug leak that emits that decimal shape.
 
 /// Assert `rendered` exposes `secret` in NONE of the forms a sink could leak
 /// it: lowercase hex and the `[160, 167, …]` decimal-array form. Works for any

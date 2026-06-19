@@ -74,6 +74,7 @@ As a user, I want my wallet protected by a passphrase so that others cannot acce
 - The prompt offers a "Keep this wallet unlocked until I close the app" option so a busy session is asked only once.
 - That option defaults to off: unless the user actively ticks it, every secret access re-prompts, and the seed is not cached.
 - The seed is never held in memory between operations: it is decrypted on demand and wiped as soon as the operation finishes.
+- After the storage-seam migration, a previously password-protected wallet's secrets move to the on-device vault and the wallet no longer prompts for its password to open; a one-time notice at that unlock explains the change and that full password protection returns in a future update.
 
 ### WAL-007: Remove a wallet [Implemented]
 **Persona:** Priya, Jordan
@@ -234,7 +235,7 @@ As a power user, I want the balance breakdown and address table to be collapsibl
 As a power user who imported a private key under an old per-key password, I want to restore that key after the storage update so that I do not lose access to the address.
 
 - A banner on the wallets screen counts the imported keys still waiting to be restored and offers to restore them.
-- A per-key dialog takes the old password, decrypts the preserved key, and re-saves it in the modern encrypted vault (optionally under a new passphrase the user chooses).
+- A per-key dialog takes the old password, decrypts the preserved key, and re-saves it in the on-device secret vault (optionally under a new passphrase the user chooses).
 - A wrong password fails with a calm, generic message and leaves the key restorable — the old data is never corrupted.
 - After restore the key appears in the wallet list at the same address; a note explains that balance and sending for single-key wallets arrive in a future update.
 

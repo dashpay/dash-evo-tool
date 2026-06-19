@@ -10,16 +10,14 @@
 //!
 //! Resolution order for each call:
 //!   1. session cache (only populated when the user opted in; TTL honored);
-//!   2. else prompt via [`SecretPrompt`] for the passphrase, decrypt the
-//!      stored envelope just-in-time, optionally promote to the session
-//!      cache, run the closure, then zeroize.
+//!   2. else, an **unprotected** scope (a migrated raw secret, or a no-password
+//!      HD wallet / no-passphrase imported key) resolves **without prompting** —
+//!      the chokepoint reads it directly with no passphrase;
+//!   3. else prompt via [`SecretPrompt`] for the passphrase, decrypt the
+//!      stored secret just-in-time, optionally promote to the session cache,
+//!      run the closure, then zeroize.
 //!
-//! Unprotected scopes (HD wallets stored without a password, imported keys
-//! stored without a passphrase) resolve **without prompting** — the
-//! envelope is decryptable with no passphrase, so the chokepoint reads it
-//! directly (Smythe must-fix #4).
-//!
-//! Secret hygiene (Smythe must-fixes #1–#3):
+//! Secret hygiene:
 //! - **Closure form, no storable guard.** [`SecretPlaintext`] and
 //!   [`SecretSession`] are bound to the closure's lifetime; they cannot be
 //!   parked across awaits outside the chokepoint.
@@ -168,9 +166,9 @@ impl Plaintext {
 
 /// A session-cache entry: the boxed plaintext plus its expiry policy.
 ///
-/// The plaintext is boxed (Smythe must-fix #3) so a `HashMap` rehash moves
-/// only the `Box` pointer, never the secret bytes — no un-wiped inline copy
-/// is left behind. `expires_at = None` means "until app close".
+/// The plaintext is boxed so a `HashMap` rehash moves only the `Box` pointer,
+/// never the secret bytes — no un-wiped inline copy is left behind.
+/// `expires_at = None` means "until app close".
 struct SessionEntry {
     plaintext: Box<Plaintext>,
     expires_at: Option<Instant>,
@@ -543,7 +541,7 @@ impl SecretAccess {
     /// cancel from a non-interactive host
     /// ([`NullSecretPrompt`](crate::wallet_backend::secret_prompt::NullSecretPrompt))
     /// means there was no window to ask in, surfaced as
-    /// [`TaskError::SecretPromptUnavailable`] (Q-HEADLESS).
+    /// [`TaskError::SecretPromptUnavailable`].
     fn cancel_error(&self) -> TaskError {
         if self.inner.prompt.is_interactive() {
             TaskError::SecretPromptCancelled
@@ -553,7 +551,7 @@ impl SecretAccess {
     }
 
     /// Whether `scope`'s stored secret is passphrase-protected. Drives the
-    /// unprotected fast-path (Smythe must-fix #4).
+    /// unprotected fast-path.
     ///
     /// Seam-first: a secret already migrated to its raw label has no
     /// passphrase (the user password no longer gates it). Only a not-yet-
@@ -1040,7 +1038,7 @@ mod tests {
     async fn null_prompt_on_protected_scope_yields_unavailable() {
         // Headless host: a passphrase-protected scope has no window to ask
         // in, so the chokepoint surfaces the typed "unavailable" error
-        // rather than a misleading "you cancelled" (Q-HEADLESS).
+        // rather than a misleading "you cancelled".
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());
         let seed_hash: WalletSeedHash = [0x0C; 32];
@@ -1099,7 +1097,7 @@ mod tests {
     async fn can_resolve_without_prompt_tracks_protection_and_cache() {
         // The background identity sweep keys off this: an unprotected wallet or
         // a session-unlocked protected wallet resolves without a prompt; a
-        // locked protected wallet does not, so the sweep skips it (F-2).
+        // locked protected wallet does not, so the sweep skips it.
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());
 
@@ -1359,7 +1357,7 @@ mod tests {
         assert_eq!(never.ask_count(), 0, "migrated key resolves prompt-free");
     }
 
-    // --- secret confinement (Smythe must-fix #5) --------------------------
+    // --- secret confinement -----------------------------------------------
 
     #[tokio::test]
     async fn sentinel_never_appears_in_error_or_debug() {

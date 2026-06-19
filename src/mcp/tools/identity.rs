@@ -1039,9 +1039,18 @@ impl AsyncTool<DashMcpService> for IdentityMasternodeCreditsWithdraw {
             reject_owner_address_contradiction(&param.to_address)?;
         }
 
-        // Resolve the loaded identity. A not-found points at the load tool; a
-        // malformed ID is reported separately.
+        // Parse identity ID (pure — no backend access).
         let identity_id = masternode_input::decode_identity_id(&param.identity_id)?;
+
+        // Wire the wallet backend and wait for a synced chain BEFORE any
+        // backend-touching call. `get_identity_by_id` reads through `identity_kv`
+        // → `wallet_backend()?.kv()`, so on a cold standalone process it returns
+        // `WalletBackendNotYetWired` unless the backend is built first. This gate
+        // is the single chokepoint that ensures that — matching the LOAD tool's
+        // ordering at :756.
+        resolve::ensure_spv_synced(&ctx).await?;
+
+        // Resolve the loaded identity. A not-found points at the load tool.
         let qi = ctx
             .get_identity_by_id(&identity_id)
             .map_err(|e| McpToolError::Internal(e.to_string()))?
@@ -1055,11 +1064,6 @@ impl AsyncTool<DashMcpService> for IdentityMasternodeCreditsWithdraw {
 
         // Resolve the signing key and destination per mode (pure, no network).
         let plan = resolve_withdrawal_plan(&qi, key_mode, &param.to_address, ctx.network())?;
-
-        // A withdrawal does proof-verified Platform reads, so wait for a synced
-        // chain before dispatch. The sibling identity_credits_withdraw skips this
-        // gate; here it is the more conservative choice.
-        resolve::ensure_spv_synced(&ctx).await?;
 
         let task = BackendTask::IdentityTask(IdentityTask::WithdrawFromIdentity(
             qi,

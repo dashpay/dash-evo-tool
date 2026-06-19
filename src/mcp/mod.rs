@@ -19,13 +19,27 @@ mod tests;
 pub use config::McpConfig;
 
 /// Start the MCP server over stdin/stdout.
+///
+/// Runs until the stdio transport closes (client disconnects), then
+/// gracefully stops the wallet backend — if one was started — before
+/// returning.  This ensures the `platform-address-sync` / `identity-sync`
+/// coordinator threads are quiesced while the Tokio runtime is still alive,
+/// preventing panics from timer registration during runtime shutdown.
 #[cfg(feature = "cli")]
 pub async fn start_stdio() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use rmcp::ServiceExt;
 
     let service = server::DashMcpService::new_lazy();
+    // Keep a clone so we can access the context after `serve()` moves `service`.
+    // `DashMcpService` is cheaply cloneable (all fields are `Arc`-wrapped).
+    let service_for_shutdown = service.clone();
     let server = service.serve(rmcp::transport::stdio()).await?;
     server.waiting().await?;
+
+    // Quiesce the wallet backend (coordinator threads) before returning.
+    // The caller's runtime is still alive at this point; the shutdown must
+    // complete here, inside `block_on`, NOT during runtime drop.
+    service_for_shutdown.shutdown_wallet_backend().await;
     Ok(())
 }
 

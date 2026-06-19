@@ -5,6 +5,8 @@ use std::sync::Arc;
 /// Run det-cli as a headless HTTP MCP server.
 /// Eagerly initializes AppContext, starts SPV, serves MCP tools over HTTP.
 pub(super) fn run_headless() -> Result<(), Box<dyn std::error::Error>> {
+    use std::time::Duration;
+
     use dash_evo_tool::logging::initialize_logger;
     use dash_evo_tool::mcp::server::init_app_context;
     use dash_evo_tool::mcp::{McpConfig, start_http_server};
@@ -25,7 +27,7 @@ pub(super) fn run_headless() -> Result<(), Box<dyn std::error::Error>> {
         .enable_all()
         .build()?;
 
-    runtime.block_on(async {
+    let result = runtime.block_on(async {
         let ctx = init_app_context()
             .await
             .map_err(|e| format!("Failed to initialize: {}", e.message))?;
@@ -39,8 +41,26 @@ pub(super) fn run_headless() -> Result<(), Box<dyn std::error::Error>> {
             cancel_on_signal.cancel();
         });
 
-        start_http_server(swappable, config, cancel)
+        let result = start_http_server(swappable.clone(), config, cancel)
             .await
-            .map_err(|e| -> Box<dyn std::error::Error> { e })
-    })
+            .map_err(|e| -> Box<dyn std::error::Error> { e });
+
+        // Quiesce the wallet backend (coordinator threads) before the runtime
+        // is torn down — same concern as the stdio path.  `swappable.load_full()`
+        // yields the context that is CURRENTLY active (may differ from the
+        // initial `ctx` if a `network_switch` tool call was made during the
+        // session).
+        let current_ctx = swappable.load_full();
+        if let Ok(backend) = current_ctx.wallet_backend() {
+            backend.shutdown().await;
+        }
+
+        result
+    });
+
+    // Backstop: bounded window for any remaining spawned tasks (pending I/O,
+    // the ctrl-c signal handler, etc.) to exit before the runtime is dropped.
+    runtime.shutdown_timeout(Duration::from_secs(5));
+
+    result
 }

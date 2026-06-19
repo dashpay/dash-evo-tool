@@ -14,6 +14,8 @@ pub(super) fn format_service_error(e: rmcp::service::ServiceError) -> String {
 
 /// Run as a standalone MCP stdio server (replaces the separate dash-evo-tool-mcp binary).
 pub(super) fn run_stdio_server() -> Result<(), Box<dyn std::error::Error>> {
+    use std::time::Duration;
+
     use dash_evo_tool::logging::initialize_logger;
 
     initialize_logger();
@@ -27,9 +29,18 @@ pub(super) fn run_stdio_server() -> Result<(), Box<dyn std::error::Error>> {
         .enable_all()
         .build()?;
 
-    runtime
+    let result = runtime
         .block_on(dash_evo_tool::mcp::start_stdio())
-        .map_err(|e| -> Box<dyn std::error::Error> { e })
+        .map_err(|e| -> Box<dyn std::error::Error> { e });
+
+    // Backstop: give any remaining background tasks (e.g., pending network I/O
+    // that outlasted the wallet-backend shutdown) a bounded window to exit
+    // before the runtime is forcibly dropped.  `start_stdio()` already awaits
+    // `WalletBackend::shutdown()` for the coordinator threads, so in the normal
+    // case this timeout elapses quickly.
+    runtime.shutdown_timeout(Duration::from_secs(5));
+
+    result
 }
 
 pub(super) async fn connect_in_process() -> Result<McpClient, Box<dyn std::error::Error>> {

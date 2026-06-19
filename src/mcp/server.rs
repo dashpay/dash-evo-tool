@@ -127,6 +127,29 @@ impl DashMcpService {
         self.ctx.store(new_ctx);
     }
 
+    /// Gracefully stop the wallet backend if it was started during this session.
+    ///
+    /// Called from the standalone stdio exit path, inside the `block_on` context
+    /// (runtime still alive), before the Tokio runtime is torn down.  This stops
+    /// the `platform-address-sync` / `identity-sync` coordinators so their
+    /// timer-based DAPI-retry back-offs do not fire against a shutting-down
+    /// runtime and panic.
+    ///
+    /// Safe to call unconditionally:
+    /// - If the context was never initialized (no tool was ever called), `ctx.load()`
+    ///   returns `None` and the function returns immediately.
+    /// - If the context was initialized but `ensure_wallet_backend` was never called
+    ///   (only network-exempt tools ran), `wallet_backend()` returns
+    ///   `Err(WalletBackendNotYetWired)` and the function returns immediately.
+    #[cfg(feature = "cli")]
+    pub async fn shutdown_wallet_backend(&self) {
+        let Some(ctx) = self.ctx.load() else { return };
+        let Ok(backend) = ctx.wallet_backend() else {
+            return;
+        };
+        backend.shutdown().await;
+    }
+
     /// Build the tool router using trait-based tool composition.
     pub fn tool_router() -> ToolRouter<Self> {
         ToolRouter::new()

@@ -35,10 +35,13 @@ pub mod hydration;
 #[cfg(not(any(test, feature = "bench")))]
 pub(crate) mod hydration;
 mod kv;
+#[cfg(test)]
+pub(crate) mod leak_test_support;
 mod loader;
 mod platform_address;
 pub mod secret_access;
 pub mod secret_prompt;
+pub mod secret_seam;
 #[cfg(any(test, feature = "bench"))]
 pub mod single_key;
 #[cfg(not(any(test, feature = "bench")))]
@@ -65,6 +68,7 @@ pub use secret_prompt::{
     NullSecretPrompt, RememberPolicy, SecretPrompt, SecretPromptCancelled, SecretPromptReply,
     SecretPromptRequest, SecretPromptRetry, SecretScope,
 };
+pub use secret_seam::SecretSeam;
 
 use coordinator_gate::CoordinatorGate;
 

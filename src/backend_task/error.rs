@@ -185,6 +185,46 @@ pub enum TaskError {
         source: Box<platform_wallet_storage::secrets::SecretStoreError>,
     },
 
+    /// The secret seam (the single chokepoint that stores/loads raw wallet
+    /// secret bytes) could not write to or read from the upstream vault. The
+    /// low-level wrap shared by all three secret classes; class views may
+    /// surface their own flavored variants for banner copy.
+    #[error(
+        "Could not access your wallet's secure storage. Check available disk space and restart the application."
+    )]
+    SecretSeam {
+        #[source]
+        source: Box<platform_wallet_storage::secrets::SecretStoreError>,
+    },
+
+    /// A wallet secret's storage label was found in neither its raw form nor
+    /// any legacy form — the secret is gone. A loud, typed funds-safety signal
+    /// (never a silent miss that would drop a key). The user must restore the
+    /// wallet from its recovery phrase or re-import the key.
+    #[error(
+        "This wallet's secret could not be found on this device. Restore the wallet from its recovery phrase to keep using it."
+    )]
+    SecretSeamMissing,
+
+    /// An identity private key could not be stored in or read from the secret
+    /// vault through the seam. Distinct from [`Self::SecretSeam`] so the banner
+    /// can speak about identity keys specifically.
+    #[error(
+        "Could not access this identity's signing key. Check available disk space and restart the application."
+    )]
+    IdentityKeyVault {
+        #[source]
+        source: Box<platform_wallet_storage::secrets::SecretStoreError>,
+    },
+
+    /// An identity private key was expected in the vault but is absent — the
+    /// stored identity references a key whose bytes are gone. Loud and typed
+    /// so a sign attempt fails observably rather than silently.
+    #[error(
+        "This identity's signing key could not be found on this device. Re-import the identity to keep signing with it."
+    )]
+    IdentityKeyMissing,
+
     /// The DET wallet-metadata sidecar (alias / `is_main` /
     /// `core_wallet_name`) could not be read or written. Distinct from
     /// [`Self::WalletStorage`] because the cause sits in the cross-

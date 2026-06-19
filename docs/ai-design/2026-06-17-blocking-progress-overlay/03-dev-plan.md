@@ -193,7 +193,7 @@ top stays untestable until T7; note it as such.
 
 > **Superseded — see the code and the addendum.** The signature block below is the *original*
 > Cancel-era plan, kept for history. The shipped surface differs: there is **no** `with_cancel`,
-> `with_action`, `OVERLAY_CANCEL_ACTION_ID`, or `CANCEL_LABEL`, and `is_primary` is not a public
+> `OVERLAY_CANCEL_ACTION_ID`, or `CANCEL_LABEL`, and `is_primary` is not a public
 > field. The real builders are `with_action(label, id)` and `with_secondary_action(label, id)`
 > (on `OverlayConfig`, `OverlayHandle`, and the instance form), backed by a private
 > `ButtonStyle { Primary, Secondary }`. Clicks are delivered **keyed** to the owner via

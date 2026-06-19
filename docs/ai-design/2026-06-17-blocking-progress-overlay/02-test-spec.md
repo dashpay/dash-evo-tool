@@ -1001,6 +1001,31 @@ escape. See AC-3a, AC-3c.
 
 ---
 
+#### TC-OVL-054 — Escape button stays mouse-clickable after a backdrop press
+**Type:** kittest
+**Traceability:** FR-8 (AC-3a), R-1
+
+**Preconditions:** Overlay active with a secondary action `"Continue in the background"` designated
+as the keyboard escape; settle frames so the centered card has cached its size.
+
+**Steps:**
+1. Press the dim backdrop (a corner well outside the card), then release.
+2. Click the escape button at its own position.
+3. Assert `take_actions` returns the escape id.
+
+**Expected outcome:** The escape button receives the mouse click and enqueues its action even after a
+prior backdrop press. The full-window pointer sink must keep blocking widgets beneath, yet must never
+float above the card it dims — the card and its buttons always sit above the sink.
+
+**Rationale:** Regression guard. egui auto-raises any interactable `Area` to the top of its `Order`
+on a pointer press (`area.rs` bring-to-front). With the sink and card as peer `Order::Foreground`
+areas, a backdrop press raised the sink above the card, permanently trapping the escape beneath it —
+the unbounded SPV block then had no mouse exit. Pinning the card as a sublayer of the sink fixes the
+z-order by construction. Existing button-click tests (TC-OVL-024/025) never press the backdrop first,
+so they missed this.
+
+---
+
 ### Group M — Non-Functional
 
 ---

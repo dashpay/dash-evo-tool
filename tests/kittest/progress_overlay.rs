@@ -49,7 +49,7 @@ fn overlay_harness() -> Harness<'static> {
         .with_size(egui::vec2(420.0, 360.0))
         .build_ui(|ui| {
             ProgressOverlay::claim_input(ui.ctx());
-            ProgressOverlay::render_global(ui.ctx());
+            ProgressOverlay::render_global(ui.ctx(), false);
         })
 }
 
@@ -371,7 +371,7 @@ fn tc_ovl_021_long_description_within_bounds() {
     let mut harness = Harness::builder()
         .with_size(egui::vec2(300.0, 400.0))
         .build_ui(|ui| {
-            ProgressOverlay::render_global(ui.ctx());
+            ProgressOverlay::render_global(ui.ctx(), false);
         });
     let _handle = ProgressOverlay::set_global(&harness.ctx, long, OverlayConfig::default());
     harness.step();
@@ -529,7 +529,7 @@ fn tc_ovl_028_pointer_click_beneath_blocked() {
             if ui.button("Increment").clicked() {
                 counter_ui.set(counter_ui.get() + 1);
             }
-            ProgressOverlay::render_global(ui.ctx());
+            ProgressOverlay::render_global(ui.ctx(), false);
         });
     let handle = ProgressOverlay::set_global_spinner_only(&harness.ctx);
     harness.step();
@@ -556,7 +556,7 @@ fn tc_ovl_029_keyboard_beneath_blocked() {
             ProgressOverlay::claim_input(ui.ctx());
             let mut buffer = text_ui.borrow_mut();
             ui.text_edit_singleline(&mut *buffer);
-            ProgressOverlay::render_global(ui.ctx());
+            ProgressOverlay::render_global(ui.ctx(), false);
         });
     let _handle = ProgressOverlay::set_global(
         &harness.ctx,
@@ -708,7 +708,7 @@ fn tc_ovl_041_tab_focus_trap() {
             ProgressOverlay::claim_input(ui.ctx());
             let mut buffer = text_ui.borrow_mut();
             ui.text_edit_singleline(&mut *buffer);
-            ProgressOverlay::render_global(ui.ctx());
+            ProgressOverlay::render_global(ui.ctx(), false);
         });
     let _handle = ProgressOverlay::set_global(
         &harness.ctx,
@@ -876,7 +876,7 @@ fn tc_ovl_053_designated_escape_is_focus_pinned() {
             ProgressOverlay::claim_input(ui.ctx());
             let mut buffer = text_ui.borrow_mut();
             ui.text_edit_singleline(&mut *buffer);
-            ProgressOverlay::render_global(ui.ctx());
+            ProgressOverlay::render_global(ui.ctx(), false);
         });
     let handle = ProgressOverlay::set_global(
         &harness.ctx,
@@ -932,6 +932,99 @@ fn tc_ovl_053_designated_escape_is_focus_pinned() {
     );
 }
 
+/// SEC-002 — a focus-INDEPENDENT global key handler beneath an escape block (the
+/// pattern in `info_popup` / `selection_dialog` / `address_input`, which call
+/// `i.key_pressed(Enter)` with no focus guard) NEVER observes the Enter: `claim_input`
+/// strips it at frame start, before the beneath `ui()` runs, and routes it to the
+/// escape's action queue instead. This is the hard-block invariant the old design
+/// could not hold — under it, a confirmed-focus escape KEPT Enter/Space in `i.events`,
+/// so a focus-independent handler beneath saw the key that same frame.
+#[test]
+fn sec002_escape_block_strips_enter_from_focus_independent_handler_beneath() {
+    let fired = Rc::new(Cell::new(false));
+    let fired_ui = Rc::clone(&fired);
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(420.0, 360.0))
+        .build_ui(move |ui| {
+            // Mirrors AppState::update: claim input at frame start, BEFORE the screen.
+            ProgressOverlay::claim_input(ui.ctx());
+            // A focus-independent handler beneath the block (info_popup.rs:156 et al.).
+            if ui.ctx().input(|i| i.key_pressed(egui::Key::Enter)) {
+                fired_ui.set(true);
+            }
+            ProgressOverlay::render_global(ui.ctx(), false);
+        });
+    let handle = ProgressOverlay::set_global(
+        &harness.ctx,
+        "Syncing with the Dash network.",
+        OverlayConfig::new()
+            .with_secondary_action("Continue in the background", "spv:escape")
+            .with_keyboard_escape("spv:escape"),
+    );
+    harness.step();
+    harness.step();
+    harness.step();
+
+    harness.key_press(egui::Key::Enter);
+    harness.step();
+    assert!(
+        !fired.get(),
+        "the Enter is stripped at frame start; no focus-independent handler beneath observes it"
+    );
+    // The Enter activated the escape instead — enqueued once at frame start, not via
+    // a fake button click (the key never reached the button either).
+    assert_eq!(handle.take_actions(), vec!["spv:escape".to_string()]);
+}
+
+/// TC-OVL-054 — the escape button stays mouse-clickable after a backdrop press.
+///
+/// Regression guard for the SPV trap: egui auto-raises any interactable `Area` to
+/// the top of its `Order` on a pointer press (`area.rs` bring-to-front). When the
+/// dim/pointer sink and the card were peer `Order::Foreground` areas, pressing the
+/// backdrop raised the sink ABOVE the card, permanently burying the escape button
+/// beneath the click-absorbing sink — the unbounded SPV block then had no mouse
+/// exit. A real mouse click on the button after such a press must still reach it
+/// and enqueue the escape action. TC-OVL-024/025 never press the backdrop first,
+/// so they passed while this path was broken.
+#[test]
+fn tc_ovl_054_escape_clickable_after_backdrop_press() {
+    let mut harness = overlay_harness();
+    let handle = ProgressOverlay::set_global(
+        &harness.ctx,
+        "Syncing with the Dash network.",
+        OverlayConfig::new()
+            .with_secondary_action("Continue in the background", "spv:escape")
+            .with_keyboard_escape("spv:escape"),
+    );
+    // Settle the centered card (anchored CENTER_CENTER moves for a couple of frames
+    // until its size is cached) so the button lands where we click.
+    harness.step();
+    harness.step();
+    harness.step();
+    assert!(
+        harness
+            .query_by_label("Continue in the background")
+            .is_some()
+    );
+
+    // Press the dim backdrop, well outside the card. This is what trapped the
+    // button: the sink area auto-raises to the top of Foreground on the press.
+    let backdrop = egui::pos2(8.0, 8.0);
+    harness.drag_at(backdrop);
+    harness.drop_at(backdrop);
+    harness.step();
+
+    // A real mouse click at the escape button's own position must still reach it.
+    harness.get_by_label("Continue in the background").click();
+    harness.step();
+    assert_eq!(
+        handle.take_actions(),
+        vec!["spv:escape".to_string()],
+        "the escape button must receive the mouse click even after a backdrop press"
+    );
+    assert!(ProgressOverlay::has_global(&harness.ctx));
+}
+
 // ── Group M — Non-Functional ───────────────────────────────────────────────
 
 /// TC-OVL-046 — switching theme mid-overlay re-renders without panic.
@@ -962,7 +1055,7 @@ fn tc_ovl_048_secret_prompt_renders_above_overlay() {
     let mut harness = Harness::builder()
         .with_size(egui::vec2(640.0, 480.0))
         .build_ui(|ui| {
-            ProgressOverlay::render_global(ui.ctx());
+            ProgressOverlay::render_global(ui.ctx(), false);
             let config = PassphraseModalConfig {
                 window_title: "Unlock to continue",
                 body: "Enter your passphrase to continue.",
@@ -1162,7 +1255,7 @@ fn qa_buttonless_overlay_blocks_typing_into_focused_field_beneath() {
             ProgressOverlay::claim_input(ui.ctx());
             let mut buffer = text_ui.borrow_mut();
             ui.text_edit_singleline(&mut *buffer);
-            ProgressOverlay::render_global(ui.ctx());
+            ProgressOverlay::render_global(ui.ctx(), false);
         });
 
     // Focus the field beneath, before any overlay exists.
@@ -1222,7 +1315,7 @@ fn qa_buttonless_overlay_strips_edit_and_clipboard_events() {
             survived_ui.set(leaked);
             let mut buffer = text_ui.borrow_mut();
             ui.text_edit_singleline(&mut *buffer);
-            ProgressOverlay::render_global(ui.ctx());
+            ProgressOverlay::render_global(ui.ctx(), false);
         });
 
     // Focus the field and type real content while idle (claim_input is a no-op
@@ -1290,7 +1383,7 @@ fn reconciliation_render_global_keeps_keyboard_for_prompt() {
         .with_size(egui::vec2(420.0, 360.0))
         .build_ui(move |ui| {
             // No claim_input — mirrors AppState gating it off while a prompt is up.
-            ProgressOverlay::render_global(ui.ctx());
+            ProgressOverlay::render_global(ui.ctx(), false);
             let survived = ui.ctx().input(|i| {
                 i.events.iter().any(|e| {
                     matches!(
@@ -1424,6 +1517,82 @@ fn rq1_appstate_secret_prompt_gate_keeps_prompt_typeable_over_overlay() {
     });
 }
 
+/// SEC-001 (security) — drives the REAL `AppState::update` loop with BOTH a passphrase
+/// prompt active AND a `with_keyboard_escape` block beneath it (the SPV-sync pattern).
+/// The escape must NOT steal focus from the prompt: the prompt stays focused across
+/// several frames, a typed passphrase + Enter SUBMITS (closing the prompt), and the
+/// escape action is NEVER enqueued. Under the pre-fix code `render_buttons` re-requested
+/// the escape's focus every frame — and ran (`render_global`) BEFORE `render_secret_prompt`
+/// — so the escape stole the prompt's focus: keystrokes hit the focused button and Enter
+/// fired the escape instead of submitting. The submit + empty escape queue both detect
+/// that regression.
+#[cfg(feature = "testing")]
+#[test]
+fn sec001_keyboard_escape_block_does_not_steal_focus_from_secret_prompt() {
+    crate::support::with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let mut harness = Harness::builder().with_max_steps(100).build_eframe(|ctx| {
+            let mut app = dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
+                .expect("Failed to create AppState")
+                .with_animations(false);
+            // A secret prompt is active (renders above the overlay, needs keyboard).
+            app.test_set_secret_prompt_active(true);
+            app
+        });
+        harness.set_size(egui::vec2(800.0, 600.0));
+
+        // Raise a keyboard-escape block (the unbounded SPV-sync pattern) beneath the
+        // prompt, holding its handle so we can inspect whether the escape ever fired.
+        let handle = ProgressOverlay::set_global(
+            &harness.ctx,
+            "Syncing with the Dash network.",
+            OverlayConfig::new()
+                .with_secondary_action(
+                    "Continue in the background",
+                    dash_evo_tool::app::SPV_CONTINUE_BACKGROUND_ACTION,
+                )
+                .with_keyboard_escape(dash_evo_tool::app::SPV_CONTINUE_BACKGROUND_ACTION),
+        );
+        harness.run_steps(5);
+
+        // The prompt renders above the escape block and KEEPS keyboard focus across
+        // multiple frames — the escape never re-grabs it while a prompt is up.
+        for _ in 0..3 {
+            harness.step();
+            assert!(
+                harness.query_by_label_contains("Test prompt").is_some(),
+                "the secret prompt stays up above the escape block"
+            );
+            assert!(
+                harness.ctx.memory(|m| m.focused()).is_some(),
+                "focus is held (by the prompt) every frame, not surrendered to nothing"
+            );
+        }
+
+        // The prompt ACCEPTS typed text and submits on Enter — proving IT held focus,
+        // not the escape button.
+        harness
+            .input_mut()
+            .events
+            .push(egui::Event::Text("pw".to_string()));
+        harness.run_steps(2);
+        harness.key_press(egui::Key::Enter);
+        harness.run_steps(5);
+        assert!(
+            harness.query_by_label_contains("Test prompt").is_none(),
+            "the prompt accepted the passphrase and submitted on Enter (the escape did \
+             not steal focus, so the keystrokes reached the field)"
+        );
+        // ...and the escape action was NEVER enqueued — Enter went to the passphrase.
+        assert!(
+            handle.take_actions().is_empty(),
+            "SEC-001: Enter must submit the passphrase, never activate a focus-stolen escape"
+        );
+    });
+}
+
 // ── Task 9: SPV-sync blocking overlay (startup + Connect) ────────────────────
 
 /// Task 9 / F-SPV-A — the SPV-sync block is SCOPED to a user-initiated (armed)
@@ -1443,7 +1612,7 @@ fn task9_spv_overlay_armed_scope_disarm_and_escape() {
         let mut harness = Harness::builder()
             .with_size(egui::vec2(640.0, 480.0))
             .build_ui(|ui| {
-                ProgressOverlay::render_global(ui.ctx());
+                ProgressOverlay::render_global(ui.ctx(), false);
             });
         let mut app = dash_evo_tool::app::AppState::new(harness.ctx.clone())
             .expect("Failed to create AppState");
@@ -1539,6 +1708,61 @@ fn task9_spv_overlay_armed_scope_disarm_and_escape() {
     });
 }
 
+/// F-SPV-A regression — completing onboarding with auto-start enabled must ARM the
+/// SPV-sync block, exactly like the boot auto-start and the Connect button. Drives
+/// the REAL post-onboarding path (`AppState::try_auto_start_spv`, the method
+/// `AppAction::OnboardingComplete` invokes) and asserts both the armed flag flips
+/// and that an armed Connecting sync then hard-blocks. Without the arm, a fresh
+/// user who opted into auto-start during onboarding would sync with no overlay.
+#[cfg(feature = "testing")]
+#[test]
+fn fspv_a_onboarding_auto_start_arms_spv_block() {
+    use dash_evo_tool::context::connection_status::OverallConnectionState;
+    crate::support::with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let harness = Harness::builder()
+            .with_size(egui::vec2(640.0, 480.0))
+            .build_ui(|ui| {
+                ProgressOverlay::render_global(ui.ctx(), false);
+            });
+        let mut app = dash_evo_tool::app::AppState::new(harness.ctx.clone())
+            .expect("Failed to create AppState");
+        let app_context = app.current_app_context().clone();
+
+        // Fresh boot before onboarding completes: the block is NOT armed (boot
+        // auto-start only arms when onboarding was ALREADY done at startup).
+        assert!(
+            !app.test_spv_block_armed(),
+            "the SPV block must not be armed before onboarding completes"
+        );
+
+        // The user opted into auto-start, then finishes onboarding → the
+        // OnboardingComplete handler runs the real auto-start path.
+        app_context
+            .update_auto_start_spv(true)
+            .expect("persist auto_start_spv");
+        app.test_run_auto_start_spv();
+
+        // The post-onboarding auto-start is user-initiated → it must arm the block.
+        assert!(
+            app.test_spv_block_armed(),
+            "completing onboarding with auto-start enabled must ARM the SPV-sync block"
+        );
+
+        // And an armed Connecting sync then hard-blocks (the overlay actually shows).
+        app_context
+            .connection_status()
+            .set_overall_state(OverallConnectionState::Connecting);
+        app.test_drive_spv_overlay(&harness.ctx);
+        assert!(
+            ProgressOverlay::has_global(&harness.ctx),
+            "the armed post-onboarding sync raises the blocking overlay"
+        );
+    });
+}
+
 /// Task 9 / QA-002 refinement — the REAL SPV block's "Continue in the background"
 /// escape is keyboard-activatable: pressing **Enter** while it holds focus enqueues
 /// its action, which the driver drains to lower the block. Guards the app.rs wiring
@@ -1557,7 +1781,7 @@ fn task9_spv_escape_is_keyboard_activatable() {
             .with_size(egui::vec2(640.0, 480.0))
             .build_ui(|ui| {
                 ProgressOverlay::claim_input(ui.ctx());
-                ProgressOverlay::render_global(ui.ctx());
+                ProgressOverlay::render_global(ui.ctx(), false);
             });
         let mut app = dash_evo_tool::app::AppState::new(harness.ctx.clone())
             .expect("Failed to create AppState");

@@ -35,7 +35,6 @@ use crate::ui::tools::address_balance_screen::AddressBalanceScreen;
 use crate::ui::tools::contract_visualizer_screen::ContractVisualizerScreen;
 use crate::ui::tools::document_visualizer_screen::DocumentVisualizerScreen;
 use crate::ui::tools::grovestark_screen::GroveSTARKScreen;
-use crate::ui::tools::masternode_list_diff_screen::MasternodeListDiffScreen;
 use crate::ui::tools::platform_info_screen::PlatformInfoScreen;
 use crate::ui::tools::proof_visualizer_screen::ProofVisualizerScreen;
 use crate::ui::tools::transition_visualizer_screen::TransitionVisualizerScreen;
@@ -555,8 +554,6 @@ impl AppState {
 
         let network_chooser_screen = NetworkChooserScreen::new(&network_contexts, chosen_network);
 
-        let masternode_list_diff_screen = MasternodeListDiffScreen::new(&active_context);
-
         let wallets_balances_screen = WalletsBalancesScreen::new(&active_context);
 
         let selected_main_screen = settings.root_screen_type;
@@ -702,10 +699,6 @@ impl AppState {
                 (
                     RootScreenType::RootScreenNetworkChooser,
                     Screen::NetworkChooserScreen(network_chooser_screen),
-                ),
-                (
-                    RootScreenType::RootScreenToolsMasternodeListDiffScreen,
-                    Screen::MasternodeListDiffScreen(masternode_list_diff_screen),
                 ),
                 (
                     RootScreenType::RootScreenMyTokenBalances,
@@ -1400,6 +1393,20 @@ impl AppState {
         self.update_spv_overlay(ctx, &app_context);
     }
 
+    /// Test seam (F-SPV-A): run the REAL post-onboarding auto-start path
+    /// ([`Self::try_auto_start_spv`], the method `AppAction::OnboardingComplete`
+    /// invokes) so a kittest can lock that it arms the SPV-sync block.
+    #[cfg(feature = "testing")]
+    pub fn test_run_auto_start_spv(&mut self) {
+        self.try_auto_start_spv();
+    }
+
+    /// Test seam (F-SPV-A): observe the SPV-sync block's armed flag.
+    #[cfg(feature = "testing")]
+    pub fn test_spv_block_armed(&self) -> bool {
+        self.spv_block_armed
+    }
+
     /// Sweep orphaned overlay action ids whose owning overlay is gone. Screens own
     /// dispatch and cancellation today — they drain their own clicks via
     /// [`OverlayHandle::take_actions`]; this loop only reclaims orphans so they
@@ -1466,11 +1473,18 @@ impl AppState {
     /// Wires the wallet backend first (via the async chokepoint) so the start
     /// cannot race ahead of backend wiring. Used after onboarding completes;
     /// boot-time auto-start is handled inline by the eager wallet-backend init.
-    fn try_auto_start_spv(&self) {
-        let ctx = self.current_app_context();
+    ///
+    /// Arms the SPV-sync block (F-SPV-A) when the start actually fires — this is
+    /// a user-initiated sync just like the Connect button, so the blocking
+    /// overlay must cover it. Boot auto-start arms via the constructor instead.
+    fn try_auto_start_spv(&mut self) {
+        let ctx = self.current_app_context().clone();
         let auto_start = ctx.get_app_settings().auto_start_spv;
-        if auto_start && FeatureGate::SpvBackend.is_available(ctx) {
-            let ctx = ctx.clone();
+        if auto_start && FeatureGate::SpvBackend.is_available(&ctx) {
+            // Fresh user-initiated episode: arm the block and re-arm the escape,
+            // mirroring AppAction::StartSpv.
+            self.spv_block_armed = true;
+            self.spv_overlay_dismissed = false;
             let sender = self.task_result_sender.clone();
             self.subtasks.spawn_sync("spv_auto_start", async move {
                 if let Err(e) = ctx.ensure_wallet_backend_and_start_spv(sender).await {
@@ -1833,8 +1847,10 @@ impl App for AppState {
         // Blocking progress overlay: above banners, below the secret prompt.
         // It consumes Esc/Tab/Enter while active, so it must render before the
         // secret prompt (which is focus-raised and stays interactive above it)
-        // and before `handle_banner_esc` so the overlay wins Esc.
-        ProgressOverlay::render_global(ctx);
+        // and before `handle_banner_esc` so the overlay wins Esc. The
+        // secret-prompt flag (mirroring the `claim_overlay_input` gate) tells the
+        // block to suppress its focus management so the prompt keeps the keyboard.
+        ProgressOverlay::render_global(ctx, self.active_secret_prompt.is_some());
 
         // Render any just-in-time passphrase prompt on top of the screen.
         self.render_secret_prompt(ctx);

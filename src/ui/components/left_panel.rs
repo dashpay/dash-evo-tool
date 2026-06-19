@@ -238,7 +238,6 @@ pub fn add_left_panel(
                                                             | RootScreenType::RootScreenToolsTransitionVisualizerScreen
                                                             | RootScreenType::RootScreenToolsDocumentVisualizerScreen
                                                             | RootScreenType::RootScreenToolsProofVisualizerScreen
-                                                            | RootScreenType::RootScreenToolsMasternodeListDiffScreen
                                                             | RootScreenType::RootScreenToolsContractVisualizerScreen
                                                             | RootScreenType::RootScreenToolsGroveSTARKScreen
                                                             | RootScreenType::RootScreenToolsAddressBalanceScreen

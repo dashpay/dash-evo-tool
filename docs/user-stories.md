@@ -955,7 +955,7 @@ As a user, I want to see Platform status (epoch info, total credits, validators,
 
 - Displays epoch info, validator list, withdrawal queue, and version voting status.
 
-### DEV-006: View masternode list diff [Implemented]
+### DEV-006: View masternode list diff [Removed]
 **Persona:** Priya
 
 As a masternode operator, I want to view changes to the masternode list so that I can monitor network composition.

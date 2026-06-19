@@ -2,10 +2,10 @@ use crate::app::AppAction;
 use crate::backend_task::wallet::WalletTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
-use crate::model::qualified_identity::{PrivateKeyTarget, QualifiedIdentity};
 use crate::model::qualified_identity::encrypted_key_storage::{
     PrivateKeyData, WalletDerivationPath,
 };
+use crate::model::qualified_identity::{PrivateKeyTarget, QualifiedIdentity};
 use crate::model::secret::Secret;
 use crate::model::wallet::Wallet;
 use crate::ui::components::MessageBanner;
@@ -469,8 +469,10 @@ impl ScreenLike for KeyInfoScreen {
                             // fetched just-in-time by a backend task. The UI
                             // only ever sees the derived WIF for display.
                             ui.label(
-                                RichText::new("This signing key is stored securely on this device.")
-                                    .color(text_primary),
+                                RichText::new(
+                                    "This signing key is stored securely on this device.",
+                                )
+                                .color(text_primary),
                             );
                             ui.add_space(10.0);
                             if let Some(private_key) = self.decrypted_private_key {

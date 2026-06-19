@@ -271,7 +271,9 @@ impl AppContext {
             .find(|k| k.address == address)
             .and_then(|k| k.alias)
             .unwrap_or_else(|| address.to_string());
-        let migrated = backend.single_key().verify_passphrase(address, passphrase)?;
+        let migrated = backend
+            .single_key()
+            .verify_passphrase(address, passphrase)?;
         if migrated {
             self.show_single_key_migration_notice(&label);
         }
@@ -589,15 +591,13 @@ impl AppContext {
         // seam: `encrypted_seed_slice()` is the verbatim seed (no DET AES-GCM).
         // The non-secret metadata rides in `WalletMeta` (write_wallet_meta).
         if !wallet.uses_password {
-            let seed: [u8; 64] =
-                wallet
-                    .encrypted_seed_slice()
-                    .try_into()
-                    .map_err(|_| TaskError::WalletSeedStorage {
-                        source: Box::new(
-                            platform_wallet_storage::secrets::SecretStoreError::MalformedVault,
-                        ),
-                    })?;
+            let seed: [u8; 64] = wallet.encrypted_seed_slice().try_into().map_err(|_| {
+                TaskError::WalletSeedStorage {
+                    source: Box::new(
+                        platform_wallet_storage::secrets::SecretStoreError::MalformedVault,
+                    ),
+                }
+            })?;
             return view.set_raw(&seed_hash, &seed);
         }
         // Password wallets keep the legacy AES-GCM envelope at creation; they
@@ -977,11 +977,7 @@ impl AppContext {
         passphrase: Option<&str>,
     ) {
         let (seed_hash, uses_password, wallet_alias) = match wallet.read() {
-            Ok(guard) => (
-                guard.seed_hash(),
-                guard.uses_password,
-                guard.alias.clone(),
-            ),
+            Ok(guard) => (guard.seed_hash(), guard.uses_password, guard.alias.clone()),
             Err(_) => return,
         };
 
@@ -2331,7 +2327,10 @@ mod tests {
             .get_raw(&seed_hash)
             .expect("vault read must not error")
             .expect("the raw seed must be persisted at register time, even unwired");
-        assert_eq!(&*raw, &seed, "persisted raw seed must equal the wallet seed");
+        assert_eq!(
+            &*raw, &seed,
+            "persisted raw seed must equal the wallet seed"
+        );
         assert!(
             WalletSeedView::new(&ctx.secret_store())
                 .legacy_envelope_get(&seed_hash)
@@ -2491,7 +2490,9 @@ mod tests {
         let store = ctx.secret_store();
         let view = WalletSeedView::new(&store);
         assert!(
-            view.get_raw(&seed_hash).expect("raw read after removal").is_none(),
+            view.get_raw(&seed_hash)
+                .expect("raw read after removal")
+                .is_none(),
             "the raw seed must be deleted from the vault on removal"
         );
         assert!(
@@ -2609,7 +2610,9 @@ mod tests {
         let store = ctx.secret_store();
         let view = WalletSeedView::new(&store);
         assert!(
-            view.get_raw(&seed_hash).expect("raw read after removal").is_none(),
+            view.get_raw(&seed_hash)
+                .expect("raw read after removal")
+                .is_none(),
             "the raw seed must be deleted from the vault on a fresh install"
         );
         assert!(
@@ -2671,7 +2674,9 @@ mod tests {
         let store = ctx.secret_store();
         let view = WalletSeedView::new(&store);
         assert!(
-            view.get_raw(&seed_hash).expect("raw read after clear").is_none(),
+            view.get_raw(&seed_hash)
+                .expect("raw read after clear")
+                .is_none(),
             "raw seed must be deleted from the vault after clear"
         );
         assert!(

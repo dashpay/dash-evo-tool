@@ -64,12 +64,12 @@ pub(crate) use dashpay::{derive_contact_info_encryption_keys, derive_contact_xpu
 
 pub(crate) use det_platform_signer::{DetPlatformSigner, PlatformPathIndex};
 pub(crate) use det_signer::DetSigner;
+pub use identity_key_store::IdentityKeyView;
 pub use secret_access::{SecretAccess, SecretPlaintext, SecretSession, WalletPromptMeta};
 pub use secret_prompt::{
     NullSecretPrompt, RememberPolicy, SecretPrompt, SecretPromptCancelled, SecretPromptReply,
     SecretPromptRequest, SecretPromptRetry, SecretScope,
 };
-pub use identity_key_store::IdentityKeyView;
 pub use secret_seam::SecretSeam;
 
 use coordinator_gate::CoordinatorGate;

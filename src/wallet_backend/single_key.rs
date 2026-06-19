@@ -217,41 +217,44 @@ impl<'a> SingleKeyView<'a> {
         // legacy AES-GCM `SingleKeyEntry` at import and migrate to raw lazily on
         // the next unlock through the chokepoint. The locked-render pubkey lives
         // in the `ImportedKey` sidecar either way.
-        let (has_passphrase, passphrase_hint) =
-            match passphrase.passphrase.as_ref().map(|p| p.as_str()) {
-                Some(p) if !p.is_empty() => {
-                    if p.chars().count() < MIN_SINGLE_KEY_PASSPHRASE_LEN {
-                        return Err(TaskError::SingleKeyPassphraseTooShort {
-                            min: MIN_SINGLE_KEY_PASSPHRASE_LEN as u32,
-                        });
-                    }
-                    let entry =
-                        SingleKeyEntry::protected(&raw, p, passphrase.hint.clone(), pub_bytes.clone())?;
-                    let payload = entry.encode()?;
-                    self.secret_store
-                        .set(
-                            &single_key_namespace_id(),
-                            &label,
-                            &SecretBytes::from_slice(&payload),
-                        )
-                        .map_err(|source| TaskError::SecretStore {
-                            source: Box::new(source),
-                        })?;
-                    (true, passphrase.hint.clone())
+        let (has_passphrase, passphrase_hint) = match passphrase
+            .passphrase
+            .as_ref()
+            .map(|p| p.as_str())
+        {
+            Some(p) if !p.is_empty() => {
+                if p.chars().count() < MIN_SINGLE_KEY_PASSPHRASE_LEN {
+                    return Err(TaskError::SingleKeyPassphraseTooShort {
+                        min: MIN_SINGLE_KEY_PASSPHRASE_LEN as u32,
+                    });
                 }
-                _ => {
-                    self.secret_store
-                        .set(
-                            &single_key_namespace_id(),
-                            &label,
-                            &SecretBytes::from_slice(&*raw),
-                        )
-                        .map_err(|source| TaskError::SecretStore {
-                            source: Box::new(source),
-                        })?;
-                    (false, None)
-                }
-            };
+                let entry =
+                    SingleKeyEntry::protected(&raw, p, passphrase.hint.clone(), pub_bytes.clone())?;
+                let payload = entry.encode()?;
+                self.secret_store
+                    .set(
+                        &single_key_namespace_id(),
+                        &label,
+                        &SecretBytes::from_slice(&payload),
+                    )
+                    .map_err(|source| TaskError::SecretStore {
+                        source: Box::new(source),
+                    })?;
+                (true, passphrase.hint.clone())
+            }
+            _ => {
+                self.secret_store
+                    .set(
+                        &single_key_namespace_id(),
+                        &label,
+                        &SecretBytes::from_slice(&*raw),
+                    )
+                    .map_err(|source| TaskError::SecretStore {
+                        source: Box::new(source),
+                    })?;
+                (false, None)
+            }
+        };
 
         let imported = ImportedKey {
             address: address_str.clone(),
@@ -1615,7 +1618,9 @@ mod tests {
             network,
             app_kv: Some(&kv),
         };
-        let imported = view.import_wif(known_wif(), Some("raw".into())).expect("import");
+        let imported = view
+            .import_wif(known_wif(), Some("raw".into()))
+            .expect("import");
         assert!(!imported.has_passphrase);
         assert!(
             !imported.public_key_bytes.is_empty(),
@@ -1628,7 +1633,11 @@ mod tests {
             .get(&single_key_namespace_id(), &label)
             .expect("get")
             .expect("present");
-        assert_eq!(raw.expose_secret().len(), 32, "raw, not a versioned envelope");
+        assert_eq!(
+            raw.expose_secret().len(),
+            32,
+            "raw, not a versioned envelope"
+        );
         let priv_key = PrivateKey::from_wif(known_wif()).unwrap();
         assert_eq!(raw.expose_secret(), &priv_key.inner[..]);
 

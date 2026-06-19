@@ -445,13 +445,11 @@ impl SecretAccess {
         let plaintext = self.decrypt_jit(&scope, passphrase)?;
 
         let mut migrated = false;
-        if !already_raw
-            && let Plaintext::HdSeed(seed) = &plaintext
-        {
+        if !already_raw && let Plaintext::HdSeed(seed) = &plaintext {
             // The seed came from the legacy envelope. Re-store it raw
             // (vault-first), then drop the legacy envelope.
             let view = WalletSeedView::new(&self.inner.secret_store);
-            view.set_raw(seed_hash, &**seed)?;
+            view.set_raw(seed_hash, seed)?;
             view.delete(seed_hash)?;
             migrated = true;
         }
@@ -565,7 +563,11 @@ impl SecretAccess {
         match scope {
             SecretScope::HdSeed { seed_hash } => {
                 // Raw seed present ⇒ migrated ⇒ no passphrase.
-                if self.seam().get_secret(&seed_scope(seed_hash), SEED_RAW_LABEL)?.is_some() {
+                if self
+                    .seam()
+                    .get_secret(&seed_scope(seed_hash), SEED_RAW_LABEL)?
+                    .is_some()
+                {
                     return Ok(false);
                 }
                 let view = WalletSeedView::new(&self.inner.secret_store);
@@ -603,18 +605,18 @@ impl SecretAccess {
     ) -> Result<Plaintext, TaskError> {
         match scope {
             SecretScope::HdSeed { seed_hash } => {
-                if let Some(raw) =
-                    self.seam().get_secret(&seed_scope(seed_hash), SEED_RAW_LABEL)?
+                if let Some(raw) = self
+                    .seam()
+                    .get_secret(&seed_scope(seed_hash), SEED_RAW_LABEL)?
                 {
-                    let seed: [u8; HD_SEED_LEN] =
-                        raw.expose_secret().try_into().map_err(|_| {
-                            tracing::warn!(
-                                target = "wallet_backend::secret_access",
-                                blob_len = raw.expose_secret().len(),
-                                "Raw seam seed has wrong length",
-                            );
-                            TaskError::SecretDecryptFailed
-                        })?;
+                    let seed: [u8; HD_SEED_LEN] = raw.expose_secret().try_into().map_err(|_| {
+                        tracing::warn!(
+                            target = "wallet_backend::secret_access",
+                            blob_len = raw.expose_secret().len(),
+                            "Raw seam seed has wrong length",
+                        );
+                        TaskError::SecretDecryptFailed
+                    })?;
                     return Ok(Plaintext::HdSeed(Zeroizing::new(seed)));
                 }
                 // Legacy fallback (migration reader). Neither raw nor legacy
@@ -651,15 +653,14 @@ impl SecretAccess {
                     .seam()
                     .get_secret(&SecretWalletId::from(*identity_id), &label)?
                     .ok_or(TaskError::IdentityKeyMissing)?;
-                let key: [u8; SINGLE_KEY_LEN] =
-                    raw.expose_secret().try_into().map_err(|_| {
-                        tracing::warn!(
-                            target = "wallet_backend::secret_access",
-                            blob_len = raw.expose_secret().len(),
-                            "Raw identity key has wrong length",
-                        );
-                        TaskError::SecretDecryptFailed
-                    })?;
+                let key: [u8; SINGLE_KEY_LEN] = raw.expose_secret().try_into().map_err(|_| {
+                    tracing::warn!(
+                        target = "wallet_backend::secret_access",
+                        blob_len = raw.expose_secret().len(),
+                        "Raw identity key has wrong length",
+                    );
+                    TaskError::SecretDecryptFailed
+                })?;
                 Ok(Plaintext::IdentityKey(Zeroizing::new(key)))
             }
         }
@@ -701,7 +702,10 @@ impl SecretAccess {
     /// already been migrated to its raw label, else `None`. A legacy
     /// `SingleKeyEntry`-framed value (length != 32) is left for the legacy
     /// reader and reported as `None` here.
-    fn single_key_raw(&self, address: &str) -> Result<Option<Zeroizing<[u8; SINGLE_KEY_LEN]>>, TaskError> {
+    fn single_key_raw(
+        &self,
+        address: &str,
+    ) -> Result<Option<Zeroizing<[u8; SINGLE_KEY_LEN]>>, TaskError> {
         let label = label_for_address(address);
         let Some(payload) = self.seam().get_secret(&single_key_namespace_id(), &label)? else {
             return Ok(None);
@@ -1318,9 +1322,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());
         let address = import_protected_key(&store, SENTINEL_PASSPHRASE);
-        let expected: [u8; 32] = PrivateKey::from_wif(&known_testnet_wif())
-            .unwrap()
-            .inner[..]
+        let expected: [u8; 32] = PrivateKey::from_wif(&known_testnet_wif()).unwrap().inner[..]
             .try_into()
             .unwrap();
 

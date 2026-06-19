@@ -50,7 +50,8 @@ impl AppContext {
                     TaskError::WalletMessageSigningFailed
                 })?;
                 let secp = Secp256k1::new();
-                let digest = Message::from_digest(*signed_msg_hash(message.as_str()).as_byte_array());
+                let digest =
+                    Message::from_digest(*signed_msg_hash(message.as_str()).as_byte_array());
                 let recoverable = secp.sign_ecdsa_recoverable(&digest, &secret_key);
                 Ok(MessageSignature::new(recoverable, true).to_base64())
             })

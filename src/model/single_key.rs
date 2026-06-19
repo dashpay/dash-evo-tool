@@ -49,4 +49,12 @@ pub struct ImportedKey {
     /// `None` for legacy entries that pre-date the per-key passphrase.
     #[serde(default)]
     pub passphrase_hint: Option<String>,
+    /// Compressed SEC1-encoded **public** key for this imported key. The
+    /// locked-render cold-boot path needs it to rebuild a passphrase-protected
+    /// key's display wallet without the secret (moved here from the
+    /// `SingleKeyEntry` vault blob under the raw-seam migration). Empty for
+    /// entries written before this field — the caller falls back to deriving
+    /// from plaintext when the key is unlocked. NON-secret.
+    #[serde(default)]
+    pub public_key_bytes: Vec<u8>,
 }

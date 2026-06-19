@@ -583,6 +583,8 @@ impl AppContext {
                 .master_bip44_ecdsa_extended_public_key
                 .encode()
                 .to_vec(),
+            uses_password: wallet.uses_password,
+            password_hint: wallet.password_hint().clone(),
         };
         WalletMetaView::new(&self.app_kv).set(self.network, &seed_hash, &meta)
     }
@@ -1866,6 +1868,8 @@ mod tests {
                         is_main: false,
                         core_wallet_name: None,
                         xpub_encoded: det_master_bip44.encode().to_vec(),
+                        uses_password: false,
+                        password_hint: None,
                     },
                 )
                 .expect("write wallet-meta sidecar");

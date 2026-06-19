@@ -263,6 +263,8 @@ mod tests {
             is_main: true,
             core_wallet_name: Some("local-dashd".into()),
             xpub_encoded: xpub,
+            uses_password: false,
+            password_hint: None,
         };
 
         // Stand-in for `WalletSeedView::get` — direct decode of the
@@ -303,6 +305,8 @@ mod tests {
             is_main: false,
             core_wallet_name: None,
             xpub_encoded: xpub,
+            uses_password: false,
+            password_hint: None,
         };
 
         let master = ExtendedPubKey::decode(&envelope.xpub_encoded).expect("xpub decodes");
@@ -337,6 +341,8 @@ mod tests {
             is_main: false,
             core_wallet_name: None,
             xpub_encoded: xpub,
+            uses_password: false,
+            password_hint: None,
         };
         let master = ExtendedPubKey::decode(&envelope.xpub_encoded).expect("xpub decodes");
         let wallet = wallet_from_envelope(seed_hash_for(seed), envelope, &meta, master)
@@ -378,6 +384,8 @@ mod tests {
             is_main: true,
             core_wallet_name: None,
             xpub_encoded: xpub,
+            uses_password: false,
+            password_hint: None,
         };
 
         let wallet = reconstruct_wallet(&view, &hash, &meta)
@@ -405,6 +413,8 @@ mod tests {
             is_main: false,
             core_wallet_name: None,
             xpub_encoded: xpub,
+            uses_password: false,
+            password_hint: None,
         };
         let result = reconstruct_wallet(&view, &seed_hash_for(seed), &meta).expect("no error");
         assert!(result.is_none(), "missing envelope must collapse to None");
@@ -434,6 +444,8 @@ mod tests {
             is_main: false,
             core_wallet_name: None,
             xpub_encoded: Vec::new(),
+            uses_password: false,
+            password_hint: None,
         };
         let result = reconstruct_wallet(&view, &hash, &meta).expect("no error");
         assert!(result.is_none(), "empty xpub must collapse to None");
@@ -460,6 +472,8 @@ mod tests {
             is_main: false,
             core_wallet_name: None,
             xpub_encoded: xpub.clone(),
+            uses_password: false,
+            password_hint: None,
         };
         let master = ExtendedPubKey::decode(&xpub).expect("xpub decodes");
         let err = wallet_from_envelope(seed_hash_for(seed), envelope, &meta, master)
@@ -499,6 +513,8 @@ mod tests {
             is_main: true,
             core_wallet_name: None,
             xpub_encoded: xpub.clone(),
+            uses_password: false,
+            password_hint: None,
         };
         let master = ExtendedPubKey::decode(&xpub).expect("xpub decodes");
         let mut wallet = wallet_from_envelope(seed_hash_for(seed), envelope, &meta, master)

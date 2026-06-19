@@ -931,6 +931,12 @@ where
             is_main: is_main.unwrap_or(false),
             core_wallet_name,
             xpub_encoded,
+            // The legacy `wallet` table does not carry the password flag/hint
+            // (they lived in the seed envelope). The authoritative value is
+            // read from the envelope at the migrating unlock; default to "no
+            // extra prompt" here.
+            uses_password: false,
+            password_hint: None,
         };
 
         match set(seed_hash, meta) {
@@ -2192,6 +2198,8 @@ mod tests {
                 is_main: true,
                 core_wallet_name: Some("dev-dashd".into()),
                 xpub_encoded: Vec::new(),
+                uses_password: false,
+                password_hint: None,
             })
         );
         // Mainnet row must not be visible on testnet.

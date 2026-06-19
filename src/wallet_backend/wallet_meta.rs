@@ -30,7 +30,7 @@ use dash_sdk::dpp::dashcore::base58;
 
 use crate::backend_task::error::TaskError;
 use crate::model::wallet::WalletSeedHash;
-use crate::model::wallet::meta::WalletMeta;
+use crate::model::wallet::meta::{WalletMeta, decode_versioned, encode_versioned};
 use crate::wallet_backend::kv::KvAdapterError;
 use crate::wallet_backend::{DetKv, DetScope};
 
@@ -111,7 +111,7 @@ impl<'a> WalletMetaView<'a> {
                 );
                 continue;
             };
-            match self.kv.get::<WalletMeta>(DetScope::Global, &key) {
+            match self.read_meta(&key) {
                 Ok(Some(meta)) => out.push((hash, meta)),
                 Ok(None) => {}
                 Err(e) => {
@@ -131,7 +131,7 @@ impl<'a> WalletMetaView<'a> {
     /// absent or the blob fails to decode (logged).
     pub fn get(&self, network: Network, seed_hash: &WalletSeedHash) -> Option<WalletMeta> {
         let key = key_for(network, seed_hash);
-        match self.kv.get::<WalletMeta>(DetScope::Global, &key) {
+        match self.read_meta(&key) {
             Ok(v) => v,
             Err(e) => {
                 tracing::warn!(
@@ -154,9 +154,23 @@ impl<'a> WalletMetaView<'a> {
         meta: &WalletMeta,
     ) -> Result<(), TaskError> {
         let key = key_for(network, seed_hash);
+        let framed = encode_versioned(meta)
+            .map_err(|e| map_kv_error_to_task_error(KvAdapterError::Encode(e)))?;
         self.kv
-            .put(DetScope::Global, &key, meta)
+            .put(DetScope::Global, &key, &framed)
             .map_err(map_kv_error_to_task_error)
+    }
+
+    /// Read and version-decode a single wallet-meta blob, migrating a v1 (or
+    /// pre-version-byte legacy) shape into the current [`WalletMeta`].
+    /// `Ok(None)` when the key is absent.
+    fn read_meta(&self, key: &str) -> Result<Option<WalletMeta>, KvAdapterError> {
+        let Some(framed) = self.kv.get::<Vec<u8>>(DetScope::Global, key)? else {
+            return Ok(None);
+        };
+        decode_versioned(&framed)
+            .map(Some)
+            .map_err(KvAdapterError::Decode)
     }
 
     /// Delete the metadata for a single wallet. Idempotent — a
@@ -258,6 +272,8 @@ mod tests {
             is_main,
             core_wallet_name: core.map(str::to_string),
             xpub_encoded: Vec::new(),
+            uses_password: false,
+            password_hint: None,
         }
     }
 

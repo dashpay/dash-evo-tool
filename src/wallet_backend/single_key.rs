@@ -237,6 +237,7 @@ impl<'a> SingleKeyView<'a> {
             network: self.network,
             has_passphrase: entry.has_passphrase,
             passphrase_hint: entry.passphrase_hint.clone(),
+            public_key_bytes: pub_key.inner.serialize().to_vec(),
         };
 
         if let Some(kv) = self.app_kv {
@@ -1218,6 +1219,7 @@ mod tests {
             network,
             has_passphrase: false,
             passphrase_hint: None,
+            public_key_bytes: Vec::new(),
         };
         kv.put(
             DetScope::Global,
@@ -1515,6 +1517,7 @@ mod tests {
             network,
             has_passphrase: false,
             passphrase_hint: None,
+            public_key_bytes: Vec::new(),
         };
         kv.put(DetScope::Global, &meta_key_for(network, &address), &meta)
             .expect("seed sidecar");

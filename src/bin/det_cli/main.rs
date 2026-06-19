@@ -104,7 +104,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     if matches!(cli.command, Some(Commands::Serve)) {
-        return connect::run_stdio_server();
+        connect::run_stdio_server();
     }
 
     #[cfg(feature = "headless")]
@@ -126,11 +126,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .enable_all()
         .build()?;
 
-    if let Err(e) = runtime.block_on(run(cli)) {
-        eprintln!("Error: {e}");
-        std::process::exit(1);
-    }
-    Ok(())
+    let exit_code: i32 = match runtime.block_on(run(cli)) {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!("Error: {e}");
+            1
+        }
+    };
+
+    // Hard-exit: bypass Tokio runtime teardown to prevent coordinator OS threads
+    // (identity-sync, platform-address-sync, shielded-sync) from panicking when
+    // they poll `tokio::time::sleep` against a shutting-down timer wheel.
+    // The tool result has already been printed by this point; any SQLite writes
+    // issued before the tool returned are transaction-committed.
+    // See `DashMcpService::shutdown_wallet_backend` for the full race analysis.
+    use std::io::Write as _;
+    let _ = std::io::stdout().lock().flush();
+    let _ = std::io::stderr().lock().flush();
+    std::process::exit(exit_code);
 }
 
 async fn run(cli: Cli) -> Result<(), String> {

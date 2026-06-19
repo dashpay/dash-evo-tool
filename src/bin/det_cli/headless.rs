@@ -3,10 +3,13 @@
 use std::sync::Arc;
 
 /// Run det-cli as a headless HTTP MCP server.
+///
 /// Eagerly initializes AppContext, starts SPV, serves MCP tools over HTTP.
+/// Terminates via [`std::process::exit`] on clean shutdown — bypassing Tokio
+/// runtime teardown to prevent coordinator OS threads from panicking against a
+/// shutting-down timer wheel.  See `DashMcpService::shutdown_wallet_backend`
+/// for the race analysis.
 pub(super) fn run_headless() -> Result<(), Box<dyn std::error::Error>> {
-    use std::time::Duration;
-
     use dash_evo_tool::logging::initialize_logger;
     use dash_evo_tool::mcp::server::init_app_context;
     use dash_evo_tool::mcp::{McpConfig, start_http_server};
@@ -27,7 +30,7 @@ pub(super) fn run_headless() -> Result<(), Box<dyn std::error::Error>> {
         .enable_all()
         .build()?;
 
-    let result = runtime.block_on(async {
+    let result: Result<(), Box<dyn std::error::Error>> = runtime.block_on(async {
         let ctx = init_app_context()
             .await
             .map_err(|e| format!("Failed to initialize: {}", e.message))?;
@@ -45,11 +48,8 @@ pub(super) fn run_headless() -> Result<(), Box<dyn std::error::Error>> {
             .await
             .map_err(|e| -> Box<dyn std::error::Error> { e });
 
-        // Quiesce the wallet backend (coordinator threads) before the runtime
-        // is torn down — same concern as the stdio path.  `swappable.load_full()`
-        // yields the context that is CURRENTLY active (may differ from the
-        // initial `ctx` if a `network_switch` tool call was made during the
-        // session).
+        // Drain the wallet backend's persister.  `swappable.load_full()` yields
+        // the CURRENTLY active context (may differ from `ctx` after network_switch).
         let current_ctx = swappable.load_full();
         if let Ok(backend) = current_ctx.wallet_backend() {
             backend.shutdown().await;
@@ -58,9 +58,17 @@ pub(super) fn run_headless() -> Result<(), Box<dyn std::error::Error>> {
         result
     });
 
-    // Backstop: bounded window for any remaining spawned tasks (pending I/O,
-    // the ctrl-c signal handler, etc.) to exit before the runtime is dropped.
-    runtime.shutdown_timeout(Duration::from_secs(5));
-
-    result
+    // Hard-exit: bypass runtime teardown to prevent coordinator OS threads from
+    // panicking against the shutting-down timer wheel.
+    let exit_code: i32 = match result {
+        Ok(()) => 0,
+        Err(ref e) => {
+            eprintln!("Headless server error: {e}");
+            1
+        }
+    };
+    use std::io::Write as _;
+    let _ = std::io::stdout().lock().flush();
+    let _ = std::io::stderr().lock().flush();
+    std::process::exit(exit_code);
 }

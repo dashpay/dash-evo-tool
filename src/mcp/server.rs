@@ -127,66 +127,60 @@ impl DashMcpService {
         self.ctx.store(new_ctx);
     }
 
-    /// Gracefully stop the wallet backend if it was started during this session.
+    /// Drain the wallet backend's persister before process exit.
     ///
-    /// Called from the standalone stdio exit path, inside the `block_on` context
-    /// (runtime still alive), before the Tokio runtime is torn down.  This stops
-    /// the `platform-address-sync` / `identity-sync` / `shielded-sync` coordinator
-    /// threads so they do not touch the Tokio timer wheel after the runtime starts
-    /// shutting down.
+    /// Called from the standalone stdio serve path (`start_stdio`), inside
+    /// `block_on` while the Tokio runtime is still alive.  Ensures any in-flight
+    /// `TokenBalanceChangeSet` / `PlatformWalletChangeSet` persister writes issued
+    /// by the coordinator sync loops complete before the process exits.
     ///
-    /// ## Why the extra sleep after `backend.shutdown()`
+    /// ## Why this does NOT stop the coordinator timer panic
     ///
-    /// Each coordinator runs on a **dedicated OS thread** (not a Tokio task) that
-    /// calls [`Handle::block_on`].  Their inner loop is:
+    /// Each coordinator (`identity-sync`, `platform-address-sync`, `shielded-sync`)
+    /// runs on a **dedicated OS thread** that calls [`Handle::block_on`].  Their
+    /// inner loop ends with:
     ///
     /// ```text
-    /// loop {
-    ///     if cancel.is_cancelled() { break; }
-    ///     this.sync_now().await;
-    ///     tokio::select! {
-    ///         _ = tokio::time::sleep(interval) => {}   // ← panics when runtime is shutting down
-    ///         _ = cancel.cancelled()            => break,
-    ///     }
+    /// tokio::select! {
+    ///     _ = tokio::time::sleep(interval) => {}   // panics if runtime shut down
+    ///     _ = cancel.cancelled()            => break,
     /// }
     /// ```
     ///
-    /// `backend.shutdown()` calls `pwm.shutdown()` which calls `quiesce()` on each
-    /// coordinator.  `quiesce()` cancels the token and spins until `is_syncing ==
-    /// false` — a "no more persister writes" barrier.  But **`quiesce()` does not
-    /// join the OS thread**: it returns as soon as `sync_now()` drains, while the
-    /// thread may still be between `sync_now()` returning and the `tokio::select!`.
+    /// `backend.shutdown()` → `quiesce()` cancels the tokens and waits for
+    /// `is_syncing == false`, but **does not join the OS threads** — it returns
+    /// as soon as the last persister write completes.  At that point the coordinator
+    /// threads are still alive and may poll `sleep(interval)` in `select!`.
     ///
-    /// `tokio::select!` polls its arms in random order.  If `sleep(interval)` is
-    /// polled before `cancel.cancelled()` (which IS immediately ready), `Sleep::poll`
-    /// tries to register a timer with the Tokio driver.  If the runtime is already
-    /// shutting down at that point, Tokio panics:
-    /// *"A Tokio 1.x context was found, but it is being shutdown."*
+    /// `tokio::select!` picks arms in **random order** for fairness.  If
+    /// `sleep(interval)` is polled before `cancel.cancelled()` (which is ready
+    /// immediately) while the Tokio runtime is shutting down, `Sleep::poll`
+    /// panics: *"A Tokio 1.x context was found, but it is being shutdown."*
     ///
-    /// The sleep below — executed while `block_on` is still alive — gives the OS
-    /// scheduler a large-enough window (hundreds of context-switch quanta) for each
-    /// coordinator thread to run through the `select!` → `cancel.cancelled()` →
-    /// `break` path and exit `block_on` cleanly.  The upstream fix (storing and
-    /// joining the `JoinHandle` in `quiesce()`) would be airtight, but requires an
-    /// upstream `rs-platform-wallet` change; this is the correct DET-side mitigation
-    /// in the interim.
+    /// A `tokio::time::sleep` grace period was tried and also fails: DAPI retries
+    /// that are already in flight when `quiesce()` returns can extend past any
+    /// fixed sleep window.
+    ///
+    /// **The deterministic fix** is `std::process::exit` in the CLI entry points
+    /// (`run_stdio_server`, `run_headless`, and the one-shot tool path in `main`),
+    /// applied after the tool result is flushed to stdout.  `process::exit`
+    /// reclaims all OS threads before they can poll the shutting-down timer wheel.
+    /// The upstream fix (storing and joining the OS thread's `JoinHandle` in
+    /// `quiesce()`) would be the correct library-level solution.
     ///
     /// ## Safe to call unconditionally
     ///
-    /// - Context never initialized → `ctx.load()` returns `None` → immediate return.
+    /// - Context never initialized → `ctx.load()` returns `None` → no-op.
     /// - Context init'd, backend never wired → `wallet_backend()` returns
-    ///   `Err(WalletBackendNotYetWired)` → immediate return (no coordinators, no sleep).
+    ///   `Err(WalletBackendNotYetWired)` → no-op (no coordinators were started).
     #[cfg(feature = "cli")]
     pub async fn shutdown_wallet_backend(&self) {
         let Some(ctx) = self.ctx.load() else { return };
         let Ok(backend) = ctx.wallet_backend() else {
             return;
         };
+        // Drain in-flight persister writes.  Does not join coordinator threads.
         backend.shutdown().await;
-        // Allow coordinator OS threads to reach and exit their outer `select!`
-        // while the runtime is still alive.  See the method doc above for the
-        // full race explanation.  100 ms >> one OS scheduling quantum (~4 ms).
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
 
     /// Build the tool router using trait-based tool composition.

@@ -327,8 +327,10 @@ pub async fn send_payment_to_contact_impl(
         payment.amount
     );
 
-    // Save to database using the db interface - propagate errors
-    app_context.db.save_payment(
+    // Save to database. The payment is already broadcast on-chain at this point,
+    // so a local-history persistence failure must not fail the task — otherwise the
+    // UI would report failure and could prompt a duplicate retry. Log and continue.
+    if let Err(e) = app_context.db.save_payment(
         &txid,
         &from_identity.identity.id(),
         &to_contact_id,
@@ -336,7 +338,13 @@ pub async fn send_payment_to_contact_impl(
         memo.as_deref(),
         "sent",
         None,
-    )?;
+    ) {
+        tracing::error!(
+            "Failed to save DashPay payment history for broadcast txid {}: {:?}",
+            txid,
+            e
+        );
+    }
 
     // Convert to Dash for display
     let amount_dash = amount_duffs as f64 / 100_000_000.0;

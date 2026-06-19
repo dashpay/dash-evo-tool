@@ -500,6 +500,7 @@ impl AppContext {
             qi.associated_wallets = wallets.clone();
             qi.secret_access = self.wallet_backend().ok().map(|b| b.secret_access());
             qi.top_ups = BTreeMap::new();
+            self.migrate_identity_keys_to_vault(&kv, &id, &mut qi);
             out.push(qi);
         }
         Ok(out)
@@ -618,8 +619,117 @@ impl AppContext {
     ) -> std::result::Result<(), TaskError> {
         let kv = self.identity_kv()?;
         let id = identifier.to_buffer();
+        self.clear_identity_vault_keys(&kv, &id);
         purge_identity_scope(&kv, &id)?;
         index_remove_identity(&kv, &id)
+    }
+
+    /// EAGER identity-key migration (dialog-free): move any plaintext
+    /// `Clear`/`AlwaysClear` identity keys into the vault as raw bytes and
+    /// rewrite the blob with `InVault` placeholders so the keys are never
+    /// resident.
+    ///
+    /// Crash-safe ordering: vault `store_all` FIRST, then blob rewrite. If the
+    /// vault write fails the blob is left untouched (the in-memory `qi` is
+    /// restored to its resident plaintext for this session) and the next load
+    /// retries — keys are never lost. Idempotent: a blob already all-`InVault`
+    /// has nothing to take and is skipped. Best-effort: a blob-rewrite failure
+    /// is logged; the next load re-detects the plaintext and retries.
+    fn migrate_identity_keys_to_vault(
+        &self,
+        kv: &crate::wallet_backend::DetKv,
+        id: &[u8; 32],
+        qi: &mut QualifiedIdentity,
+    ) {
+        let before = qi.private_keys.clone();
+        let taken = qi.private_keys.take_plaintext_for_vault();
+        if taken.is_empty() {
+            return;
+        }
+        let view = crate::wallet_backend::IdentityKeyView::new(&self.secret_store, *id);
+        if let Err(e) = view.store_all(&taken) {
+            // Vault-first failed: restore the resident plaintext so this
+            // session can still sign, and leave the blob for the next retry.
+            qi.private_keys = before;
+            tracing::warn!(
+                target = "context::identity_db",
+                identity = %hex::encode(id),
+                error = ?e,
+                "Identity-key vault migration deferred (vault write failed)",
+            );
+            return;
+        }
+        // Vault holds the raw bytes; rewrite the blob with the InVault
+        // placeholders. A failure here is recoverable — the legacy plaintext
+        // blob plus the (now redundant) raw vault entries are re-detected next
+        // load and the migration re-runs idempotently.
+        if let Err(e) = self.persist_identity_blob(kv, id, qi) {
+            tracing::warn!(
+                target = "context::identity_db",
+                identity = %hex::encode(id),
+                error = ?e,
+                "Identity-key blob rewrite deferred after vault migration",
+            );
+        } else {
+            tracing::info!(
+                target = "context::identity_db",
+                identity = %hex::encode(id),
+                migrated = taken.len(),
+                "Migrated identity keys to the secret vault",
+            );
+        }
+    }
+
+    /// Re-persist `qi`'s blob in place, preserving the stored wallet
+    /// association and status. Used by the eager identity-key migration.
+    fn persist_identity_blob(
+        &self,
+        kv: &crate::wallet_backend::DetKv,
+        id: &[u8; 32],
+        qi: &QualifiedIdentity,
+    ) -> std::result::Result<(), TaskError> {
+        let scope = DetScope::Identity(id);
+        let existing: Option<StoredQualifiedIdentity> = kv
+            .get(scope, IDENTITY_KEY)
+            .map_err(|source| TaskError::IdentityStorage { source })?;
+        let (wallet_hash, wallet_index, status) = existing
+            .as_ref()
+            .map(|s| (s.wallet_hash, s.wallet_index, s.status))
+            .unwrap_or((None, None, qi.status.as_u8()));
+        let stored = StoredQualifiedIdentity {
+            qi_bytes: qi.to_bytes(),
+            status,
+            identity_type: format!("{:?}", qi.identity_type),
+            wallet_hash,
+            wallet_index,
+        };
+        kv.put(scope, IDENTITY_KEY, &stored)
+            .map_err(|source| TaskError::IdentityStorage { source })
+    }
+
+    /// Delete every identity-key raw secret for `id` from the vault. Best
+    /// effort: a decode/read failure is logged and skipped so identity removal
+    /// never wedges on an unreadable blob — leaving a stale vault entry is
+    /// preferable to blocking the delete, and the entry is unreachable once the
+    /// blob is gone. Idempotent (deleting an absent label is `Ok`).
+    fn clear_identity_vault_keys(&self, kv: &crate::wallet_backend::DetKv, id: &[u8; 32]) {
+        let Ok(Some(stored)) =
+            kv.get::<StoredQualifiedIdentity>(DetScope::Identity(id), IDENTITY_KEY)
+        else {
+            return;
+        };
+        let Ok(qi) = QualifiedIdentity::from_bytes(&stored.qi_bytes) else {
+            return;
+        };
+        let view = crate::wallet_backend::IdentityKeyView::new(&self.secret_store, *id);
+        if let Err(e) = view.delete_all(qi.private_keys.keys_set()) {
+            tracing::warn!(
+                target = "context::identity_db",
+                identity = %hex::encode(id),
+                error = ?e,
+                "Failed to clear some identity vault keys on delete; continuing",
+            );
+        }
     }
 
     /// Devnet-only sweep: drop every locally-stored identity for the
@@ -635,6 +745,7 @@ impl AppContext {
         let kv = self.identity_kv()?;
         let ids = load_identity_index(&kv)?;
         for id in &ids {
+            self.clear_identity_vault_keys(&kv, id);
             purge_identity_scope(&kv, id)?;
         }
         kv.delete(DetScope::Global, IDENTITY_INDEX_KEY)

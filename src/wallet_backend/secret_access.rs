@@ -414,12 +414,50 @@ impl SecretAccess {
         passphrase: Option<&SecretString>,
         policy: RememberPolicy,
     ) -> Result<(), TaskError> {
+        self.promote_and_maybe_migrate_hd_seed(seed_hash, passphrase, policy)
+            .map(|_migrated| ())
+    }
+
+    /// As [`Self::promote_hd_seed_with_passphrase`], but reports whether a
+    /// LAZY raw-seam migration was performed.
+    ///
+    /// When the seed is still in a legacy `envelope.v1` (no raw label), this
+    /// re-stores the decrypted 64-byte seed raw via the seam (vault-FIRST) and
+    /// deletes the legacy envelope — all inside the borrowed `Zeroizing` scope,
+    /// so the plaintext is never copied out. Returns `Ok(true)` when that
+    /// migration ran (the caller flips `WalletMeta.uses_password=false`), or
+    /// `Ok(false)` when the seed was already raw (nothing to migrate).
+    ///
+    /// Crash-safe: `set_raw` (upsert) precedes `delete`; a crash between leaves
+    /// both forms present and the loader prefers raw. Idempotent.
+    pub fn promote_and_maybe_migrate_hd_seed(
+        &self,
+        seed_hash: &WalletSeedHash,
+        passphrase: Option<&SecretString>,
+        policy: RememberPolicy,
+    ) -> Result<bool, TaskError> {
         let scope = SecretScope::HdSeed {
             seed_hash: *seed_hash,
         };
+        let already_raw = WalletSeedView::new(&self.inner.secret_store)
+            .get_raw(seed_hash)?
+            .is_some();
         let plaintext = self.decrypt_jit(&scope, passphrase)?;
+
+        let mut migrated = false;
+        if !already_raw
+            && let Plaintext::HdSeed(seed) = &plaintext
+        {
+            // The seed came from the legacy envelope. Re-store it raw
+            // (vault-first), then drop the legacy envelope.
+            let view = WalletSeedView::new(&self.inner.secret_store);
+            view.set_raw(seed_hash, &**seed)?;
+            view.delete(seed_hash)?;
+            migrated = true;
+        }
+
         self.maybe_remember(&scope, &plaintext, policy);
-        Ok(())
+        Ok(migrated)
     }
 
     /// Forget the session-cached secret for `scope`, zeroizing it.
@@ -531,7 +569,7 @@ impl SecretAccess {
                     return Ok(false);
                 }
                 let view = WalletSeedView::new(&self.inner.secret_store);
-                let envelope = view.get(seed_hash)?.ok_or(TaskError::WalletNotFound)?;
+                let envelope = view.get(seed_hash)?.ok_or(TaskError::SecretSeamMissing)?;
                 Ok(envelope.uses_password)
             }
             SecretScope::SingleKey { address } => {
@@ -579,9 +617,10 @@ impl SecretAccess {
                         })?;
                     return Ok(Plaintext::HdSeed(Zeroizing::new(seed)));
                 }
-                // Legacy fallback (migration reader).
+                // Legacy fallback (migration reader). Neither raw nor legacy
+                // present ⇒ the secret is gone (loud, never a silent miss).
                 let view = WalletSeedView::new(&self.inner.secret_store);
-                let envelope = view.get(seed_hash)?.ok_or(TaskError::WalletNotFound)?;
+                let envelope = view.get(seed_hash)?.ok_or(TaskError::SecretSeamMissing)?;
                 let seed = decrypt_hd_seed(&envelope, passphrase)?;
                 Ok(Plaintext::HdSeed(seed))
             }
@@ -1429,6 +1468,27 @@ mod tests {
         assert!(
             sa.can_resolve_without_prompt(&scope),
             "identity key is always resolvable without a prompt"
+        );
+    }
+
+    /// TS-MISS-01/02 — an HD seed present in NEITHER raw nor legacy form
+    /// surfaces the loud typed `SecretSeamMissing` (never a silent `Ok(None)`
+    /// that would drop a key on the floor), distinct from `WalletNotFound`.
+    #[tokio::test]
+    async fn ts_miss_01_hd_seed_in_neither_form_is_secret_seam_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = fresh_store(dir.path());
+        let sa = access(store, Arc::new(TestPrompt::never()));
+        let scope = SecretScope::HdSeed {
+            seed_hash: [0x7Du8; 32],
+        };
+        let err = sa
+            .with_secret(&scope, |_pt| Ok(()))
+            .await
+            .expect_err("seed gone");
+        assert!(
+            matches!(err, TaskError::SecretSeamMissing),
+            "expected SecretSeamMissing, got {err:?}"
         );
     }
 

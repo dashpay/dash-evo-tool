@@ -92,6 +92,21 @@ fn reconstruct_wallet(
     seed_hash: &WalletSeedHash,
     meta: &WalletMeta,
 ) -> Result<Option<Wallet>, TaskError> {
+    // Raw seam value wins (precedence raw > legacy). A migrated no-password
+    // wallet has no envelope — its seed rides raw under `seed.raw.v1` and its
+    // non-secret metadata (xpub) lives in `WalletMeta`.
+    if let Some(raw) = seed_view.get_raw(seed_hash)? {
+        let envelope = StoredSeedEnvelope {
+            encrypted_seed: raw.to_vec(),
+            salt: Vec::new(),
+            nonce: Vec::new(),
+            password_hint: meta.password_hint.clone(),
+            uses_password: false,
+            xpub_encoded: meta.xpub_encoded.clone(),
+        };
+        return reconstruct_from_envelope(seed_hash, envelope, meta);
+    }
+
     let envelope = match seed_view.get(seed_hash)? {
         Some(e) => e,
         None => {
@@ -104,9 +119,45 @@ fn reconstruct_wallet(
         }
     };
 
-    // Prefer the envelope's xpub (written by T-W-00.5-v2) over the meta
-    // one. The meta copy was carried for the cold-boot picker before the
-    // envelope path was wired; in practice they are written together.
+    // EAGER migration (dialog-free): a no-password legacy envelope holds the
+    // raw seed verbatim. Re-store it raw (vault-FIRST) then drop the legacy
+    // envelope so the at-rest plaintext-equivalent form is gone. Crash-safe and
+    // idempotent — `set_raw` upserts, and a crash before `delete` leaves both
+    // forms with raw preferred next load. A password envelope is left for the
+    // lazy unlock migration.
+    if !envelope.uses_password
+        && envelope.encrypted_seed.len() == EXPECTED_SEED_LEN as usize
+        && let Ok(seed) = <[u8; 64]>::try_from(envelope.encrypted_seed.as_slice())
+    {
+        if let Err(e) = seed_view.set_raw(seed_hash, &seed) {
+            tracing::warn!(
+                target = "wallet_backend::hydration",
+                seed_hash = %hex::encode(seed_hash),
+                error = ?e,
+                "Eager no-password seed migration deferred (raw write failed)",
+            );
+        } else if let Err(e) = seed_view.delete(seed_hash) {
+            tracing::warn!(
+                target = "wallet_backend::hydration",
+                seed_hash = %hex::encode(seed_hash),
+                error = ?e,
+                "Eager seed migration left a redundant legacy envelope (delete failed)",
+            );
+        }
+    }
+
+    reconstruct_from_envelope(seed_hash, envelope, meta)
+}
+
+/// Decode the master xpub (envelope copy preferred, `WalletMeta` fallback) and
+/// assemble the `Wallet`. Shared by the raw-seam and legacy-envelope paths in
+/// [`reconstruct_wallet`]. `Ok(None)` (skip + log) when the xpub is absent or
+/// undecodable.
+fn reconstruct_from_envelope(
+    seed_hash: &WalletSeedHash,
+    envelope: StoredSeedEnvelope,
+    meta: &WalletMeta,
+) -> Result<Option<Wallet>, TaskError> {
     let xpub_bytes: &[u8] = if !envelope.xpub_encoded.is_empty() {
         &envelope.xpub_encoded
     } else {
@@ -395,6 +446,106 @@ mod tests {
         assert!(wallet.is_main);
         assert!(wallet.is_open());
         assert_eq!(wallet.seed_hash(), hash);
+    }
+
+    /// TS-EAGER-01 / TS-EAGER-04 — a no-password legacy envelope is eagerly
+    /// migrated on load: the raw `seed.raw.v1` is written, the legacy
+    /// `envelope.v1` is deleted, and a reload reads via the raw seam. Running
+    /// the load twice is idempotent (second pass already-raw, legacy gone).
+    #[test]
+    fn ts_eager_01_no_password_seed_migrates_on_load() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = fresh_secret_store(dir.path());
+        let view = WalletSeedView::new(&store);
+
+        let seed = [0x5Au8; 64];
+        let network = Network::Testnet;
+        let xpub = xpub_bytes_for(seed, network);
+        let hash = seed_hash_for(seed);
+        view.set(
+            &hash,
+            &StoredSeedEnvelope {
+                encrypted_seed: seed.to_vec(),
+                salt: Vec::new(),
+                nonce: Vec::new(),
+                password_hint: None,
+                uses_password: false,
+                xpub_encoded: xpub.clone(),
+            },
+        )
+        .expect("seed legacy envelope");
+        let meta = WalletMeta {
+            alias: "eager".into(),
+            is_main: false,
+            core_wallet_name: None,
+            xpub_encoded: xpub,
+            uses_password: false,
+            password_hint: None,
+        };
+
+        // First load migrates.
+        let wallet = reconstruct_wallet(&view, &hash, &meta)
+            .expect("no error")
+            .expect("rebuilt");
+        assert!(wallet.is_open());
+        // Raw present and equals the seed; legacy gone.
+        assert_eq!(*view.get_raw(&hash).unwrap().unwrap(), seed);
+        assert!(
+            view.legacy_envelope_get(&hash).unwrap().is_none(),
+            "legacy envelope deleted after eager migration"
+        );
+
+        // Second load is idempotent — reads via the raw seam, no error,
+        // legacy still absent, raw byte-identical.
+        let wallet2 = reconstruct_wallet(&view, &hash, &meta)
+            .expect("no error")
+            .expect("rebuilt again");
+        assert!(wallet2.is_open());
+        assert_eq!(*view.get_raw(&hash).unwrap().unwrap(), seed);
+        assert!(view.legacy_envelope_get(&hash).unwrap().is_none());
+    }
+
+    /// TS-CRASH-01 (read half) — the legal mid-migration state (raw present
+    /// AND legacy still present) loads from the RAW value; the leftover legacy
+    /// is cleaned up. No key loss, no error.
+    #[test]
+    fn ts_crash_01_raw_wins_and_legacy_is_cleaned() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = fresh_secret_store(dir.path());
+        let view = WalletSeedView::new(&store);
+
+        let seed = [0x6Bu8; 64];
+        let network = Network::Testnet;
+        let xpub = xpub_bytes_for(seed, network);
+        let hash = seed_hash_for(seed);
+        // Both forms present (crash after raw write, before legacy delete).
+        view.set_raw(&hash, &seed).expect("raw");
+        view.set(
+            &hash,
+            &StoredSeedEnvelope {
+                encrypted_seed: seed.to_vec(),
+                salt: Vec::new(),
+                nonce: Vec::new(),
+                password_hint: None,
+                uses_password: false,
+                xpub_encoded: xpub.clone(),
+            },
+        )
+        .expect("legacy too");
+        let meta = WalletMeta {
+            alias: "midmig".into(),
+            is_main: false,
+            core_wallet_name: None,
+            xpub_encoded: xpub,
+            uses_password: false,
+            password_hint: None,
+        };
+
+        let wallet = reconstruct_wallet(&view, &hash, &meta)
+            .expect("no error")
+            .expect("rebuilt");
+        assert!(wallet.is_open());
+        assert_eq!(*view.get_raw(&hash).unwrap().unwrap(), seed);
     }
 
     /// Orphan path — a `WalletMeta` entry whose envelope is missing is

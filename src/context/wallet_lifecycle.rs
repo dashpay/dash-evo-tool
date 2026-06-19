@@ -17,6 +17,11 @@ use std::sync::{Arc, RwLock};
 /// window so the common identity-load path serves entirely from cache.
 const AUTH_PUBKEY_WARM_KEY_COUNT: u32 = 12;
 
+/// Copy D — the shared, opt-in technical detail attached to the one-time
+/// at-rest disclosure notice (jargon-free per the persona spec). Surfaced via
+/// `with_details`, so it lives in the collapsible panel and the log.
+const INTERIM_AT_REST_DETAILS: &str = "This wallet's secrets are now stored in a shared protected location on this device, guarded by your computer's account and file permissions rather than by your wallet password. This is a temporary step while a stronger, built-in protection is being finished. Your keys never leave this device. To keep this wallet extra safe in the meantime, make sure your computer account is password-protected and not shared.";
+
 /// The upstream `dash-spv` `DiskStorageManager` chain-cache entries under the
 /// per-network SPV directory. Each is a subfolder except `peers.dat`. The
 /// wallet/shielded SQLite sidecars in the same directory are deliberately
@@ -944,8 +949,12 @@ impl AppContext {
         wallet: &Arc<RwLock<Wallet>>,
         passphrase: Option<&str>,
     ) {
-        let (seed_hash, uses_password) = match wallet.read() {
-            Ok(guard) => (guard.seed_hash(), guard.uses_password),
+        let (seed_hash, uses_password, wallet_alias) = match wallet.read() {
+            Ok(guard) => (
+                guard.seed_hash(),
+                guard.uses_password,
+                guard.alias.clone(),
+            ),
             Err(_) => return,
         };
 
@@ -964,15 +973,21 @@ impl AppContext {
             return;
         };
         let secret = platform_wallet_storage::secrets::SecretString::new(passphrase);
-        match backend.secret_access().promote_hd_seed_with_passphrase(
+        match backend.secret_access().promote_and_maybe_migrate_hd_seed(
             &seed_hash,
             Some(&secret),
             crate::wallet_backend::RememberPolicy::UntilAppClose,
         ) {
-            Ok(()) => tracing::trace!(
-                wallet = %hex::encode(seed_hash),
-                "Verified-open seed promoted to the session cache on unlock"
-            ),
+            Ok(migrated) => {
+                tracing::trace!(
+                    wallet = %hex::encode(seed_hash),
+                    migrated,
+                    "Verified-open seed promoted to the session cache on unlock"
+                );
+                if migrated {
+                    self.finish_lazy_seed_migration(&seed_hash, wallet_alias.as_deref());
+                }
+            }
             Err(error) => tracing::debug!(
                 wallet = %hex::encode(seed_hash),
                 %error,
@@ -998,6 +1013,40 @@ impl AppContext {
         // Platform-ready time, so a just-unlocked wallet is searched here. This
         // is the "searched after unlock" path the all-wallets sweep documents.
         self.queue_unlocked_wallet_identity_discovery(wallet);
+    }
+
+    /// Finish a LAZY HD-seed migration after the unlock decrypt + raw re-store:
+    /// flip `WalletMeta.uses_password` to `false` (the password no longer gates
+    /// the at-rest secret) and show the one-time per-wallet disclosure notice.
+    ///
+    /// The flip is what makes the notice fire exactly once: after it,
+    /// `handle_wallet_unlocked`'s `uses_password` gate returns early on every
+    /// future unlock, so this never re-runs for the wallet.
+    fn finish_lazy_seed_migration(&self, seed_hash: &WalletSeedHash, alias: Option<&str>) {
+        use crate::ui::MessageType;
+        use crate::ui::components::message_banner::MessageBanner;
+
+        let view = WalletMetaView::new(&self.app_kv);
+        if let Some(mut meta) = view.get(self.network, seed_hash) {
+            meta.uses_password = false;
+            if let Err(error) = view.set(self.network, seed_hash, &meta) {
+                tracing::warn!(
+                    wallet = %hex::encode(seed_hash),
+                    %error,
+                    "Could not clear the migrated wallet's password flag",
+                );
+            }
+        }
+
+        // Copy A (wallet) — Warning so it does not auto-dismiss before read.
+        // Distinct text from the imported-key notice so `set_global`'s dedup
+        // does not collapse them when both migrate in one session.
+        let wallet = alias.filter(|a| !a.is_empty()).unwrap_or("Your wallet");
+        let message = format!(
+            "\"{wallet}\" no longer needs its password to open. Your wallet stays on this device, protected by your computer's account. Full password protection will return in a future update."
+        );
+        MessageBanner::set_global(self.egui_ctx(), &message, MessageType::Warning)
+            .with_details(INTERIM_AT_REST_DETAILS);
     }
 
     /// Spawn the unlock-triggered JIT bootstrap/registration for a wallet whose
@@ -2249,16 +2298,26 @@ mod tests {
             .register_wallet(wallet, &seed, WalletOrigin::Imported)
             .expect("register wallet before the backend is wired");
 
-        let envelope = WalletSeedView::new(&ctx.secret_store())
-            .get(&seed_hash)
+        // A no-password wallet persists the RAW seed via the seam (no legacy
+        // envelope), and the xpub rides in the WalletMeta sidecar.
+        let raw = WalletSeedView::new(&ctx.secret_store())
+            .get_raw(&seed_hash)
             .expect("vault read must not error")
-            .expect("the seed envelope must be persisted at register time, even unwired");
+            .expect("the raw seed must be persisted at register time, even unwired");
+        assert_eq!(&*raw, &seed, "persisted raw seed must equal the wallet seed");
         assert!(
-            !envelope.uses_password,
-            "the persisted envelope must carry the no-password flag for the W2 fast-path"
+            WalletSeedView::new(&ctx.secret_store())
+                .legacy_envelope_get(&seed_hash)
+                .unwrap()
+                .is_none(),
+            "no legacy envelope is written for a no-password wallet"
         );
+        let meta = WalletMetaView::new(&ctx.app_kv())
+            .get(Network::Testnet, &seed_hash)
+            .expect("wallet-meta sidecar persisted at register time");
+        assert!(!meta.uses_password, "no-password wallet meta flag");
         assert_eq!(
-            envelope.xpub_encoded,
+            meta.xpub_encoded,
             ctx.wallets
                 .read()
                 .unwrap()
@@ -2390,24 +2449,29 @@ mod tests {
 
         let backend = ctx.wallet_backend().expect("backend wired");
 
-        // Precondition: the seed envelope is present.
+        // Precondition: the raw seed is present (no-password wallet stores raw).
         assert!(
             WalletSeedView::new(&ctx.secret_store())
-                .get(&seed_hash)
+                .get_raw(&seed_hash)
                 .expect("vault read")
                 .is_some(),
-            "precondition: the seed envelope must exist before removal"
+            "precondition: the raw seed must exist before removal"
         );
 
         ctx.remove_wallet(&seed_hash).expect("remove wallet");
 
-        // The encrypted seed envelope (the JIT decrypt source) is gone.
+        // The seed (the JIT decrypt source) is gone in BOTH forms.
+        let store = ctx.secret_store();
+        let view = WalletSeedView::new(&store);
         assert!(
-            WalletSeedView::new(&ctx.secret_store())
-                .get(&seed_hash)
-                .expect("vault read after removal")
+            view.get_raw(&seed_hash).expect("raw read after removal").is_none(),
+            "the raw seed must be deleted from the vault on removal"
+        );
+        assert!(
+            view.legacy_envelope_get(&seed_hash)
+                .expect("legacy read after removal")
                 .is_none(),
-            "the seed envelope must be deleted from the vault on removal"
+            "any legacy envelope must also be gone on removal"
         );
 
         backend.shutdown().await;
@@ -2501,13 +2565,13 @@ mod tests {
 
         let backend = ctx.wallet_backend().expect("backend wired");
 
-        // Precondition: the seed envelope exists.
+        // Precondition: the raw seed exists.
         assert!(
             WalletSeedView::new(&ctx.secret_store())
-                .get(&seed_hash)
+                .get_raw(&seed_hash)
                 .expect("vault read")
                 .is_some(),
-            "precondition: the seed envelope must exist before removal"
+            "precondition: the raw seed must exist before removal"
         );
 
         // Pre-fix this returned `Err(no such table: wallet_addresses)` and the
@@ -2515,12 +2579,17 @@ mod tests {
         ctx.remove_wallet(&seed_hash)
             .expect("remove_wallet must succeed on a fresh install");
 
+        let store = ctx.secret_store();
+        let view = WalletSeedView::new(&store);
         assert!(
-            WalletSeedView::new(&ctx.secret_store())
-                .get(&seed_hash)
-                .expect("vault read after removal")
+            view.get_raw(&seed_hash).expect("raw read after removal").is_none(),
+            "the raw seed must be deleted from the vault on a fresh install"
+        );
+        assert!(
+            view.legacy_envelope_get(&seed_hash)
+                .expect("legacy read after removal")
                 .is_none(),
-            "the seed envelope must be deleted from the vault on a fresh install"
+            "no legacy envelope must survive removal on a fresh install"
         );
 
         backend.shutdown().await;
@@ -2556,28 +2625,33 @@ mod tests {
         );
         assert!(
             WalletSeedView::new(&ctx.secret_store())
-                .get(&seed_hash)
+                .get_raw(&seed_hash)
                 .expect("vault read")
                 .is_some(),
-            "precondition: seed envelope must exist before clear"
+            "precondition: raw seed must exist before clear"
         );
 
         ctx.clear_network_database()
             .expect("clear_network_database should succeed");
 
-        // The wallet must not rehydrate: its meta and encrypted seed are gone.
+        // The wallet must not rehydrate: its meta and seed (both forms) are gone.
         assert!(
             WalletMetaView::new(&ctx.app_kv())
                 .get(Network::Testnet, &seed_hash)
                 .is_none(),
             "wallet-meta sidecar must be empty after clear (no rehydration)"
         );
+        let store = ctx.secret_store();
+        let view = WalletSeedView::new(&store);
         assert!(
-            WalletSeedView::new(&ctx.secret_store())
-                .get(&seed_hash)
-                .expect("vault read after clear")
+            view.get_raw(&seed_hash).expect("raw read after clear").is_none(),
+            "raw seed must be deleted from the vault after clear"
+        );
+        assert!(
+            view.legacy_envelope_get(&seed_hash)
+                .expect("legacy read after clear")
                 .is_none(),
-            "seed envelope must be deleted from the vault after clear"
+            "no legacy envelope must survive clear"
         );
         assert!(
             ctx.wallets.read().unwrap().is_empty(),

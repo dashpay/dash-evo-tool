@@ -31,6 +31,7 @@ use egui::Color32;
 use std::collections::{BTreeMap, HashSet};
 use std::fmt::{Display, Formatter};
 use std::sync::{Arc, RwLock};
+use zeroize::Zeroizing;
 
 #[derive(Debug, Encode, Decode, PartialEq, Clone, Copy)]
 pub enum IdentityType {
@@ -521,7 +522,34 @@ impl QualifiedIdentity {
         target: PrivateKeyTarget,
         key_id: KeyID,
     ) -> Result<Option<ResolvedPrivateKey>, TaskError> {
-        let resolve_key = (target, key_id);
+        let resolve_key = (target.clone(), key_id);
+
+        // Vault-backed identity key: fetch the raw bytes per-use through the
+        // chokepoint (unprotected fast-path, no prompt). Requires the
+        // chokepoint to be wired; without it the key cannot be resolved (the
+        // bytes are not resident), so fail closed.
+        if self.private_keys.is_in_vault(&resolve_key) {
+            let Some(secret_access) = self.secret_access.as_ref() else {
+                return Err(TaskError::WalletLocked);
+            };
+            let Some(public_key) = self.private_keys.public_key_for(&resolve_key).cloned() else {
+                return Ok(None);
+            };
+            let scope = crate::wallet_backend::SecretScope::IdentityKey {
+                identity_id: self.identity.id().to_buffer(),
+                target,
+                key_id,
+            };
+            return secret_access
+                .with_secret(&scope, move |plaintext| {
+                    let key = plaintext
+                        .expose_identity_key()
+                        .ok_or(TaskError::IdentityKeyMissing)?;
+                    Ok(Some((public_key, Zeroizing::new(*key))))
+                })
+                .await;
+        }
+
         match (
             self.secret_access.as_ref(),
             self.private_keys.wallet_seed_hash_for(&resolve_key),

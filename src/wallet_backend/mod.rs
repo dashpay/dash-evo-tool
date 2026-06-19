@@ -815,7 +815,17 @@ impl WalletBackend {
         seed_hash: &WalletSeedHash,
         wallet_id: Option<WalletId>,
     ) -> Result<(), TaskError> {
-        // Encrypted seed-envelope vault (the JIT decrypt source).
+        // Seed vault — delete BOTH the raw `seed.raw.v1` (the current form) and
+        // the legacy `envelope.v1`. Idempotent on both; a wallet may be in
+        // either form (raw post-migration, legacy pre-migration), so removal
+        // must clear whichever is present to leave no recoverable seed.
+        if let Err(e) = self.wallet_seeds().delete_raw(seed_hash) {
+            tracing::warn!(
+                wallet = %hex::encode(seed_hash),
+                error = ?e,
+                "Failed to delete raw seed from vault"
+            );
+        }
         if let Err(e) = self.wallet_seeds().delete(seed_hash) {
             tracing::warn!(
                 wallet = %hex::encode(seed_hash),

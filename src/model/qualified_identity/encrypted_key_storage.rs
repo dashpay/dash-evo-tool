@@ -560,10 +560,17 @@ impl KeyStorage {
     /// vault-backed / encrypted keys are left untouched — they were never
     /// plaintext-at-rest.
     pub fn take_plaintext_for_vault(&mut self) -> Vec<VaultBoundKey> {
+        use zeroize::Zeroize;
         let mut out = Vec::new();
         for (map_key, (_pub_key, data)) in self.private_keys.iter_mut() {
             let raw = match data {
-                PrivateKeyData::Clear(bytes) | PrivateKeyData::AlwaysClear(bytes) => *bytes,
+                PrivateKeyData::Clear(bytes) | PrivateKeyData::AlwaysClear(bytes) => {
+                    let raw = *bytes;
+                    // Wipe the resident array before the `InVault` overwrite
+                    // drops it — de-residenting the key is this fn's whole job.
+                    bytes.zeroize();
+                    raw
+                }
                 _ => continue,
             };
             out.push((map_key.clone(), Zeroizing::new(raw)));

@@ -16,11 +16,31 @@ use crate::model::wallet::WalletSeedHash;
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::balances::credits::Credits;
 use dash_sdk::dpp::dashcore::OutPoint;
+use dash_sdk::dpp::dashcore::hashes::Hash;
+use dash_sdk::dpp::dashcore::secp256k1::{Message, Secp256k1, SecretKey};
+use dash_sdk::dpp::dashcore::sign_message::{MessageSignature, signed_msg_hash};
 use dash_sdk::dpp::identity::core_script::CoreScript;
 use dash_sdk::dpp::identity::{KeyID, KeyType};
 use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
 use dash_sdk::platform::Identifier;
 use std::collections::BTreeMap;
+
+/// Build the Base64-encoded Dash signed-message envelope for `message` signed
+/// with `secret_key`. The envelope is a recoverable signature: a header byte
+/// (`27 + recId`, `+4` when `compressed`) followed by the 64-byte signature, so
+/// a verifier can recover the signer's public key from the signature alone.
+/// Shared by the wallet-key and identity-key message-signing tasks.
+pub(crate) fn dash_signed_message(
+    message: &str,
+    secret_key: &SecretKey,
+    compressed: bool,
+) -> String {
+    let secp = Secp256k1::new();
+    let message_hash = signed_msg_hash(message);
+    let digest = Message::from_digest(*message_hash.as_byte_array());
+    let recoverable = secp.sign_ecdsa_recoverable(&digest, secret_key);
+    MessageSignature::new(recoverable, compressed).to_base64()
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum WalletTask {
@@ -146,4 +166,42 @@ pub enum WalletTask {
         /// If false, fees are paid from extra wallet balance (recipient receives exact amount).
         fee_deduct_from_output: bool,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::dash_signed_message;
+    use dash_sdk::dpp::dashcore::secp256k1::{PublicKey, Secp256k1, SecretKey};
+    use dash_sdk::dpp::dashcore::sign_message::{MessageSignature, signed_msg_hash};
+
+    /// The shared signed-message envelope round-trips: the signer's public key
+    /// recovers from the produced signature for both compression flags. A
+    /// hardcoded recovery header would fail ~50% of the time here. Both the
+    /// wallet-key and identity-key signers call this one helper.
+    fn assert_recovers(compressed: bool) {
+        let secp = Secp256k1::new();
+        let secret_key = SecretKey::from_byte_array(&[0x42u8; 32]).expect("valid secret");
+        let expected_pubkey = PublicKey::from_secret_key(&secp, &secret_key);
+        let message = "Bilby was here";
+
+        let base64 = dash_signed_message(message, &secret_key, compressed);
+        let parsed = MessageSignature::from_base64(&base64).expect("valid envelope");
+        assert_eq!(parsed.compressed, compressed);
+
+        let recovered = parsed
+            .recover_pubkey(&secp, signed_msg_hash(message))
+            .expect("recovers a public key");
+        assert_eq!(recovered.inner, expected_pubkey);
+        assert_eq!(recovered.compressed, compressed);
+    }
+
+    #[test]
+    fn recovers_signer_pubkey_compressed() {
+        assert_recovers(true);
+    }
+
+    #[test]
+    fn recovers_signer_pubkey_uncompressed() {
+        assert_recovers(false);
+    }
 }

@@ -59,6 +59,7 @@ impl<'a> IdentityKeyView<'a> {
         let label = SecretScope::identity_key_label(target, key_id);
         self.seam()
             .put_secret(&self.scope(), &label, &SecretBytes::from_slice(key))
+            .map_err(identity_flavored)
     }
 
     /// Store every `(target, key_id) → raw 32 bytes` pair. Used by the
@@ -79,7 +80,11 @@ impl<'a> IdentityKeyView<'a> {
         key_id: KeyID,
     ) -> Result<Option<Zeroizing<[u8; 32]>>, TaskError> {
         let label = SecretScope::identity_key_label(target, key_id);
-        let Some(bytes) = self.seam().get_secret(&self.scope(), &label)? else {
+        let Some(bytes) = self
+            .seam()
+            .get_secret(&self.scope(), &label)
+            .map_err(identity_flavored)?
+        else {
             return Ok(None);
         };
         let key: [u8; 32] = bytes.expose_secret().try_into().map_err(|_| {
@@ -96,7 +101,9 @@ impl<'a> IdentityKeyView<'a> {
     /// Idempotent delete of one identity key.
     pub fn delete(&self, target: &PrivateKeyTarget, key_id: KeyID) -> Result<(), TaskError> {
         let label = SecretScope::identity_key_label(target, key_id);
-        self.seam().delete_secret(&self.scope(), &label)
+        self.seam()
+            .delete_secret(&self.scope(), &label)
+            .map_err(identity_flavored)
     }
 
     /// Delete every `(target, key_id)` listed. Idempotent. Used on identity
@@ -109,6 +116,16 @@ impl<'a> IdentityKeyView<'a> {
             self.delete(&target, key_id)?;
         }
         Ok(())
+    }
+}
+
+/// Re-flavor a generic seam error as the identity-key-domain variant so a vault
+/// failure on an identity key surfaces with identity-specific banner copy. Any
+/// non-`SecretSeam` error passes through unchanged.
+fn identity_flavored(e: TaskError) -> TaskError {
+    match e {
+        TaskError::SecretSeam { source } => TaskError::IdentityKeyVault { source },
+        other => other,
     }
 }
 

@@ -4,11 +4,10 @@
 
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
+use crate::backend_task::wallet::dash_signed_message;
 use crate::context::AppContext;
 use crate::model::qualified_identity::PrivateKeyTarget;
-use dash_sdk::dpp::dashcore::hashes::Hash;
-use dash_sdk::dpp::dashcore::secp256k1::{Message, Secp256k1, SecretKey};
-use dash_sdk::dpp::dashcore::sign_message::{MessageSignature, signed_msg_hash};
+use dash_sdk::dpp::dashcore::secp256k1::SecretKey;
 use dash_sdk::dpp::identity::{KeyID, KeyType};
 use dash_sdk::platform::Identifier;
 use std::sync::Arc;
@@ -49,11 +48,8 @@ impl AppContext {
                     tracing::warn!(error = %detail, "Identity-key sign secret construction failed");
                     TaskError::WalletMessageSigningFailed
                 })?;
-                let secp = Secp256k1::new();
-                let digest =
-                    Message::from_digest(*signed_msg_hash(message.as_str()).as_byte_array());
-                let recoverable = secp.sign_ecdsa_recoverable(&digest, &secret_key);
-                Ok(MessageSignature::new(recoverable, true).to_base64())
+                // Identity keys are compressed by convention.
+                Ok(dash_signed_message(message.as_str(), &secret_key, true))
             })
             .await?;
 

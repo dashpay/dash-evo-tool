@@ -444,7 +444,7 @@ impl ScreenLike for RegisterDpnsNameScreen {
                 ui.label("Name (without \".dash\"):");
                 ui.add(
                     egui::TextEdit::singleline(&mut self.name_input)
-                        .hint_text("Enter name to register"),
+                        .hint_text("Enter a name to register."),
                 );
             });
 

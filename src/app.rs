@@ -294,15 +294,16 @@ impl AppState {
 
     #[cfg(feature = "testing")]
     fn testing_data_dir() -> Result<(PathBuf, Option<TempDir>), std::io::Error> {
+        // Opt-in to using the real (or DASH_EVO_DATA_DIR-overridden) data dir.
+        // app_user_data_dir_path() itself honors DASH_EVO_DATA_DIR, so callers
+        // that want a specific directory must combine TESTING_USE_REAL_DATA_DIR_ENV
+        // with DASH_EVO_DATA_DIR. Without the explicit opt-in we always use a
+        // tempdir so tests never touch user state accidentally.
         if std::env::var(TESTING_USE_REAL_DATA_DIR_ENV)
             .map(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"))
             .unwrap_or(false)
         {
             return Ok((app_user_data_dir_path()?, None));
-        }
-
-        if let Ok(dir) = std::env::var("DASH_EVO_DATA_DIR") {
-            return Ok((PathBuf::from(dir), None));
         }
 
         let dir = tempfile::Builder::new()

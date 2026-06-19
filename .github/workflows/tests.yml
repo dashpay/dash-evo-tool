@@ -91,7 +91,7 @@ jobs:
             echo "Skipping frontend E2E tests: E2E_WALLET_MNEMONIC is not set"
             exit 0
           fi
-          cargo test --all-features --test frontend-e2e -- --ignored --nocapture
+          scripts/safe-cargo.sh test --all-features --test frontend-e2e -- --ignored --nocapture
       - name: Run backend E2E tests
         env:
           E2E_WALLET_MNEMONIC: ${{ secrets.E2E_WALLET_MNEMONIC }}
@@ -101,7 +101,7 @@ jobs:
             echo "Skipping backend E2E tests: E2E_WALLET_MNEMONIC is not set"
             exit 0
           fi
-          cargo test --test backend-e2e --all-features -- --ignored --nocapture --test-threads=1
+          scripts/safe-cargo.sh test --test backend-e2e --all-features -- --ignored --nocapture --test-threads=1
       - name: Cleanup E2E test wallets
         if: ${{ always() }}
         env:
@@ -112,4 +112,4 @@ jobs:
             echo "Skipping E2E cleanup: E2E_WALLET_MNEMONIC is not set"
             exit 0
           fi
-          cargo test --test backend-e2e --all-features -- --ignored --nocapture --test-threads=1 cleanup_only
+          scripts/safe-cargo.sh test --test backend-e2e --all-features -- --ignored --nocapture --test-threads=1 cleanup_only

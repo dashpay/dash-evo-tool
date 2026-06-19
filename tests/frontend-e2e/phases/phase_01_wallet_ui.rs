@@ -2,7 +2,6 @@ use crate::helpers::context::TestContext;
 use crate::helpers::harness::*;
 use dash_evo_tool::app::AppState;
 use dash_evo_tool::ui::RootScreenType;
-use dash_sdk::dpp::dashcore::Network;
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
 use std::time::Duration;
@@ -83,9 +82,12 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
         ui_balance, expected_balance
     );
 
-    // 3. Get receive address and verify it's a valid testnet P2PKH address (starts with 'y')
+    // 3. Get receive address and verify it's a valid testnet P2PKH address (starts with 'y').
+    // The active app context is set to Testnet in phase 00; use that network so the
+    // address derivation always matches the AppContext rather than a hardcoded constant.
     {
         let app_ctx = harness.state().current_app_context();
+        let network = app_ctx.network();
         let wallets = app_ctx.wallets().read().unwrap();
         let wallet = wallets
             .get(ctx.seed_hash())
@@ -93,7 +95,7 @@ pub fn run(harness: &mut Harness<'_, AppState>, ctx: &mut TestContext) {
         let addr = wallet
             .write()
             .unwrap()
-            .receive_address(Network::Testnet, false, None)
+            .receive_address(network, false, None)
             .expect("Failed to get receive address from imported wallet");
         ctx.receive_address = Some(addr.to_string());
     }

@@ -35,7 +35,13 @@ ENV_ARGS=(
 )
 
 # Conditionally pass optional variables only if they are set and non-empty.
-for var in PROTOC CC CXX PKG_CONFIG_PATH USER SHELL; do
+#
+# E2E_WALLET_MNEMONIC is read at runtime by E2E tests (not by build scripts),
+# so allowlisting it is consistent with the script's threat model — build
+# scripts still cannot reach CI-only secrets like CLAUDE_CODE_OAUTH_TOKEN or
+# GITHUB_TOKEN. RUST_MIN_STACK is honored by the Rust runtime; several E2E
+# tests need a larger stack to avoid overflow.
+for var in PROTOC CC CXX PKG_CONFIG_PATH USER SHELL E2E_WALLET_MNEMONIC RUST_MIN_STACK; do
     if [ -n "${!var:-}" ]; then
         ENV_ARGS+=("$var=${!var}")
     fi

@@ -162,12 +162,11 @@ impl AsyncTool<DashMcpService> for MasternodeIdentityLoad {
         require_nonblank_network(&param.network)?;
         resolve::require_network(&ctx, Some(&param.network))?;
         let identity_type = masternode_input::parse_node_type(&param.node_type)?;
-        // S1: keys are already `Secret` from deserialization (H1 / S1 fix).
-        // We expose only to run the presence check; no plain-String copy lives
-        // beyond the lifetime of these temporaries.
+        // Keys are `Secret`-typed; presence check uses `is_blank()` so no
+        // expose_secret() call is needed here.
         masternode_input::require_at_least_one_signing_key(
-            param.owner_private_key.expose_secret(),
-            param.payout_private_key.expose_secret(),
+            &param.owner_private_key,
+            &param.payout_private_key,
         )?;
         // S2: validate the ProTxHash format BEFORE the SPV wait so a malformed
         // hash is rejected immediately rather than after a 10-min sync.
@@ -209,13 +208,18 @@ impl AsyncTool<DashMcpService> for MasternodeIdentityLoad {
         for key in qi.available_withdrawal_keys() {
             match key.identity_public_key.purpose() {
                 Purpose::OWNER => {
+                    // Guard: push the mode string only on first OWNER key seen so
+                    // identities with multiple OWNER keys don't yield duplicates.
+                    if !owner_key_loaded {
+                        available_withdrawal_keys.push(KeyMode::Owner.to_string());
+                    }
                     owner_key_loaded = true;
-                    // S3: use KeyMode Display instead of hard-coded literals.
-                    available_withdrawal_keys.push(KeyMode::Owner.to_string());
                 }
                 Purpose::TRANSFER => {
+                    if !payout_key_loaded {
+                        available_withdrawal_keys.push(KeyMode::Transfer.to_string());
+                    }
                     payout_key_loaded = true;
-                    available_withdrawal_keys.push(KeyMode::Transfer.to_string());
                 }
                 _ => {}
             }

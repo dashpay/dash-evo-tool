@@ -13,6 +13,7 @@ use std::fmt;
 
 use crate::mcp::error::McpToolError;
 use crate::model::qualified_identity::IdentityType;
+use crate::model::secret::Secret;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::prelude::Identifier;
 
@@ -86,10 +87,10 @@ pub fn parse_key_mode(key_mode: &str) -> Result<KeyMode, McpToolError> {
 /// Returns [`McpToolError::InvalidParam`] naming both keys and explaining the
 /// two withdraw modes when neither is supplied.
 pub fn require_at_least_one_signing_key(
-    owner_private_key: &str,
-    payout_private_key: &str,
+    owner_private_key: &Secret,
+    payout_private_key: &Secret,
 ) -> Result<(), McpToolError> {
-    if owner_private_key.trim().is_empty() && payout_private_key.trim().is_empty() {
+    if owner_private_key.is_blank() && payout_private_key.is_blank() {
         return Err(McpToolError::InvalidParam {
             message: "Provide at least one of the owner or payout private key. \
                       The owner key withdraws to the registered payout address; \
@@ -201,7 +202,7 @@ mod tests {
 
     #[test]
     fn both_keys_absent_rejected_naming_both() {
-        let err = require_at_least_one_signing_key("", "").unwrap_err();
+        let err = require_at_least_one_signing_key(&Secret::new(""), &Secret::new("")).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("owner"), "message names owner key: {msg}");
         assert!(msg.contains("payout"), "message names payout key: {msg}");
@@ -211,17 +212,23 @@ mod tests {
     fn voting_key_alone_does_not_satisfy() {
         // Voting key is not a parameter here — the rule sees only owner/payout.
         // Both empty must still be rejected even when a voting key is set elsewhere.
-        assert!(require_at_least_one_signing_key("   ", "   ").is_err());
+        assert!(
+            require_at_least_one_signing_key(&Secret::new("   "), &Secret::new("   ")).is_err()
+        );
     }
 
     #[test]
     fn owner_key_alone_satisfies() {
-        assert!(require_at_least_one_signing_key("OWNER_WIF", "").is_ok());
+        assert!(
+            require_at_least_one_signing_key(&Secret::new("OWNER_WIF"), &Secret::new("")).is_ok()
+        );
     }
 
     #[test]
     fn payout_key_alone_satisfies() {
-        assert!(require_at_least_one_signing_key("", "PAYOUT_WIF").is_ok());
+        assert!(
+            require_at_least_one_signing_key(&Secret::new(""), &Secret::new("PAYOUT_WIF")).is_ok()
+        );
     }
 
     // ── decode_identity_id — Base58/hex identifier parse (TC-MN-005/006/007) ──

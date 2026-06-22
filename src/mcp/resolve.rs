@@ -200,6 +200,7 @@ pub(crate) async fn ensure_spv_synced(ctx: &Arc<AppContext>) -> Result<(), McpTo
     let sender = crate::utils::egui_mpsc::SenderAsync::new(tx, egui::Context::default());
     if let Err(e) = ctx.ensure_wallet_backend_and_start_spv(sender).await {
         tracing::warn!(error = %e, "wallet backend wiring / SPV start failed before sync wait");
+        return Err(McpToolError::TaskFailed(e));
     }
 
     // S7: In standalone/headless MCP mode the GUI frame-loop never runs, so

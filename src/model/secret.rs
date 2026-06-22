@@ -124,6 +124,14 @@ impl Secret {
         self.inner.is_empty()
     }
 
+    /// Whether the secret's trimmed value is empty.
+    ///
+    /// Prefer this over `expose_secret().trim().is_empty()` for presence
+    /// checks — it avoids exposing the raw bytes unnecessarily.
+    pub fn is_blank(&self) -> bool {
+        self.inner.trim().is_empty()
+    }
+
     /// Returns a new `Secret` containing the trimmed content.
     /// Keeps the data within the secure wrapper unlike `text().trim()`
     /// which returns a borrowed `&str`.

@@ -838,11 +838,16 @@ pub(crate) fn sign_message_with_raw_key(
 /// refuses pre-existing modes looser than `0600`, so the secret-at-rest
 /// floor is enforced at open time — see `SecretStoreError::InsecurePermissions`).
 ///
-/// The passphrase is a fixed, non-secret per-process constant: at-rest
-/// protection relies on file permissions (enforced by the upstream backend).
-/// A user-supplied passphrase is a follow-up (T-SK-03 UX work). The design
-/// choice is documented in the ADR under
-/// `docs/ai-design/2026-05-18-platform-wallet-migration/`.
+/// The vault file itself is opened **keyless** ([`SecretStore::file_unprotected`]):
+/// at-rest protection of the file relies on owner-only permissions (enforced by
+/// the upstream backend). Per-secret confidentiality comes from Tier-2 *object*
+/// passwords — each protected secret is sealed under its own password via
+/// [`SecretStore::set_secret`] / read back with [`SecretStore::get_secret`], so a
+/// vault-file compromise still cannot reveal a protected secret. (Upstream's
+/// [`SecretStore::file`] now rejects a blank passphrase; `file_unprotected` is the
+/// explicit keyless door it documents for exactly this per-secret-password model.)
+/// The design choice is documented in the ADR under
+/// `docs/ai-design/2026-06-19-secret-storage-seam/`.
 pub fn open_secret_store(path: &std::path::Path) -> Result<SecretStore, SecretStoreError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|_| SecretStoreError::MalformedVault)?;
@@ -856,10 +861,7 @@ pub fn open_secret_store(path: &std::path::Path) -> Result<SecretStore, SecretSt
                 .map_err(|_| SecretStoreError::MalformedVault)?;
         }
     }
-    SecretStore::file(
-        path,
-        platform_wallet_storage::secrets::SecretString::new(""),
-    )
+    SecretStore::file_unprotected(path)
 }
 
 #[cfg(test)]

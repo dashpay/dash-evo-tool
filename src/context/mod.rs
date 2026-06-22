@@ -7,10 +7,6 @@ mod platform_address_db;
 mod settings_db;
 mod wallet_lifecycle;
 
-pub use wallet_lifecycle::{
-    INTERIM_AT_REST_DETAILS, single_key_migration_notice, wallet_migration_notice,
-};
-
 use crate::app_dir::core_cookie_path;
 use crate::backend_task::error::{TaskError, is_rpc_connection_error};
 use crate::config::{Config, NetworkConfig};

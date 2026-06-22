@@ -17,34 +17,11 @@ use std::sync::{Arc, RwLock};
 /// window so the common identity-load path serves entirely from cache.
 const AUTH_PUBKEY_WARM_KEY_COUNT: u32 = 12;
 
-/// Copy D — the shared, opt-in technical detail attached to the one-time
-/// at-rest disclosure notice (jargon-free per the persona spec). Surfaced via
-/// `with_details`, so it lives in the collapsible panel and the log.
-pub const INTERIM_AT_REST_DETAILS: &str = "This wallet's secrets are now stored in a shared protected location on this device, guarded by your computer's account and file permissions rather than by your wallet password. This is a temporary step while a stronger, built-in protection is being finished. Your keys never leave this device. To keep this wallet extra safe in the meantime, make sure your computer account is password-protected and not shared.";
-
-/// Copy A — the one-time disclosure shown when a password-protected HD wallet
-/// finishes its lazy migration. `wallet` is the wallet alias (or a default).
-/// Distinct text from [`single_key_migration_notice`] so `MessageBanner`'s
-/// text-dedup never collapses the two when both migrate in one session.
-pub fn wallet_migration_notice(wallet: &str) -> String {
-    let wallet = if wallet.is_empty() {
-        "Your wallet"
-    } else {
-        wallet
-    };
-    format!(
-        "\"{wallet}\" no longer needs its password to open. Your wallet stays on this device, protected by your computer's account. Full password protection will return in a future update."
-    )
-}
-
-/// Copy B — the one-time disclosure shown when a protected imported key
-/// finishes its lazy migration. `key` is the key's user-facing label. Distinct
-/// text from [`wallet_migration_notice`] (see that fn's note).
-pub fn single_key_migration_notice(key: &str) -> String {
-    format!(
-        "The imported key \"{key}\" no longer needs its passphrase to use. It stays on this device, protected by your computer's account. Full passphrase protection will return in a future update."
-    )
-}
+// The interim "protection removed" disclosure notices (HD wallet + imported
+// key) and their shared at-rest detail copy were retired with the Tier-2
+// adoption: lazy migration now RE-WRAPS protected secrets under the same
+// password (it never downgrades them to a password-free at-rest form), so there
+// is nothing to disclose.
 
 /// The upstream `dash-spv` `DiskStorageManager` chain-cache entries under the
 /// per-network SPV directory. Each is a subfolder except `peers.dat`. The
@@ -284,36 +261,14 @@ impl AppContext {
         address: &str,
         passphrase: &str,
     ) -> Result<(), TaskError> {
-        // The unlock gesture also lazy-migrates a protected entry to raw
-        // (verify_passphrase re-stores it). On migration, surface the one-time
-        // per-key disclosure (Copy B). The alias is read BEFORE the flag flip.
+        // The unlock gesture also lazy re-wraps a protected entry to Tier-2
+        // (verify_passphrase re-seals it under the same password). Protection is
+        // KEPT, so there is no downgrade to disclose — no notice.
         let backend = self.wallet_backend()?;
-        let label = backend
-            .single_key()
-            .list()
-            .into_iter()
-            .find(|k| k.address == address)
-            .and_then(|k| k.alias)
-            .unwrap_or_else(|| address.to_string());
-        let migrated = backend
+        backend
             .single_key()
             .verify_passphrase(address, passphrase)?;
-        if migrated {
-            self.show_single_key_migration_notice(&label);
-        }
         Ok(())
-    }
-
-    /// Show the one-time per-key disclosure (Copy B) after an imported key's
-    /// vault secret was lazy-migrated to raw. Distinct copy from the wallet
-    /// notice so `set_global`'s text-dedup does not collapse them.
-    fn show_single_key_migration_notice(&self, label: &str) {
-        use crate::ui::MessageType;
-        use crate::ui::components::message_banner::MessageBanner;
-
-        let message = single_key_migration_notice(label);
-        MessageBanner::set_global(self.egui_ctx(), &message, MessageType::Warning)
-            .with_details(INTERIM_AT_REST_DETAILS);
     }
 
     /// Start chain sync against an already-wired wallet backend.

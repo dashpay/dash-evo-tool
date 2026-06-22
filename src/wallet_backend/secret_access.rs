@@ -542,17 +542,26 @@ impl SecretAccess {
                 }
             }
             SecretScope::SingleKey { address } => {
-                // Raw 32-byte key present ⇒ migrated ⇒ no passphrase.
-                if self.single_key_raw(address)?.is_some() {
-                    return Ok(false);
+                let label = label_for_address(address);
+                match self.seam().scheme(&single_key_namespace_id(), &label)? {
+                    // Tier-2 protected (re-wrapped) ⇒ needs the object password.
+                    SecretScheme::Protected => Ok(true),
+                    SecretScheme::Absent => Err(TaskError::ImportedKeyNotFound),
+                    // Unprotected at the vault: either a migrated raw-32 key
+                    // (no passphrase) or a not-yet-migrated legacy `SingleKeyEntry`
+                    // blob whose `has_passphrase` flag decides.
+                    SecretScheme::Unprotected => {
+                        if self.single_key_raw(address)?.is_some() {
+                            return Ok(false);
+                        }
+                        if let Ok(index) = self.inner.single_key_index.read()
+                            && let Some(meta) = index.get(address)
+                        {
+                            return Ok(meta.has_passphrase);
+                        }
+                        Ok(self.load_single_key_entry(address)?.has_passphrase)
+                    }
                 }
-                if let Ok(index) = self.inner.single_key_index.read()
-                    && let Some(meta) = index.get(address)
-                {
-                    return Ok(meta.has_passphrase);
-                }
-                let entry = self.load_single_key_entry(address)?;
-                Ok(entry.has_passphrase)
             }
             // Identity keys are stored raw, unprotected — always prompt-free.
             SecretScope::IdentityKey { .. } => Ok(false),
@@ -613,21 +622,46 @@ impl SecretAccess {
                 }
             }
             SecretScope::SingleKey { address } => {
-                if let Some(raw) = self.single_key_raw(address)? {
-                    return Ok(Plaintext::SingleKey(raw));
+                let label = label_for_address(address);
+                match self.seam().scheme(&single_key_namespace_id(), &label)? {
+                    // Tier-2 — unseal with this key's own object password.
+                    SecretScheme::Protected => {
+                        let pw = passphrase.ok_or(TaskError::SingleKeyPassphraseIncorrect)?;
+                        let raw = self
+                            .seam()
+                            .get_secret_protected(&single_key_namespace_id(), &label, pw)?
+                            .ok_or(TaskError::ImportedKeyNotFound)?;
+                        let key: [u8; SINGLE_KEY_LEN] =
+                            raw.expose_secret().try_into().map_err(|_| {
+                                tracing::warn!(
+                                    target = "wallet_backend::secret_access",
+                                    blob_len = raw.expose_secret().len(),
+                                    "Tier-2 single key has wrong length",
+                                );
+                                TaskError::SecretDecryptFailed
+                            })?;
+                        Ok(Plaintext::SingleKey(Zeroizing::new(key)))
+                    }
+                    SecretScheme::Absent => Err(TaskError::ImportedKeyNotFound),
+                    SecretScheme::Unprotected => {
+                        // A migrated raw-32 key wins prompt-free.
+                        if let Some(raw) = self.single_key_raw(address)? {
+                            return Ok(Plaintext::SingleKey(raw));
+                        }
+                        // Legacy `SingleKeyEntry` (decode-only reader). A
+                        // protected entry was just decrypted with the user's
+                        // passphrase — LAZY re-wrap it to Tier-2 under the SAME
+                        // password (the upsert replaces the AES-GCM framing),
+                        // KEEPING protection. Idempotent.
+                        let entry = self.load_single_key_entry(address)?;
+                        let raw = entry.decrypt(passphrase.map(|p| p.expose_secret()))?;
+                        if entry.has_passphrase {
+                            let pw = passphrase.ok_or(TaskError::SingleKeyPassphraseIncorrect)?;
+                            self.migrate_single_key_to_tier2(address, &raw, pw);
+                        }
+                        Ok(Plaintext::SingleKey(raw))
+                    }
                 }
-                // Legacy fallback (migration reader). A protected entry was just
-                // decrypted with the user's passphrase — LAZY-migrate it to raw
-                // here (the upsert under the SAME label replaces the AES-GCM
-                // framing with the raw 32 bytes, so no separate delete is
-                // needed) and flip the in-memory index so the next resolve takes
-                // the prompt-free fast-path. Idempotent.
-                let entry = self.load_single_key_entry(address)?;
-                let raw = entry.decrypt(passphrase.map(|p| p.expose_secret()))?;
-                if entry.has_passphrase {
-                    self.migrate_single_key_to_raw(address, &raw);
-                }
-                Ok(Plaintext::SingleKey(raw))
             }
             SecretScope::IdentityKey {
                 identity_id,
@@ -657,30 +691,32 @@ impl SecretAccess {
         SecretSeam::new(&self.inner.secret_store)
     }
 
-    /// LAZY-migrate a just-decrypted protected single key to raw bytes under
-    /// the same label (the upsert replaces the AES-GCM framing) and flip the
-    /// in-memory index so the next resolve takes the prompt-free fast-path.
-    /// Best-effort: a vault-write failure is logged and the key keeps working
-    /// via the legacy reader. The persistent `ImportedKey.has_passphrase` flip
-    /// + the user notice are driven by the screen that owns the app k/v.
-    fn migrate_single_key_to_raw(&self, address: &str, raw: &[u8; SINGLE_KEY_LEN]) {
+    /// LAZY-re-wrap a just-decrypted protected single key to a Tier-2 envelope
+    /// under the same label and object `password` (the upsert replaces the
+    /// legacy AES-GCM framing), KEEPING protection. Best-effort: a vault-write
+    /// failure is logged and the key keeps working via the legacy reader.
+    ///
+    /// `has_passphrase` is deliberately NOT flipped — the secret stays protected,
+    /// so the in-memory index and the persisted flag remain accurate (the next
+    /// resolve still prompts for the object password).
+    fn migrate_single_key_to_tier2(
+        &self,
+        address: &str,
+        raw: &[u8; SINGLE_KEY_LEN],
+        password: &SecretString,
+    ) {
         let label = label_for_address(address);
-        if let Err(e) = self.seam().put_secret(
+        if let Err(e) = self.seam().put_secret_protected(
             &single_key_namespace_id(),
             &label,
             &platform_wallet_storage::secrets::SecretBytes::from_slice(raw),
+            password,
         ) {
             tracing::warn!(
                 target = "wallet_backend::secret_access",
                 error = ?e,
-                "Single-key lazy raw migration deferred (vault write failed)",
+                "Single-key lazy Tier-2 re-wrap deferred (vault write failed)",
             );
-            return;
-        }
-        if let Ok(mut index) = self.inner.single_key_index.write()
-            && let Some(meta) = index.get_mut(address)
-        {
-            meta.has_passphrase = false;
         }
     }
 
@@ -1300,13 +1336,12 @@ mod tests {
         assert_eq!(prompt.ask_count(), 2);
     }
 
-    /// TS-LAZY-03 — a protected single key lazy-migrates through the chokepoint:
-    /// the first `with_secret` decrypts with the passphrase AND re-stores the
-    /// raw 32 bytes; a second `with_secret` with a never-prompt host then
-    /// resolves the SAME bytes prompt-free, and the recovered bytes equal the
-    /// WIF plaintext.
+    /// TS-LAZY-03 (Tier-2) — a protected single key lazy RE-WRAPS through the
+    /// chokepoint, KEEPING protection: the first `with_secret` decrypts with the
+    /// passphrase AND re-stores a Tier-2 object-password envelope (not a raw
+    /// secret); a second `with_secret` therefore still requires the password.
     #[tokio::test]
-    async fn ts_lazy_03_protected_single_key_migrates_via_chokepoint() {
+    async fn ts_lazy_03_protected_single_key_rewraps_to_tier2_via_chokepoint() {
         use dash_sdk::dpp::dashcore::PrivateKey;
 
         let dir = tempfile::tempdir().unwrap();
@@ -1316,7 +1351,7 @@ mod tests {
             .try_into()
             .unwrap();
 
-        // First resolve: one passphrase, migrates to raw.
+        // First resolve: one passphrase, re-wraps to Tier-2.
         let prompt = Arc::new(TestPrompt::new([ScriptedAnswer::once(SENTINEL_PASSPHRASE)]));
         let sa = access(Arc::clone(&store), prompt.clone());
         let scope = SecretScope::SingleKey {
@@ -1329,24 +1364,36 @@ mod tests {
         assert_eq!(first, Some(expected));
         assert_eq!(prompt.ask_count(), 1);
 
-        // The vault now holds the raw 32 bytes (migration replaced the framing).
+        // The vault now holds a Tier-2 envelope (kept protected) — a password-
+        // free read fails, and the password read returns the 32 key bytes.
         let label = label_for_address(&address);
-        let stored = store
-            .get(&single_key_namespace_id(), &label)
+        assert_eq!(
+            SecretSeam::new(&store)
+                .scheme(&single_key_namespace_id(), &label)
+                .unwrap(),
+            SecretScheme::Protected,
+            "the single key must re-wrap to Tier-2, never downgrade to raw"
+        );
+        assert!(
+            store.get(&single_key_namespace_id(), &label).is_err(),
+            "a password-free read of a protected single key must fail"
+        );
+        let pw = SecretString::new(SENTINEL_PASSPHRASE);
+        let unsealed = store
+            .get_secret(&single_key_namespace_id(), &label, Some(&pw))
             .unwrap()
             .unwrap();
-        assert_eq!(stored.expose_secret().len(), 32, "migrated to raw");
-        assert_eq!(stored.expose_secret(), &expected[..]);
+        assert_eq!(unsealed.expose_secret(), &expected[..]);
 
-        // Second resolve under a fresh never-prompt chokepoint is prompt-free.
-        let never = Arc::new(TestPrompt::never());
-        let sa2 = access(Arc::clone(&store), never.clone());
+        // Second resolve still requires the object password (Tier-2, not raw).
+        let prompt2 = Arc::new(TestPrompt::new([ScriptedAnswer::once(SENTINEL_PASSPHRASE)]));
+        let sa2 = access(Arc::clone(&store), prompt2.clone());
         let second = sa2
             .with_secret(&scope, |pt| Ok(pt.expose_single_key().copied()))
             .await
-            .expect("prompt-free after migration");
+            .expect("resolve with the password");
         assert_eq!(second, Some(expected));
-        assert_eq!(never.ask_count(), 0, "migrated key resolves prompt-free");
+        assert_eq!(prompt2.ask_count(), 1, "protected single key prompts again");
     }
 
     // --- secret confinement -----------------------------------------------

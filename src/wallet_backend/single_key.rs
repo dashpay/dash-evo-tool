@@ -311,34 +311,6 @@ impl<'a> SingleKeyView<'a> {
         Ok(())
     }
 
-    /// Clear the `has_passphrase` flag on the imported key at `address` in both
-    /// the in-memory index and the persistent sidecar, after the key's vault
-    /// secret was lazy-migrated to raw (the passphrase no longer gates it).
-    /// Idempotent; a no-op success when the address is unknown.
-    pub fn clear_passphrase_flag(&self, address: &str) -> Result<(), TaskError> {
-        let updated = {
-            let mut idx = self
-                .index
-                .write()
-                .map_err(|_| TaskError::ImportedKeyNotFound)?;
-            let Some(entry) = idx.get_mut(address) else {
-                return Ok(());
-            };
-            entry.has_passphrase = false;
-            entry.passphrase_hint = None;
-            entry.clone()
-        };
-        if let Some(kv) = self.app_kv {
-            let key = meta_key_for(self.network, address);
-            kv.put(DetScope::Global, &key, &updated).map_err(|source| {
-                TaskError::SingleKeyMetaStorage {
-                    source: Box::new(source),
-                }
-            })?;
-        }
-        Ok(())
-    }
-
     /// Returns `true` when the imported key at `address` was stored
     /// with a per-key passphrase. The UI uses this to decide whether to
     /// prompt before signing.
@@ -387,11 +359,11 @@ impl<'a> SingleKeyView<'a> {
     ///
     /// Returns [`TaskError::SingleKeyPassphraseIncorrect`] on a wrong
     /// passphrase (the same generic signal as the restore path — no oracle).
-    /// For an unprotected entry the passphrase is irrelevant and this is an
-    /// `Ok(false)` so callers can treat "ready to use" uniformly. `Ok(true)`
-    /// means a protected entry was just lazy-migrated to raw (the caller may
-    /// surface the one-time disclosure notice).
-    pub fn verify_passphrase(&self, address: &str, passphrase: &str) -> Result<bool, TaskError> {
+    /// For an unprotected entry the passphrase is irrelevant. A protected entry
+    /// that just unlocked is lazily RE-WRAPPED to a Tier-2 object-password
+    /// envelope under the same password (protection KEPT; `has_passphrase` stays
+    /// true) — so there is no downgrade to surface and no notice to show.
+    pub fn verify_passphrase(&self, address: &str, passphrase: &str) -> Result<(), TaskError> {
         let label = label_for_address(address);
         let payload = self
             .secret_store
@@ -404,24 +376,24 @@ impl<'a> SingleKeyView<'a> {
         // Decrypt to verify, then drop immediately — the binding is wiped on
         // drop, so the plaintext never crosses back out of this method.
         let verified: Zeroizing<[u8; 32]> = entry.decrypt(Some(passphrase))?;
-        // LAZY migration: a protected entry just unlocked — re-store it raw
-        // under the same label (the upsert replaces the AES-GCM framing) and
-        // clear the persistent passphrase flag, so the next use is prompt-free.
-        // Returns whether a migration ran so the caller can surface the notice.
+        // LAZY re-wrap: a protected entry just unlocked — re-store it Tier-2
+        // (the upsert replaces the legacy AES-GCM framing with an Argon2id +
+        // XChaCha20 envelope sealed under the SAME password). Protection is
+        // KEPT, so `has_passphrase` stays true and the next use still prompts.
         if entry.has_passphrase {
+            let pw = platform_wallet_storage::secrets::SecretString::new(passphrase);
             self.secret_store
-                .set(
+                .set_secret(
                     &single_key_namespace_id(),
                     &label,
                     &SecretBytes::from_slice(&*verified),
+                    Some(&pw),
                 )
                 .map_err(|source| TaskError::SecretStore {
                     source: Box::new(source),
                 })?;
-            self.clear_passphrase_flag(address)?;
-            return Ok(true);
         }
-        Ok(false)
+        Ok(())
     }
 
     /// List every imported key tracked by this backend, sorted by

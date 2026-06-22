@@ -402,38 +402,24 @@ impl SecretAccess {
     /// not re-prompt. `passphrase` is `None` for unprotected wallets (the
     /// envelope decrypts verbatim). The plaintext is borrowed only to seed the
     /// cache and zeroizes on return.
+    ///
+    /// The lazy legacy→steady-state re-wrap happens inside [`Self::decrypt_jit`]:
+    /// a protected seed re-wraps to **Tier-2 under the same password** (protection
+    /// KEPT, never downgraded to a raw secret), an unprotected one to the raw
+    /// label. So there is nothing for the unlock callsite to "finalize" — the
+    /// wallet's `uses_password` stays accurate (`true` for a protected wallet).
     pub fn promote_hd_seed_with_passphrase(
         &self,
         seed_hash: &WalletSeedHash,
         passphrase: Option<&SecretString>,
         policy: RememberPolicy,
     ) -> Result<(), TaskError> {
-        self.promote_and_maybe_migrate_hd_seed(seed_hash, passphrase, policy)
-            .map(|_migrated| ())
-    }
-
-    /// As [`Self::promote_hd_seed_with_passphrase`]. Decrypts the seed (running
-    /// the lazy legacy→steady-state re-wrap inside [`Self::decrypt_jit`]) and
-    /// promotes it into the session cache.
-    ///
-    /// Always reports `Ok(false)`: a protected seed re-wraps to **Tier-2 under
-    /// the same password** (protection KEPT) — it is never downgraded to a raw,
-    /// password-free secret — so there is no `uses_password` flip for the unlock
-    /// callsite to finalize. The bool is retained for source compatibility with
-    /// that callsite (which then takes no migration-finalize action); the
-    /// crash-safe re-wrap + legacy delete live in `decrypt_jit`.
-    pub fn promote_and_maybe_migrate_hd_seed(
-        &self,
-        seed_hash: &WalletSeedHash,
-        passphrase: Option<&SecretString>,
-        policy: RememberPolicy,
-    ) -> Result<bool, TaskError> {
         let scope = SecretScope::HdSeed {
             seed_hash: *seed_hash,
         };
         let plaintext = self.decrypt_jit(&scope, passphrase)?;
         self.maybe_remember(&scope, &plaintext, policy);
-        Ok(false)
+        Ok(())
     }
 
     /// Forget the session-cached secret for `scope`, zeroizing it.

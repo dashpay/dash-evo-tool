@@ -868,11 +868,12 @@ where
     }
     let core_wallet_name_present = wallet_table_has_core_wallet_name(conn)?;
     let sql = if core_wallet_name_present {
-        "SELECT seed_hash, alias, is_main, core_wallet_name, master_ecdsa_bip44_account_0_epk \
+        "SELECT seed_hash, alias, is_main, core_wallet_name, master_ecdsa_bip44_account_0_epk, \
+         uses_password, password_hint \
          FROM wallet WHERE network = ?1"
     } else {
         "SELECT seed_hash, alias, is_main, NULL AS core_wallet_name, \
-         master_ecdsa_bip44_account_0_epk \
+         master_ecdsa_bip44_account_0_epk, uses_password, password_hint \
          FROM wallet WHERE network = ?1"
     };
 
@@ -890,7 +891,17 @@ where
             let is_main: Option<bool> = row.get(2)?;
             let core_wallet_name: Option<String> = row.get(3)?;
             let xpub_encoded: Vec<u8> = row.get(4)?;
-            Ok((seed_hash, alias, is_main, core_wallet_name, xpub_encoded))
+            let uses_password: bool = row.get(5)?;
+            let password_hint: Option<String> = row.get(6)?;
+            Ok((
+                seed_hash,
+                alias,
+                is_main,
+                core_wallet_name,
+                xpub_encoded,
+                uses_password,
+                password_hint,
+            ))
         })
         .map_err(|e| MigrationError::LegacyDbRead {
             table: "wallet",
@@ -899,7 +910,15 @@ where
 
     let mut outcome = WalletMetaMigrationOutcome::default();
     for row in rows {
-        let (seed_hash_bytes, alias, is_main, core_wallet_name, xpub_encoded) = match row {
+        let (
+            seed_hash_bytes,
+            alias,
+            is_main,
+            core_wallet_name,
+            xpub_encoded,
+            uses_password,
+            password_hint,
+        ) = match row {
             Ok(t) => t,
             Err(e) => {
                 tracing::warn!(
@@ -931,12 +950,13 @@ where
             is_main: is_main.unwrap_or(false),
             core_wallet_name,
             xpub_encoded,
-            // The legacy `wallet` table does not carry the password flag/hint
-            // (they lived in the seed envelope). The authoritative value is
-            // read from the envelope at the migrating unlock; default to "no
-            // extra prompt" here.
-            uses_password: false,
-            password_hint: None,
+            // Carry the legacy `wallet` row's password flag/hint straight into
+            // WalletMeta so the persisted metadata is accurate from cold-start:
+            // a protected wallet stays `uses_password = true` (Tier-2 keeps the
+            // password; nothing downgrades it), keeping the metadata and the
+            // at-rest scheme always in agreement.
+            uses_password,
+            password_hint,
         };
 
         match set(seed_hash, meta) {

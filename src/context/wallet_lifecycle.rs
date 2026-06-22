@@ -998,8 +998,8 @@ impl AppContext {
         wallet: &Arc<RwLock<Wallet>>,
         passphrase: Option<&str>,
     ) {
-        let (seed_hash, uses_password, wallet_alias) = match wallet.read() {
-            Ok(guard) => (guard.seed_hash(), guard.uses_password, guard.alias.clone()),
+        let (seed_hash, uses_password) = match wallet.read() {
+            Ok(guard) => (guard.seed_hash(), guard.uses_password),
             Err(_) => return,
         };
 
@@ -1018,21 +1018,18 @@ impl AppContext {
             return;
         };
         let secret = platform_wallet_storage::secrets::SecretString::new(passphrase);
-        match backend.secret_access().promote_and_maybe_migrate_hd_seed(
+        match backend.secret_access().promote_hd_seed_with_passphrase(
             &seed_hash,
             Some(&secret),
             crate::wallet_backend::RememberPolicy::UntilAppClose,
         ) {
-            Ok(migrated) => {
-                tracing::trace!(
-                    wallet = %hex::encode(seed_hash),
-                    migrated,
-                    "Verified-open seed promoted to the session cache on unlock"
-                );
-                if migrated {
-                    self.finish_lazy_seed_migration(&seed_hash, wallet_alias.as_deref());
-                }
-            }
+            // Tier-2 keep-protection: the seed re-wraps under the same password
+            // inside the chokepoint — no downgrade to finalize, `uses_password`
+            // stays accurate. The verified-open just promotes it to the cache.
+            Ok(()) => tracing::trace!(
+                wallet = %hex::encode(seed_hash),
+                "Verified-open seed promoted to the session cache on unlock"
+            ),
             Err(error) => tracing::debug!(
                 wallet = %hex::encode(seed_hash),
                 %error,
@@ -1058,35 +1055,6 @@ impl AppContext {
         // Platform-ready time, so a just-unlocked wallet is searched here. This
         // is the "searched after unlock" path the all-wallets sweep documents.
         self.queue_unlocked_wallet_identity_discovery(wallet);
-    }
-
-    /// Finish a LAZY HD-seed migration after the unlock decrypt + raw re-store:
-    /// flip `WalletMeta.uses_password` to `false` (the password no longer gates
-    /// the at-rest secret) and show the one-time per-wallet disclosure notice.
-    ///
-    /// The flip is what makes the notice fire exactly once: after it,
-    /// `handle_wallet_unlocked`'s `uses_password` gate returns early on every
-    /// future unlock, so this never re-runs for the wallet.
-    fn finish_lazy_seed_migration(&self, seed_hash: &WalletSeedHash, alias: Option<&str>) {
-        use crate::ui::MessageType;
-        use crate::ui::components::message_banner::MessageBanner;
-
-        let view = WalletMetaView::new(&self.app_kv);
-        if let Some(mut meta) = view.get(self.network, seed_hash) {
-            meta.uses_password = false;
-            if let Err(error) = view.set(self.network, seed_hash, &meta) {
-                tracing::warn!(
-                    wallet = %hex::encode(seed_hash),
-                    %error,
-                    "Could not clear the migrated wallet's password flag",
-                );
-            }
-        }
-
-        // Copy A — Warning so it does not auto-dismiss before read.
-        let message = wallet_migration_notice(alias.unwrap_or_default());
-        MessageBanner::set_global(self.egui_ctx(), &message, MessageType::Warning)
-            .with_details(INTERIM_AT_REST_DETAILS);
     }
 
     /// Spawn the unlock-triggered JIT bootstrap/registration for a wallet whose
@@ -3281,15 +3249,33 @@ mod tests {
             "exactly one wallet must be watched after the unlock reconciliation"
         );
 
-        // QA-004 — lazy-migration secret post-conditions. The unlock decrypted
-        // the legacy envelope and re-stored the seed raw, vault-first.
+        // QA-004 (Tier-2) — keep-protection migration post-conditions. The
+        // unlock decrypted the legacy AES-GCM envelope and RE-WRAPPED the seed
+        // as a Tier-2 object-password envelope (protection KEPT, not downgraded
+        // to a raw secret), then dropped the legacy envelope.
         let store = ctx.secret_store();
         let seed_view = WalletSeedView::new(&store);
-        let raw = seed_view
-            .get_raw(&seed_hash)
-            .expect("raw read")
-            .expect("the seed must be re-stored raw after the migrating unlock");
-        assert_eq!(&*raw, &seed, "raw seed must equal the true 64-byte seed");
+        // Steady state is Tier-2 protected.
+        assert_eq!(
+            seed_view.scheme(&seed_hash).expect("scheme"),
+            crate::wallet_backend::secret_seam::SecretScheme::Protected,
+            "the seed must be re-wrapped to Tier-2, never downgraded to raw"
+        );
+        // A raw (password-free) read of a protected seed must fail — never strip.
+        assert!(
+            seed_view.get_raw(&seed_hash).is_err(),
+            "a raw read of a Tier-2-protected seed must fail"
+        );
+        // It reads back only WITH the object password, byte-for-byte.
+        let pw = platform_wallet_storage::secrets::SecretString::new(passphrase);
+        let protected = seed_view
+            .get_protected(&seed_hash, &pw)
+            .expect("protected read")
+            .expect("the seed must be re-stored as Tier-2 after the migrating unlock");
+        assert_eq!(
+            &*protected, &seed,
+            "Tier-2 seed must equal the true 64-byte seed"
+        );
         assert!(
             seed_view
                 .legacy_envelope_get(&seed_hash)
@@ -3297,29 +3283,34 @@ mod tests {
                 .is_none(),
             "the legacy envelope must be deleted after migration"
         );
-        // The sidecar password flag is flipped, so the next unlock is prompt-free.
+        // The sidecar password flag STAYS true — protection was kept, so the
+        // metadata stays accurate (no downgrade flip).
         let meta = WalletMetaView::new(&ctx.app_kv())
             .get(Network::Testnet, &seed_hash)
             .expect("wallet meta present");
         assert!(
-            !meta.uses_password,
-            "WalletMeta.uses_password must flip false after migration"
+            meta.uses_password,
+            "WalletMeta.uses_password must stay true — Tier-2 keeps protection"
         );
 
-        // A SECOND secret resolve for this seed is prompt-free: a never-prompt
-        // chokepoint over the now-raw vault resolves the true seed with zero asks.
-        use crate::wallet_backend::secret_prompt::test_support::TestPrompt;
+        // A SECOND secret resolve still requires the object password (Tier-2 is
+        // not prompt-free): a scripted prompt that supplies it resolves the seed.
+        use crate::wallet_backend::secret_prompt::test_support::{ScriptedAnswer, TestPrompt};
         use crate::wallet_backend::{SecretAccess, SecretScope};
-        let never = std::sync::Arc::new(TestPrompt::never());
-        let sa = SecretAccess::new(ctx.secret_store(), never.clone(), Network::Testnet);
+        let prompt = std::sync::Arc::new(TestPrompt::new([ScriptedAnswer::once(passphrase)]));
+        let sa = SecretAccess::new(ctx.secret_store(), prompt.clone(), Network::Testnet);
         let resolved = sa
             .with_secret(&SecretScope::HdSeed { seed_hash }, |pt| {
                 Ok(pt.expose_hd_seed().copied())
             })
             .await
-            .expect("second resolve is prompt-free");
-        assert_eq!(resolved, Some(seed), "prompt-free resolve returns the seed");
-        assert_eq!(never.ask_count(), 0, "the second unlock never prompts");
+            .expect("second resolve with the password");
+        assert_eq!(resolved, Some(seed), "password resolve returns the seed");
+        assert_eq!(
+            prompt.ask_count(),
+            1,
+            "the protected seed prompts exactly once"
+        );
 
         backend.shutdown().await;
     }

@@ -5,14 +5,19 @@
 //! [`SecretStore`] vault. No DET-side serialization wraps the secret: a
 //! [`SecretBytes`] is written verbatim and read back verbatim.
 //!
-//! TODAY this is a no-encryption pass-through to the vault. This is the exact
-//! place per-secret encryption wires in later — every put/get body is tagged
-//! with the greppable string `TODO(per-secret-encryption):` so a reviewer-side
-//! grep is the wiring checklist.
+//! Per-secret encryption is wired here through the upstream Tier-2 envelope:
+//! the `*_protected` methods seal/unseal a secret under its OWN object password
+//! (Argon2id + XChaCha20-Poly1305) before it reaches the backend, while the
+//! plain `*_secret` methods stay Tier-1 (unprotected — vault-file perms only).
+//! [`SecretSeam::scheme`] reports which tier a stored secret uses without the
+//! password. This is the single coherent encrypt/decrypt path.
 //!
-//! The seam is **prompt-free**: it never builds a passphrase request. The only
-//! place a passphrase is needed is the retained legacy-envelope decrypt during
-//! migration, which lives in the legacy reader, not here.
+//! The seam is **prompt-free**: it never builds a passphrase request. It
+//! receives the password its caller ([`SecretAccess`]) obtained just-in-time
+//! and passes it straight to the upstream envelope. The only remaining legacy
+//! decrypt (for not-yet-migrated AES-GCM secrets) lives in the legacy reader.
+//!
+//! [`SecretAccess`]: crate::wallet_backend::secret_access::SecretAccess
 //!
 //! No-serialization invariant: secrets are passed as [`SecretBytes`], which
 //! deliberately has no `Serialize`/`Encode` (verified upstream). Any struct
@@ -43,14 +48,40 @@
 use std::sync::Arc;
 
 use platform_wallet_storage::secrets::{
-    SecretBytes, SecretStore, SecretStoreError, WalletId as SecretWalletId,
+    SecretBytes, SecretStore, SecretStoreError, SecretString, WalletId as SecretWalletId,
 };
 
 use crate::backend_task::error::TaskError;
 
+/// At-rest protection scheme of the value stored under a `(scope, label)`,
+/// detected without the object password via a `get(None)` probe.
+///
+/// This is the seam's single source of truth for "does this secret need a
+/// password?" — it reads the scheme from the upstream envelope, so a secret
+/// that was lazily re-wrapped to Tier-2 is reported `Protected` even though no
+/// DET-side metadata says so.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SecretScheme {
+    /// No value stored under `(scope, label)`.
+    Absent,
+    /// Stored unprotected (Tier-1 raw / unprotected envelope) — readable with
+    /// no password.
+    Unprotected,
+    /// Stored under a Tier-2 object password (Argon2id + XChaCha20-Poly1305) —
+    /// readable only via [`SecretSeam::get_secret_protected`].
+    Protected,
+}
+
 /// The single doorway through which raw wallet secret bytes enter and leave
 /// the vault. Cheap to construct — callers build one per operation over the
 /// shared [`SecretStore`] handle.
+///
+/// Two at-rest tiers, selected by the caller per secret (never per wallet):
+/// the `*_secret` methods are **Tier-1** (unprotected — vault-file perms only),
+/// the `*_secret_protected` methods are **Tier-2** (sealed under that secret's
+/// own object password before it reaches the backend). The seam is the one
+/// coherent encrypt/decrypt path; it stays **prompt-free** — it receives the
+/// password its caller (`SecretAccess`) obtained just-in-time, it never prompts.
 pub struct SecretSeam<'a> {
     secret_store: &'a Arc<SecretStore>,
 }
@@ -61,13 +92,12 @@ impl<'a> SecretSeam<'a> {
         Self { secret_store }
     }
 
-    /// Store `secret` raw under `(scope, label)`, overwriting any prior value.
-    /// Idempotent — the upstream `set` upserts.
+    /// Store `secret` **unprotected** (Tier-1) under `(scope, label)`,
+    /// overwriting any prior value. Idempotent — the upstream `set` upserts.
     ///
-    /// TODAY the [`SecretBytes`] is written verbatim with no DET-side
-    /// encryption; the upstream vault adds its own at-rest layer.
-    // TODO(per-secret-encryption): encrypt `secret` here before set() once the
-    // upstream per-secret key layer lands (see platform /todo).
+    /// Tier-1 is intentionally password-free: confidentiality rests on the
+    /// vault file's owner-only permissions. Use [`Self::put_secret_protected`]
+    /// for a secret that carries its own object password.
     pub fn put_secret(
         &self,
         scope: &SecretWalletId,
@@ -77,13 +107,29 @@ impl<'a> SecretSeam<'a> {
         self.secret_store.set(scope, label, secret).map_err(map_err)
     }
 
-    /// Load the raw bytes stored under `(scope, label)`, or `Ok(None)` if
-    /// nothing is stored there. No prompt — an already-migrated raw secret
-    /// needs none.
+    /// Store `secret` **protected** (Tier-2) under `(scope, label)`, sealed with
+    /// `password` (Argon2id + XChaCha20-Poly1305) before it reaches the backend,
+    /// overwriting any prior value. Idempotent upsert. The password belongs to
+    /// THIS secret only — never a shared/per-wallet password.
+    pub fn put_secret_protected(
+        &self,
+        scope: &SecretWalletId,
+        label: &str,
+        secret: &SecretBytes,
+        password: &SecretString,
+    ) -> Result<(), TaskError> {
+        self.secret_store
+            .set_secret(scope, label, secret, Some(password))
+            .map_err(map_err)
+    }
+
+    /// Load the **unprotected** bytes stored under `(scope, label)`, or
+    /// `Ok(None)` if nothing is stored there. No prompt.
     ///
-    /// TODAY the vault bytes are returned verbatim.
-    // TODO(per-secret-encryption): decrypt the loaded bytes here once the
-    // upstream per-secret key layer lands.
+    /// A Tier-2 (protected) value under this label is reported as
+    /// [`SecretStoreError::NeedsPassword`] by the backend (mapped through
+    /// [`TaskError::SecretSeam`]); callers that may face either tier should
+    /// branch on [`Self::scheme`] first.
     pub fn get_secret(
         &self,
         scope: &SecretWalletId,
@@ -92,9 +138,39 @@ impl<'a> SecretSeam<'a> {
         self.secret_store.get(scope, label).map_err(map_err)
     }
 
+    /// Load the **protected** (Tier-2) bytes stored under `(scope, label)`,
+    /// unsealing with `password`, or `Ok(None)` if nothing is stored there.
+    ///
+    /// A wrong password surfaces as [`SecretStoreError::WrongPassword`]; an
+    /// unprotected value read through this path surfaces as
+    /// [`SecretStoreError::ExpectedProtectedButUnsealed`] (a refused downgrade)
+    /// — both via [`TaskError::SecretSeam`].
+    pub fn get_secret_protected(
+        &self,
+        scope: &SecretWalletId,
+        label: &str,
+        password: &SecretString,
+    ) -> Result<Option<SecretBytes>, TaskError> {
+        self.secret_store
+            .get_secret(scope, label, Some(password))
+            .map_err(map_err)
+    }
+
+    /// Detect the at-rest [`SecretScheme`] under `(scope, label)` without the
+    /// object password, via a `get(None)` probe. `NeedsPassword` ⇒
+    /// [`SecretScheme::Protected`]; a present value ⇒
+    /// [`SecretScheme::Unprotected`]; absent ⇒ [`SecretScheme::Absent`].
+    pub fn scheme(&self, scope: &SecretWalletId, label: &str) -> Result<SecretScheme, TaskError> {
+        match self.secret_store.get(scope, label) {
+            Ok(Some(_)) => Ok(SecretScheme::Unprotected),
+            Ok(None) => Ok(SecretScheme::Absent),
+            Err(SecretStoreError::NeedsPassword) => Ok(SecretScheme::Protected),
+            Err(source) => Err(map_err(source)),
+        }
+    }
+
     /// Idempotent delete of `(scope, label)`. A missing entry is `Ok(())`.
-    // No `TODO(per-secret-encryption)` here — delete is metadata-free, there is
-    // no secret to (de)crypt.
+    /// Delete is metadata-free — there is no secret to (de)crypt.
     pub fn delete_secret(&self, scope: &SecretWalletId, label: &str) -> Result<(), TaskError> {
         self.secret_store.delete(scope, label).map_err(map_err)
     }

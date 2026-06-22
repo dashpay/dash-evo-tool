@@ -13,7 +13,13 @@ pub(super) fn format_service_error(e: rmcp::service::ServiceError) -> String {
 }
 
 /// Run as a standalone MCP stdio server (replaces the separate dash-evo-tool-mcp binary).
-pub(super) fn run_stdio_server() -> Result<(), Box<dyn std::error::Error>> {
+///
+/// Always terminates via [`std::process::exit`] rather than returning — this
+/// bypasses Tokio runtime teardown and prevents coordinator OS threads
+/// (`identity-sync`, `platform-address-sync`, `shielded-sync`) from panicking
+/// when they poll `tokio::time::sleep` against a shutting-down timer wheel.
+/// See `DashMcpService::shutdown_wallet_backend` for the full race analysis.
+pub(super) fn run_stdio_server() -> ! {
     use dash_evo_tool::logging::initialize_logger;
 
     initialize_logger();
@@ -25,11 +31,28 @@ pub(super) fn run_stdio_server() -> Result<(), Box<dyn std::error::Error>> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(4)
         .enable_all()
-        .build()?;
+        .build()
+        .expect("failed to build Tokio runtime");
 
-    runtime
-        .block_on(dash_evo_tool::mcp::start_stdio())
-        .map_err(|e| -> Box<dyn std::error::Error> { e })
+    // `start_stdio` drains the wallet backend's persister (quiesce) before
+    // returning.  We do NOT call `runtime.shutdown_timeout` afterwards —
+    // instead we hard-exit below so coordinator threads cannot race the
+    // timer-wheel teardown.
+    let result = runtime.block_on(dash_evo_tool::mcp::start_stdio());
+
+    let exit_code: i32 = match result {
+        Ok(()) => 0,
+        Err(ref e) => {
+            eprintln!("MCP server error: {e}");
+            1
+        }
+    };
+
+    use std::io::Write as _;
+    let _ = std::io::stdout().lock().flush();
+    let _ = std::io::stderr().lock().flush();
+    // TODO(graceful-teardown): replace with normal return once WalletBackend::quiesce() joins coordinator threads.
+    std::process::exit(exit_code);
 }
 
 pub(super) async fn connect_in_process() -> Result<McpClient, Box<dyn std::error::Error>> {

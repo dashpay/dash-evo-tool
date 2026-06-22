@@ -120,6 +120,7 @@ fn error_codes_are_distinct() {
             actual: "b".into(),
         },
         McpToolError::SpvSyncFailed,
+        McpToolError::StorageNotReady,
         McpToolError::Internal("x".into()),
     ];
 
@@ -131,12 +132,39 @@ fn error_codes_are_distinct() {
         })
         .collect();
 
-    // WalletNotFound, NetworkMismatch, SpvSyncFailed should have unique custom codes
-    let custom_codes: Vec<i32> = vec![codes[0], codes[2], codes[3]];
+    // WalletNotFound, NetworkMismatch, SpvSyncFailed, StorageNotReady should have unique custom codes
+    let custom_codes: Vec<i32> = vec![codes[0], codes[2], codes[3], codes[4]];
     let unique: std::collections::HashSet<i32> = custom_codes.iter().copied().collect();
     assert_eq!(
         unique.len(),
         custom_codes.len(),
         "Custom error codes must be distinct: {custom_codes:?}"
+    );
+}
+
+#[test]
+fn storage_not_ready_display_is_actionable() {
+    let err = McpToolError::StorageNotReady;
+    let msg = err.to_string();
+    assert!(
+        msg.contains("starting up") || msg.contains("wait") || msg.contains("retry"),
+        "StorageNotReady message should direct the user to wait/retry; got: {msg}"
+    );
+}
+
+#[test]
+fn storage_not_ready_has_dedicated_error_code() {
+    use rmcp::ErrorData as McpError;
+
+    let spv: McpError = McpToolError::SpvSyncFailed.into();
+    let storage: McpError = McpToolError::StorageNotReady.into();
+    assert_ne!(
+        spv.code.0, storage.code.0,
+        "StorageNotReady must have a different code from SpvSyncFailed"
+    );
+    // Custom range: must not collide with standard JSON-RPC codes
+    assert!(
+        storage.code.0 < -32000 || storage.code.0 == -32005,
+        "StorageNotReady code should be in the custom range"
     );
 }

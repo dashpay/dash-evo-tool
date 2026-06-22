@@ -1,12 +1,12 @@
 //! Backend E2E: headless masternode/evonode load + credit withdrawal.
 //!
 //! Mirrors `identity_withdraw.rs` but exercises the masternode path the new
-//! `masternode_identity_load` / `masternode_credits_withdraw` MCP tools
+//! `masternode_identity_load` / `masternode_withdraw` MCP tools
 //! dispatch: a real load by ProTxHash + keys, then a real withdraw in both key
 //! modes against testnet.
 //!
 //! TC-MN-050 and TC-MN-051 go through the full tool `invoke()` path
-//! (`MasternodeCreditsWithdraw::invoke`), exercising key-mode resolution, the
+//! (`MasternodeWithdraw::invoke`), exercising key-mode resolution, the
 //! owner/transfer address logic, the SPV gate, and the fee echo — not just
 //! the underlying BackendTask. All other tests drive the BackendTask directly
 //! because they test backend-level behaviour that the tool is transparent to.
@@ -28,7 +28,7 @@ use dash_evo_tool::backend_task::error::TaskError;
 use dash_evo_tool::backend_task::identity::{IdentityInputToLoad, IdentityTask};
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
 use dash_evo_tool::mcp::server::DashMcpService;
-use dash_evo_tool::mcp::tools::masternode::{MasternodeCreditsWithdraw, MasternodeWithdrawParams};
+use dash_evo_tool::mcp::tools::masternode::{MasternodeWithdraw, MasternodeWithdrawParams};
 use dash_evo_tool::model::qualified_identity::{IdentityType, QualifiedIdentity};
 use dash_evo_tool::model::secret::Secret;
 use dash_sdk::dpp::identity::Purpose;
@@ -281,7 +281,7 @@ async fn test_mn021_load_identity_not_found() {
 
 // ── TC-MN-050 — OWNER mode happy path via tool invoke: destination forced to payout
 //
-// Goes through the full `MasternodeCreditsWithdraw::invoke()` path, exercising:
+// Goes through the full `MasternodeWithdraw::invoke()` path, exercising:
 //   - key-mode resolution (owner key lookup via `available_withdrawal_keys`)
 //   - `resolve_withdrawal_plan` → `dispatch_address = None` (Platform forces payout)
 //   - echo_address = registered payout address (verified in the output)
@@ -335,7 +335,7 @@ async fn test_mn050_owner_withdraw_to_payout() {
         network: network_str,
     };
 
-    let output = MasternodeCreditsWithdraw::invoke(&service, params)
+    let output = MasternodeWithdraw::invoke(&service, params)
         .await
         .expect("owner-mode withdrawal via tool invoke should succeed");
 
@@ -357,7 +357,7 @@ async fn test_mn050_owner_withdraw_to_payout() {
 
 // ── TC-MN-051 — TRANSFER mode happy path via tool invoke: any Core address
 //
-// Goes through `MasternodeCreditsWithdraw::invoke()`, exercising:
+// Goes through `MasternodeWithdraw::invoke()`, exercising:
 //   - key-mode resolution (transfer/payout key via `available_withdrawal_keys`)
 //   - `resolve_withdrawal_plan` → `dispatch_address = Some(caller_addr)`
 //   - echo_address = the caller's address (verified in the output)
@@ -419,7 +419,7 @@ async fn test_mn051_transfer_withdraw_to_address() {
         network: network_str,
     };
 
-    let output = MasternodeCreditsWithdraw::invoke(&service, params)
+    let output = MasternodeWithdraw::invoke(&service, params)
         .await
         .expect("transfer-mode withdrawal via tool invoke should succeed");
 

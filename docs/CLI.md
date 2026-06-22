@@ -155,7 +155,7 @@ address — Platform (bech32m `dash1…`/`tdash1…`) addresses are rejected.
 ```bash
 # 1. Load an evonode identity (testnet). Provide at least one of the owner or
 #    payout key; voting key and alias are optional.
-det-cli identity-masternode-load \
+det-cli masternode-identity-load \
   pro-tx-hash=<64-hex protx> \
   node-type=evonode \
   owner-private-key=<WIF> \
@@ -166,14 +166,14 @@ det-cli identity-masternode-load \
 
 # 2a. Owner key — destination is forced to the registered payout address.
 #     Supplying to-address is rejected.
-det-cli identity-masternode-credits-withdraw \
+det-cli masternode-withdraw \
   identity-id=<base58> \
   key-mode=owner \
   amount-credits=100000 \
   network=testnet
 
 # 2b. Payout/transfer key — withdraw to any Core address.
-det-cli identity-masternode-credits-withdraw \
+det-cli masternode-withdraw \
   identity-id=<base58> \
   key-mode=transfer \
   to-address=y... \

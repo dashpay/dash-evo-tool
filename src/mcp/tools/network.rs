@@ -247,6 +247,15 @@ impl AsyncTool<DashMcpService> for NetworkSwitch {
                 spv_started,
                 ..
             } => {
+                // S5: drain the OUTGOING context's wallet backend before
+                // replacing it.  The old `ctx` (still in scope above) is the
+                // context that is being evicted; the new `context` is the one
+                // being installed.  Draining here — at the swap callsite —
+                // ensures every network switch leaves no orphaned WalletBackend,
+                // regardless of how many switches happen in a session.
+                if let Ok(backend) = ctx.wallet_backend() {
+                    backend.shutdown().await;
+                }
                 service.swap_context(context);
                 Ok(NetworkSwitchOutput {
                     active: network_display_name(target).to_owned(),

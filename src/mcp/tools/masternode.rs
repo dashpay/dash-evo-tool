@@ -4,7 +4,7 @@
 //!
 //! * [`MasternodeIdentityLoad`] (`masternode_identity_load`) — bind an
 //!   evonode/masternode identity by ProTxHash and private keys.
-//! * [`MasternodeCreditsWithdraw`] (`masternode_credits_withdraw`) — withdraw
+//! * [`MasternodeWithdraw`] (`masternode_withdraw`) — withdraw
 //!   Platform credits to a Core address using owner- or transfer-mode signing.
 
 use std::borrow::Cow;
@@ -238,13 +238,13 @@ impl AsyncTool<DashMcpService> for MasternodeIdentityLoad {
 }
 
 // ---------------------------------------------------------------------------
-// MasternodeCreditsWithdraw — masternode-aware Platform credits → Core
+// MasternodeWithdraw — masternode-aware Platform credits → Core
 // ---------------------------------------------------------------------------
 
 /// Withdraw a masternode or evonode identity's Platform credits to Core,
 /// honouring the two key modes (owner → payout-forced, transfer → any Core
 /// address).
-pub struct MasternodeCreditsWithdraw;
+pub struct MasternodeWithdraw;
 
 #[derive(Debug, Deserialize, schemars::JsonSchema, Default)]
 pub struct MasternodeWithdrawParams {
@@ -416,13 +416,13 @@ fn resolve_withdrawal_plan(
     }
 }
 
-impl ToolBase for MasternodeCreditsWithdraw {
+impl ToolBase for MasternodeWithdraw {
     type Parameter = MasternodeWithdrawParams;
     type Output = MasternodeWithdrawOutput;
     type Error = McpToolError;
 
     fn name() -> Cow<'static, str> {
-        "masternode_credits_withdraw".into()
+        "masternode_withdraw".into()
     }
 
     fn description() -> Option<Cow<'static, str>> {
@@ -446,7 +446,7 @@ impl ToolBase for MasternodeCreditsWithdraw {
     }
 }
 
-impl AsyncTool<DashMcpService> for MasternodeCreditsWithdraw {
+impl AsyncTool<DashMcpService> for MasternodeWithdraw {
     async fn invoke(
         service: &DashMcpService,
         param: MasternodeWithdrawParams,
@@ -737,8 +737,8 @@ mod tests {
     fn withdraw_tool_registered_with_expected_annotations_and_schema() {
         let router = DashMcpService::tool_router();
         let tool = router
-            .get("masternode_credits_withdraw")
-            .expect("masternode_credits_withdraw must be registered in tool_router");
+            .get("masternode_withdraw")
+            .expect("masternode_withdraw must be registered in tool_router");
 
         let ann = tool
             .annotations

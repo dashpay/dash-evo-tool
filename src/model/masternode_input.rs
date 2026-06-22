@@ -2,7 +2,7 @@
 //!
 //! These helpers are the single source of truth for parsing the string
 //! parameters of `masternode_identity_load` and
-//! `masternode_credits_withdraw`: the node type, the withdrawal key
+//! `masternode_withdraw`: the node type, the withdrawal key
 //! mode, the at-least-one-signing-key rule, and the ProTxHash decode. They hold
 //! no state — no `AppContext`, `Sdk`, DB, or `BackendTask` — so they are
 //! exhaustively unit-testable without a network. Stateful enforcement (key

@@ -12,7 +12,9 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
-use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt, ResultBannerExt};
+use crate::ui::components::{
+    MessageBanner, OptionOverlayExt, OverlayConfig, OverlayHandle, ResultBannerExt,
+};
 use crate::ui::helpers::{TransactionType, add_key_chooser_with_doc_type};
 use crate::ui::theme::{DashColors, ResponseExt};
 use crate::ui::{MessageType, ScreenLike};
@@ -61,7 +63,11 @@ pub struct RegisterDpnsNameScreen {
     completed_fee_result: Option<FeeResult>,
     // Source of navigation to this screen
     pub source: RegisterDpnsNameSource,
-    refresh_banner: Option<BannerHandle>,
+    /// Bucket A overlay-adoption pattern: a button-less full-window block raised
+    /// when the bounded registration is dispatched and torn down on every
+    /// terminal result. It replaces the old progress banner and, by blocking the
+    /// whole window, closes the double-submit hole the banner left open.
+    op_overlay: Option<OverlayHandle>,
 }
 
 impl RegisterDpnsNameScreen {
@@ -124,7 +130,7 @@ impl RegisterDpnsNameScreen {
             show_advanced_options: false,
             completed_fee_result: None,
             source,
-            refresh_banner: None,
+            op_overlay: None,
         }
     }
 
@@ -270,6 +276,37 @@ impl RegisterDpnsNameScreen {
         )))
     }
 
+    /// Dispatch the registration and raise the Bucket A blocking overlay.
+    ///
+    /// The overlay is raised only when a real task is produced (an identity and a
+    /// signing key are selected), so a no-op click never strands a block. The
+    /// full-window block is the in-progress feedback that replaces the old banner
+    /// and prevents a second submit while the first is in flight.
+    fn begin_registration(&mut self, ctx: &Context) -> AppAction {
+        let action = self.register_dpns_name_clicked();
+        if matches!(action, AppAction::BackendTask(_)) {
+            self.register_dpns_name_status = RegisterDpnsNameStatus::WaitingForResult;
+            self.raise_progress_overlay(ctx);
+        }
+        action
+    }
+
+    fn raise_progress_overlay(&mut self, ctx: &Context) {
+        self.op_overlay.raise(
+            ctx,
+            "Registering your username on the network.",
+            OverlayConfig::default(),
+        );
+    }
+
+    /// Test seam: run the exact production overlay-raise the Register button uses,
+    /// so the Bucket A adoption (raise + guaranteed teardown) is exercisable in
+    /// kittests without funding an identity. Mirrors `force_input_for_test`.
+    #[doc(hidden)]
+    pub fn raise_progress_overlay_for_test(&mut self, ctx: &Context) {
+        self.raise_progress_overlay(ctx);
+    }
+
     pub fn show_success(&mut self, ui: &mut Ui) -> AppAction {
         let action = crate::ui::helpers::show_success_screen_with_info(
             ui,
@@ -301,17 +338,20 @@ impl RegisterDpnsNameScreen {
 impl ScreenLike for RegisterDpnsNameScreen {
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
+        // SEC-001: tear down the blocking overlay on the error terminal path so a
+        // failed registration can never hard-lock the window.
         if matches!(message_type, MessageType::Error | MessageType::Warning) {
-            self.refresh_banner.take_and_clear();
+            self.op_overlay.take_and_clear();
             self.register_dpns_name_status = RegisterDpnsNameStatus::Error;
         }
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
+        // SEC-001: tear down the blocking overlay on the success terminal path.
         if let BackendTaskSuccessResult::RegisteredDpnsName(fee_result) =
             backend_task_success_result
         {
-            self.refresh_banner.take_and_clear();
+            self.op_overlay.take_and_clear();
             self.completed_fee_result = Some(fee_result);
             self.register_dpns_name_status = RegisterDpnsNameStatus::Complete;
         }
@@ -551,11 +591,7 @@ impl ScreenLike for RegisterDpnsNameScreen {
                 .disabled_tooltip(&hover_text)
                 .clicked()
             {
-                self.register_dpns_name_status = RegisterDpnsNameStatus::WaitingForResult;
-                let handle = MessageBanner::set_global(ui.ctx(), "Registering DPNS name...", MessageType::Info);
-                handle.with_elapsed();
-                self.refresh_banner = Some(handle);
-                inner_action = self.register_dpns_name_clicked();
+                inner_action = self.begin_registration(ui.ctx());
             }
 
             ui.add_space(10.0);

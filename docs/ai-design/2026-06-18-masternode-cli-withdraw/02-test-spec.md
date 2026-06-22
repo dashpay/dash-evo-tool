@@ -14,8 +14,8 @@ case is *passing* only when the test fails should the requirement be unmet.
 Two new MCP tools, both pure adapters over existing backend tasks (no backend or
 `TaskError` change):
 
-- **Tool A — `identity_masternode_load`** → dispatches `IdentityTask::LoadIdentity(IdentityInputToLoad)`.
-- **Tool B — `identity_masternode_credits_withdraw`** → dispatches `IdentityTask::WithdrawFromIdentity(qi, to_address, credits, Some(key_id))`.
+- **Tool A — `masternode_identity_load`** → dispatches `IdentityTask::LoadIdentity(IdentityInputToLoad)`.
+- **Tool B — `masternode_credits_withdraw`** → dispatches `IdentityTask::WithdrawFromIdentity(qi, to_address, credits, Some(key_id))`.
 
 ### 0.1 Test layers
 
@@ -72,7 +72,7 @@ absence — they are `#[ignore]` anyway).
 
 ---
 
-## 1. Tool A — `identity_masternode_load`
+## 1. Tool A — `masternode_identity_load`
 
 ### Unit layer (no network)
 
@@ -207,11 +207,11 @@ absence — they are `#[ignore]` anyway).
 #### TC-MN-015 — annotations & schema (discoverability)
 - **Layer:** tool-level
 - **Preconditions:** in-process MCP service.
-- **Steps:** `tools/list` and `tool-describe name=identity_masternode_load`.
+- **Steps:** `tools/list` and `tool-describe name=masternode_identity_load`.
 - **Expected:** Tool appears; annotations `read_only=false, destructive=false,
   idempotent=false, open_world=true`; schema is valid JSON, exposes `pro_tx_hash,
   node_type, owner_private_key, voting_private_key, payout_private_key, alias,
-  network`; CLI name hyphenates to `identity-masternode-load`.
+  network`; CLI name hyphenates to `masternode-identity-load`.
 - **Traces:** NFR-D1, NFR-D2, AC-X1, AC-X3.
 
 ### Backend-e2e (`#[ignore]`, network)
@@ -292,7 +292,7 @@ absence — they are `#[ignore]` anyway).
 
 ---
 
-## 2. Tool B — `identity_masternode_credits_withdraw`
+## 2. Tool B — `masternode_credits_withdraw`
 
 ### Unit layer (no network)
 
@@ -355,9 +355,9 @@ absence — they are `#[ignore]` anyway).
 #### TC-MN-040 — withdraw before load → InvalidParam pointing at the load tool
 - **Layer:** tool-level
 - **Preconditions:** empty local DB; active testnet.
-- **Steps:** `identity_masternode_credits_withdraw identity_id=<never-loaded base58>
+- **Steps:** `masternode_credits_withdraw identity_id=<never-loaded base58>
   key_mode=transfer to_address=<valid core> amount_credits=N network=testnet`.
-- **Expected:** `InvalidParam` whose message names `identity-masternode-load`
+- **Expected:** `InvalidParam` whose message names `masternode-identity-load`
   (FR-B5 reworded). Resolution fails at `resolve::qualified_identity` before dispatch.
 - **Traces:** FR-B5, AC-B8, Error-UX row "Withdraw before load".
 
@@ -380,11 +380,11 @@ absence — they are `#[ignore]` anyway).
 #### TC-MN-043 — annotations & schema
 - **Layer:** tool-level
 - **Preconditions:** in-process MCP service.
-- **Steps:** `tools/list`; `tool-describe name=identity_masternode_credits_withdraw`.
+- **Steps:** `tools/list`; `tool-describe name=masternode_credits_withdraw`.
 - **Expected:** Present; annotations `read_only=false, destructive=true,
   idempotent=false, open_world=true` (identical to `identity_credits_withdraw`);
   schema exposes `identity_id, key_mode, to_address, amount_credits, network`; CLI
-  name `identity-masternode-credits-withdraw`.
+  name `masternode-credits-withdraw`.
 - **Traces:** NFR-D2, AC-X1, AC-X3.
 
 #### TC-MN-044 — mode key not loaded → InvalidParam naming the missing key
@@ -394,7 +394,7 @@ absence — they are `#[ignore]` anyway).
   TC-MN-016 result).
 - **Steps:** `key_mode=owner amount_credits=N network=testnet` (no to_address).
 - **Expected:** `InvalidParam`
-  `The owner key needed for this withdrawal is not loaded. Re-run identity-masternode-load and include it.`
+  `The owner key needed for this withdrawal is not loaded. Re-run masternode-identity-load and include it.`
   Resolution scans `available_withdrawal_keys()` for an OWNER-purpose key, finds
   none, and rejects **before** dispatch (no funds move).
 - **Traces:** FR-B1, AC-B7, Error-UX row "key_mode key not loaded".
@@ -495,8 +495,8 @@ absence — they are `#[ignore]` anyway).
 #### TC-MN-060 — both tools discoverable & describable (smoke)
 - **Layer:** tool-level
 - **Preconditions:** in-process MCP service (no network).
-- **Steps:** `det-cli tools`; `det-cli tool-describe name=identity_masternode_load`;
-  `det-cli tool-describe name=identity_masternode_credits_withdraw`.
+- **Steps:** `det-cli tools`; `det-cli tool-describe name=masternode_identity_load`;
+  `det-cli tool-describe name=masternode_credits_withdraw`.
 - **Expected:** Both names listed; both `tool-describe` calls return clean,
   client-acceptable JSON schemas (no bare-`true` schemar quirks); registered one line
   each in `tool_router()`; zero tool logic in `src/bin/det_cli/`.

@@ -4,7 +4,7 @@
 //!
 //! * [`MasternodeIdentityLoad`] (`masternode_identity_load`) — bind an
 //!   evonode/masternode identity by ProTxHash and private keys.
-//! * [`MasternodeWithdraw`] (`masternode_withdraw`) — withdraw
+//! * [`MasternodeCreditsWithdraw`] (`masternode_credits_withdraw`) — withdraw
 //!   Platform credits to a Core address using owner- or transfer-mode signing.
 
 use std::borrow::Cow;
@@ -238,16 +238,16 @@ impl AsyncTool<DashMcpService> for MasternodeIdentityLoad {
 }
 
 // ---------------------------------------------------------------------------
-// MasternodeWithdraw — masternode-aware Platform credits → Core
+// MasternodeCreditsWithdraw — masternode-aware Platform credits → Core
 // ---------------------------------------------------------------------------
 
 /// Withdraw a masternode or evonode identity's Platform credits to Core,
 /// honouring the two key modes (owner → payout-forced, transfer → any Core
 /// address).
-pub struct MasternodeWithdraw;
+pub struct MasternodeCreditsWithdraw;
 
 #[derive(Debug, Deserialize, schemars::JsonSchema, Default)]
-pub struct MasternodeWithdrawParams {
+pub struct MasternodeCreditsWithdrawParams {
     /// Base58 identity ID of the loaded masternode/evonode identity.
     pub identity_id: String,
     /// Key mode: "owner" (destination forced to the payout address) or
@@ -265,7 +265,7 @@ pub struct MasternodeWithdrawParams {
 }
 
 #[derive(Serialize, schemars::JsonSchema)]
-pub struct MasternodeWithdrawOutput {
+pub struct MasternodeCreditsWithdrawOutput {
     pub identity_id: String,
     /// The key mode used: "owner" or "transfer" (canonical via [`KeyMode`]).
     pub key_mode: String,
@@ -416,13 +416,13 @@ fn resolve_withdrawal_plan(
     }
 }
 
-impl ToolBase for MasternodeWithdraw {
-    type Parameter = MasternodeWithdrawParams;
-    type Output = MasternodeWithdrawOutput;
+impl ToolBase for MasternodeCreditsWithdraw {
+    type Parameter = MasternodeCreditsWithdrawParams;
+    type Output = MasternodeCreditsWithdrawOutput;
     type Error = McpToolError;
 
     fn name() -> Cow<'static, str> {
-        "masternode_withdraw".into()
+        "masternode_credits_withdraw".into()
     }
 
     fn description() -> Option<Cow<'static, str>> {
@@ -446,11 +446,11 @@ impl ToolBase for MasternodeWithdraw {
     }
 }
 
-impl AsyncTool<DashMcpService> for MasternodeWithdraw {
+impl AsyncTool<DashMcpService> for MasternodeCreditsWithdraw {
     async fn invoke(
         service: &DashMcpService,
-        param: MasternodeWithdrawParams,
-    ) -> Result<MasternodeWithdrawOutput, McpToolError> {
+        param: MasternodeCreditsWithdrawParams,
+    ) -> Result<MasternodeCreditsWithdrawOutput, McpToolError> {
         let ctx = service
             .ctx()
             .await
@@ -506,7 +506,7 @@ impl AsyncTool<DashMcpService> for MasternodeWithdraw {
             )));
         };
 
-        Ok(MasternodeWithdrawOutput {
+        Ok(MasternodeCreditsWithdrawOutput {
             identity_id: param.identity_id,
             // S3: use KeyMode Display — single source of truth for "owner"/"transfer".
             key_mode: key_mode.to_string(),
@@ -737,8 +737,8 @@ mod tests {
     fn withdraw_tool_registered_with_expected_annotations_and_schema() {
         let router = DashMcpService::tool_router();
         let tool = router
-            .get("masternode_withdraw")
-            .expect("masternode_withdraw must be registered in tool_router");
+            .get("masternode_credits_withdraw")
+            .expect("masternode_credits_withdraw must be registered in tool_router");
 
         let ann = tool
             .annotations

@@ -2,7 +2,7 @@
 //!
 //! These helpers are the single source of truth for parsing the string
 //! parameters of `masternode_identity_load` and
-//! `masternode_withdraw`: the node type, the withdrawal key
+//! `masternode_credits_withdraw`: the node type, the withdrawal key
 //! mode, the at-least-one-signing-key rule, and the ProTxHash decode. They hold
 //! no state — no `AppContext`, `Sdk`, DB, or `BackendTask` — so they are
 //! exhaustively unit-testable without a network. Stateful enforcement (key
@@ -116,7 +116,7 @@ pub fn decode_identity_id(input: &str) -> Result<Identifier, McpToolError> {
             message: format!(
                 "Could not read the identity ID: {input}. \
                  Provide a 64-character hex ProTxHash or the Base58 identity ID \
-                 from identity-masternode-load."
+                 from masternode-identity-load."
             ),
         })
 }
@@ -271,6 +271,6 @@ mod tests {
         let err = decode_identity_id("not-a-hash").unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("64-character hex ProTxHash"), "got: {msg}");
-        assert!(msg.contains("identity-masternode-load"), "got: {msg}");
+        assert!(msg.contains("masternode-identity-load"), "got: {msg}");
     }
 }

@@ -30,12 +30,12 @@ stand in the way, both already solved in the GUI but absent from the tool layer:
 **Solution direction.** Two thin MCP tools, mirroring patterns already proven in
 the codebase:
 
-- **(A) `identity_masternode_load`** — load a masternode/evonode identity headlessly
+- **(A) `masternode_identity_load`** — load a masternode/evonode identity headlessly
   from a ProTxHash plus owner/voting/payout private keys. Mirrors the secret-input
   mechanism of `core_wallet_import` (`src/mcp/tools/wallet.rs`) and dispatches the
   existing `IdentityTask::LoadIdentity`.
 
-- **(B) `identity_masternode_credits_withdraw`** — a masternode-aware credit
+- **(B) `masternode_credits_withdraw`** — a masternode-aware credit
   withdrawal supporting **both** key modes, mirroring the GUI's
   `withdraw_screen.rs` rules and dispatching the existing
   `IdentityTask::WithdrawFromIdentity`.
@@ -99,7 +99,7 @@ its annotations and its `Debug` redaction matter for agent safety.
 
 ## 3. Functional Requirements
 
-### 3.1 Tool A — `identity_masternode_load`
+### 3.1 Tool A — `masternode_identity_load`
 
 **Purpose.** Load a masternode or evonode identity headlessly: fetch it by
 ProTxHash over DAPI, verify and bind the supplied private keys, and persist it
@@ -174,7 +174,7 @@ truth, and it returns typed `TaskError::KeyInputValidationFailed { key_name, det
   conservatively (re-load re-fetches network state and can change bound keys), but
   document that re-running is safe and updates the local record.
 
-### 3.2 Tool B — `identity_masternode_credits_withdraw`
+### 3.2 Tool B — `masternode_credits_withdraw`
 
 **Purpose.** Withdraw credits from a loaded masternode/evonode identity to Core,
 honoring the two key/destination modes.
@@ -253,7 +253,7 @@ funds went.
   address. (Open question OQ-3 confirms.)
 
 - **FR-B5 — Identity must be loaded first.** If `resolve::qualified_identity` fails,
-  return its existing message — now accurate, because the door (`identity_masternode_load`)
+  return its existing message — now accurate, because the door (`masternode_identity_load`)
   exists. Consider updating the message to name the new tool.
 
 ### 3.3 Network safety (both tools)
@@ -266,13 +266,13 @@ funds went.
 ### 3.4 Composition (A → B), validated
 
 ```
-identity_masternode_load (pro_tx_hash + keys + network)
+masternode_identity_load (pro_tx_hash + keys + network)
         │  fetch by ProTxHash over DAPI, verify keys, bind, persist
         ▼
    LoadedIdentity(qi)  → insert_local_qualified_identity (INSERT-OR-REPLACE)
         │
         ▼
-identity_masternode_credits_withdraw (identity_id + key_mode + ... )
+masternode_credits_withdraw (identity_id + key_mode + ... )
         │  resolve::qualified_identity finds the persisted record
         ▼
    WithdrawFromIdentity(qi, dest, credits, key_id) → CreditWithdrawal ST
@@ -335,12 +335,12 @@ GUI→withdraw flow does. No shared in-memory state, no ordering coupling beyond
 ### 4.4 DX / discoverability (per `MCP_TOOL_DEVELOPMENT.md`)
 
 - **NFR-D1** — Tool names follow `{domain}_{object}_{action}`:
-  `identity_masternode_load`, `identity_masternode_credits_withdraw`. CLI auto-hyphenates
-  (`identity-masternode-load`).
+  `masternode_identity_load`, `masternode_credits_withdraw`. CLI auto-hyphenates
+  (`masternode-identity-load`).
 - **NFR-D2** — Annotations:
-  - `identity_masternode_load`: `read_only(false)`, `destructive(false)`,
+  - `masternode_identity_load`: `read_only(false)`, `destructive(false)`,
     `idempotent(false)`, `open_world(true)`.
-  - `identity_masternode_credits_withdraw`: `read_only(false)`, `destructive(true)`,
+  - `masternode_credits_withdraw`: `read_only(false)`, `destructive(true)`,
     `idempotent(false)`, `open_world(true)` — identical to `identity_credits_withdraw`.
 - **NFR-D3** — Descriptions state the two modes (load: by ProTxHash + keys;
   withdraw: owner→payout-forced vs transfer→any-address) and that `network` is
@@ -363,7 +363,7 @@ diverge from the one tool operators already know.
 
 ```bash
 # 1. Load an evonode identity headlessly (testnet example)
-det-cli identity-masternode-load \
+det-cli masternode-identity-load \
   pro_tx_hash=<64-hex protx> \
   node_type=evonode \
   owner_private_key=<WIF> \
@@ -373,7 +373,7 @@ det-cli identity-masternode-load \
 #     "payout_address": "y...", ... }
 
 # 2a. Withdraw with the OWNER key — destination is forced to the payout address
-det-cli identity-masternode-credits-withdraw \
+det-cli masternode-credits-withdraw \
   identity_id=<base58> \
   key_mode=owner \
   amount_credits=100000 \
@@ -381,7 +381,7 @@ det-cli identity-masternode-credits-withdraw \
 # (no to_address; supplying one is rejected)
 
 # 2b. Withdraw with the payout/TRANSFER key — any Core address
-det-cli identity-masternode-credits-withdraw \
+det-cli masternode-credits-withdraw \
   identity_id=<base58> \
   key_mode=transfer \
   to_address=y... \
@@ -423,9 +423,9 @@ copyable handles, not jargon).
 | Identity not found on network | `TaskFailed(IdentityNotFound)` | (backend) "That identity was not found on this network. Check the ProTxHash and the network." |
 | Network missing/mismatch | `NetworkMismatch` / `InvalidParam` | "The 'network' parameter must match the active network: expected {expected}, active {actual}." |
 | SPV not synced | `SpvSyncFailed` | "Still syncing with the network — wait a moment and try again." |
-| Withdraw before load (FR-B5) | `InvalidParam` | "This identity is not loaded yet. Run identity-masternode-load with the ProTxHash and keys first." |
+| Withdraw before load (FR-B5) | `InvalidParam` | "This identity is not loaded yet. Run masternode-identity-load with the ProTxHash and keys first." |
 | `key_mode` unknown | `InvalidParam` | "The 'key_mode' must be \"owner\" or \"transfer\"." |
-| `key_mode` key not loaded | `InvalidParam` | "The {owner|payout} key needed for this withdrawal is not loaded. Re-run identity-masternode-load and include it." |
+| `key_mode` key not loaded | `InvalidParam` | "The {owner|payout} key needed for this withdrawal is not loaded. Re-run masternode-identity-load and include it." |
 | OWNER mode + `to_address` supplied (FR-B2) | `InvalidParam` | "An owner-key withdrawal always goes to the registered payout address. Remove 'to_address', or use key_mode=transfer to choose an address." |
 | OWNER mode + no payout address | `InvalidParam` | "This identity has no registered payout address, so an owner-key withdrawal has no destination. Use key_mode=transfer with a Core address." |
 | TRANSFER mode + missing/invalid/Platform address | `InvalidParam` | (mirror existing) "Enter a valid Core address — Platform addresses cannot receive withdrawals." |
@@ -438,7 +438,7 @@ copyable handles, not jargon).
 
 ## 7. Acceptance Criteria
 
-### Tool A — `identity_masternode_load`
+### Tool A — `masternode_identity_load`
 
 - **AC-A1** Given a valid testnet evonode ProTxHash and a valid payout WIF, when I
   call the tool with `node_type=evonode network=testnet`, then it returns
@@ -456,12 +456,12 @@ copyable handles, not jargon).
 - **AC-A6** Given the active network is mainnet and `network=testnet`, then
   `NetworkMismatch` before any network call.
 - **AC-A7** After a successful load, when I call
-  `identity_masternode_credits_withdraw` for the same `identity_id`, then the
+  `masternode_credits_withdraw` for the same `identity_id`, then the
   identity resolves (no "not loaded" error) — proving A→B composition.
 - **AC-A8** The params struct's `Debug` output renders every private key as
   `<redacted>` (unit-testable without network).
 
-### Tool B — `identity_masternode_credits_withdraw`
+### Tool B — `masternode_credits_withdraw`
 
 - **AC-B1 (OWNER, happy path)** Given a loaded MN identity with an owner key and a
   registered payout address, when I withdraw `key_mode=owner amount_credits=N` with
@@ -481,7 +481,7 @@ copyable handles, not jargon).
 - **AC-B7 (mode key not loaded)** `key_mode=owner` on an identity loaded with only a
   payout key → `InvalidParam` naming the missing owner key.
 - **AC-B8 (not loaded)** Withdraw for an `identity_id` never loaded → `InvalidParam`
-  pointing at `identity-masternode-load`.
+  pointing at `masternode-identity-load`.
 - **AC-B9 (network)** Network mismatch → `NetworkMismatch`; `amount_credits=0`
   → `InvalidParam`.
 - **AC-B10 (output numbers)** On success, output includes `estimated_fee` and
@@ -494,7 +494,7 @@ copyable handles, not jargon).
 - **AC-X2** No tool logic lives in `src/bin/det_cli/`; both tools live in
   `src/mcp/tools/identity.rs` and register one line each in `tool_router()`.
 - **AC-X3** Smoke: `det-cli tools` lists both; `det-cli tool-describe
-  name=identity_masternode_load` returns its schema (no network needed).
+  name=masternode_identity_load` returns its schema (no network needed).
 
 ---
 
@@ -557,7 +557,7 @@ headlessly via det-cli, in both key modes, so that I can automate payouts.
 
 ### Open product questions
 
-- **OQ-1 — Should `identity_masternode_load` accept ProTxHash in hex only, or also
+- **OQ-1 — Should `masternode_identity_load` accept ProTxHash in hex only, or also
   Base58?** The backend `load_identity` tries Base58 then Hex. ProTxHash is
   canonically hex (it is a transaction hash). Recommend: **accept both**, document
   hex as the expected form. Low risk; the backend already handles it.

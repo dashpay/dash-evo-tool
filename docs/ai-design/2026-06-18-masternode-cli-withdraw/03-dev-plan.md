@@ -8,8 +8,8 @@
 
 Two new MCP tools exposing masternode/evonode credit withdrawal headlessly via det-cli:
 
-- **`identity_masternode_load`** — load a masternode/evonode identity (ProTxHash + owner/voting/payout private keys) into the local store.
-- **`identity_masternode_credits_withdraw`** — withdraw the node identity's Platform credits, with explicit owner/payout-key selection and the matching destination rules.
+- **`masternode_identity_load`** — load a masternode/evonode identity (ProTxHash + owner/voting/payout private keys) into the local store.
+- **`masternode_credits_withdraw`** — withdraw the node identity's Platform credits, with explicit owner/payout-key selection and the matching destination rules.
 
 ## Locked decisions (do not re-litigate)
 
@@ -17,8 +17,8 @@ Two new MCP tools exposing masternode/evonode credit withdrawal headlessly via d
 - **Tool logic in `src/mcp/tools/identity.rs`**; stateless parsing in a new `model/` validator. Register both in `src/mcp/server.rs::tool_router()`.
 - **Secrets** mirror `core_wallet_import`: plain `String` params, wrapped in `Secret::new` inside `invoke`; **hand-written redacting `Debug`** on the param struct. Passed as inline `key=value` argv (env-var hardening deferred — see Follow-ups).
 - **SPV gate:** both tools call `resolve::ensure_spv_synced` (they do proof-verified Platform reads). Resolves OQ-4 = option (b).
-- **`identity_masternode_load`:** `node_type` ∈ {masternode, evonode} (never User); `pro_tx_hash` accepts hex **or** Base58; at least one of owner/payout key **required**; voting key + alias optional; `derive_keys_from_wallets:false`.
-- **`identity_masternode_credits_withdraw`:** explicit `key_mode` ∈ {owner, transfer}. **OWNER** → `to_address` forced `None`, any supplied address rejected (`InvalidParam`); Platform routes to the registered payout address. **TRANSFER** → `to_address` required, any valid Core address, Platform addresses rejected. KeyID resolved from `available_withdrawal_keys()` by purpose. Destination is *also* enforced server-side by Platform consensus; the client check is a friendly pre-flight.
+- **`masternode_identity_load`:** `node_type` ∈ {masternode, evonode} (never User); `pro_tx_hash` accepts hex **or** Base58; at least one of owner/payout key **required**; voting key + alias optional; `derive_keys_from_wallets:false`.
+- **`masternode_credits_withdraw`:** explicit `key_mode` ∈ {owner, transfer}. **OWNER** → `to_address` forced `None`, any supplied address rejected (`InvalidParam`); Platform routes to the registered payout address. **TRANSFER** → `to_address` required, any valid Core address, Platform addresses rejected. KeyID resolved from `available_withdrawal_keys()` by purpose. Destination is *also* enforced server-side by Platform consensus; the client check is a friendly pre-flight.
 
 ## Critical pitfall (must enforce)
 
@@ -29,10 +29,10 @@ Two new MCP tools exposing masternode/evonode credit withdrawal headlessly via d
 | # | Task | Files | Test cases | Layer |
 |---|------|-------|------------|-------|
 | 1 | **`model/` validators** — `parse_node_type` (trim + case-insensitive; reject User/garbage — pins G-4), `parse_key_mode`, `require_at_least_one_signing_key`, identity-id decode (hex+Base58); reuse `is_platform_address_string`. | `src/model/masternode_input.rs` (new), `src/model/mod.rs` | TC-MN-001,002,003,004,008,009,030,031 | unit |
-| 2 | **Tool A param struct + redacting `Debug`** — `IdentityMasternodeLoadParams`/`Output`; hand-written `Debug` redacts the 3 key fields (mirror `wallet.rs:397`). | `src/mcp/tools/identity.rs` | TC-MN-005,006,007,010,011 | unit |
+| 2 | **Tool A param struct + redacting `Debug`** — `MasternodeIdentityLoadParams`/`Output`; hand-written `Debug` redacts the 3 key fields (mirror `wallet.rs:397`). | `src/mcp/tools/identity.rs` | TC-MN-005,006,007,010,011 | unit |
 | 3 | **Tool A `invoke`** — order: `require_network` → `parse_node_type` → key-presence → `ensure_spv_synced` → wrap keys in `Secret::new` → build `IdentityInputToLoad{derive_keys_from_wallets:false, keys_input:vec![]}` → dispatch `LoadIdentity` → map output (loaded keys + `available_withdrawal_keys` + `payout_address`). Register in `tool_router()`. | `src/mcp/tools/identity.rs`, `src/mcp/server.rs` | TC-MN-012,013,014,015 | tool-level |
-| 4 | **Tool B param struct + pre-flight units** — `IdentityMasternodeWithdrawParams`/`Output`; pure checks (key_mode, amount=0, OWNER+address contradiction, missing/invalid address, Platform-address via `is_platform_address_string`). | `src/mcp/tools/identity.rs` | TC-MN-030,031,032,033,034,035 | unit |
-| 5 | **Tool B `invoke`** — order: `require_network` → `validate_credits` → `parse_key_mode` → **OWNER+to_address contradiction first** → `qualified_identity` (error message names `identity-masternode-load` as the fix) → KeyID from `available_withdrawal_keys()` by purpose → destination rules (owner→payout/`None`; transfer→`is_platform_address_string` + `NetworkUnchecked` + cross-network reject) → `ensure_spv_synced` → dispatch `WithdrawFromIdentity(qi, dest, credits, Some(key_id))`. Register in `tool_router()`. | `src/mcp/tools/identity.rs`, `src/mcp/server.rs` | TC-MN-040,041,042,043,044,045,046,047 | tool-level |
+| 4 | **Tool B param struct + pre-flight units** — `MasternodeCreditsWithdrawParams`/`Output`; pure checks (key_mode, amount=0, OWNER+address contradiction, missing/invalid address, Platform-address via `is_platform_address_string`). | `src/mcp/tools/identity.rs` | TC-MN-030,031,032,033,034,035 | unit |
+| 5 | **Tool B `invoke`** — order: `require_network` → `validate_credits` → `parse_key_mode` → **OWNER+to_address contradiction first** → `qualified_identity` (error message names `masternode-identity-load` as the fix) → KeyID from `available_withdrawal_keys()` by purpose → destination rules (owner→payout/`None`; transfer→`is_platform_address_string` + `NetworkUnchecked` + cross-network reject) → `ensure_spv_synced` → dispatch `WithdrawFromIdentity(qi, dest, credits, Some(key_id))`. Register in `tool_router()`. | `src/mcp/tools/identity.rs`, `src/mcp/server.rs` | TC-MN-040,041,042,043,044,045,046,047 | tool-level |
 | 6 | **Cross-cutting discoverability + error-redaction** — `tools/list` / `tool-describe` clean schemas, CLI hyphenation, `TaskFailed` `data`-payload non-leak of keys. | existing MCP tool test module | TC-MN-015,043,060,061 | tool-level |
 | 7 | **Backend-e2e suite** (`#[ignore]`, `E2E_MN_*`) — mirror `identity_withdraw.rs`; every fund-moving assertion carries a variant + ≥1 number. | `tests/backend-e2e/identity_masternode_withdraw.rs` (new), `tests/backend-e2e/main.rs`, `README.md` (optional) | TC-MN-016..023, 050..054, 061 | backend-e2e |
 | 8 | **Docs & user-stories** — `docs/MCP.md` (+ NFR-S4 / G-6 note), `docs/CLI.md`, `docs/user-stories.md` (add MCP-003 headless MN load, MCP-004 headless MN withdraw). | `docs/MCP.md`, `docs/CLI.md`, `docs/user-stories.md` | — | docs |

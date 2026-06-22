@@ -166,14 +166,14 @@ det-cli masternode-identity-load \
 
 # 2a. Owner key — destination is forced to the registered payout address.
 #     Supplying to-address is rejected.
-det-cli masternode-withdraw \
+det-cli masternode-credits-withdraw \
   identity-id=<base58> \
   key-mode=owner \
   amount-credits=100000 \
   network=testnet
 
 # 2b. Payout/transfer key — withdraw to any Core address.
-det-cli masternode-withdraw \
+det-cli masternode-credits-withdraw \
   identity-id=<base58> \
   key-mode=transfer \
   to-address=y... \

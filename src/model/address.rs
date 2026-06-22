@@ -11,11 +11,17 @@ use dash_sdk::platform::Identifier;
 /// This checks whether the string starts with a known Platform HRP followed by the
 /// bech32 separator '1'. It does NOT fully validate the address — use
 /// `PlatformAddress::from_bech32m_string()` for that.
+///
+/// Uses byte-level comparison throughout (`as_bytes()`) to avoid the panic that
+/// `s[..hrp.len()]` would produce for non-ASCII (multi-byte UTF-8) input whose
+/// HRP-length byte offset falls inside a multi-byte codepoint.
 pub fn is_platform_address_string(s: &str) -> bool {
+    let bytes = s.as_bytes();
     for hrp in [PLATFORM_HRP_MAINNET, PLATFORM_HRP_TESTNET] {
-        if s.len() > hrp.len()
-            && s[..hrp.len()].eq_ignore_ascii_case(hrp)
-            && s.as_bytes()[hrp.len()] == b'1'
+        let hrp_bytes = hrp.as_bytes();
+        if bytes.len() > hrp_bytes.len()
+            && bytes[..hrp_bytes.len()].eq_ignore_ascii_case(hrp_bytes)
+            && bytes[hrp_bytes.len()] == b'1'
         {
             return true;
         }
@@ -422,5 +428,24 @@ mod tests {
         assert!(!is_platform_address_string(
             "yQ9JNCT4S9zVHaKYbr1FUY4YkUMYxSzWAj"
         ));
+    }
+
+    // TC-MN-B1 — non-ASCII input must never panic.
+    //
+    // The old implementation did `s[..hrp.len()]` which is byte-slicing a
+    // `&str`; that panics when byte offset `hrp.len()` (4 for "dash", 5 for
+    // "tdash") falls inside a multi-byte UTF-8 codepoint.  The fix switches
+    // to `as_bytes()` throughout.  This regression test must never panic.
+    #[test]
+    fn platform_address_string_non_ascii_does_not_panic() {
+        // "日本ABC" — each CJK char is 3 UTF-8 bytes; total 9 bytes.
+        // The old code: s.len()=9 > hrp.len()=4, then s[..4] panics because
+        // byte 4 is inside "本".
+        assert!(!is_platform_address_string("日本ABC"));
+        // Also test strings that are shorter than the HRP in chars but longer
+        // in bytes (no panic even without the length guard being satisfied).
+        assert!(!is_platform_address_string("日"));
+        // Non-ASCII that starts "like" a HRP (ASCII bytes matching then UTF-8)
+        assert!(!is_platform_address_string("dash\u{00E9}test"));
     }
 }

@@ -1,11 +1,15 @@
 //! Backend E2E: headless masternode/evonode load + credit withdrawal.
 //!
 //! Mirrors `identity_withdraw.rs` but exercises the masternode path the new
-//! `identity_masternode_load` / `identity_masternode_credits_withdraw` MCP tools
+//! `masternode_identity_load` / `masternode_credits_withdraw` MCP tools
 //! dispatch: a real load by ProTxHash + keys, then a real withdraw in both key
-//! modes against testnet. The tools are thin adapters, so these tests drive the
-//! same `IdentityTask::LoadIdentity` / `IdentityTask::WithdrawFromIdentity` the
-//! tools build.
+//! modes against testnet.
+//!
+//! TC-MN-050 and TC-MN-051 go through the full tool `invoke()` path
+//! (`MasternodeCreditsWithdraw::invoke`), exercising key-mode resolution, the
+//! owner/transfer address logic, the SPV gate, and the fee echo — not just
+//! the underlying BackendTask. All other tests drive the BackendTask directly
+//! because they test backend-level behaviour that the tool is transparent to.
 //!
 //! All cases are `#[ignore]` and gated on `E2E_MN_*` env vars; each skips with a
 //! log line (never fails) when its inputs are unset, since a real testnet
@@ -23,12 +27,17 @@ use crate::framework::task_runner::run_task;
 use dash_evo_tool::backend_task::error::TaskError;
 use dash_evo_tool::backend_task::identity::{IdentityInputToLoad, IdentityTask};
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
+use dash_evo_tool::mcp::server::DashMcpService;
+use dash_evo_tool::mcp::tools::masternode::{MasternodeCreditsWithdraw, MasternodeWithdrawParams};
 use dash_evo_tool::model::qualified_identity::{IdentityType, QualifiedIdentity};
 use dash_evo_tool::model::secret::Secret;
 use dash_sdk::dpp::identity::Purpose;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+use rmcp::handler::server::router::tool::AsyncTool;
 use std::str::FromStr;
+use std::sync::Arc;
 
 /// Read an env var, returning `None` and logging a skip line when unset.
 fn opt_env(name: &str) -> Option<String> {
@@ -38,6 +47,17 @@ fn opt_env(name: &str) -> Option<String> {
             tracing::info!("Skipping masternode e2e: {name} is not set");
             None
         }
+    }
+}
+
+/// Convert a Dash Network enum to the string the MCP require_network check uses.
+fn network_name(network: dash_sdk::dpp::dashcore::Network) -> &'static str {
+    use dash_sdk::dpp::dashcore::Network;
+    match network {
+        Network::Mainnet => "mainnet",
+        Network::Testnet => "testnet",
+        Network::Devnet => "devnet",
+        Network::Regtest => "local",
     }
 }
 
@@ -259,7 +279,13 @@ async fn test_mn021_load_identity_not_found() {
     );
 }
 
-// ── TC-MN-050 — OWNER mode happy path: destination forced to payout, to_address=None
+// ── TC-MN-050 — OWNER mode happy path via tool invoke: destination forced to payout
+//
+// Goes through the full `MasternodeCreditsWithdraw::invoke()` path, exercising:
+//   - key-mode resolution (owner key lookup via `available_withdrawal_keys`)
+//   - `resolve_withdrawal_plan` → `dispatch_address = None` (Platform forces payout)
+//   - echo_address = registered payout address (verified in the output)
+//   - SPV gate (already satisfied by the preceding load)
 
 #[ignore]
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
@@ -272,7 +298,7 @@ async fn test_mn050_owner_withdraw_to_payout() {
     let ctx = ctx().await;
 
     let load = load_task(
-        pro_tx_hash,
+        pro_tx_hash.clone(),
         node_type_from_env(),
         Some(owner_wif),
         None,
@@ -285,7 +311,6 @@ async fn test_mn050_owner_withdraw_to_payout() {
         panic!("Expected LoadedIdentity");
     };
 
-    let owner_key_id = withdrawal_key_id(&qi, Purpose::OWNER).expect("owner key loaded");
     let payout_address = qi
         .masternode_payout_address(ctx.app_context.network())
         .expect("payout address present");
@@ -293,27 +318,49 @@ async fn test_mn050_owner_withdraw_to_payout() {
     assert!(balance > 0, "identity must have withdrawable credits");
     let amount = (balance / 10).max(1);
 
-    // OWNER mode dispatches to_address = None; Platform forces the payout addr.
-    let task = BackendTask::IdentityTask(IdentityTask::WithdrawFromIdentity(
-        qi,
-        None,
-        amount,
-        Some(owner_key_id),
-    ));
-    let result = run_task(&ctx.app_context, task)
-        .await
-        .expect("owner-mode withdrawal should succeed");
+    // Obtain the persisted identity ID (Base58) from the loaded identity.
+    let identity_id_b58 = qi.identity.id().to_string(Encoding::Base58);
+    let network_str = network_name(ctx.app_context.network()).to_owned();
 
-    match result {
-        BackendTaskSuccessResult::WithdrewFromIdentity(fee) => {
-            tracing::info!("Owner withdraw to {payout_address}, fee: {fee:?}");
-            assert!(fee.actual_fee > 0, "actual fee should be positive");
-        }
-        other => panic!("Expected WithdrewFromIdentity, got: {other:?}"),
-    }
+    // Wrap the test context in an ArcSwap for the shared-context service.
+    let swappable = Arc::new(arc_swap::ArcSwap::new(Arc::clone(&ctx.app_context)));
+    let service = DashMcpService::new_shared(swappable);
+
+    // OWNER mode: no to_address — Platform consensus forces the registered payout address.
+    let params = MasternodeWithdrawParams {
+        identity_id: identity_id_b58,
+        key_mode: "owner".to_owned(),
+        to_address: String::new(),
+        amount_credits: amount,
+        network: network_str,
+    };
+
+    let output = MasternodeCreditsWithdraw::invoke(&service, params)
+        .await
+        .expect("owner-mode withdrawal via tool invoke should succeed");
+
+    tracing::info!(
+        "Owner withdraw: to={}, estimated_fee={}, actual_fee={}",
+        output.to_address,
+        output.estimated_fee,
+        output.actual_fee
+    );
+    assert!(output.actual_fee > 0, "actual fee should be positive");
+    // The echo address must be the registered payout address.
+    assert_eq!(
+        output.to_address,
+        payout_address.to_string(),
+        "owner mode echo must match the registered payout address"
+    );
+    assert_eq!(output.key_mode, "owner", "key_mode must echo 'owner'");
 }
 
-// ── TC-MN-051 — TRANSFER mode happy path: any Core address ───────────────────
+// ── TC-MN-051 — TRANSFER mode happy path via tool invoke: any Core address
+//
+// Goes through `MasternodeCreditsWithdraw::invoke()`, exercising:
+//   - key-mode resolution (transfer/payout key via `available_withdrawal_keys`)
+//   - `resolve_withdrawal_plan` → `dispatch_address = Some(caller_addr)`
+//   - echo_address = the caller's address (verified in the output)
 
 #[ignore]
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
@@ -339,13 +386,14 @@ async fn test_mn051_transfer_withdraw_to_address() {
         panic!("Expected LoadedIdentity");
     };
 
-    let transfer_key_id = withdrawal_key_id(&qi, Purpose::TRANSFER).expect("transfer key loaded");
     let balance = qi.identity.balance();
     assert!(balance > 0, "identity must have withdrawable credits");
     let amount = (balance / 10).max(1);
 
-    // A fresh testnet Core address from the framework wallet (no extra funding
-    // broadcast — we only need a watched destination address).
+    let identity_id_b58 = qi.identity.id().to_string(Encoding::Base58);
+    let network_str = network_name(ctx.app_context.network()).to_owned();
+
+    // A fresh testnet Core address from the framework wallet.
     let framework_wallet = {
         let wallets = ctx.app_context.wallets().read().expect("wallets lock");
         wallets
@@ -358,27 +406,36 @@ async fn test_mn051_transfer_withdraw_to_address() {
         &framework_wallet,
     )
     .await;
-    let to_address = dash_sdk::dpp::dashcore::Address::from_str(&addr_str)
-        .expect("valid address")
-        .assume_checked();
 
-    let task = BackendTask::IdentityTask(IdentityTask::WithdrawFromIdentity(
-        qi,
-        Some(to_address),
-        amount,
-        Some(transfer_key_id),
-    ));
-    let result = run_task(&ctx.app_context, task)
+    let swappable = Arc::new(arc_swap::ArcSwap::new(Arc::clone(&ctx.app_context)));
+    let service = DashMcpService::new_shared(swappable);
+
+    // TRANSFER mode: caller supplies an explicit Core address.
+    let params = MasternodeWithdrawParams {
+        identity_id: identity_id_b58,
+        key_mode: "transfer".to_owned(),
+        to_address: addr_str.clone(),
+        amount_credits: amount,
+        network: network_str,
+    };
+
+    let output = MasternodeCreditsWithdraw::invoke(&service, params)
         .await
-        .expect("transfer-mode withdrawal should succeed");
+        .expect("transfer-mode withdrawal via tool invoke should succeed");
 
-    match result {
-        BackendTaskSuccessResult::WithdrewFromIdentity(fee) => {
-            tracing::info!("Transfer withdraw to {addr_str}, fee: {fee:?}");
-            assert!(fee.actual_fee > 0, "actual fee should be positive");
-        }
-        other => panic!("Expected WithdrewFromIdentity, got: {other:?}"),
-    }
+    tracing::info!(
+        "Transfer withdraw: to={}, estimated_fee={}, actual_fee={}",
+        output.to_address,
+        output.estimated_fee,
+        output.actual_fee
+    );
+    assert!(output.actual_fee > 0, "actual fee should be positive");
+    // The echo address must be the caller-supplied address.
+    assert_eq!(
+        output.to_address, addr_str,
+        "transfer mode echo must match the caller-supplied address"
+    );
+    assert_eq!(output.key_mode, "transfer", "key_mode must echo 'transfer'");
 }
 
 // ── TC-MN-054 — withdraw with the mode key not loaded (no ST broadcast)  ──────

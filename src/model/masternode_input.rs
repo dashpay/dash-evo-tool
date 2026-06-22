@@ -1,13 +1,15 @@
 //! Stateless input parsing for the headless masternode/evonode MCP tools.
 //!
 //! These helpers are the single source of truth for parsing the string
-//! parameters of `identity_masternode_load` and
-//! `identity_masternode_credits_withdraw`: the node type, the withdrawal key
+//! parameters of `masternode_identity_load` and
+//! `masternode_credits_withdraw`: the node type, the withdrawal key
 //! mode, the at-least-one-signing-key rule, and the ProTxHash decode. They hold
 //! no state — no `AppContext`, `Sdk`, DB, or `BackendTask` — so they are
 //! exhaustively unit-testable without a network. Stateful enforcement (key
 //! presence on-chain, identity existence, network match) stays in the backend
 //! task and the tool layer.
+
+use std::fmt;
 
 use crate::mcp::error::McpToolError;
 use crate::model::qualified_identity::IdentityType;
@@ -25,6 +27,15 @@ pub enum KeyMode {
     Owner,
     /// Transfer/payout key: withdraws to any caller-supplied Core address.
     Transfer,
+}
+
+impl fmt::Display for KeyMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            KeyMode::Owner => f.write_str("owner"),
+            KeyMode::Transfer => f.write_str("transfer"),
+        }
+    }
 }
 
 /// Parse the `node_type` parameter into an [`IdentityType`].

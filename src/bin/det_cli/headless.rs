@@ -31,10 +31,13 @@ pub(super) fn run_headless() -> Result<(), Box<dyn std::error::Error>> {
         .build()?;
 
     let result: Result<(), Box<dyn std::error::Error>> = runtime.block_on(async {
-        let ctx = init_app_context()
+        let initial_ctx = init_app_context()
             .await
             .map_err(|e| format!("Failed to initialize: {}", e.message))?;
-        let swappable = Arc::new(arc_swap::ArcSwap::new(ctx));
+        // Keep a clone of the initial Arc so we can compare it with the
+        // current context after shutdown — see the S5 drain below.
+        let ctx = Arc::clone(&initial_ctx);
+        let swappable = Arc::new(arc_swap::ArcSwap::new(initial_ctx));
 
         let cancel = tokio_util::sync::CancellationToken::new();
         let cancel_on_signal = cancel.clone();
@@ -48,10 +51,19 @@ pub(super) fn run_headless() -> Result<(), Box<dyn std::error::Error>> {
             .await
             .map_err(|e| -> Box<dyn std::error::Error> { e });
 
-        // Drain the wallet backend's persister.  `swappable.load_full()` yields
-        // the CURRENTLY active context (may differ from `ctx` after network_switch).
+        // S5: drain BOTH the initial and the current (post-network_switch)
+        // wallet backend persisters.  `swappable.load_full()` yields only the
+        // currently-active context — after `network_switch`, the original
+        // context's backend is no longer stored there, so we shut it down
+        // separately if it differs.
         let current_ctx = swappable.load_full();
         if let Ok(backend) = current_ctx.wallet_backend() {
+            backend.shutdown().await;
+        }
+        // Shutdown the initial context if the network was switched (different Arc pointer).
+        if !Arc::ptr_eq(&ctx, &current_ctx)
+            && let Ok(backend) = ctx.wallet_backend()
+        {
             backend.shutdown().await;
         }
 

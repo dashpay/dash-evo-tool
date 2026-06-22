@@ -202,6 +202,24 @@ pub(crate) async fn ensure_spv_synced(ctx: &Arc<AppContext>) -> Result<(), McpTo
         tracing::warn!(error = %e, "wallet backend wiring / SPV start failed before sync wait");
     }
 
+    // S7: In standalone/headless MCP mode the GUI frame-loop never runs, so
+    // `MigrationTask::FinishUnwire` is never dispatched from `AppState`.
+    // Dispatch it here (idempotent — returns immediately if the sentinel file
+    // exists or there are no legacy rows) so `ensure_storage_ready` can see a
+    // terminal state instead of always fast-pathing through `Idle`.
+    {
+        use crate::backend_task::migration::MigrationTask;
+        if let Err(e) = ctx.run_migration_task(MigrationTask::FinishUnwire).await {
+            // Log but do not fail — the migration failing should not prevent the
+            // tool from proceeding; the user will get an actionable error if the
+            // backend task itself later rejects due to missing data.
+            tracing::warn!(
+                error = ?e,
+                "Standalone cold-start migration (FinishUnwire) failed; proceeding anyway"
+            );
+        }
+    }
+
     // Wait for cold-start storage migration before polling SPV state.
     // `run_backend_task` rejects wallet-touching tasks while migration is
     // running; ensuring it finishes here makes cold-start tool calls

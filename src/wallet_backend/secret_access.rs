@@ -40,7 +40,9 @@ use std::time::Instant;
 use aes_gcm::aead::Aead;
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
 use dash_sdk::dpp::dashcore::Network;
-use platform_wallet_storage::secrets::{SecretStore, SecretString, WalletId as SecretWalletId};
+use platform_wallet_storage::secrets::{
+    SecretStore, SecretStoreError, SecretString, WalletId as SecretWalletId,
+};
 use zeroize::Zeroizing;
 
 use crate::backend_task::error::TaskError;
@@ -51,7 +53,7 @@ use crate::model::wallet::seed_envelope::StoredSeedEnvelope;
 use crate::wallet_backend::secret_prompt::{
     RememberPolicy, SecretPrompt, SecretPromptRequest, SecretPromptRetry, SecretScope,
 };
-use crate::wallet_backend::secret_seam::SecretSeam;
+use crate::wallet_backend::secret_seam::{SecretScheme, SecretSeam};
 use crate::wallet_backend::single_key::{label_for_address, single_key_namespace_id};
 use crate::wallet_backend::single_key_entry::SingleKeyEntry;
 use crate::wallet_backend::wallet_seed_store::WalletSeedView;
@@ -63,12 +65,6 @@ const SINGLE_KEY_LEN: usize = 32;
 /// Vault label for a raw (migrated) HD seed, distinct from the legacy
 /// `envelope.v1` so the loader can tell raw from legacy by label presence.
 pub(crate) const SEED_RAW_LABEL: &str = "seed.raw.v1";
-
-/// The vault scope for an HD seed — the 32-byte seed hash reused as the
-/// upstream `WalletId`.
-fn seed_scope(seed_hash: &WalletSeedHash) -> SecretWalletId {
-    SecretWalletId::from(*seed_hash)
-}
 
 /// Borrowed, kind-tagged plaintext handed to a [`SecretAccess::with_secret`]
 /// closure. Lives only for the closure call. No `Clone`, no `Deref` to raw
@@ -416,18 +412,16 @@ impl SecretAccess {
             .map(|_migrated| ())
     }
 
-    /// As [`Self::promote_hd_seed_with_passphrase`], but reports whether a
-    /// LAZY raw-seam migration was performed.
+    /// As [`Self::promote_hd_seed_with_passphrase`]. Decrypts the seed (running
+    /// the lazy legacy→steady-state re-wrap inside [`Self::decrypt_jit`]) and
+    /// promotes it into the session cache.
     ///
-    /// When the seed is still in a legacy `envelope.v1` (no raw label), this
-    /// re-stores the decrypted 64-byte seed raw via the seam (vault-FIRST) and
-    /// deletes the legacy envelope — all inside the borrowed `Zeroizing` scope,
-    /// so the plaintext is never copied out. Returns `Ok(true)` when that
-    /// migration ran (the caller flips `WalletMeta.uses_password=false`), or
-    /// `Ok(false)` when the seed was already raw (nothing to migrate).
-    ///
-    /// Crash-safe: `set_raw` (upsert) precedes `delete`; a crash between leaves
-    /// both forms present and the loader prefers raw. Idempotent.
+    /// Always reports `Ok(false)`: a protected seed re-wraps to **Tier-2 under
+    /// the same password** (protection KEPT) — it is never downgraded to a raw,
+    /// password-free secret — so there is no `uses_password` flip for the unlock
+    /// callsite to finalize. The bool is retained for source compatibility with
+    /// that callsite (which then takes no migration-finalize action); the
+    /// crash-safe re-wrap + legacy delete live in `decrypt_jit`.
     pub fn promote_and_maybe_migrate_hd_seed(
         &self,
         seed_hash: &WalletSeedHash,
@@ -437,23 +431,9 @@ impl SecretAccess {
         let scope = SecretScope::HdSeed {
             seed_hash: *seed_hash,
         };
-        let already_raw = WalletSeedView::new(&self.inner.secret_store)
-            .get_raw(seed_hash)?
-            .is_some();
         let plaintext = self.decrypt_jit(&scope, passphrase)?;
-
-        let mut migrated = false;
-        if !already_raw && let Plaintext::HdSeed(seed) = &plaintext {
-            // The seed came from the legacy envelope. Re-store it raw
-            // (vault-first), then drop the legacy envelope.
-            let view = WalletSeedView::new(&self.inner.secret_store);
-            view.set_raw(seed_hash, seed)?;
-            view.delete(seed_hash)?;
-            migrated = true;
-        }
-
         self.maybe_remember(&scope, &plaintext, policy);
-        Ok(migrated)
+        Ok(false)
     }
 
     /// Forget the session-cached secret for `scope`, zeroizing it.
@@ -560,17 +540,20 @@ impl SecretAccess {
     fn scope_has_passphrase(&self, scope: &SecretScope) -> Result<bool, TaskError> {
         match scope {
             SecretScope::HdSeed { seed_hash } => {
-                // Raw seed present ⇒ migrated ⇒ no passphrase.
-                if self
-                    .seam()
-                    .get_secret(&seed_scope(seed_hash), SEED_RAW_LABEL)?
-                    .is_some()
-                {
-                    return Ok(false);
-                }
                 let view = WalletSeedView::new(&self.inner.secret_store);
-                let envelope = view.get(seed_hash)?.ok_or(TaskError::SecretSeamMissing)?;
-                Ok(envelope.uses_password)
+                match view.scheme(seed_hash)? {
+                    // Tier-2: the seed is sealed under its own object password.
+                    SecretScheme::Protected => Ok(true),
+                    // Tier-1 raw: unprotected — no passphrase.
+                    SecretScheme::Unprotected => Ok(false),
+                    // Nothing at the raw label yet ⇒ the legacy envelope's
+                    // `uses_password` is the source of truth until first unlock
+                    // migrates it to the raw label.
+                    SecretScheme::Absent => {
+                        let envelope = view.get(seed_hash)?.ok_or(TaskError::SecretSeamMissing)?;
+                        Ok(envelope.uses_password)
+                    }
+                }
             }
             SecretScope::SingleKey { address } => {
                 // Raw 32-byte key present ⇒ migrated ⇒ no passphrase.
@@ -603,26 +586,45 @@ impl SecretAccess {
     ) -> Result<Plaintext, TaskError> {
         match scope {
             SecretScope::HdSeed { seed_hash } => {
-                if let Some(raw) = self
-                    .seam()
-                    .get_secret(&seed_scope(seed_hash), SEED_RAW_LABEL)?
-                {
-                    let seed: [u8; HD_SEED_LEN] = raw.expose_secret().try_into().map_err(|_| {
-                        tracing::warn!(
-                            target = "wallet_backend::secret_access",
-                            blob_len = raw.expose_secret().len(),
-                            "Raw seam seed has wrong length",
-                        );
-                        TaskError::SecretDecryptFailed
-                    })?;
-                    return Ok(Plaintext::HdSeed(Zeroizing::new(seed)));
-                }
-                // Legacy fallback (migration reader). Neither raw nor legacy
-                // present ⇒ the secret is gone (loud, never a silent miss).
                 let view = WalletSeedView::new(&self.inner.secret_store);
-                let envelope = view.get(seed_hash)?.ok_or(TaskError::SecretSeamMissing)?;
-                let seed = decrypt_hd_seed(&envelope, passphrase)?;
-                Ok(Plaintext::HdSeed(seed))
+                match view.scheme(seed_hash)? {
+                    // Tier-1 raw — unprotected, no password.
+                    SecretScheme::Unprotected => {
+                        let seed = view
+                            .get_raw(seed_hash)?
+                            .ok_or(TaskError::SecretSeamMissing)?;
+                        Ok(Plaintext::HdSeed(seed))
+                    }
+                    // Tier-2 — unseal with this seed's own object password.
+                    SecretScheme::Protected => {
+                        let pw = passphrase.ok_or(TaskError::HdPassphraseIncorrect)?;
+                        let seed = view
+                            .get_protected(seed_hash, pw)?
+                            .ok_or(TaskError::SecretSeamMissing)?;
+                        Ok(Plaintext::HdSeed(seed))
+                    }
+                    // Legacy AES-GCM envelope: decode-only reader, then LAZY
+                    // re-wrap to the steady-state form and drop the legacy
+                    // envelope. A protected seed re-wraps to Tier-2 under the
+                    // SAME user password (protection KEPT, not downgraded to
+                    // raw); an unprotected one goes to the raw label. An absent
+                    // envelope ⇒ the secret is gone (loud, never a silent miss).
+                    // Crash-safe: the re-store (upsert) precedes the delete, and
+                    // the scheme probe prefers the new label, so a crash between
+                    // leaves both forms and the next read takes the new one.
+                    SecretScheme::Absent => {
+                        let envelope = view.get(seed_hash)?.ok_or(TaskError::SecretSeamMissing)?;
+                        let seed = decrypt_hd_seed(&envelope, passphrase)?;
+                        if envelope.uses_password {
+                            let pw = passphrase.ok_or(TaskError::HdPassphraseIncorrect)?;
+                            view.set_protected(seed_hash, &seed, pw)?;
+                        } else {
+                            view.set_raw(seed_hash, &seed)?;
+                        }
+                        view.delete(seed_hash)?;
+                        Ok(Plaintext::HdSeed(seed))
+                    }
+                }
             }
             SecretScope::SingleKey { address } => {
                 if let Some(raw) = self.single_key_raw(address)? {
@@ -847,10 +849,14 @@ fn decrypt_hd_seed(
 /// Whether `e` is the "wrong passphrase" condition that the re-ask loop
 /// catches and re-prompts on (rather than aborting).
 fn is_wrong_passphrase(e: &TaskError) -> bool {
-    matches!(
-        e,
-        TaskError::SingleKeyPassphraseIncorrect | TaskError::HdPassphraseIncorrect
-    )
+    match e {
+        TaskError::SingleKeyPassphraseIncorrect | TaskError::HdPassphraseIncorrect => true,
+        // A Tier-2 unseal that rejected the object password surfaces through the
+        // seam as `WrongPassword`; the re-ask loop catches it and re-prompts
+        // rather than aborting (same UX as the legacy AES-GCM wrong-pass path).
+        TaskError::SecretSeam { source } => matches!(**source, SecretStoreError::WrongPassword),
+        _ => false,
+    }
 }
 
 #[cfg(test)]
@@ -1634,12 +1640,8 @@ mod tests {
         let legacy_seed = [0x11u8; 64];
         store_unprotected_hd(&store, &seed_hash, &legacy_seed);
         let raw_seed = [0x99u8; 64];
-        SecretSeam::new(&store)
-            .put_secret(
-                &super::seed_scope(&seed_hash),
-                super::SEED_RAW_LABEL,
-                &SecretBytes::from_slice(&raw_seed),
-            )
+        WalletSeedView::new(&store)
+            .set_raw(&seed_hash, &raw_seed)
             .unwrap();
 
         let sa = access(store, Arc::new(TestPrompt::never()));
@@ -1654,5 +1656,141 @@ mod tests {
         })
         .await
         .expect("raw wins");
+    }
+
+    // --- Tier-2 per-secret object-password adoption -----------------------
+
+    /// TS-T2-01 — lazy re-wrap KEEPS protection. A protected legacy AES-GCM
+    /// envelope, on first unlock, migrates to a Tier-2 object-password envelope
+    /// at the raw label (NOT downgraded to a password-free raw secret), the
+    /// legacy envelope is dropped, and the seed reads back only with its
+    /// password.
+    #[tokio::test]
+    async fn ts_t2_01_protected_seed_rewraps_to_tier2_on_first_unlock() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = fresh_store(dir.path());
+        let seed_hash: WalletSeedHash = [0x71; 32];
+        store_protected_hd(&store, &seed_hash, &SENTINEL_SEED, SENTINEL_PASSPHRASE);
+
+        let prompt = Arc::new(TestPrompt::new([ScriptedAnswer::once(SENTINEL_PASSPHRASE)]));
+        let sa = access(store.clone(), prompt.clone());
+        let scope = SecretScope::HdSeed { seed_hash };
+
+        sa.with_secret(&scope, |pt| {
+            assert_eq!(pt.expose_hd_seed().copied(), Some(SENTINEL_SEED));
+            Ok(())
+        })
+        .await
+        .expect("first unlock");
+        assert_eq!(prompt.ask_count(), 1);
+
+        let view = WalletSeedView::new(&store);
+        // Steady state is Tier-2 protected, NOT raw.
+        assert_eq!(view.scheme(&seed_hash).unwrap(), SecretScheme::Protected);
+        // Legacy envelope dropped.
+        assert!(
+            view.get(&seed_hash).unwrap().is_none(),
+            "legacy envelope removed after re-wrap"
+        );
+        // Reads back only WITH the object password ...
+        let pw = SecretString::new(SENTINEL_PASSPHRASE);
+        assert_eq!(
+            view.get_protected(&seed_hash, &pw).unwrap().map(|z| *z),
+            Some(SENTINEL_SEED)
+        );
+        // ... and NOT without it (a raw read sees a protected blob).
+        assert!(
+            view.get_raw(&seed_hash).is_err(),
+            "raw read of a protected seed must fail, never strip protection"
+        );
+    }
+
+    /// TS-T2-02 — a Tier-2 seed re-asks on a wrong object password (upstream
+    /// `WrongPassword` ⇒ re-prompt, not abort) and then succeeds.
+    #[tokio::test]
+    async fn ts_t2_02_tier2_seed_wrong_password_reasks_then_succeeds() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = fresh_store(dir.path());
+        let seed_hash: WalletSeedHash = [0x72; 32];
+        let right = SecretString::new(SENTINEL_PASSPHRASE);
+        WalletSeedView::new(&store)
+            .set_protected(&seed_hash, &SENTINEL_SEED, &right)
+            .expect("seal seed as Tier-2");
+        assert_eq!(
+            WalletSeedView::new(&store).scheme(&seed_hash).unwrap(),
+            SecretScheme::Protected
+        );
+
+        let prompt = Arc::new(TestPrompt::new([
+            ScriptedAnswer::once("not-the-password"),
+            ScriptedAnswer::once(SENTINEL_PASSPHRASE),
+        ]));
+        let sa = access(store, prompt.clone());
+        let scope = SecretScope::HdSeed { seed_hash };
+        sa.with_secret(&scope, |pt| {
+            assert_eq!(pt.expose_hd_seed().copied(), Some(SENTINEL_SEED));
+            Ok(())
+        })
+        .await
+        .expect("retry succeeds");
+        assert_eq!(prompt.ask_count(), 2, "one wrong-pass re-ask, then success");
+    }
+
+    /// TS-T2-03 — PER-SECRET password isolation. Two seeds protected under
+    /// DIFFERENT passwords: unlocking A (and remembering it) does NOT satisfy
+    /// B — B still prompts for its OWN password, each decrypts only with its
+    /// own, and A's remembered entry never unlocks B.
+    #[tokio::test]
+    async fn ts_t2_03_per_secret_passwords_are_isolated() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = fresh_store(dir.path());
+        let hash_a: WalletSeedHash = [0xAA; 32];
+        let hash_b: WalletSeedHash = [0xBB; 32];
+        let seed_a = [0xA1u8; 64];
+        let seed_b = [0xB2u8; 64];
+        let pw_a = SecretString::new("password-A-aaaaaaaaaa");
+        let pw_b = SecretString::new("password-B-bbbbbbbbbb");
+        let view = WalletSeedView::new(&store);
+        view.set_protected(&hash_a, &seed_a, &pw_a).unwrap();
+        view.set_protected(&hash_b, &seed_b, &pw_b).unwrap();
+
+        // Scripted in access order: A remembers, then B.
+        let prompt = Arc::new(TestPrompt::new([
+            ScriptedAnswer::remember("password-A-aaaaaaaaaa", RememberPolicy::UntilAppClose),
+            ScriptedAnswer::remember("password-B-bbbbbbbbbb", RememberPolicy::UntilAppClose),
+        ]));
+        let sa = access(store, prompt.clone());
+        let scope_a = SecretScope::HdSeed { seed_hash: hash_a };
+        let scope_b = SecretScope::HdSeed { seed_hash: hash_b };
+
+        sa.with_secret(&scope_a, |pt| {
+            assert_eq!(pt.expose_hd_seed().copied(), Some(seed_a));
+            Ok(())
+        })
+        .await
+        .unwrap();
+        assert!(sa.is_session_cached(&scope_a));
+        assert!(
+            !sa.is_session_cached(&scope_b),
+            "A's unlock must not cache B"
+        );
+
+        // B STILL prompts (A's cache entry does not satisfy B) and decrypts to B.
+        sa.with_secret(&scope_b, |pt| {
+            assert_eq!(pt.expose_hd_seed().copied(), Some(seed_b));
+            Ok(())
+        })
+        .await
+        .unwrap();
+        assert_eq!(prompt.ask_count(), 2, "B prompted independently of A");
+
+        // A still resolves from its own cache entry — no third prompt.
+        sa.with_secret(&scope_a, |pt| {
+            assert_eq!(pt.expose_hd_seed().copied(), Some(seed_a));
+            Ok(())
+        })
+        .await
+        .unwrap();
+        assert_eq!(prompt.ask_count(), 2, "A served from cache, no re-prompt");
     }
 }

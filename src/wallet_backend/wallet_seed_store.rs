@@ -27,7 +27,7 @@
 use std::sync::Arc;
 
 use platform_wallet_storage::secrets::{
-    SecretBytes, SecretStore, SecretStoreError, WalletId as SecretWalletId,
+    SecretBytes, SecretStore, SecretStoreError, SecretString, WalletId as SecretWalletId,
 };
 use zeroize::Zeroizing;
 
@@ -35,7 +35,7 @@ use crate::backend_task::error::TaskError;
 use crate::model::wallet::WalletSeedHash;
 use crate::model::wallet::seed_envelope::{STORED_SEED_ENVELOPE_VERSION, StoredSeedEnvelope};
 use crate::wallet_backend::secret_access::SEED_RAW_LABEL;
-use crate::wallet_backend::secret_seam::SecretSeam;
+use crate::wallet_backend::secret_seam::{SecretScheme, SecretSeam};
 
 /// Label under which the bincode-encoded envelope is stored. Versioned
 /// so a future shape change (e.g. an additional field that breaks
@@ -186,6 +186,57 @@ impl<'a> WalletSeedView<'a> {
     /// Idempotent delete of the raw `seed.raw.v1` row.
     pub fn delete_raw(&self, seed_hash: &WalletSeedHash) -> Result<(), TaskError> {
         SecretSeam::new(self.secret_store).delete_secret(&scope_for(seed_hash), SEED_RAW_LABEL)
+    }
+
+    /// At-rest [`SecretScheme`] of the `seed.raw.v1` row — `Protected` once the
+    /// seed is Tier-2 sealed, `Unprotected` for a raw seed, `Absent` when only
+    /// the legacy `envelope.v1` (or nothing) is present. No password needed.
+    pub fn scheme(&self, seed_hash: &WalletSeedHash) -> Result<SecretScheme, TaskError> {
+        SecretSeam::new(self.secret_store).scheme(&scope_for(seed_hash), SEED_RAW_LABEL)
+    }
+
+    /// Store the 64-byte seed under `seed.raw.v1` **Tier-2 protected**, sealed
+    /// with this seed's own object `password` (Argon2id + XChaCha20-Poly1305).
+    /// Replaces any raw/legacy value at the same label (upsert).
+    pub fn set_protected(
+        &self,
+        seed_hash: &WalletSeedHash,
+        seed: &[u8; 64],
+        password: &SecretString,
+    ) -> Result<(), TaskError> {
+        SecretSeam::new(self.secret_store).put_secret_protected(
+            &scope_for(seed_hash),
+            SEED_RAW_LABEL,
+            &SecretBytes::from_slice(seed),
+            password,
+        )
+    }
+
+    /// Read the Tier-2-protected 64-byte seed under `seed.raw.v1`, unsealing
+    /// with `password`, or `None` if nothing is stored there. A wrong password
+    /// surfaces as [`SecretStoreError::WrongPassword`] (via the seam).
+    pub fn get_protected(
+        &self,
+        seed_hash: &WalletSeedHash,
+        password: &SecretString,
+    ) -> Result<Option<Zeroizing<[u8; 64]>>, TaskError> {
+        let Some(bytes) = SecretSeam::new(self.secret_store).get_secret_protected(
+            &scope_for(seed_hash),
+            SEED_RAW_LABEL,
+            password,
+        )?
+        else {
+            return Ok(None);
+        };
+        let seed: [u8; 64] = bytes.expose_secret().try_into().map_err(|_| {
+            tracing::warn!(
+                target = "wallet_backend::wallet_seed_store",
+                blob_len = bytes.expose_secret().len(),
+                "Tier-2 seam seed has wrong length",
+            );
+            map_err(SecretStoreError::MalformedVault)
+        })?;
+        Ok(Some(Zeroizing::new(seed)))
     }
 }
 

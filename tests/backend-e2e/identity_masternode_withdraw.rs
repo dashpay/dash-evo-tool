@@ -222,7 +222,9 @@ async fn test_mn020_load_wrong_key_rejected() {
     let ctx = ctx().await;
 
     // A valid-format WIF that is (overwhelmingly) NOT a key on the identity.
-    let bogus_owner = dash_sdk::dpp::dashcore::PrivateKey::from_byte_array(
+    // Capture the actual WIF value BEFORE moving it into the task so we can
+    // check for key-material leakage in TC-MN-061 below.
+    let wrong_key_wif = dash_sdk::dpp::dashcore::PrivateKey::from_byte_array(
         &[0x11u8; 32],
         dash_sdk::dpp::dashcore::Network::Testnet,
     )
@@ -232,7 +234,7 @@ async fn test_mn020_load_wrong_key_rejected() {
     let task = load_task(
         pro_tx_hash,
         node_type_from_env(),
-        Some(bogus_owner),
+        Some(wrong_key_wif.clone()), // clone — value used in assertion below
         None,
         None,
     );
@@ -244,14 +246,19 @@ async fn test_mn020_load_wrong_key_rejected() {
         matches!(err, TaskError::KeyInputValidationFailed { .. }),
         "expected KeyInputValidationFailed, got: {err:?}"
     );
-    // TC-MN-061 cross-check: the key value never appears in Display or Debug.
+    // TC-MN-061 cross-check: the actual WIF bytes never appear in Display or Debug.
+    // (Previous check used "bogus" — the variable name — which is never part of a
+    // WIF string and made the assertion vacuously true.)
     let display = err.to_string();
     let debug = format!("{err:?}");
     assert!(
-        !display.contains("bogus"),
-        "no key bytes in Display: {display}"
+        !display.contains(&wrong_key_wif),
+        "actual key WIF must not appear in Display: {display}"
     );
-    assert!(!debug.contains("bogus"), "no key bytes in Debug: {debug}");
+    assert!(
+        !debug.contains(&wrong_key_wif),
+        "actual key WIF must not appear in Debug: {debug}"
+    );
 }
 
 // ── TC-MN-021 — identity not found on network → IdentityNotFound ──────────────

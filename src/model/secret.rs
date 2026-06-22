@@ -282,8 +282,9 @@ impl From<&str> for Secret {
 //
 // `Secret` carries private-key / mnemonic material in MCP tool parameter
 // structs.  Adding `Deserialize` lets the params struct derive `Deserialize`
-// directly — the JSON string is immediately mlocked and zeroized-on-drop
-// without ever living as a plain `String`.  The `JsonSchema` impl (gated to
+// directly — the impl deserializes into a transient `String`, then moves it
+// into the zeroizing/mlock'd buffer and drops the transient, so no long-lived
+// plain `String` copy persists.  The `JsonSchema` impl (gated to
 // the features that bring in `rmcp`) exposes `Secret` as a JSON string in the
 // MCP tool schema so clients know what format to supply.
 //

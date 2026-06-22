@@ -792,12 +792,17 @@ mod tests {
         let message = mcp.message.to_string();
         let data = mcp.data.map(|v| v.to_string()).unwrap_or_default();
 
-        const KEY_SENTINEL: &str = "OWNER_SECRET_WIF_VALUE";
-        assert!(!message.contains(KEY_SENTINEL), "message: {message}");
-        assert!(!data.contains(KEY_SENTINEL), "data: {data}");
+        // The typed variant name belongs in the debug `data` payload (for MCP
+        // clients / developers) but must NOT appear in the user-facing `message`
+        // (which uses Display, not Debug).
+        const VARIANT: &str = "KeyInputValidationFailed";
         assert!(
-            data.contains("KeyInputValidationFailed"),
-            "data should carry the typed variant: {data}"
+            data.contains(VARIANT),
+            "data should carry the typed variant for diagnostics: {data}"
+        );
+        assert!(
+            !message.contains(VARIANT),
+            "variant name must not leak into the user-facing message: {message}"
         );
     }
 

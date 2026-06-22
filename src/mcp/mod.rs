@@ -20,11 +20,11 @@ pub use config::McpConfig;
 
 /// Start the MCP server over stdin/stdout.
 ///
-/// Runs until the stdio transport closes (client disconnects), then
-/// gracefully stops the wallet backend — if one was started — before
-/// returning.  This ensures the `platform-address-sync` / `identity-sync`
-/// coordinator threads are quiesced while the Tokio runtime is still alive,
-/// preventing panics from timer registration during runtime shutdown.
+/// Runs until the stdio transport closes (client disconnects), then drains
+/// the wallet-backend persister before returning.  This does **not** prevent
+/// the coordinator timer-wheel panic that occurs on Tokio runtime drop —
+/// `shutdown_wallet_backend` does not join coordinator OS threads.
+/// `std::process::exit` in the caller is the deterministic mitigation.
 #[cfg(feature = "cli")]
 pub async fn start_stdio() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use rmcp::ServiceExt;

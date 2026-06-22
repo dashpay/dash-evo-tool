@@ -13,6 +13,15 @@ use std::sync::{Arc, RwLock};
 /// Initial SPV sync (headers, masternodes, filters, blocks) can take several minutes.
 const SPV_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
 
+/// Maximum wait for a cold-start storage migration to complete.
+///
+/// Migration is fast (typically < 5 s) but bounded at 60 s to guard
+/// against a hung migrator.  If this elapses, `ensure_storage_ready`
+/// returns [`McpToolError::StorageNotReady`] so the caller gets an
+/// actionable error rather than a mysterious `WalletStorageNotReady`
+/// from deep inside `run_backend_task`.
+const STORAGE_MIGRATION_WAIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// Verify that the expected network matches the server's active network.
 ///
 /// If `expected` is `None`, validation is skipped (backwards compatible).
@@ -102,6 +111,55 @@ pub(crate) fn wallet_arc(
         })
 }
 
+/// Poll until the cold-start storage migration is no longer running.
+///
+/// On a fresh standalone process, `ensure_wallet_backend_and_start_spv`
+/// kicks off a legacy-data migration before the backend is fully usable.
+/// `AppContext::run_backend_task` short-circuits all wallet-touching tasks
+/// while `migration_status().state().is_running()`, returning
+/// [`TaskError::WalletStorageNotReady`].  By waiting here (still inside
+/// `ensure_spv_synced`, before SPV wait), we turn that fast-fail into a
+/// transparent pause — the tool appears to "just work" on a cold start.
+///
+/// Fast exit: returns immediately if migration is already done (the common
+/// case after the first gated tool has already waited).
+///
+/// Terminal states `Idle`, `Success`, and `Failed` all pass through —
+/// `Failed` is surfaced to the user via the migration banner; the tool
+/// proceeds and will fail with whatever backend error it encounters there.
+async fn ensure_storage_ready(ctx: &Arc<AppContext>) -> Result<(), McpToolError> {
+    let migration = ctx.migration_status();
+    // Fast path — not running; nothing to wait for.
+    if !migration.state().is_running() {
+        return Ok(());
+    }
+
+    tracing::info!("Waiting for cold-start storage migration to complete…");
+
+    let poll = async {
+        loop {
+            if !migration.state().is_running() {
+                return Ok(());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        }
+    };
+
+    match tokio::time::timeout(STORAGE_MIGRATION_WAIT_TIMEOUT, poll).await {
+        Ok(result) => {
+            tracing::info!("Cold-start storage migration complete.");
+            result
+        }
+        Err(_elapsed) => {
+            tracing::warn!(
+                timeout_secs = STORAGE_MIGRATION_WAIT_TIMEOUT.as_secs(),
+                "Timed out waiting for cold-start storage migration"
+            );
+            Err(McpToolError::StorageNotReady)
+        }
+    }
+}
+
 /// Wait for SPV to reach the `Running` state (chain headers + filters synced).
 ///
 /// Required for **all wallet-facing tools** — both core-chain (UTXOs, sending
@@ -118,6 +176,11 @@ pub(crate) fn wallet_arc(
 /// post-network-switch path eagerly wires the backend the way the GUI does, so
 /// this is the single chokepoint that makes SPV actually start for every gated
 /// tool. Both steps are idempotent, so repeated tool calls are cheap.
+///
+/// Also waits for any in-progress cold-start storage migration to finish
+/// (see [`ensure_storage_ready`]) before polling SPV state — this prevents
+/// the `WalletStorageNotReady` fast-fail that `run_backend_task` applies
+/// while migration is mid-flight.
 ///
 /// ## Why `SpvStatus::Running`, not `OverallConnectionState::Synced`
 ///
@@ -137,7 +200,32 @@ pub(crate) async fn ensure_spv_synced(ctx: &Arc<AppContext>) -> Result<(), McpTo
     let sender = crate::utils::egui_mpsc::SenderAsync::new(tx, egui::Context::default());
     if let Err(e) = ctx.ensure_wallet_backend_and_start_spv(sender).await {
         tracing::warn!(error = %e, "wallet backend wiring / SPV start failed before sync wait");
+        return Err(McpToolError::TaskFailed(e));
     }
+
+    // S7: In standalone/headless MCP mode the GUI frame-loop never runs, so
+    // `MigrationTask::FinishUnwire` is never dispatched from `AppState`.
+    // Dispatch it here (idempotent — returns immediately if the sentinel file
+    // exists or there are no legacy rows) so `ensure_storage_ready` can see a
+    // terminal state instead of always fast-pathing through `Idle`.
+    {
+        use crate::backend_task::migration::MigrationTask;
+        if let Err(e) = ctx.run_migration_task(MigrationTask::FinishUnwire).await {
+            // Log but do not fail — the migration failing should not prevent the
+            // tool from proceeding; the user will get an actionable error if the
+            // backend task itself later rejects due to missing data.
+            tracing::warn!(
+                error = ?e,
+                "Standalone cold-start migration (FinishUnwire) failed; proceeding anyway"
+            );
+        }
+    }
+
+    // Wait for cold-start storage migration before polling SPV state.
+    // `run_backend_task` rejects wallet-touching tasks while migration is
+    // running; ensuring it finishes here makes cold-start tool calls
+    // wait transparently rather than bouncing with WalletStorageNotReady.
+    ensure_storage_ready(ctx).await?;
 
     // Subscribe BEFORE reading the current value so no transition is lost
     // between the `ensure_wallet_backend_and_start_spv` call above and the

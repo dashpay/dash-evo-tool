@@ -7,6 +7,9 @@ pub mod feature_gate;
 pub mod fee_estimation;
 pub mod grovestark_prover;
 pub mod identity_discovery;
+/// Stateless input parsing for the headless masternode/evonode MCP tools.
+#[cfg(any(feature = "mcp", feature = "cli"))]
+pub mod masternode_input;
 pub mod proof_log_item;
 pub mod qualified_contract;
 pub mod qualified_identity;

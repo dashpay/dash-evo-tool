@@ -17,6 +17,7 @@ mod framework;
 mod cleanup_only;
 mod fetch_contract;
 mod identity_create;
+mod identity_masternode_withdraw;
 mod identity_withdraw;
 mod register_dpns;
 mod send_funds;

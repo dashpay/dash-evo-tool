@@ -127,6 +127,90 @@ impl DashMcpService {
         self.ctx.store(new_ctx);
     }
 
+    /// Drain the wallet backend's persister before process exit.
+    ///
+    /// Called from the standalone stdio serve path (`start_stdio`), inside
+    /// `block_on` while the Tokio runtime is still alive.  Ensures any in-flight
+    /// `TokenBalanceChangeSet` / `PlatformWalletChangeSet` persister writes issued
+    /// by the coordinator sync loops complete before the process exits.
+    ///
+    /// ## Why this does NOT stop the coordinator timer panic
+    ///
+    /// Each coordinator (`identity-sync`, `platform-address-sync`, `shielded-sync`)
+    /// runs on a **dedicated OS thread** that calls [`Handle::block_on`].  Their
+    /// inner loop ends with:
+    ///
+    /// ```text
+    /// tokio::select! {
+    ///     _ = tokio::time::sleep(interval) => {}   // panics if runtime shut down
+    ///     _ = cancel.cancelled()            => break,
+    /// }
+    /// ```
+    ///
+    /// `backend.shutdown()` → `quiesce()` cancels the tokens and waits for
+    /// `is_syncing == false`, but **does not join the OS threads** — it returns
+    /// as soon as the last persister write completes.  At that point the coordinator
+    /// threads are still alive and may poll `sleep(interval)` in `select!`.
+    ///
+    /// `tokio::select!` picks arms in **random order** for fairness.  If
+    /// `sleep(interval)` is polled before `cancel.cancelled()` (which is ready
+    /// immediately) while the Tokio runtime is shutting down, `Sleep::poll`
+    /// panics: *"A Tokio 1.x context was found, but it is being shutdown."*
+    ///
+    /// A `tokio::time::sleep` grace period was tried and also fails: DAPI retries
+    /// that are already in flight when `quiesce()` returns can extend past any
+    /// fixed sleep window.
+    ///
+    /// **The deterministic fix** is `std::process::exit` in the CLI entry points
+    /// (`run_stdio_server`, `run_headless`, and the one-shot tool path in `main`),
+    /// applied after the tool result is flushed to stdout.  `process::exit`
+    /// reclaims all OS threads before they can poll the shutting-down timer wheel.
+    /// The upstream fix (storing and joining the OS thread's `JoinHandle` in
+    /// `quiesce()`) would be the correct library-level solution.
+    ///
+    /// ## Graceful teardown — plan for when upstream delivers
+    ///
+    /// Once `WalletBackend::quiesce()` (or a new `shutdown_and_join()` variant)
+    /// joins the coordinator OS threads before returning, the `process::exit`
+    /// stopgap can be removed from all three CLI call-sites.  The replacement
+    /// would look like:
+    ///
+    /// ```text
+    /// // TODO(graceful-teardown): remove process::exit once WalletBackend exposes
+    /// // coordinator JoinHandles and quiesce() joins them before returning.
+    ///
+    /// // 1. Quiesce persister writes AND join all coordinator OS threads.
+    /// backend.shutdown_and_join().await;
+    ///
+    /// // 2. At this point NO coordinator thread holds a Tokio timer registration,
+    /// //    so the runtime can be dropped (or allowed to fall off the stack)
+    /// //    without triggering the "context is being shutdown" panic.
+    /// drop(runtime);   // or just let it fall out of scope
+    ///
+    /// // 3. Return normally — no hard-exit required.
+    /// return result;
+    /// ```
+    ///
+    /// Call-sites to update when the upstream fix lands:
+    /// - `src/bin/det_cli/connect.rs`  — `run_stdio_server()`
+    /// - `src/bin/det_cli/main.rs`     — one-shot tool path in `main()`
+    /// - `src/bin/det_cli/headless.rs` — `run_headless()`
+    ///
+    /// ## Safe to call unconditionally
+    ///
+    /// - Context never initialized → `ctx.load()` returns `None` → no-op.
+    /// - Context init'd, backend never wired → `wallet_backend()` returns
+    ///   `Err(WalletBackendNotYetWired)` → no-op (no coordinators were started).
+    #[cfg(feature = "cli")]
+    pub async fn shutdown_wallet_backend(&self) {
+        let Some(ctx) = self.ctx.load() else { return };
+        let Ok(backend) = ctx.wallet_backend() else {
+            return;
+        };
+        // Drain in-flight persister writes.  Does not join coordinator threads.
+        backend.shutdown().await;
+    }
+
     /// Build the tool router using trait-based tool composition.
     pub fn tool_router() -> ToolRouter<Self> {
         ToolRouter::new()
@@ -147,6 +231,9 @@ impl DashMcpService {
             .with_async_tool::<tools::identity::IdentityCreditsTransfer>()
             .with_async_tool::<tools::identity::IdentityCreditsWithdraw>()
             .with_async_tool::<tools::identity::IdentityCreditsToAddress>()
+            // Masternode / evonode tools
+            .with_async_tool::<tools::masternode::MasternodeIdentityLoad>()
+            .with_async_tool::<tools::masternode::MasternodeCreditsWithdraw>()
             // Shielded tools
             .with_async_tool::<tools::shielded::ShieldedShieldFromCore>()
             .with_async_tool::<tools::shielded::ShieldedShieldFromPlatform>()

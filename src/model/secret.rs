@@ -124,6 +124,14 @@ impl Secret {
         self.inner.is_empty()
     }
 
+    /// Whether the secret's trimmed value is empty.
+    ///
+    /// Prefer this over `expose_secret().trim().is_empty()` for presence
+    /// checks — it avoids exposing the raw bytes unnecessarily.
+    pub fn is_blank(&self) -> bool {
+        self.inner.trim().is_empty()
+    }
+
     /// Returns a new `Secret` containing the trimmed content.
     /// Keeps the data within the secure wrapper unlike `text().trim()`
     /// which returns a borrowed `&str`.
@@ -267,6 +275,44 @@ impl From<String> for Secret {
 impl From<&str> for Secret {
     fn from(s: &str) -> Self {
         Self::new(s.to_string())
+    }
+}
+
+// -- serde / schemars impls --------------------------------------------------
+//
+// `Secret` carries private-key / mnemonic material in MCP tool parameter
+// structs.  Adding `Deserialize` lets the params struct derive `Deserialize`
+// directly — the impl deserializes into a transient `String`, then moves it
+// into the zeroizing/mlock'd buffer and drops the transient, so no long-lived
+// plain `String` copy persists.  The `JsonSchema` impl (gated to
+// the features that bring in `rmcp`) exposes `Secret` as a JSON string in the
+// MCP tool schema so clients know what format to supply.
+//
+// `platform_wallet_storage::SecretString` offers the same security guarantees
+// but lacks both `Deserialize` and `JsonSchema`, and `IdentityInputToLoad`
+// already uses this local `Secret` type — switching would require a lossy
+// expose-then-rewrap at the boundary.  The local type is therefore preferred
+// for MCP parameters.
+
+impl<'de> serde::Deserialize<'de> for Secret {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = <String as serde::Deserialize>::deserialize(deserializer)?;
+        Ok(Secret::new(s))
+    }
+}
+
+/// Expose as a plain JSON string schema — the secure wrapper is invisible to
+/// the caller; they just supply a string value.
+#[cfg(any(feature = "mcp", feature = "cli"))]
+impl rmcp::schemars::JsonSchema for Secret {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "Secret".into()
+    }
+    fn json_schema(_gen: &mut rmcp::schemars::SchemaGenerator) -> rmcp::schemars::Schema {
+        rmcp::schemars::json_schema!({ "type": "string" })
     }
 }
 

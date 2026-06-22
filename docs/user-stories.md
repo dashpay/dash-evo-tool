@@ -536,6 +536,7 @@ As a user, I want to register a human-readable username on DPNS so that others c
 
 - Choose identity, enter desired name.
 - Cost estimate displayed before confirmation.
+- While registration runs, a full-window blocking overlay (UX-001) is shown so the same name cannot be submitted twice; it lowers automatically on success or error.
 
 ### DPN-002: View owned usernames [Implemented]
 **Persona:** Alex, Priya
@@ -1122,6 +1123,26 @@ As an AI agent, I want MCP server access so that I can assist users with wallet 
 - Bearer token authentication for HTTP mode.
 - Network verification guard prevents cross-network mistakes.
 - Tools expose wallet, identity, and platform operations.
+
+### MCP-003: Load a masternode/evonode identity via CLI [Implemented]
+**Persona:** Priya, Jordan
+
+As a masternode operator, I want to load my masternode or evonode identity headlessly via det-cli — by ProTxHash plus owner/voting/payout private keys — so that I can manage it in scripts and automation without opening the GUI.
+
+- Identity is fetched by ProTxHash over the network and persisted locally.
+- Private keys are accepted as WIF or hex, never echoed back, and redacted in logs.
+- Output reports which keys loaded, the available withdrawal modes, and the registered payout address.
+- The 'network' parameter is required and must match the active network.
+
+### MCP-004: Withdraw masternode/evonode credits via CLI [Implemented]
+**Persona:** Priya, Jordan
+
+As a masternode operator, I want to withdraw my node's Platform credits to Core headlessly via det-cli, in both key modes, so that I can automate payouts.
+
+- With the owner key, the destination is forced to the registered payout address; supplying a different address is rejected.
+- With the payout/transfer key, I can withdraw to any Core address.
+- The withdrawal is queued on Platform and settles after confirmation; the result reports the destination used and the estimated and actual fees.
+- The 'network' parameter is required and must match the active network.
 
 ---
 

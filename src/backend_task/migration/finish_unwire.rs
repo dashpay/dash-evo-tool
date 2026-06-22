@@ -866,6 +866,14 @@ where
     if !legacy_table_exists_named(conn, "wallet")? {
         return Ok(WalletMetaMigrationOutcome::default());
     }
+    // `core_wallet_name` is the ONLY optional `wallet` column (a recent legacy
+    // migration drops it), so it is probed and NULL-substituted. `uses_password`
+    // and `password_hint` are a hard invariant of the legacy `wallet` table: the
+    // wallet-seed migration (`migrate_wallet_seeds_rows_from_conn`) selects both
+    // unconditionally and runs FIRST over the same table at the same cold-start,
+    // so a schema lacking them fails there before this pass — reading them
+    // unprobed here is exactly as robust as the shipped seed migration. (The flip
+    // carries them into `WalletMeta` so the persisted password flag is accurate.)
     let core_wallet_name_present = wallet_table_has_core_wallet_name(conn)?;
     let sql = if core_wallet_name_present {
         "SELECT seed_hash, alias, is_main, core_wallet_name, master_ecdsa_bip44_account_0_epk, \

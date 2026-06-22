@@ -71,5 +71,6 @@ pub(super) fn run_headless() -> Result<(), Box<dyn std::error::Error>> {
     use std::io::Write as _;
     let _ = std::io::stdout().lock().flush();
     let _ = std::io::stderr().lock().flush();
+    // TODO(graceful-teardown): replace with normal return once WalletBackend::quiesce() joins coordinator threads.
     std::process::exit(exit_code);
 }

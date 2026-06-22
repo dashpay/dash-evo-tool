@@ -168,6 +168,34 @@ impl DashMcpService {
     /// The upstream fix (storing and joining the OS thread's `JoinHandle` in
     /// `quiesce()`) would be the correct library-level solution.
     ///
+    /// ## Graceful teardown — plan for when upstream delivers
+    ///
+    /// Once `WalletBackend::quiesce()` (or a new `shutdown_and_join()` variant)
+    /// joins the coordinator OS threads before returning, the `process::exit`
+    /// stopgap can be removed from all three CLI call-sites.  The replacement
+    /// would look like:
+    ///
+    /// ```text
+    /// // TODO(graceful-teardown): remove process::exit once WalletBackend exposes
+    /// // coordinator JoinHandles and quiesce() joins them before returning.
+    ///
+    /// // 1. Quiesce persister writes AND join all coordinator OS threads.
+    /// backend.shutdown_and_join().await;
+    ///
+    /// // 2. At this point NO coordinator thread holds a Tokio timer registration,
+    /// //    so the runtime can be dropped (or allowed to fall off the stack)
+    /// //    without triggering the "context is being shutdown" panic.
+    /// drop(runtime);   // or just let it fall out of scope
+    ///
+    /// // 3. Return normally — no hard-exit required.
+    /// return result;
+    /// ```
+    ///
+    /// Call-sites to update when the upstream fix lands:
+    /// - `src/bin/det_cli/connect.rs`  — `run_stdio_server()`
+    /// - `src/bin/det_cli/main.rs`     — one-shot tool path in `main()`
+    /// - `src/bin/det_cli/headless.rs` — `run_headless()`
+    ///
     /// ## Safe to call unconditionally
     ///
     /// - Context never initialized → `ctx.load()` returns `None` → no-op.

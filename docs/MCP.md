@@ -107,7 +107,7 @@ Tools that make no network calls skip the SPV gate: the metadata tools (`core_wa
 
 ### Private-key handling
 
-`masternode_identity_load` accepts the masternode owner/voting/payout private keys as JSON string values (WIF or 64-char hex). They are typed as `Secret` in the parameter struct, so they are placed into a zeroizing, best-effort page-locked buffer at deserialization time — no plain-`String` copy ever exists. The keys are never echoed back: the tool output reports only which keys loaded (booleans), validation errors name the key by role and never its value, and the parameter struct's `Debug` renders each key as `Secret(***)` so it cannot leak into logs or the MCP error `data` payload.
+`masternode_identity_load` accepts the masternode owner/voting/payout private keys as JSON string values (WIF or 64-char hex). They are typed as `Secret` in the parameter struct. At deserialization, `Secret::new()` copies the content into a zeroizing, best-effort page-locked buffer, then zeroes and frees the transient serde `String` before returning — so no plain copy of the key persists beyond the deserialization call. The keys are never echoed back: the tool output reports only which keys loaded (booleans), validation errors name the key by role and never its value, and the parameter struct's `Debug` renders each key as `Secret(***)` so it cannot leak into logs or the MCP error `data` payload.
 
 Over the MCP **HTTP** transport these keys traverse the request body. The HTTP endpoint is bearer-authenticated and binds to loopback by default; do not send live mainnet masternode keys over a non-loopback MCP HTTP endpoint. (HTTP transport-layer key handling is not separately enforced in code — keep the endpoint loopback-only for key-bearing calls.)
 

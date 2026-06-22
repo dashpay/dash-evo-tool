@@ -596,6 +596,20 @@ impl SecretAccess {
                         let seed = view
                             .get_protected(seed_hash, pw)?
                             .ok_or(TaskError::SecretSeamMissing)?;
+                        // SEC-001: GC a legacy `envelope.v1` orphaned by a crash
+                        // or delete-failure between the migration's
+                        // `set_protected` and `delete`. The Absent branch (the
+                        // only other deleter) is never re-entered once the seed
+                        // is `Protected`, so the stale AES-GCM ciphertext — which
+                        // still decrypts under the seed's OLD password — would
+                        // otherwise survive forever. Idempotent + best-effort.
+                        if let Err(e) = view.delete(seed_hash) {
+                            tracing::warn!(
+                                target = "wallet_backend::secret_access",
+                                error = ?e,
+                                "Best-effort GC of a stale legacy seed envelope failed",
+                            );
+                        }
                         Ok(Plaintext::HdSeed(seed))
                     }
                     // Legacy AES-GCM envelope: decode-only reader, then LAZY
@@ -1396,6 +1410,80 @@ mod tests {
         assert_eq!(prompt2.ask_count(), 1, "protected single key prompts again");
     }
 
+    /// TS-T2-SK-ISO — PER-SECRET isolation for imported single keys: two Tier-2
+    /// keys under DIFFERENT passwords. A's password cannot open B (the negative
+    /// crypto property), and remembering A never satisfies B (scope-keyed cache).
+    #[tokio::test]
+    async fn ts_t2_sk_iso_per_secret_passwords_are_isolated() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = fresh_store(dir.path());
+        let addr_a = "single-key-address-A".to_string();
+        let addr_b = "single-key-address-B".to_string();
+        let key_a = [0xA7u8; 32];
+        let key_b = [0xB8u8; 32];
+        let pw_a = SecretString::new("single-key-A-pwpwpwpw");
+        let pw_b = SecretString::new("single-key-B-pwpwpwpw");
+        let seam = SecretSeam::new(&store);
+        seam.put_secret_protected(
+            &single_key_namespace_id(),
+            &label_for_address(&addr_a),
+            &SecretBytes::from_slice(&key_a),
+            &pw_a,
+        )
+        .unwrap();
+        seam.put_secret_protected(
+            &single_key_namespace_id(),
+            &label_for_address(&addr_b),
+            &SecretBytes::from_slice(&key_b),
+            &pw_b,
+        )
+        .unwrap();
+
+        // Negative crypto property: A's password is REJECTED by B's envelope.
+        match seam.get_secret_protected(
+            &single_key_namespace_id(),
+            &label_for_address(&addr_b),
+            &pw_a,
+        ) {
+            Err(TaskError::SecretSeam { source })
+                if matches!(*source, SecretStoreError::WrongPassword) => {}
+            other => panic!("A's password must be rejected by B, got {other:?}"),
+        }
+
+        // Scope-keyed cache: remembering A does not satisfy B — B still prompts.
+        let prompt = Arc::new(TestPrompt::new([
+            ScriptedAnswer::remember("single-key-A-pwpwpwpw", RememberPolicy::UntilAppClose),
+            ScriptedAnswer::remember("single-key-B-pwpwpwpw", RememberPolicy::UntilAppClose),
+        ]));
+        let sa = access(Arc::clone(&store), prompt.clone());
+        let scope_a = SecretScope::SingleKey {
+            address: addr_a.clone(),
+        };
+        let scope_b = SecretScope::SingleKey {
+            address: addr_b.clone(),
+        };
+
+        sa.with_secret(&scope_a, |pt| {
+            assert_eq!(pt.expose_single_key().copied(), Some(key_a));
+            Ok(())
+        })
+        .await
+        .unwrap();
+        assert!(sa.is_session_cached(&scope_a));
+        assert!(
+            !sa.is_session_cached(&scope_b),
+            "A's unlock must not cache B"
+        );
+
+        sa.with_secret(&scope_b, |pt| {
+            assert_eq!(pt.expose_single_key().copied(), Some(key_b));
+            Ok(())
+        })
+        .await
+        .unwrap();
+        assert_eq!(prompt.ask_count(), 2, "B prompted independently of A");
+    }
+
     // --- secret confinement -----------------------------------------------
 
     #[tokio::test]
@@ -1786,6 +1874,16 @@ mod tests {
         let view = WalletSeedView::new(&store);
         view.set_protected(&hash_a, &seed_a, &pw_a).unwrap();
         view.set_protected(&hash_b, &seed_b, &pw_b).unwrap();
+
+        // SEC-004 — the NEGATIVE crypto property: A's password CANNOT open B.
+        // Upstream binds the AEAD AAD to wallet_id‖label and derives a fresh
+        // per-object key, so B's envelope rejects A's password with a tag
+        // failure (`WrongPassword`) rather than yielding A's — or any — bytes.
+        match view.get_protected(&hash_b, &pw_a) {
+            Err(TaskError::SecretSeam { source })
+                if matches!(*source, SecretStoreError::WrongPassword) => {}
+            other => panic!("A's password must be REJECTED by B's envelope, got {other:?}"),
+        }
 
         // Scripted in access order: A remembers, then B.
         let prompt = Arc::new(TestPrompt::new([

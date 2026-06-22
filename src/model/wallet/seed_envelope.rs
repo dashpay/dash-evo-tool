@@ -14,6 +14,19 @@
 //! vault — the `WalletMeta` sidecar in `det-app.sqlite` keeps the same
 //! bytes for the same reason; the two copies are an intentional
 //! redundancy.
+//!
+//! **Status since the Tier-2 adoption: this is a DECODE-ONLY legacy reader.**
+//! New protected seeds are sealed directly by the upstream Tier-2 object-password
+//! envelope (no DET-side AES-GCM re-wrap on write); a `StoredSeedEnvelope` is only
+//! decoded, to migrate not-yet-migrated wallets on first unlock, and the path
+//! shrinks as wallets re-wrap to Tier-2.
+//!
+//! SEC-005 / RUSTSEC-2025-0141: bincode 1.x is flagged unmaintained
+//! (informational, not an exploitable CVE). This envelope encodes/decodes with
+//! bincode **2.x** (`bincode::serde` + `config::standard`); `bincode 1.3.3` in
+//! `Cargo.lock` is only a transitive dependency. Exposure is minimal regardless —
+//! the payload is read from the LOCAL, owner-only vault, never from untrusted
+//! network input.
 
 use serde::{Deserialize, Serialize};
 

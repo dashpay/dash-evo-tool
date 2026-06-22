@@ -351,10 +351,18 @@ mod tests {
     }
 
     /// TS-NOLEAK-01 — the on-disk vault file holds the raw secret in neither
-    /// hex nor decimal-array form (the upstream file backend encrypts at rest
-    /// even under an empty global passphrase). The in-memory `get_secret`
-    /// return is legitimately plaintext by design — this asserts the persisted
-    /// file, not the return value.
+    /// hex nor decimal-array form. The in-memory `get_secret` return is
+    /// legitimately plaintext by design — this asserts the persisted file, not
+    /// the return value.
+    ///
+    /// SEC-002 scope note: this proves **non-literal-plaintext**, NOT
+    /// confidentiality. The secret here is stored Tier-1 in a `file_unprotected`
+    /// (keyless) vault, which upstream documents as "obfuscation, not
+    /// confidentiality" — the key derives from an empty passphrase under a public
+    /// salt, so anyone who can read the file can re-derive it. Real at-rest
+    /// confidentiality is a property of **Tier-2** object-password secrets only
+    /// (see `open_secret_store`'s doc). A green TS-NOLEAK-01 must not be read as
+    /// "Tier-1 secrets are confidential at rest."
     #[test]
     fn ts_noleak_01_on_disk_vault_does_not_contain_raw_secret() {
         let dir = tempfile::tempdir().unwrap();

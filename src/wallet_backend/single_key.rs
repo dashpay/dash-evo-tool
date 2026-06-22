@@ -810,16 +810,25 @@ pub(crate) fn sign_message_with_raw_key(
 /// refuses pre-existing modes looser than `0600`, so the secret-at-rest
 /// floor is enforced at open time — see `SecretStoreError::InsecurePermissions`).
 ///
-/// The vault file itself is opened **keyless** ([`SecretStore::file_unprotected`]):
-/// at-rest protection of the file relies on owner-only permissions (enforced by
-/// the upstream backend). Per-secret confidentiality comes from Tier-2 *object*
-/// passwords — each protected secret is sealed under its own password via
-/// [`SecretStore::set_secret`] / read back with [`SecretStore::get_secret`], so a
-/// vault-file compromise still cannot reveal a protected secret. (Upstream's
-/// [`SecretStore::file`] now rejects a blank passphrase; `file_unprotected` is the
-/// explicit keyless door it documents for exactly this per-secret-password model.)
-/// The design choice is documented in the ADR under
-/// `docs/ai-design/2026-06-19-secret-storage-seam/`.
+/// The vault file itself is opened **keyless** ([`SecretStore::file_unprotected`]).
+/// Upstream documents this verbatim as **"obfuscation, not confidentiality"**: the
+/// vault key derives from an empty passphrase under a public salt, so anyone who
+/// can READ the vault file can re-derive it and recover every **Tier-1**
+/// (unprotected) secret. Tier-1 at-rest protection is therefore **owner-only file
+/// permissions ALONE** — it covers no-password seeds, raw imported keys, and
+/// identity keys (prompt-free by design for headless signing).
+///
+/// Real at-rest **confidentiality** comes only from **Tier-2** *object* passwords:
+/// each protected secret is sealed under its own password (Argon2id + XChaCha20)
+/// via [`SecretStore::set_secret`] / read back with [`SecretStore::get_secret`]
+/// BEFORE it reaches the backend, so a full vault-file compromise cannot reveal a
+/// protected secret. (Upstream's [`SecretStore::file`] now rejects a blank
+/// passphrase; `file_unprotected` is the explicit keyless door it documents for
+/// exactly this per-secret-password model.) This Tier-1-is-obfuscation-only
+/// residual is an accepted, documented risk — see the ADR under
+/// `docs/ai-design/2026-06-19-secret-storage-seam/` (SEC-002). Hosts that can hold
+/// a real key may instead use [`SecretStore::os`] (OS keyring) or a vault
+/// passphrase via `EncryptedFileStore::rekey`.
 pub fn open_secret_store(path: &std::path::Path) -> Result<SecretStore, SecretStoreError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|_| SecretStoreError::MalformedVault)?;

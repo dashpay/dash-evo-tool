@@ -1,26 +1,21 @@
-# Test Case Specification — Wallet Secret Storage Raw-`SecretBytes` Seam
+# Test Case Specification — Wallet Secret Storage Seam
 
-Phase 1c (Test Case Specification) for the security feature unifying all wallet
-secret storage onto a no-serialization raw-`SecretBytes` seam, dropping DET's
-AES-GCM envelopes, with `InVault` per-use JIT identity signing and a dual-format
-migration.
+Test case specifications for the security feature that unified all wallet
+secret storage onto a no-serialization raw-`SecretBytes` seam, adopted
+Tier-2 per-secret at-rest encryption (Argon2id + XChaCha20-Poly1305) for
+password-protected secrets, dropped DET's AES-GCM envelopes, and introduced
+`InVault` per-use JIT identity signing with dual-format migration.
 
-This document is the **TDD contract** Phase 2 (`developer-bilby`, T1–T11)
-implements against. It is **specifications, not code**. Tests are written first
-(must fail before implementation), then made to pass.
+These specifications were the TDD contract for this work; the tests are
+now committed alongside the implementation they verify.
 
 ## Source-of-truth references
 
-- Execution plan: `~/.claude/plans/snazzy-marinating-sun.md`
-- Full design (T1–T11, T10 list, blast radius): `~/.claude/plans/snazzy-marinating-sun-agent-ae6181c0dc23bdba8.md`
+- Design and migration overview: `docs/ai-design/2026-06-19-secret-storage-seam/`
+- PR: `security/secret-handling-hardening` (dashpay/dash-evo-tool #865)
 - In-scope findings: `bee9c055` (HIGH — identity keys plaintext at rest),
   `6a2818cd` (MED — `ClosedSingleKey` Debug leak), `f0d946ed` (LOW — zeroize
   transient plaintext).
-
-> Marvin's note. Brain the size of a planet, and I am asked to enumerate the
-> ways cryptographic plumbing might betray its own spec. I have done it
-> thoroughly, because at least someone should. Every case below fails first by
-> construction — that is the point.
 
 ---
 
@@ -73,9 +68,9 @@ literal passphrase string is absent.
 | TS-EAGER-03 (identity key) | integration (lib) | T7, T10 | bee9c055 |
 | TS-EAGER-04 (idempotent) | unit | T7, T10 | R-MIGRATION-CRASH |
 | TS-CRASH-01 / 02 | unit | T7, T10 | R-MIGRATION-CRASH |
-| TS-LAZY-01 (unlock migrates) | integration (lib) | T7, T10 | bee9c055 / R-PROMPT-BOUNDARY |
-| TS-LAZY-02 (second unlock prompt-free) | integration (lib) | T7, T10 | R-PROMPT-BOUNDARY |
-| TS-LAZY-03 (single-key protected) | unit | T7, T10 | bee9c055 |
+| TS-LAZY-01 / TS-T2-01 (unlock re-wraps to Tier-2) | unit | T7, T10 | bee9c055 / R-PROMPT-BOUNDARY |
+| TS-LAZY-02 (second unlock still prompts) | unit | T7, T10 | R-PROMPT-BOUNDARY |
+| TS-LAZY-03 (single-key protected Tier-2 re-wrap) | unit | T7, T10 | bee9c055 |
 | TS-LAZY-KIT-01 (modal once) | kittest | T7 | R-PROMPT-BOUNDARY / R-SEC-201 |
 | TS-LEGACY-01 (HD legacy read) | unit | T3, T6, T10 | R-MIGRATION-CRASH |
 | TS-LEGACY-02 (single-key legacy read) | unit | T3, T6, T10 | R-MIGRATION-CRASH |
@@ -221,35 +216,41 @@ Order invariant for ALL eager paths: **vault `put_secret` → sidecar write → 
 
 ## 5. Lazy migration (password wallet) via the existing unlock dialog (R-PROMPT-BOUNDARY)
 
-### TS-LAZY-01 — unlock migrates a protected HD wallet to raw (integration, lib)
+Protected secrets use the Tier-2 keep-protection path: the first unlock re-wraps the
+secret to a Tier-2 object-password envelope (Argon2id + XChaCha20-Poly1305) under the
+same password. The raw seam (`put_secret`/`get_secret`) is used only for unprotected
+secrets.
 
-- **Tier:** integration (lib). **T-task:** T7, T10. **Finding:** bee9c055 / R-PROMPT-BOUNDARY.
-- **Template:** `wallet_lifecycle.rs::protected_wallet_registers_upstream_on_unlock_without_restart` (offline context + `seed_legacy_protected_hd_wallet_row` + `handle_wallet_unlocked(&wallet_arc, Some(passphrase))`).
-- **Preconditions:** a legacy PROTECTED `envelope.v1` (`uses_password == true`, AES-GCM ciphertext) staged; NO raw label; `WalletMeta.uses_password == true` (or derived from legacy).
+### TS-LAZY-01 / TS-T2-01 — unlock re-wraps a protected HD wallet to Tier-2 keep-protection (unit)
+
+- **Tier:** unit. **T-task:** T7, T10. **Finding:** bee9c055 / R-PROMPT-BOUNDARY.
+- **Source test:** `ts_t2_01_protected_seed_rewraps_to_tier2_on_first_unlock` in `src/wallet_backend/secret_access.rs`.
+- **Preconditions:** a legacy PROTECTED `envelope.v1` (`uses_password == true`, AES-GCM ciphertext) staged; NO Tier-2 or raw label present.
 - **Steps:**
   1. hydrate (wallet locked, not migrated, `uses_password` still true);
-  2. `wallet_seed.open(passphrase)` then `ctx.handle_wallet_unlocked(&wallet_arc, Some(passphrase))` — the single existing unlock gesture, routed through `promote_hd_seed_with_passphrase`.
+  2. call `with_secret(HdSeed)` with `ScriptedAnswer::once(passphrase)` — the single existing unlock gesture, routed through `promote_hd_seed_with_passphrase`.
 - **Expected outcome (assert ALL):**
-  1. legacy envelope decrypted with the supplied passphrase inside the borrowed `Zeroizing` scope;
-  2. raw `seed.raw.v1` written, `expose_secret()` equals the true 64-byte seed;
-  3. `WalletMeta.uses_password` flipped to **`false`**;
+  1. legacy AES-GCM envelope decrypted with the supplied passphrase inside the borrowed `Zeroizing` scope;
+  2. seed re-wrapped to a **Tier-2 object-password envelope** under the same password — scheme reads `SecretScheme::Protected`, NOT `Raw`;
+  3. `WalletMeta.uses_password` stays **`true`** (protection kept — never downgraded);
   4. legacy `envelope.v1` deleted;
-  5. exactly **one** prompt's-worth of passphrase use — the unlock the user already performs (no second/out-of-band prompt).
+  5. exactly **one** prompt's-worth of passphrase use at the migrating unlock;
+  6. a password-free raw read of the re-wrapped label fails (confirms Tier-2 sealing).
 
-### TS-LAZY-02 — second unlock is prompt-free after migration (integration, lib)
+### TS-LAZY-02 — second unlock re-prompts for the object password (unit)
 
-- **Tier:** integration (lib). **T-task:** T7, T10. **Finding:** R-PROMPT-BOUNDARY.
-- **Preconditions:** state left by TS-LAZY-01 (raw present, `uses_password == false`).
-- **Steps:** drive a subsequent secret resolve for the same seed scope through `SecretAccess::with_secret` with a `TestPrompt::never()`.
-- **Expected outcome:** resolve succeeds via the unprotected fast-path; `ask_count() == 0`; `can_resolve_without_prompt(scope) == true`; `scope_has_passphrase` now reads `false` from `WalletMeta`.
+- **Tier:** unit. **T-task:** T7, T10. **Finding:** R-PROMPT-BOUNDARY.
+- **Preconditions:** state left by TS-LAZY-01 (Tier-2 envelope present, `uses_password == true`).
+- **Steps:** drive a subsequent secret resolve for the same seed scope through `SecretAccess::with_secret` with a fresh `ScriptedAnswer::once(correct_passphrase)`.
+- **Expected outcome:** resolve succeeds via the Tier-2 protected path; `ask_count() == 1` (still prompts — **not** prompt-free); scheme still reads `Protected`; `WalletMeta.uses_password` is still `true`; a `TestPrompt::never()` on this scope fails (protection not downgraded). Confirms Tier-2 keeps the user's password in place across unlocks.
 
-### TS-LAZY-03 — single-key protected lazy migration via chokepoint (unit)
+### TS-LAZY-03 — single-key protected lazy re-wrap to Tier-2 via chokepoint (unit)
 
 - **Tier:** unit. **T-task:** T7, T10. **Finding:** bee9c055.
-- **Template:** `single_key.rs::sec_002_protected_sign_via_chokepoint` (import protected, `SecretAccess::with_secret(SingleKey)` with `ScriptedAnswer`).
+- **Source test:** `ts_lazy_03_protected_single_key_rewraps_to_tier2_via_chokepoint` in `src/wallet_backend/secret_access.rs`.
 - **Preconditions:** a legacy protected `SingleKeyEntry` (`has_passphrase == true`) and matching sidecar (`has_passphrase == true`).
 - **Steps:** drive `with_secret(SingleKey{addr})` with the correct passphrase (one `ScriptedAnswer::once`).
-- **Expected outcome:** the legacy entry is decrypted JIT; inside that scope the raw 32 bytes are re-stored via the seam; `ImportedKey.has_passphrase` flipped to `false`; legacy framed entry deleted; a subsequent `with_secret` with `TestPrompt::never()` resolves the SAME key bytes prompt-free, and the recovered bytes equal the WIF plaintext.
+- **Expected outcome:** the legacy AES-GCM entry is decrypted JIT; the 32 bytes are re-wrapped to a **Tier-2 object-password envelope** (`SecretScheme::Protected`) under the same passphrase; `ImportedKey.has_passphrase` stays **`true`** (protection kept — not downgraded); legacy framed entry deleted; a subsequent `with_secret` with a fresh `ScriptedAnswer` still requires the object passphrase (`ask_count() == 1`), and the recovered bytes equal the WIF plaintext. A `TestPrompt::never()` on this scope fails (protection kept).
 
 ### TS-LAZY-KIT-01 — the unlock modal renders once for the migration path (kittest)
 

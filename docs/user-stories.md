@@ -74,7 +74,7 @@ As a user, I want my wallet protected by a passphrase so that others cannot acce
 - The prompt offers a "Keep this wallet unlocked until I close the app" option so a busy session is asked only once.
 - That option defaults to off: unless the user actively ticks it, every secret access re-prompts, and the seed is not cached.
 - The seed is never held in memory between operations: it is decrypted on demand and wiped as soon as the operation finishes.
-- After the storage-seam migration, a previously password-protected wallet's secrets move to the on-device vault and the wallet no longer prompts for its password to open; a one-time notice at that unlock explains the change and that full password protection returns in a future update.
+- After the storage-seam migration, a previously password-protected wallet's secret is re-sealed in the on-device vault under the same password (Tier-2 per-secret encryption: Argon2id + XChaCha20-Poly1305). The wallet continues to prompt just-in-time; the migration is silent (no disclosure notice).
 
 ### WAL-007: Remove a wallet [Implemented]
 **Persona:** Priya, Jordan

@@ -745,7 +745,7 @@ const LEGACY_SALT_LEN: usize = 16;
 /// (12 bytes, see `src/model/wallet/encryption.rs`).
 const LEGACY_NONCE_LEN: usize = 12;
 
-/// SEC-007 — row-level length guard for the password-related crypto
+/// Row-level length guard for the password-related crypto
 /// fields on a legacy `wallet` row. Password-protected rows must carry a
 /// 16-byte salt and a 12-byte nonce; unprotected rows must carry empty
 /// fields (the legacy DB writer bypasses encryption when
@@ -1152,7 +1152,7 @@ where
                 }
             };
 
-        // SEC-007: salt/nonce length sanity. AES-GCM requires a
+        // Salt/nonce length sanity. AES-GCM requires a
         // 16-byte Argon2 salt and a 12-byte GCM nonce when the row is
         // password-protected; when it isn't, both fields must be
         // empty. Anything else is row-level corruption — skip and
@@ -1434,7 +1434,7 @@ mod tests {
         assert_eq!(completion.sha, env!("CARGO_PKG_VERSION"));
     }
 
-    /// SEC-001 regression — the sentinel is scoped per network. Writing
+    /// Per-network sentinel regression — the sentinel is scoped per network. Writing
     /// the mainnet sentinel must not satisfy a subsequent testnet read,
     /// so a network switch correctly re-triggers the migration on the
     /// previously-unseen network.
@@ -1472,7 +1472,7 @@ mod tests {
                 .expect("read testnet")
                 .is_none(),
             "mainnet sentinel must not satisfy a testnet read — \
-             SEC-001 regression",
+             per-network sentinel regression",
         );
         // Step 3: a clean testnet migration writes its own sentinel
         // without touching the mainnet one. Both then short-circuit
@@ -1502,7 +1502,7 @@ mod tests {
         assert_eq!(devnet, "det:migration:finish_unwire:devnet:v1");
         assert_eq!(regtest, "det:migration:finish_unwire:regtest:v1");
         // All four are distinct — a misencoded network would collapse
-        // the sentinels and re-introduce SEC-001.
+        // the sentinels and re-introduce the cross-network leak.
         let set: std::collections::HashSet<_> = [&mainnet, &testnet, &devnet, &regtest]
             .into_iter()
             .collect();
@@ -1658,8 +1658,8 @@ mod tests {
 
         // The canonical secret-store label is present and decodes as
         // an unprotected SingleKeyEntry whose plaintext is 32 bytes
-        // (post-SEC-002 the in-vault payload is the versioned entry
-        // shape rather than the bare 32 raw bytes).
+        // (with per-key passphrases the in-vault payload is the versioned
+        // entry shape rather than the bare 32 raw bytes).
         let label = label_for_address(&address);
         let secret = store
             .get(&single_key_namespace_id(), &label)

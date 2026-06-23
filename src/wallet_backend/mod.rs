@@ -152,6 +152,18 @@ impl StartLatch {
 /// always operated account 0; multi-account support is out of P2 scope.
 const DEFAULT_BIP44_ACCOUNT: u32 = 0;
 
+/// Number of times [`WalletBackend::resolve_registered_wallet`] re-probes the
+/// upstream wallet manager before concluding a wallet is genuinely absent.
+/// Tolerates the brief window where a concurrent registration has created the
+/// wallet upstream but the manager has not finished exposing it via
+/// `get_wallet` — the loser of that race must not spuriously fail.
+const REGISTRATION_RESOLVE_RETRIES: u32 = 5;
+
+/// Delay between the re-probes counted by [`REGISTRATION_RESOLVE_RETRIES`].
+/// Five tries at 20ms bound the wait to ~80ms in the (rare) genuinely-absent
+/// case while comfortably covering the in-flight-registration window.
+const REGISTRATION_RESOLVE_BACKOFF: std::time::Duration = std::time::Duration::from_millis(20);
+
 /// Upstream `WalletId` = `SHA256(root_xpub || root_chain_code)`, distinct
 /// from DET's `WalletSeedHash` = `SHA256(seed_bytes)`. The map is the bridge:
 /// populated once per wallet at registration, read by every DET-keyed call.
@@ -769,7 +781,23 @@ impl WalletBackend {
         wallet_id: WalletId,
         expected_account_xpub: &[u8],
     ) -> Result<(), TaskError> {
-        let Some(pw) = self.inner.pwm.get_wallet(&wallet_id).await else {
+        // A concurrent registration that won the create race may sit between
+        // inserting the wallet upstream and exposing it through `get_wallet`, so
+        // a single probe can read `None` even though the wallet IS being
+        // registered. Re-poll a few times before declaring it missing — this is
+        // the TOCTOU tolerance for the A→B window the loser can land in
+        // (CWE-362/367). The fund-routing xpub gate below is unchanged.
+        let mut pw = None;
+        for attempt in 0..REGISTRATION_RESOLVE_RETRIES {
+            if let Some(found) = self.inner.pwm.get_wallet(&wallet_id).await {
+                pw = Some(found);
+                break;
+            }
+            if attempt + 1 < REGISTRATION_RESOLVE_RETRIES {
+                tokio::time::sleep(REGISTRATION_RESOLVE_BACKOFF).await;
+            }
+        }
+        let Some(pw) = pw else {
             return Err(TaskError::WalletBackend {
                 source: Box::new(platform_wallet::error::PlatformWalletError::WalletNotFound(
                     hex::encode(wallet_id),

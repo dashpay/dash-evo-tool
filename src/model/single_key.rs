@@ -39,9 +39,13 @@ pub struct ImportedKey {
     /// `WalletBackend` network — single-key entries are per-network by
     /// the secret store's per-network scoping.
     pub network: Network,
-    /// `true` when the key bytes inside the upstream vault are wrapped
-    /// in DET's per-key AES-GCM envelope (SEC-002 Option C). The UI
-    /// keys the unlock prompt off this flag — when `false`, callers can
+    /// `true` when the imported key requires a per-key passphrase to use.
+    /// The on-disk shape depends on whether the key has been unlocked since
+    /// Tier-2 adoption: a fresh import or a still-unmigrated entry is stored
+    /// in DET's legacy AES-GCM `SingleKeyEntry` envelope; after the first
+    /// unlock the entry is re-sealed via the upstream Tier-2 envelope
+    /// (Argon2id + XChaCha20-Poly1305) under the SAME password. In both
+    /// shapes the flag is the prompt-UI signal — `false` means callers can
     /// sign without prompting.
     #[serde(default)]
     pub has_passphrase: bool,

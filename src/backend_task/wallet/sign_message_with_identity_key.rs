@@ -44,9 +44,11 @@ impl AppContext {
                 let key = plaintext
                     .expose_identity_key()
                     .ok_or(TaskError::IdentityKeyMissing)?;
+                // Present-but-malformed key bytes are a decrypt/parse failure,
+                // not a signing failure — same mapping as the display sibling.
                 let secret_key = SecretKey::from_byte_array(key).map_err(|detail| {
                     tracing::warn!(error = %detail, "Identity-key sign secret construction failed");
-                    TaskError::WalletMessageSigningFailed
+                    TaskError::SecretDecryptFailed
                 })?;
                 // Identity keys are compressed by convention.
                 Ok(dash_signed_message(message.as_str(), &secret_key, true))

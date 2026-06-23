@@ -605,7 +605,7 @@ mod tests {
         assert_no_leak_bytes(rendered, secret, context);
     }
 
-    /// QA-001 — the redacting `Debug` (and `Display`) on `PrivateKeyData` must
+    /// The redacting `Debug` (and `Display`) on `PrivateKeyData` must
     /// never emit raw plaintext private-key bytes, and that guarantee must hold
     /// transitively through the derived-`Debug` chain
     /// `QualifiedIdentity -> KeyStorage -> PrivateKeyData`.

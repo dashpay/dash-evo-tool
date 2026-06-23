@@ -294,6 +294,31 @@ fn migrate_keystore_to_vault(
     KeystoreMigration::Migrated(migrated)
 }
 
+/// Encode `qi` for at-rest storage with every resident plaintext private key
+/// moved into the secret vault FIRST, leaving `InVault` placeholders in the
+/// returned blob. This is the write-path twin of [`migrate_keystore_to_vault`]
+/// (the load-path migration): a freshly inserted or updated identity never
+/// writes `Clear` / `AlwaysClear` key bytes to `det-app.sqlite`.
+///
+/// Funds-safe ordering: the vault `store_all` happens BEFORE the bytes are
+/// produced. On a vault-write failure the error propagates and the caller
+/// persists nothing — never plaintext, never `InVault` placeholders without the
+/// backing vault entries. Operates on a clone so the caller's in-memory
+/// identity keeps its resident keys (signing continues this session). A blob
+/// with no plaintext keys (already migrated / watch-only) encodes unchanged.
+fn encode_identity_blob_vault_first(
+    secret_store: &Arc<platform_wallet_storage::secrets::SecretStore>,
+    id: &[u8; 32],
+    qi: &QualifiedIdentity,
+) -> std::result::Result<Vec<u8>, TaskError> {
+    let mut qi = qi.clone();
+    let taken = qi.private_keys.take_plaintext_for_vault();
+    if !taken.is_empty() {
+        crate::wallet_backend::IdentityKeyView::new(secret_store, *id).store_all(&taken)?;
+    }
+    Ok(qi.to_bytes())
+}
+
 fn purge_identity_scope(
     kv: &crate::wallet_backend::DetKv,
     id: &[u8; 32],
@@ -412,14 +437,19 @@ impl AppContext {
                 (None, None)
             }
         };
+        let id = qualified_identity.identity.id().to_buffer();
+        // Vault-first: move any plaintext keys into the vault before encoding, so
+        // the at-rest blob carries only `InVault` placeholders. A vault-write
+        // failure aborts the insert (nothing is persisted).
+        let qi_bytes =
+            encode_identity_blob_vault_first(&self.secret_store, &id, qualified_identity)?;
         let stored = StoredQualifiedIdentity {
-            qi_bytes: qualified_identity.to_bytes(),
+            qi_bytes,
             status: qualified_identity.status.as_u8(),
             identity_type: format!("{:?}", qualified_identity.identity_type),
             wallet_hash,
             wallet_index,
         };
-        let id = qualified_identity.identity.id().to_buffer();
         index_add_identity(&kv, &id)?;
         kv.put(DetScope::Identity(&id), IDENTITY_KEY, &stored)
             .map_err(|source| TaskError::IdentityStorage { source })
@@ -443,8 +473,12 @@ impl AppContext {
             .as_ref()
             .map(|s| (s.wallet_hash, s.wallet_index))
             .unwrap_or((None, None));
+        // Vault-first: move any plaintext keys into the vault before encoding, so
+        // an update never lands `Clear` / `AlwaysClear` key bytes on disk.
+        let qi_bytes =
+            encode_identity_blob_vault_first(&self.secret_store, &id, qualified_identity)?;
         let stored = StoredQualifiedIdentity {
-            qi_bytes: qualified_identity.to_bytes(),
+            qi_bytes,
             status: qualified_identity.status.as_u8(),
             identity_type: format!("{:?}", qualified_identity.identity_type),
             wallet_hash,
@@ -476,7 +510,9 @@ impl AppContext {
         };
         let mut qi = decode_stored_identity(&stored.qi_bytes, self.network)?;
         qi.alias = new_alias.map(str::to_string);
-        stored.qi_bytes = qi.to_bytes();
+        // Re-encode vault-first so an alias edit on a not-yet-migrated blob does
+        // not rewrite resident plaintext keys back to disk.
+        stored.qi_bytes = encode_identity_blob_vault_first(&self.secret_store, &id, &qi)?;
         kv.put(scope, IDENTITY_KEY, &stored)
             .map_err(|source| TaskError::IdentityStorage { source })
     }
@@ -1529,7 +1565,7 @@ mod tests {
         }
     }
 
-    /// QA-002 — `migrate_keystore_to_vault` content-detects Clear/AlwaysClear,
+    /// Load-path migration — `migrate_keystore_to_vault` content-detects Clear/AlwaysClear,
     /// stores them in the vault FIRST, then rewrites the blob to InVault.
     /// Asserts: vault-first (the raw bytes are present), the wallet-derived key
     /// is untouched, zero plaintext remains, and the persist closure ran AFTER
@@ -1613,7 +1649,71 @@ mod tests {
         );
     }
 
-    /// QA-005 — write-fault no-loss ordering. With the vault made unwritable so
+    /// Write-path twin of the load-path migration: the insert/update encoder
+    /// (`encode_identity_blob_vault_first`) moves plaintext keys into the vault
+    /// FIRST and returns an `InVault`-only blob, so a freshly inserted or
+    /// updated identity never lands `Clear` / `AlwaysClear` key bytes in
+    /// `det-app.sqlite`. Regression for the gap where the migration only ran on
+    /// bulk load while the write paths still serialized plaintext.
+    #[test]
+    fn write_path_encodes_invault_only_and_vaults_plaintext() {
+        use crate::wallet_backend::leak_test_support::assert_no_leak_bytes;
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = fresh_vault(dir.path());
+        let id = id(0x55);
+        let high = [0xA1; 32];
+        let medium = [0xB2; 32];
+        let qi = qi_with_plaintext_and_derived(high, medium);
+
+        let blob = encode_identity_blob_vault_first(&store, &id, &qi).expect("encode");
+
+        // The persisted blob carries neither plaintext key in any rendered form.
+        let rendered = format!("{blob:?}");
+        assert_no_leak_bytes(&rendered, &high, "identity write-path blob (HIGH)");
+        assert_no_leak_bytes(&rendered, &medium, "identity write-path blob (MEDIUM)");
+
+        // Decoding the stored blob yields no plaintext key variant at all.
+        let decoded = QualifiedIdentity::from_bytes(&blob).expect("decode");
+        for (_, d) in decoded.private_keys.private_keys.values() {
+            assert!(
+                !matches!(d, PrivateKeyData::Clear(_) | PrivateKeyData::AlwaysClear(_)),
+                "persisted write-path blob must carry no plaintext key",
+            );
+        }
+
+        // The plaintext bytes live in the vault, retrievable per (target, key_id).
+        let view = IdentityKeyView::new(&store, id);
+        assert_eq!(
+            *view
+                .get(&PrivateKeyTarget::PrivateKeyOnMainIdentity, 1)
+                .unwrap()
+                .unwrap(),
+            high
+        );
+        assert_eq!(
+            *view
+                .get(&PrivateKeyTarget::PrivateKeyOnMainIdentity, 2)
+                .unwrap()
+                .unwrap(),
+            medium
+        );
+
+        // The caller's in-memory identity keeps its resident keys (signing still
+        // works this session) — the encoder operates on a clone.
+        let clear_in_caller = qi
+            .private_keys
+            .private_keys
+            .values()
+            .filter(|(_, d)| matches!(d, PrivateKeyData::Clear(_) | PrivateKeyData::AlwaysClear(_)))
+            .count();
+        assert_eq!(
+            clear_in_caller, 2,
+            "the caller's identity must keep its resident plaintext for this session",
+        );
+    }
+
+    /// Write-fault no-loss ordering. With the vault made unwritable so
     /// `store_all` fails, the migration restores the resident plaintext, does
     /// NOT call persist, and reports `VaultWriteFailed` — keys are never lost on
     /// a mid-write fault (the write half CRASH-01's read half does not cover).
@@ -1655,7 +1755,7 @@ mod tests {
         );
     }
 
-    /// QA-003 — `clear_identity_vault_keys` removes the deleted identity's vault
+    /// Scoped key deletion — `clear_identity_vault_keys` removes the deleted identity's vault
     /// keys AND leaves other identities' keys untouched (isolation), via the
     /// public delete entry point. Builds a real `AppContext`-free vault and
     /// drives the free `IdentityKeyView` the deletion uses.

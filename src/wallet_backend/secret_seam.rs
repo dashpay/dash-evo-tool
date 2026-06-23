@@ -355,7 +355,7 @@ mod tests {
     /// legitimately plaintext by design — this asserts the persisted file, not
     /// the return value.
     ///
-    /// SEC-002 scope note: this proves **non-literal-plaintext**, NOT
+    /// Scope note: this proves **non-literal-plaintext**, NOT
     /// confidentiality. The secret here is stored Tier-1 in a `file_unprotected`
     /// (keyless) vault, which upstream documents as "obfuscation, not
     /// confidentiality" — the key derives from an empty passphrase under a public

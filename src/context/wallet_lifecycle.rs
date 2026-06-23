@@ -596,7 +596,7 @@ impl AppContext {
 
     /// Persist a newly-registered wallet's metadata (alias / is_main /
     /// core_wallet_name + master xpub) to the wallet-meta sidecar.
-    /// **Fail-closed** (SEC-002): cold-boot hydration enumerates ONLY this
+    /// **Fail-closed**: cold-boot hydration enumerates ONLY this
     /// sidecar (`hydrate_wallets_for_network` lists `WalletMetaView`), and
     /// nothing reconstructs the meta from the upstream persistor — so a wallet
     /// with no meta row never rehydrates and its funds become unreachable. The
@@ -623,7 +623,7 @@ impl AppContext {
     /// a Core address (no Platform-payment addresses yet). Idempotent: a
     /// fully-bootstrapped wallet returns `false`.
     fn wallet_needs_bootstrap(guard: &Wallet) -> bool {
-        // INTENTIONAL(CODE-006): Bootstrap checks only PlatformPayment address
+        // INTENTIONAL: Bootstrap checks only PlatformPayment address
         // type. Other platform address types may trigger redundant
         // re-derivation, but `bootstrap_known_addresses` is idempotent so this
         // is safe.
@@ -1636,7 +1636,7 @@ mod tests {
         second.shutdown().await;
     }
 
-    /// QA-007: a failure at the (fallible) wiring step must surface — the
+    /// A failure at the (fallible) wiring step must surface — the
     /// chokepoint returns `Err` AND flips the SPV indicator to `Error`, so the
     /// user does not silently fall back to `Disconnected` with no feedback.
     ///
@@ -1676,7 +1676,7 @@ mod tests {
         );
     }
 
-    /// SEC-001/SEC-002 regression, adapted to the JIT secret model: a
+    /// Cold-boot signability regression, adapted to the JIT secret model: a
     /// no-password wallet must remain signable after a cold-boot hydration
     /// without any seed ever being parked in a long-lived cache.
     ///
@@ -1738,7 +1738,7 @@ mod tests {
         backend.shutdown().await;
     }
 
-    /// QA-007: leaving a network must not strand session-cached secrets on the
+    /// Leaving a network must not strand session-cached secrets on the
     /// outgoing context. `finalize_network_switch` funnels through
     /// [`WalletBackend::forget_all_secrets`]; this exercises that exact call
     /// against a populated session cache and asserts it is emptied — the JIT
@@ -2724,7 +2724,7 @@ mod tests {
         );
     }
 
-    /// SEC-002 — when the wallet-meta sidecar write fails, `register_wallet`
+    /// When the wallet-meta sidecar write fails, `register_wallet`
     /// must FAIL CLOSED: return `Err` and NOT keep the wallet. Cold-boot
     /// hydration (`hydrate_wallets_for_network`) enumerates ONLY the meta
     /// sidecar — `ctx.wallets` is rebuilt solely from `WalletMetaView::list`.
@@ -2818,7 +2818,7 @@ mod tests {
                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, 0, NULL, 'testnet', NULL)",
                 rusqlite::params![
                     seed_hash.as_slice(),
-                    // Unprotected wallet: salt/nonce must be empty (SEC-007),
+                    // Unprotected wallet: salt/nonce must be empty,
                     // the encrypted_seed slot carries the verbatim 64-byte seed.
                     seed.to_vec(),
                     Vec::<u8>::new(),
@@ -2893,7 +2893,7 @@ mod tests {
                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, 0, NULL, 'testnet', NULL)",
                 rusqlite::params![
                     seed_hash.as_slice(),
-                    // Unprotected wallet: salt/nonce must be empty (SEC-007), the
+                    // Unprotected wallet: salt/nonce must be empty, the
                     // encrypted_seed slot carries the verbatim 64-byte seed.
                     seed.to_vec(),
                     Vec::<u8>::new(),
@@ -2935,7 +2935,7 @@ mod tests {
         backend.shutdown().await;
     }
 
-    /// F140 (protected half — QA-001) — a *password-protected* wallet migrated
+    /// Protected cold-start hydration — a *password-protected* wallet migrated
     /// from legacy `data.db` at cold start must hydrate into `ctx.wallets` but
     /// must NOT be upstream-registered until the user unlocks it. The cold-start
     /// migration re-runs the W2 cold-boot bridge
@@ -3204,7 +3204,7 @@ mod tests {
             "exactly one wallet must be watched after the unlock reconciliation"
         );
 
-        // QA-004 (Tier-2) — keep-protection migration post-conditions. The
+        // Tier-2 keep-protection migration post-conditions. The
         // unlock decrypted the legacy AES-GCM envelope and RE-WRAPPED the seed
         // as a Tier-2 object-password envelope (protection KEPT, not downgraded
         // to a raw secret), then dropped the legacy envelope.
@@ -3704,7 +3704,7 @@ mod tests {
     }
 
     // ──────────────────────────────────────────────────────────────────────
-    // Automatic identity-discovery trigger / latch / re-arm (QA-002, QA-003)
+    // Automatic identity-discovery trigger / latch / re-arm
     // ──────────────────────────────────────────────────────────────────────
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

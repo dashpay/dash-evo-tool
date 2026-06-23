@@ -596,7 +596,7 @@ impl SecretAccess {
                         let seed = view
                             .get_protected(seed_hash, pw)?
                             .ok_or(TaskError::SecretSeamMissing)?;
-                        // SEC-001: GC a legacy `envelope.v1` orphaned by a crash
+                        // GC a legacy `envelope.v1` orphaned by a crash
                         // or delete-failure between the migration's
                         // `set_protected` and `delete`. The Absent branch (the
                         // only other deleter) is never re-entered once the seed
@@ -630,7 +630,18 @@ impl SecretAccess {
                         } else {
                             view.set_raw(seed_hash, &seed)?;
                         }
-                        view.delete(seed_hash)?;
+                        // Best-effort GC of the legacy envelope, matching the
+                        // Protected branch above: the new value is already
+                        // written (upsert) and the scheme probe prefers it on the
+                        // next read, so a transient delete failure must not fail a
+                        // successful unlock. A stale envelope is cleaned up later.
+                        if let Err(e) = view.delete(seed_hash) {
+                            tracing::warn!(
+                                target = "wallet_backend::secret_access",
+                                error = ?e,
+                                "Best-effort GC of the legacy envelope deferred after migration",
+                            );
+                        }
                         Ok(Plaintext::HdSeed(seed))
                     }
                 }
@@ -1875,7 +1886,7 @@ mod tests {
         view.set_protected(&hash_a, &seed_a, &pw_a).unwrap();
         view.set_protected(&hash_b, &seed_b, &pw_b).unwrap();
 
-        // SEC-004 — the NEGATIVE crypto property: A's password CANNOT open B.
+        // Negative crypto property: A's password CANNOT open B's envelope.
         // Upstream binds the AEAD AAD to wallet_id‖label and derives a fresh
         // per-object key, so B's envelope rejects A's password with a tag
         // failure (`WrongPassword`) rather than yielding A's — or any — bytes.

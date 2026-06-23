@@ -39,8 +39,14 @@ impl AppContext {
                 let key = plaintext
                     .expose_identity_key()
                     .ok_or(TaskError::IdentityKeyMissing)?;
-                let secret_key =
-                    SecretKey::from_byte_array(key).map_err(|_| TaskError::IdentityKeyMissing)?;
+                // The key bytes WERE found in the vault — they are merely not a
+                // valid secp256k1 scalar. Report a decrypt/parse failure, not
+                // "missing" (which would misdirect the user to re-import), and
+                // keep this consistent with the sign-message sibling.
+                let secret_key = SecretKey::from_byte_array(key).map_err(|detail| {
+                    tracing::warn!(error = %detail, "Identity-key display secret construction failed");
+                    TaskError::SecretDecryptFailed
+                })?;
                 let private_key = PrivateKey::new(secret_key, network);
                 Ok(Secret::new(private_key.to_wif()))
             })

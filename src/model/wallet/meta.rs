@@ -98,13 +98,15 @@ pub struct WalletMeta {
     #[serde(default)]
     pub xpub_encoded: Vec<u8>,
     /// `true` when the wallet's seed was stored under a user password. Moved
-    /// out of the legacy seed envelope into this non-secret sidecar. After the
-    /// raw-seam migration this flips to `false` (the password no longer gates
-    /// the at-rest secret) — see the migration's lazy-unlock path.
+    /// out of the legacy seed envelope into this non-secret sidecar. Under the
+    /// Tier-2 keep-protection policy the flag **stays** `true` after migration —
+    /// the seed is re-wrapped under the same object password (never downgraded
+    /// to raw), so the persisted flag stays accurate for the prompt UI on every
+    /// future unlock.
     #[serde(default)]
     pub uses_password: bool,
     /// Optional user-set password hint, moved out of the legacy seed envelope.
-    /// Shown next to the unlock prompt for a not-yet-migrated password wallet.
+    /// Shown next to the unlock prompt for protected wallets.
     #[serde(default)]
     pub password_hint: Option<String>,
 }
@@ -151,7 +153,7 @@ mod tests {
     /// `read_meta` relies on: a legacy 4-field blob FAILS to decode as the new
     /// 6-field `WalletMeta` (runs out of bytes) but decodes as `WalletMetaV1`;
     /// a 6-field blob decodes as `WalletMeta`. This is why "try new, then V1"
-    /// is correct and order-sensitive. Includes the SEC-003 collision case (a
+    /// is correct and order-sensitive. Includes the leading-byte collision case (a
     /// 1-char alias, whose bincode length varint is `1`) — the old leading-byte
     /// dispatch would have mis-routed it; the try-both reader does not.
     #[test]

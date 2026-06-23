@@ -26,6 +26,7 @@ use crate::backend_task::error::TaskError;
 use crate::model::wallet::meta::WalletMeta;
 use crate::model::wallet::seed_envelope::StoredSeedEnvelope;
 use crate::model::wallet::{ClosedKeyItem, OpenWalletSeed, Wallet, WalletSeed, WalletSeedHash};
+use crate::wallet_backend::secret_seam::SecretScheme;
 use std::collections::{BTreeMap, HashMap};
 
 use super::WalletBackend;
@@ -92,19 +93,46 @@ fn reconstruct_wallet(
     seed_hash: &WalletSeedHash,
     meta: &WalletMeta,
 ) -> Result<Option<Wallet>, TaskError> {
-    // Raw seam value wins (precedence raw > legacy). A migrated no-password
-    // wallet has no envelope — its seed rides raw under `seed.raw.v1` and its
-    // non-secret metadata (xpub) lives in `WalletMeta`.
-    if let Some(raw) = seed_view.get_raw(seed_hash)? {
-        let envelope = StoredSeedEnvelope {
-            encrypted_seed: raw.to_vec(),
-            salt: Vec::new(),
-            nonce: Vec::new(),
-            password_hint: meta.password_hint.clone(),
-            uses_password: false,
-            xpub_encoded: meta.xpub_encoded.clone(),
-        };
-        return reconstruct_from_envelope(seed_hash, envelope, meta);
+    // Branch on the raw-seam at-rest scheme BEFORE reading the seed. A Tier-2
+    // protected seed is intentionally unreadable at cold boot (the object
+    // password is not available without a prompt), so probing the scheme first
+    // keeps a `get_raw` (which would surface `NeedsPassword`) off the protected
+    // path and lets the wallet still render closed.
+    match seed_view.scheme(seed_hash)? {
+        // Tier-2 protected: reconstruct a closed (watch-only) wallet from the
+        // public master xpub in `WalletMeta` — never read the seed. The unlock
+        // gesture later supplies the password through the JIT chokepoint.
+        SecretScheme::Protected => {
+            let envelope = StoredSeedEnvelope {
+                encrypted_seed: Vec::new(),
+                salt: Vec::new(),
+                nonce: Vec::new(),
+                password_hint: meta.password_hint.clone(),
+                uses_password: true,
+                xpub_encoded: meta.xpub_encoded.clone(),
+            };
+            return reconstruct_from_envelope(seed_hash, envelope, meta);
+        }
+        // Tier-1 raw seed present (precedence raw > legacy). A migrated
+        // no-password wallet has no envelope — its seed rides raw under
+        // `seed.raw.v1` and its non-secret metadata (xpub) lives in `WalletMeta`.
+        SecretScheme::Unprotected => {
+            let raw = seed_view
+                .get_raw(seed_hash)?
+                .ok_or(TaskError::SecretSeamMissing)?;
+            let envelope = StoredSeedEnvelope {
+                encrypted_seed: raw.to_vec(),
+                salt: Vec::new(),
+                nonce: Vec::new(),
+                password_hint: meta.password_hint.clone(),
+                uses_password: false,
+                xpub_encoded: meta.xpub_encoded.clone(),
+            };
+            return reconstruct_from_envelope(seed_hash, envelope, meta);
+        }
+        // No raw value yet — fall through to the legacy `envelope.v1` reader and
+        // its eager/lazy migration below.
+        SecretScheme::Absent => {}
     }
 
     let envelope = match seed_view.get(seed_hash)? {
@@ -129,6 +157,9 @@ fn reconstruct_wallet(
         && envelope.encrypted_seed.len() == EXPECTED_SEED_LEN as usize
         && let Ok(seed) = <[u8; 64]>::try_from(envelope.encrypted_seed.as_slice())
     {
+        // Keep the extracted raw seed in `Zeroizing` so the stack copy wipes on
+        // drop, matching every other raw-seed site introduced by this work.
+        let seed = zeroize::Zeroizing::new(seed);
         if let Err(e) = seed_view.set_raw(seed_hash, &seed) {
             tracing::warn!(
                 target = "wallet_backend::hydration",
@@ -602,10 +633,10 @@ mod tests {
         assert!(result.is_none(), "empty xpub must collapse to None");
     }
 
-    /// SEC-008 — a non-password envelope whose `encrypted_seed` is not
-    /// 64 bytes now surfaces [`TaskError::SeedLengthInvalid`] with the
-    /// alias-as-label and the observed length, instead of silently
-    /// degrading to a closed wallet.
+    /// A non-password envelope whose `encrypted_seed` is not 64 bytes
+    /// surfaces [`TaskError::SeedLengthInvalid`] with the alias-as-label
+    /// and the observed length, instead of silently degrading to a
+    /// closed wallet.
     #[test]
     fn sec_008_non_64_byte_seed_surfaces_typed_error() {
         let seed = [0xBEu8; 64];
@@ -682,5 +713,131 @@ mod tests {
         );
         assert!(wallet.is_main);
         assert_eq!(wallet.alias.as_deref(), Some("new"));
+    }
+
+    /// In-memory `KvStore` backing a [`WalletMetaView`] so the cold-boot
+    /// enumeration path can be exercised without a real DET database.
+    #[derive(Default)]
+    struct InMemoryKv {
+        slots: std::sync::Mutex<Vec<(platform_wallet_storage::ObjectId, String, Vec<u8>)>>,
+    }
+
+    impl platform_wallet_storage::KvStore for InMemoryKv {
+        fn get(
+            &self,
+            scope: &platform_wallet_storage::ObjectId,
+            key: &str,
+        ) -> Result<Option<Vec<u8>>, platform_wallet_storage::KvError> {
+            Ok(self
+                .slots
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|(s, k, _)| s == scope && k == key)
+                .map(|(_, _, v)| v.clone()))
+        }
+        fn put(
+            &self,
+            scope: &platform_wallet_storage::ObjectId,
+            key: &str,
+            value: &[u8],
+        ) -> Result<(), platform_wallet_storage::KvError> {
+            let mut slots = self.slots.lock().unwrap();
+            if let Some(slot) = slots.iter_mut().find(|(s, k, _)| s == scope && k == key) {
+                slot.2 = value.to_vec();
+            } else {
+                slots.push((scope.clone(), key.to_string(), value.to_vec()));
+            }
+            Ok(())
+        }
+        fn delete(
+            &self,
+            scope: &platform_wallet_storage::ObjectId,
+            key: &str,
+        ) -> Result<(), platform_wallet_storage::KvError> {
+            self.slots
+                .lock()
+                .unwrap()
+                .retain(|(s, k, _)| !(s == scope && k == key));
+            Ok(())
+        }
+        fn list_keys(
+            &self,
+            scope: &platform_wallet_storage::ObjectId,
+            prefix: Option<&str>,
+        ) -> Result<Vec<String>, platform_wallet_storage::KvError> {
+            let pred = |k: &str| -> bool { prefix.is_none_or(|p| k.starts_with(p)) };
+            Ok(self
+                .slots
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(s, k, _)| s == scope && pred(k))
+                .map(|(_, k, _)| k.clone())
+                .collect())
+        }
+    }
+
+    /// Regression for the cold-boot disappearance of a Tier-2-protected HD
+    /// seed: a seed re-wrapped under its own object password (keep-protection)
+    /// must rehydrate as a CLOSED wallet, not be skipped. Before the
+    /// scheme-first branch, `reconstruct_wallet` called `get_raw` on the
+    /// protected label, which surfaced `NeedsPassword`; the `?` then dropped the
+    /// wallet from the picker on every launch.
+    #[test]
+    fn tier2_protected_seed_reconstructs_closed_and_is_listed() {
+        use crate::wallet_backend::wallet_meta::WalletMetaView;
+        use platform_wallet_storage::secrets::SecretString;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let store = fresh_secret_store(dir.path());
+        let view = WalletSeedView::new(&store);
+
+        let seed = [0x91u8; 64];
+        let network = Network::Testnet;
+        let xpub = xpub_bytes_for(seed, network);
+        let hash = seed_hash_for(seed);
+
+        // Keep-protection migration shape: the seed lives Tier-2 under its own
+        // object password at `seed.raw.v1`; no legacy envelope remains.
+        let password = SecretString::new("correct-horse-battery");
+        view.set_protected(&hash, &seed, &password)
+            .expect("set_protected");
+        assert_eq!(
+            view.scheme(&hash).expect("scheme"),
+            SecretScheme::Protected,
+            "seed must read back as Tier-2 protected without a password",
+        );
+
+        let meta = WalletMeta {
+            alias: "savings".into(),
+            is_main: false,
+            core_wallet_name: None,
+            xpub_encoded: xpub,
+            uses_password: true,
+            password_hint: Some("the usual".into()),
+        };
+
+        // Direct reconstruction returns Ok(Some(closed)) — never an Err.
+        let wallet = reconstruct_wallet(&view, &hash, &meta)
+            .expect("no error from a protected seed")
+            .expect("protected wallet must rehydrate, not be skipped");
+        assert!(!wallet.is_open(), "protected seed must rehydrate closed");
+        assert!(wallet.uses_password);
+        assert_eq!(wallet.seed_hash(), hash);
+        assert_eq!(wallet.password_hint().as_deref(), Some("the usual"));
+
+        // And it appears in the cold-boot enumeration (not skipped).
+        let meta_kv = std::sync::Arc::new(crate::wallet_backend::DetKv::from_store(
+            std::sync::Arc::new(InMemoryKv::default()),
+        ));
+        let meta_view = WalletMetaView::new(&meta_kv);
+        meta_view.set(network, &hash, &meta).expect("persist meta");
+        let listed =
+            hydrate_hd_wallets_from_views(&view, &meta_view, network).expect("hydration ok");
+        assert!(
+            listed.iter().any(|(h, _)| *h == hash),
+            "the protected wallet must appear in the cold-boot listing",
+        );
     }
 }

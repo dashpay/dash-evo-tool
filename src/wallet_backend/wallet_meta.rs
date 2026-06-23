@@ -409,14 +409,14 @@ mod tests {
         assert_eq!(decoded.as_slice(), seed.as_slice());
     }
 
-    /// PROJ-001/002/003 (WalletMeta leg) — an OLD 4-field blob, written exactly
+    /// Dual-format legacy-blob upgrade — an OLD 4-field blob, written exactly
     /// as the base branch did (`kv.put::<WalletMetaV1>`), is read back through
     /// the view: its `alias`/`is_main`/`core_wallet_name`/`xpub` are preserved
     /// (NOT silently lost to a `Vec<u8>` type-confusion), the new fields default,
     /// and the entry is RE-STORED in the new 6-field shape (a subsequent
     /// `get::<WalletMeta>` succeeds directly). Covers a 1-char alias (the
-    /// SEC-003 leading-byte-collision case). Makes the `WalletMetaV1` legacy
-    /// path live + tested end-to-end.
+    /// leading-byte-collision case a version-tag dispatch would mis-route).
+    /// Makes the `WalletMetaV1` legacy path live + tested end-to-end.
     #[test]
     fn old_wallet_meta_blob_decodes_preserves_fields_and_restores() {
         for alias in ["paycheque", "a", "ab"] {

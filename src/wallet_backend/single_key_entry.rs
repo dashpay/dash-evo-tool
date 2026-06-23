@@ -1,5 +1,4 @@
-//! Per-key passphrase envelope for imported single-key WIFs (SEC-002,
-//! Option C).
+//! Per-key passphrase envelope for imported single-key WIFs.
 //!
 //! The upstream `SecretStore` row at `single_key_priv.<addr>` used to
 //! hold the raw 32-byte secret. With per-key passphrases, the row
@@ -28,7 +27,7 @@ use crate::backend_task::error::TaskError;
 pub const SINGLE_KEY_ENTRY_VERSION: u8 = 1;
 
 /// Length of a raw (un-versioned) legacy entry — the bare 32 private
-/// key bytes that pre-SEC-002 code wrote.
+/// key bytes that pre-per-key-passphrase code wrote.
 pub const LEGACY_RAW_KEY_LEN: usize = 32;
 
 /// On-disk shape of a single imported private key. See module docs.
@@ -126,7 +125,7 @@ impl SingleKeyEntry {
     /// entries the caller must supply the passphrase; for unprotected
     /// entries it is ignored.
     ///
-    /// Returned wrapped in [`Zeroizing`] (SEC-103): the key bytes zeroize when
+    /// Returned wrapped in [`Zeroizing`]: the key bytes zeroize when
     /// the caller drops the binding, so a copy never lingers on the stack after
     /// crossing this boundary.
     pub fn decrypt(&self, passphrase: Option<&str>) -> Result<Zeroizing<[u8; 32]>, TaskError> {

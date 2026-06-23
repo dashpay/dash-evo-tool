@@ -1,23 +1,29 @@
-//! Encrypted-envelope view over the upstream [`SecretStore`].
+//! Seed-storage view over the upstream [`SecretStore`].
 //!
-//! Each HD wallet's seed envelope (the full
-//! [`StoredSeedEnvelope`] struct — ciphertext, salt, nonce, optional
-//! hint, `uses_password` flag, master xpub) is bincode-encoded and
-//! stored in the upstream Argon2id + XChaCha20-Poly1305 vault at one
-//! label per wallet:
+//! The active write path stores each HD wallet's RAW 64-byte BIP-39 seed
+//! through the raw secret seam at one label per wallet:
 //!
 //! ```text
 //! service: WalletId(seed_hash)
-//! label:   "envelope.v1"
-//! value:   SecretBytes(bincode-encoded StoredSeedEnvelope)
+//! label:   "seed.raw.v1"
+//! value:   SecretBytes(raw seed)            // Tier-1 unprotected, OR
+//!          a Tier-2 object-password envelope // Argon2id + XChaCha20-Poly1305
 //! ```
 //!
+//! An unprotected seed is written Tier-1 via [`WalletSeedView::set_raw`]; a
+//! password-protected seed is sealed Tier-2 under its OWN object password via
+//! [`WalletSeedView::set_protected`]. The non-secret metadata (`uses_password`,
+//! hint, master xpub) lives in `WalletMeta`, not next to the seed.
+//!
+//! The legacy `envelope.v1` row — a bincode-encoded [`StoredSeedEnvelope`]
+//! whose ciphertext was DET's own AES-GCM envelope — is retained DECODE-ONLY as
+//! a migration reader ([`WalletSeedView::get`] /
+//! [`WalletSeedView::legacy_envelope_get`]). Every production write now goes
+//! through the raw/`set_protected` seam; a legacy envelope is rewritten to the
+//! raw label on the first load/unlock and then deleted.
+//!
 //! The `WalletSeedHash` is reused directly as the upstream `WalletId`
-//! (both are `[u8; 32]`). The envelope itself is already AES-GCM
-//! encrypted when `uses_password` is set, and the vault adds its own
-//! at-rest layer on top — the double encryption is a deliberate
-//! trade-off so the per-wallet password UX stays identical to the
-//! legacy behaviour.
+//! (both are `[u8; 32]`).
 //!
 //! All accessors funnel storage errors into the dedicated
 //! [`TaskError::WalletSeedStorage`] envelope so banner copy can speak
@@ -380,7 +386,7 @@ mod tests {
         assert!(view.get(&seed_hash).unwrap().is_none());
     }
 
-    /// SEC-005 — a freshly-written envelope's on-disk payload starts
+    /// A freshly-written envelope's on-disk payload starts
     /// with [`STORED_SEED_ENVELOPE_VERSION`], and a legacy bare-bincode
     /// payload (written without the leading version byte) still decodes
     /// cleanly. Locks the framing the reader needs to keep accepting

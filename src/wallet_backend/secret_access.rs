@@ -202,6 +202,10 @@ struct SecretAccessInner {
     /// Single-key index (address → alias / hint / has_passphrase) for
     /// prompt copy and the unprotected fast-path check.
     single_key_index: RwLock<BTreeMap<String, ImportedKey>>,
+    /// Identity prompt-copy index (identity id → alias / password hint) for
+    /// the sign-time prompt of an opted-in (Tier-2) identity. Display-only;
+    /// the vault scheme — not this index — gates whether a prompt fires.
+    identity_prompt_index: RwLock<BTreeMap<[u8; 32], IdentityPromptMeta>>,
     /// The UI seam. `dyn` so the host is chosen at construction.
     prompt: Arc<dyn SecretPrompt>,
     /// Opt-in session cache. Empty by default; a scope lands here only on
@@ -224,6 +228,22 @@ pub struct WalletPromptMeta {
     pub password_hint: Option<String>,
 }
 
+/// Minimal prompt-copy metadata for an identity whose keys may be
+/// password-protected (SEC-001). Seeded from the loaded `QualifiedIdentity`
+/// alias and the DET-side `IdentityMetaView` hint at hydration so the
+/// sign-time prompt shows the right identity label and hint.
+///
+/// This is display-only: it NEVER decides whether to prompt (the vault scheme
+/// does, in [`SecretAccess::scope_has_passphrase`]). A missing entry degrades
+/// to a generic label, never an error.
+#[derive(Clone, Debug, Default)]
+pub struct IdentityPromptMeta {
+    /// User-visible identity label (DPNS name or truncated id), if any.
+    pub alias: Option<String>,
+    /// User-set password hint for this identity's keys, if any.
+    pub password_hint: Option<String>,
+}
+
 impl SecretAccess {
     /// Build a chokepoint over `secret_store`, prompting through `prompt`.
     ///
@@ -240,6 +260,7 @@ impl SecretAccess {
                 secret_store,
                 wallet_meta: RwLock::new(BTreeMap::new()),
                 single_key_index: RwLock::new(BTreeMap::new()),
+                identity_prompt_index: RwLock::new(BTreeMap::new()),
                 prompt,
                 session: RwLock::new(HashMap::new()),
                 network,
@@ -265,6 +286,16 @@ impl SecretAccess {
     /// so the unprotected fast-path can skip the prompt.
     pub fn set_single_key_index(&self, index: BTreeMap<String, ImportedKey>) {
         if let Ok(mut guard) = self.inner.single_key_index.write() {
+            *guard = index;
+        }
+    }
+
+    /// Replace the identity prompt-copy index. Used at hydration time and
+    /// after an opt-in migration so the sign-time prompt for a protected
+    /// identity shows its label and password hint. Display-only — never
+    /// gates whether a prompt fires (the vault scheme does).
+    pub fn set_identity_prompt_index(&self, index: BTreeMap<[u8; 32], IdentityPromptMeta>) {
+        if let Ok(mut guard) = self.inner.identity_prompt_index.write() {
             *guard = index;
         }
     }
@@ -563,8 +594,29 @@ impl SecretAccess {
                     }
                 }
             }
-            // Identity keys are stored raw, unprotected — always prompt-free.
-            SecretScope::IdentityKey { .. } => Ok(false),
+            // Identity keys default to keyless (Tier-1 raw) and resolve
+            // prompt-free so headless/MCP signing keeps working. A user may
+            // OPT IN per identity to seal them Tier-2; the vault scheme is the
+            // single source of truth for whether to prompt — no parallel flag.
+            SecretScope::IdentityKey {
+                identity_id,
+                target,
+                key_id,
+            } => {
+                let label = SecretScope::identity_key_label(target, *key_id);
+                match self
+                    .seam()
+                    .scheme(&SecretWalletId::from(*identity_id), &label)?
+                {
+                    // Tier-2 protected ⇒ needs the identity's object password.
+                    SecretScheme::Protected => Ok(true),
+                    // Tier-1 raw ⇒ keyless default, prompt-free.
+                    SecretScheme::Unprotected => Ok(false),
+                    // Absent ⇒ the stored identity references a key whose bytes
+                    // are gone. Loud, never a silent prompt-free miss.
+                    SecretScheme::Absent => Err(TaskError::IdentityKeyMissing),
+                }
+            }
         }
     }
 
@@ -693,20 +745,31 @@ impl SecretAccess {
                 target,
                 key_id,
             } => {
+                let scope_id = SecretWalletId::from(*identity_id);
                 let label = SecretScope::identity_key_label(target, *key_id);
-                let raw = self
-                    .seam()
-                    .get_secret(&SecretWalletId::from(*identity_id), &label)?
-                    .ok_or(TaskError::IdentityKeyMissing)?;
-                let key: [u8; SINGLE_KEY_LEN] = raw.expose_secret().try_into().map_err(|_| {
-                    tracing::warn!(
-                        target = "wallet_backend::secret_access",
-                        blob_len = raw.expose_secret().len(),
-                        "Raw identity key has wrong length",
-                    );
-                    TaskError::SecretDecryptFailed
-                })?;
-                Ok(Plaintext::IdentityKey(Zeroizing::new(key)))
+                match self.seam().scheme(&scope_id, &label)? {
+                    // Tier-2 — unseal with this identity's object password
+                    // (opted-in). Symmetric to the single-key Protected arm.
+                    SecretScheme::Protected => {
+                        let pw = passphrase.ok_or(TaskError::IdentityKeyPassphraseIncorrect)?;
+                        let raw = self
+                            .seam()
+                            .get_secret_protected(&scope_id, &label, pw)?
+                            .ok_or(TaskError::IdentityKeyMissing)?;
+                        let key = identity_key_from_bytes(raw.expose_secret())?;
+                        Ok(Plaintext::IdentityKey(Zeroizing::new(key)))
+                    }
+                    // Tier-1 raw — keyless default, no password.
+                    SecretScheme::Unprotected => {
+                        let raw = self
+                            .seam()
+                            .get_secret(&scope_id, &label)?
+                            .ok_or(TaskError::IdentityKeyMissing)?;
+                        let key = identity_key_from_bytes(raw.expose_secret())?;
+                        Ok(Plaintext::IdentityKey(Zeroizing::new(key)))
+                    }
+                    SecretScheme::Absent => Err(TaskError::IdentityKeyMissing),
+                }
             }
         }
     }
@@ -811,10 +874,23 @@ impl SecretAccess {
                 let hint = meta.and_then(|m| m.passphrase_hint);
                 (label, hint)
             }
-            // Identity keys are prompt-free (unprotected fast-path), so this
-            // request is never built for them — a generic label keeps the
-            // match exhaustive without inventing copy that cannot surface.
-            SecretScope::IdentityKey { .. } => ("this identity key".to_string(), None),
+            // Opted-in (Tier-2) identity keys DO prompt; read the display copy
+            // from the identity prompt-index (alias + password hint). A missing
+            // entry degrades to a generic label, never an error.
+            SecretScope::IdentityKey { identity_id, .. } => {
+                let meta = self
+                    .inner
+                    .identity_prompt_index
+                    .read()
+                    .ok()
+                    .and_then(|g| g.get(identity_id).cloned());
+                let label = meta
+                    .as_ref()
+                    .and_then(|m| m.alias.clone())
+                    .unwrap_or_else(|| "this identity".to_string());
+                let hint = meta.and_then(|m| m.password_hint);
+                (label, hint)
+            }
         };
         let mut request = SecretPromptRequest::new(scope.clone(), label).with_hint(hint);
         if let Some(reason) = retry {
@@ -893,11 +969,28 @@ fn decrypt_hd_seed(
     Ok(Zeroizing::new(seed))
 }
 
+/// Convert raw vault bytes into a 32-byte identity private key, mapping a
+/// wrong-length blob to the typed [`TaskError::IdentityKeyMalformed`] (vault
+/// corruption / truncated write) rather than a panic or a generic decrypt
+/// error. Shared by the Tier-1 and Tier-2 identity-key decrypt arms.
+fn identity_key_from_bytes(bytes: &[u8]) -> Result<[u8; SINGLE_KEY_LEN], TaskError> {
+    bytes.try_into().map_err(|_| {
+        tracing::warn!(
+            target = "wallet_backend::secret_access",
+            blob_len = bytes.len(),
+            "Stored identity key has wrong length",
+        );
+        TaskError::IdentityKeyMalformed
+    })
+}
+
 /// Whether `e` is the "wrong passphrase" condition that the re-ask loop
 /// catches and re-prompts on (rather than aborting).
 fn is_wrong_passphrase(e: &TaskError) -> bool {
     match e {
-        TaskError::SingleKeyPassphraseIncorrect | TaskError::HdPassphraseIncorrect => true,
+        TaskError::SingleKeyPassphraseIncorrect
+        | TaskError::HdPassphraseIncorrect
+        | TaskError::IdentityKeyPassphraseIncorrect => true,
         // A Tier-2 unseal that rejected the object password surfaces through the
         // seam as `WrongPassword`; the re-ask loop catches it and re-prompts
         // rather than aborting (same UX as the legacy AES-GCM wrong-pass path).
@@ -1748,6 +1841,270 @@ mod tests {
             matches!(err, TaskError::SecretSeamMissing),
             "expected SecretSeamMissing, got {err:?}"
         );
+    }
+
+    /// Seal a raw identity key Tier-2 under `password`, the way the opt-in
+    /// migration does (in-place upsert at the SAME label as the Tier-1 value).
+    fn store_identity_key_protected(
+        store: &Arc<SecretStore>,
+        identity_id: [u8; 32],
+        target: &PrivateKeyTarget,
+        key_id: u32,
+        key: &[u8; 32],
+        password: &str,
+    ) {
+        let label = SecretScope::identity_key_label(target, key_id);
+        SecretSeam::new(store)
+            .put_secret_protected(
+                &SecretWalletId::from(identity_id),
+                &label,
+                &SecretBytes::from_slice(key),
+                &SecretString::new(password),
+            )
+            .expect("seal identity key tier-2");
+    }
+
+    /// SEC-001 opt-in seal: a Tier-2 identity key reports `Protected`
+    /// (scheme-as-flag), a password-free read fails, the chokepoint prompts
+    /// exactly once, decrypts the exact 32 bytes, and `can_resolve_without_prompt`
+    /// is false (the background sweep skips a locked protected identity).
+    #[tokio::test]
+    async fn ts_t2_ik_01_protected_identity_key_prompts_and_decrypts() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = fresh_store(dir.path());
+        let identity_id = [0x51u8; 32];
+        let key = [0xD4u8; 32];
+        store_identity_key_protected(
+            &store,
+            identity_id,
+            &PrivateKeyTarget::PrivateKeyOnMainIdentity,
+            4,
+            &key,
+            SENTINEL_PASSPHRASE,
+        );
+
+        // Scheme-as-flag: Protected, and a password-free read fails.
+        let label = SecretScope::identity_key_label(&PrivateKeyTarget::PrivateKeyOnMainIdentity, 4);
+        assert_eq!(
+            SecretSeam::new(&store)
+                .scheme(&SecretWalletId::from(identity_id), &label)
+                .unwrap(),
+            SecretScheme::Protected,
+            "opt-in seals the identity key Tier-2"
+        );
+        assert!(
+            store
+                .get(&SecretWalletId::from(identity_id), &label)
+                .is_err(),
+            "a password-free read of a protected identity key must fail"
+        );
+
+        let prompt = Arc::new(TestPrompt::new([ScriptedAnswer::once(SENTINEL_PASSPHRASE)]));
+        let sa = access(store, prompt.clone());
+        let scope = SecretScope::IdentityKey {
+            identity_id,
+            target: PrivateKeyTarget::PrivateKeyOnMainIdentity,
+            key_id: 4,
+        };
+        assert!(
+            !sa.can_resolve_without_prompt(&scope),
+            "a locked protected identity key would prompt — the sweep must skip it"
+        );
+        let matched = sa
+            .with_secret(&scope, |pt| {
+                Ok(pt.expose_identity_key().copied() == Some(key))
+            })
+            .await
+            .expect("protected identity key resolves with the password");
+        assert!(matched, "closure saw the unsealed identity key");
+        assert_eq!(prompt.ask_count(), 1, "exactly one prompt");
+    }
+
+    /// A Tier-2 identity key re-asks on a wrong password (no oracle) and then
+    /// succeeds — the same re-ask UX as protected seeds and single keys.
+    #[tokio::test]
+    async fn ts_t2_ik_02_protected_identity_key_wrong_password_reasks() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = fresh_store(dir.path());
+        let identity_id = [0x52u8; 32];
+        let key = [0xE5u8; 32];
+        store_identity_key_protected(
+            &store,
+            identity_id,
+            &PrivateKeyTarget::PrivateKeyOnVoterIdentity,
+            2,
+            &key,
+            SENTINEL_PASSPHRASE,
+        );
+
+        let prompt = Arc::new(TestPrompt::new([
+            ScriptedAnswer::once("not-the-password"),
+            ScriptedAnswer::once(SENTINEL_PASSPHRASE),
+        ]));
+        let sa = access(store, prompt.clone());
+        let scope = SecretScope::IdentityKey {
+            identity_id,
+            target: PrivateKeyTarget::PrivateKeyOnVoterIdentity,
+            key_id: 2,
+        };
+        let matched = sa
+            .with_secret(&scope, |pt| {
+                Ok(pt.expose_identity_key().copied() == Some(key))
+            })
+            .await
+            .expect("retry succeeds");
+        assert!(matched);
+        assert_eq!(prompt.ask_count(), 2, "one wrong-pass re-ask, then success");
+    }
+
+    /// Headless (NullSecretPrompt): an OPTED-IN identity key has no window to
+    /// ask in, so the chokepoint surfaces the typed `SecretPromptUnavailable`
+    /// — the accepted trade-off. A non-opted-in identity key (default keyless)
+    /// still resolves headless (covered by TS-FAST-01).
+    #[tokio::test]
+    async fn ts_t2_ik_03_headless_protected_identity_key_is_unavailable() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = fresh_store(dir.path());
+        let identity_id = [0x53u8; 32];
+        store_identity_key_protected(
+            &store,
+            identity_id,
+            &PrivateKeyTarget::PrivateKeyOnMainIdentity,
+            0,
+            &[0xF6u8; 32],
+            SENTINEL_PASSPHRASE,
+        );
+
+        let sa = access(store, Arc::new(NullSecretPrompt));
+        let scope = SecretScope::IdentityKey {
+            identity_id,
+            target: PrivateKeyTarget::PrivateKeyOnMainIdentity,
+            key_id: 0,
+        };
+        let err = sa
+            .with_secret(&scope, |_pt| Ok(()))
+            .await
+            .expect_err("no interactive prompt headless");
+        assert!(
+            matches!(err, TaskError::SecretPromptUnavailable),
+            "expected SecretPromptUnavailable, got {err:?}"
+        );
+    }
+
+    /// TS-T2-IK-ISO — PER-IDENTITY password isolation. Two identities sealed
+    /// under DIFFERENT passwords: A's password is rejected by B's envelope
+    /// (the negative crypto property), and remembering A never satisfies B
+    /// (scope-keyed cache).
+    #[tokio::test]
+    async fn ts_t2_ik_iso_per_identity_passwords_are_isolated() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = fresh_store(dir.path());
+        let id_a = [0xA1u8; 32];
+        let id_b = [0xB2u8; 32];
+        let key_a = [0x1Au8; 32];
+        let key_b = [0x2Bu8; 32];
+        store_identity_key_protected(
+            &store,
+            id_a,
+            &PrivateKeyTarget::PrivateKeyOnMainIdentity,
+            0,
+            &key_a,
+            "identity-A-passwordpw",
+        );
+        store_identity_key_protected(
+            &store,
+            id_b,
+            &PrivateKeyTarget::PrivateKeyOnMainIdentity,
+            0,
+            &key_b,
+            "identity-B-passwordpw",
+        );
+
+        // Negative crypto property: A's password is REJECTED by B's envelope.
+        let label = SecretScope::identity_key_label(&PrivateKeyTarget::PrivateKeyOnMainIdentity, 0);
+        match SecretSeam::new(&store).get_secret_protected(
+            &SecretWalletId::from(id_b),
+            &label,
+            &SecretString::new("identity-A-passwordpw"),
+        ) {
+            Err(TaskError::SecretSeam { source })
+                if matches!(*source, SecretStoreError::WrongPassword) => {}
+            other => panic!("A's password must be rejected by B, got {other:?}"),
+        }
+
+        // Scope-keyed cache: remembering A does not satisfy B — B still prompts.
+        let prompt = Arc::new(TestPrompt::new([
+            ScriptedAnswer::remember("identity-A-passwordpw", RememberPolicy::UntilAppClose),
+            ScriptedAnswer::remember("identity-B-passwordpw", RememberPolicy::UntilAppClose),
+        ]));
+        let sa = access(Arc::clone(&store), prompt.clone());
+        let scope_a = SecretScope::IdentityKey {
+            identity_id: id_a,
+            target: PrivateKeyTarget::PrivateKeyOnMainIdentity,
+            key_id: 0,
+        };
+        let scope_b = SecretScope::IdentityKey {
+            identity_id: id_b,
+            target: PrivateKeyTarget::PrivateKeyOnMainIdentity,
+            key_id: 0,
+        };
+
+        sa.with_secret(&scope_a, |pt| {
+            assert_eq!(pt.expose_identity_key().copied(), Some(key_a));
+            Ok(())
+        })
+        .await
+        .unwrap();
+        assert!(sa.is_session_cached(&scope_a));
+        assert!(
+            !sa.is_session_cached(&scope_b),
+            "A's unlock must not cache B"
+        );
+
+        sa.with_secret(&scope_b, |pt| {
+            assert_eq!(pt.expose_identity_key().copied(), Some(key_b));
+            Ok(())
+        })
+        .await
+        .unwrap();
+        assert_eq!(prompt.ask_count(), 2, "B prompted independently of A");
+    }
+
+    /// The sign-time prompt for a protected identity carries the alias and
+    /// password hint from the identity prompt-index (display-only). An empty
+    /// index degrades to a generic label, never an error.
+    #[tokio::test]
+    async fn protected_identity_key_prompt_uses_identity_prompt_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = fresh_store(dir.path());
+        let identity_id = [0x54u8; 32];
+        store_identity_key_protected(
+            &store,
+            identity_id,
+            &PrivateKeyTarget::PrivateKeyOnMainIdentity,
+            1,
+            &[0x77u8; 32],
+            SENTINEL_PASSPHRASE,
+        );
+
+        let prompt = Arc::new(TestPrompt::new([ScriptedAnswer::once(SENTINEL_PASSPHRASE)]));
+        let sa = access(store, prompt.clone());
+        sa.set_identity_prompt_index(BTreeMap::from([(
+            identity_id,
+            IdentityPromptMeta {
+                alias: Some("alice.dash".to_string()),
+                password_hint: Some("the usual".to_string()),
+            },
+        )]));
+        let scope = SecretScope::IdentityKey {
+            identity_id,
+            target: PrivateKeyTarget::PrivateKeyOnMainIdentity,
+            key_id: 1,
+        };
+        sa.with_secret(&scope, |_pt| Ok(())).await.unwrap();
+        let req = &prompt.requests()[0];
+        assert_eq!(req.display_label, "alice.dash", "prompt shows the alias");
+        assert_eq!(req.hint.as_deref(), Some("the usual"), "prompt shows hint");
     }
 
     /// A missing identity key surfaces the loud typed `IdentityKeyMissing`,

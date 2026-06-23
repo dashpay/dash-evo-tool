@@ -466,6 +466,19 @@ As a user, I want to view all keys associated with my identity so that I can aud
 - Lists all keys with type, purpose, and status.
 - View individual key details.
 
+### IDN-013: Password-protect an identity's signing keys (SEC-001) [Implemented]
+**Persona:** Priya, Jordan
+
+As a power user, I want to add a password to an identity's signing keys so that they cannot be used to sign on this device without that password.
+
+- Identity keys default to keyless: they sign automatically and headless/MCP signing keeps working — this is unchanged for any identity the user does not opt in.
+- From the Key Info screen, a collapsible "Key Protection" section (closed by default) shows whether this identity's keys are protected and offers "Add password protection…" or "Remove password protection…".
+- Opting in shows a danger warning (a forgotten password makes the keys unrecoverable for standalone-imported identities; automatic tools can no longer sign this identity), then asks for a new password, a confirmation, and an optional plain-text hint.
+- Once protected, every signing operation for that identity asks for the password just-in-time, with an optional "keep unlocked until I close the app". A wrong password re-asks with no oracle.
+- Headless / MCP signing of a protected identity fails with a calm, actionable message telling the user to unlock it in the app or remove the protection — no environment-variable or flag password fallback exists.
+- Opting out asks for the current password and reverts the keys to keyless; signing is prompt-free again, including headless.
+- One password protects all of the identity's keys; it is separate from any wallet password (per-secret isolation). The encryption reuses the shipped Tier-2 seam (Argon2id + XChaCha20-Poly1305) — no new crypto, no plaintext written to disk.
+
 ### IDN-009: Refresh identity state [Implemented]
 **Persona:** Priya, Jordan
 

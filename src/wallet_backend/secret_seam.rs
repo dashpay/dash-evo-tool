@@ -401,6 +401,7 @@ mod tests {
             "src/wallet_backend/single_key.rs",
             "src/wallet_backend/single_key_entry.rs",
             "src/model/qualified_identity/encrypted_key_storage.rs",
+            "src/model/qualified_identity/identity_meta.rs",
             "src/model/wallet/meta.rs",
             "src/model/single_key.rs",
             "src/model/wallet/seed_envelope.rs",

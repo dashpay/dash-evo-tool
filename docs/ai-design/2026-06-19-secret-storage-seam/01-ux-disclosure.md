@@ -84,8 +84,28 @@ protected under different passwords cannot decrypt each other — the property t
 `TS-T2-SK-ISO` in `src/wallet_backend/secret_access.rs`.
 
 The keyless-vault residual (identity keys, no-password secrets) uses
-`put_secret` / `get_secret` (raw path). Per-secret encryption for keyless scopes is the
-deferred tier.
+`put_secret` / `get_secret` (raw path) by default.
+
+### Optional identity-key encryption (SEC-001) — the former deferred tier, now implemented
+
+Identity keys still default to the keyless raw path (so headless/MCP signing of a
+non-opted-in identity is unchanged, byte for byte). A user may now **opt in per identity**
+to seal that identity's keys Tier-2 over the same `put_secret_protected` /
+`get_secret_protected` seam — no new crypto. The at-rest vault scheme is the single source
+of truth for "does this need a password?": `SecretAccess::scope_has_passphrase` probes
+`SecretSeam::scheme` for the identity-key label (`Protected → prompt`, `Unprotected →
+prompt-free`, `Absent → IdentityKeyMissing`), exactly as it already does for single keys.
+The opt-in/opt-out are crash-safe same-label in-place upserts (`IdentityTask::Protect /
+UnprotectIdentityKeys`, `IdentityKeyView::store_protected` / `store_unprotected`), idempotent
+and re-runnable; a protection-aware `IdentityKeyView::store` refuses a keyless write over a
+`Protected` label (`TaskError::IdentityKeyProtectionDowngrade`) so a later `AddKeyToIdentity`
+cannot silently strip protection. A DET-side `IdentityMeta` sidecar carries only the password
+hint + prompt copy (display-only — it never gates the prompt). Opted-in ⇒ signing prompts
+just-in-time; headless yields `SecretPromptUnavailable`. The per-secret isolation property is
+covered by `TS-T2-IK-ISO` in `src/wallet_backend/secret_access.rs`, twinning `TS-T2-SK-ISO`.
+
+No-password secrets (no-password HD wallets, no-passphrase imported keys) remain on the raw
+path; per-secret encryption for those scopes stays deferred.
 
 ---
 

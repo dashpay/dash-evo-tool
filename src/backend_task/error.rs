@@ -235,6 +235,24 @@ pub enum TaskError {
     )]
     IdentityKeyMalformed,
 
+    /// The password supplied for a password-protected identity key does not
+    /// unseal it. The just-in-time chokepoint catches this inside its re-ask
+    /// loop and re-prompts; it surfaces to the UI when removing protection with
+    /// the wrong password. No upstream error is preserved — the authenticated-
+    /// decryption failure carries no useful diagnostic and leaks no oracle.
+    #[error("That password is not correct. Try again.")]
+    IdentityKeyPassphraseIncorrect,
+
+    /// A keyless (unprotected) write was refused over a password-protected
+    /// identity key, which would have silently stripped its protection. Raised
+    /// by the protection-aware store guard so adding or changing a key on a
+    /// protected identity cannot quietly downgrade it. Fieldless: the callsite
+    /// logs the typed detail; no secret or raw error string is stored here.
+    #[error(
+        "This identity's keys are password-protected, so this change cannot be saved without that password. Remove the password protection from this identity, make your change, then add the protection again."
+    )]
+    IdentityKeyProtectionDowngrade,
+
     /// The DET wallet-metadata sidecar (alias / `is_main` /
     /// `core_wallet_name`) could not be read or written. Distinct from
     /// [`Self::WalletStorage`] because the cause sits in the cross-
@@ -244,6 +262,21 @@ pub enum TaskError {
         "Could not access wallet details. Check available disk space and restart the application."
     )]
     WalletMetaStorage {
+        #[source]
+        source: Box<crate::wallet_backend::KvAdapterError>,
+    },
+
+    /// The DET-owned identity-metadata sidecar (the password hint and prompt
+    /// copy for an identity whose keys are password-protected) could not be
+    /// read or written. Lives in the same cross-network `det-app.sqlite` k/v
+    /// file as [`Self::WalletMetaStorage`]; the sidecar is cosmetic (it never
+    /// gates whether a password is required — the vault scheme does), so a
+    /// failure here only costs the hint, and the user hint is the same calm
+    /// disk-space prompt.
+    #[error(
+        "Could not access identity details. Check available disk space and restart the application."
+    )]
+    IdentityMetaStorage {
         #[source]
         source: Box<crate::wallet_backend::KvAdapterError>,
     },

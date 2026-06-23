@@ -25,7 +25,7 @@ use crate::ui::components::passphrase_modal::{
 };
 use crate::wallet_backend::secret_prompt::{
     RememberPolicy, SecretPrompt, SecretPromptCancelled, SecretPromptReply, SecretPromptRequest,
-    SecretPromptRetry,
+    SecretPromptRetry, SecretScope,
 };
 
 /// A request plus its reply channel, carried from the host to `AppState`.
@@ -127,6 +127,12 @@ impl ActivePrompt {
             .retry_reason
             .map(|SecretPromptRetry::WrongPassphrase| "That passphrase is not correct. Try again.");
 
+        // Identity-key prompts say "key", not "wallet" (Diziet D-2).
+        let remember_label = match self.request.scope {
+            SecretScope::IdentityKey { .. } => "Keep this key unlocked until I close the app.",
+            _ => KEEP_UNLOCKED_LABEL,
+        };
+
         let config = PassphraseModalConfig {
             window_title: "Unlock to continue",
             body: &self.request.display_label,
@@ -134,11 +140,15 @@ impl ActivePrompt {
             error: retry_error,
             submit_label: "Unlock",
             input_placeholder: "Enter passphrase",
+            remember_label: Some(remember_label),
         };
 
         let mut remember = self.remember;
         let outcome = passphrase_modal(ctx, &config, |ui| {
-            ui.checkbox(&mut remember, KEEP_UNLOCKED_LABEL);
+            ui.checkbox(
+                &mut remember,
+                config.remember_label.unwrap_or(KEEP_UNLOCKED_LABEL),
+            );
         });
         self.remember = remember;
 

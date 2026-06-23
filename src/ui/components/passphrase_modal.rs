@@ -83,6 +83,11 @@ pub struct PassphraseModalConfig<'a> {
     /// Defaults to `"Enter passphrase"` when the callers' existing default is
     /// appropriate; use `"Enter password"` for wallet-unlock flows.
     pub input_placeholder: &'a str,
+    /// Caller-specific label for the "keep unlocked" checkbox drawn in `extra`.
+    /// `None` falls back to [`KEEP_UNLOCKED_LABEL`] (the wallet wording); set
+    /// `Some(...)` for non-wallet prompts (e.g. an identity key) so the
+    /// checkbox copy is not wallet-specific (Diziet D-2).
+    pub remember_label: Option<&'a str>,
 }
 
 /// Per-modal mutable state stored in egui's data cache between frames.

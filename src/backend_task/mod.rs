@@ -379,6 +379,21 @@ pub enum BackendTaskSuccessResult {
     RegisteredDpnsName(FeeResult),
     RefreshedIdentity(QualifiedIdentity),
     LoadedIdentity(QualifiedIdentity),
+    /// SEC-001: this identity's keys were sealed under a password (opt-in).
+    /// The `count` keys newly sealed (0 when the task was an idempotent re-run
+    /// over an already-protected identity).
+    IdentityKeysProtected {
+        /// The identity whose keys are now password-protected.
+        identity_id: Identifier,
+        /// How many keys this run newly sealed Tier-2.
+        count: usize,
+    },
+    /// SEC-001: this identity's key protection was removed (opt-out); signing
+    /// is prompt-free again.
+    IdentityKeysUnprotected {
+        /// The identity whose key protection was removed.
+        identity_id: Identifier,
+    },
 
     // Document operation results (replacing string messages)
     DeletedDocument(Identifier, FeeResult),

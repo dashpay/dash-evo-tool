@@ -614,6 +614,13 @@ impl AppContext {
             self.migrate_identity_keys_to_vault(&kv, &id, &mut qi);
             out.push(qi);
         }
+        // Seed the JIT chokepoint's identity prompt-copy index (alias + hint)
+        // so the sign-time prompt for an opted-in (Tier-2) identity shows the
+        // right label and hint. Display-only and best-effort — the vault scheme,
+        // not this index, decides whether a prompt fires.
+        if let Ok(backend) = self.wallet_backend() {
+            backend.seed_identity_prompt_index(&out);
+        }
         Ok(out)
     }
 

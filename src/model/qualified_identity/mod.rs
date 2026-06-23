@@ -1,4 +1,5 @@
 pub mod encrypted_key_storage;
+pub mod identity_meta;
 pub mod qualified_identity_public_key;
 
 use crate::backend_task::error::TaskError;

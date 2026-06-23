@@ -35,6 +35,10 @@ pub mod hydration;
 #[cfg(not(any(test, feature = "bench")))]
 pub(crate) mod hydration;
 pub mod identity_key_store;
+#[cfg(any(test, feature = "bench"))]
+pub mod identity_meta;
+#[cfg(not(any(test, feature = "bench")))]
+pub(crate) mod identity_meta;
 mod kv;
 #[cfg(test)]
 pub(crate) mod leak_test_support;
@@ -65,7 +69,10 @@ pub(crate) use dashpay::{derive_contact_info_encryption_keys, derive_contact_xpu
 pub(crate) use det_platform_signer::{DetPlatformSigner, PlatformPathIndex};
 pub(crate) use det_signer::DetSigner;
 pub use identity_key_store::IdentityKeyView;
-pub use secret_access::{SecretAccess, SecretPlaintext, SecretSession, WalletPromptMeta};
+pub use identity_meta::IdentityMetaView;
+pub use secret_access::{
+    IdentityPromptMeta, SecretAccess, SecretPlaintext, SecretSession, WalletPromptMeta,
+};
 pub use secret_prompt::{
     NullSecretPrompt, RememberPolicy, SecretPrompt, SecretPromptCancelled, SecretPromptReply,
     SecretPromptRequest, SecretPromptRetry, SecretScope,
@@ -1327,6 +1334,46 @@ impl WalletBackend {
     /// callers may build one per operation rather than threading it.
     pub fn wallet_meta(&self) -> WalletMetaView<'_> {
         WalletMetaView::new(&self.inner.app_kv)
+    }
+
+    /// View over the DET-owned identity-metadata sidecar (the password hint for
+    /// an identity whose keys are password-protected, SEC-001). Backed by the
+    /// same cross-network app-level k/v store as [`Self::wallet_meta`]; see
+    /// [`IdentityMetaView`] for the key schema. Display-only — it never gates
+    /// whether a sign-time prompt fires (the vault scheme does).
+    pub fn identity_meta(&self) -> IdentityMetaView<'_> {
+        IdentityMetaView::new(&self.inner.app_kv)
+    }
+
+    /// Replace the JIT chokepoint's identity prompt-copy index from the loaded
+    /// identities (alias) and their persisted hints ([`Self::identity_meta`]).
+    /// Display-only: it never decides whether to prompt (the vault scheme
+    /// does). Best-effort — a missing hint degrades to "no hint", never an
+    /// error. Called whenever identities are (re)loaded so the sign-time prompt
+    /// for an opted-in identity shows its label and hint.
+    pub fn seed_identity_prompt_index(
+        &self,
+        identities: &[crate::model::qualified_identity::QualifiedIdentity],
+    ) {
+        use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+        let network = self.inner.network;
+        let meta_view = self.identity_meta();
+        let index: std::collections::BTreeMap<[u8; 32], secret_access::IdentityPromptMeta> =
+            identities
+                .iter()
+                .map(|qi| {
+                    let id = qi.identity.id().to_buffer();
+                    let password_hint = meta_view.get(network, &id).and_then(|m| m.password_hint);
+                    (
+                        id,
+                        secret_access::IdentityPromptMeta {
+                            alias: Some(qi.to_string()),
+                            password_hint,
+                        },
+                    )
+                })
+                .collect();
+        self.inner.secret_access.set_identity_prompt_index(index);
     }
 
     /// View over the DET-owned identity-authentication public-key cache

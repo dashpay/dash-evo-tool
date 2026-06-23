@@ -1,4 +1,5 @@
 use crate::app::AppAction;
+use crate::backend_task::identity::IdentityTask;
 use crate::backend_task::wallet::WalletTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
@@ -8,6 +9,7 @@ use crate::model::qualified_identity::encrypted_key_storage::{
 use crate::model::qualified_identity::{PrivateKeyTarget, QualifiedIdentity};
 use crate::model::secret::Secret;
 use crate::model::wallet::Wallet;
+use crate::model::wallet::passphrase::validate_single_key_passphrase;
 use crate::ui::components::MessageBanner;
 use crate::ui::components::component_trait::Component;
 use crate::ui::components::info_popup::InfoPopup;
@@ -20,6 +22,8 @@ use crate::ui::components::wallet_unlock_popup::{
 };
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, ScreenLike};
+use crate::wallet_backend::IdentityKeyView;
+use crate::wallet_backend::secret_seam::SecretScheme;
 use dash_sdk::dashcore_rpc::dashcore::PrivateKey as RPCPrivateKey;
 use dash_sdk::dpp::dashcore::address::Payload;
 use dash_sdk::dpp::dashcore::hashes::Hash;
@@ -38,6 +42,7 @@ use dash_sdk::platform::IdentityPublicKey;
 use eframe::egui::{self, Context};
 use egui::{Color32, RichText, ScrollArea};
 use std::sync::{Arc, RwLock};
+use zxcvbn::zxcvbn;
 
 pub struct KeyInfoScreen {
     pub identity: QualifiedIdentity,
@@ -73,6 +78,60 @@ pub struct KeyInfoScreen {
     /// A queued "sign message" request for a vault-backed identity key. Drained
     /// into `WalletTask::SignMessageWithIdentityKey`.
     pending_identity_sign: bool,
+    /// SEC-001 Key Protection: cached at-rest protection status of this
+    /// identity's vault keys. `None` until first probed; invalidated after a
+    /// migration so the status line re-reads the vault.
+    protection_status: Option<IdentityProtectionStatus>,
+    /// SEC-001: which step of the opt-in / opt-out flow is active.
+    protection_stage: ProtectionStage,
+    /// SEC-001: the danger confirmation dialog gating the active flow.
+    protection_confirm: Option<ConfirmationDialog>,
+    /// SEC-001: opt-in password entry (new password + confirmation + hint).
+    protection_new_password: PasswordInput,
+    protection_confirm_password: PasswordInput,
+    protection_hint: String,
+    /// SEC-001: opt-out password entry (verify the current password).
+    protection_verify_password: PasswordInput,
+    /// SEC-001: inline validation error for the protection password form.
+    protection_form_error: Option<String>,
+    /// SEC-001: true while a Protect/Unprotect task is in flight (disables the
+    /// action button so the same migration is not dispatched twice).
+    protection_in_flight: bool,
+    /// SEC-001: a queued opt-in dispatch (password + hint), drained in `ui()`.
+    pending_protect: Option<(Secret, Option<String>)>,
+    /// SEC-001: a queued opt-out dispatch (current password), drained in `ui()`.
+    pending_unprotect: Option<Secret>,
+}
+
+/// At-rest protection posture of an identity's vault-stored keys (SEC-001).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum IdentityProtectionStatus {
+    /// No keys live in the identity vault (e.g. only wallet-derived keys); the
+    /// per-identity protection control does not apply.
+    NoVaultKeys,
+    /// Every vault key is keyless (Tier-1) — signs prompt-free (the default).
+    Unprotected,
+    /// Every vault key is password-protected (Tier-2).
+    Protected,
+    /// A partial state (some protected, some not) — typically a crash mid
+    /// migration. The UI offers "Finish protecting".
+    Mixed,
+}
+
+/// Which step of the Key Protection opt-in / opt-out flow is on screen.
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
+enum ProtectionStage {
+    /// Status line + action button only.
+    #[default]
+    Idle,
+    /// The danger warning before opt-in is showing.
+    ConfirmAdd,
+    /// The new-password form (opt-in) is showing.
+    EnterNewPassword,
+    /// The danger warning before opt-out is showing.
+    ConfirmRemove,
+    /// The verify-password form (opt-out) is showing.
+    EnterVerifyPassword,
 }
 
 impl ScreenLike for KeyInfoScreen {
@@ -117,7 +176,35 @@ impl ScreenLike for KeyInfoScreen {
             BackendTaskSuccessResult::IdentityMessageSigned { signature, .. } => {
                 self.signed_message = Some(signature);
             }
+            BackendTaskSuccessResult::IdentityKeysProtected { .. } => {
+                self.protection_in_flight = false;
+                self.protection_status = None; // re-probe the vault on next render
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    "This identity's keys are now password-protected. You will be asked for the password each time they sign.",
+                    MessageType::Success,
+                );
+            }
+            BackendTaskSuccessResult::IdentityKeysUnprotected { .. } => {
+                self.protection_in_flight = false;
+                self.protection_status = None; // re-probe the vault on next render
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    "Password protection removed. This identity's keys will now sign automatically.",
+                    MessageType::Success,
+                );
+            }
             _ => {}
+        }
+    }
+
+    fn display_message(&mut self, _message: &str, message_type: MessageType) {
+        // A migration that failed surfaces as an error banner (set centrally by
+        // AppState); clear the in-flight gate so the user can retry, and
+        // re-probe the vault in case a partial change landed.
+        if self.protection_in_flight && matches!(message_type, MessageType::Error) {
+            self.protection_in_flight = false;
+            self.protection_status = None;
         }
     }
 
@@ -482,6 +569,9 @@ impl ScreenLike for KeyInfoScreen {
                                 self.key_display_requested = true;
                             }
                             self.render_sign_input(ui);
+                            ui.add_space(10.0);
+                            ui.separator();
+                            self.render_key_protection_section(ui);
                         }
                     }
                 } else {
@@ -603,6 +693,35 @@ impl ScreenLike for KeyInfoScreen {
             ));
         }
 
+        // SEC-001: drain a queued identity-key protection opt-in / opt-out.
+        if let Some((password, hint)) = self.pending_protect.take() {
+            MessageBanner::set_global(
+                ctx,
+                "Protecting this identity's keys. Please wait.",
+                MessageType::Info,
+            );
+            action |= AppAction::BackendTask(BackendTask::IdentityTask(
+                IdentityTask::ProtectIdentityKeys {
+                    identity_id,
+                    password,
+                    hint,
+                },
+            ));
+        }
+        if let Some(password) = self.pending_unprotect.take() {
+            MessageBanner::set_global(
+                ctx,
+                "Removing password protection. Please wait.",
+                MessageType::Info,
+            );
+            action |= AppAction::BackendTask(BackendTask::IdentityTask(
+                IdentityTask::UnprotectIdentityKeys {
+                    identity_id,
+                    password,
+                },
+            ));
+        }
+
         action
     }
 }
@@ -647,6 +766,17 @@ impl KeyInfoScreen {
             pending_sign_request: None,
             pending_identity_key_display: false,
             pending_identity_sign: false,
+            protection_status: None,
+            protection_stage: ProtectionStage::Idle,
+            protection_confirm: None,
+            protection_new_password: PasswordInput::new().with_hint_text("New password"),
+            protection_confirm_password: PasswordInput::new().with_hint_text("Confirm password"),
+            protection_hint: String::new(),
+            protection_verify_password: PasswordInput::new().with_hint_text("Current password"),
+            protection_form_error: None,
+            protection_in_flight: false,
+            pending_protect: None,
+            pending_unprotect: None,
         }
     }
 
@@ -907,4 +1037,321 @@ impl KeyInfoScreen {
             }
         }
     }
+
+    // --- SEC-001 Key Protection (per-identity at-rest key encryption) --------
+
+    /// At-rest protection posture of this identity's vault keys, by probing the
+    /// vault scheme of each key. Cheap (a handful of local vault reads). Cached
+    /// in `protection_status`; invalidated after a migration.
+    fn compute_protection_status(&self) -> IdentityProtectionStatus {
+        let Ok(backend) = self.app_context.wallet_backend() else {
+            return IdentityProtectionStatus::NoVaultKeys;
+        };
+        let id = self.identity.identity.id().to_buffer();
+        let view = IdentityKeyView::new(backend.secret_store(), id);
+        let (mut protected, mut unprotected) = (0usize, 0usize);
+        for (target, key_id) in self.identity.private_keys.keys_set() {
+            match view.scheme(&target, key_id) {
+                Ok(SecretScheme::Protected) => protected += 1,
+                Ok(SecretScheme::Unprotected) => unprotected += 1,
+                // Absent (wallet-derived / resident-plaintext) or a transient
+                // vault error: not a protectable vault key — ignore it.
+                _ => {}
+            }
+        }
+        match (protected, unprotected) {
+            (0, 0) => IdentityProtectionStatus::NoVaultKeys,
+            (_, 0) => IdentityProtectionStatus::Protected,
+            (0, _) => IdentityProtectionStatus::Unprotected,
+            _ => IdentityProtectionStatus::Mixed,
+        }
+    }
+
+    /// Render the collapsible "Key Protection" section (default closed). Hidden
+    /// entirely when the identity has no vault-stored keys.
+    fn render_key_protection_section(&mut self, ui: &mut egui::Ui) {
+        if self.protection_status.is_none() {
+            let status = self.compute_protection_status();
+            self.protection_status = Some(status);
+        }
+        let status = self
+            .protection_status
+            .unwrap_or(IdentityProtectionStatus::NoVaultKeys);
+        if status == IdentityProtectionStatus::NoVaultKeys {
+            return;
+        }
+        let dark_mode = ui.ctx().style().visuals.dark_mode;
+
+        egui::CollapsingHeader::new("Key Protection")
+            .default_open(false)
+            .show(ui, |ui| {
+                let status_text = match status {
+                    IdentityProtectionStatus::Unprotected => {
+                        "This identity's keys sign automatically. No password is required."
+                    }
+                    IdentityProtectionStatus::Protected => {
+                        "This identity's keys require a password each time they sign."
+                    }
+                    IdentityProtectionStatus::Mixed => {
+                        "Password protection for this identity's keys is incomplete. Finish protecting them with the same password you set."
+                    }
+                    IdentityProtectionStatus::NoVaultKeys => "",
+                };
+                ui.label(
+                    RichText::new(status_text).color(DashColors::text_secondary(dark_mode)),
+                );
+                ui.add_space(8.0);
+
+                match self.protection_stage {
+                    ProtectionStage::Idle => self.render_protection_idle(ui, status),
+                    ProtectionStage::EnterNewPassword => self.render_new_password_form(ui),
+                    ProtectionStage::EnterVerifyPassword => self.render_verify_password_form(ui),
+                    // The confirm dialogs draw as modals (below), not inline.
+                    ProtectionStage::ConfirmAdd | ProtectionStage::ConfirmRemove => {}
+                }
+            });
+
+        // The danger confirmation dialog (opt-in / opt-out) draws as a modal.
+        self.handle_protection_confirm(ui);
+    }
+
+    /// The idle status row: the action button whose meaning depends on the
+    /// current protection posture.
+    fn render_protection_idle(&mut self, ui: &mut egui::Ui, status: IdentityProtectionStatus) {
+        let (label, is_add) = match status {
+            IdentityProtectionStatus::Protected => ("Remove password protection…", false),
+            IdentityProtectionStatus::Mixed => ("Finish protecting…", true),
+            _ => ("Add password protection…", true),
+        };
+        let resp = ui.add_enabled(!self.protection_in_flight, egui::Button::new(label));
+        if resp.clicked() {
+            if is_add {
+                self.open_add_confirm();
+            } else {
+                self.open_remove_confirm();
+            }
+        }
+        if self.protection_in_flight {
+            ui.add_space(4.0);
+            ui.label(RichText::new("Working…").color(DashColors::text_secondary(
+                ui.ctx().style().visuals.dark_mode,
+            )));
+        }
+    }
+
+    /// Open the danger warning before opt-in.
+    fn open_add_confirm(&mut self) {
+        self.protection_form_error = None;
+        self.protection_new_password.clear();
+        self.protection_confirm_password.clear();
+        self.protection_hint.clear();
+        self.protection_stage = ProtectionStage::ConfirmAdd;
+        self.protection_confirm = Some(
+            ConfirmationDialog::new(
+                "Protect this identity's keys with a password?",
+                "Adding a password means this identity's keys will ask for the password each time they are used to sign. Keep this in mind:\n\n\
+                 • If you forget the password, these keys cannot be recovered. There is no reset option.\n\n\
+                 • Automatic tools (such as scripts or the command-line interface) will no longer be able to sign with this identity without the password.\n\n\
+                 Are you sure you want to continue?",
+            )
+            .danger_mode(true)
+            .confirm_text(Some("Yes, add protection"))
+            .cancel_text(Some("Cancel"))
+            .open(true),
+        );
+    }
+
+    /// Open the danger warning before opt-out.
+    fn open_remove_confirm(&mut self) {
+        self.protection_form_error = None;
+        self.protection_verify_password.clear();
+        self.protection_stage = ProtectionStage::ConfirmRemove;
+        self.protection_confirm = Some(
+            ConfirmationDialog::new(
+                "Remove password protection?",
+                "Removing the password means this identity's keys will sign automatically without any password. Anyone with access to this device could use them to sign on behalf of this identity.\n\n\
+                 You will need to enter the current password to confirm this change.",
+            )
+            .danger_mode(true)
+            .confirm_text(Some("Yes, remove protection"))
+            .cancel_text(Some("Cancel"))
+            .open(true),
+        );
+    }
+
+    /// Drive the danger confirmation dialog; on confirm, advance to the
+    /// matching password form; on cancel, return to idle.
+    fn handle_protection_confirm(&mut self, ui: &mut egui::Ui) {
+        let Some(dialog) = self.protection_confirm.as_mut() else {
+            return;
+        };
+        let response = dialog.show(ui);
+        if let Some(result) = response.inner.dialog_response {
+            self.protection_confirm = None;
+            match (self.protection_stage, result) {
+                (ProtectionStage::ConfirmAdd, ConfirmationStatus::Confirmed) => {
+                    self.protection_stage = ProtectionStage::EnterNewPassword;
+                }
+                (ProtectionStage::ConfirmRemove, ConfirmationStatus::Confirmed) => {
+                    self.protection_stage = ProtectionStage::EnterVerifyPassword;
+                }
+                _ => self.protection_stage = ProtectionStage::Idle,
+            }
+        }
+    }
+
+    /// The opt-in password form: new password + confirmation + strength + hint.
+    fn render_new_password_form(&mut self, ui: &mut egui::Ui) {
+        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        ui.label(
+            RichText::new(format!(
+                "This password protects the signing keys for {}.",
+                self.identity
+            ))
+            .color(DashColors::text_primary(dark_mode)),
+        );
+        ui.add_space(6.0);
+
+        ui.label("New password:");
+        self.protection_new_password.show(ui);
+        ui.add_space(4.0);
+        let pw = self.protection_new_password.text().to_string();
+        render_password_strength(ui, &pw);
+
+        ui.add_space(8.0);
+        ui.label("Confirm password:");
+        self.protection_confirm_password.show(ui);
+
+        ui.add_space(8.0);
+        ui.label(
+            "Password hint (optional — visible in plain text. Do not use the password itself as a hint.):",
+        );
+        ui.add(egui::TextEdit::singleline(&mut self.protection_hint).hint_text("Password hint"));
+
+        if let Some(err) = &self.protection_form_error {
+            ui.add_space(6.0);
+            ui.colored_label(DashColors::ERROR, err);
+        }
+
+        ui.add_space(10.0);
+        ui.horizontal(|ui| {
+            if ui.button("Protect keys").clicked() {
+                self.submit_new_password();
+            }
+            if ui.button("Cancel").clicked() {
+                self.cancel_protection_flow();
+            }
+        });
+    }
+
+    /// The opt-out password form: verify the current password.
+    fn render_verify_password_form(&mut self, ui: &mut egui::Ui) {
+        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        ui.label(
+            RichText::new(format!(
+                "Enter the current password for the signing keys for {}.",
+                self.identity
+            ))
+            .color(DashColors::text_primary(dark_mode)),
+        );
+        ui.add_space(6.0);
+        self.protection_verify_password.show(ui);
+
+        if let Some(err) = &self.protection_form_error {
+            ui.add_space(6.0);
+            ui.colored_label(DashColors::ERROR, err);
+        }
+
+        ui.add_space(10.0);
+        ui.horizontal(|ui| {
+            if ui.button("Verify and remove").clicked() {
+                self.submit_verify_password();
+            }
+            if ui.button("Cancel").clicked() {
+                self.cancel_protection_flow();
+            }
+        });
+    }
+
+    /// Validate the opt-in form and queue the `ProtectIdentityKeys` dispatch.
+    fn submit_new_password(&mut self) {
+        let pw = self.protection_new_password.text().to_string();
+        let confirm = self.protection_confirm_password.text().to_string();
+        if let Err(e) = validate_single_key_passphrase(&pw, &confirm) {
+            self.protection_form_error = Some(e.to_string());
+            return;
+        }
+        let hint = {
+            let h = self.protection_hint.trim();
+            if h.is_empty() {
+                None
+            } else {
+                Some(h.to_string())
+            }
+        };
+        self.pending_protect = Some((Secret::new(pw), hint));
+        self.finish_protection_flow();
+    }
+
+    /// Queue the `UnprotectIdentityKeys` dispatch (the backend verifies the
+    /// password — a wrong one returns a typed error, no client-side oracle).
+    fn submit_verify_password(&mut self) {
+        let pw = self.protection_verify_password.text().to_string();
+        if pw.is_empty() {
+            self.protection_form_error =
+                Some("Enter the current password to remove protection.".to_string());
+            return;
+        }
+        self.pending_unprotect = Some(Secret::new(pw));
+        self.finish_protection_flow();
+    }
+
+    /// Mark a migration as dispatched: clear the forms, flip to in-flight, and
+    /// return to the idle status row.
+    fn finish_protection_flow(&mut self) {
+        self.protection_in_flight = true;
+        self.protection_form_error = None;
+        self.protection_new_password.clear();
+        self.protection_confirm_password.clear();
+        self.protection_verify_password.clear();
+        self.protection_hint.clear();
+        self.protection_stage = ProtectionStage::Idle;
+    }
+
+    /// Abandon the active flow with no change.
+    fn cancel_protection_flow(&mut self) {
+        self.protection_form_error = None;
+        self.protection_new_password.clear();
+        self.protection_confirm_password.clear();
+        self.protection_verify_password.clear();
+        self.protection_hint.clear();
+        self.protection_stage = ProtectionStage::Idle;
+    }
+}
+
+/// Render a zxcvbn-backed password-strength bar (0–4 score). Mirrors the
+/// wallet-creation strength UI so the two surfaces feel identical.
+fn render_password_strength(ui: &mut egui::Ui, password: &str) {
+    let score = if password.is_empty() {
+        0u8
+    } else {
+        u8::from(zxcvbn(password, &[]).score())
+    };
+    let fraction = f32::from(score) / 4.0;
+    let (fill, label) = match score {
+        0 => (DashColors::STRENGTH_WEAK, "None"),
+        1 => (DashColors::STRENGTH_WEAK, "Very weak"),
+        2 => (DashColors::STRENGTH_FAIR, "Weak"),
+        3 => (DashColors::STRENGTH_GOOD, "Strong"),
+        _ => (DashColors::STRENGTH_STRONG, "Very strong"),
+    };
+    ui.horizontal(|ui| {
+        ui.label("Password strength:");
+        ui.add(
+            egui::ProgressBar::new(fraction)
+                .desired_width(180.0)
+                .text(label)
+                .fill(fill),
+        );
+    });
 }

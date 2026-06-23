@@ -22,6 +22,7 @@ use crate::context::AppContext;
 use crate::model::qualified_identity::PrivateKeyTarget;
 use crate::model::qualified_identity::identity_meta::IdentityMeta;
 use crate::model::secret::Secret;
+use crate::model::wallet::passphrase::validate_single_key_passphrase;
 use crate::wallet_backend::IdentityKeyView;
 use crate::wallet_backend::secret_seam::SecretScheme;
 
@@ -38,6 +39,11 @@ impl AppContext {
         password: Secret,
         hint: Option<String>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
+        // Backend = authoritative validation (SEC-002): re-enforce the password
+        // policy here, not only in the UI, so a future MCP/CLI caller cannot
+        // seal under a too-short password.
+        validate_protection_password(&password)?;
+
         let qi = self
             .get_identity_by_id(&identity_id)?
             .ok_or(TaskError::IdentityNotFoundLocally)?;
@@ -119,12 +125,29 @@ impl AppContext {
     }
 }
 
+/// Backend-authoritative password policy for identity-key protection (SEC-002).
+/// Re-uses the single-key passphrase validator (the same minimum length the UI
+/// shows) so the rule lives in one place and a non-UI caller cannot bypass it.
+/// The confirmation match is a UI concern, so the password is passed as its own
+/// confirmation here — only the length check is meaningful at this layer.
+fn validate_protection_password(password: &Secret) -> Result<(), TaskError> {
+    let pw = password.expose_secret();
+    validate_single_key_passphrase(pw, pw)
+}
+
 /// Seal every keyless (`Unprotected`) vault key in `keys` Tier-2 under
 /// `password`, returning how many were newly sealed. Idempotent: an
 /// already-`Protected` key is skipped, and an `Absent` key (not vault-stored —
 /// a wallet-derived or resident-plaintext key, protected by other means) is
 /// skipped. Crash-safe: the same-label upsert never loses a key, so a re-run
 /// finishes a partial migration.
+///
+/// At-rest residual (SEC-004, known): the in-place upsert replaces the value at
+/// the label, but the PRE-opt-in keyless plaintext may persist in freed
+/// filesystem blocks (atomic-rename/copy-on-write residue, filesystem-owned)
+/// until those blocks are reused. This is a strict improvement over the keyless
+/// default and matches the residual already accepted for the seed/single-key
+/// Tier-2 re-wrap; secure-erase of freed blocks is out of this layer's control.
 fn seal_identity_keys(
     view: &IdentityKeyView<'_>,
     keys: &IdentityKeySet,
@@ -298,6 +321,20 @@ mod tests {
         let keys = key_set(&[(M, 7), (V, 9)]); // nothing stored under these
         assert_eq!(seal_identity_keys(&view, &keys, &pw).unwrap(), 0);
         assert_eq!(unseal_identity_keys(&view, &keys, &pw).unwrap(), 0);
+    }
+
+    /// SEC-002: the backend enforces the password policy — a too-short password
+    /// is rejected with the typed error before any sealing, regardless of the UI.
+    #[test]
+    fn weak_password_is_rejected_by_backend_policy() {
+        let err = validate_protection_password(&Secret::new("short")).expect_err("too short");
+        assert!(
+            matches!(err, TaskError::SingleKeyPassphraseTooShort { .. }),
+            "expected SingleKeyPassphraseTooShort, got {err:?}"
+        );
+        // A policy-compliant password passes.
+        validate_protection_password(&Secret::new("long-enough-password"))
+            .expect("compliant password accepted");
     }
 
     /// A full round trip with a Zeroizing-backed raw key proves the bytes are

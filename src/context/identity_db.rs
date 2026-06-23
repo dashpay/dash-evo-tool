@@ -237,6 +237,37 @@ enum KeystoreMigration {
     VaultWriteFailed,
     /// `n` keys moved to the vault and `qi` rewritten to `InVault` placeholders.
     Migrated(usize),
+    /// The identity is password-protected (SEC-001), so a resident plaintext key
+    /// was NOT migrated to a keyless vault entry. `qi` keeps its resident key (it
+    /// still signs this session) and nothing is persisted; the add-key path seals
+    /// new keys Tier-2 explicitly.
+    ProtectedSkipped,
+}
+
+/// Find an existing password-protected (Tier-2) key of this identity, as a
+/// [`SecretScope`](crate::wallet_backend::secret_prompt::SecretScope) suitable
+/// for verifying the identity's password when sealing a newly-added key
+/// (SEC-001). `None` when the identity has no protected key — i.e. the identity
+/// is keyless and the default path applies.
+fn find_protected_identity_key_scope(
+    secret_store: &Arc<platform_wallet_storage::secrets::SecretStore>,
+    id: &[u8; 32],
+    qi: &QualifiedIdentity,
+) -> Option<crate::wallet_backend::secret_prompt::SecretScope> {
+    use crate::wallet_backend::secret_prompt::SecretScope;
+    use crate::wallet_backend::secret_seam::SecretScheme;
+    let view = crate::wallet_backend::IdentityKeyView::new(secret_store, *id);
+    qi.private_keys
+        .keys_set()
+        .into_iter()
+        .find_map(|(target, key_id)| match view.scheme(&target, key_id) {
+            Ok(SecretScheme::Protected) => Some(SecretScope::IdentityKey {
+                identity_id: *id,
+                target,
+                key_id,
+            }),
+            _ => None,
+        })
 }
 
 /// EAGER identity-key migration core (vault-first, crash-safe). Moves any
@@ -264,6 +295,18 @@ fn migrate_keystore_to_vault(
     // the resident plaintext on a vault-write failure.
     if !qi.private_keys.has_plaintext_for_vault() {
         return KeystoreMigration::Nothing;
+    }
+    // SEC-001 fail-closed: never migrate a protected identity's resident
+    // plaintext to a KEYLESS vault entry — that would silently strip protection
+    // off a new key. Leave it resident (it still signs this session) and persist
+    // nothing; the add-key path seals new keys Tier-2 under the identity password.
+    if find_protected_identity_key_scope(secret_store, id, qi).is_some() {
+        tracing::warn!(
+            target = "context::identity_db",
+            identity = %hex::encode(id),
+            "Skipped keyless migration of a resident key on a password-protected identity",
+        );
+        return KeystoreMigration::ProtectedSkipped;
     }
     let before = qi.private_keys.clone();
     let taken = qi.private_keys.take_plaintext_for_vault();
@@ -319,6 +362,14 @@ fn encode_identity_blob_vault_first(
     // identity that callers re-save unchanged).
     if !qi.private_keys.has_plaintext_for_vault() {
         return Ok(qi.to_bytes());
+    }
+    // SEC-001 fail-closed: a password-protected identity must NEVER acquire a
+    // keyless key. If any existing key is Tier-2, refuse to move new plaintext
+    // into the vault keyless — the add-key path seals the new key Tier-2 under
+    // the identity's password and marks it `InVault` first, so a correctly-sealed
+    // add never reaches this branch. This closes the silent-plaintext-key leak.
+    if find_protected_identity_key_scope(secret_store, id, qi).is_some() {
+        return Err(TaskError::IdentityKeyProtectionDowngrade);
     }
     let mut qi = qi.clone();
     let taken = qi.private_keys.take_plaintext_for_vault();
@@ -686,6 +737,24 @@ impl AppContext {
         qi.top_ups = BTreeMap::new();
         self.hydrate_top_ups(&mut qi);
         Ok(Some(qi))
+    }
+
+    /// The [`SecretScope`](crate::wallet_backend::secret_prompt::SecretScope) of
+    /// an existing password-protected key of `qi`, used to verify the identity's
+    /// password when sealing a newly-added key (SEC-001), or `None` when the
+    /// identity is not password-protected (the default keyless add applies).
+    pub(crate) fn protected_identity_verify_scope(
+        &self,
+        qi: &QualifiedIdentity,
+    ) -> std::result::Result<Option<crate::wallet_backend::secret_prompt::SecretScope>, TaskError>
+    {
+        let backend = self.wallet_backend()?;
+        let id = qi.identity.id().to_buffer();
+        Ok(find_protected_identity_key_scope(
+            backend.secret_store(),
+            &id,
+            qi,
+        ))
     }
 
     /// Fetches every locally-stored identity whose `identity_type` is
@@ -1660,6 +1729,130 @@ mod tests {
         assert_eq!(
             migrate_keystore_to_vault(&store, &id, &mut qi, |_| Ok(())),
             KeystoreMigration::Nothing
+        );
+    }
+
+    /// SEC-001 MUST-FIX helper: a QI with one `InVault` key (key_id 1, sealed
+    /// Tier-2 in the vault by the caller) and one freshly-added `Clear` key
+    /// (key_id 2) — i.e. a new key added to a password-protected identity.
+    fn qi_invault_plus_new_clear() -> (QualifiedIdentity, dash_sdk::dpp::identity::KeyID) {
+        let pv = PlatformVersion::latest();
+        let mut ks = KeyStorage::default();
+        let existing = IdentityPublicKey::random_key(1, Some(1), pv);
+        ks.private_keys.insert(
+            (PrivateKeyTarget::PrivateKeyOnMainIdentity, existing.id()),
+            (
+                QualifiedIdentityPublicKey::from(existing),
+                PrivateKeyData::InVault,
+            ),
+        );
+        let added = IdentityPublicKey::random_key(2, Some(2), pv);
+        let added_id = added.id();
+        ks.private_keys.insert(
+            (PrivateKeyTarget::PrivateKeyOnMainIdentity, added_id),
+            (
+                QualifiedIdentityPublicKey::from(added),
+                PrivateKeyData::Clear([0xCC; 32]),
+            ),
+        );
+        let identity =
+            Identity::create_basic_identity(Identifier::default(), pv).expect("basic identity");
+        let qi = QualifiedIdentity {
+            identity,
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::User,
+            alias: None,
+            private_keys: ks,
+            dpns_names: vec![],
+            associated_wallets: BTreeMap::new(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: BTreeMap::new(),
+            status: IdentityStatus::Active,
+            network: Network::Testnet,
+        };
+        (qi, added_id)
+    }
+
+    /// SEC-001 MUST-FIX: the at-rest encode path REFUSES to write a new keyless
+    /// key onto a password-protected identity (the silent-plaintext leak Smythe
+    /// found). The encode fails closed and the new key lands NOWHERE — not
+    /// keyless, not Tier-2.
+    #[test]
+    fn encode_refuses_keyless_key_on_protected_identity() {
+        use crate::wallet_backend::secret_seam::SecretScheme;
+        use platform_wallet_storage::secrets::SecretString;
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = fresh_vault(dir.path());
+        let id = id(0x71);
+        let (qi, added_id) = qi_invault_plus_new_clear();
+        // Seal the existing key Tier-2 so the identity is password-protected.
+        IdentityKeyView::new(&store, id)
+            .store_protected(
+                &PrivateKeyTarget::PrivateKeyOnMainIdentity,
+                1,
+                &[0x10; 32],
+                &SecretString::new("identity-password-xx"),
+            )
+            .expect("seal existing key");
+
+        let err = encode_identity_blob_vault_first(&store, &id, &qi)
+            .expect_err("must refuse to keyless-store a new key on a protected identity");
+        assert!(
+            matches!(err, TaskError::IdentityKeyProtectionDowngrade),
+            "expected IdentityKeyProtectionDowngrade, got {err:?}"
+        );
+        // The new key was NOT written keyless (or at all).
+        assert_eq!(
+            IdentityKeyView::new(&store, id)
+                .scheme(&PrivateKeyTarget::PrivateKeyOnMainIdentity, added_id)
+                .unwrap(),
+            SecretScheme::Absent,
+            "no keyless key landed for the newly-added id",
+        );
+    }
+
+    /// SEC-001: the load-path migration likewise skips a protected identity's
+    /// resident plaintext rather than writing it keyless — fail closed, persist
+    /// nothing, leave it resident for the session.
+    #[test]
+    fn migrate_skips_keyless_on_protected_identity() {
+        use platform_wallet_storage::secrets::SecretString;
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = fresh_vault(dir.path());
+        let id = id(0x72);
+        let (mut qi, added_id) = qi_invault_plus_new_clear();
+        IdentityKeyView::new(&store, id)
+            .store_protected(
+                &PrivateKeyTarget::PrivateKeyOnMainIdentity,
+                1,
+                &[0x10; 32],
+                &SecretString::new("identity-password-xx"),
+            )
+            .expect("seal existing key");
+
+        let mut persisted = false;
+        let outcome = migrate_keystore_to_vault(&store, &id, &mut qi, |_| {
+            persisted = true;
+            Ok(())
+        });
+        assert_eq!(outcome, KeystoreMigration::ProtectedSkipped);
+        assert!(!persisted, "a protected-skip must persist nothing");
+        // No keyless key written for the resident plaintext key.
+        assert_eq!(
+            IdentityKeyView::new(&store, id)
+                .scheme(&PrivateKeyTarget::PrivateKeyOnMainIdentity, added_id)
+                .unwrap(),
+            crate::wallet_backend::secret_seam::SecretScheme::Absent,
+        );
+        // The resident plaintext is preserved (it still signs this session).
+        assert!(
+            qi.private_keys
+                .is_in_vault(&(PrivateKeyTarget::PrivateKeyOnMainIdentity, 1)),
         );
     }
 

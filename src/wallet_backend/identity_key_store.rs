@@ -68,6 +68,12 @@ impl<'a> IdentityKeyView<'a> {
         key: &[u8; 32],
     ) -> Result<(), TaskError> {
         let label = SecretScope::identity_key_label(target, key_id);
+        // SEC-003 (known, LOW): this scheme-probe-then-write is a theoretical
+        // check-then-act TOCTOU, bounded in practice by the upstream secret
+        // store's single-writer lock and the UI in-flight gate that serialises
+        // protect/unprotect/add-key on one identity. The identity-level
+        // fail-closed guard in the save path is the primary defense; this
+        // per-label check is defense in depth.
         if self
             .seam()
             .scheme(&self.scope(), &label)

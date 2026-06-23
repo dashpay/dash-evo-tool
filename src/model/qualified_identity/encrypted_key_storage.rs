@@ -530,6 +530,24 @@ impl KeyStorage {
         }
     }
 
+    /// Mark `key` as a vault placeholder ([`PrivateKeyData::InVault`]), wiping
+    /// any resident plaintext bytes. Used after a freshly-added key has been
+    /// sealed into the secret vault (SEC-001) so the at-rest encode path stores
+    /// no plaintext for it. Returns `true` if the key was present.
+    pub fn mark_in_vault(&mut self, key: &(PrivateKeyTarget, KeyID)) -> bool {
+        use zeroize::Zeroize;
+        match self.private_keys.get_mut(key) {
+            Some((_pub_key, data)) => {
+                if let PrivateKeyData::Clear(bytes) | PrivateKeyData::AlwaysClear(bytes) = data {
+                    bytes.zeroize();
+                }
+                *data = PrivateKeyData::InVault;
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Whether the key at `key` is a vault placeholder
     /// ([`PrivateKeyData::InVault`]) — its bytes live in the secret vault and
     /// are fetched per-use, never resident here.

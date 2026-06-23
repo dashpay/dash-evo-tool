@@ -121,6 +121,30 @@ impl AppContext {
 
         let fee_result = FeeResult::new(estimated_fee, actual_fee);
 
+        // SEC-001: a password-protected identity must never acquire a keyless
+        // key. If this identity already has a Tier-2 key, seal the newly-added
+        // key Tier-2 under the SAME password (prompting + verifying once) and
+        // mark it `InVault` BEFORE saving, so the at-rest encode writes no
+        // plaintext. Headless already failed closed at the signing step above,
+        // and the encode-path guard fails closed if this seal is ever skipped.
+        let new_key = (
+            PrivateKeyOnMainIdentity,
+            public_key_to_add.identity_public_key.id(),
+        );
+        if let Some(verify) = self.protected_identity_verify_scope(&qualified_identity)? {
+            self.wallet_backend()?
+                .secret_access()
+                .seal_new_identity_key(
+                    qualified_identity.identity.id().to_buffer(),
+                    &verify,
+                    &new_key.0,
+                    new_key.1,
+                    &private_key,
+                )
+                .await?;
+            qualified_identity.private_keys.mark_in_vault(&new_key);
+        }
+
         self.update_local_qualified_identity(&qualified_identity)?;
         Ok(BackendTaskSuccessResult::AddedKeyToIdentity(fee_result))
     }

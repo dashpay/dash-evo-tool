@@ -40,12 +40,14 @@ use std::time::Instant;
 use aes_gcm::aead::Aead;
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
 use dash_sdk::dpp::dashcore::Network;
+use dash_sdk::dpp::identity::KeyID;
 use platform_wallet_storage::secrets::{
-    SecretStore, SecretStoreError, SecretString, WalletId as SecretWalletId,
+    SecretBytes, SecretStore, SecretStoreError, SecretString, WalletId as SecretWalletId,
 };
 use zeroize::Zeroizing;
 
 use crate::backend_task::error::TaskError;
+use crate::model::qualified_identity::PrivateKeyTarget;
 use crate::model::single_key::ImportedKey;
 use crate::model::wallet::WalletSeedHash;
 use crate::model::wallet::encryption::derive_password_key;
@@ -451,6 +453,68 @@ impl SecretAccess {
         let plaintext = self.decrypt_jit(&scope, passphrase)?;
         self.maybe_remember(&scope, &plaintext, policy);
         Ok(())
+    }
+
+    /// Seal a NEW identity key Tier-2 under the identity's EXISTING object
+    /// password (SEC-001). A protected identity must never acquire a keyless
+    /// key, so when a key is added to such an identity it is sealed here rather
+    /// than written raw.
+    ///
+    /// Prompts for the password and VERIFIES it by unsealing `verify` (an
+    /// existing `Protected` key of the same identity) — so the whole identity
+    /// stays under ONE password, with the standard wrong-password re-ask — then
+    /// seals `new_key` at its label under that same password. Headless
+    /// (`NullSecretPrompt`) yields [`TaskError::SecretPromptUnavailable`] and
+    /// nothing is written (fail closed). The password and the verification
+    /// plaintext never leave this method; both zeroize on return.
+    pub async fn seal_new_identity_key(
+        &self,
+        identity_id: [u8; 32],
+        verify: &SecretScope,
+        new_target: &PrivateKeyTarget,
+        new_key_id: KeyID,
+        new_key: &[u8; 32],
+    ) -> Result<(), TaskError> {
+        let scope_id = SecretWalletId::from(identity_id);
+        let label = SecretScope::identity_key_label(new_target, new_key_id);
+
+        let mut retry: Option<SecretPromptRetry> = None;
+        loop {
+            let request = self.build_request(verify, retry);
+            let reply = self
+                .inner
+                .prompt
+                .request(request)
+                .await
+                .map_err(|_cancelled| self.cancel_error())?;
+
+            // Verify the typed password against an existing protected key so the
+            // new key is sealed under the SAME password as the rest. The
+            // verification plaintext is dropped (zeroized) immediately.
+            match self.decrypt_jit(verify, Some(&reply.passphrase)) {
+                Ok(_verified) => {
+                    self.seam()
+                        .put_secret_protected(
+                            &scope_id,
+                            &label,
+                            &SecretBytes::from_slice(new_key),
+                            &reply.passphrase,
+                        )
+                        .map_err(|e| match e {
+                            TaskError::SecretSeam { source } => {
+                                TaskError::IdentityKeyVault { source }
+                            }
+                            other => other,
+                        })?;
+                    return Ok(());
+                }
+                Err(e) if is_wrong_passphrase(&e) => {
+                    retry = Some(SecretPromptRetry::WrongPassphrase);
+                    continue;
+                }
+                Err(other) => return Err(other),
+            }
+        }
     }
 
     /// Forget the session-cached secret for `scope`, zeroizing it.
@@ -2105,6 +2169,168 @@ mod tests {
         let req = &prompt.requests()[0];
         assert_eq!(req.display_label, "alice.dash", "prompt shows the alias");
         assert_eq!(req.hint.as_deref(), Some("the usual"), "prompt shows hint");
+    }
+
+    /// SEC-001 MUST-FIX: a NEW key added to a protected identity is sealed
+    /// Tier-2 under the identity's verified password — never written keyless.
+    /// After the seal the new key reports `Protected`, a password-free read
+    /// fails, and it unseals to the exact bytes under the same password.
+    #[tokio::test]
+    async fn seal_new_identity_key_seals_tier2_under_verified_password() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = fresh_store(dir.path());
+        let identity_id = [0x61u8; 32];
+        // An existing protected key of the identity (the verify anchor).
+        store_identity_key_protected(
+            &store,
+            identity_id,
+            &PrivateKeyTarget::PrivateKeyOnMainIdentity,
+            0,
+            &[0x10u8; 32],
+            SENTINEL_PASSPHRASE,
+        );
+        let new_key = [0x20u8; 32];
+
+        let prompt = Arc::new(TestPrompt::new([ScriptedAnswer::once(SENTINEL_PASSPHRASE)]));
+        let sa = access(Arc::clone(&store), prompt.clone());
+        let verify = SecretScope::IdentityKey {
+            identity_id,
+            target: PrivateKeyTarget::PrivateKeyOnMainIdentity,
+            key_id: 0,
+        };
+        sa.seal_new_identity_key(
+            identity_id,
+            &verify,
+            &PrivateKeyTarget::PrivateKeyOnMainIdentity,
+            5,
+            &new_key,
+        )
+        .await
+        .expect("seal new key under the verified password");
+        assert_eq!(prompt.ask_count(), 1, "one prompt to verify + seal");
+
+        let new_label =
+            SecretScope::identity_key_label(&PrivateKeyTarget::PrivateKeyOnMainIdentity, 5);
+        let seam = SecretSeam::new(&store);
+        assert_eq!(
+            seam.scheme(&SecretWalletId::from(identity_id), &new_label)
+                .unwrap(),
+            SecretScheme::Protected,
+            "the new key is sealed Tier-2, never keyless",
+        );
+        assert!(
+            store
+                .get(&SecretWalletId::from(identity_id), &new_label)
+                .is_err(),
+            "a password-free read of the new key must fail",
+        );
+        let unsealed = seam
+            .get_secret_protected(
+                &SecretWalletId::from(identity_id),
+                &new_label,
+                &SecretString::new(SENTINEL_PASSPHRASE),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(unsealed.expose_secret(), &new_key[..]);
+    }
+
+    /// Headless: sealing a new key onto a protected identity fails closed
+    /// (`SecretPromptUnavailable`) and writes NOTHING — no keyless key lands.
+    #[tokio::test]
+    async fn seal_new_identity_key_headless_fails_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = fresh_store(dir.path());
+        let identity_id = [0x62u8; 32];
+        store_identity_key_protected(
+            &store,
+            identity_id,
+            &PrivateKeyTarget::PrivateKeyOnMainIdentity,
+            0,
+            &[0x11u8; 32],
+            SENTINEL_PASSPHRASE,
+        );
+
+        let sa = access(Arc::clone(&store), Arc::new(NullSecretPrompt));
+        let verify = SecretScope::IdentityKey {
+            identity_id,
+            target: PrivateKeyTarget::PrivateKeyOnMainIdentity,
+            key_id: 0,
+        };
+        let err = sa
+            .seal_new_identity_key(
+                identity_id,
+                &verify,
+                &PrivateKeyTarget::PrivateKeyOnMainIdentity,
+                5,
+                &[0x20u8; 32],
+            )
+            .await
+            .expect_err("headless cannot seal");
+        assert!(
+            matches!(err, TaskError::SecretPromptUnavailable),
+            "expected SecretPromptUnavailable, got {err:?}"
+        );
+        // Nothing was written for the new key — no keyless leak.
+        let new_label =
+            SecretScope::identity_key_label(&PrivateKeyTarget::PrivateKeyOnMainIdentity, 5);
+        assert_eq!(
+            SecretSeam::new(&store)
+                .scheme(&SecretWalletId::from(identity_id), &new_label)
+                .unwrap(),
+            SecretScheme::Absent,
+            "a failed headless seal must leave no key at all",
+        );
+    }
+
+    /// A wrong password re-asks (verifying against the existing protected key),
+    /// then seals the new key on the correct password.
+    #[tokio::test]
+    async fn seal_new_identity_key_wrong_password_reasks() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = fresh_store(dir.path());
+        let identity_id = [0x63u8; 32];
+        store_identity_key_protected(
+            &store,
+            identity_id,
+            &PrivateKeyTarget::PrivateKeyOnMainIdentity,
+            0,
+            &[0x12u8; 32],
+            SENTINEL_PASSPHRASE,
+        );
+
+        let prompt = Arc::new(TestPrompt::new([
+            ScriptedAnswer::once("not-the-password"),
+            ScriptedAnswer::once(SENTINEL_PASSPHRASE),
+        ]));
+        let sa = access(Arc::clone(&store), prompt.clone());
+        let verify = SecretScope::IdentityKey {
+            identity_id,
+            target: PrivateKeyTarget::PrivateKeyOnMainIdentity,
+            key_id: 0,
+        };
+        sa.seal_new_identity_key(
+            identity_id,
+            &verify,
+            &PrivateKeyTarget::PrivateKeyOnMainIdentity,
+            5,
+            &[0x20u8; 32],
+        )
+        .await
+        .expect("retry then seal");
+        assert_eq!(prompt.ask_count(), 2, "one wrong-pass re-ask, then success");
+        assert_eq!(
+            SecretSeam::new(&store)
+                .scheme(
+                    &SecretWalletId::from(identity_id),
+                    &SecretScope::identity_key_label(
+                        &PrivateKeyTarget::PrivateKeyOnMainIdentity,
+                        5
+                    )
+                )
+                .unwrap(),
+            SecretScheme::Protected,
+        );
     }
 
     /// A missing identity key surfaces the loud typed `IdentityKeyMissing`,

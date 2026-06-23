@@ -550,6 +550,20 @@ impl KeyStorage {
         self.private_keys.get(key).map(|(pub_key, _)| pub_key)
     }
 
+    /// Whether any key still carries resident plaintext bytes
+    /// ([`PrivateKeyData::Clear`] / [`PrivateKeyData::AlwaysClear`]) that
+    /// [`Self::take_plaintext_for_vault`] would move into the vault. A cheap,
+    /// non-mutating probe so callers can skip a full `KeyStorage` clone when
+    /// there is nothing to migrate (the steady-state, already-`InVault` case).
+    pub fn has_plaintext_for_vault(&self) -> bool {
+        self.private_keys.values().any(|(_, data)| {
+            matches!(
+                data,
+                PrivateKeyData::Clear(_) | PrivateKeyData::AlwaysClear(_)
+            )
+        })
+    }
+
     /// Rewrite every plaintext-carrying identity key
     /// ([`PrivateKeyData::Clear`] / [`PrivateKeyData::AlwaysClear`]) to an
     /// [`PrivateKeyData::InVault`] placeholder, returning the raw bytes that

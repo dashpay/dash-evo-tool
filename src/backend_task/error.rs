@@ -225,6 +225,16 @@ pub enum TaskError {
     )]
     IdentityKeyMissing,
 
+    /// An identity private key was found in the vault but its bytes are not a
+    /// usable signing key (vault corruption or a truncated write). Distinct
+    /// from [`Self::IdentityKeyMissing`] (genuinely absent) so the user gets
+    /// the right next step. Fieldless: the callsite logs the typed detail; no
+    /// secret or raw error string is stored here.
+    #[error(
+        "This identity's signing key is stored but unreadable on this device. Re-import the identity to refresh it."
+    )]
+    IdentityKeyMalformed,
+
     /// The DET wallet-metadata sidecar (alias / `is_main` /
     /// `core_wallet_name`) could not be read or written. Distinct from
     /// [`Self::WalletStorage`] because the cause sits in the cross-

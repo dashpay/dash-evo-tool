@@ -259,11 +259,14 @@ fn migrate_keystore_to_vault(
     qi: &mut QualifiedIdentity,
     persist: impl FnOnce(&QualifiedIdentity) -> std::result::Result<(), TaskError>,
 ) -> KeystoreMigration {
-    let before = qi.private_keys.clone();
-    let taken = qi.private_keys.take_plaintext_for_vault();
-    if taken.is_empty() {
+    // Probe before cloning: the steady-state (already all-`InVault`) case must
+    // not pay for a full `KeyStorage` clone — that clone exists only to restore
+    // the resident plaintext on a vault-write failure.
+    if !qi.private_keys.has_plaintext_for_vault() {
         return KeystoreMigration::Nothing;
     }
+    let before = qi.private_keys.clone();
+    let taken = qi.private_keys.take_plaintext_for_vault();
     let view = crate::wallet_backend::IdentityKeyView::new(secret_store, *id);
     if let Err(e) = view.store_all(&taken) {
         qi.private_keys = before;
@@ -311,11 +314,15 @@ fn encode_identity_blob_vault_first(
     id: &[u8; 32],
     qi: &QualifiedIdentity,
 ) -> std::result::Result<Vec<u8>, TaskError> {
+    // No resident plaintext ⇒ nothing to vault and nothing to rewrite; encode
+    // the borrow directly without a clone (the steady-state, already-`InVault`
+    // identity that callers re-save unchanged).
+    if !qi.private_keys.has_plaintext_for_vault() {
+        return Ok(qi.to_bytes());
+    }
     let mut qi = qi.clone();
     let taken = qi.private_keys.take_plaintext_for_vault();
-    if !taken.is_empty() {
-        crate::wallet_backend::IdentityKeyView::new(secret_store, *id).store_all(&taken)?;
-    }
+    crate::wallet_backend::IdentityKeyView::new(secret_store, *id).store_all(&taken)?;
     Ok(qi.to_bytes())
 }
 

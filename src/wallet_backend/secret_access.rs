@@ -1324,6 +1324,38 @@ mod tests {
         PrivateKey::new(sk, Network::Testnet).to_wif()
     }
 
+    /// Write a legacy DET AES-GCM `SingleKeyEntry` straight to the vault Tier-1 —
+    /// the pre-Tier-2 protected-import shape. Fresh imports now seal Tier-2 at
+    /// import time, so this is how the legacy→Tier-2 lazy migration path stays
+    /// covered.
+    fn write_legacy_protected_key(store: &Arc<SecretStore>, passphrase: &str) -> String {
+        use dash_sdk::dpp::dashcore::secp256k1::Secp256k1;
+        use dash_sdk::dpp::dashcore::{Address, PrivateKey, PublicKey};
+
+        let priv_key = PrivateKey::from_wif(&known_testnet_wif()).expect("wif");
+        let raw: Zeroizing<[u8; 32]> =
+            Zeroizing::new(priv_key.inner[..].try_into().expect("32 bytes"));
+        let secp = Secp256k1::new();
+        let pub_key = PublicKey {
+            compressed: priv_key.compressed,
+            inner: priv_key.inner.public_key(&secp),
+        };
+        let address = Address::p2pkh(&pub_key, Network::Testnet).to_string();
+        let pub_bytes = pub_key.inner.serialize().to_vec();
+        let entry =
+            SingleKeyEntry::protected(&raw, passphrase, Some("the usual".into()), pub_bytes)
+                .expect("build legacy protected entry");
+        let payload = entry.encode().expect("encode legacy entry");
+        store
+            .set(
+                &single_key_namespace_id(),
+                &label_for_address(&address),
+                &SecretBytes::from_slice(&payload),
+            )
+            .expect("write legacy vault entry");
+        address
+    }
+
     #[tokio::test]
     async fn single_key_cache_miss_prompts_and_decrypts() {
         let dir = tempfile::tempdir().unwrap();
@@ -1361,17 +1393,19 @@ mod tests {
         assert_eq!(prompt.ask_count(), 2);
     }
 
-    /// TS-LAZY-03 (Tier-2) — a protected single key lazy RE-WRAPS through the
-    /// chokepoint, KEEPING protection: the first `with_secret` decrypts with the
-    /// passphrase AND re-stores a Tier-2 object-password envelope (not a raw
-    /// secret); a second `with_secret` therefore still requires the password.
+    /// TS-LAZY-03 (Tier-2) — a *legacy* protected single key lazy RE-WRAPS
+    /// through the chokepoint, KEEPING protection: the first `with_secret`
+    /// decrypts with the passphrase AND re-stores a Tier-2 object-password
+    /// envelope (not a raw secret); a second `with_secret` therefore still
+    /// requires the password. Starts from a legacy AES-GCM entry so the
+    /// migration path is genuinely exercised (fresh imports already seal Tier-2).
     #[tokio::test]
     async fn ts_lazy_03_protected_single_key_rewraps_to_tier2_via_chokepoint() {
         use dash_sdk::dpp::dashcore::PrivateKey;
 
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());
-        let address = import_protected_key(&store, SENTINEL_PASSPHRASE);
+        let address = write_legacy_protected_key(&store, SENTINEL_PASSPHRASE);
         let expected: [u8; 32] = PrivateKey::from_wif(&known_testnet_wif()).unwrap().inner[..]
             .try_into()
             .unwrap();

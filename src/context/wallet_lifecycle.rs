@@ -3932,20 +3932,32 @@ mod tests {
             let h = wallet.seed_hash();
 
             let (ctx, sender) = offline_testnet_context_at(temp_dir.path());
-            // Backend must be wired before register_wallet so the upstream
-            // registration subtask is not silently deferred.
+
+            // Register the wallet BEFORE wiring the backend.  register_wallet
+            // writes the DET sidecars (seed-envelope vault + wallet-meta), but
+            // register_wallet_upstream checks ctx.wallet_backend() and, finding it
+            // not yet wired, returns early without spawning the background
+            // "wallet_upstream_registration" subtask.  This avoids the concurrency
+            // hazard: if the backend were wired first the background subtask would
+            // race with the synchronous register_wallet_from_seed call below —
+            // both call create_wallet_from_seed_bytes for the same wallet.  The
+            // upstream register_wallet inserts into wallet_manager (step A) and into
+            // self.wallets (step B) with async work in between; a concurrent caller
+            // that arrives between A and B sees WalletAlreadyExists but then
+            // get_wallet returns None → WalletNotFound panic.  Under CI load
+            // (1000+ concurrent tests) this window is reliably hit.
+            ctx.register_wallet(wallet, &seed, WalletOrigin::Fresh)
+                .expect("boot 1: ctx.register_wallet");
+
+            // Wire the backend now so the explicit registration below has the
+            // upstream persister available.
             ctx.ensure_wallet_backend(sender)
                 .await
                 .expect("boot 1: ensure_wallet_backend offline");
 
-            // Write the wallet-meta sidecar (xpub_encoded → seed_hash bridge
-            // used by the cold-boot fund-routing gate in
-            // load_from_persistor_seedless).
-            ctx.register_wallet(wallet, &seed, WalletOrigin::Fresh)
-                .expect("boot 1: ctx.register_wallet");
-
-            // Synchronously write the upstream persister so we don't race the
-            // background subtask.  Idempotent with the subtask.
+            // Write the upstream persister synchronously — no background subtask
+            // is in flight (we didn't wire the backend when register_wallet ran),
+            // so this call is race-free.
             let backend1 = ctx.wallet_backend().expect("boot 1 backend");
             backend1
                 .register_wallet_from_seed(&h, &seed, Some(0))

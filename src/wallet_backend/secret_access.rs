@@ -246,6 +246,22 @@ pub struct IdentityPromptMeta {
     pub password_hint: Option<String>,
 }
 
+/// An identity object password VERIFIED against an existing protected key of
+/// the identity (SEC-001). Produced by
+/// [`SecretAccess::verify_identity_object_password`] and consumed by
+/// [`SecretAccess::seal_new_identity_key_with_password`], so the add-key flow
+/// can enforce the protected-identity precondition BEFORE the irreversible
+/// on-chain broadcast and seal the new key AFTER it — with a single prompt.
+/// Wraps a [`SecretString`], so the plaintext zeroizes on drop.
+pub struct VerifiedIdentityPassword(SecretString);
+
+impl std::fmt::Debug for VerifiedIdentityPassword {
+    /// Redacts the wrapped password (M-PUBLIC-DEBUG, M-DONT-LEAK-TYPES).
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("VerifiedIdentityPassword").finish()
+    }
+}
+
 impl SecretAccess {
     /// Build a chokepoint over `secret_store`, prompting through `prompt`.
     ///
@@ -465,8 +481,14 @@ impl SecretAccess {
     /// stays under ONE password, with the standard wrong-password re-ask — then
     /// seals `new_key` at its label under that same password. Headless
     /// (`NullSecretPrompt`) yields [`TaskError::SecretPromptUnavailable`] and
-    /// nothing is written (fail closed). The password and the verification
-    /// plaintext never leave this method; both zeroize on return.
+    /// nothing is written (fail closed).
+    ///
+    /// This is the verify-then-seal composition for callers that run both
+    /// halves together. The add-key flow instead calls
+    /// [`Self::verify_identity_object_password`] BEFORE its on-chain broadcast
+    /// and [`Self::seal_new_identity_key_with_password`] AFTER, so a headless or
+    /// wrong-password attempt fails closed before any state transition is sent
+    /// (SEC-001 O-2) — the same single prompt, split across the broadcast.
     pub async fn seal_new_identity_key(
         &self,
         identity_id: [u8; 32],
@@ -475,9 +497,32 @@ impl SecretAccess {
         new_key_id: KeyID,
         new_key: &[u8; 32],
     ) -> Result<(), TaskError> {
-        let scope_id = SecretWalletId::from(identity_id);
-        let label = SecretScope::identity_key_label(new_target, new_key_id);
+        let password = self.verify_identity_object_password(verify).await?;
+        self.seal_new_identity_key_with_password(
+            identity_id,
+            new_target,
+            new_key_id,
+            new_key,
+            &password,
+        )
+    }
 
+    /// Prompt for the identity's object password and VERIFY it by unsealing
+    /// `verify` (an existing `Protected` key of the same identity), returning
+    /// the verified password for a later
+    /// [`Self::seal_new_identity_key_with_password`].
+    ///
+    /// Split out of [`Self::seal_new_identity_key`] so the add-key flow can
+    /// enforce the protected-identity precondition BEFORE its irreversible
+    /// on-chain broadcast and seal the new key AFTER, without a second prompt.
+    /// Headless ([`NullSecretPrompt`](crate::wallet_backend::secret_prompt::NullSecretPrompt))
+    /// yields [`TaskError::SecretPromptUnavailable`] (fail closed); a wrong
+    /// password re-asks. The verification plaintext is dropped (zeroized)
+    /// immediately; the returned password zeroizes on drop.
+    pub async fn verify_identity_object_password(
+        &self,
+        verify: &SecretScope,
+    ) -> Result<VerifiedIdentityPassword, TaskError> {
         let mut retry: Option<SecretPromptRetry> = None;
         loop {
             let request = self.build_request(verify, retry);
@@ -489,25 +534,10 @@ impl SecretAccess {
                 .map_err(|_cancelled| self.cancel_error())?;
 
             // Verify the typed password against an existing protected key so the
-            // new key is sealed under the SAME password as the rest. The
+            // new key is later sealed under the SAME password as the rest. The
             // verification plaintext is dropped (zeroized) immediately.
             match self.decrypt_jit(verify, Some(&reply.passphrase)) {
-                Ok(_verified) => {
-                    self.seam()
-                        .put_secret_protected(
-                            &scope_id,
-                            &label,
-                            &SecretBytes::from_slice(new_key),
-                            &reply.passphrase,
-                        )
-                        .map_err(|e| match e {
-                            TaskError::SecretSeam { source } => {
-                                TaskError::IdentityKeyVault { source }
-                            }
-                            other => other,
-                        })?;
-                    return Ok(());
-                }
+                Ok(_verified) => return Ok(VerifiedIdentityPassword(reply.passphrase)),
                 Err(e) if is_wrong_passphrase(&e) => {
                     retry = Some(SecretPromptRetry::WrongPassphrase);
                     continue;
@@ -515,6 +545,35 @@ impl SecretAccess {
                 Err(other) => return Err(other),
             }
         }
+    }
+
+    /// Seal a NEW identity key Tier-2 under an ALREADY-VERIFIED identity object
+    /// password (SEC-001) — the back half of [`Self::seal_new_identity_key`].
+    /// No prompt and no re-verify: `password` came from a successful
+    /// [`Self::verify_identity_object_password`], so this only writes the sealed
+    /// key. The add-key flow calls this AFTER its on-chain broadcast, having
+    /// verified the password up front, so the new key never lands keyless.
+    pub fn seal_new_identity_key_with_password(
+        &self,
+        identity_id: [u8; 32],
+        new_target: &PrivateKeyTarget,
+        new_key_id: KeyID,
+        new_key: &[u8; 32],
+        password: &VerifiedIdentityPassword,
+    ) -> Result<(), TaskError> {
+        let scope_id = SecretWalletId::from(identity_id);
+        let label = SecretScope::identity_key_label(new_target, new_key_id);
+        self.seam()
+            .put_secret_protected(
+                &scope_id,
+                &label,
+                &SecretBytes::from_slice(new_key),
+                &password.0,
+            )
+            .map_err(|e| match e {
+                TaskError::SecretSeam { source } => TaskError::IdentityKeyVault { source },
+                other => other,
+            })
     }
 
     /// Forget the session-cached secret for `scope`, zeroizing it.
@@ -2330,6 +2389,117 @@ mod tests {
                 )
                 .unwrap(),
             SecretScheme::Protected,
+        );
+    }
+
+    /// SEC-001 O-2: the add-key flow verifies the password UP FRONT
+    /// ([`SecretAccess::verify_identity_object_password`]) and seals AFTER its
+    /// broadcast ([`SecretAccess::seal_new_identity_key_with_password`]). The
+    /// split prompts EXACTLY ONCE total and seals the new key Tier-2 — the same
+    /// outcome as the combined `seal_new_identity_key`, with the verify and seal
+    /// halves usable around an intervening on-chain broadcast.
+    #[tokio::test]
+    async fn verify_up_front_then_seal_after_broadcast_one_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = fresh_store(dir.path());
+        let identity_id = [0x64u8; 32];
+        store_identity_key_protected(
+            &store,
+            identity_id,
+            &PrivateKeyTarget::PrivateKeyOnMainIdentity,
+            0,
+            &[0x13u8; 32],
+            SENTINEL_PASSPHRASE,
+        );
+        let new_key = [0x21u8; 32];
+
+        let prompt = Arc::new(TestPrompt::new([ScriptedAnswer::once(SENTINEL_PASSPHRASE)]));
+        let sa = access(Arc::clone(&store), prompt.clone());
+        let verify = SecretScope::IdentityKey {
+            identity_id,
+            target: PrivateKeyTarget::PrivateKeyOnMainIdentity,
+            key_id: 0,
+        };
+
+        // Front half: the precondition the add-key flow runs BEFORE broadcast.
+        let password = sa
+            .verify_identity_object_password(&verify)
+            .await
+            .expect("verify the object password up front");
+        assert_eq!(prompt.ask_count(), 1, "one prompt at the precondition");
+
+        // (broadcast would happen here) — back half: seal AFTER, no re-prompt.
+        sa.seal_new_identity_key_with_password(
+            identity_id,
+            &PrivateKeyTarget::PrivateKeyOnMainIdentity,
+            5,
+            &new_key,
+            &password,
+        )
+        .expect("seal the new key with the verified password");
+        assert_eq!(prompt.ask_count(), 1, "sealing did not prompt again");
+
+        let new_label =
+            SecretScope::identity_key_label(&PrivateKeyTarget::PrivateKeyOnMainIdentity, 5);
+        let seam = SecretSeam::new(&store);
+        assert_eq!(
+            seam.scheme(&SecretWalletId::from(identity_id), &new_label)
+                .unwrap(),
+            SecretScheme::Protected,
+            "the new key is sealed Tier-2, never keyless",
+        );
+        let unsealed = seam
+            .get_secret_protected(
+                &SecretWalletId::from(identity_id),
+                &new_label,
+                &SecretString::new(SENTINEL_PASSPHRASE),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(unsealed.expose_secret(), &new_key[..]);
+    }
+
+    /// SEC-001 O-2 fail-closed: headless verification of a protected identity's
+    /// password yields `SecretPromptUnavailable` and writes NOTHING. Because the
+    /// add-key flow runs this BEFORE its broadcast, a headless add never reaches
+    /// the on-chain state transition — no on-chain/local divergence.
+    #[tokio::test]
+    async fn verify_identity_object_password_headless_fails_closed_before_seal() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = fresh_store(dir.path());
+        let identity_id = [0x65u8; 32];
+        store_identity_key_protected(
+            &store,
+            identity_id,
+            &PrivateKeyTarget::PrivateKeyOnMainIdentity,
+            0,
+            &[0x14u8; 32],
+            SENTINEL_PASSPHRASE,
+        );
+
+        let sa = access(Arc::clone(&store), Arc::new(NullSecretPrompt));
+        let verify = SecretScope::IdentityKey {
+            identity_id,
+            target: PrivateKeyTarget::PrivateKeyOnMainIdentity,
+            key_id: 0,
+        };
+        let err = sa
+            .verify_identity_object_password(&verify)
+            .await
+            .expect_err("headless cannot verify");
+        assert!(
+            matches!(err, TaskError::SecretPromptUnavailable),
+            "expected SecretPromptUnavailable, got {err:?}"
+        );
+        // The precondition failed, so the seal half never runs: no key written.
+        let new_label =
+            SecretScope::identity_key_label(&PrivateKeyTarget::PrivateKeyOnMainIdentity, 5);
+        assert_eq!(
+            SecretSeam::new(&store)
+                .scheme(&SecretWalletId::from(identity_id), &new_label)
+                .unwrap(),
+            SecretScheme::Absent,
+            "a failed precondition must leave no key at all",
         );
     }
 

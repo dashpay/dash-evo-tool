@@ -71,7 +71,8 @@ pub(crate) use det_signer::DetSigner;
 pub use identity_key_store::IdentityKeyView;
 pub use identity_meta::IdentityMetaView;
 pub use secret_access::{
-    IdentityPromptMeta, SecretAccess, SecretPlaintext, SecretSession, WalletPromptMeta,
+    IdentityPromptMeta, SecretAccess, SecretPlaintext, SecretSession, VerifiedIdentityPassword,
+    WalletPromptMeta,
 };
 pub use secret_prompt::{
     NullSecretPrompt, RememberPolicy, SecretPrompt, SecretPromptCancelled, SecretPromptReply,

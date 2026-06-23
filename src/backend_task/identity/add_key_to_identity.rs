@@ -6,6 +6,8 @@ use crate::model::fee_estimation::PlatformFeeEstimator;
 use crate::model::qualified_identity::PrivateKeyTarget::PrivateKeyOnMainIdentity;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
+use crate::wallet_backend::secret_prompt::SecretScope;
+use crate::wallet_backend::{SecretAccess, VerifiedIdentityPassword};
 use dash_sdk::Error as SdkError;
 use dash_sdk::Sdk;
 use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
@@ -27,6 +29,20 @@ impl AppContext {
         mut public_key_to_add: QualifiedIdentityPublicKey,
         private_key: [u8; 32],
     ) -> Result<BackendTaskSuccessResult, TaskError> {
+        // SEC-001 O-2: enforce the protected-identity precondition BEFORE any
+        // on-chain side effect. If this identity is password-protected, prompt
+        // for and VERIFY its object password up front; a headless host or a
+        // wrong password fails closed here, so the AddKeys state transition
+        // below is never built or broadcast for a protected identity we cannot
+        // seal — no on-chain/local divergence. A keyless identity yields `None`
+        // and the existing broadcast-then-keyless-persist path is unchanged.
+        let verify_scope = self.protected_identity_verify_scope(&qualified_identity)?;
+        let verified_password = verify_protected_identity_precondition(
+            &self.wallet_backend()?.secret_access(),
+            verify_scope,
+        )
+        .await?;
+
         let new_identity_nonce = sdk
             .get_identity_nonce(qualified_identity.identity.id(), true, None)
             .await?;
@@ -122,30 +138,211 @@ impl AppContext {
         let fee_result = FeeResult::new(estimated_fee, actual_fee);
 
         // SEC-001: a password-protected identity must never acquire a keyless
-        // key. If this identity already has a Tier-2 key, seal the newly-added
-        // key Tier-2 under the SAME password (prompting + verifying once) and
-        // mark it `InVault` BEFORE saving, so the at-rest encode writes no
-        // plaintext. Headless already failed closed at the signing step above,
-        // and the encode-path guard fails closed if this seal is ever skipped.
+        // key. The object password was already verified up front (before the
+        // broadcast above), so here we just seal the newly-added key Tier-2
+        // under that SAME password and mark it `InVault` BEFORE saving, so the
+        // at-rest encode writes no plaintext for it. The encode-path guard
+        // (`encode_identity_blob_vault_first` → `IdentityKeyProtectionDowngrade`)
+        // still fails closed if this seal is ever skipped.
         let new_key = (
             PrivateKeyOnMainIdentity,
             public_key_to_add.identity_public_key.id(),
         );
-        if let Some(verify) = self.protected_identity_verify_scope(&qualified_identity)? {
+        if let Some(password) = verified_password {
             self.wallet_backend()?
                 .secret_access()
-                .seal_new_identity_key(
+                .seal_new_identity_key_with_password(
                     qualified_identity.identity.id().to_buffer(),
-                    &verify,
                     &new_key.0,
                     new_key.1,
                     &private_key,
-                )
-                .await?;
-            qualified_identity.private_keys.mark_in_vault(&new_key);
+                    &password,
+                )?;
+            // O-1: `mark_in_vault` reports whether the key was present to flip.
+            // In this single-threaded flow the key we just inserted is always
+            // present, so a `false` is an unexpected invariant break — warn.
+            // Persistence stays safe regardless: the at-rest encode guard fails
+            // closed on any unmarked resident plaintext key of a protected
+            // identity, so no keyless key can ever be written.
+            if !qualified_identity.private_keys.mark_in_vault(&new_key) {
+                tracing::warn!(
+                    target = "backend_task::identity",
+                    "Sealed identity key was unexpectedly absent when marking it in-vault",
+                );
+            }
         }
 
         self.update_local_qualified_identity(&qualified_identity)?;
         Ok(BackendTaskSuccessResult::AddedKeyToIdentity(fee_result))
+    }
+}
+
+/// SEC-001 O-2 add-key precondition (no SDK, no network): when the target
+/// identity is password-protected, prompt for and VERIFY its object password
+/// before the caller performs any irreversible on-chain action. `verify_scope`
+/// is [`AppContext::protected_identity_verify_scope`]'s result — `Some(existing
+/// protected key)` for a protected identity, `None` for a keyless one.
+///
+/// A protected identity that cannot be verified — headless
+/// ([`NullSecretPrompt`](crate::wallet_backend::secret_prompt::NullSecretPrompt))
+/// → [`TaskError::SecretPromptUnavailable`], or a wrong/cancelled password —
+/// fails closed HERE. Since [`AppContext::add_key_to_identity`] calls this with
+/// `?` before it builds or broadcasts the AddKeys state transition, that error
+/// returns the task before any on-chain side effect: no on-chain/local
+/// divergence. A keyless identity returns `Ok(None)` and the keyless add path is
+/// unchanged. On success the verified password is returned to seal the new key
+/// after the broadcast — a single prompt, split across it.
+async fn verify_protected_identity_precondition(
+    secret_access: &SecretAccess,
+    verify_scope: Option<SecretScope>,
+) -> Result<Option<VerifiedIdentityPassword>, TaskError> {
+    match verify_scope {
+        Some(verify) => Ok(Some(
+            secret_access
+                .verify_identity_object_password(&verify)
+                .await?,
+        )),
+        None => Ok(None),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::qualified_identity::PrivateKeyTarget;
+    use crate::wallet_backend::SecretSeam;
+    use crate::wallet_backend::secret_prompt::test_support::{ScriptedAnswer, TestPrompt};
+    use crate::wallet_backend::secret_prompt::{NullSecretPrompt, SecretPrompt};
+    use crate::wallet_backend::single_key::open_secret_store;
+    use dash_sdk::dpp::dashcore::Network;
+    use platform_wallet_storage::secrets::{
+        SecretBytes, SecretStore, SecretString, WalletId as SecretWalletId,
+    };
+    use std::sync::Arc;
+
+    fn fresh_store(dir: &std::path::Path) -> Arc<SecretStore> {
+        Arc::new(open_secret_store(&dir.join("secrets.pwsvault")).expect("open vault"))
+    }
+
+    fn access(store: Arc<SecretStore>, prompt: Arc<dyn SecretPrompt>) -> SecretAccess {
+        SecretAccess::new(store, prompt, Network::Testnet)
+    }
+
+    /// Seal a raw identity key Tier-2 under `password`, making the identity
+    /// password-protected (the precondition's verify anchor).
+    fn store_protected_identity_key(
+        store: &Arc<SecretStore>,
+        identity_id: [u8; 32],
+        target: &PrivateKeyTarget,
+        key_id: u32,
+        key: &[u8; 32],
+        password: &str,
+    ) {
+        let label = SecretScope::identity_key_label(target, key_id);
+        SecretSeam::new(store)
+            .put_secret_protected(
+                &SecretWalletId::from(identity_id),
+                &label,
+                &SecretBytes::from_slice(key),
+                &SecretString::new(password),
+            )
+            .expect("seal identity key tier-2");
+    }
+
+    fn main_identity_scope(identity_id: [u8; 32], key_id: u32) -> SecretScope {
+        SecretScope::IdentityKey {
+            identity_id,
+            target: PrivateKeyTarget::PrivateKeyOnMainIdentity,
+            key_id,
+        }
+    }
+
+    /// O-2 fail-closed: a HEADLESS add-key precondition for a PROTECTED identity
+    /// returns `SecretPromptUnavailable`. `add_key_to_identity` propagates this
+    /// with `?` BEFORE it builds or broadcasts the AddKeys state transition, so
+    /// no on-chain state transition is ever produced — proving the headless add
+    /// fails closed before the broadcast.
+    #[tokio::test]
+    async fn headless_protected_precondition_fails_closed_before_broadcast() {
+        let dir = tempfile::tempdir().unwrap();
+        let identity_id = [0x71u8; 32];
+        let store = fresh_store(dir.path());
+        // Make the identity protected via an existing Tier-2 key — the verify
+        // scope `protected_identity_verify_scope` would derive.
+        store_protected_identity_key(
+            &store,
+            identity_id,
+            &PrivateKeyTarget::PrivateKeyOnMainIdentity,
+            0,
+            &[0x15u8; 32],
+            "identity-object-passwordpw",
+        );
+        let sa = access(store, Arc::new(NullSecretPrompt));
+
+        let err =
+            verify_protected_identity_precondition(&sa, Some(main_identity_scope(identity_id, 0)))
+                .await
+                .expect_err("headless protected precondition must fail closed");
+        assert!(
+            matches!(err, TaskError::SecretPromptUnavailable),
+            "expected SecretPromptUnavailable, got {err:?}"
+        );
+    }
+
+    /// The keyless (non-protected) add path is unchanged: a `None` verify scope
+    /// returns `Ok(None)` without ever prompting, so the broadcast-then-keyless
+    /// -persist flow proceeds exactly as before.
+    #[tokio::test]
+    async fn keyless_precondition_returns_none_without_prompting() {
+        let dir = tempfile::tempdir().unwrap();
+        // `TestPrompt::never()` panics if asked — proving no prompt fires.
+        let sa = access(fresh_store(dir.path()), Arc::new(TestPrompt::never()));
+
+        let result = verify_protected_identity_precondition(&sa, None)
+            .await
+            .expect("keyless precondition is a no-op");
+        assert!(
+            result.is_none(),
+            "keyless identity yields no verified password",
+        );
+    }
+
+    /// An interactive add-key to a protected identity verifies the correct
+    /// password up front (one prompt) — the precondition the GUI satisfies
+    /// before the broadcast — yielding the password used to seal afterwards.
+    #[tokio::test]
+    async fn interactive_protected_precondition_verifies_then_yields_password() {
+        let dir = tempfile::tempdir().unwrap();
+        let identity_id = [0x72u8; 32];
+        const PW: &str = "identity-object-passwordpw";
+        let store = fresh_store(dir.path());
+        store_protected_identity_key(
+            &store,
+            identity_id,
+            &PrivateKeyTarget::PrivateKeyOnMainIdentity,
+            0,
+            &[0x16u8; 32],
+            PW,
+        );
+        let prompt = Arc::new(TestPrompt::new([ScriptedAnswer::once(PW)]));
+        let sa = access(store, prompt.clone());
+
+        let password =
+            verify_protected_identity_precondition(&sa, Some(main_identity_scope(identity_id, 0)))
+                .await
+                .expect("interactive verify succeeds")
+                .expect("protected identity yields a verified password");
+        assert_eq!(prompt.ask_count(), 1, "verified with a single prompt");
+
+        // The yielded password seals a new key Tier-2 with no further prompt.
+        sa.seal_new_identity_key_with_password(
+            identity_id,
+            &PrivateKeyTarget::PrivateKeyOnMainIdentity,
+            5,
+            &[0x26u8; 32],
+            &password,
+        )
+        .expect("seal new key with the verified password");
+        assert_eq!(prompt.ask_count(), 1, "sealing did not prompt again");
     }
 }

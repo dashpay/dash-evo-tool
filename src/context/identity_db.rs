@@ -368,6 +368,11 @@ fn encode_identity_blob_vault_first(
     // into the vault keyless — the add-key path seals the new key Tier-2 under
     // the identity's password and marks it `InVault` first, so a correctly-sealed
     // add never reaches this branch. This closes the silent-plaintext-key leak.
+    //
+    // A Mixed identity (some keys Tier-2, some still resident plaintext) hits
+    // this same guard on a plain re-save — e.g. an alias edit — so the re-save
+    // fails closed until "Finish protecting" reseals the remaining keys under
+    // the identity password. This is intended secure behavior, not a regression.
     if find_protected_identity_key_scope(secret_store, id, qi).is_some() {
         return Err(TaskError::IdentityKeyProtectionDowngrade);
     }

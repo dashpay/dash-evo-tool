@@ -17,7 +17,8 @@ impl AppContext {
         } = input;
 
         let balance_before = qualified_identity.identity.balance();
-        let estimated_fee = PlatformFeeEstimator::new().estimate_identity_topup();
+        let fee_estimator = PlatformFeeEstimator::new();
+        let estimated_fee = fee_estimator.estimate_identity_topup();
 
         // Both wallet-funded top-up paths (fresh asset lock or resume from a
         // tracked asset lock) run end-to-end through the upstream
@@ -61,9 +62,7 @@ impl AppContext {
 
         let actual_fee = match amount_duffs_for_fee {
             Some(amount) => {
-                let expected_credits = amount.saturating_mul(1000);
-                let balance_increase = new_balance.saturating_sub(balance_before);
-                expected_credits.saturating_sub(balance_increase)
+                fee_estimator.resolve_identity_topup_actual_fee(amount, balance_before, new_balance)
             }
             None => estimated_fee,
         };

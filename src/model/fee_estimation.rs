@@ -406,6 +406,40 @@ impl PlatformFeeEstimator {
         total.saturating_add(total / 5)
     }
 
+    /// Resolve the actual fee paid by a wallet-funded identity top-up.
+    ///
+    /// A top-up converts `amount_duffs` of asset-lock value into
+    /// `amount_duffs × CREDITS_PER_DUFF` credits, less the Platform processing
+    /// fee. That fee is the shortfall between the credits the asset lock should
+    /// have minted and the balance the identity actually gained:
+    ///
+    /// ```text
+    /// actual_fee = expected_credits − (balance_after − balance_before)
+    /// ```
+    ///
+    /// The subtraction is only meaningful when `balance_before` is the
+    /// identity's true pre-top-up balance. After a backend reload the caller may
+    /// hold a stale (lower) cached balance, which inflates the apparent increase
+    /// and collapses the computed fee to zero — physically impossible for a real
+    /// top-up, since the balance can never grow by more than the asset lock
+    /// mints. When the delta yields no fee, fall back to the deterministic
+    /// estimate so the reported fee stays meaningful.
+    pub fn resolve_identity_topup_actual_fee(
+        &self,
+        amount_duffs: u64,
+        balance_before: u64,
+        balance_after: u64,
+    ) -> u64 {
+        let expected_credits = amount_duffs.saturating_mul(CREDITS_PER_DUFF);
+        let balance_increase = balance_after.saturating_sub(balance_before);
+        let delta_fee = expected_credits.saturating_sub(balance_increase);
+        if delta_fee == 0 {
+            self.estimate_identity_topup()
+        } else {
+            delta_fee
+        }
+    }
+
     /// Estimate fee for document batch transition
     pub fn estimate_document_batch(&self, transition_count: usize) -> u64 {
         let base_fee = self
@@ -777,6 +811,48 @@ mod tests {
         // Base cost + asset lock cost + 2 keys
         let fee = estimator.estimate_identity_create(2);
         assert_eq!(fee, 2_000_000 + 200_000_000 + 2 * 6_500_000);
+    }
+
+    #[test]
+    fn test_identity_topup_actual_fee_uses_balance_delta_when_consistent() {
+        let estimator = PlatformFeeEstimator::new();
+        // 500_000 duffs → 500_000_000 credits minted; a real top-up loses some
+        // to the processing fee, so the balance gains slightly less.
+        let amount_duffs = 500_000u64;
+        let balance_before = 1_000_000_000u64;
+        let processing_fee = 3_000_000u64;
+        let balance_after = balance_before + amount_duffs * CREDITS_PER_DUFF - processing_fee;
+        assert_eq!(
+            estimator.resolve_identity_topup_actual_fee(
+                amount_duffs,
+                balance_before,
+                balance_after,
+            ),
+            processing_fee,
+            "a consistent balance delta must report the real processing fee"
+        );
+    }
+
+    #[test]
+    fn test_identity_topup_actual_fee_falls_back_to_estimate_on_stale_balance() {
+        let estimator = PlatformFeeEstimator::new();
+        // Stale (too-low) `balance_before` — e.g. after a backend reload — makes
+        // the apparent increase exceed the minted credits, so the naive delta
+        // collapses to zero. The helper must fall back to the estimate instead.
+        let amount_duffs = 500_000u64;
+        let stale_balance_before = 0u64;
+        let balance_after = 9_999_999_999u64; // far more than the lock could mint
+        let resolved = estimator.resolve_identity_topup_actual_fee(
+            amount_duffs,
+            stale_balance_before,
+            balance_after,
+        );
+        assert_ne!(resolved, 0, "a top-up must never report a zero fee");
+        assert_eq!(
+            resolved,
+            estimator.estimate_identity_topup(),
+            "the stale-balance fallback must be the deterministic estimate"
+        );
     }
 
     #[test]

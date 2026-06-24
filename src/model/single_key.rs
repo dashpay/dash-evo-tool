@@ -40,13 +40,10 @@ pub struct ImportedKey {
     /// the secret store's per-network scoping.
     pub network: Network,
     /// `true` when the imported key requires a per-key passphrase to use.
-    /// The on-disk shape depends on whether the key has been unlocked since
-    /// Tier-2 adoption: a fresh import or a still-unmigrated entry is stored
-    /// in DET's legacy AES-GCM `SingleKeyEntry` envelope; after the first
-    /// unlock the entry is re-sealed via the upstream Tier-2 envelope
-    /// (Argon2id + XChaCha20-Poly1305) under the SAME password. In both
-    /// shapes the flag is the prompt-UI signal — `false` means callers can
-    /// sign without prompting.
+    /// A protected key is sealed at import time in the upstream Tier-2 envelope
+    /// (Argon2id + XChaCha20-Poly1305) under that passphrase — one on-disk shape
+    /// from import onward, with no first-unlock migration. The flag is the
+    /// prompt-UI signal: `false` means callers can sign without prompting.
     #[serde(default)]
     pub has_passphrase: bool,
     /// Optional user-supplied hint shown next to the passphrase prompt.

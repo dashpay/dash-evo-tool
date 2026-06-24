@@ -79,8 +79,11 @@ async fn cd_cold_boot_identity_register_and_topup() {
     let ctx = ctx().await;
 
     // ── Create a funded test wallet ─────────────────────────────────────────
-    // 30 M duffs: asset-lock (5 M) + registration fee margin + top-up (5 M).
-    let (seed_hash, wallet_arc) = ctx.create_funded_test_wallet(30_000_000).await;
+    // 35 M duffs: scenario C asset-lock (5 M) + registration fees, then
+    // scenario D top-up (5 M) + its fees. 30 M left scenario C with 4,999,703
+    // duffs — 297 short of the 5 M top-up minimum (QA-016) — so the extra 5 M is
+    // headroom for both transactions' network fees.
+    let (seed_hash, wallet_arc) = ctx.create_funded_test_wallet(35_000_000).await;
 
     let backend = ctx
         .app_context

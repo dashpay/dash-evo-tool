@@ -111,6 +111,66 @@ pub struct BackendTestContext {
     _task_result_rx: tokio::sync::mpsc::Receiver<TaskResult>,
 }
 
+/// Whether a `register_wallet` failure is worth retrying: transient storage
+/// contention or a not-yet-ready wallet backend, as opposed to a permanent
+/// error (bad input, poisoned lock) or the idempotent `WalletAlreadyImported`.
+fn is_transient_registration_error(error: &TaskError) -> bool {
+    matches!(
+        error,
+        TaskError::WalletBackend { .. }
+            | TaskError::WalletBackendNotYetWired
+            | TaskError::WalletSeedStorage { .. }
+            | TaskError::WalletMetaStorage { .. }
+    )
+}
+
+/// Register a wallet, retrying transient storage/backend errors with bounded
+/// backoff (~30s total).
+///
+/// Under the shared-runtime backend-e2e harness, the fail-closed sidecar writes
+/// (`WalletSeedStorage` / `WalletMetaStorage`) can briefly lose a SQLite race,
+/// and upstream registration can surface the typed transient `WalletBackend`
+/// ("retry in a moment") signal. A single attempt then panics and masks the test
+/// under exercise (e.g. identity_create / identity_cold_boot). Retry those
+/// transient variants until they clear or the deadline passes; a permanent error
+/// still surfaces after the bounded attempts. `WalletAlreadyImported` is returned
+/// as-is so callers can treat it as the idempotent success it is.
+async fn register_wallet_with_retry(
+    app_context: &Arc<AppContext>,
+    wallet: dash_evo_tool::model::wallet::Wallet,
+    seed: &[u8; 64],
+    origin: dash_evo_tool::model::wallet::birth_height::WalletOrigin,
+) -> Result<
+    (
+        WalletSeedHash,
+        Arc<std::sync::RwLock<dash_evo_tool::model::wallet::Wallet>>,
+    ),
+    TaskError,
+> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let mut attempt: u32 = 0;
+    loop {
+        attempt += 1;
+        // `register_wallet` consumes the wallet; clone per attempt so a retry
+        // can submit a fresh copy.
+        match app_context.register_wallet(wallet.clone(), seed, origin) {
+            Ok(registered) => return Ok(registered),
+            Err(e)
+                if is_transient_registration_error(&e) && std::time::Instant::now() < deadline =>
+            {
+                let backoff = Duration::from_millis(500 * u64::from(attempt.min(6)));
+                tracing::warn!(
+                    attempt,
+                    error = %e,
+                    "wallet registration hit a transient error; retrying after backoff"
+                );
+                tokio::time::sleep(backoff).await;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
 impl BackendTestContext {
     async fn init() -> Self {
         // Cancel orphaned SPV tasks from a previous panicked init (if any).
@@ -273,11 +333,14 @@ impl BackendTestContext {
             None,
         )
         .expect("Failed to create framework wallet");
-        match app_context.register_wallet(
+        match register_wallet_with_retry(
+            &app_context,
             wallet,
             &seed,
             dash_evo_tool::model::wallet::birth_height::WalletOrigin::Imported,
-        ) {
+        )
+        .await
+        {
             Ok((hash, _)) => {
                 tracing::info!("Registered framework wallet (seed_hash: {:?})", &hash[..4]);
             }
@@ -468,13 +531,14 @@ impl BackendTestContext {
         )
         .expect("Failed to create test wallet");
 
-        let (seed_hash, wallet_arc) = app_context
-            .register_wallet(
-                wallet,
-                &seed,
-                dash_evo_tool::model::wallet::birth_height::WalletOrigin::Imported,
-            )
-            .expect("Failed to register test wallet");
+        let (seed_hash, wallet_arc) = register_wallet_with_retry(
+            app_context,
+            wallet,
+            &seed,
+            dash_evo_tool::model::wallet::birth_height::WalletOrigin::Imported,
+        )
+        .await
+        .expect("Failed to register test wallet");
         tracing::trace!(
             seed_hash = ?&seed_hash[..4],
             amount_duffs,

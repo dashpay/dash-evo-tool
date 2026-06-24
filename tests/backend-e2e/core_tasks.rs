@@ -70,10 +70,10 @@ async fn test_tc002_refresh_wallet_info_core_and_platform() {
 
 // TC-003: RefreshSingleKeyWalletInfo
 //
-// Single-key wallets require Dash Core (RPC) for UTXO discovery — SPV tracks
-// HD wallet-derived addresses only. The backend now returns a typed
-// `OperationRequiresDashCore` error in SPV mode; the test asserts that
-// mode-specific outcome rather than an unconditional success.
+// Single-key wallets are intentionally unsupported this release (PROJ-007 /
+// single-key-mock.md, Decision #7): every single-key task arm returns the typed
+// `SingleKeyWalletsUnsupported`. The test asserts that typed outcome rather than
+// an unconditional success.
 #[ignore]
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
 async fn test_tc003_refresh_single_key_wallet_info() {
@@ -199,11 +199,12 @@ async fn test_tc005_create_top_up_asset_lock() {
 
 // TC-009: SendSingleKeyWalletPayment
 //
-// Broadcast now routes through `AppContext::broadcast_raw_transaction`, so a
-// single-key send can reach the network in both RPC and SPV modes. UTXO
-// discovery still requires Dash Core; in SPV mode the test verifies that
-// `RefreshSingleKeyWalletInfo` returns `OperationRequiresDashCore` and stops
-// before attempting the send (no spendable UTXOs available).
+// Single-key wallets are intentionally unsupported this release (PROJ-007 /
+// single-key-mock.md, Decision #7): every single-key task arm returns the typed
+// `SingleKeyWalletsUnsupported`. The funding step still exercises a real send
+// from the framework HD wallet to the single-key address, then the test
+// verifies that `RefreshSingleKeyWalletInfo` returns `SingleKeyWalletsUnsupported`
+// and stops before attempting the single-key send.
 #[ignore]
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
 async fn test_tc009_send_single_key_wallet_payment() {
@@ -257,29 +258,28 @@ async fn test_tc009_send_single_key_wallet_payment() {
     // Wait for the transaction to propagate, then refresh UTXOs.
     tokio::time::sleep(std::time::Duration::from_secs(5)).await;
 
-    // Backend E2E runs against SPV only (see tests/backend-e2e/README.md), and
-    // single-key wallets depend on Core RPC for UTXO refresh. The refresh task
-    // therefore returns `OperationRequiresDashCore` — we verify the typed error
-    // and stop; the send step is unreachable without refreshed UTXOs.
+    // Single-key wallets are unsupported this release (PROJ-007): the refresh
+    // arm returns the typed `SingleKeyWalletsUnsupported` regardless of network
+    // mode. We verify the typed error and stop; the send step is unreachable
+    // until single-key wallets are reinstated.
     let refresh_result = run_task(
         app_context,
         BackendTask::CoreTask(CoreTask::RefreshSingleKeyWalletInfo(skw_arc.clone())),
     )
     .await;
 
-    let err = refresh_result
-        .expect_err("RefreshSingleKeyWalletInfo must fail in SPV mode with a typed error");
+    let err = refresh_result.expect_err("RefreshSingleKeyWalletInfo must fail with a typed error");
     assert!(
         matches!(
             err,
-            dash_evo_tool::backend_task::error::TaskError::OperationRequiresDashCore { .. }
+            dash_evo_tool::backend_task::error::TaskError::SingleKeyWalletsUnsupported
         ),
-        "Expected OperationRequiresDashCore in SPV mode, got: {:?}",
+        "Expected SingleKeyWalletsUnsupported, got: {:?}",
         err
     );
     tracing::info!(
-        "TC-009: single-key wallet flow is not supported in SPV mode; \
-         verified typed OperationRequiresDashCore error and skipping send step."
+        "TC-009: single-key wallets are unsupported this release; \
+         verified typed SingleKeyWalletsUnsupported error and skipping send step."
     );
 
     // ----------------------------------------------------------------------

@@ -1,5 +1,13 @@
 //! DashPayTask backend E2E tests (TC-031 to TC-044).
 //!
+//! DEFERRED: this module is currently disabled (commented out in
+//! `tests/backend-e2e/main.rs`). The dashpay backend depends on upstream
+//! `platform-wallet` dashpay support that is still incomplete; the completion
+//! lands in `dashpay/platform#3841` ("fix(platform-wallet)!: complete dashpay",
+//! shumkov, branch `feat/dashpay-m1-sync-correctness`). Re-enable the `mod
+//! dashpay_tasks;` declaration once that PR merges and the DET platform-wallet
+//! dep is bumped.
+//!
 //! Tests run serially via `--test-threads=1`. TC-037 through TC-042 form a
 //! sequential contact flow merged into a single lifecycle test:
 //! send request -> load requests -> accept -> register addresses -> update info.

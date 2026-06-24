@@ -745,7 +745,7 @@ const LEGACY_SALT_LEN: usize = 16;
 /// (12 bytes, see `src/model/wallet/encryption.rs`).
 const LEGACY_NONCE_LEN: usize = 12;
 
-/// SEC-007 — row-level length guard for the password-related crypto
+/// Row-level length guard for the password-related crypto
 /// fields on a legacy `wallet` row. Password-protected rows must carry a
 /// 16-byte salt and a 12-byte nonce; unprotected rows must carry empty
 /// fields (the legacy DB writer bypasses encryption when
@@ -866,13 +866,22 @@ where
     if !legacy_table_exists_named(conn, "wallet")? {
         return Ok(WalletMetaMigrationOutcome::default());
     }
+    // `core_wallet_name` is the ONLY optional `wallet` column (a recent legacy
+    // migration drops it), so it is probed and NULL-substituted. `uses_password`
+    // and `password_hint` are a hard invariant of the legacy `wallet` table: the
+    // wallet-seed migration (`migrate_wallet_seeds_rows_from_conn`) selects both
+    // unconditionally and runs FIRST over the same table at the same cold-start,
+    // so a schema lacking them fails there before this pass — reading them
+    // unprobed here is exactly as robust as the shipped seed migration. (The flip
+    // carries them into `WalletMeta` so the persisted password flag is accurate.)
     let core_wallet_name_present = wallet_table_has_core_wallet_name(conn)?;
     let sql = if core_wallet_name_present {
-        "SELECT seed_hash, alias, is_main, core_wallet_name, master_ecdsa_bip44_account_0_epk \
+        "SELECT seed_hash, alias, is_main, core_wallet_name, master_ecdsa_bip44_account_0_epk, \
+         uses_password, password_hint \
          FROM wallet WHERE network = ?1"
     } else {
         "SELECT seed_hash, alias, is_main, NULL AS core_wallet_name, \
-         master_ecdsa_bip44_account_0_epk \
+         master_ecdsa_bip44_account_0_epk, uses_password, password_hint \
          FROM wallet WHERE network = ?1"
     };
 
@@ -890,7 +899,17 @@ where
             let is_main: Option<bool> = row.get(2)?;
             let core_wallet_name: Option<String> = row.get(3)?;
             let xpub_encoded: Vec<u8> = row.get(4)?;
-            Ok((seed_hash, alias, is_main, core_wallet_name, xpub_encoded))
+            let uses_password: bool = row.get(5)?;
+            let password_hint: Option<String> = row.get(6)?;
+            Ok((
+                seed_hash,
+                alias,
+                is_main,
+                core_wallet_name,
+                xpub_encoded,
+                uses_password,
+                password_hint,
+            ))
         })
         .map_err(|e| MigrationError::LegacyDbRead {
             table: "wallet",
@@ -899,7 +918,15 @@ where
 
     let mut outcome = WalletMetaMigrationOutcome::default();
     for row in rows {
-        let (seed_hash_bytes, alias, is_main, core_wallet_name, xpub_encoded) = match row {
+        let (
+            seed_hash_bytes,
+            alias,
+            is_main,
+            core_wallet_name,
+            xpub_encoded,
+            uses_password,
+            password_hint,
+        ) = match row {
             Ok(t) => t,
             Err(e) => {
                 tracing::warn!(
@@ -931,6 +958,13 @@ where
             is_main: is_main.unwrap_or(false),
             core_wallet_name,
             xpub_encoded,
+            // Carry the legacy `wallet` row's password flag/hint straight into
+            // WalletMeta so the persisted metadata is accurate from cold-start:
+            // a protected wallet stays `uses_password = true` (Tier-2 keeps the
+            // password; nothing downgrades it), keeping the metadata and the
+            // at-rest scheme always in agreement.
+            uses_password,
+            password_hint,
         };
 
         match set(seed_hash, meta) {
@@ -1118,7 +1152,7 @@ where
                 }
             };
 
-        // SEC-007: salt/nonce length sanity. AES-GCM requires a
+        // Salt/nonce length sanity. AES-GCM requires a
         // 16-byte Argon2 salt and a 12-byte GCM nonce when the row is
         // password-protected; when it isn't, both fields must be
         // empty. Anything else is row-level corruption — skip and
@@ -1400,7 +1434,7 @@ mod tests {
         assert_eq!(completion.sha, env!("CARGO_PKG_VERSION"));
     }
 
-    /// SEC-001 regression — the sentinel is scoped per network. Writing
+    /// Per-network sentinel regression — the sentinel is scoped per network. Writing
     /// the mainnet sentinel must not satisfy a subsequent testnet read,
     /// so a network switch correctly re-triggers the migration on the
     /// previously-unseen network.
@@ -1438,7 +1472,7 @@ mod tests {
                 .expect("read testnet")
                 .is_none(),
             "mainnet sentinel must not satisfy a testnet read — \
-             SEC-001 regression",
+             per-network sentinel regression",
         );
         // Step 3: a clean testnet migration writes its own sentinel
         // without touching the mainnet one. Both then short-circuit
@@ -1468,7 +1502,7 @@ mod tests {
         assert_eq!(devnet, "det:migration:finish_unwire:devnet:v1");
         assert_eq!(regtest, "det:migration:finish_unwire:regtest:v1");
         // All four are distinct — a misencoded network would collapse
-        // the sentinels and re-introduce SEC-001.
+        // the sentinels and re-introduce the cross-network leak.
         let set: std::collections::HashSet<_> = [&mainnet, &testnet, &devnet, &regtest]
             .into_iter()
             .collect();
@@ -1624,8 +1658,8 @@ mod tests {
 
         // The canonical secret-store label is present and decodes as
         // an unprotected SingleKeyEntry whose plaintext is 32 bytes
-        // (post-SEC-002 the in-vault payload is the versioned entry
-        // shape rather than the bare 32 raw bytes).
+        // (with per-key passphrases the in-vault payload is the versioned
+        // entry shape rather than the bare 32 raw bytes).
         let label = label_for_address(&address);
         let secret = store
             .get(&single_key_namespace_id(), &label)
@@ -2192,6 +2226,8 @@ mod tests {
                 is_main: true,
                 core_wallet_name: Some("dev-dashd".into()),
                 xpub_encoded: Vec::new(),
+                uses_password: false,
+                password_hint: None,
             })
         );
         // Mainnet row must not be visible on testnet.

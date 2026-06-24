@@ -1,23 +1,29 @@
-//! Encrypted-envelope view over the upstream [`SecretStore`].
+//! Seed-storage view over the upstream [`SecretStore`].
 //!
-//! Each HD wallet's seed envelope (the full
-//! [`StoredSeedEnvelope`] struct — ciphertext, salt, nonce, optional
-//! hint, `uses_password` flag, master xpub) is bincode-encoded and
-//! stored in the upstream Argon2id + XChaCha20-Poly1305 vault at one
-//! label per wallet:
+//! The active write path stores each HD wallet's RAW 64-byte BIP-39 seed
+//! through the raw secret seam at one label per wallet:
 //!
 //! ```text
 //! service: WalletId(seed_hash)
-//! label:   "envelope.v1"
-//! value:   SecretBytes(bincode-encoded StoredSeedEnvelope)
+//! label:   "seed.raw.v1"
+//! value:   SecretBytes(raw seed)            // Tier-1 unprotected, OR
+//!          a Tier-2 object-password envelope // Argon2id + XChaCha20-Poly1305
 //! ```
 //!
+//! An unprotected seed is written Tier-1 via [`WalletSeedView::set_raw`]; a
+//! password-protected seed is sealed Tier-2 under its OWN object password via
+//! [`WalletSeedView::set_protected`]. The non-secret metadata (`uses_password`,
+//! hint, master xpub) lives in `WalletMeta`, not next to the seed.
+//!
+//! The legacy `envelope.v1` row — a bincode-encoded [`StoredSeedEnvelope`]
+//! whose ciphertext was DET's own AES-GCM envelope — is retained DECODE-ONLY as
+//! a migration reader ([`WalletSeedView::get`] /
+//! [`WalletSeedView::legacy_envelope_get`]). Every production write now goes
+//! through the raw/`set_protected` seam; a legacy envelope is rewritten to the
+//! raw label on the first load/unlock and then deleted.
+//!
 //! The `WalletSeedHash` is reused directly as the upstream `WalletId`
-//! (both are `[u8; 32]`). The envelope itself is already AES-GCM
-//! encrypted when `uses_password` is set, and the vault adds its own
-//! at-rest layer on top — the double encryption is a deliberate
-//! trade-off so the per-wallet password UX stays identical to the
-//! legacy behaviour.
+//! (both are `[u8; 32]`).
 //!
 //! All accessors funnel storage errors into the dedicated
 //! [`TaskError::WalletSeedStorage`] envelope so banner copy can speak
@@ -27,12 +33,15 @@
 use std::sync::Arc;
 
 use platform_wallet_storage::secrets::{
-    SecretBytes, SecretStore, SecretStoreError, WalletId as SecretWalletId,
+    SecretBytes, SecretStore, SecretStoreError, SecretString, WalletId as SecretWalletId,
 };
+use zeroize::Zeroizing;
 
 use crate::backend_task::error::TaskError;
 use crate::model::wallet::WalletSeedHash;
 use crate::model::wallet::seed_envelope::{STORED_SEED_ENVELOPE_VERSION, StoredSeedEnvelope};
+use crate::wallet_backend::secret_access::SEED_RAW_LABEL;
+use crate::wallet_backend::secret_seam::{SecretScheme, SecretSeam};
 
 /// Label under which the bincode-encoded envelope is stored. Versioned
 /// so a future shape change (e.g. an additional field that breaks
@@ -135,6 +144,105 @@ impl<'a> WalletSeedView<'a> {
         self.secret_store
             .delete(&scope_for(seed_hash), ENVELOPE_LABEL)
             .map_err(map_err)
+    }
+
+    /// Retained decode-only legacy reader: read the `envelope.v1` row. Alias
+    /// for [`Self::get`] under the migration-reader name — the loader and the
+    /// chokepoint reach for it explicitly when the raw seed is absent.
+    pub fn legacy_envelope_get(
+        &self,
+        seed_hash: &WalletSeedHash,
+    ) -> Result<Option<StoredSeedEnvelope>, TaskError> {
+        self.get(seed_hash)
+    }
+
+    /// Store the RAW 64-byte BIP-39 seed under `seed.raw.v1` via the seam.
+    /// No DET-side encryption — the seam writes the bytes verbatim. The
+    /// non-secret metadata (`uses_password`, hint, xpub) lives in `WalletMeta`.
+    pub fn set_raw(&self, seed_hash: &WalletSeedHash, seed: &[u8; 64]) -> Result<(), TaskError> {
+        SecretSeam::new(self.secret_store).put_secret(
+            &scope_for(seed_hash),
+            SEED_RAW_LABEL,
+            &SecretBytes::from_slice(seed),
+        )
+    }
+
+    /// Read the RAW 64-byte seed under `seed.raw.v1`, or `None` if it has not
+    /// been migrated to the raw label yet.
+    pub fn get_raw(
+        &self,
+        seed_hash: &WalletSeedHash,
+    ) -> Result<Option<Zeroizing<[u8; 64]>>, TaskError> {
+        let Some(bytes) =
+            SecretSeam::new(self.secret_store).get_secret(&scope_for(seed_hash), SEED_RAW_LABEL)?
+        else {
+            return Ok(None);
+        };
+        let seed: [u8; 64] = bytes.expose_secret().try_into().map_err(|_| {
+            tracing::warn!(
+                target = "wallet_backend::wallet_seed_store",
+                blob_len = bytes.expose_secret().len(),
+                "Raw seam seed has wrong length",
+            );
+            map_err(SecretStoreError::MalformedVault)
+        })?;
+        Ok(Some(Zeroizing::new(seed)))
+    }
+
+    /// Idempotent delete of the raw `seed.raw.v1` row.
+    pub fn delete_raw(&self, seed_hash: &WalletSeedHash) -> Result<(), TaskError> {
+        SecretSeam::new(self.secret_store).delete_secret(&scope_for(seed_hash), SEED_RAW_LABEL)
+    }
+
+    /// At-rest [`SecretScheme`] of the `seed.raw.v1` row — `Protected` once the
+    /// seed is Tier-2 sealed, `Unprotected` for a raw seed, `Absent` when only
+    /// the legacy `envelope.v1` (or nothing) is present. No password needed.
+    pub fn scheme(&self, seed_hash: &WalletSeedHash) -> Result<SecretScheme, TaskError> {
+        SecretSeam::new(self.secret_store).scheme(&scope_for(seed_hash), SEED_RAW_LABEL)
+    }
+
+    /// Store the 64-byte seed under `seed.raw.v1` **Tier-2 protected**, sealed
+    /// with this seed's own object `password` (Argon2id + XChaCha20-Poly1305).
+    /// Replaces any raw/legacy value at the same label (upsert).
+    pub fn set_protected(
+        &self,
+        seed_hash: &WalletSeedHash,
+        seed: &[u8; 64],
+        password: &SecretString,
+    ) -> Result<(), TaskError> {
+        SecretSeam::new(self.secret_store).put_secret_protected(
+            &scope_for(seed_hash),
+            SEED_RAW_LABEL,
+            &SecretBytes::from_slice(seed),
+            password,
+        )
+    }
+
+    /// Read the Tier-2-protected 64-byte seed under `seed.raw.v1`, unsealing
+    /// with `password`, or `None` if nothing is stored there. A wrong password
+    /// surfaces as [`SecretStoreError::WrongPassword`] (via the seam).
+    pub fn get_protected(
+        &self,
+        seed_hash: &WalletSeedHash,
+        password: &SecretString,
+    ) -> Result<Option<Zeroizing<[u8; 64]>>, TaskError> {
+        let Some(bytes) = SecretSeam::new(self.secret_store).get_secret_protected(
+            &scope_for(seed_hash),
+            SEED_RAW_LABEL,
+            password,
+        )?
+        else {
+            return Ok(None);
+        };
+        let seed: [u8; 64] = bytes.expose_secret().try_into().map_err(|_| {
+            tracing::warn!(
+                target = "wallet_backend::wallet_seed_store",
+                blob_len = bytes.expose_secret().len(),
+                "Tier-2 seam seed has wrong length",
+            );
+            map_err(SecretStoreError::MalformedVault)
+        })?;
+        Ok(Some(Zeroizing::new(seed)))
     }
 }
 
@@ -278,7 +386,7 @@ mod tests {
         assert!(view.get(&seed_hash).unwrap().is_none());
     }
 
-    /// SEC-005 — a freshly-written envelope's on-disk payload starts
+    /// A freshly-written envelope's on-disk payload starts
     /// with [`STORED_SEED_ENVELOPE_VERSION`], and a legacy bare-bincode
     /// payload (written without the leading version byte) still decodes
     /// cleanly. Locks the framing the reader needs to keep accepting
@@ -344,5 +452,34 @@ mod tests {
 
         assert_eq!(view.get(&a).unwrap().unwrap(), envelope_a);
         assert_eq!(view.get(&b).unwrap().unwrap(), envelope_b);
+    }
+
+    /// The raw seam path round-trips the exact 64-byte seed and is independent
+    /// of the legacy `envelope.v1` row (distinct labels). `get_raw` on a hash
+    /// with only a legacy envelope returns `None`.
+    #[test]
+    fn raw_seed_round_trips_independent_of_legacy() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = fresh_store(dir.path());
+        let view = WalletSeedView::new(&store);
+        let seed_hash: WalletSeedHash = [0xB1; 32];
+        let mut seed = [0u8; 64];
+        for (i, b) in seed.iter_mut().enumerate() {
+            *b = (i as u8).wrapping_mul(9).wrapping_add(1);
+        }
+
+        view.set_raw(&seed_hash, &seed).expect("set_raw");
+        assert_eq!(*view.get_raw(&seed_hash).unwrap().unwrap(), seed);
+        // The legacy reader sees nothing under this hash.
+        assert!(view.legacy_envelope_get(&seed_hash).unwrap().is_none());
+
+        view.delete_raw(&seed_hash).expect("delete_raw");
+        assert!(view.get_raw(&seed_hash).unwrap().is_none());
+
+        // A legacy-only hash returns None from the raw reader.
+        let legacy_only: WalletSeedHash = [0xB2; 32];
+        view.set(&legacy_only, &sample_non_password_envelope())
+            .unwrap();
+        assert!(view.get_raw(&legacy_only).unwrap().is_none());
     }
 }

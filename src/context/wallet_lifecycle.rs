@@ -17,6 +17,12 @@ use std::sync::{Arc, RwLock};
 /// window so the common identity-load path serves entirely from cache.
 const AUTH_PUBKEY_WARM_KEY_COUNT: u32 = 12;
 
+// The interim "protection removed" disclosure notices (HD wallet + imported
+// key) and their shared at-rest detail copy were retired with the Tier-2
+// adoption: lazy migration now RE-WRAPS protected secrets under the same
+// password (it never downgrades them to a password-free at-rest form), so there
+// is nothing to disclose.
+
 /// The upstream `dash-spv` `DiskStorageManager` chain-cache entries under the
 /// per-network SPV directory. Each is a subfolder except `peers.dat`. The
 /// wallet/shielded SQLite sidecars in the same directory are deliberately
@@ -251,13 +257,18 @@ impl AppContext {
     /// confirmation that their passphrase is correct. Returns
     /// [`TaskError::SingleKeyPassphraseIncorrect`] on a wrong passphrase.
     pub fn verify_single_key_passphrase(
-        &self,
+        self: &Arc<Self>,
         address: &str,
         passphrase: &str,
     ) -> Result<(), TaskError> {
-        self.wallet_backend()?
+        // The unlock gesture also lazy re-wraps a protected entry to Tier-2
+        // (verify_passphrase re-seals it under the same password). Protection is
+        // KEPT, so there is no downgrade to disclose — no notice.
+        let backend = self.wallet_backend()?;
+        backend
             .single_key()
-            .verify_passphrase(address, passphrase)
+            .verify_passphrase(address, passphrase)?;
+        Ok(())
     }
 
     /// Start chain sync against an already-wired wallet backend.
@@ -552,6 +563,23 @@ impl AppContext {
     /// the backend, once built, reuses the very same vault handle.
     fn write_seed_envelope(&self, wallet: &Wallet) -> Result<(), TaskError> {
         let seed_hash = wallet.seed_hash();
+        let view = WalletSeedView::new(&self.secret_store);
+        // No-password wallets store the raw 64-byte seed directly through the
+        // seam: `encrypted_seed_slice()` is the verbatim seed (no DET AES-GCM).
+        // The non-secret metadata rides in `WalletMeta` (write_wallet_meta).
+        if !wallet.uses_password {
+            let seed: [u8; 64] = wallet.encrypted_seed_slice().try_into().map_err(|_| {
+                TaskError::WalletSeedStorage {
+                    source: Box::new(
+                        platform_wallet_storage::secrets::SecretStoreError::MalformedVault,
+                    ),
+                }
+            })?;
+            return view.set_raw(&seed_hash, &seed);
+        }
+        // Password wallets keep the legacy AES-GCM envelope at creation; they
+        // migrate to the raw seam lazily at the next unlock (one prompt the
+        // user already does).
         let envelope = StoredSeedEnvelope {
             encrypted_seed: wallet.encrypted_seed_slice().to_vec(),
             salt: wallet.salt().to_vec(),
@@ -563,12 +591,12 @@ impl AppContext {
                 .encode()
                 .to_vec(),
         };
-        WalletSeedView::new(&self.secret_store).set(&seed_hash, &envelope)
+        view.set(&seed_hash, &envelope)
     }
 
     /// Persist a newly-registered wallet's metadata (alias / is_main /
     /// core_wallet_name + master xpub) to the wallet-meta sidecar.
-    /// **Fail-closed** (SEC-002): cold-boot hydration enumerates ONLY this
+    /// **Fail-closed**: cold-boot hydration enumerates ONLY this
     /// sidecar (`hydrate_wallets_for_network` lists `WalletMetaView`), and
     /// nothing reconstructs the meta from the upstream persistor — so a wallet
     /// with no meta row never rehydrates and its funds become unreachable. The
@@ -583,6 +611,8 @@ impl AppContext {
                 .master_bip44_ecdsa_extended_public_key
                 .encode()
                 .to_vec(),
+            uses_password: wallet.uses_password,
+            password_hint: wallet.password_hint().clone(),
         };
         WalletMetaView::new(&self.app_kv).set(self.network, &seed_hash, &meta)
     }
@@ -593,7 +623,7 @@ impl AppContext {
     /// a Core address (no Platform-payment addresses yet). Idempotent: a
     /// fully-bootstrapped wallet returns `false`.
     fn wallet_needs_bootstrap(guard: &Wallet) -> bool {
-        // INTENTIONAL(CODE-006): Bootstrap checks only PlatformPayment address
+        // INTENTIONAL: Bootstrap checks only PlatformPayment address
         // type. Other platform address types may trigger redundant
         // re-derivation, but `bootstrap_known_addresses` is idempotent so this
         // is safe.
@@ -948,6 +978,9 @@ impl AppContext {
             Some(&secret),
             crate::wallet_backend::RememberPolicy::UntilAppClose,
         ) {
+            // Tier-2 keep-protection: the seed re-wraps under the same password
+            // inside the chokepoint — no downgrade to finalize, `uses_password`
+            // stays accurate. The verified-open just promotes it to the cache.
             Ok(()) => tracing::trace!(
                 wallet = %hex::encode(seed_hash),
                 "Verified-open seed promoted to the session cache on unlock"
@@ -1603,7 +1636,7 @@ mod tests {
         second.shutdown().await;
     }
 
-    /// QA-007: a failure at the (fallible) wiring step must surface — the
+    /// A failure at the (fallible) wiring step must surface — the
     /// chokepoint returns `Err` AND flips the SPV indicator to `Error`, so the
     /// user does not silently fall back to `Disconnected` with no feedback.
     ///
@@ -1643,7 +1676,7 @@ mod tests {
         );
     }
 
-    /// SEC-001/SEC-002 regression, adapted to the JIT secret model: a
+    /// Cold-boot signability regression, adapted to the JIT secret model: a
     /// no-password wallet must remain signable after a cold-boot hydration
     /// without any seed ever being parked in a long-lived cache.
     ///
@@ -1705,7 +1738,7 @@ mod tests {
         backend.shutdown().await;
     }
 
-    /// QA-007: leaving a network must not strand session-cached secrets on the
+    /// Leaving a network must not strand session-cached secrets on the
     /// outgoing context. `finalize_network_switch` funnels through
     /// [`WalletBackend::forget_all_secrets`]; this exercises that exact call
     /// against a populated session cache and asserts it is emptied — the JIT
@@ -1866,6 +1899,8 @@ mod tests {
                         is_main: false,
                         core_wallet_name: None,
                         xpub_encoded: det_master_bip44.encode().to_vec(),
+                        uses_password: false,
+                        password_hint: None,
                     },
                 )
                 .expect("write wallet-meta sidecar");
@@ -2226,16 +2261,29 @@ mod tests {
             .register_wallet(wallet, &seed, WalletOrigin::Imported)
             .expect("register wallet before the backend is wired");
 
-        let envelope = WalletSeedView::new(&ctx.secret_store())
-            .get(&seed_hash)
+        // A no-password wallet persists the RAW seed via the seam (no legacy
+        // envelope), and the xpub rides in the WalletMeta sidecar.
+        let raw = WalletSeedView::new(&ctx.secret_store())
+            .get_raw(&seed_hash)
             .expect("vault read must not error")
-            .expect("the seed envelope must be persisted at register time, even unwired");
-        assert!(
-            !envelope.uses_password,
-            "the persisted envelope must carry the no-password flag for the W2 fast-path"
-        );
+            .expect("the raw seed must be persisted at register time, even unwired");
         assert_eq!(
-            envelope.xpub_encoded,
+            &*raw, &seed,
+            "persisted raw seed must equal the wallet seed"
+        );
+        assert!(
+            WalletSeedView::new(&ctx.secret_store())
+                .legacy_envelope_get(&seed_hash)
+                .unwrap()
+                .is_none(),
+            "no legacy envelope is written for a no-password wallet"
+        );
+        let meta = WalletMetaView::new(&ctx.app_kv())
+            .get(Network::Testnet, &seed_hash)
+            .expect("wallet-meta sidecar persisted at register time");
+        assert!(!meta.uses_password, "no-password wallet meta flag");
+        assert_eq!(
+            meta.xpub_encoded,
             ctx.wallets
                 .read()
                 .unwrap()
@@ -2367,24 +2415,31 @@ mod tests {
 
         let backend = ctx.wallet_backend().expect("backend wired");
 
-        // Precondition: the seed envelope is present.
+        // Precondition: the raw seed is present (no-password wallet stores raw).
         assert!(
             WalletSeedView::new(&ctx.secret_store())
-                .get(&seed_hash)
+                .get_raw(&seed_hash)
                 .expect("vault read")
                 .is_some(),
-            "precondition: the seed envelope must exist before removal"
+            "precondition: the raw seed must exist before removal"
         );
 
         ctx.remove_wallet(&seed_hash).expect("remove wallet");
 
-        // The encrypted seed envelope (the JIT decrypt source) is gone.
+        // The seed (the JIT decrypt source) is gone in BOTH forms.
+        let store = ctx.secret_store();
+        let view = WalletSeedView::new(&store);
         assert!(
-            WalletSeedView::new(&ctx.secret_store())
-                .get(&seed_hash)
-                .expect("vault read after removal")
+            view.get_raw(&seed_hash)
+                .expect("raw read after removal")
                 .is_none(),
-            "the seed envelope must be deleted from the vault on removal"
+            "the raw seed must be deleted from the vault on removal"
+        );
+        assert!(
+            view.legacy_envelope_get(&seed_hash)
+                .expect("legacy read after removal")
+                .is_none(),
+            "any legacy envelope must also be gone on removal"
         );
 
         backend.shutdown().await;
@@ -2478,13 +2533,13 @@ mod tests {
 
         let backend = ctx.wallet_backend().expect("backend wired");
 
-        // Precondition: the seed envelope exists.
+        // Precondition: the raw seed exists.
         assert!(
             WalletSeedView::new(&ctx.secret_store())
-                .get(&seed_hash)
+                .get_raw(&seed_hash)
                 .expect("vault read")
                 .is_some(),
-            "precondition: the seed envelope must exist before removal"
+            "precondition: the raw seed must exist before removal"
         );
 
         // Pre-fix this returned `Err(no such table: wallet_addresses)` and the
@@ -2492,12 +2547,19 @@ mod tests {
         ctx.remove_wallet(&seed_hash)
             .expect("remove_wallet must succeed on a fresh install");
 
+        let store = ctx.secret_store();
+        let view = WalletSeedView::new(&store);
         assert!(
-            WalletSeedView::new(&ctx.secret_store())
-                .get(&seed_hash)
-                .expect("vault read after removal")
+            view.get_raw(&seed_hash)
+                .expect("raw read after removal")
                 .is_none(),
-            "the seed envelope must be deleted from the vault on a fresh install"
+            "the raw seed must be deleted from the vault on a fresh install"
+        );
+        assert!(
+            view.legacy_envelope_get(&seed_hash)
+                .expect("legacy read after removal")
+                .is_none(),
+            "no legacy envelope must survive removal on a fresh install"
         );
 
         backend.shutdown().await;
@@ -2533,28 +2595,35 @@ mod tests {
         );
         assert!(
             WalletSeedView::new(&ctx.secret_store())
-                .get(&seed_hash)
+                .get_raw(&seed_hash)
                 .expect("vault read")
                 .is_some(),
-            "precondition: seed envelope must exist before clear"
+            "precondition: raw seed must exist before clear"
         );
 
         ctx.clear_network_database()
             .expect("clear_network_database should succeed");
 
-        // The wallet must not rehydrate: its meta and encrypted seed are gone.
+        // The wallet must not rehydrate: its meta and seed (both forms) are gone.
         assert!(
             WalletMetaView::new(&ctx.app_kv())
                 .get(Network::Testnet, &seed_hash)
                 .is_none(),
             "wallet-meta sidecar must be empty after clear (no rehydration)"
         );
+        let store = ctx.secret_store();
+        let view = WalletSeedView::new(&store);
         assert!(
-            WalletSeedView::new(&ctx.secret_store())
-                .get(&seed_hash)
-                .expect("vault read after clear")
+            view.get_raw(&seed_hash)
+                .expect("raw read after clear")
                 .is_none(),
-            "seed envelope must be deleted from the vault after clear"
+            "raw seed must be deleted from the vault after clear"
+        );
+        assert!(
+            view.legacy_envelope_get(&seed_hash)
+                .expect("legacy read after clear")
+                .is_none(),
+            "no legacy envelope must survive clear"
         );
         assert!(
             ctx.wallets.read().unwrap().is_empty(),
@@ -2655,7 +2724,7 @@ mod tests {
         );
     }
 
-    /// SEC-002 — when the wallet-meta sidecar write fails, `register_wallet`
+    /// When the wallet-meta sidecar write fails, `register_wallet`
     /// must FAIL CLOSED: return `Err` and NOT keep the wallet. Cold-boot
     /// hydration (`hydrate_wallets_for_network`) enumerates ONLY the meta
     /// sidecar — `ctx.wallets` is rebuilt solely from `WalletMetaView::list`.
@@ -2749,7 +2818,7 @@ mod tests {
                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, 0, NULL, 'testnet', NULL)",
                 rusqlite::params![
                     seed_hash.as_slice(),
-                    // Unprotected wallet: salt/nonce must be empty (SEC-007),
+                    // Unprotected wallet: salt/nonce must be empty,
                     // the encrypted_seed slot carries the verbatim 64-byte seed.
                     seed.to_vec(),
                     Vec::<u8>::new(),
@@ -2824,7 +2893,7 @@ mod tests {
                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, 0, NULL, 'testnet', NULL)",
                 rusqlite::params![
                     seed_hash.as_slice(),
-                    // Unprotected wallet: salt/nonce must be empty (SEC-007), the
+                    // Unprotected wallet: salt/nonce must be empty, the
                     // encrypted_seed slot carries the verbatim 64-byte seed.
                     seed.to_vec(),
                     Vec::<u8>::new(),
@@ -2866,7 +2935,7 @@ mod tests {
         backend.shutdown().await;
     }
 
-    /// F140 (protected half — QA-001) — a *password-protected* wallet migrated
+    /// Protected cold-start hydration — a *password-protected* wallet migrated
     /// from legacy `data.db` at cold start must hydrate into `ctx.wallets` but
     /// must NOT be upstream-registered until the user unlocks it. The cold-start
     /// migration re-runs the W2 cold-boot bridge
@@ -3133,6 +3202,69 @@ mod tests {
             backend.wallet_count().await,
             1,
             "exactly one wallet must be watched after the unlock reconciliation"
+        );
+
+        // Tier-2 keep-protection migration post-conditions. The
+        // unlock decrypted the legacy AES-GCM envelope and RE-WRAPPED the seed
+        // as a Tier-2 object-password envelope (protection KEPT, not downgraded
+        // to a raw secret), then dropped the legacy envelope.
+        let store = ctx.secret_store();
+        let seed_view = WalletSeedView::new(&store);
+        // Steady state is Tier-2 protected.
+        assert_eq!(
+            seed_view.scheme(&seed_hash).expect("scheme"),
+            crate::wallet_backend::secret_seam::SecretScheme::Protected,
+            "the seed must be re-wrapped to Tier-2, never downgraded to raw"
+        );
+        // A raw (password-free) read of a protected seed must fail — never strip.
+        assert!(
+            seed_view.get_raw(&seed_hash).is_err(),
+            "a raw read of a Tier-2-protected seed must fail"
+        );
+        // It reads back only WITH the object password, byte-for-byte.
+        let pw = platform_wallet_storage::secrets::SecretString::new(passphrase);
+        let protected = seed_view
+            .get_protected(&seed_hash, &pw)
+            .expect("protected read")
+            .expect("the seed must be re-stored as Tier-2 after the migrating unlock");
+        assert_eq!(
+            &*protected, &seed,
+            "Tier-2 seed must equal the true 64-byte seed"
+        );
+        assert!(
+            seed_view
+                .legacy_envelope_get(&seed_hash)
+                .expect("legacy read")
+                .is_none(),
+            "the legacy envelope must be deleted after migration"
+        );
+        // The sidecar password flag STAYS true — protection was kept, so the
+        // metadata stays accurate (no downgrade flip).
+        let meta = WalletMetaView::new(&ctx.app_kv())
+            .get(Network::Testnet, &seed_hash)
+            .expect("wallet meta present");
+        assert!(
+            meta.uses_password,
+            "WalletMeta.uses_password must stay true — Tier-2 keeps protection"
+        );
+
+        // A SECOND secret resolve still requires the object password (Tier-2 is
+        // not prompt-free): a scripted prompt that supplies it resolves the seed.
+        use crate::wallet_backend::secret_prompt::test_support::{ScriptedAnswer, TestPrompt};
+        use crate::wallet_backend::{SecretAccess, SecretScope};
+        let prompt = std::sync::Arc::new(TestPrompt::new([ScriptedAnswer::once(passphrase)]));
+        let sa = SecretAccess::new(ctx.secret_store(), prompt.clone(), Network::Testnet);
+        let resolved = sa
+            .with_secret(&SecretScope::HdSeed { seed_hash }, |pt| {
+                Ok(pt.expose_hd_seed().copied())
+            })
+            .await
+            .expect("second resolve with the password");
+        assert_eq!(resolved, Some(seed), "password resolve returns the seed");
+        assert_eq!(
+            prompt.ask_count(),
+            1,
+            "the protected seed prompts exactly once"
         );
 
         backend.shutdown().await;
@@ -3572,7 +3704,7 @@ mod tests {
     }
 
     // ──────────────────────────────────────────────────────────────────────
-    // Automatic identity-discovery trigger / latch / re-arm (QA-002, QA-003)
+    // Automatic identity-discovery trigger / latch / re-arm
     // ──────────────────────────────────────────────────────────────────────
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -3800,20 +3932,32 @@ mod tests {
             let h = wallet.seed_hash();
 
             let (ctx, sender) = offline_testnet_context_at(temp_dir.path());
-            // Backend must be wired before register_wallet so the upstream
-            // registration subtask is not silently deferred.
+
+            // Register the wallet BEFORE wiring the backend.  register_wallet
+            // writes the DET sidecars (seed-envelope vault + wallet-meta), but
+            // register_wallet_upstream checks ctx.wallet_backend() and, finding it
+            // not yet wired, returns early without spawning the background
+            // "wallet_upstream_registration" subtask.  This avoids the concurrency
+            // hazard: if the backend were wired first the background subtask would
+            // race with the synchronous register_wallet_from_seed call below —
+            // both call create_wallet_from_seed_bytes for the same wallet.  The
+            // upstream register_wallet inserts into wallet_manager (step A) and into
+            // self.wallets (step B) with async work in between; a concurrent caller
+            // that arrives between A and B sees WalletAlreadyExists but then
+            // get_wallet returns None → WalletNotFound panic.  Under CI load
+            // (1000+ concurrent tests) this window is reliably hit.
+            ctx.register_wallet(wallet, &seed, WalletOrigin::Fresh)
+                .expect("boot 1: ctx.register_wallet");
+
+            // Wire the backend now so the explicit registration below has the
+            // upstream persister available.
             ctx.ensure_wallet_backend(sender)
                 .await
                 .expect("boot 1: ensure_wallet_backend offline");
 
-            // Write the wallet-meta sidecar (xpub_encoded → seed_hash bridge
-            // used by the cold-boot fund-routing gate in
-            // load_from_persistor_seedless).
-            ctx.register_wallet(wallet, &seed, WalletOrigin::Fresh)
-                .expect("boot 1: ctx.register_wallet");
-
-            // Synchronously write the upstream persister so we don't race the
-            // background subtask.  Idempotent with the subtask.
+            // Write the upstream persister synchronously — no background subtask
+            // is in flight (we didn't wire the backend when register_wallet ran),
+            // so this call is race-free.
             let backend1 = ctx.wallet_backend().expect("boot 1 backend");
             backend1
                 .register_wallet_from_seed(&h, &seed, Some(0))

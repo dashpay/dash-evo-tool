@@ -4,6 +4,7 @@ mod discover_identities;
 mod load_identity;
 mod load_identity_by_dpns_name;
 mod load_identity_from_wallet;
+mod protect_identity_keys;
 mod refresh_identity;
 mod refresh_loaded_identities_dpns_names;
 mod register_dpns_name;
@@ -432,6 +433,32 @@ pub enum IdentityTask {
         wallet_seed_hash: WalletSeedHash,
     },
     AddKeyToIdentity(QualifiedIdentity, QualifiedIdentityPublicKey, [u8; 32]),
+    /// SEC-001 opt-in: seal every keyless (Tier-1) vault-stored key of this
+    /// identity under ONE per-identity object `password` (Tier-2), and store
+    /// `hint` for the sign-time prompt copy. Idempotent (an already-protected
+    /// key is skipped) and crash-safe (same-label in-place upsert, vault before
+    /// sidecar). After this, signing with this identity prompts for the
+    /// password; headless/MCP signing yields `SecretPromptUnavailable`.
+    ProtectIdentityKeys {
+        /// The identity whose keys to protect.
+        identity_id: Identifier,
+        /// The per-identity password the user chose. Isolated per secret —
+        /// never the wallet's object password.
+        password: Secret,
+        /// Optional user-set hint shown next to the sign-time prompt.
+        hint: Option<String>,
+    },
+    /// SEC-001 opt-out: revert every password-protected (Tier-2) vault-stored
+    /// key of this identity back to keyless (Tier-1), after verifying
+    /// `password`. Idempotent (an already-keyless key is skipped) and crash-safe
+    /// (vault downgrade before sidecar delete). After this, signing is
+    /// prompt-free again, including headless/MCP.
+    UnprotectIdentityKeys {
+        /// The identity whose key protection to remove.
+        identity_id: Identifier,
+        /// The current per-identity password, verified before downgrading.
+        password: Secret,
+    },
     WithdrawFromIdentity(QualifiedIdentity, Option<Address>, Credits, Option<KeyID>),
     Transfer(QualifiedIdentity, Identifier, Credits, Option<KeyID>),
     /// Transfer credits from identity to Platform addresses
@@ -842,6 +869,15 @@ impl AppContext {
             IdentityTask::RefreshLoadedIdentitiesOwnedDPNSNames => {
                 Ok(self.refresh_loaded_identities_dpns_names(sender).await?)
             }
+            IdentityTask::ProtectIdentityKeys {
+                identity_id,
+                password,
+                hint,
+            } => self.protect_identity_keys(identity_id, password, hint),
+            IdentityTask::UnprotectIdentityKeys {
+                identity_id,
+                password,
+            } => self.unprotect_identity_keys(identity_id, password),
         }
     }
 

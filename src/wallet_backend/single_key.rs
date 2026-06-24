@@ -17,7 +17,7 @@ use dash_sdk::dpp::dashcore::secp256k1::ecdsa::Signature;
 use dash_sdk::dpp::dashcore::secp256k1::{Message, Secp256k1};
 use dash_sdk::dpp::dashcore::{Address, Network, PrivateKey, PublicKey};
 use platform_wallet_storage::secrets::{
-    SecretBytes, SecretStore, SecretStoreError, WalletId as SecretWalletId,
+    SecretBytes, SecretStore, SecretStoreError, SecretString, WalletId as SecretWalletId,
 };
 use zeroize::Zeroizing;
 
@@ -26,6 +26,7 @@ use crate::model::single_key::ImportedKey;
 use crate::model::wallet::single_key::{
     ClosedSingleKey, OpenSingleKey, SingleKeyData, SingleKeyHash, SingleKeyWallet,
 };
+use crate::wallet_backend::secret_seam::{SecretScheme, SecretSeam};
 use crate::wallet_backend::single_key_entry::SingleKeyEntry;
 use crate::wallet_backend::{DetKv, DetScope};
 
@@ -170,7 +171,7 @@ impl<'a> SingleKeyView<'a> {
         self.import_wif_with_passphrase(wif, alias, ImportPassphrase::default())
     }
 
-    /// SEC-002 Option C — same as [`Self::import_wif`], plus an optional
+    /// Per-key passphrase import — same as [`Self::import_wif`], plus an optional
     /// per-key passphrase. When `passphrase.passphrase` is `Some(p)` and
     /// non-empty the raw key bytes are AES-GCM encrypted under `p`
     /// before being written to the vault; the metadata sidecar records
@@ -202,41 +203,61 @@ impl<'a> SingleKeyView<'a> {
         let address_str = address.to_string();
 
         // Extracted WIF bytes wrapped in `Zeroizing` so the stack copy wipes
-        // on drop instead of lingering after the entry is built (SEC-103).
+        // on drop instead of lingering after the entry is built.
         let raw: Zeroizing<[u8; 32]> = Zeroizing::new(
             priv_key.inner[..]
                 .try_into()
                 .map_err(|_| TaskError::SingleKeyCryptoFailure)?,
         );
 
-        let entry = match passphrase.passphrase.as_ref().map(|p| p.as_str()) {
-            Some(p) if !p.is_empty() => {
-                if p.chars().count() < MIN_SINGLE_KEY_PASSPHRASE_LEN {
-                    return Err(TaskError::SingleKeyPassphraseTooShort {
-                        min: MIN_SINGLE_KEY_PASSPHRASE_LEN as u32,
-                    });
-                }
-                let pub_bytes = pub_key.inner.serialize().to_vec();
-                SingleKeyEntry::protected(&raw, p, passphrase.hint.clone(), pub_bytes)?
-            }
-            _ => SingleKeyEntry::unprotected(*raw),
-        };
-        let payload = entry.encode()?;
-
+        let pub_bytes = pub_key.inner.serialize().to_vec();
         let label = label_for_address(&address_str);
-        let bytes = SecretBytes::from_slice(&payload);
-        self.secret_store
-            .set(&single_key_namespace_id(), &label, &bytes)
-            .map_err(|source| TaskError::SecretStore {
-                source: Box::new(source),
-            })?;
+
+        // Both tiers route through the secret seam under the same label — no
+        // DET-side `SingleKeyEntry` framing for new imports. An unprotected key
+        // is stored as RAW 32 bytes (Tier-1); a protected key is sealed Tier-2
+        // under the user's passphrase (Argon2id + XChaCha20-Poly1305) at import
+        // time, so the storage chokepoint is a single shape from import onward
+        // with no lazy first-unlock migration. The locked-render pubkey lives in
+        // the `ImportedKey` sidecar either way.
+        let (has_passphrase, passphrase_hint) =
+            match passphrase.passphrase.as_ref().map(|p| p.as_str()) {
+                Some(p) if !p.is_empty() => {
+                    if p.chars().count() < MIN_SINGLE_KEY_PASSPHRASE_LEN {
+                        return Err(TaskError::SingleKeyPassphraseTooShort {
+                            min: MIN_SINGLE_KEY_PASSPHRASE_LEN as u32,
+                        });
+                    }
+                    let pw = SecretString::new(p);
+                    SecretSeam::new(self.secret_store).put_secret_protected(
+                        &single_key_namespace_id(),
+                        &label,
+                        &SecretBytes::from_slice(&*raw),
+                        &pw,
+                    )?;
+                    (true, passphrase.hint.clone())
+                }
+                _ => {
+                    self.secret_store
+                        .set(
+                            &single_key_namespace_id(),
+                            &label,
+                            &SecretBytes::from_slice(&*raw),
+                        )
+                        .map_err(|source| TaskError::SecretStore {
+                            source: Box::new(source),
+                        })?;
+                    (false, None)
+                }
+            };
 
         let imported = ImportedKey {
             address: address_str.clone(),
             alias,
             network: self.network,
-            has_passphrase: entry.has_passphrase,
-            passphrase_hint: entry.passphrase_hint.clone(),
+            has_passphrase,
+            passphrase_hint,
+            public_key_bytes: pub_bytes,
         };
 
         if let Some(kv) = self.app_kv {
@@ -307,6 +328,17 @@ impl<'a> SingleKeyView<'a> {
     /// get a typed signal rather than a silent failure.
     fn raw_key_bytes(&self, address: &str) -> Result<Zeroizing<[u8; 32]>, TaskError> {
         let label = label_for_address(address);
+        // A Tier-2-sealed key cannot be read without the passphrase — surface the
+        // typed "passphrase required" signal (the chokepoint is the unlock path),
+        // mirroring the legacy protected `SingleKeyEntry` case below.
+        if matches!(
+            SecretSeam::new(self.secret_store).scheme(&single_key_namespace_id(), &label)?,
+            SecretScheme::Protected
+        ) {
+            return Err(TaskError::SingleKeyPassphraseRequired {
+                addr: address.to_string(),
+            });
+        }
         let payload = self
             .secret_store
             .get(&single_key_namespace_id(), &label)
@@ -321,7 +353,7 @@ impl<'a> SingleKeyView<'a> {
             });
         }
         // `decrypt` returns the key wrapped in `Zeroizing`, so it wipes on
-        // drop instead of lingering on the stack after the sign (SEC-103).
+        // drop instead of lingering on the stack after the sign.
         entry.decrypt(None)
     }
 
@@ -333,22 +365,63 @@ impl<'a> SingleKeyView<'a> {
     ///
     /// Returns [`TaskError::SingleKeyPassphraseIncorrect`] on a wrong
     /// passphrase (the same generic signal as the restore path — no oracle).
-    /// For an unprotected entry the passphrase is irrelevant and this is an
-    /// `Ok(())` so callers can treat "ready to use" uniformly.
+    /// For an unprotected entry the passphrase is irrelevant. A not-yet-migrated
+    /// legacy protected entry that just unlocked is RE-WRAPPED to a Tier-2
+    /// object-password envelope under the same password (protection KEPT;
+    /// `has_passphrase` stays true) — so there is no downgrade to surface and no
+    /// notice to show. An already-Tier-2 entry is verified by unsealing and
+    /// needs no re-wrap.
     pub fn verify_passphrase(&self, address: &str, passphrase: &str) -> Result<(), TaskError> {
         let label = label_for_address(address);
-        let payload = self
-            .secret_store
-            .get(&single_key_namespace_id(), &label)
-            .map_err(|source| TaskError::SecretStore {
-                source: Box::new(source),
-            })?
-            .ok_or(TaskError::ImportedKeyNotFound)?;
-        let entry = SingleKeyEntry::decode(payload.expose_secret())?;
-        // Decrypt to verify, then drop immediately — the binding is wiped on
-        // drop, so the plaintext never crosses back out of this method.
-        let _verified: Zeroizing<[u8; 32]> = entry.decrypt(Some(passphrase))?;
-        Ok(())
+        match SecretSeam::new(self.secret_store).scheme(&single_key_namespace_id(), &label)? {
+            // Already Tier-2: verify by unsealing with the supplied password. A
+            // wrong password maps to the generic incorrect signal (no oracle); a
+            // correct one confirms without re-parking plaintext. No re-wrap.
+            SecretScheme::Protected => {
+                let pw = SecretString::new(passphrase);
+                self.secret_store
+                    .get_secret(&single_key_namespace_id(), &label, Some(&pw))
+                    .map_err(|source| match source {
+                        SecretStoreError::WrongPassword => TaskError::SingleKeyPassphraseIncorrect,
+                        other => TaskError::SecretStore {
+                            source: Box::new(other),
+                        },
+                    })?
+                    .ok_or(TaskError::ImportedKeyNotFound)?;
+                Ok(())
+            }
+            SecretScheme::Absent => Err(TaskError::ImportedKeyNotFound),
+            // Legacy `SingleKeyEntry` (or a migrated raw-32 key): decode, decrypt
+            // to verify, then lazily re-wrap a protected entry to Tier-2 under the
+            // SAME password. An unprotected entry ignores the passphrase.
+            SecretScheme::Unprotected => {
+                let payload = self
+                    .secret_store
+                    .get(&single_key_namespace_id(), &label)
+                    .map_err(|source| TaskError::SecretStore {
+                        source: Box::new(source),
+                    })?
+                    .ok_or(TaskError::ImportedKeyNotFound)?;
+                let entry = SingleKeyEntry::decode(payload.expose_secret())?;
+                // Decrypt to verify, then drop immediately — the binding is wiped
+                // on drop, so the plaintext never crosses back out of this method.
+                let verified: Zeroizing<[u8; 32]> = entry.decrypt(Some(passphrase))?;
+                if entry.has_passphrase {
+                    let pw = SecretString::new(passphrase);
+                    self.secret_store
+                        .set_secret(
+                            &single_key_namespace_id(),
+                            &label,
+                            &SecretBytes::from_slice(&*verified),
+                            Some(&pw),
+                        )
+                        .map_err(|source| TaskError::SecretStore {
+                            source: Box::new(source),
+                        })?;
+                }
+                Ok(())
+            }
+        }
     }
 
     /// List every imported key tracked by this backend, sorted by
@@ -409,7 +482,7 @@ impl<'a> SingleKeyView<'a> {
         };
         let mut out = Vec::with_capacity(keys.len());
         for key in keys {
-            match kv.get::<ImportedKey>(DetScope::Global, &key) {
+            match self.read_imported_key(kv, &key) {
                 Ok(Some(meta)) => out.push(meta),
                 Ok(None) => {}
                 Err(e) => {
@@ -423,6 +496,39 @@ impl<'a> SingleKeyView<'a> {
             }
         }
         out
+    }
+
+    /// Read one `ImportedKey` sidecar blob with a dual-format fallback. Tries
+    /// the current shape first; on a decode failure (an old blob lacks the
+    /// appended `public_key_bytes`) falls back to the legacy [`ImportedKeyV1`]
+    /// shape and RE-STORES it in the current shape — so an imported key created
+    /// before that field still appears in the picker instead of vanishing.
+    /// Mirrors the `WalletMeta` dual-format reader.
+    fn read_imported_key(
+        &self,
+        kv: &Arc<DetKv>,
+        key: &str,
+    ) -> Result<Option<ImportedKey>, crate::wallet_backend::KvAdapterError> {
+        use crate::wallet_backend::KvAdapterError;
+        match kv.get::<ImportedKey>(DetScope::Global, key) {
+            Ok(opt) => return Ok(opt),
+            Err(KvAdapterError::Decode(_)) => {}
+            Err(e) => return Err(e),
+        }
+        let Some(v1) = kv.get::<crate::model::single_key::ImportedKeyV1>(DetScope::Global, key)?
+        else {
+            return Ok(None);
+        };
+        let migrated: ImportedKey = v1.into();
+        if let Err(e) = kv.put(DetScope::Global, key, &migrated) {
+            tracing::warn!(
+                target = "wallet_backend::single_key",
+                key = %key,
+                error = ?e,
+                "Could not re-store migrated single-key sidecar; will retry next read",
+            );
+        }
+        Ok(Some(migrated))
     }
 
     /// Reconstruct DET-side [`SingleKeyWallet`] rows from the k/v sidecar
@@ -499,6 +605,18 @@ impl<'a> SingleKeyView<'a> {
 
     fn rebuild_wallet(&self, meta: &ImportedKey) -> Result<Option<SingleKeyWallet>, TaskError> {
         let label = label_for_address(&meta.address);
+        // A key re-wrapped to a Tier-2 object-password envelope (keep-protection,
+        // on the first unlock) reads back as Protected without the password.
+        // Reconstruct it CLOSED from the public sidecar — the password is
+        // intentionally unavailable at cold boot, so the secret is never read
+        // here. Without the scheme probe a plain `get` would surface
+        // `NeedsPassword` and the key would vanish from the picker.
+        if matches!(
+            SecretSeam::new(self.secret_store).scheme(&single_key_namespace_id(), &label)?,
+            SecretScheme::Protected
+        ) {
+            return Ok(self.rebuild_closed_tier2_wallet(meta));
+        }
         let secret = match self
             .secret_store
             .get(&single_key_namespace_id(), &label)
@@ -608,56 +726,7 @@ impl<'a> SingleKeyView<'a> {
         meta: &ImportedKey,
         entry: &SingleKeyEntry,
     ) -> Option<SingleKeyWallet> {
-        use std::str::FromStr;
-        let address = match Address::from_str(&meta.address) {
-            Ok(a) => match a.require_network(meta.network) {
-                Ok(a) => a,
-                Err(_) => {
-                    tracing::warn!(
-                        target = "wallet_backend::single_key",
-                        address = %meta.address,
-                        network = ?meta.network,
-                        "Locked single-key entry address does not match expected network; skipping",
-                    );
-                    return None;
-                }
-            },
-            Err(_) => {
-                tracing::warn!(
-                    target = "wallet_backend::single_key",
-                    address = %meta.address,
-                    "Locked single-key entry address is not parseable; skipping",
-                );
-                return None;
-            }
-        };
-
-        if entry.public_key_bytes.is_empty() {
-            tracing::warn!(
-                target = "wallet_backend::single_key",
-                address = %meta.address,
-                "Locked single-key entry has no stored public key; skipping (re-import to refresh)",
-            );
-            return None;
-        }
-        let inner = match dash_sdk::dpp::dashcore::secp256k1::PublicKey::from_slice(
-            &entry.public_key_bytes,
-        ) {
-            Ok(p) => p,
-            Err(e) => {
-                tracing::warn!(
-                    target = "wallet_backend::single_key",
-                    address = %meta.address,
-                    error = %e,
-                    "Locked single-key entry public-key bytes are unparseable; skipping",
-                );
-                return None;
-            }
-        };
-        let public_key = PublicKey {
-            compressed: true,
-            inner,
-        };
+        let (address, public_key) = parse_locked_address_and_pubkey(meta, &entry.public_key_bytes)?;
 
         // `compute_key_hash` is defined over the plaintext private key;
         // locked entries don't have it here, so the handle is SHA-256 of the
@@ -667,21 +736,48 @@ impl<'a> SingleKeyView<'a> {
         // key. Two locked entries with the same plaintext but distinct salts
         // still hash apart — fine, the handle is only a per-entry map key.
         const LOCKED_HANDLE_DOMAIN: &[u8] = b"det-single-key-locked-handle-v1";
-        let key_hash = {
-            use sha2::{Digest, Sha256};
-            let mut hasher = Sha256::new();
-            hasher.update(LOCKED_HANDLE_DOMAIN);
-            hasher.update(&entry.ciphertext);
-            let out = hasher.finalize();
-            let mut h = [0u8; 32];
-            h.copy_from_slice(&out);
-            h
-        };
+        let key_hash = locked_key_handle(LOCKED_HANDLE_DOMAIN, &entry.ciphertext);
         let closed = ClosedSingleKey {
             key_hash,
             encrypted_private_key: entry.ciphertext.clone(),
             salt: entry.salt.clone(),
             nonce: entry.nonce.clone(),
+        };
+        Some(SingleKeyWallet {
+            private_key_data: SingleKeyData::Closed(closed),
+            uses_password: true,
+            public_key,
+            address,
+            alias: meta.alias.clone(),
+            key_hash,
+            confirmed_balance: 0,
+            unconfirmed_balance: 0,
+            total_balance: 0,
+            utxos: std::collections::HashMap::new(),
+            core_wallet_name: None,
+        })
+    }
+
+    /// Build a closed [`SingleKeyWallet`] for a key whose secret is sealed in a
+    /// Tier-2 object-password envelope — the steady-state shape after the first
+    /// unlock. The ciphertext is unreachable without the password at cold boot,
+    /// so the public material comes from the `ImportedKey` sidecar
+    /// (`public_key_bytes` + `address`) and the per-entry handle is derived from
+    /// the public key bytes. Returns `None` (skip + log) when the sidecar's
+    /// public material is missing or unparseable.
+    fn rebuild_closed_tier2_wallet(&self, meta: &ImportedKey) -> Option<SingleKeyWallet> {
+        let (address, public_key) = parse_locked_address_and_pubkey(meta, &meta.public_key_bytes)?;
+
+        // No ciphertext is reachable for a Tier-2 entry without the password, so
+        // the per-entry handle is domain-separated over the public key bytes
+        // (which uniquely identify the key) instead of the ciphertext.
+        const LOCKED_TIER2_HANDLE_DOMAIN: &[u8] = b"det-single-key-locked-tier2-handle-v1";
+        let key_hash = locked_key_handle(LOCKED_TIER2_HANDLE_DOMAIN, &meta.public_key_bytes);
+        let closed = ClosedSingleKey {
+            key_hash,
+            encrypted_private_key: Vec::new(),
+            salt: Vec::new(),
+            nonce: Vec::new(),
         };
         Some(SingleKeyWallet {
             private_key_data: SingleKeyData::Closed(closed),
@@ -712,6 +808,83 @@ impl<'a> SingleKeyView<'a> {
     }
 }
 
+/// Parse the stored address (network-checked) and the compressed public key
+/// from `public_key_bytes` for a locked single-key render. `None` (skip + log)
+/// when the address or the public key is missing or unparseable — without both
+/// the rebuilt wallet would lack a usable address / [`PublicKey`]. Shared by the
+/// legacy-AES-GCM and Tier-2 closed-render paths so they apply one policy.
+fn parse_locked_address_and_pubkey(
+    meta: &ImportedKey,
+    public_key_bytes: &[u8],
+) -> Option<(Address, PublicKey)> {
+    use std::str::FromStr;
+    let address = match Address::from_str(&meta.address) {
+        Ok(a) => match a.require_network(meta.network) {
+            Ok(a) => a,
+            Err(_) => {
+                tracing::warn!(
+                    target = "wallet_backend::single_key",
+                    address = %meta.address,
+                    network = ?meta.network,
+                    "Locked single-key entry address does not match expected network; skipping",
+                );
+                return None;
+            }
+        },
+        Err(_) => {
+            tracing::warn!(
+                target = "wallet_backend::single_key",
+                address = %meta.address,
+                "Locked single-key entry address is not parseable; skipping",
+            );
+            return None;
+        }
+    };
+
+    if public_key_bytes.is_empty() {
+        tracing::warn!(
+            target = "wallet_backend::single_key",
+            address = %meta.address,
+            "Locked single-key entry has no stored public key; skipping (re-import to refresh)",
+        );
+        return None;
+    }
+    let inner = match dash_sdk::dpp::dashcore::secp256k1::PublicKey::from_slice(public_key_bytes) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(
+                target = "wallet_backend::single_key",
+                address = %meta.address,
+                error = %e,
+                "Locked single-key entry public-key bytes are unparseable; skipping",
+            );
+            return None;
+        }
+    };
+    Some((
+        address,
+        PublicKey {
+            compressed: true,
+            inner,
+        },
+    ))
+}
+
+/// SHA-256 of `domain || material`, used as a stable per-entry BTreeMap handle
+/// for a locked single-key wallet. The domain tag keeps locked handles in a
+/// different space from the plaintext `compute_key_hash`, so a locked entry and
+/// an open one can never collide.
+fn locked_key_handle(domain: &[u8], material: &[u8]) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(domain);
+    hasher.update(material);
+    let out = hasher.finalize();
+    let mut h = [0u8; 32];
+    h.copy_from_slice(&out);
+    h
+}
+
 /// Sign a 32-byte digest with raw secp256k1 private-key bytes. Shared by the
 /// unprotected [`SingleKeyView::sign_with`] path and the JIT chokepoint path
 /// ([`WalletBackend::sign_single_key`](super::WalletBackend::sign_single_key)),
@@ -732,11 +905,25 @@ pub(crate) fn sign_message_with_raw_key(
 /// refuses pre-existing modes looser than `0600`, so the secret-at-rest
 /// floor is enforced at open time — see `SecretStoreError::InsecurePermissions`).
 ///
-/// The passphrase is a fixed, non-secret per-process constant: at-rest
-/// protection relies on file permissions (enforced by the upstream backend).
-/// A user-supplied passphrase is a follow-up (T-SK-03 UX work). The design
-/// choice is documented in the ADR under
-/// `docs/ai-design/2026-05-18-platform-wallet-migration/`.
+/// The vault file itself is opened **keyless** ([`SecretStore::file_unprotected`]).
+/// Upstream documents this verbatim as **"obfuscation, not confidentiality"**: the
+/// vault key derives from an empty passphrase under a public salt, so anyone who
+/// can READ the vault file can re-derive it and recover every **Tier-1**
+/// (unprotected) secret. Tier-1 at-rest protection is therefore **owner-only file
+/// permissions ALONE** — it covers no-password seeds, raw imported keys, and
+/// identity keys (prompt-free by design for headless signing).
+///
+/// Real at-rest **confidentiality** comes only from **Tier-2** *object* passwords:
+/// each protected secret is sealed under its own password (Argon2id + XChaCha20)
+/// via [`SecretStore::set_secret`] / read back with [`SecretStore::get_secret`]
+/// BEFORE it reaches the backend, so a full vault-file compromise cannot reveal a
+/// protected secret. (Upstream's [`SecretStore::file`] now rejects a blank
+/// passphrase; `file_unprotected` is the explicit keyless door it documents for
+/// exactly this per-secret-password model.) This Tier-1-is-obfuscation-only
+/// residual is an accepted, documented risk — see the ADR under
+/// `docs/ai-design/2026-06-19-secret-storage-seam/`. Hosts that can hold
+/// a real key may instead use [`SecretStore::os`] (OS keyring) or a vault
+/// passphrase via `EncryptedFileStore::rekey`.
 pub fn open_secret_store(path: &std::path::Path) -> Result<SecretStore, SecretStoreError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|_| SecretStoreError::MalformedVault)?;
@@ -750,10 +937,7 @@ pub fn open_secret_store(path: &std::path::Path) -> Result<SecretStore, SecretSt
                 .map_err(|_| SecretStoreError::MalformedVault)?;
         }
     }
-    SecretStore::file(
-        path,
-        platform_wallet_storage::secrets::SecretString::new(""),
-    )
+    SecretStore::file_unprotected(path)
 }
 
 #[cfg(test)]
@@ -1218,6 +1402,7 @@ mod tests {
             network,
             has_passphrase: false,
             passphrase_hint: None,
+            public_key_bytes: Vec::new(),
         };
         kv.put(
             DetScope::Global,
@@ -1234,9 +1419,11 @@ mod tests {
         );
     }
 
-    /// SEC-002 — importing with a passphrase encrypts the in-vault
+    /// Importing with a passphrase encrypts the in-vault
     /// payload (so a vault dump does not yield the raw key) and the
-    /// sidecar records `has_passphrase = true` with the user's hint.
+    /// sidecar records `has_passphrase = true` with the user's hint. A fresh
+    /// protected import seals Tier-2 at import time, so the vault row reads back
+    /// as [`SecretScheme::Protected`] (a password-free read fails).
     ///
     /// JIT model: there is no unlock cache to prime at import, so a direct
     /// `sign_with` on the protected key returns the typed
@@ -1271,19 +1458,19 @@ mod tests {
         assert!(imported.has_passphrase);
         assert_eq!(imported.passphrase_hint.as_deref(), Some("xkcd 936"));
 
-        // Vault payload is not the raw 32 bytes — it's the versioned
-        // ciphertext envelope.
+        // The vault row is sealed Tier-2 at import — a password-free read fails
+        // (NeedsPassword), so the at-rest value is never the plaintext key.
         let label = label_for_address(&imported.address);
-        let raw = store
-            .get(&single_key_namespace_id(), &label)
-            .expect("get")
-            .expect("present");
-        assert_ne!(raw.expose_secret().len(), 32);
-        let priv_key = PrivateKey::from_wif(known_wif()).unwrap();
-        assert_ne!(
-            raw.expose_secret(),
-            &priv_key.inner[..],
-            "ciphertext must not be the plaintext key bytes",
+        assert_eq!(
+            SecretSeam::new(&store)
+                .scheme(&single_key_namespace_id(), &label)
+                .expect("scheme"),
+            SecretScheme::Protected,
+            "a protected import must seal Tier-2 at import time",
+        );
+        assert!(
+            store.get(&single_key_namespace_id(), &label).is_err(),
+            "a password-free read of a Tier-2 single key must fail",
         );
 
         // No cache prime: a direct view sign on the protected key reports
@@ -1294,7 +1481,75 @@ mod tests {
         assert!(matches!(err, TaskError::SingleKeyPassphraseRequired { .. }));
     }
 
-    /// SEC-002, JIT-adapted — a protected imported key is signed through
+    /// Regression for the cold-boot disappearance of a Tier-2-protected single
+    /// key: after the first unlock re-wraps the key to a Tier-2 object-password
+    /// envelope (keep-protection), the cold-boot rebuild must still list it
+    /// CLOSED instead of skipping it. Before the scheme-first branch,
+    /// `rebuild_wallet` did a plain `get`, which surfaced `NeedsPassword` and the
+    /// key vanished from the picker on every launch.
+    #[test]
+    fn tier2_protected_single_key_rebuilds_closed_and_is_listed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ViewFixture {
+            store,
+            index,
+            kv,
+            network,
+        } = fresh_view_with_kv(dir.path(), Network::Testnet);
+        let view = SingleKeyView {
+            secret_store: &store,
+            index: &index,
+            network,
+            app_kv: Some(&kv),
+        };
+
+        let passphrase = "correct-horse-battery-staple";
+        let imported = view
+            .import_wif_with_passphrase(
+                known_wif(),
+                Some("savings".into()),
+                crate::wallet_backend::single_key::ImportPassphrase {
+                    passphrase: Some(Zeroizing::new(passphrase.into())),
+                    hint: Some("xkcd 936".into()),
+                },
+            )
+            .expect("import");
+        let address = imported.address.clone();
+
+        // First unlock re-wraps the legacy AES-GCM entry to a Tier-2 envelope
+        // under the same password.
+        view.verify_passphrase(&address, passphrase)
+            .expect("verify + re-wrap");
+        let label = label_for_address(&address);
+        assert_eq!(
+            SecretSeam::new(&store)
+                .scheme(&single_key_namespace_id(), &label)
+                .expect("scheme"),
+            SecretScheme::Protected,
+            "key must read back as Tier-2 protected without a password",
+        );
+
+        // Cold-boot rebuild returns Ok(Some(closed)) — never an Err that skips.
+        let rebuilt = view
+            .rebuild_display_wallet(&imported)
+            .expect("no error from a protected single key")
+            .expect("protected key must rebuild closed, not be skipped");
+        assert!(
+            matches!(rebuilt.private_key_data, SingleKeyData::Closed(_)),
+            "a Tier-2 key must rebuild as a closed wallet",
+        );
+        assert!(rebuilt.uses_password);
+        assert_eq!(rebuilt.address.to_string(), address);
+
+        // And the full cold-boot enumeration lists it too.
+        let listed = view.hydrate_wallets();
+        assert!(
+            listed.iter().any(|(_, w)| w.address.to_string() == address),
+            "the Tier-2 single key must appear in the cold-boot listing",
+        );
+    }
+
+    /// JIT-adapted protected sign — a protected imported key is signed through
     /// the chokepoint. A direct view sign reports `SingleKeyPassphraseRequired`;
     /// then `SecretAccess::with_secret` prompts, re-asks on a wrong passphrase,
     /// decrypts just-in-time on the right one, and signs. The signature
@@ -1373,7 +1628,7 @@ mod tests {
         assert_eq!(prompt.ask_count(), 2, "one wrong + one right passphrase");
     }
 
-    /// SEC-002 — a passphrase shorter than the configured minimum is
+    /// A passphrase shorter than the configured minimum is
     /// rejected at import time with the typed
     /// `SingleKeyPassphraseTooShort` variant; no vault write occurs.
     #[test]
@@ -1477,7 +1732,7 @@ mod tests {
         assert!(matches!(err, TaskError::ImportedKeyNotFound), "got {err:?}");
     }
 
-    /// SEC-002 — legacy 32-byte raw vault payloads (pre-Option C)
+    /// Legacy 32-byte raw vault payloads (pre per-key-passphrase)
     /// still decode as `has_passphrase = false`, so a user who
     /// upgrades from a previous tag never loses their imported keys.
     #[test]
@@ -1496,8 +1751,8 @@ mod tests {
             app_kv: Some(&kv),
         };
 
-        // Pretend a pre-SEC-002 install wrote a raw 32-byte payload
-        // under the canonical label, with a matching sidecar entry.
+        // Pretend a pre-per-key-passphrase install wrote a raw 32-byte
+        // payload under the canonical label, with a matching sidecar entry.
         let priv_key = PrivateKey::from_wif(known_wif()).unwrap();
         let pub_key = PublicKey {
             compressed: priv_key.compressed,
@@ -1515,6 +1770,7 @@ mod tests {
             network,
             has_passphrase: false,
             passphrase_hint: None,
+            public_key_bytes: Vec::new(),
         };
         kv.put(DetScope::Global, &meta_key_for(network, &address), &meta)
             .expect("seed sidecar");
@@ -1523,5 +1779,105 @@ mod tests {
         // No passphrase needed, signing works.
         view.sign_with(&address, &[0x11u8; 32])
             .expect("legacy sign without passphrase");
+    }
+
+    /// TS-RT-02 / TS-EAGER-02 (import half) — an unprotected import writes the
+    /// RAW 32 bytes under the canonical label (no `SingleKeyEntry` framing),
+    /// the sidecar carries the public key for locked render, and the key signs.
+    #[test]
+    fn unprotected_import_writes_raw_32_bytes_not_framed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ViewFixture {
+            store,
+            index,
+            kv,
+            network,
+        } = fresh_view_with_kv(dir.path(), Network::Testnet);
+        let view = SingleKeyView {
+            secret_store: &store,
+            index: &index,
+            network,
+            app_kv: Some(&kv),
+        };
+        let imported = view
+            .import_wif(known_wif(), Some("raw".into()))
+            .expect("import");
+        assert!(!imported.has_passphrase);
+        assert!(
+            !imported.public_key_bytes.is_empty(),
+            "sidecar carries the locked-render public key"
+        );
+
+        // Vault payload is exactly the raw 32 bytes — no version-tag framing.
+        let label = label_for_address(&imported.address);
+        let raw = store
+            .get(&single_key_namespace_id(), &label)
+            .expect("get")
+            .expect("present");
+        assert_eq!(
+            raw.expose_secret().len(),
+            32,
+            "raw, not a versioned envelope"
+        );
+        let priv_key = PrivateKey::from_wif(known_wif()).unwrap();
+        assert_eq!(raw.expose_secret(), &priv_key.inner[..]);
+
+        // Signs with no passphrase.
+        view.sign_with(&imported.address, &[0x42u8; 32])
+            .expect("raw key signs");
+    }
+
+    /// Dual-format sidecar upgrade — an OLD `ImportedKey` sidecar blob written WITHOUT the
+    /// appended `public_key_bytes` (the pre-this-PR 5-field shape) is read back
+    /// through the view's dual-format fallback: it does NOT vanish from the
+    /// picker, its fields are preserved, and it is re-stored in the new shape.
+    #[test]
+    fn old_imported_key_blob_decodes_and_restores() {
+        use crate::model::single_key::ImportedKeyV1;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ViewFixture {
+            store,
+            index,
+            kv,
+            network,
+        } = fresh_view_with_kv(dir.path(), Network::Testnet);
+        let view = SingleKeyView {
+            secret_store: &store,
+            index: &index,
+            network,
+            app_kv: Some(&kv),
+        };
+
+        // Write the OLD 5-field shape directly, the way the base branch did.
+        let address = "yTestImportedAddr".to_string();
+        let key = meta_key_for(network, &address);
+        let v1 = ImportedKeyV1 {
+            address: address.clone(),
+            alias: Some("legacy key".into()),
+            network,
+            has_passphrase: true,
+            passphrase_hint: Some("the usual".into()),
+        };
+        kv.put(DetScope::Global, &key, &v1).expect("write old blob");
+
+        // The view lists it (dual-format fallback) — not skipped.
+        let listed = view.list_persisted();
+        assert_eq!(listed.len(), 1, "old key must not vanish from the picker");
+        let got = &listed[0];
+        assert_eq!(got.address, address);
+        assert_eq!(got.alias.as_deref(), Some("legacy key"));
+        assert!(got.has_passphrase);
+        assert_eq!(got.passphrase_hint.as_deref(), Some("the usual"));
+        assert!(
+            got.public_key_bytes.is_empty(),
+            "no stored pubkey pre-migration"
+        );
+
+        // It was re-stored in the new shape: a direct new-shape decode succeeds.
+        let direct: Option<ImportedKey> = kv
+            .get(DetScope::Global, &key)
+            .expect("direct new-shape read");
+        assert_eq!(direct.expect("present").address, address);
     }
 }

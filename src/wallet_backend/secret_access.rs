@@ -10,16 +10,14 @@
 //!
 //! Resolution order for each call:
 //!   1. session cache (only populated when the user opted in; TTL honored);
-//!   2. else prompt via [`SecretPrompt`] for the passphrase, decrypt the
-//!      stored envelope just-in-time, optionally promote to the session
-//!      cache, run the closure, then zeroize.
+//!   2. else, an **unprotected** scope (a migrated raw secret, or a no-password
+//!      HD wallet / no-passphrase imported key) resolves **without prompting** —
+//!      the chokepoint reads it directly with no passphrase;
+//!   3. else prompt via [`SecretPrompt`] for the passphrase, decrypt the
+//!      stored secret just-in-time, optionally promote to the session cache,
+//!      run the closure, then zeroize.
 //!
-//! Unprotected scopes (HD wallets stored without a password, imported keys
-//! stored without a passphrase) resolve **without prompting** — the
-//! envelope is decryptable with no passphrase, so the chokepoint reads it
-//! directly (Smythe must-fix #4).
-//!
-//! Secret hygiene (Smythe must-fixes #1–#3):
+//! Secret hygiene:
 //! - **Closure form, no storable guard.** [`SecretPlaintext`] and
 //!   [`SecretSession`] are bound to the closure's lifetime; they cannot be
 //!   parked across awaits outside the chokepoint.
@@ -42,11 +40,14 @@ use std::time::Instant;
 use aes_gcm::aead::Aead;
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
 use dash_sdk::dpp::dashcore::Network;
-use platform_wallet_storage::secrets::SecretStore;
-use platform_wallet_storage::secrets::SecretString;
+use dash_sdk::dpp::identity::KeyID;
+use platform_wallet_storage::secrets::{
+    SecretBytes, SecretStore, SecretStoreError, SecretString, WalletId as SecretWalletId,
+};
 use zeroize::Zeroizing;
 
 use crate::backend_task::error::TaskError;
+use crate::model::qualified_identity::PrivateKeyTarget;
 use crate::model::single_key::ImportedKey;
 use crate::model::wallet::WalletSeedHash;
 use crate::model::wallet::encryption::derive_password_key;
@@ -54,6 +55,7 @@ use crate::model::wallet::seed_envelope::StoredSeedEnvelope;
 use crate::wallet_backend::secret_prompt::{
     RememberPolicy, SecretPrompt, SecretPromptRequest, SecretPromptRetry, SecretScope,
 };
+use crate::wallet_backend::secret_seam::{SecretScheme, SecretSeam};
 use crate::wallet_backend::single_key::{label_for_address, single_key_namespace_id};
 use crate::wallet_backend::single_key_entry::SingleKeyEntry;
 use crate::wallet_backend::wallet_seed_store::WalletSeedView;
@@ -62,6 +64,9 @@ use crate::wallet_backend::wallet_seed_store::WalletSeedView;
 const HD_SEED_LEN: usize = 64;
 /// Length of an imported single-key secret.
 const SINGLE_KEY_LEN: usize = 32;
+/// Vault label for a raw (migrated) HD seed, distinct from the legacy
+/// `envelope.v1` so the loader can tell raw from legacy by label presence.
+pub(crate) const SEED_RAW_LABEL: &str = "seed.raw.v1";
 
 /// Borrowed, kind-tagged plaintext handed to a [`SecretAccess::with_secret`]
 /// closure. Lives only for the closure call. No `Clone`, no `Deref` to raw
@@ -73,6 +78,8 @@ pub enum SecretPlaintext<'a> {
     HdSeed(&'a Zeroizing<[u8; HD_SEED_LEN]>),
     /// A 32-byte imported single-key secret.
     SingleKey(&'a Zeroizing<[u8; SINGLE_KEY_LEN]>),
+    /// A 32-byte identity private key, read raw from the vault per-use.
+    IdentityKey(&'a Zeroizing<[u8; SINGLE_KEY_LEN]>),
 }
 
 impl SecretPlaintext<'_> {
@@ -84,7 +91,7 @@ impl SecretPlaintext<'_> {
             // implements `AsRef<PushBytes>` (dashcore), which makes a bare
             // `.as_ref()` ambiguous.
             SecretPlaintext::HdSeed(s) => Some(&***s),
-            SecretPlaintext::SingleKey(_) => None,
+            _ => None,
         }
     }
 
@@ -93,7 +100,17 @@ impl SecretPlaintext<'_> {
     pub fn expose_single_key(&self) -> Option<&[u8; SINGLE_KEY_LEN]> {
         match self {
             SecretPlaintext::SingleKey(k) => Some(&***k),
-            SecretPlaintext::HdSeed(_) => None,
+            _ => None,
+        }
+    }
+
+    /// Borrow the 32-byte identity private key, or `None` for the other
+    /// kinds. The plaintext is borrowed for the closure only and zeroizes
+    /// on return — it is never resident.
+    pub fn expose_identity_key(&self) -> Option<&[u8; SINGLE_KEY_LEN]> {
+        match self {
+            SecretPlaintext::IdentityKey(k) => Some(&***k),
+            _ => None,
         }
     }
 }
@@ -121,6 +138,7 @@ impl SecretSession<'_> {
 enum Plaintext {
     HdSeed(Zeroizing<[u8; HD_SEED_LEN]>),
     SingleKey(Zeroizing<[u8; SINGLE_KEY_LEN]>),
+    IdentityKey(Zeroizing<[u8; SINGLE_KEY_LEN]>),
 }
 
 impl Plaintext {
@@ -128,6 +146,7 @@ impl Plaintext {
         match self {
             Plaintext::HdSeed(s) => SecretPlaintext::HdSeed(s),
             Plaintext::SingleKey(k) => SecretPlaintext::SingleKey(k),
+            Plaintext::IdentityKey(k) => SecretPlaintext::IdentityKey(k),
         }
     }
 
@@ -138,15 +157,16 @@ impl Plaintext {
         match self {
             Plaintext::HdSeed(s) => Plaintext::HdSeed(Zeroizing::new(**s)),
             Plaintext::SingleKey(k) => Plaintext::SingleKey(Zeroizing::new(**k)),
+            Plaintext::IdentityKey(k) => Plaintext::IdentityKey(Zeroizing::new(**k)),
         }
     }
 }
 
 /// A session-cache entry: the boxed plaintext plus its expiry policy.
 ///
-/// The plaintext is boxed (Smythe must-fix #3) so a `HashMap` rehash moves
-/// only the `Box` pointer, never the secret bytes — no un-wiped inline copy
-/// is left behind. `expires_at = None` means "until app close".
+/// The plaintext is boxed so a `HashMap` rehash moves only the `Box` pointer,
+/// never the secret bytes — no un-wiped inline copy is left behind.
+/// `expires_at = None` means "until app close".
 struct SessionEntry {
     plaintext: Box<Plaintext>,
     expires_at: Option<Instant>,
@@ -184,6 +204,10 @@ struct SecretAccessInner {
     /// Single-key index (address → alias / hint / has_passphrase) for
     /// prompt copy and the unprotected fast-path check.
     single_key_index: RwLock<BTreeMap<String, ImportedKey>>,
+    /// Identity prompt-copy index (identity id → alias / password hint) for
+    /// the sign-time prompt of an opted-in (Tier-2) identity. Display-only;
+    /// the vault scheme — not this index — gates whether a prompt fires.
+    identity_prompt_index: RwLock<BTreeMap<[u8; 32], IdentityPromptMeta>>,
     /// The UI seam. `dyn` so the host is chosen at construction.
     prompt: Arc<dyn SecretPrompt>,
     /// Opt-in session cache. Empty by default; a scope lands here only on
@@ -206,6 +230,38 @@ pub struct WalletPromptMeta {
     pub password_hint: Option<String>,
 }
 
+/// Minimal prompt-copy metadata for an identity whose keys may be
+/// password-protected (SEC-001). Seeded from the loaded `QualifiedIdentity`
+/// alias and the DET-side `IdentityMetaView` hint at hydration so the
+/// sign-time prompt shows the right identity label and hint.
+///
+/// This is display-only: it NEVER decides whether to prompt (the vault scheme
+/// does, in [`SecretAccess::scope_has_passphrase`]). A missing entry degrades
+/// to a generic label, never an error.
+#[derive(Clone, Debug, Default)]
+pub struct IdentityPromptMeta {
+    /// User-visible identity label (DPNS name or truncated id), if any.
+    pub alias: Option<String>,
+    /// User-set password hint for this identity's keys, if any.
+    pub password_hint: Option<String>,
+}
+
+/// An identity object password VERIFIED against an existing protected key of
+/// the identity (SEC-001). Produced by
+/// [`SecretAccess::verify_identity_object_password`] and consumed by
+/// [`SecretAccess::seal_new_identity_key_with_password`], so the add-key flow
+/// can enforce the protected-identity precondition BEFORE the irreversible
+/// on-chain broadcast and seal the new key AFTER it — with a single prompt.
+/// Wraps a [`SecretString`], so the plaintext zeroizes on drop.
+pub struct VerifiedIdentityPassword(SecretString);
+
+impl std::fmt::Debug for VerifiedIdentityPassword {
+    /// Redacts the wrapped password (M-PUBLIC-DEBUG, M-DONT-LEAK-TYPES).
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("VerifiedIdentityPassword").finish()
+    }
+}
+
 impl SecretAccess {
     /// Build a chokepoint over `secret_store`, prompting through `prompt`.
     ///
@@ -222,6 +278,7 @@ impl SecretAccess {
                 secret_store,
                 wallet_meta: RwLock::new(BTreeMap::new()),
                 single_key_index: RwLock::new(BTreeMap::new()),
+                identity_prompt_index: RwLock::new(BTreeMap::new()),
                 prompt,
                 session: RwLock::new(HashMap::new()),
                 network,
@@ -235,20 +292,44 @@ impl SecretAccess {
     }
 
     /// Replace the HD prompt-copy metadata map. Used at hydration time so
-    /// prompts can show the wallet name and password hint.
+    /// prompts can show the wallet name and password hint. Poison-safe: a
+    /// poisoned lock is recovered (matching `forget`/`forget_all`) so a panicked
+    /// reader can never freeze prompt-copy metadata for the rest of the session.
     pub fn set_wallet_meta(&self, meta: BTreeMap<WalletSeedHash, WalletPromptMeta>) {
-        if let Ok(mut guard) = self.inner.wallet_meta.write() {
-            *guard = meta;
-        }
+        let mut guard = self
+            .inner
+            .wallet_meta
+            .write()
+            .unwrap_or_else(|poison| poison.into_inner());
+        *guard = meta;
     }
 
     /// Replace the single-key prompt-copy index. Used at hydration time and
     /// after an import so prompts can show the key nickname and hint, and
-    /// so the unprotected fast-path can skip the prompt.
+    /// so the unprotected fast-path can skip the prompt. Poison-safe: a poisoned
+    /// lock is recovered so the index can self-heal after a panicked reader.
     pub fn set_single_key_index(&self, index: BTreeMap<String, ImportedKey>) {
-        if let Ok(mut guard) = self.inner.single_key_index.write() {
-            *guard = index;
-        }
+        let mut guard = self
+            .inner
+            .single_key_index
+            .write()
+            .unwrap_or_else(|poison| poison.into_inner());
+        *guard = index;
+    }
+
+    /// Replace the identity prompt-copy index. Used at hydration time and
+    /// after an opt-in migration so the sign-time prompt for a protected
+    /// identity shows its label and password hint. Display-only — never
+    /// gates whether a prompt fires (the vault scheme does). Poison-safe: a
+    /// poisoned lock is recovered so the index can self-heal after a panicked
+    /// reader.
+    pub fn set_identity_prompt_index(&self, index: BTreeMap<[u8; 32], IdentityPromptMeta>) {
+        let mut guard = self
+            .inner
+            .identity_prompt_index
+            .write()
+            .unwrap_or_else(|poison| poison.into_inner());
+        *guard = index;
     }
 
     /// Run `f` with the plaintext secret for `scope`, obtaining it
@@ -369,6 +450,7 @@ impl SecretAccess {
         let owned = match plaintext {
             SecretPlaintext::HdSeed(s) => Plaintext::HdSeed(Zeroizing::new(**s)),
             SecretPlaintext::SingleKey(k) => Plaintext::SingleKey(Zeroizing::new(**k)),
+            SecretPlaintext::IdentityKey(k) => Plaintext::IdentityKey(Zeroizing::new(**k)),
         };
         self.maybe_remember(scope, &owned, policy);
     }
@@ -383,6 +465,12 @@ impl SecretAccess {
     /// not re-prompt. `passphrase` is `None` for unprotected wallets (the
     /// envelope decrypts verbatim). The plaintext is borrowed only to seed the
     /// cache and zeroizes on return.
+    ///
+    /// The lazy legacy→steady-state re-wrap happens inside [`Self::decrypt_jit`]:
+    /// a protected seed re-wraps to **Tier-2 under the same password** (protection
+    /// KEPT, never downgraded to a raw secret), an unprotected one to the raw
+    /// label. So there is nothing for the unlock callsite to "finalize" — the
+    /// wallet's `uses_password` stays accurate (`true` for a protected wallet).
     pub fn promote_hd_seed_with_passphrase(
         &self,
         seed_hash: &WalletSeedHash,
@@ -395,6 +483,111 @@ impl SecretAccess {
         let plaintext = self.decrypt_jit(&scope, passphrase)?;
         self.maybe_remember(&scope, &plaintext, policy);
         Ok(())
+    }
+
+    /// Seal a NEW identity key Tier-2 under the identity's EXISTING object
+    /// password (SEC-001). A protected identity must never acquire a keyless
+    /// key, so when a key is added to such an identity it is sealed here rather
+    /// than written raw.
+    ///
+    /// Prompts for the password and VERIFIES it by unsealing `verify` (an
+    /// existing `Protected` key of the same identity) — so the whole identity
+    /// stays under ONE password, with the standard wrong-password re-ask — then
+    /// seals `new_key` at its label under that same password. Headless
+    /// (`NullSecretPrompt`) yields [`TaskError::SecretPromptUnavailable`] and
+    /// nothing is written (fail closed).
+    ///
+    /// This is the verify-then-seal composition for callers that run both
+    /// halves together. The add-key flow instead calls
+    /// [`Self::verify_identity_object_password`] BEFORE its on-chain broadcast
+    /// and [`Self::seal_new_identity_key_with_password`] AFTER, so a headless or
+    /// wrong-password attempt fails closed before any state transition is sent
+    /// (SEC-001 O-2) — the same single prompt, split across the broadcast.
+    pub async fn seal_new_identity_key(
+        &self,
+        identity_id: [u8; 32],
+        verify: &SecretScope,
+        new_target: &PrivateKeyTarget,
+        new_key_id: KeyID,
+        new_key: &[u8; 32],
+    ) -> Result<(), TaskError> {
+        let password = self.verify_identity_object_password(verify).await?;
+        self.seal_new_identity_key_with_password(
+            identity_id,
+            new_target,
+            new_key_id,
+            new_key,
+            &password,
+        )
+    }
+
+    /// Prompt for the identity's object password and VERIFY it by unsealing
+    /// `verify` (an existing `Protected` key of the same identity), returning
+    /// the verified password for a later
+    /// [`Self::seal_new_identity_key_with_password`].
+    ///
+    /// Split out of [`Self::seal_new_identity_key`] so the add-key flow can
+    /// enforce the protected-identity precondition BEFORE its irreversible
+    /// on-chain broadcast and seal the new key AFTER, without a second prompt.
+    /// Headless ([`NullSecretPrompt`](crate::wallet_backend::secret_prompt::NullSecretPrompt))
+    /// yields [`TaskError::SecretPromptUnavailable`] (fail closed); a wrong
+    /// password re-asks. The verification plaintext is dropped (zeroized)
+    /// immediately; the returned password zeroizes on drop.
+    pub async fn verify_identity_object_password(
+        &self,
+        verify: &SecretScope,
+    ) -> Result<VerifiedIdentityPassword, TaskError> {
+        let mut retry: Option<SecretPromptRetry> = None;
+        loop {
+            let request = self.build_request(verify, retry);
+            let reply = self
+                .inner
+                .prompt
+                .request(request)
+                .await
+                .map_err(|_cancelled| self.cancel_error())?;
+
+            // Verify the typed password against an existing protected key so the
+            // new key is later sealed under the SAME password as the rest. The
+            // verification plaintext is dropped (zeroized) immediately.
+            match self.decrypt_jit(verify, Some(&reply.passphrase)) {
+                Ok(_verified) => return Ok(VerifiedIdentityPassword(reply.passphrase)),
+                Err(e) if is_wrong_passphrase(&e) => {
+                    retry = Some(SecretPromptRetry::WrongPassphrase);
+                    continue;
+                }
+                Err(other) => return Err(other),
+            }
+        }
+    }
+
+    /// Seal a NEW identity key Tier-2 under an ALREADY-VERIFIED identity object
+    /// password (SEC-001) — the back half of [`Self::seal_new_identity_key`].
+    /// No prompt and no re-verify: `password` came from a successful
+    /// [`Self::verify_identity_object_password`], so this only writes the sealed
+    /// key. The add-key flow calls this AFTER its on-chain broadcast, having
+    /// verified the password up front, so the new key never lands keyless.
+    pub fn seal_new_identity_key_with_password(
+        &self,
+        identity_id: [u8; 32],
+        new_target: &PrivateKeyTarget,
+        new_key_id: KeyID,
+        new_key: &[u8; 32],
+        password: &VerifiedIdentityPassword,
+    ) -> Result<(), TaskError> {
+        let scope_id = SecretWalletId::from(identity_id);
+        let label = SecretScope::identity_key_label(new_target, new_key_id);
+        self.seam()
+            .put_secret_protected(
+                &scope_id,
+                &label,
+                &SecretBytes::from_slice(new_key),
+                &password.0,
+            )
+            .map_err(|e| match e {
+                TaskError::SecretSeam { source } => TaskError::IdentityKeyVault { source },
+                other => other,
+            })
     }
 
     /// Forget the session-cached secret for `scope`, zeroizing it.
@@ -464,6 +657,7 @@ impl SecretAccess {
         let boxed = match plaintext {
             Plaintext::HdSeed(s) => Box::new(Plaintext::HdSeed(Zeroizing::new(**s))),
             Plaintext::SingleKey(k) => Box::new(Plaintext::SingleKey(Zeroizing::new(**k))),
+            Plaintext::IdentityKey(k) => Box::new(Plaintext::IdentityKey(Zeroizing::new(**k))),
         };
         if let Ok(mut guard) = self.inner.session.write() {
             guard.insert(
@@ -481,7 +675,7 @@ impl SecretAccess {
     /// cancel from a non-interactive host
     /// ([`NullSecretPrompt`](crate::wallet_backend::secret_prompt::NullSecretPrompt))
     /// means there was no window to ask in, surfaced as
-    /// [`TaskError::SecretPromptUnavailable`] (Q-HEADLESS).
+    /// [`TaskError::SecretPromptUnavailable`].
     fn cancel_error(&self) -> TaskError {
         if self.inner.prompt.is_interactive() {
             TaskError::SecretPromptCancelled
@@ -491,23 +685,74 @@ impl SecretAccess {
     }
 
     /// Whether `scope`'s stored secret is passphrase-protected. Drives the
-    /// unprotected fast-path (Smythe must-fix #4). Reads the in-memory
-    /// index/meta where possible; falls back to the stored envelope.
+    /// unprotected fast-path.
+    ///
+    /// Seam-first: a secret already migrated to its raw label has no
+    /// passphrase (the user password no longer gates it). Only a not-yet-
+    /// migrated legacy entry can still be protected. Identity keys are always
+    /// unprotected (prompt-free → headless/MCP signing works).
     fn scope_has_passphrase(&self, scope: &SecretScope) -> Result<bool, TaskError> {
         match scope {
             SecretScope::HdSeed { seed_hash } => {
                 let view = WalletSeedView::new(&self.inner.secret_store);
-                let envelope = view.get(seed_hash)?.ok_or(TaskError::WalletNotFound)?;
-                Ok(envelope.uses_password)
+                match view.scheme(seed_hash)? {
+                    // Tier-2: the seed is sealed under its own object password.
+                    SecretScheme::Protected => Ok(true),
+                    // Tier-1 raw: unprotected — no passphrase.
+                    SecretScheme::Unprotected => Ok(false),
+                    // Nothing at the raw label yet ⇒ the legacy envelope's
+                    // `uses_password` is the source of truth until first unlock
+                    // migrates it to the raw label.
+                    SecretScheme::Absent => {
+                        let envelope = view.get(seed_hash)?.ok_or(TaskError::SecretSeamMissing)?;
+                        Ok(envelope.uses_password)
+                    }
+                }
             }
             SecretScope::SingleKey { address } => {
-                if let Ok(index) = self.inner.single_key_index.read()
-                    && let Some(meta) = index.get(address)
-                {
-                    return Ok(meta.has_passphrase);
+                let label = label_for_address(address);
+                match self.seam().scheme(&single_key_namespace_id(), &label)? {
+                    // Tier-2 protected (re-wrapped) ⇒ needs the object password.
+                    SecretScheme::Protected => Ok(true),
+                    SecretScheme::Absent => Err(TaskError::ImportedKeyNotFound),
+                    // Unprotected at the vault: either a migrated raw-32 key
+                    // (no passphrase) or a not-yet-migrated legacy `SingleKeyEntry`
+                    // blob whose `has_passphrase` flag decides.
+                    SecretScheme::Unprotected => {
+                        if self.single_key_raw(address)?.is_some() {
+                            return Ok(false);
+                        }
+                        if let Ok(index) = self.inner.single_key_index.read()
+                            && let Some(meta) = index.get(address)
+                        {
+                            return Ok(meta.has_passphrase);
+                        }
+                        Ok(self.load_single_key_entry(address)?.has_passphrase)
+                    }
                 }
-                let entry = self.load_single_key_entry(address)?;
-                Ok(entry.has_passphrase)
+            }
+            // Identity keys default to keyless (Tier-1 raw) and resolve
+            // prompt-free so headless/MCP signing keeps working. A user may
+            // OPT IN per identity to seal them Tier-2; the vault scheme is the
+            // single source of truth for whether to prompt — no parallel flag.
+            SecretScope::IdentityKey {
+                identity_id,
+                target,
+                key_id,
+            } => {
+                let label = SecretScope::identity_key_label(target, *key_id);
+                match self
+                    .seam()
+                    .scheme(&SecretWalletId::from(*identity_id), &label)?
+                {
+                    // Tier-2 protected ⇒ needs the identity's object password.
+                    SecretScheme::Protected => Ok(true),
+                    // Tier-1 raw ⇒ keyless default, prompt-free.
+                    SecretScheme::Unprotected => Ok(false),
+                    // Absent ⇒ the stored identity references a key whose bytes
+                    // are gone. Loud, never a silent prompt-free miss.
+                    SecretScheme::Absent => Err(TaskError::IdentityKeyMissing),
+                }
             }
         }
     }
@@ -515,6 +760,9 @@ impl SecretAccess {
     /// Decrypt the stored secret for `scope` with `passphrase`
     /// (`None` for unprotected scopes). The only place the vault is read
     /// for plaintext. Returns the kind-tagged owned plaintext.
+    ///
+    /// Seam-first for all three classes: the raw label wins; the retained
+    /// legacy reader is the migration fallback for HD seeds and single keys.
     fn decrypt_jit(
         &self,
         scope: &SecretScope,
@@ -523,15 +771,196 @@ impl SecretAccess {
         match scope {
             SecretScope::HdSeed { seed_hash } => {
                 let view = WalletSeedView::new(&self.inner.secret_store);
-                let envelope = view.get(seed_hash)?.ok_or(TaskError::WalletNotFound)?;
-                let seed = decrypt_hd_seed(&envelope, passphrase)?;
-                Ok(Plaintext::HdSeed(seed))
+                match view.scheme(seed_hash)? {
+                    // Tier-1 raw — unprotected, no password.
+                    SecretScheme::Unprotected => {
+                        let seed = view
+                            .get_raw(seed_hash)?
+                            .ok_or(TaskError::SecretSeamMissing)?;
+                        Ok(Plaintext::HdSeed(seed))
+                    }
+                    // Tier-2 — unseal with this seed's own object password.
+                    SecretScheme::Protected => {
+                        let pw = passphrase.ok_or(TaskError::HdPassphraseIncorrect)?;
+                        let seed = view
+                            .get_protected(seed_hash, pw)?
+                            .ok_or(TaskError::SecretSeamMissing)?;
+                        // GC a legacy `envelope.v1` orphaned by a crash
+                        // or delete-failure between the migration's
+                        // `set_protected` and `delete`. The Absent branch (the
+                        // only other deleter) is never re-entered once the seed
+                        // is `Protected`, so the stale AES-GCM ciphertext — which
+                        // still decrypts under the seed's OLD password — would
+                        // otherwise survive forever. Idempotent + best-effort.
+                        if let Err(e) = view.delete(seed_hash) {
+                            tracing::warn!(
+                                target = "wallet_backend::secret_access",
+                                error = ?e,
+                                "Best-effort GC of a stale legacy seed envelope failed",
+                            );
+                        }
+                        Ok(Plaintext::HdSeed(seed))
+                    }
+                    // Legacy AES-GCM envelope: decode-only reader, then LAZY
+                    // re-wrap to the steady-state form and drop the legacy
+                    // envelope. A protected seed re-wraps to Tier-2 under the
+                    // SAME user password (protection KEPT, not downgraded to
+                    // raw); an unprotected one goes to the raw label. An absent
+                    // envelope ⇒ the secret is gone (loud, never a silent miss).
+                    // Crash-safe: the re-store (upsert) precedes the delete, and
+                    // the scheme probe prefers the new label, so a crash between
+                    // leaves both forms and the next read takes the new one.
+                    SecretScheme::Absent => {
+                        let envelope = view.get(seed_hash)?.ok_or(TaskError::SecretSeamMissing)?;
+                        let seed = decrypt_hd_seed(&envelope, passphrase)?;
+                        if envelope.uses_password {
+                            let pw = passphrase.ok_or(TaskError::HdPassphraseIncorrect)?;
+                            view.set_protected(seed_hash, &seed, pw)?;
+                        } else {
+                            view.set_raw(seed_hash, &seed)?;
+                        }
+                        // Best-effort GC of the legacy envelope, matching the
+                        // Protected branch above: the new value is already
+                        // written (upsert) and the scheme probe prefers it on the
+                        // next read, so a transient delete failure must not fail a
+                        // successful unlock. A stale envelope is cleaned up later.
+                        if let Err(e) = view.delete(seed_hash) {
+                            tracing::warn!(
+                                target = "wallet_backend::secret_access",
+                                error = ?e,
+                                "Best-effort GC of the legacy envelope deferred after migration",
+                            );
+                        }
+                        Ok(Plaintext::HdSeed(seed))
+                    }
+                }
             }
             SecretScope::SingleKey { address } => {
-                let entry = self.load_single_key_entry(address)?;
-                let raw = entry.decrypt(passphrase.map(|p| p.expose_secret()))?;
-                Ok(Plaintext::SingleKey(raw))
+                let label = label_for_address(address);
+                match self.seam().scheme(&single_key_namespace_id(), &label)? {
+                    // Tier-2 — unseal with this key's own object password.
+                    SecretScheme::Protected => {
+                        let pw = passphrase.ok_or(TaskError::SingleKeyPassphraseIncorrect)?;
+                        let raw = self
+                            .seam()
+                            .get_secret_protected(&single_key_namespace_id(), &label, pw)?
+                            .ok_or(TaskError::ImportedKeyNotFound)?;
+                        let key: [u8; SINGLE_KEY_LEN] =
+                            raw.expose_secret().try_into().map_err(|_| {
+                                tracing::warn!(
+                                    target = "wallet_backend::secret_access",
+                                    blob_len = raw.expose_secret().len(),
+                                    "Tier-2 single key has wrong length",
+                                );
+                                TaskError::SecretDecryptFailed
+                            })?;
+                        Ok(Plaintext::SingleKey(Zeroizing::new(key)))
+                    }
+                    SecretScheme::Absent => Err(TaskError::ImportedKeyNotFound),
+                    SecretScheme::Unprotected => {
+                        // A migrated raw-32 key wins prompt-free.
+                        if let Some(raw) = self.single_key_raw(address)? {
+                            return Ok(Plaintext::SingleKey(raw));
+                        }
+                        // Legacy `SingleKeyEntry` (decode-only reader). A
+                        // protected entry was just decrypted with the user's
+                        // passphrase — LAZY re-wrap it to Tier-2 under the SAME
+                        // password (the upsert replaces the AES-GCM framing),
+                        // KEEPING protection. Idempotent.
+                        let entry = self.load_single_key_entry(address)?;
+                        let raw = entry.decrypt(passphrase.map(|p| p.expose_secret()))?;
+                        if entry.has_passphrase {
+                            let pw = passphrase.ok_or(TaskError::SingleKeyPassphraseIncorrect)?;
+                            self.migrate_single_key_to_tier2(address, &raw, pw);
+                        }
+                        Ok(Plaintext::SingleKey(raw))
+                    }
+                }
             }
+            SecretScope::IdentityKey {
+                identity_id,
+                target,
+                key_id,
+            } => {
+                let scope_id = SecretWalletId::from(*identity_id);
+                let label = SecretScope::identity_key_label(target, *key_id);
+                match self.seam().scheme(&scope_id, &label)? {
+                    // Tier-2 — unseal with this identity's object password
+                    // (opted-in). Symmetric to the single-key Protected arm.
+                    SecretScheme::Protected => {
+                        let pw = passphrase.ok_or(TaskError::IdentityKeyPassphraseIncorrect)?;
+                        let raw = self
+                            .seam()
+                            .get_secret_protected(&scope_id, &label, pw)?
+                            .ok_or(TaskError::IdentityKeyMissing)?;
+                        let key = identity_key_from_bytes(raw.expose_secret())?;
+                        Ok(Plaintext::IdentityKey(Zeroizing::new(key)))
+                    }
+                    // Tier-1 raw — keyless default, no password.
+                    SecretScheme::Unprotected => {
+                        let raw = self
+                            .seam()
+                            .get_secret(&scope_id, &label)?
+                            .ok_or(TaskError::IdentityKeyMissing)?;
+                        let key = identity_key_from_bytes(raw.expose_secret())?;
+                        Ok(Plaintext::IdentityKey(Zeroizing::new(key)))
+                    }
+                    SecretScheme::Absent => Err(TaskError::IdentityKeyMissing),
+                }
+            }
+        }
+    }
+
+    /// Borrow the secret store as a [`SecretSeam`].
+    fn seam(&self) -> SecretSeam<'_> {
+        SecretSeam::new(&self.inner.secret_store)
+    }
+
+    /// LAZY-re-wrap a just-decrypted protected single key to a Tier-2 envelope
+    /// under the same label and object `password` (the upsert replaces the
+    /// legacy AES-GCM framing), KEEPING protection. Best-effort: a vault-write
+    /// failure is logged and the key keeps working via the legacy reader.
+    ///
+    /// `has_passphrase` is deliberately NOT flipped — the secret stays protected,
+    /// so the in-memory index and the persisted flag remain accurate (the next
+    /// resolve still prompts for the object password).
+    fn migrate_single_key_to_tier2(
+        &self,
+        address: &str,
+        raw: &[u8; SINGLE_KEY_LEN],
+        password: &SecretString,
+    ) {
+        let label = label_for_address(address);
+        if let Err(e) = self.seam().put_secret_protected(
+            &single_key_namespace_id(),
+            &label,
+            &platform_wallet_storage::secrets::SecretBytes::from_slice(raw),
+            password,
+        ) {
+            tracing::warn!(
+                target = "wallet_backend::secret_access",
+                error = ?e,
+                "Single-key lazy Tier-2 re-wrap deferred (vault write failed)",
+            );
+        }
+    }
+
+    /// Read the raw 32-byte single-key secret for `address` if the entry has
+    /// already been migrated to its raw label, else `None`. A legacy
+    /// `SingleKeyEntry`-framed value (length != 32) is left for the legacy
+    /// reader and reported as `None` here.
+    fn single_key_raw(
+        &self,
+        address: &str,
+    ) -> Result<Option<Zeroizing<[u8; SINGLE_KEY_LEN]>>, TaskError> {
+        let label = label_for_address(address);
+        let Some(payload) = self.seam().get_secret(&single_key_namespace_id(), &label)? else {
+            return Ok(None);
+        };
+        match <[u8; SINGLE_KEY_LEN]>::try_from(payload.expose_secret()) {
+            Ok(raw) => Ok(Some(Zeroizing::new(raw))),
+            // Not 32 bytes ⇒ a legacy framed entry, not yet migrated.
+            Err(_) => Ok(None),
         }
     }
 
@@ -580,6 +1009,23 @@ impl SecretAccess {
                     .and_then(|m| m.alias.clone())
                     .unwrap_or_else(|| address.clone());
                 let hint = meta.and_then(|m| m.passphrase_hint);
+                (label, hint)
+            }
+            // Opted-in (Tier-2) identity keys DO prompt; read the display copy
+            // from the identity prompt-index (alias + password hint). A missing
+            // entry degrades to a generic label, never an error.
+            SecretScope::IdentityKey { identity_id, .. } => {
+                let meta = self
+                    .inner
+                    .identity_prompt_index
+                    .read()
+                    .ok()
+                    .and_then(|g| g.get(identity_id).cloned());
+                let label = meta
+                    .as_ref()
+                    .and_then(|m| m.alias.clone())
+                    .unwrap_or_else(|| "this identity".to_string());
+                let hint = meta.and_then(|m| m.password_hint);
                 (label, hint)
             }
         };
@@ -660,13 +1106,34 @@ fn decrypt_hd_seed(
     Ok(Zeroizing::new(seed))
 }
 
+/// Convert raw vault bytes into a 32-byte identity private key, mapping a
+/// wrong-length blob to the typed [`TaskError::IdentityKeyMalformed`] (vault
+/// corruption / truncated write) rather than a panic or a generic decrypt
+/// error. Shared by the Tier-1 and Tier-2 identity-key decrypt arms.
+fn identity_key_from_bytes(bytes: &[u8]) -> Result<[u8; SINGLE_KEY_LEN], TaskError> {
+    bytes.try_into().map_err(|_| {
+        tracing::warn!(
+            target = "wallet_backend::secret_access",
+            blob_len = bytes.len(),
+            "Stored identity key has wrong length",
+        );
+        TaskError::IdentityKeyMalformed
+    })
+}
+
 /// Whether `e` is the "wrong passphrase" condition that the re-ask loop
 /// catches and re-prompts on (rather than aborting).
 fn is_wrong_passphrase(e: &TaskError) -> bool {
-    matches!(
-        e,
-        TaskError::SingleKeyPassphraseIncorrect | TaskError::HdPassphraseIncorrect
-    )
+    match e {
+        TaskError::SingleKeyPassphraseIncorrect
+        | TaskError::HdPassphraseIncorrect
+        | TaskError::IdentityKeyPassphraseIncorrect => true,
+        // A Tier-2 unseal that rejected the object password surfaces through the
+        // seam as `WrongPassword`; the re-ask loop catches it and re-prompts
+        // rather than aborting (same UX as the legacy AES-GCM wrong-pass path).
+        TaskError::SecretSeam { source } => matches!(**source, SecretStoreError::WrongPassword),
+        _ => false,
+    }
 }
 
 #[cfg(test)]
@@ -854,7 +1321,7 @@ mod tests {
     async fn null_prompt_on_protected_scope_yields_unavailable() {
         // Headless host: a passphrase-protected scope has no window to ask
         // in, so the chokepoint surfaces the typed "unavailable" error
-        // rather than a misleading "you cancelled" (Q-HEADLESS).
+        // rather than a misleading "you cancelled".
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());
         let seed_hash: WalletSeedHash = [0x0C; 32];
@@ -913,7 +1380,7 @@ mod tests {
     async fn can_resolve_without_prompt_tracks_protection_and_cache() {
         // The background identity sweep keys off this: an unprotected wallet or
         // a session-unlocked protected wallet resolves without a prompt; a
-        // locked protected wallet does not, so the sweep skips it (F-2).
+        // locked protected wallet does not, so the sweep skips it.
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());
 
@@ -1087,6 +1554,38 @@ mod tests {
         PrivateKey::new(sk, Network::Testnet).to_wif()
     }
 
+    /// Write a legacy DET AES-GCM `SingleKeyEntry` straight to the vault Tier-1 —
+    /// the pre-Tier-2 protected-import shape. Fresh imports now seal Tier-2 at
+    /// import time, so this is how the legacy→Tier-2 lazy migration path stays
+    /// covered.
+    fn write_legacy_protected_key(store: &Arc<SecretStore>, passphrase: &str) -> String {
+        use dash_sdk::dpp::dashcore::secp256k1::Secp256k1;
+        use dash_sdk::dpp::dashcore::{Address, PrivateKey, PublicKey};
+
+        let priv_key = PrivateKey::from_wif(&known_testnet_wif()).expect("wif");
+        let raw: Zeroizing<[u8; 32]> =
+            Zeroizing::new(priv_key.inner[..].try_into().expect("32 bytes"));
+        let secp = Secp256k1::new();
+        let pub_key = PublicKey {
+            compressed: priv_key.compressed,
+            inner: priv_key.inner.public_key(&secp),
+        };
+        let address = Address::p2pkh(&pub_key, Network::Testnet).to_string();
+        let pub_bytes = pub_key.inner.serialize().to_vec();
+        let entry =
+            SingleKeyEntry::protected(&raw, passphrase, Some("the usual".into()), pub_bytes)
+                .expect("build legacy protected entry");
+        let payload = entry.encode().expect("encode legacy entry");
+        store
+            .set(
+                &single_key_namespace_id(),
+                &label_for_address(&address),
+                &SecretBytes::from_slice(&payload),
+            )
+            .expect("write legacy vault entry");
+        address
+    }
+
     #[tokio::test]
     async fn single_key_cache_miss_prompts_and_decrypts() {
         let dir = tempfile::tempdir().unwrap();
@@ -1124,7 +1623,143 @@ mod tests {
         assert_eq!(prompt.ask_count(), 2);
     }
 
-    // --- secret confinement (Smythe must-fix #5) --------------------------
+    /// TS-LAZY-03 (Tier-2) — a *legacy* protected single key lazy RE-WRAPS
+    /// through the chokepoint, KEEPING protection: the first `with_secret`
+    /// decrypts with the passphrase AND re-stores a Tier-2 object-password
+    /// envelope (not a raw secret); a second `with_secret` therefore still
+    /// requires the password. Starts from a legacy AES-GCM entry so the
+    /// migration path is genuinely exercised (fresh imports already seal Tier-2).
+    #[tokio::test]
+    async fn ts_lazy_03_protected_single_key_rewraps_to_tier2_via_chokepoint() {
+        use dash_sdk::dpp::dashcore::PrivateKey;
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = fresh_store(dir.path());
+        let address = write_legacy_protected_key(&store, SENTINEL_PASSPHRASE);
+        let expected: [u8; 32] = PrivateKey::from_wif(&known_testnet_wif()).unwrap().inner[..]
+            .try_into()
+            .unwrap();
+
+        // First resolve: one passphrase, re-wraps to Tier-2.
+        let prompt = Arc::new(TestPrompt::new([ScriptedAnswer::once(SENTINEL_PASSPHRASE)]));
+        let sa = access(Arc::clone(&store), prompt.clone());
+        let scope = SecretScope::SingleKey {
+            address: address.clone(),
+        };
+        let first = sa
+            .with_secret(&scope, |pt| Ok(pt.expose_single_key().copied()))
+            .await
+            .unwrap();
+        assert_eq!(first, Some(expected));
+        assert_eq!(prompt.ask_count(), 1);
+
+        // The vault now holds a Tier-2 envelope (kept protected) — a password-
+        // free read fails, and the password read returns the 32 key bytes.
+        let label = label_for_address(&address);
+        assert_eq!(
+            SecretSeam::new(&store)
+                .scheme(&single_key_namespace_id(), &label)
+                .unwrap(),
+            SecretScheme::Protected,
+            "the single key must re-wrap to Tier-2, never downgrade to raw"
+        );
+        assert!(
+            store.get(&single_key_namespace_id(), &label).is_err(),
+            "a password-free read of a protected single key must fail"
+        );
+        let pw = SecretString::new(SENTINEL_PASSPHRASE);
+        let unsealed = store
+            .get_secret(&single_key_namespace_id(), &label, Some(&pw))
+            .unwrap()
+            .unwrap();
+        assert_eq!(unsealed.expose_secret(), &expected[..]);
+
+        // Second resolve still requires the object password (Tier-2, not raw).
+        let prompt2 = Arc::new(TestPrompt::new([ScriptedAnswer::once(SENTINEL_PASSPHRASE)]));
+        let sa2 = access(Arc::clone(&store), prompt2.clone());
+        let second = sa2
+            .with_secret(&scope, |pt| Ok(pt.expose_single_key().copied()))
+            .await
+            .expect("resolve with the password");
+        assert_eq!(second, Some(expected));
+        assert_eq!(prompt2.ask_count(), 1, "protected single key prompts again");
+    }
+
+    /// TS-T2-SK-ISO — PER-SECRET isolation for imported single keys: two Tier-2
+    /// keys under DIFFERENT passwords. A's password cannot open B (the negative
+    /// crypto property), and remembering A never satisfies B (scope-keyed cache).
+    #[tokio::test]
+    async fn ts_t2_sk_iso_per_secret_passwords_are_isolated() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = fresh_store(dir.path());
+        let addr_a = "single-key-address-A".to_string();
+        let addr_b = "single-key-address-B".to_string();
+        let key_a = [0xA7u8; 32];
+        let key_b = [0xB8u8; 32];
+        let pw_a = SecretString::new("single-key-A-pwpwpwpw");
+        let pw_b = SecretString::new("single-key-B-pwpwpwpw");
+        let seam = SecretSeam::new(&store);
+        seam.put_secret_protected(
+            &single_key_namespace_id(),
+            &label_for_address(&addr_a),
+            &SecretBytes::from_slice(&key_a),
+            &pw_a,
+        )
+        .unwrap();
+        seam.put_secret_protected(
+            &single_key_namespace_id(),
+            &label_for_address(&addr_b),
+            &SecretBytes::from_slice(&key_b),
+            &pw_b,
+        )
+        .unwrap();
+
+        // Negative crypto property: A's password is REJECTED by B's envelope.
+        match seam.get_secret_protected(
+            &single_key_namespace_id(),
+            &label_for_address(&addr_b),
+            &pw_a,
+        ) {
+            Err(TaskError::SecretSeam { source })
+                if matches!(*source, SecretStoreError::WrongPassword) => {}
+            other => panic!("A's password must be rejected by B, got {other:?}"),
+        }
+
+        // Scope-keyed cache: remembering A does not satisfy B — B still prompts.
+        let prompt = Arc::new(TestPrompt::new([
+            ScriptedAnswer::remember("single-key-A-pwpwpwpw", RememberPolicy::UntilAppClose),
+            ScriptedAnswer::remember("single-key-B-pwpwpwpw", RememberPolicy::UntilAppClose),
+        ]));
+        let sa = access(Arc::clone(&store), prompt.clone());
+        let scope_a = SecretScope::SingleKey {
+            address: addr_a.clone(),
+        };
+        let scope_b = SecretScope::SingleKey {
+            address: addr_b.clone(),
+        };
+
+        sa.with_secret(&scope_a, |pt| {
+            assert_eq!(pt.expose_single_key().copied(), Some(key_a));
+            Ok(())
+        })
+        .await
+        .unwrap();
+        assert!(sa.is_session_cached(&scope_a));
+        assert!(
+            !sa.is_session_cached(&scope_b),
+            "A's unlock must not cache B"
+        );
+
+        sa.with_secret(&scope_b, |pt| {
+            assert_eq!(pt.expose_single_key().copied(), Some(key_b));
+            Ok(())
+        })
+        .await
+        .unwrap();
+        assert_eq!(prompt.ask_count(), 2, "B prompted independently of A");
+    }
+
+    // --- secret confinement -----------------------------------------------
 
     #[tokio::test]
     async fn sentinel_never_appears_in_error_or_debug() {
@@ -1258,5 +1893,847 @@ mod tests {
             .unwrap();
         assert_eq!(count, 3, "held secret borrowed N times");
         assert_eq!(prompt.ask_count(), 1, "one prompt for the whole operation");
+    }
+
+    // --- identity-key scope (raw seam, prompt-free) -----------------------
+
+    use crate::model::qualified_identity::PrivateKeyTarget;
+    use platform_wallet_storage::secrets::{SecretBytes, WalletId as SecretWalletId};
+
+    /// Store a raw identity key in the vault under the seam label, the way the
+    /// migration does.
+    fn store_identity_key(
+        store: &Arc<SecretStore>,
+        identity_id: [u8; 32],
+        target: &PrivateKeyTarget,
+        key_id: u32,
+        key: &[u8; 32],
+    ) {
+        let label = SecretScope::identity_key_label(target, key_id);
+        SecretSeam::new(store)
+            .put_secret(
+                &SecretWalletId::from(identity_id),
+                &label,
+                &SecretBytes::from_slice(key),
+            )
+            .expect("store identity key");
+    }
+
+    /// TS-FAST-01 — an identity-key scope resolves prompt-free under a
+    /// never-prompt host (the unprotected fast-path), returns the exact 32
+    /// bytes, and never asks. Proves headless/MCP identity signing works.
+    #[tokio::test]
+    async fn ts_fast_01_identity_key_resolves_prompt_free() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = fresh_store(dir.path());
+        let identity_id = [0x33u8; 32];
+        let key = [0xC7u8; 32];
+        store_identity_key(
+            &store,
+            identity_id,
+            &PrivateKeyTarget::PrivateKeyOnMainIdentity,
+            7,
+            &key,
+        );
+
+        // never() panics if asked — proves no prompt fires.
+        let prompt = Arc::new(TestPrompt::never());
+        let sa = access(store, prompt.clone());
+        let scope = SecretScope::IdentityKey {
+            identity_id,
+            target: PrivateKeyTarget::PrivateKeyOnMainIdentity,
+            key_id: 7,
+        };
+
+        let matched = sa
+            .with_secret(&scope, |pt| {
+                Ok(pt.expose_identity_key().copied() == Some(key))
+            })
+            .await
+            .expect("identity key resolves prompt-free");
+        assert!(matched, "closure saw the raw identity key");
+        assert_eq!(prompt.ask_count(), 0, "identity key never prompts");
+        assert!(
+            sa.can_resolve_without_prompt(&scope),
+            "identity key is always resolvable without a prompt"
+        );
+    }
+
+    /// TS-MISS-01/02 — an HD seed present in NEITHER raw nor legacy form
+    /// surfaces the loud typed `SecretSeamMissing` (never a silent `Ok(None)`
+    /// that would drop a key on the floor), distinct from `WalletNotFound`.
+    #[tokio::test]
+    async fn ts_miss_01_hd_seed_in_neither_form_is_secret_seam_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = fresh_store(dir.path());
+        let sa = access(store, Arc::new(TestPrompt::never()));
+        let scope = SecretScope::HdSeed {
+            seed_hash: [0x7Du8; 32],
+        };
+        let err = sa
+            .with_secret(&scope, |_pt| Ok(()))
+            .await
+            .expect_err("seed gone");
+        assert!(
+            matches!(err, TaskError::SecretSeamMissing),
+            "expected SecretSeamMissing, got {err:?}"
+        );
+    }
+
+    /// Seal a raw identity key Tier-2 under `password`, the way the opt-in
+    /// migration does (in-place upsert at the SAME label as the Tier-1 value).
+    fn store_identity_key_protected(
+        store: &Arc<SecretStore>,
+        identity_id: [u8; 32],
+        target: &PrivateKeyTarget,
+        key_id: u32,
+        key: &[u8; 32],
+        password: &str,
+    ) {
+        let label = SecretScope::identity_key_label(target, key_id);
+        SecretSeam::new(store)
+            .put_secret_protected(
+                &SecretWalletId::from(identity_id),
+                &label,
+                &SecretBytes::from_slice(key),
+                &SecretString::new(password),
+            )
+            .expect("seal identity key tier-2");
+    }
+
+    /// SEC-001 opt-in seal: a Tier-2 identity key reports `Protected`
+    /// (scheme-as-flag), a password-free read fails, the chokepoint prompts
+    /// exactly once, decrypts the exact 32 bytes, and `can_resolve_without_prompt`
+    /// is false (the background sweep skips a locked protected identity).
+    #[tokio::test]
+    async fn ts_t2_ik_01_protected_identity_key_prompts_and_decrypts() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = fresh_store(dir.path());
+        let identity_id = [0x51u8; 32];
+        let key = [0xD4u8; 32];
+        store_identity_key_protected(
+            &store,
+            identity_id,
+            &PrivateKeyTarget::PrivateKeyOnMainIdentity,
+            4,
+            &key,
+            SENTINEL_PASSPHRASE,
+        );
+
+        // Scheme-as-flag: Protected, and a password-free read fails.
+        let label = SecretScope::identity_key_label(&PrivateKeyTarget::PrivateKeyOnMainIdentity, 4);
+        assert_eq!(
+            SecretSeam::new(&store)
+                .scheme(&SecretWalletId::from(identity_id), &label)
+                .unwrap(),
+            SecretScheme::Protected,
+            "opt-in seals the identity key Tier-2"
+        );
+        assert!(
+            store
+                .get(&SecretWalletId::from(identity_id), &label)
+                .is_err(),
+            "a password-free read of a protected identity key must fail"
+        );
+
+        let prompt = Arc::new(TestPrompt::new([ScriptedAnswer::once(SENTINEL_PASSPHRASE)]));
+        let sa = access(store, prompt.clone());
+        let scope = SecretScope::IdentityKey {
+            identity_id,
+            target: PrivateKeyTarget::PrivateKeyOnMainIdentity,
+            key_id: 4,
+        };
+        assert!(
+            !sa.can_resolve_without_prompt(&scope),
+            "a locked protected identity key would prompt — the sweep must skip it"
+        );
+        let matched = sa
+            .with_secret(&scope, |pt| {
+                Ok(pt.expose_identity_key().copied() == Some(key))
+            })
+            .await
+            .expect("protected identity key resolves with the password");
+        assert!(matched, "closure saw the unsealed identity key");
+        assert_eq!(prompt.ask_count(), 1, "exactly one prompt");
+    }
+
+    /// A Tier-2 identity key re-asks on a wrong password (no oracle) and then
+    /// succeeds — the same re-ask UX as protected seeds and single keys.
+    #[tokio::test]
+    async fn ts_t2_ik_02_protected_identity_key_wrong_password_reasks() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = fresh_store(dir.path());
+        let identity_id = [0x52u8; 32];
+        let key = [0xE5u8; 32];
+        store_identity_key_protected(
+            &store,
+            identity_id,
+            &PrivateKeyTarget::PrivateKeyOnVoterIdentity,
+            2,
+            &key,
+            SENTINEL_PASSPHRASE,
+        );
+
+        let prompt = Arc::new(TestPrompt::new([
+            ScriptedAnswer::once("not-the-password"),
+            ScriptedAnswer::once(SENTINEL_PASSPHRASE),
+        ]));
+        let sa = access(store, prompt.clone());
+        let scope = SecretScope::IdentityKey {
+            identity_id,
+            target: PrivateKeyTarget::PrivateKeyOnVoterIdentity,
+            key_id: 2,
+        };
+        let matched = sa
+            .with_secret(&scope, |pt| {
+                Ok(pt.expose_identity_key().copied() == Some(key))
+            })
+            .await
+            .expect("retry succeeds");
+        assert!(matched);
+        assert_eq!(prompt.ask_count(), 2, "one wrong-pass re-ask, then success");
+    }
+
+    /// Headless (NullSecretPrompt): an OPTED-IN identity key has no window to
+    /// ask in, so the chokepoint surfaces the typed `SecretPromptUnavailable`
+    /// — the accepted trade-off. A non-opted-in identity key (default keyless)
+    /// still resolves headless (covered by TS-FAST-01).
+    #[tokio::test]
+    async fn ts_t2_ik_03_headless_protected_identity_key_is_unavailable() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = fresh_store(dir.path());
+        let identity_id = [0x53u8; 32];
+        store_identity_key_protected(
+            &store,
+            identity_id,
+            &PrivateKeyTarget::PrivateKeyOnMainIdentity,
+            0,
+            &[0xF6u8; 32],
+            SENTINEL_PASSPHRASE,
+        );
+
+        let sa = access(store, Arc::new(NullSecretPrompt));
+        let scope = SecretScope::IdentityKey {
+            identity_id,
+            target: PrivateKeyTarget::PrivateKeyOnMainIdentity,
+            key_id: 0,
+        };
+        let err = sa
+            .with_secret(&scope, |_pt| Ok(()))
+            .await
+            .expect_err("no interactive prompt headless");
+        assert!(
+            matches!(err, TaskError::SecretPromptUnavailable),
+            "expected SecretPromptUnavailable, got {err:?}"
+        );
+    }
+
+    /// TS-T2-IK-ISO — PER-IDENTITY password isolation. Two identities sealed
+    /// under DIFFERENT passwords: A's password is rejected by B's envelope
+    /// (the negative crypto property), and remembering A never satisfies B
+    /// (scope-keyed cache).
+    #[tokio::test]
+    async fn ts_t2_ik_iso_per_identity_passwords_are_isolated() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = fresh_store(dir.path());
+        let id_a = [0xA1u8; 32];
+        let id_b = [0xB2u8; 32];
+        let key_a = [0x1Au8; 32];
+        let key_b = [0x2Bu8; 32];
+        store_identity_key_protected(
+            &store,
+            id_a,
+            &PrivateKeyTarget::PrivateKeyOnMainIdentity,
+            0,
+            &key_a,
+            "identity-A-passwordpw",
+        );
+        store_identity_key_protected(
+            &store,
+            id_b,
+            &PrivateKeyTarget::PrivateKeyOnMainIdentity,
+            0,
+            &key_b,
+            "identity-B-passwordpw",
+        );
+
+        // Negative crypto property: A's password is REJECTED by B's envelope.
+        let label = SecretScope::identity_key_label(&PrivateKeyTarget::PrivateKeyOnMainIdentity, 0);
+        match SecretSeam::new(&store).get_secret_protected(
+            &SecretWalletId::from(id_b),
+            &label,
+            &SecretString::new("identity-A-passwordpw"),
+        ) {
+            Err(TaskError::SecretSeam { source })
+                if matches!(*source, SecretStoreError::WrongPassword) => {}
+            other => panic!("A's password must be rejected by B, got {other:?}"),
+        }
+
+        // Scope-keyed cache: remembering A does not satisfy B — B still prompts.
+        let prompt = Arc::new(TestPrompt::new([
+            ScriptedAnswer::remember("identity-A-passwordpw", RememberPolicy::UntilAppClose),
+            ScriptedAnswer::remember("identity-B-passwordpw", RememberPolicy::UntilAppClose),
+        ]));
+        let sa = access(Arc::clone(&store), prompt.clone());
+        let scope_a = SecretScope::IdentityKey {
+            identity_id: id_a,
+            target: PrivateKeyTarget::PrivateKeyOnMainIdentity,
+            key_id: 0,
+        };
+        let scope_b = SecretScope::IdentityKey {
+            identity_id: id_b,
+            target: PrivateKeyTarget::PrivateKeyOnMainIdentity,
+            key_id: 0,
+        };
+
+        sa.with_secret(&scope_a, |pt| {
+            assert_eq!(pt.expose_identity_key().copied(), Some(key_a));
+            Ok(())
+        })
+        .await
+        .unwrap();
+        assert!(sa.is_session_cached(&scope_a));
+        assert!(
+            !sa.is_session_cached(&scope_b),
+            "A's unlock must not cache B"
+        );
+
+        sa.with_secret(&scope_b, |pt| {
+            assert_eq!(pt.expose_identity_key().copied(), Some(key_b));
+            Ok(())
+        })
+        .await
+        .unwrap();
+        assert_eq!(prompt.ask_count(), 2, "B prompted independently of A");
+    }
+
+    /// The sign-time prompt for a protected identity carries the alias and
+    /// password hint from the identity prompt-index (display-only). An empty
+    /// index degrades to a generic label, never an error.
+    #[tokio::test]
+    async fn protected_identity_key_prompt_uses_identity_prompt_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = fresh_store(dir.path());
+        let identity_id = [0x54u8; 32];
+        store_identity_key_protected(
+            &store,
+            identity_id,
+            &PrivateKeyTarget::PrivateKeyOnMainIdentity,
+            1,
+            &[0x77u8; 32],
+            SENTINEL_PASSPHRASE,
+        );
+
+        let prompt = Arc::new(TestPrompt::new([ScriptedAnswer::once(SENTINEL_PASSPHRASE)]));
+        let sa = access(store, prompt.clone());
+        sa.set_identity_prompt_index(BTreeMap::from([(
+            identity_id,
+            IdentityPromptMeta {
+                alias: Some("alice.dash".to_string()),
+                password_hint: Some("the usual".to_string()),
+            },
+        )]));
+        let scope = SecretScope::IdentityKey {
+            identity_id,
+            target: PrivateKeyTarget::PrivateKeyOnMainIdentity,
+            key_id: 1,
+        };
+        sa.with_secret(&scope, |_pt| Ok(())).await.unwrap();
+        let req = &prompt.requests()[0];
+        assert_eq!(req.display_label, "alice.dash", "prompt shows the alias");
+        assert_eq!(req.hint.as_deref(), Some("the usual"), "prompt shows hint");
+    }
+
+    /// SEC-001 MUST-FIX: a NEW key added to a protected identity is sealed
+    /// Tier-2 under the identity's verified password — never written keyless.
+    /// After the seal the new key reports `Protected`, a password-free read
+    /// fails, and it unseals to the exact bytes under the same password.
+    #[tokio::test]
+    async fn seal_new_identity_key_seals_tier2_under_verified_password() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = fresh_store(dir.path());
+        let identity_id = [0x61u8; 32];
+        // An existing protected key of the identity (the verify anchor).
+        store_identity_key_protected(
+            &store,
+            identity_id,
+            &PrivateKeyTarget::PrivateKeyOnMainIdentity,
+            0,
+            &[0x10u8; 32],
+            SENTINEL_PASSPHRASE,
+        );
+        let new_key = [0x20u8; 32];
+
+        let prompt = Arc::new(TestPrompt::new([ScriptedAnswer::once(SENTINEL_PASSPHRASE)]));
+        let sa = access(Arc::clone(&store), prompt.clone());
+        let verify = SecretScope::IdentityKey {
+            identity_id,
+            target: PrivateKeyTarget::PrivateKeyOnMainIdentity,
+            key_id: 0,
+        };
+        sa.seal_new_identity_key(
+            identity_id,
+            &verify,
+            &PrivateKeyTarget::PrivateKeyOnMainIdentity,
+            5,
+            &new_key,
+        )
+        .await
+        .expect("seal new key under the verified password");
+        assert_eq!(prompt.ask_count(), 1, "one prompt to verify + seal");
+
+        let new_label =
+            SecretScope::identity_key_label(&PrivateKeyTarget::PrivateKeyOnMainIdentity, 5);
+        let seam = SecretSeam::new(&store);
+        assert_eq!(
+            seam.scheme(&SecretWalletId::from(identity_id), &new_label)
+                .unwrap(),
+            SecretScheme::Protected,
+            "the new key is sealed Tier-2, never keyless",
+        );
+        assert!(
+            store
+                .get(&SecretWalletId::from(identity_id), &new_label)
+                .is_err(),
+            "a password-free read of the new key must fail",
+        );
+        let unsealed = seam
+            .get_secret_protected(
+                &SecretWalletId::from(identity_id),
+                &new_label,
+                &SecretString::new(SENTINEL_PASSPHRASE),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(unsealed.expose_secret(), &new_key[..]);
+    }
+
+    /// Headless: sealing a new key onto a protected identity fails closed
+    /// (`SecretPromptUnavailable`) and writes NOTHING — no keyless key lands.
+    #[tokio::test]
+    async fn seal_new_identity_key_headless_fails_closed() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = fresh_store(dir.path());
+        let identity_id = [0x62u8; 32];
+        store_identity_key_protected(
+            &store,
+            identity_id,
+            &PrivateKeyTarget::PrivateKeyOnMainIdentity,
+            0,
+            &[0x11u8; 32],
+            SENTINEL_PASSPHRASE,
+        );
+
+        let sa = access(Arc::clone(&store), Arc::new(NullSecretPrompt));
+        let verify = SecretScope::IdentityKey {
+            identity_id,
+            target: PrivateKeyTarget::PrivateKeyOnMainIdentity,
+            key_id: 0,
+        };
+        let err = sa
+            .seal_new_identity_key(
+                identity_id,
+                &verify,
+                &PrivateKeyTarget::PrivateKeyOnMainIdentity,
+                5,
+                &[0x20u8; 32],
+            )
+            .await
+            .expect_err("headless cannot seal");
+        assert!(
+            matches!(err, TaskError::SecretPromptUnavailable),
+            "expected SecretPromptUnavailable, got {err:?}"
+        );
+        // Nothing was written for the new key — no keyless leak.
+        let new_label =
+            SecretScope::identity_key_label(&PrivateKeyTarget::PrivateKeyOnMainIdentity, 5);
+        assert_eq!(
+            SecretSeam::new(&store)
+                .scheme(&SecretWalletId::from(identity_id), &new_label)
+                .unwrap(),
+            SecretScheme::Absent,
+            "a failed headless seal must leave no key at all",
+        );
+    }
+
+    /// A wrong password re-asks (verifying against the existing protected key),
+    /// then seals the new key on the correct password.
+    #[tokio::test]
+    async fn seal_new_identity_key_wrong_password_reasks() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = fresh_store(dir.path());
+        let identity_id = [0x63u8; 32];
+        store_identity_key_protected(
+            &store,
+            identity_id,
+            &PrivateKeyTarget::PrivateKeyOnMainIdentity,
+            0,
+            &[0x12u8; 32],
+            SENTINEL_PASSPHRASE,
+        );
+
+        let prompt = Arc::new(TestPrompt::new([
+            ScriptedAnswer::once("not-the-password"),
+            ScriptedAnswer::once(SENTINEL_PASSPHRASE),
+        ]));
+        let sa = access(Arc::clone(&store), prompt.clone());
+        let verify = SecretScope::IdentityKey {
+            identity_id,
+            target: PrivateKeyTarget::PrivateKeyOnMainIdentity,
+            key_id: 0,
+        };
+        sa.seal_new_identity_key(
+            identity_id,
+            &verify,
+            &PrivateKeyTarget::PrivateKeyOnMainIdentity,
+            5,
+            &[0x20u8; 32],
+        )
+        .await
+        .expect("retry then seal");
+        assert_eq!(prompt.ask_count(), 2, "one wrong-pass re-ask, then success");
+        assert_eq!(
+            SecretSeam::new(&store)
+                .scheme(
+                    &SecretWalletId::from(identity_id),
+                    &SecretScope::identity_key_label(
+                        &PrivateKeyTarget::PrivateKeyOnMainIdentity,
+                        5
+                    )
+                )
+                .unwrap(),
+            SecretScheme::Protected,
+        );
+    }
+
+    /// SEC-001 O-2: the add-key flow verifies the password UP FRONT
+    /// ([`SecretAccess::verify_identity_object_password`]) and seals AFTER its
+    /// broadcast ([`SecretAccess::seal_new_identity_key_with_password`]). The
+    /// split prompts EXACTLY ONCE total and seals the new key Tier-2 — the same
+    /// outcome as the combined `seal_new_identity_key`, with the verify and seal
+    /// halves usable around an intervening on-chain broadcast.
+    #[tokio::test]
+    async fn verify_up_front_then_seal_after_broadcast_one_prompt() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = fresh_store(dir.path());
+        let identity_id = [0x64u8; 32];
+        store_identity_key_protected(
+            &store,
+            identity_id,
+            &PrivateKeyTarget::PrivateKeyOnMainIdentity,
+            0,
+            &[0x13u8; 32],
+            SENTINEL_PASSPHRASE,
+        );
+        let new_key = [0x21u8; 32];
+
+        let prompt = Arc::new(TestPrompt::new([ScriptedAnswer::once(SENTINEL_PASSPHRASE)]));
+        let sa = access(Arc::clone(&store), prompt.clone());
+        let verify = SecretScope::IdentityKey {
+            identity_id,
+            target: PrivateKeyTarget::PrivateKeyOnMainIdentity,
+            key_id: 0,
+        };
+
+        // Front half: the precondition the add-key flow runs BEFORE broadcast.
+        let password = sa
+            .verify_identity_object_password(&verify)
+            .await
+            .expect("verify the object password up front");
+        assert_eq!(prompt.ask_count(), 1, "one prompt at the precondition");
+
+        // (broadcast would happen here) — back half: seal AFTER, no re-prompt.
+        sa.seal_new_identity_key_with_password(
+            identity_id,
+            &PrivateKeyTarget::PrivateKeyOnMainIdentity,
+            5,
+            &new_key,
+            &password,
+        )
+        .expect("seal the new key with the verified password");
+        assert_eq!(prompt.ask_count(), 1, "sealing did not prompt again");
+
+        let new_label =
+            SecretScope::identity_key_label(&PrivateKeyTarget::PrivateKeyOnMainIdentity, 5);
+        let seam = SecretSeam::new(&store);
+        assert_eq!(
+            seam.scheme(&SecretWalletId::from(identity_id), &new_label)
+                .unwrap(),
+            SecretScheme::Protected,
+            "the new key is sealed Tier-2, never keyless",
+        );
+        let unsealed = seam
+            .get_secret_protected(
+                &SecretWalletId::from(identity_id),
+                &new_label,
+                &SecretString::new(SENTINEL_PASSPHRASE),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(unsealed.expose_secret(), &new_key[..]);
+    }
+
+    /// SEC-001 O-2 fail-closed: headless verification of a protected identity's
+    /// password yields `SecretPromptUnavailable` and writes NOTHING. Because the
+    /// add-key flow runs this BEFORE its broadcast, a headless add never reaches
+    /// the on-chain state transition — no on-chain/local divergence.
+    #[tokio::test]
+    async fn verify_identity_object_password_headless_fails_closed_before_seal() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = fresh_store(dir.path());
+        let identity_id = [0x65u8; 32];
+        store_identity_key_protected(
+            &store,
+            identity_id,
+            &PrivateKeyTarget::PrivateKeyOnMainIdentity,
+            0,
+            &[0x14u8; 32],
+            SENTINEL_PASSPHRASE,
+        );
+
+        let sa = access(Arc::clone(&store), Arc::new(NullSecretPrompt));
+        let verify = SecretScope::IdentityKey {
+            identity_id,
+            target: PrivateKeyTarget::PrivateKeyOnMainIdentity,
+            key_id: 0,
+        };
+        let err = sa
+            .verify_identity_object_password(&verify)
+            .await
+            .expect_err("headless cannot verify");
+        assert!(
+            matches!(err, TaskError::SecretPromptUnavailable),
+            "expected SecretPromptUnavailable, got {err:?}"
+        );
+        // The precondition failed, so the seal half never runs: no key written.
+        let new_label =
+            SecretScope::identity_key_label(&PrivateKeyTarget::PrivateKeyOnMainIdentity, 5);
+        assert_eq!(
+            SecretSeam::new(&store)
+                .scheme(&SecretWalletId::from(identity_id), &new_label)
+                .unwrap(),
+            SecretScheme::Absent,
+            "a failed precondition must leave no key at all",
+        );
+    }
+
+    /// A missing identity key surfaces the loud typed `IdentityKeyMissing`,
+    /// never a silent miss.
+    #[tokio::test]
+    async fn identity_key_missing_is_loud() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = fresh_store(dir.path());
+        let sa = access(store, Arc::new(TestPrompt::never()));
+        let scope = SecretScope::IdentityKey {
+            identity_id: [0x44u8; 32],
+            target: PrivateKeyTarget::PrivateKeyOnVoterIdentity,
+            key_id: 1,
+        };
+        let err = sa
+            .with_secret(&scope, |_pt| Ok(()))
+            .await
+            .expect_err("missing identity key");
+        assert!(
+            matches!(err, TaskError::IdentityKeyMissing),
+            "expected IdentityKeyMissing, got {err:?}"
+        );
+    }
+
+    /// TS-LEGACY-01 — with only a legacy unprotected envelope present (no raw
+    /// `seed.raw.v1`), the seam-first reader falls through to the retained
+    /// legacy decoder and recovers the exact seed, prompt-free.
+    #[tokio::test]
+    async fn ts_legacy_01_hd_legacy_envelope_served_when_raw_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = fresh_store(dir.path());
+        let seed_hash: WalletSeedHash = [0x4E; 32];
+        store_unprotected_hd(&store, &seed_hash, &SENTINEL_SEED);
+
+        let prompt = Arc::new(TestPrompt::never());
+        let sa = access(store, prompt.clone());
+        let scope = SecretScope::HdSeed { seed_hash };
+        sa.with_secret(&scope, |pt| {
+            assert_eq!(pt.expose_hd_seed().copied(), Some(SENTINEL_SEED));
+            Ok(())
+        })
+        .await
+        .expect("legacy envelope served via fallback");
+        assert_eq!(prompt.ask_count(), 0, "unprotected legacy ⇒ no prompt");
+    }
+
+    /// Seam-first precedence: when BOTH a raw `seed.raw.v1` and a legacy
+    /// envelope exist (the legal mid-migration state, TS-CRASH-01 read half),
+    /// the raw value wins and the legacy is not consulted.
+    #[tokio::test]
+    async fn raw_seed_wins_over_legacy_when_both_present() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = fresh_store(dir.path());
+        let seed_hash: WalletSeedHash = [0x5E; 32];
+        // Legacy holds one seed; raw holds a DIFFERENT one — proving which won.
+        let legacy_seed = [0x11u8; 64];
+        store_unprotected_hd(&store, &seed_hash, &legacy_seed);
+        let raw_seed = [0x99u8; 64];
+        WalletSeedView::new(&store)
+            .set_raw(&seed_hash, &raw_seed)
+            .unwrap();
+
+        let sa = access(store, Arc::new(TestPrompt::never()));
+        let scope = SecretScope::HdSeed { seed_hash };
+        sa.with_secret(&scope, |pt| {
+            assert_eq!(
+                pt.expose_hd_seed().copied(),
+                Some(raw_seed),
+                "raw seam value must win over the legacy envelope"
+            );
+            Ok(())
+        })
+        .await
+        .expect("raw wins");
+    }
+
+    // --- Tier-2 per-secret object-password adoption -----------------------
+
+    /// TS-T2-01 — lazy re-wrap KEEPS protection. A protected legacy AES-GCM
+    /// envelope, on first unlock, migrates to a Tier-2 object-password envelope
+    /// at the raw label (NOT downgraded to a password-free raw secret), the
+    /// legacy envelope is dropped, and the seed reads back only with its
+    /// password.
+    #[tokio::test]
+    async fn ts_t2_01_protected_seed_rewraps_to_tier2_on_first_unlock() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = fresh_store(dir.path());
+        let seed_hash: WalletSeedHash = [0x71; 32];
+        store_protected_hd(&store, &seed_hash, &SENTINEL_SEED, SENTINEL_PASSPHRASE);
+
+        let prompt = Arc::new(TestPrompt::new([ScriptedAnswer::once(SENTINEL_PASSPHRASE)]));
+        let sa = access(store.clone(), prompt.clone());
+        let scope = SecretScope::HdSeed { seed_hash };
+
+        sa.with_secret(&scope, |pt| {
+            assert_eq!(pt.expose_hd_seed().copied(), Some(SENTINEL_SEED));
+            Ok(())
+        })
+        .await
+        .expect("first unlock");
+        assert_eq!(prompt.ask_count(), 1);
+
+        let view = WalletSeedView::new(&store);
+        // Steady state is Tier-2 protected, NOT raw.
+        assert_eq!(view.scheme(&seed_hash).unwrap(), SecretScheme::Protected);
+        // Legacy envelope dropped.
+        assert!(
+            view.get(&seed_hash).unwrap().is_none(),
+            "legacy envelope removed after re-wrap"
+        );
+        // Reads back only WITH the object password ...
+        let pw = SecretString::new(SENTINEL_PASSPHRASE);
+        assert_eq!(
+            view.get_protected(&seed_hash, &pw).unwrap().map(|z| *z),
+            Some(SENTINEL_SEED)
+        );
+        // ... and NOT without it (a raw read sees a protected blob).
+        assert!(
+            view.get_raw(&seed_hash).is_err(),
+            "raw read of a protected seed must fail, never strip protection"
+        );
+    }
+
+    /// TS-T2-02 — a Tier-2 seed re-asks on a wrong object password (upstream
+    /// `WrongPassword` ⇒ re-prompt, not abort) and then succeeds.
+    #[tokio::test]
+    async fn ts_t2_02_tier2_seed_wrong_password_reasks_then_succeeds() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = fresh_store(dir.path());
+        let seed_hash: WalletSeedHash = [0x72; 32];
+        let right = SecretString::new(SENTINEL_PASSPHRASE);
+        WalletSeedView::new(&store)
+            .set_protected(&seed_hash, &SENTINEL_SEED, &right)
+            .expect("seal seed as Tier-2");
+        assert_eq!(
+            WalletSeedView::new(&store).scheme(&seed_hash).unwrap(),
+            SecretScheme::Protected
+        );
+
+        let prompt = Arc::new(TestPrompt::new([
+            ScriptedAnswer::once("not-the-password"),
+            ScriptedAnswer::once(SENTINEL_PASSPHRASE),
+        ]));
+        let sa = access(store, prompt.clone());
+        let scope = SecretScope::HdSeed { seed_hash };
+        sa.with_secret(&scope, |pt| {
+            assert_eq!(pt.expose_hd_seed().copied(), Some(SENTINEL_SEED));
+            Ok(())
+        })
+        .await
+        .expect("retry succeeds");
+        assert_eq!(prompt.ask_count(), 2, "one wrong-pass re-ask, then success");
+    }
+
+    /// TS-T2-03 — PER-SECRET password isolation. Two seeds protected under
+    /// DIFFERENT passwords: unlocking A (and remembering it) does NOT satisfy
+    /// B — B still prompts for its OWN password, each decrypts only with its
+    /// own, and A's remembered entry never unlocks B.
+    #[tokio::test]
+    async fn ts_t2_03_per_secret_passwords_are_isolated() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = fresh_store(dir.path());
+        let hash_a: WalletSeedHash = [0xAA; 32];
+        let hash_b: WalletSeedHash = [0xBB; 32];
+        let seed_a = [0xA1u8; 64];
+        let seed_b = [0xB2u8; 64];
+        let pw_a = SecretString::new("password-A-aaaaaaaaaa");
+        let pw_b = SecretString::new("password-B-bbbbbbbbbb");
+        let view = WalletSeedView::new(&store);
+        view.set_protected(&hash_a, &seed_a, &pw_a).unwrap();
+        view.set_protected(&hash_b, &seed_b, &pw_b).unwrap();
+
+        // Negative crypto property: A's password CANNOT open B's envelope.
+        // Upstream binds the AEAD AAD to wallet_id‖label and derives a fresh
+        // per-object key, so B's envelope rejects A's password with a tag
+        // failure (`WrongPassword`) rather than yielding A's — or any — bytes.
+        match view.get_protected(&hash_b, &pw_a) {
+            Err(TaskError::SecretSeam { source })
+                if matches!(*source, SecretStoreError::WrongPassword) => {}
+            other => panic!("A's password must be REJECTED by B's envelope, got {other:?}"),
+        }
+
+        // Scripted in access order: A remembers, then B.
+        let prompt = Arc::new(TestPrompt::new([
+            ScriptedAnswer::remember("password-A-aaaaaaaaaa", RememberPolicy::UntilAppClose),
+            ScriptedAnswer::remember("password-B-bbbbbbbbbb", RememberPolicy::UntilAppClose),
+        ]));
+        let sa = access(store, prompt.clone());
+        let scope_a = SecretScope::HdSeed { seed_hash: hash_a };
+        let scope_b = SecretScope::HdSeed { seed_hash: hash_b };
+
+        sa.with_secret(&scope_a, |pt| {
+            assert_eq!(pt.expose_hd_seed().copied(), Some(seed_a));
+            Ok(())
+        })
+        .await
+        .unwrap();
+        assert!(sa.is_session_cached(&scope_a));
+        assert!(
+            !sa.is_session_cached(&scope_b),
+            "A's unlock must not cache B"
+        );
+
+        // B STILL prompts (A's cache entry does not satisfy B) and decrypts to B.
+        sa.with_secret(&scope_b, |pt| {
+            assert_eq!(pt.expose_hd_seed().copied(), Some(seed_b));
+            Ok(())
+        })
+        .await
+        .unwrap();
+        assert_eq!(prompt.ask_count(), 2, "B prompted independently of A");
+
+        // A still resolves from its own cache entry — no third prompt.
+        sa.with_secret(&scope_a, |pt| {
+            assert_eq!(pt.expose_hd_seed().copied(), Some(seed_a));
+            Ok(())
+        })
+        .await
+        .unwrap();
+        assert_eq!(prompt.ask_count(), 2, "A served from cache, no re-prompt");
     }
 }

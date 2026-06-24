@@ -36,6 +36,7 @@ fn modal_renders_body_hint_error_and_remember_checkbox() {
                 error: Some("That passphrase is not correct. Try again."),
                 submit_label: "Unlock",
                 input_placeholder: "Enter passphrase",
+                remember_label: None,
             };
             passphrase_modal(&ctx, &config, |ui| {
                 ui.checkbox(&mut remember, KEEP_UNLOCKED_LABEL);
@@ -94,6 +95,7 @@ fn remember_checkbox_toggles() {
                 error: None,
                 submit_label: "Unlock",
                 input_placeholder: "Enter passphrase",
+                remember_label: None,
             };
             let mut local = remember_for_ui.get();
             passphrase_modal(&ctx, &config, |ui| {

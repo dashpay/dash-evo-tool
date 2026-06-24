@@ -95,11 +95,15 @@ impl WalletUnlockPopup {
             error: self.error.as_deref(),
             submit_label: "Unlock",
             input_placeholder: "Enter password",
+            remember_label: None,
         };
 
         let mut remember = self.remember;
         let outcome = passphrase_modal(ctx, &config, |ui| {
-            ui.checkbox(&mut remember, KEEP_UNLOCKED_LABEL);
+            ui.checkbox(
+                &mut remember,
+                config.remember_label.unwrap_or(KEEP_UNLOCKED_LABEL),
+            );
         });
         self.remember = remember;
 

@@ -122,6 +122,8 @@ fn seed_hd_wallets(
             is_main: i == 0,
             core_wallet_name: None,
             xpub_encoded: xpub,
+            uses_password: false,
+            password_hint: None,
         };
         let seed_hash = wallet.seed_hash();
         seed_view.set(&seed_hash, &envelope).expect("set envelope");

@@ -336,6 +336,25 @@ pub enum BackendTaskSuccessResult {
         /// The Base64-encoded signature (a public artifact, not a secret).
         signature: String,
     },
+    /// An identity private key derived for on-screen display/export, fetched
+    /// JIT from the vault (`InVault`). The key bytes never become resident;
+    /// only the WIF (zeroize-on-drop) crosses to the UI.
+    IdentityKeyForDisplay {
+        identity_id: dash_sdk::platform::Identifier,
+        target: crate::model::qualified_identity::PrivateKeyTarget,
+        key_id: dash_sdk::dpp::identity::KeyID,
+        /// The identity private key as a WIF string, zeroize-on-drop.
+        wif: crate::model::secret::Secret,
+    },
+    /// A message signed with a vault-backed identity key via the JIT
+    /// chokepoint. Only the public Base64 signature crosses to the UI.
+    IdentityMessageSigned {
+        identity_id: dash_sdk::platform::Identifier,
+        target: crate::model::qualified_identity::PrivateKeyTarget,
+        key_id: dash_sdk::dpp::identity::KeyID,
+        /// The Base64-encoded signature (a public artifact, not a secret).
+        signature: String,
+    },
 
     // Token operation results (replacing string messages)
     PausedTokens(FeeResult),
@@ -360,6 +379,21 @@ pub enum BackendTaskSuccessResult {
     RegisteredDpnsName(FeeResult),
     RefreshedIdentity(QualifiedIdentity),
     LoadedIdentity(QualifiedIdentity),
+    /// SEC-001: this identity's keys were sealed under a password (opt-in).
+    /// The `count` keys newly sealed (0 when the task was an idempotent re-run
+    /// over an already-protected identity).
+    IdentityKeysProtected {
+        /// The identity whose keys are now password-protected.
+        identity_id: Identifier,
+        /// How many keys this run newly sealed Tier-2.
+        count: usize,
+    },
+    /// SEC-001: this identity's key protection was removed (opt-out); signing
+    /// is prompt-free again.
+    IdentityKeysUnprotected {
+        /// The identity whose key protection was removed.
+        identity_id: Identifier,
+    },
 
     // Document operation results (replacing string messages)
     DeletedDocument(Identifier, FeeResult),
@@ -680,6 +714,24 @@ impl AppContext {
                 key_type,
             } => {
                 self.sign_message_with_key(seed_hash, derivation_path, message, key_type)
+                    .await
+            }
+            WalletTask::DeriveIdentityKeyForDisplay {
+                identity_id,
+                target,
+                key_id,
+            } => {
+                self.derive_identity_key_for_display(identity_id, target, key_id)
+                    .await
+            }
+            WalletTask::SignMessageWithIdentityKey {
+                identity_id,
+                target,
+                key_id,
+                message,
+                key_type,
+            } => {
+                self.sign_message_with_identity_key(identity_id, target, key_id, message, key_type)
                     .await
             }
             WalletTask::ListTrackedAssetLocks { seed_hash } => {

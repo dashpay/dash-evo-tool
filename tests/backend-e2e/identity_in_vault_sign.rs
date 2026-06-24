@@ -172,17 +172,31 @@ async fn ts_sign_e2e_01_in_vault_identity_signs_and_broadcasts() {
         "expected BroadcastedStateTransition, got {result:?}"
     );
 
-    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-    let fetched = dash_sdk::platform::Identity::fetch_by_identifier(&sdk, identity_id)
-        .await
-        .expect("re-fetch identity")
-        .expect("identity present after broadcast");
-    assert!(
-        fetched
+    // Poll for the new key to become visible rather than assuming a fixed
+    // propagation delay: re-fetch the identity until the key appears or the
+    // ~10s deadline passes. A single fixed sleep is racy — it can re-fetch
+    // before the broadcast has propagated and fail spuriously.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let key_visible = loop {
+        let fetched = dash_sdk::platform::Identity::fetch_by_identifier(&sdk, identity_id)
+            .await
+            .expect("re-fetch identity")
+            .expect("identity present after broadcast");
+        if fetched
             .public_keys()
             .values()
-            .any(|k| k.data() == new_ipk.data()),
-        "the new key must be visible on Platform — the InVault MASTER key signed the ST"
+            .any(|k| k.data() == new_ipk.data())
+        {
+            break true;
+        }
+        if std::time::Instant::now() >= deadline {
+            break false;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    };
+    assert!(
+        key_visible,
+        "the new key must be visible on Platform within 10s — the InVault MASTER key signed the ST"
     );
 }
 

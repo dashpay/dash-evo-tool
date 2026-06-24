@@ -130,23 +130,30 @@ async fn step_broadcast_valid(
     );
     tracing::info!("broadcast succeeded");
 
-    // Brief delay for DAPI propagation — broadcast confirms on one node but
-    // a different node may serve the re-fetch before processing the same block.
-    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-
-    let fetched = dash_sdk::platform::Identity::fetch_by_identifier(&sdk, identity_id)
-        .await
-        .expect("failed to re-fetch identity")
-        .expect("identity not found on Platform after broadcast");
-
-    let has_new_key = fetched
-        .public_keys()
-        .values()
-        .any(|k| k.data() == new_ipk.data());
+    // Poll for the new key to become visible rather than relying on a single
+    // fixed delay. The broadcast confirms on one node, but a different node may
+    // serve the re-fetch before processing the same block — a fixed 1s sleep
+    // races that propagation and fails spuriously. Re-fetch until the key
+    // appears or the ~10s deadline passes.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let (fetched, has_new_key) = loop {
+        let fetched = dash_sdk::platform::Identity::fetch_by_identifier(&sdk, identity_id)
+            .await
+            .expect("failed to re-fetch identity")
+            .expect("identity not found on Platform after broadcast");
+        let has_new_key = fetched
+            .public_keys()
+            .values()
+            .any(|k| k.data() == new_ipk.data());
+        if has_new_key || std::time::Instant::now() >= deadline {
+            break (fetched, has_new_key);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    };
 
     assert!(
         has_new_key,
-        "New key NOT found on Platform after broadcast. \
+        "New key NOT found on Platform within 10s of broadcast. \
          Fetched {} keys, expected new key with id {}. \
          The broadcast succeeded, so the key should be visible.",
         fetched.public_keys().len(),

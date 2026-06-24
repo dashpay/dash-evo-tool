@@ -19,9 +19,9 @@ use platform_wallet_storage::secrets::SecretString;
 use super::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
-use crate::model::qualified_identity::PrivateKeyTarget;
 use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
 use crate::model::qualified_identity::identity_meta::IdentityMeta;
+use crate::model::qualified_identity::{PrivateKeyTarget, QualifiedIdentity};
 use crate::model::secret::Secret;
 use crate::model::wallet::passphrase::validate_single_key_passphrase;
 use crate::wallet_backend::IdentityKeyView;
@@ -49,13 +49,29 @@ impl AppContext {
             .get_identity_by_id(&identity_id)?
             .ok_or(TaskError::IdentityNotFoundLocally)?;
 
+        self.protect_loaded_identity_keys(&qi, &password, hint)
+    }
+
+    /// Seal an ALREADY-LOADED identity's keyless vault keys Tier-2 under one
+    /// per-identity `password`, then record `hint`. Split from
+    /// [`Self::protect_identity_keys`] so the fail-closed guard, the seal, and
+    /// the success result are exercised on a real `qi` as the task runs them —
+    /// proving the guard is wired into the protect path, not merely callable.
+    fn protect_loaded_identity_keys(
+        &self,
+        qi: &QualifiedIdentity,
+        password: &Secret,
+        hint: Option<String>,
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
+        let identity_id = qi.identity.id();
+
         // SEC-001 fail-closed: any resident plaintext key left by an incomplete
         // get-path migration has an `Absent` label `seal_identity_keys` would
         // skip, so refuse here rather than emit a false-protected result.
         reject_resident_identity_plaintext(&qi.private_keys)?;
 
         let backend = self.wallet_backend()?;
-        let id = qi.identity.id().to_buffer();
+        let id = identity_id.to_buffer();
         let keys = qi.private_keys.keys_set();
         let view = IdentityKeyView::new(backend.secret_store(), id);
         let pw = SecretString::new(password.expose_secret());
@@ -647,6 +663,67 @@ mod tests {
             }
             other => panic!("expected IdentityKeysProtected, got {other:?}"),
         }
+
+        if let Ok(backend) = ctx.wallet_backend() {
+            backend.shutdown().await;
+        }
+    }
+
+    /// QA-001 wiring guard: the fail-closed check must be PLUGGED INTO the
+    /// protect path, not merely callable in isolation. Drive the real post-load
+    /// protect logic (`protect_loaded_identity_keys`, which `protect_identity_keys`
+    /// runs after `get_identity_by_id`) on a `qi` carrying resident plaintext and
+    /// assert it returns `IdentityKeyProtectionIncomplete` — NOT
+    /// `Ok(IdentityKeysProtected{count:0})`. Deleting the guard line makes this
+    /// test fail: the seal then skips the vault-`Absent` keys and reports a false
+    /// success.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn protect_loaded_identity_with_resident_plaintext_fails_closed() {
+        use crate::app::TaskResult;
+        use crate::app_dir::ensure_env_file;
+        use crate::context::connection_status::ConnectionStatus;
+        use crate::database::test_helpers::create_database_at_path;
+        use crate::utils::egui_mpsc::SenderAsync;
+        use crate::utils::tasks::TaskManager;
+
+        // Offline wired AppContext (backend wired so the post-guard seal path is
+        // real — with the guard deleted it reaches the seal and returns the false
+        // `count:0`, which is exactly what this test must catch).
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = temp_dir.path().to_path_buf();
+        ensure_env_file(&data_dir);
+        let db = Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
+        let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
+        let secret_store = AppContext::open_secret_store(&data_dir).expect("secret store");
+        let ctx = AppContext::new(
+            data_dir,
+            Network::Testnet,
+            db,
+            Arc::new(TaskManager::new()),
+            Arc::new(ConnectionStatus::new()),
+            egui::Context::default(),
+            app_kv,
+            secret_store,
+        )
+        .expect("offline testnet AppContext::new");
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("wire wallet backend offline");
+
+        // A loaded identity still carrying resident plaintext (the state an
+        // incomplete get-path migration leaves: `Clear`/`AlwaysClear` with an
+        // `Absent` vault label). It is NOT stored in the vault, so the seal would
+        // see only `Absent` and report a false success without the guard.
+        let qi = qi_clear_pair_plus_wallet_derived();
+        let err = ctx
+            .protect_loaded_identity_keys(&qi, &Secret::new("one-identity-password"), None)
+            .expect_err("resident plaintext must fail closed, not report count:0");
+        assert!(
+            matches!(err, TaskError::IdentityKeyProtectionIncomplete),
+            "expected IdentityKeyProtectionIncomplete, got {err:?}"
+        );
 
         if let Ok(backend) = ctx.wallet_backend() {
             backend.shutdown().await;

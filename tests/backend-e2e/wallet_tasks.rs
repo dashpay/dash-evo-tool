@@ -62,15 +62,16 @@ async fn tc_012_generate_receive_address() {
     // (funds-safe BIP-44 keypool behavior), so back-to-back calls return the
     // same address. The fresh-each-call UX needs the reserve-on-hand-out API
     // tracked in dashpay/rust-dashcore#818 to propagate through platform into
-    // DET — see the PROJ-015 TODO in `src/wallet_backend/mod.rs`. Re-enable the
-    // `assert_ne!` below once `next_receive_address` switches to the reserving
-    // variant. Forcing distinctness DET-side now would re-introduce the
-    // gap-window funds-loss bug that tc_012b guards.
-    //
-    // assert_ne!(
-    //     address1, address2,
-    //     "TC-012: second call should return a different address"
-    // );
+    // DET — see the PROJ-015 TODO in `src/wallet_backend/mod.rs`.
+    // Forcing distinctness DET-side now would re-introduce the gap-window
+    // funds-loss bug that tc_012b guards.
+    let first_char2 = address2.chars().next().unwrap_or_default();
+    assert!(
+        first_char2 == 'y' || first_char2 == '8',
+        "TC-012: second GenerateReceiveAddress must return a valid testnet address, got: {}",
+        address2
+    );
+
     if address1 == address2 {
         tracing::info!(
             "TC-012: receive address did not advance (known gap QA-005 / rust-dashcore#818); \

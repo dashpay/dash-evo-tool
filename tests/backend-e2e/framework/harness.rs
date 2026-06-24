@@ -49,9 +49,7 @@ const FRAMEWORK_WALLET_REGISTRATION_TIMEOUT: Duration = Duration::from_secs(120)
 /// [`FRAMEWORK_WALLET_REGISTRATION_TIMEOUT`]: the suite runs serially
 /// (`--test-threads=1`), so as more wallets accumulate in the upstream manager
 /// across the run, each later `wait_for_wallet_in_spv` round (filter rebuild +
-/// re-sync) takes longer. A 30s budget was too tight once the dashpay-deferral
-/// re-run unmasked more funded-wallet tests (QA-017), so it gets the same 120s
-/// headroom as the framework wallet.
+/// re-sync) takes longer and needs the same 120s headroom as the framework wallet.
 const FUNDED_WALLET_REGISTRATION_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Shared test context, initialized once across all backend E2E tests.

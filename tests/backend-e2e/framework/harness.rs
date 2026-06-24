@@ -44,6 +44,16 @@ pub const MAX_TEST_TIMEOUT: Duration = Duration::from_secs(360);
 /// registration round-trip.
 const FRAMEWORK_WALLET_REGISTRATION_TIMEOUT: Duration = Duration::from_secs(120);
 
+/// Budget for a per-test funded wallet to be picked up by the upstream SPV
+/// backend in [`BackendTestContext::create_funded_test_wallet`]. Matches
+/// [`FRAMEWORK_WALLET_REGISTRATION_TIMEOUT`]: the suite runs serially
+/// (`--test-threads=1`), so as more wallets accumulate in the upstream manager
+/// across the run, each later `wait_for_wallet_in_spv` round (filter rebuild +
+/// re-sync) takes longer. A 30s budget was too tight once the dashpay-deferral
+/// re-run unmasked more funded-wallet tests (QA-017), so it gets the same 120s
+/// headroom as the framework wallet.
+const FUNDED_WALLET_REGISTRATION_TIMEOUT: Duration = Duration::from_secs(120);
+
 /// Shared test context, initialized once across all backend E2E tests.
 ///
 /// Uses `tokio::sync::OnceCell` so initialization runs inside the shared
@@ -545,8 +555,9 @@ impl BackendTestContext {
             "create_funded_test_wallet: registered new wallet"
         );
 
-        // Wait for SPV to pick up the wallet
-        wait::wait_for_wallet_in_spv(app_context, seed_hash, Duration::from_secs(30))
+        // Wait for SPV to pick up the wallet. Budgeted for the cumulative
+        // upstream load late in a serial run — see FUNDED_WALLET_REGISTRATION_TIMEOUT.
+        wait::wait_for_wallet_in_spv(app_context, seed_hash, FUNDED_WALLET_REGISTRATION_TIMEOUT)
             .await
             .expect("Test wallet not picked up by SPV");
         tracing::trace!(seed_hash = ?&seed_hash[..4], "create_funded_test_wallet: wallet visible in SPV");

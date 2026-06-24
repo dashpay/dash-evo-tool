@@ -268,6 +268,20 @@ pub enum TaskError {
         source: Box<TaskError>,
     },
 
+    /// SEC-001 fail-closed guard at the opt-in protect boundary: the task found
+    /// keys still resident as plaintext on disk after the eager load-path vault
+    /// migration, so the identity cannot be reported as fully protected. The
+    /// migration only leaves resident plaintext when its vault write failed or
+    /// was skipped; proceeding would let the seal step silently skip those keys
+    /// and emit a false-protected result. Refusing here keeps the user from
+    /// believing the identity is sealed when it is not. Fieldless: the load-path
+    /// migration outcome is logged where it happens; no secret or raw error
+    /// string is stored here.
+    #[error(
+        "Some of this identity's keys could not be protected this time, so it is not fully protected yet. Check available disk space, then try protecting this identity again."
+    )]
+    IdentityKeyProtectionIncomplete,
+
     /// The DET wallet-metadata sidecar (alias / `is_main` /
     /// `core_wallet_name`) could not be read or written. Distinct from
     /// [`Self::WalletStorage`] because the cause sits in the cross-

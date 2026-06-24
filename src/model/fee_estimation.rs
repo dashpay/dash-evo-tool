@@ -433,10 +433,21 @@ impl PlatformFeeEstimator {
         let expected_credits = amount_duffs.saturating_mul(CREDITS_PER_DUFF);
         let balance_increase = balance_after.saturating_sub(balance_before);
         let delta_fee = expected_credits.saturating_sub(balance_increase);
-        if delta_fee == 0 {
-            self.estimate_identity_topup()
-        } else {
+        // Guard: only trust the real-fee delta when it is strictly between zero and the
+        // full minted amount.
+        //
+        // Two failure modes require falling back to the estimate:
+        //  • `delta_fee == 0` — the balance grew by exactly the minted amount; a real
+        //    top-up always pays a non-zero Platform fee, so this means `balance_before`
+        //    was stale-LOW (apparent increase inflated to 100 % of minted credits).
+        //  • `delta_fee == expected_credits` — the balance did not grow at all
+        //    (`balance_after <= balance_before`), meaning `balance_before` was stale-HIGH;
+        //    `balance_increase` saturates to 0, so `delta_fee` equals the full minted
+        //    amount and is returned as the "fee", which is nonsensical.
+        if 0 < delta_fee && delta_fee < expected_credits {
             delta_fee
+        } else {
+            self.estimate_identity_topup()
         }
     }
 
@@ -852,6 +863,43 @@ mod tests {
             resolved,
             estimator.estimate_identity_topup(),
             "the stale-balance fallback must be the deterministic estimate"
+        );
+    }
+
+    /// RUST-001: stale-HIGH `balance_before` must fall back to the estimate.
+    ///
+    /// If the cached balance is *higher* than the post-top-up balance (e.g.
+    /// because it was read before a spend cleared on-chain), then
+    /// `balance_after.saturating_sub(balance_before)` underflows to 0 and
+    /// `delta_fee` equals the full minted amount — not a fee, just noise.
+    /// The helper must detect this invariant violation and return the estimate.
+    #[test]
+    fn test_identity_topup_actual_fee_falls_back_to_estimate_on_stale_high_balance() {
+        let estimator = PlatformFeeEstimator::new();
+        let amount_duffs = 5_000_000u64; // 5M duffs → 5_000_000_000 credits minted
+        let expected_credits = amount_duffs * CREDITS_PER_DUFF;
+        // balance_before is stale-HIGH: the cached balance is higher than
+        // balance_after, so balance_increase saturates to 0 and delta_fee would
+        // equal the full minted amount without the guard.
+        let stale_balance_before = 10_000_000_000u64;
+        let balance_after = 5_000_000_000u64; // lower than before (stale-HIGH)
+        assert!(
+            balance_after < stale_balance_before,
+            "pre-condition: stale-HIGH scenario"
+        );
+        let resolved = estimator.resolve_identity_topup_actual_fee(
+            amount_duffs,
+            stale_balance_before,
+            balance_after,
+        );
+        assert_ne!(
+            resolved, expected_credits,
+            "stale-HIGH must not report the full minted amount as the fee"
+        );
+        assert_eq!(
+            resolved,
+            estimator.estimate_identity_topup(),
+            "stale-HIGH must fall back to the deterministic estimate (RUST-001)"
         );
     }
 

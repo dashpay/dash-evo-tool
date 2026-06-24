@@ -278,7 +278,8 @@ pub enum TaskError {
     /// migration outcome is logged where it happens; no secret or raw error
     /// string is stored here.
     #[error(
-        "Some of this identity's keys could not be protected this time, so it is not fully protected yet. Check available disk space, then try protecting this identity again."
+        "Some of this identity's keys are not fully protected yet. \
+        Close and reopen the application, then try protecting this identity again."
     )]
     IdentityKeyProtectionIncomplete,
 

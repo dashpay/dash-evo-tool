@@ -648,8 +648,24 @@ impl WalletBackend {
         Ok((wallet.wallet_id, account_xpub))
     }
 
-    // TODO(PROJ-015): TC-012 receive-address reuse unverified — see if dashpay/platform#3770
-    //   addresses it; if not, escalate.
+    // TODO(PROJ-015): TC-012 receive-address reuse (QA-005). Two consecutive
+    //   `next_receive_address()` calls return the SAME address: upstream
+    //   `next_unused` returns the lowest UNUSED receive address until it is
+    //   actually used on-chain — funds-safe BIP-44 keypool behavior, but not the
+    //   "fresh address each call" UX the Receive flow wants. The fix is a
+    //   reserve-on-hand-out API that must propagate three layers before DET can
+    //   adopt it:
+    //     1. dashpay/rust-dashcore#818 "feat(key-wallet): reserve receive
+    //        addresses on hand-out" — adds `next_unused_and_reserve`
+    //        (+ reserve/release/sweep); ready-for-review, NOT yet merged.
+    //     2. dashpay/platform — surface it as
+    //        `CoreWallet::next_receive_address_and_reserve_for_account` (the
+    //        pinned rev still calls the old non-reserving path).
+    //     3. DET — bump the platform dep, then switch
+    //        `next_receive_address()` to the reserving variant.
+    //   Until all three land, `next_receive_address` stays on `next_unused`
+    //   (funds-safe) and tc_012's "advances each call" assertion is pinned
+    //   PENDING; tc_012b's gap-window funds-safety assertion stays active.
     /// Register a wallet with the upstream SPV backend from its seed, so the
     /// upstream persistor is populated and the wallet's addresses are watched
     /// (W1 — create/import write path; PROJ-010 regression fix).

@@ -424,10 +424,10 @@ impl AppContext {
         self.connection_status.set_spv_connected_peers(0);
         self.connection_status.set_spv_sync_progress(None);
         self.connection_status.set_spv_last_error(None);
-        // Re-arm the quorum gate: the next reconnect builds a fresh backend
-        // whose SPV session must re-sync the masternode list. Leaving the flag
-        // set would let early proof calls through before quorums exist again,
-        // re-triggering the DAPI self-ban storm.
+        // Re-arm the quorum gate so the next reconnect re-syncs the masternode
+        // list on the same backend instance (`stop_in_place` keeps the backend
+        // wired). Leaving the flag set would let early proof calls through
+        // before quorums exist again, re-triggering the DAPI self-ban storm.
         self.connection_status.set_masternodes_ready(false);
         // Re-arm the automatic identity sweep so it runs once per session.
         self.identity_autodiscovery_fired

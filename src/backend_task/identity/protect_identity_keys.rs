@@ -20,6 +20,7 @@ use super::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::qualified_identity::PrivateKeyTarget;
+use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
 use crate::model::qualified_identity::identity_meta::IdentityMeta;
 use crate::model::secret::Secret;
 use crate::model::wallet::passphrase::validate_single_key_passphrase;
@@ -47,6 +48,12 @@ impl AppContext {
         let qi = self
             .get_identity_by_id(&identity_id)?
             .ok_or(TaskError::IdentityNotFoundLocally)?;
+
+        // SEC-001 fail-closed: any resident plaintext key left by an incomplete
+        // get-path migration has an `Absent` label `seal_identity_keys` would
+        // skip, so refuse here rather than emit a false-protected result.
+        reject_resident_identity_plaintext(&qi.private_keys)?;
+
         let backend = self.wallet_backend()?;
         let id = qi.identity.id().to_buffer();
         let keys = qi.private_keys.keys_set();
@@ -133,6 +140,22 @@ impl AppContext {
 fn validate_protection_password(password: &Secret) -> Result<(), TaskError> {
     let pw = password.expose_secret();
     validate_single_key_passphrase(pw, pw)
+}
+
+/// SEC-001 fail-closed guard for the protect boundary: reject an identity that
+/// still carries resident plaintext (`Clear`/`AlwaysClear`) keys on disk. Such a
+/// key means the eager load-path vault migration did not complete — its vault
+/// write failed, or it was skipped on an already-protected identity — so the key
+/// has no vault label and [`seal_identity_keys`] would silently skip its
+/// `Absent` scheme and report a false success. Wallet-derived
+/// (`AtWalletDerivationPath`) and already-vaulted (`InVault`) keys carry no
+/// resident plaintext, so a legitimately keyless / wallet-derived identity is
+/// never rejected.
+fn reject_resident_identity_plaintext(private_keys: &KeyStorage) -> Result<(), TaskError> {
+    if private_keys.has_plaintext_for_vault() {
+        return Err(TaskError::IdentityKeyProtectionIncomplete);
+    }
+    Ok(())
 }
 
 /// Seal every keyless (`Unprotected`) vault key in `keys` Tier-2 under
@@ -225,10 +248,23 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
+    use std::collections::BTreeMap;
+
     use platform_wallet_storage::secrets::SecretStore;
     use zeroize::Zeroizing;
 
+    use crate::model::qualified_identity::encrypted_key_storage::{
+        PrivateKeyData, WalletDerivationPath,
+    };
+    use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
+    use crate::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
     use crate::wallet_backend::single_key::open_secret_store;
+    use dash_sdk::dpp::dashcore::Network;
+    use dash_sdk::dpp::identity::Identity;
+    use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+    use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
+    use dash_sdk::dpp::version::PlatformVersion;
+    use dash_sdk::platform::{Identifier, IdentityPublicKey};
 
     fn fresh_store(dir: &std::path::Path) -> Arc<SecretStore> {
         Arc::new(open_secret_store(&dir.join("secrets.pwsvault")).expect("open vault"))
@@ -426,5 +462,194 @@ mod tests {
         seal_identity_keys(&view, &keys, &pw).unwrap();
         unseal_identity_keys(&view, &keys, &pw).unwrap();
         assert_eq!(*view.get(&M, 0).unwrap().unwrap(), *raw);
+    }
+
+    /// A `KeyStorage` holding a single resident-plaintext `Clear` key — the state
+    /// the load-path vault migration leaves behind when its vault write failed or
+    /// was skipped, so the key's vault label is `Absent`.
+    fn ks_with_resident_clear() -> KeyStorage {
+        let pv = PlatformVersion::latest();
+        let mut ks = KeyStorage::default();
+        let k = IdentityPublicKey::random_key(1, Some(1), pv);
+        ks.private_keys.insert(
+            (M, k.id()),
+            (
+                QualifiedIdentityPublicKey::from(k),
+                PrivateKeyData::Clear([0xCC; 32]),
+            ),
+        );
+        ks
+    }
+
+    /// A `KeyStorage` whose keys are all legitimately not-resident: one already
+    /// vault-backed (`InVault`) and one wallet-derived (`AtWalletDerivationPath`,
+    /// whose vault scheme is `Absent` by design, not by a failed migration).
+    fn ks_invault_plus_wallet_derived() -> KeyStorage {
+        let pv = PlatformVersion::latest();
+        let mut ks = KeyStorage::default();
+        let vaulted = IdentityPublicKey::random_key(1, Some(1), pv);
+        ks.private_keys.insert(
+            (M, vaulted.id()),
+            (
+                QualifiedIdentityPublicKey::from(vaulted),
+                PrivateKeyData::InVault,
+            ),
+        );
+        let derived = IdentityPublicKey::random_key(2, Some(2), pv);
+        ks.private_keys.insert(
+            (M, derived.id()),
+            (
+                QualifiedIdentityPublicKey::from(derived),
+                PrivateKeyData::AtWalletDerivationPath(WalletDerivationPath {
+                    wallet_seed_hash: [0x07; 32],
+                    derivation_path: DerivationPath::from(vec![]),
+                }),
+            ),
+        );
+        ks
+    }
+
+    /// A keyless `QualifiedIdentity` with two resident-plaintext keys (`Clear`
+    /// and `AlwaysClear`) plus one wallet-derived key — the normal opt-in shape
+    /// after a fresh import.
+    fn qi_clear_pair_plus_wallet_derived() -> QualifiedIdentity {
+        let pv = PlatformVersion::latest();
+        let mut ks = KeyStorage::default();
+        let a = IdentityPublicKey::random_key(1, Some(1), pv);
+        ks.private_keys.insert(
+            (M, a.id()),
+            (
+                QualifiedIdentityPublicKey::from(a),
+                PrivateKeyData::Clear([0xA0; 32]),
+            ),
+        );
+        let b = IdentityPublicKey::random_key(2, Some(2), pv);
+        ks.private_keys.insert(
+            (M, b.id()),
+            (
+                QualifiedIdentityPublicKey::from(b),
+                PrivateKeyData::AlwaysClear([0xB0; 32]),
+            ),
+        );
+        let derived = IdentityPublicKey::random_key(3, Some(3), pv);
+        ks.private_keys.insert(
+            (M, derived.id()),
+            (
+                QualifiedIdentityPublicKey::from(derived),
+                PrivateKeyData::AtWalletDerivationPath(WalletDerivationPath {
+                    wallet_seed_hash: [0x07; 32],
+                    derivation_path: DerivationPath::from(vec![]),
+                }),
+            ),
+        );
+        let identity =
+            Identity::create_basic_identity(Identifier::default(), pv).expect("basic identity");
+        QualifiedIdentity {
+            identity,
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::User,
+            alias: None,
+            private_keys: ks,
+            dpns_names: vec![],
+            associated_wallets: BTreeMap::new(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: BTreeMap::new(),
+            status: IdentityStatus::Active,
+            network: Network::Testnet,
+        }
+    }
+
+    /// SEC-001 fail-closed: an identity still carrying a resident-plaintext key
+    /// (the load-path vault migration did not move it, so its vault label is
+    /// `Absent`) is rejected at the protect boundary rather than reported as
+    /// protected — the false-`IdentityKeysProtected{count:0}` regression.
+    #[test]
+    fn protect_rejects_resident_plaintext_key() {
+        let ks = ks_with_resident_clear();
+        let err = reject_resident_identity_plaintext(&ks)
+            .expect_err("resident plaintext must fail closed");
+        assert!(
+            matches!(err, TaskError::IdentityKeyProtectionIncomplete),
+            "expected IdentityKeyProtectionIncomplete, got {err:?}"
+        );
+    }
+
+    /// No false positive: an identity whose keys are wallet-derived
+    /// (`AtWalletDerivationPath`, legitimately `Absent`) or already vault-backed
+    /// (`InVault`) carries no resident plaintext and is accepted — opt-in must
+    /// not regress for normal identities.
+    #[test]
+    fn protect_accepts_wallet_derived_and_vaulted_keys() {
+        let ks = ks_invault_plus_wallet_derived();
+        reject_resident_identity_plaintext(&ks)
+            .expect("wallet-derived / already-vaulted keys must not be rejected");
+    }
+
+    /// End-to-end no-false-positive: a normal keyless opt-in still succeeds. The
+    /// insert migrates the two resident-plaintext keys into the keyless vault,
+    /// `protect_identity_keys` passes the fail-closed guard, seals exactly those
+    /// two keys Tier-2, and skips the wallet-derived (`Absent`) key.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn protect_normal_opt_in_seals_vault_keys_and_skips_wallet_derived() {
+        use crate::app::TaskResult;
+        use crate::app_dir::ensure_env_file;
+        use crate::context::connection_status::ConnectionStatus;
+        use crate::database::test_helpers::create_database_at_path;
+        use crate::utils::egui_mpsc::SenderAsync;
+        use crate::utils::tasks::TaskManager;
+
+        // Offline wired AppContext (no network I/O) so the secret store is a real,
+        // writable vault the insert/opt-in paths can migrate into.
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = temp_dir.path().to_path_buf();
+        ensure_env_file(&data_dir);
+        let db = Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
+        let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
+        let secret_store = AppContext::open_secret_store(&data_dir).expect("secret store");
+        let ctx = AppContext::new(
+            data_dir,
+            Network::Testnet,
+            db,
+            Arc::new(TaskManager::new()),
+            Arc::new(ConnectionStatus::new()),
+            egui::Context::default(),
+            app_kv,
+            secret_store,
+        )
+        .expect("offline testnet AppContext::new");
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("wire wallet backend offline");
+
+        let qi = qi_clear_pair_plus_wallet_derived();
+        let identity_id = qi.identity.id();
+        ctx.insert_local_qualified_identity(&qi, &None)
+            .expect("insert identity (migrates resident plaintext into the keyless vault)");
+
+        let result = ctx
+            .protect_identity_keys(identity_id, Secret::new("one-identity-password"), None)
+            .expect("normal opt-in must succeed, not fail closed");
+        match result {
+            BackendTaskSuccessResult::IdentityKeysProtected {
+                identity_id: got,
+                count,
+            } => {
+                assert_eq!(got, identity_id, "result reports the same identity");
+                assert_eq!(
+                    count, 2,
+                    "both keyless vault keys sealed; the wallet-derived key skipped, not rejected",
+                );
+            }
+            other => panic!("expected IdentityKeysProtected, got {other:?}"),
+        }
+
+        if let Ok(backend) = ctx.wallet_backend() {
+            backend.shutdown().await;
+        }
     }
 }

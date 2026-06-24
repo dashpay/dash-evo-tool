@@ -292,30 +292,44 @@ impl SecretAccess {
     }
 
     /// Replace the HD prompt-copy metadata map. Used at hydration time so
-    /// prompts can show the wallet name and password hint.
+    /// prompts can show the wallet name and password hint. Poison-safe: a
+    /// poisoned lock is recovered (matching `forget`/`forget_all`) so a panicked
+    /// reader can never freeze prompt-copy metadata for the rest of the session.
     pub fn set_wallet_meta(&self, meta: BTreeMap<WalletSeedHash, WalletPromptMeta>) {
-        if let Ok(mut guard) = self.inner.wallet_meta.write() {
-            *guard = meta;
-        }
+        let mut guard = self
+            .inner
+            .wallet_meta
+            .write()
+            .unwrap_or_else(|poison| poison.into_inner());
+        *guard = meta;
     }
 
     /// Replace the single-key prompt-copy index. Used at hydration time and
     /// after an import so prompts can show the key nickname and hint, and
-    /// so the unprotected fast-path can skip the prompt.
+    /// so the unprotected fast-path can skip the prompt. Poison-safe: a poisoned
+    /// lock is recovered so the index can self-heal after a panicked reader.
     pub fn set_single_key_index(&self, index: BTreeMap<String, ImportedKey>) {
-        if let Ok(mut guard) = self.inner.single_key_index.write() {
-            *guard = index;
-        }
+        let mut guard = self
+            .inner
+            .single_key_index
+            .write()
+            .unwrap_or_else(|poison| poison.into_inner());
+        *guard = index;
     }
 
     /// Replace the identity prompt-copy index. Used at hydration time and
     /// after an opt-in migration so the sign-time prompt for a protected
     /// identity shows its label and password hint. Display-only — never
-    /// gates whether a prompt fires (the vault scheme does).
+    /// gates whether a prompt fires (the vault scheme does). Poison-safe: a
+    /// poisoned lock is recovered so the index can self-heal after a panicked
+    /// reader.
     pub fn set_identity_prompt_index(&self, index: BTreeMap<[u8; 32], IdentityPromptMeta>) {
-        if let Ok(mut guard) = self.inner.identity_prompt_index.write() {
-            *guard = index;
-        }
+        let mut guard = self
+            .inner
+            .identity_prompt_index
+            .write()
+            .unwrap_or_else(|poison| poison.into_inner());
+        *guard = index;
     }
 
     /// Run `f` with the plaintext secret for `scope`, obtaining it

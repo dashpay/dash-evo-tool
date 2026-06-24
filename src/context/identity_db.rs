@@ -740,6 +740,15 @@ impl AppContext {
         qi.associated_wallets = wallets.clone();
         qi.secret_access = self.wallet_backend().ok().map(|b| b.secret_access());
         qi.top_ups = BTreeMap::new();
+        // Mirror the bulk-load (`load_identities_filtered`) vault migration on
+        // this single-get path too: a legacy blob with resident `Clear` /
+        // `AlwaysClear` keys is migrated to the vault on read, so the SEC-001
+        // backend tasks (`protect_identity_keys` / `unprotect_identity_keys`)
+        // and every other single-get consumer see vault-backed schemes rather
+        // than re-persisting resident plaintext. Crash-safe (vault-first) and
+        // idempotent; a protected identity's resident plaintext is left in place
+        // (never downgraded to a keyless vault entry).
+        self.migrate_identity_keys_to_vault(&kv, &id, &mut qi);
         self.hydrate_top_ups(&mut qi);
         Ok(Some(qi))
     }
@@ -1735,6 +1744,121 @@ mod tests {
             migrate_keystore_to_vault(&store, &id, &mut qi, |_| Ok(())),
             KeystoreMigration::Nothing
         );
+    }
+
+    /// SEC-001 finding-3 regression: the single-get `get_identity_by_id` path
+    /// must run the SAME vault migration the bulk `load_identities_filtered`
+    /// path runs, so a legacy blob with resident `Clear`/`AlwaysClear` keys is
+    /// migrated to the vault on read instead of returning (and re-persisting)
+    /// resident plaintext. Before the fix this path called only `hydrate_top_ups`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn get_identity_by_id_migrates_legacy_resident_keys_to_vault() {
+        use crate::app::TaskResult;
+        use crate::app_dir::ensure_env_file;
+        use crate::context::connection_status::ConnectionStatus;
+        use crate::database::test_helpers::create_database_at_path;
+        use crate::utils::egui_mpsc::SenderAsync;
+        use crate::utils::tasks::TaskManager;
+
+        // Offline wired AppContext (no network I/O) so `secret_store` is a real,
+        // writable vault and `get_identity_by_id` can migrate into it.
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = temp_dir.path().to_path_buf();
+        ensure_env_file(&data_dir);
+        let db = Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
+        let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
+        let secret_store = AppContext::open_secret_store(&data_dir).expect("secret store");
+        let ctx = AppContext::new(
+            data_dir,
+            Network::Testnet,
+            db,
+            Arc::new(TaskManager::new()),
+            Arc::new(ConnectionStatus::new()),
+            egui::Context::default(),
+            app_kv,
+            secret_store,
+        )
+        .expect("offline testnet AppContext::new");
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("wire wallet backend offline");
+
+        // Stage a LEGACY blob: resident Clear/AlwaysClear keys written WITHOUT
+        // the vault-first encode (bypassing `insert_local_qualified_identity`).
+        let high = [0xAA; 32];
+        let medium = [0xBB; 32];
+        let qi = qi_with_plaintext_and_derived(high, medium);
+        let identity_id = qi.identity.id();
+        let id_buf = identity_id.to_buffer();
+        let kv = ctx.identity_kv().expect("identity kv");
+        kv.put(
+            DetScope::Identity(&id_buf),
+            IDENTITY_KEY,
+            &StoredQualifiedIdentity {
+                qi_bytes: qi.to_bytes(),
+                status: qi.status.as_u8(),
+                identity_type: format!("{:?}", qi.identity_type),
+                wallet_hash: None,
+                wallet_index: None,
+            },
+        )
+        .expect("stage legacy blob");
+        index_add_identity(&kv, &id_buf).expect("index legacy identity");
+
+        // Precondition: the vault holds nothing yet for this identity.
+        let store = ctx.secret_store();
+        let view = IdentityKeyView::new(&store, id_buf);
+        assert!(
+            view.get(&PrivateKeyTarget::PrivateKeyOnMainIdentity, 1)
+                .unwrap()
+                .is_none(),
+            "vault must be empty before the read-path migration"
+        );
+
+        // The single-get read MUST migrate the resident plaintext.
+        let loaded = ctx
+            .get_identity_by_id(&identity_id)
+            .expect("load identity")
+            .expect("identity present");
+        assert!(
+            !loaded.private_keys.has_plaintext_for_vault(),
+            "returned identity must carry no resident plaintext after migration"
+        );
+
+        // The plaintext keys now live in the vault as raw bytes.
+        assert_eq!(
+            *view
+                .get(&PrivateKeyTarget::PrivateKeyOnMainIdentity, 1)
+                .unwrap()
+                .expect("Clear key migrated to vault"),
+            high
+        );
+        assert_eq!(
+            *view
+                .get(&PrivateKeyTarget::PrivateKeyOnMainIdentity, 2)
+                .unwrap()
+                .expect("AlwaysClear key migrated to vault"),
+            medium
+        );
+
+        // The persisted blob was rewritten to InVault placeholders — a re-read
+        // no longer re-exposes resident plaintext.
+        let raw: StoredQualifiedIdentity = kv
+            .get(DetScope::Identity(&id_buf), IDENTITY_KEY)
+            .unwrap()
+            .expect("blob present");
+        let redecoded =
+            decode_stored_identity(&raw.qi_bytes, Network::Testnet).expect("decode rewritten blob");
+        assert!(
+            !redecoded.private_keys.has_plaintext_for_vault(),
+            "rewritten blob must carry only InVault placeholders"
+        );
+
+        if let Ok(backend) = ctx.wallet_backend() {
+            backend.shutdown().await;
+        }
     }
 
     /// SEC-001 MUST-FIX helper: a QI with one `InVault` key (key_id 1, sealed

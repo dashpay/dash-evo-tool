@@ -144,6 +144,15 @@ impl AppContext {
         // at-rest encode writes no plaintext for it. The encode-path guard
         // (`encode_identity_blob_vault_first` → `IdentityKeyProtectionDowngrade`)
         // still fails closed if this seal is ever skipped.
+        //
+        // This seal is the one fallible disk write between the broadcast above
+        // and the persist below, and on-chain + local cannot be made atomic. If
+        // it fails (I/O error, corrupt keystore), the key is already on-chain but
+        // not saved here: fail with the typed, actionable
+        // `IdentityKeyAddedButNotSaved` (the key is on the network; retry after
+        // freeing disk space) instead of a silent loss or a misleading storage
+        // error — and NEVER fall back to a keyless write (that would strip the
+        // protection this branch exists to preserve).
         let new_key = (
             PrivateKeyOnMainIdentity,
             public_key_to_add.identity_public_key.id(),
@@ -157,7 +166,8 @@ impl AppContext {
                     new_key.1,
                     &private_key,
                     &password,
-                )?;
+                )
+                .map_err(key_added_but_not_saved)?;
             // O-1: `mark_in_vault` reports whether the key was present to flip.
             // In this single-threaded flow the key we just inserted is always
             // present, so a `false` is an unexpected invariant break — warn.
@@ -203,6 +213,19 @@ async fn verify_protected_identity_precondition(
                 .await?,
         )),
         None => Ok(None),
+    }
+}
+
+/// Map a POST-broadcast seal failure to the typed
+/// [`TaskError::IdentityKeyAddedButNotSaved`]. By the time the seal runs the new
+/// key is already accepted on-chain, so a vault-write failure here cannot be
+/// undone — surface a loud, actionable error (the key is on the network; retry
+/// after freeing disk space) that preserves the upstream seal failure in its
+/// `#[source]` chain, rather than a silent loss or a misleading storage message.
+/// Never falls back to a keyless write (the SEC-001 protected invariant holds).
+fn key_added_but_not_saved(source: TaskError) -> TaskError {
+    TaskError::IdentityKeyAddedButNotSaved {
+        source: Box::new(source),
     }
 }
 
@@ -344,5 +367,36 @@ mod tests {
         )
         .expect("seal new key with the verified password");
         assert_eq!(prompt.ask_count(), 1, "sealing did not prompt again");
+    }
+
+    /// A post-broadcast seal failure maps to the typed
+    /// `IdentityKeyAddedButNotSaved` and preserves the upstream cause in the
+    /// `#[source]` chain — so the banner can speak about the on-chain key while
+    /// logs keep the storage diagnostic, and the key is never silently dropped.
+    #[test]
+    fn post_broadcast_seal_failure_maps_to_typed_orphan_error() {
+        use std::error::Error as _;
+        // Any upstream seal error stands in for a vault-write failure; the
+        // mapping wraps it without inspecting the specific variant.
+        let mapped = key_added_but_not_saved(TaskError::IdentityKeyMissing);
+        assert!(
+            matches!(mapped, TaskError::IdentityKeyAddedButNotSaved { .. }),
+            "a post-broadcast seal failure must map to the typed orphan error, got {mapped:?}"
+        );
+        // The upstream cause survives in the source chain (Display/Debug split).
+        let source = mapped.source().expect("upstream seal error is preserved");
+        assert!(
+            source
+                .to_string()
+                .contains("could not be found on this device"),
+            "expected the upstream cause in the chain, got {source}"
+        );
+        // The user-facing message states the key is on the network and is
+        // actionable (free disk space, retry) — no jargon, no silent loss.
+        let shown = mapped.to_string();
+        assert!(
+            shown.contains("added to your identity on the network"),
+            "message must tell the user the key is on-chain, got {shown}"
+        );
     }
 }

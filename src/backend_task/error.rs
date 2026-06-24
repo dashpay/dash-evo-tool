@@ -253,6 +253,21 @@ pub enum TaskError {
     )]
     IdentityKeyProtectionDowngrade,
 
+    /// A new key was accepted onto the identity ON-CHAIN, but sealing it into
+    /// the local secret vault afterward failed, so it is not yet saved on this
+    /// device. The on-chain broadcast and the local persist cannot be atomic, so
+    /// this is the unavoidable post-broadcast gap — surfaced as a loud, typed,
+    /// actionable error rather than a silent loss. It never falls back to a
+    /// keyless write (the SEC-001 protected invariant holds). The upstream seal
+    /// failure is preserved through `#[source]` for logs and the details panel.
+    #[error(
+        "The new key was added to your identity on the network, but it could not be saved on this device. Your identity and its existing keys are safe. Check available disk space, then try adding a key again."
+    )]
+    IdentityKeyAddedButNotSaved {
+        #[source]
+        source: Box<TaskError>,
+    },
+
     /// The DET wallet-metadata sidecar (alias / `is_main` /
     /// `core_wallet_name`) could not be read or written. Distinct from
     /// [`Self::WalletStorage`] because the cause sits in the cross-

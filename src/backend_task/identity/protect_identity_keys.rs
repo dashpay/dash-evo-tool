@@ -153,6 +153,14 @@ fn seal_identity_keys(
     keys: &IdentityKeySet,
     password: &SecretString,
 ) -> Result<usize, TaskError> {
+    // SEC-001 one-password invariant: a Mixed-state "Finish protecting" re-run
+    // (some keys already Tier-2 from a prior partial opt-in, some still keyless)
+    // must not seal the remaining keys under a DIFFERENT password than the
+    // existing ones. Verify the supplied password opens every already-`Protected`
+    // key BEFORE mutating any label, so a mismatch returns up front with zero
+    // state changes — the identity can never be split across two passwords.
+    verify_existing_protection_password(view, keys, password)?;
+
     let mut sealed = 0usize;
     for (target, key_id) in keys {
         match view.scheme(target, *key_id)? {
@@ -167,6 +175,27 @@ fn seal_identity_keys(
         }
     }
     Ok(sealed)
+}
+
+/// Verify `password` opens EVERY already-`Protected` key in `keys`, before any
+/// sealing mutates the vault. Enforces SEC-001's one-password-per-identity
+/// invariant on a Mixed-state opt-in re-run: if a prior partial run sealed some
+/// keys under password A and the user now supplies password B, the mismatch
+/// surfaces from `get_protected` as [`TaskError::IdentityKeyPassphraseIncorrect`]
+/// (no oracle) with zero state changes. Keyless (`Unprotected`) and `Absent`
+/// keys impose no password constraint and are skipped.
+fn verify_existing_protection_password(
+    view: &IdentityKeyView<'_>,
+    keys: &IdentityKeySet,
+    password: &SecretString,
+) -> Result<(), TaskError> {
+    for (target, key_id) in keys {
+        if view.scheme(target, *key_id)? == SecretScheme::Protected {
+            view.get_protected(target, *key_id, password)?
+                .ok_or(TaskError::IdentityKeyMissing)?;
+        }
+    }
+    Ok(())
 }
 
 /// Revert every `Protected` vault key in `keys` to keyless (Tier-1), verifying
@@ -307,6 +336,51 @@ mod tests {
         assert_eq!(
             *view.get_protected(&M, 1, &pw).unwrap().unwrap(),
             [0xE1; 32]
+        );
+    }
+
+    /// SEC-001 one-password invariant: a Mixed-state "Finish protecting" re-run
+    /// supplied with a DIFFERENT password than the already-sealed key is
+    /// rejected up front with `IdentityKeyPassphraseIncorrect`, leaving every
+    /// key untouched — the identity can never be split across two passwords.
+    /// Re-running with the ORIGINAL password finishes the job, sealing all keys
+    /// under that one password.
+    #[test]
+    fn seal_rejects_mismatched_password_on_mixed_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = fresh_store(dir.path());
+        let view = IdentityKeyView::new(&store, [0x07u8; 32]);
+        let original = SecretString::new("the-original-password");
+        // Crash mid opt-in: key 0 sealed under the original password, key 1
+        // still keyless.
+        view.store_protected(&M, 0, &[0xF0; 32], &original).unwrap();
+        view.store(&M, 1, &[0xF1; 32]).unwrap();
+        let keys = key_set(&[(M, 0), (M, 1)]);
+
+        // A re-run with a DIFFERENT password is rejected before any sealing.
+        let err = seal_identity_keys(&view, &keys, &SecretString::new("a-different-password"))
+            .expect_err("mismatched password must be rejected");
+        assert!(
+            matches!(err, TaskError::IdentityKeyPassphraseIncorrect),
+            "expected IdentityKeyPassphraseIncorrect, got {err:?}"
+        );
+        // Nothing changed: key 0 still Protected (under the original password),
+        // key 1 still keyless — no split, no partial seal.
+        assert_eq!(view.scheme(&M, 0).unwrap(), SecretScheme::Protected);
+        assert_eq!(view.scheme(&M, 1).unwrap(), SecretScheme::Unprotected);
+
+        // Re-running with the ORIGINAL password finishes the job: both keys end
+        // sealed under the one per-identity password.
+        let sealed = seal_identity_keys(&view, &keys, &original).unwrap();
+        assert_eq!(sealed, 1, "only the still-keyless key is sealed");
+        assert_eq!(view.scheme(&M, 1).unwrap(), SecretScheme::Protected);
+        assert_eq!(
+            *view.get_protected(&M, 0, &original).unwrap().unwrap(),
+            [0xF0; 32]
+        );
+        assert_eq!(
+            *view.get_protected(&M, 1, &original).unwrap().unwrap(),
+            [0xF1; 32]
         );
     }
 

@@ -167,8 +167,12 @@ fn validate_protection_password(password: &Secret) -> Result<(), TaskError> {
 /// (`AtWalletDerivationPath`) and already-vaulted (`InVault`) keys carry no
 /// resident plaintext, so a legitimately keyless / wallet-derived identity is
 /// never rejected.
+///
+/// Also rejects legacy `Encrypted` keys (decode-only, no current producer):
+/// their vault scheme is also `Absent`, so the seal step would silently skip
+/// them and issue a false-protected result. See [`KeyStorage::has_encrypted_legacy_keys`].
 fn reject_resident_identity_plaintext(private_keys: &KeyStorage) -> Result<(), TaskError> {
-    if private_keys.has_plaintext_for_vault() {
+    if private_keys.has_plaintext_for_vault() || private_keys.has_encrypted_legacy_keys() {
         return Err(TaskError::IdentityKeyProtectionIncomplete);
     }
     Ok(())

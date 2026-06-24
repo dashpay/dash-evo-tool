@@ -582,6 +582,23 @@ impl KeyStorage {
         })
     }
 
+    /// Whether any key uses the legacy [`PrivateKeyData::Encrypted`] variant.
+    ///
+    /// `Encrypted` is **decode-only** — no current producer creates these keys
+    /// in new installations. They cannot be migrated to the vault without the
+    /// decryption password, so [`Self::take_plaintext_for_vault`] leaves them
+    /// untouched. The protect-identity guard calls this to fail-closed: an
+    /// `Encrypted` key has vault scheme `Absent` and would be silently skipped
+    /// by the seal step, causing a false-protected report.
+    // TODO(SEC-001): when a migration path for Encrypted keys is available,
+    // replace this with a proper re-seal that moves them into the new password
+    // envelope instead of blocking the protect operation.
+    pub fn has_encrypted_legacy_keys(&self) -> bool {
+        self.private_keys
+            .values()
+            .any(|(_, data)| matches!(data, PrivateKeyData::Encrypted(_)))
+    }
+
     /// Rewrite every plaintext-carrying identity key
     /// ([`PrivateKeyData::Clear`] / [`PrivateKeyData::AlwaysClear`]) to an
     /// [`PrivateKeyData::InVault`] placeholder, returning the raw bytes that

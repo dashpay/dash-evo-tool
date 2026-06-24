@@ -308,7 +308,7 @@ fn migrate_keystore_to_vault(
         );
         return KeystoreMigration::ProtectedSkipped;
     }
-    let before = qi.private_keys.clone();
+    let mut before = qi.private_keys.clone();
     let taken = qi.private_keys.take_plaintext_for_vault();
     let view = crate::wallet_backend::IdentityKeyView::new(secret_store, *id);
     if let Err(e) = view.store_all(&taken) {
@@ -322,6 +322,10 @@ fn migrate_keystore_to_vault(
         return KeystoreMigration::VaultWriteFailed;
     }
     let migrated = taken.len();
+    // SEC-002: the vault write succeeded — the rollback clone is no longer
+    // needed. Zeroize its plaintext bytes (Clear/AlwaysClear) before it drops
+    // so no identity private key lingers in freed heap.
+    let _ = before.take_plaintext_for_vault();
     if let Err(e) = persist(qi) {
         tracing::warn!(
             target = "context::identity_db",

@@ -416,6 +416,13 @@ impl AppContext {
         // platform rev (`platform_address_sync` gained it in b4506492, matching
         // `identity_sync`/`shielded_sync`), so a rapid reconnect cannot leak an
         // uncancellable / duplicate sync loop (Q3).
+        //
+        // TODO(dash-spv#824): restart-in-place fully recreates the upstream DashSpvClient
+        // in SpvRuntime::run(), opening a reinit window. A block arriving at tip during
+        // that window can freeze dash-spv's filter committed_height one block below
+        // permanently → is_synced() stuck false → UI stuck on "Syncing…". Upstream bug:
+        // dashpay/rust-dashcore#824; DET's reconnect is the trigger. DET-side mitigations:
+        // quiesce header/block intake until filter init completes, or add a stall watchdog.
         if let Ok(backend) = self.wallet_backend() {
             backend.stop_in_place().await;
         }

@@ -96,14 +96,8 @@ async fn step_top_up_from_platform_addresses(
         fund_result
     );
 
-    // Reset platform sync state so incremental sync doesn't skip the newly
-    // funded address (the previous sync checkpoint may be past the funding tx).
-    if let Err(e) = ctx
-        .app_context
-        .set_platform_sync_info(&si.wallet_seed_hash, 0, 0)
-    {
-        tracing::warn!("Failed to reset platform sync info: {}", e);
-    }
+    // The manual fetch always does a full scan, so it discovers the newly
+    // funded address without any checkpoint reset.
 
     // TODO: sync_address_balances may not discover newly funded addresses
     // Expected: FetchPlatformAddressBalances returns > 0 balance after funding
@@ -659,15 +653,9 @@ async fn tc_031_incremental_address_discovery() {
         tokio::time::sleep(poll_interval).await;
     };
 
-    // Step 4: Full sync — reset checkpoint and discover the funded address
-    tracing::info!("=== Step 4: full sync (reset checkpoint, discover funded address) ===");
-    if let Err(e) = ctx
-        .app_context
-        .set_platform_sync_info(&si.wallet_seed_hash, 0, 0)
-    {
-        tracing::warn!("Failed to reset platform sync info: {}", e);
-    }
-
+    // Step 4: Full sync — the manual fetch always full-scans, so it discovers
+    // the funded address with no checkpoint reset.
+    tracing::info!("=== Step 4: full sync (discover funded address) ===");
     let full_sync_result = run_task(
         &ctx.app_context,
         BackendTask::WalletTask(WalletTask::FetchPlatformAddressBalances {
@@ -695,17 +683,10 @@ async fn tc_031_incremental_address_discovery() {
         direct_balance
     );
 
-    // Verify checkpoint is now set
-    let (ts, _) = ctx
-        .app_context
-        .get_platform_sync_info(&si.wallet_seed_hash)
-        .unwrap_or((0, 0));
-    assert!(ts > 0, "checkpoint should be set after full sync");
-
-    // Step 6: Incremental-only sync (checkpoint set, seeded balances present)
-    // This exercises the PR #3468 fix: on_address_found must fire for seeded
-    // balances so the address remains visible and gap limit extends correctly.
-    tracing::info!("=== Step 6: incremental sync (seeded balance path) ===");
+    // Step 6: A second sync must still report the balance — guards against a
+    // repeated full scan dropping the address (PR #3468: on_address_found must
+    // fire for already-known balances so they stay visible across syncs).
+    tracing::info!("=== Step 6: second sync (address stays visible) ===");
     let incr_result = run_task(
         &ctx.app_context,
         BackendTask::WalletTask(WalletTask::FetchPlatformAddressBalances {
@@ -722,17 +703,17 @@ async fn tc_031_incremental_address_discovery() {
         other => panic!("expected PlatformAddressBalances, got: {:?}", other),
     };
 
-    // Step 7: Assert incremental sync still reports the balance
+    // Step 7: Assert the second sync still reports the balance
     assert!(
         incr_bal > 0,
-        "Incremental sync should report seeded balance (full sync: {}, direct: {}). \
-         If this fails, on_address_found is not being called for seeded balances \
-         in incremental-only mode (see Platform PR #3468).",
+        "Second sync should still report the known balance (first sync: {}, direct: {}). \
+         If this fails, on_address_found is not being called for already-known balances \
+         (see Platform PR #3468).",
         full_sync_bal,
         direct_balance,
     );
     tracing::info!(
-        "TC-031 PASSED: full_sync={} incremental={} direct={}",
+        "TC-031 PASSED: first_sync={} second_sync={} direct={}",
         full_sync_bal,
         incr_bal,
         direct_balance

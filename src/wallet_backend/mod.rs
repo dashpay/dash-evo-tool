@@ -43,7 +43,6 @@ mod kv;
 #[cfg(test)]
 pub(crate) mod leak_test_support;
 mod loader;
-mod platform_address;
 pub mod secret_access;
 pub mod secret_prompt;
 pub mod secret_seam;
@@ -88,9 +87,6 @@ pub use contact_profile_cache::{CachedContactProfile, ContactProfileCacheView};
 pub use event_bridge::EventBridge;
 pub use kv::{DetKv, DetScope, KvAdapterError, SCHEMA_VERSION as KV_SCHEMA_VERSION};
 pub use loader::{LoadedWallets, PersistedLoadSkip, PersistedWalletLoader, UpstreamFromPersisted};
-pub use platform_address::{
-    KvCachedPlatformAddresses, PlatformAddressView, UpstreamPlatformAddresses,
-};
 pub use single_key::SingleKeyView;
 use snapshot::SnapshotStore;
 pub use snapshot::{DetUtxo, DetWalletBalance, WalletSnapshot};
@@ -316,6 +312,9 @@ impl WalletBackend {
             // Platform-address push writer: the platform address sync-completed callback
             // writes per-wallet owned-only balances into AppContext's frame-safe snapshot.
             Arc::clone(&ctx.platform_balances),
+            // ...and the matching `(timestamp, height)` sync-cursor snapshot that
+            // drives the "Addresses synced" status label.
+            Arc::clone(&ctx.platform_sync_cursors),
         ));
 
         let pwm = PlatformWalletManager::new(sdk, Arc::clone(&persister), bridge);
@@ -1219,14 +1218,6 @@ impl WalletBackend {
     /// the schema-version envelope.
     pub fn kv(&self) -> DetKv {
         DetKv::new(Arc::clone(&self.inner.persister))
-    }
-
-    /// Per-address Platform funds + sync-cursor view (T5 seam). Returns
-    /// the ACTIVE k/v-cached impl; [`UpstreamPlatformAddresses`] is the
-    /// reserved swap target. See [`platform_address`] for why the cache
-    /// stays active on 08b0ed9 (upstream lacks a public nonce reader).
-    pub fn platform_addresses(&self) -> KvCachedPlatformAddresses {
-        KvCachedPlatformAddresses::new(self.kv())
     }
 
     /// Per-`(identity, token)` balance view (T6 seam). Reads the lock-free

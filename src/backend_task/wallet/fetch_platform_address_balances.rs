@@ -24,15 +24,15 @@ impl AppContext {
                 .ok_or(crate::backend_task::error::TaskError::WalletNotFound)?
         };
 
-        // Get last sync cursor from per-wallet k/v
-        let (last_sync_timestamp, last_sync_height) =
-            self.get_platform_sync_info(&seed_hash).unwrap_or((0, 0));
-
         // Create provider. Address derivation needs the DIP-17 account-level
         // xpub, which is derived once from the HD seed fetched just-in-time
         // through the chokepoint. The seed is borrowed for that single
         // derivation inside the closure and zeroizes on return — the provider
         // then derives every gap-limit child from the public xpub alone.
+        //
+        // This explicit refresh does a full tree scan: with no DET-side cursor
+        // it always re-derives from scratch and returns every funded address.
+        // Steady-state freshness comes from the coordinator's background pass.
         let network = self.network;
         let backend = self.wallet_backend()?;
         let mut provider = backend
@@ -44,14 +44,11 @@ impl AppContext {
                         .expose_hd_seed()
                         .ok_or(crate::backend_task::error::TaskError::WalletLocked)?;
                     let wallet = wallet_arc.read()?;
-                    let provider = WalletAddressProvider::new(&wallet, network, seed).map_err(
-                        |detail| {
-                            crate::backend_task::error::TaskError::WalletAddressProviderSetupFailed {
-                                detail,
-                            }
-                        },
-                    )?;
-                    Ok(provider.with_stored_state(&wallet, network, last_sync_height))
+                    WalletAddressProvider::new(&wallet, network, seed).map_err(|detail| {
+                        crate::backend_task::error::TaskError::WalletAddressProviderSetupFailed {
+                            detail,
+                        }
+                    })
                 },
             )
             .await?;
@@ -71,16 +68,7 @@ impl AppContext {
             None
         };
 
-        let last_ts = if last_sync_timestamp > 0 {
-            Some(last_sync_timestamp)
-        } else {
-            None
-        };
-
-        let result = match sdk
-            .sync_address_balances(&mut provider, config, last_ts)
-            .await
-        {
+        let result = match sdk.sync_address_balances(&mut provider, config, None).await {
             Ok(res) => res,
             // A never-funded wallet has no platform-balance tree to prove
             // against, so the proof layer reports an empty tree. That is the
@@ -121,41 +109,17 @@ impl AppContext {
             );
         }
 
-        // Persist sync cursor to per-wallet k/v
-        if let Err(e) = self.set_platform_sync_info(
-            &seed_hash,
-            result.new_sync_timestamp,
-            result.new_sync_height,
-        ) {
-            tracing::warn!("Failed to save platform sync info: {}", e);
-        }
-
-        // Apply results to wallet and persist
+        // Apply results to the in-memory wallet. Persistence is the upstream
+        // coordinator's job: it owns the `platform_addresses` rows and re-pushes
+        // them on its next pass, so DET keeps no parallel at-rest copy.
         let balances = {
             let mut wallet = wallet_arc.write()?;
 
-            // Update wallet with synced balances
             provider.apply_results_to_wallet(&mut wallet);
 
-            // Persist platform-address balances to the per-wallet k/v.
-            // T-W-01: the legacy `wallet_addresses` write that used to
-            // sit alongside this loop is removed — no production read
-            // path consumes it; the in-memory wallet maps plus the
-            // platform-address-info k/v are the runtime source of truth.
-            for (_index, (address, funds)) in provider.found_balances_with_indices() {
-                if let Err(e) =
-                    self.set_platform_address_info(&seed_hash, address, funds.balance, funds.nonce)
-                {
-                    tracing::warn!("Failed to persist Platform address info: {}", e);
-                }
-            }
-
             // Return the wallet's complete platform_address_info, not just
-            // found_balances.  The SDK's incremental sync only reports addresses
-            // whose balance changed; unchanged addresses are absent from
-            // found_balances but still have valid nonces in the wallet.
-            // Returning only found_balances would cause the UI to lose nonce
-            // values for stable-balance addresses (issue #652).
+            // found_balances, so a wallet whose balances were already current
+            // keeps its full per-address set with valid nonces (issue #652).
             wallet
                 .platform_address_info
                 .iter()

@@ -3,7 +3,6 @@ mod contested_names_db;
 mod contract_token_db;
 mod identity_db;
 pub mod migration_status;
-mod platform_address_db;
 mod settings_db;
 mod wallet_lifecycle;
 
@@ -153,6 +152,14 @@ pub struct AppContext {
     ///
     /// Must never be written from the frame loop (Nagatha ruling).
     pub(crate) platform_balances: Arc<Mutex<std::collections::HashMap<WalletSeedHash, u64>>>,
+    /// Frame-safe `(last_sync_timestamp, sync_height)` snapshot keyed by
+    /// `WalletSeedHash`, written by the coordinator's platform-address sync pass
+    /// (the same pass that fills `platform_balances`) and read each frame via
+    /// [`AppContext::platform_sync_info`] to drive the "Addresses synced" label.
+    /// Shares `platform_balances`' wallet-removal leak (accepted, QA-B-004) and
+    /// must never be written from the frame loop.
+    pub(crate) platform_sync_cursors:
+        Arc<Mutex<std::collections::HashMap<WalletSeedHash, (u64, u64)>>>,
     /// The egui context, stored for use in non-UI code paths (e.g. display_task_result).
     /// Clone is O(1) — egui::Context is Arc-backed and the same instance for the app lifetime.
     egui_ctx: egui::Context,
@@ -384,6 +391,7 @@ impl AppContext {
             platform_protocol_version: AtomicU32::new(0),
             shielded_balances: Arc::new(Mutex::new(std::collections::HashMap::new())),
             platform_balances: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            platform_sync_cursors: Arc::new(Mutex::new(std::collections::HashMap::new())),
             egui_ctx,
             wallet_backend: ArcSwapOption::const_empty(),
             wallet_backend_build: tokio::sync::Mutex::new(()),
@@ -571,6 +579,30 @@ impl AppContext {
             .ok()
             .and_then(|map| map.get(seed_hash).copied())
             .unwrap_or(0)
+    }
+
+    /// Synchronous read of the latest platform-address sync cursor
+    /// `(last_sync_timestamp, sync_height)` for `seed_hash`, or `None` when no
+    /// coordinator pass has reported a funded address for the wallet yet.
+    ///
+    /// Read side of the same coordinator-push snapshot as
+    /// [`platform_balance_duffs`](Self::platform_balance_duffs); the write side
+    /// is `on_platform_address_sync_completed` in [`EventBridge`]. Drives the
+    /// "Addresses synced" label. Safe to call from the egui frame loop.
+    pub fn platform_sync_info(&self, seed_hash: &WalletSeedHash) -> Option<(u64, u64)> {
+        self.platform_sync_cursors
+            .lock()
+            .ok()
+            .and_then(|map| map.get(seed_hash).copied())
+    }
+
+    /// Drop the cached sync cursor for `seed_hash` so the "Addresses synced"
+    /// label reverts to "never synced" — used by the developer "Clear Platform
+    /// Addresses" tool after it wipes the in-memory address pools.
+    pub fn clear_platform_sync_info(&self, seed_hash: &WalletSeedHash) {
+        if let Ok(mut map) = self.platform_sync_cursors.lock() {
+            map.remove(seed_hash);
+        }
     }
 
     /// Populate each wallet's `platform_address_info` from a coordinator-push batch.
@@ -814,7 +846,10 @@ impl AppContext {
         self.wallet_backend.store(Some(Arc::new(backend)));
         drop(_build_guard);
         self.restore_selected_wallet_from_kv();
-        self.restore_platform_address_info_from_kv();
+        // Platform per-address balances warm-start from the upstream
+        // coordinator's first pass — it loads the persisted `platform_addresses`
+        // rows via `initialize_from_persisted` and pushes balance + nonce — so
+        // DET keeps no parallel at-rest copy to restore here.
 
         // Bootstrap addresses and promote any verified-open seeds into the
         // JIT chokepoint's session cache for the cold-boot path. Signing no

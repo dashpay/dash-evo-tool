@@ -1273,19 +1273,7 @@ impl AppContext {
                 // Convert PlatformAddress to core Address using the network
                 let core_addr = platform_addr.to_address_with_network(self.network);
 
-                // Update in-memory wallet state
                 wallet.set_platform_address_info(core_addr.clone(), info.balance, info.nonce);
-
-                // Persist to per-wallet k/v
-                if let Err(e) = AppContext::set_platform_address_info(
-                    self,
-                    &seed_hash,
-                    &core_addr,
-                    info.balance,
-                    info.nonce,
-                ) {
-                    tracing::warn!("Failed to store Platform address info in k/v: {}", e);
-                }
 
                 tracing::debug!(
                     "Updated platform address {} balance={} nonce={} from SDK response",

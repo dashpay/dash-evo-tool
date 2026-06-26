@@ -141,8 +141,6 @@ pub struct WalletsBalancesScreen {
     selected_account_tab: AccountTab,
     /// Shielded tab view component (lazily initialized per wallet)
     shielded_tab_view: Option<ShieldedTabView>,
-    /// Cached platform sync info: (last_sync_timestamp, last_sync_height)
-    platform_sync_info: Option<(u64, u64)>,
     /// Whether a wallet switch should trigger a Core refresh on the next frame
     pending_wallet_refresh_on_switch: bool,
     /// Cached filtered transaction indices for the currently selected wallet.
@@ -233,12 +231,6 @@ impl WalletsBalancesScreen {
         selected_wallet: Option<Arc<RwLock<Wallet>>>,
         selected_single_key_wallet: Option<Arc<RwLock<SingleKeyWallet>>>,
     ) -> Self {
-        let platform_sync_info = selected_wallet
-            .as_ref()
-            .and_then(|w| w.read().ok().map(|g| g.seed_hash()))
-            .and_then(|hash| app_context.get_platform_sync_info(&hash).ok())
-            .filter(|(ts, _)| *ts > 0);
-
         let shielded_tab_view = selected_wallet
             .as_ref()
             .and_then(|w| w.read().ok().map(|g| g.seed_hash()))
@@ -273,7 +265,6 @@ impl WalletsBalancesScreen {
             refresh_mode: RefreshMode::default(),
             selected_account_tab: AccountTab::default(),
             shielded_tab_view,
-            platform_sync_info,
             pending_wallet_refresh_on_switch: false,
             cached_tx_indices: None,
             cached_tx_source_len: None,
@@ -313,19 +304,9 @@ impl WalletsBalancesScreen {
         self.app_context.persist_selected_wallet_kv(hd_hash, hash);
     }
 
-    /// Refresh the cached platform sync info from the database.
-    fn refresh_platform_sync_info_cache(&mut self, seed_hash: &WalletSeedHash) {
-        self.platform_sync_info = self
-            .app_context
-            .get_platform_sync_info(seed_hash)
-            .ok()
-            .filter(|(ts, _)| *ts > 0);
-    }
-
     /// Set the selected HD wallet and update all associated state (persisted
-    /// hash, platform sync info cache).  All code paths that change
-    /// `selected_wallet` should go through this helper to keep the sync
-    /// status panel consistent.
+    /// hash).  All code paths that change `selected_wallet` should go through
+    /// this helper to keep the panel consistent.
     fn set_selected_hd_wallet(&mut self, wallet: Option<Arc<RwLock<Wallet>>>) {
         let seed_hash = wallet
             .as_ref()
@@ -342,11 +323,9 @@ impl WalletsBalancesScreen {
 
         if let Some(hash) = seed_hash {
             self.persist_selected_wallet_hash(Some(hash));
-            self.refresh_platform_sync_info_cache(&hash);
             // Chain sync is SPV-only and continuous; no RPC refresh-on-switch.
         } else {
             self.persist_selected_wallet_hash(None);
-            self.platform_sync_info = None;
         }
     }
 
@@ -359,7 +338,6 @@ impl WalletsBalancesScreen {
         self.selected_single_key_wallet = Some(wallet.clone());
         self.selected_wallet = None;
         self.selected_account = None;
-        self.platform_sync_info = None;
         self.utxo_page = 0;
 
         if let Ok(hash) = wallet.read().map(|g| g.key_hash) {
@@ -415,12 +393,10 @@ impl WalletsBalancesScreen {
             self.selected_single_key_wallet = Some(wallet);
             self.selected_wallet = None;
             self.selected_account = None;
-            self.platform_sync_info = None;
             return;
         }
 
         self.selected_account = None;
-        self.platform_sync_info = None;
     }
 
     /// Clear all transient request/pending state that could fire against the
@@ -1797,12 +1773,20 @@ impl WalletsBalancesScreen {
                 });
 
                 // -- Platform: Addresses --
-                let addr_count = self
+                // Count and sync cursor both come from the coordinator-push
+                // snapshot, read live each frame so the label stays truthful
+                // without a manual refresh — and even while the wallet is locked.
+                let (addr_count, platform_sync_info) = self
                     .selected_wallet
                     .as_ref()
                     .and_then(|w| w.read().ok())
-                    .map(|w| w.platform_address_info.len())
-                    .unwrap_or(0);
+                    .map(|w| {
+                        (
+                            w.platform_address_info.len(),
+                            self.app_context.platform_sync_info(&w.seed_hash()),
+                        )
+                    })
+                    .unwrap_or((0, None));
                 let addr_color = if self.refreshing {
                     syncing_color
                 } else {
@@ -1813,16 +1797,12 @@ impl WalletsBalancesScreen {
                     if self.refreshing {
                         ui.add(egui::Spinner::new().size(sz).color(syncing_color));
                     }
-                    let addr_text =
-                        if let Some((last_sync_ts, sync_height)) = self.platform_sync_info {
-                            let ago = Self::format_unix_time_ago(last_sync_ts);
-                            format!(
-                                "Addresses: {} synced (blk {}, {})",
-                                addr_count, sync_height, ago
-                            )
-                        } else {
-                            "Addresses: never synced".to_string()
-                        };
+                    let addr_text = if let Some((last_sync_ts, sync_height)) = platform_sync_info {
+                        let ago = Self::format_unix_time_ago(last_sync_ts);
+                        format!("Addresses: {addr_count} synced (blk {sync_height}, {ago})")
+                    } else {
+                        "Addresses: never synced".to_string()
+                    };
                     ui.label(RichText::new(addr_text).size(sz).color(addr_color));
                 });
 
@@ -2816,15 +2796,6 @@ impl ScreenLike for WalletsBalancesScreen {
                 self.refreshing = false;
                 self.cached_tx_indices = None;
                 self.cached_tx_source_len = None;
-                // Refresh the cached platform sync info so the panel shows
-                // updated timestamps and block heights after a wallet sync.
-                let seed_hash = self
-                    .selected_wallet
-                    .as_ref()
-                    .and_then(|w| w.read().ok().map(|g| g.seed_hash()));
-                if let Some(hash) = seed_hash {
-                    self.refresh_platform_sync_info_cache(&hash);
-                }
                 if let Some(warn_msg) = warning {
                     MessageBanner::set_global(
                         self.app_context.egui_ctx(),
@@ -2963,7 +2934,6 @@ impl ScreenLike for WalletsBalancesScreen {
                         wallet.set_platform_address_info(core_addr, balance, nonce);
                     }
                 }
-                self.refresh_platform_sync_info_cache(&seed_hash);
                 MessageBanner::set_global(
                     self.app_context.egui_ctx(),
                     "Successfully synced Platform balances",

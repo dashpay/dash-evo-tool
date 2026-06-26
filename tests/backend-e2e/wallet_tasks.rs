@@ -490,11 +490,8 @@ async fn step_withdraw(
     let poll_interval = Duration::from_secs(5);
     let start = std::time::Instant::now();
 
-    // Reset again so the next sync picks up the new funding
-    if let Err(e) = ctx.app_context.set_platform_sync_info(&seed_hash, 0, 0) {
-        tracing::warn!("Failed to reset platform sync info: {}", e);
-    }
-
+    // The manual fetch always does a full scan, so it picks up the new
+    // funding without any checkpoint reset.
     let (withdrawal_addr, withdrawal_balance) = loop {
         let fetch_task =
             BackendTask::WalletTask(WalletTask::FetchPlatformAddressBalances { seed_hash });

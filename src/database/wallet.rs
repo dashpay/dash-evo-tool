@@ -446,10 +446,9 @@ impl Database {
             }
         }
 
-        // Platform address-info + sync cursor live in the per-wallet
-        // k/v store; rehydrated by
-        // `AppContext::restore_platform_address_info_from_kv` once the
-        // wallet backend is wired.
+        // Platform per-address balances + sync cursor are owned by the upstream
+        // coordinator; DET holds no at-rest copy and warm-starts from the
+        // coordinator's first push.
 
         Ok(wallets_map.into_values().collect())
     }

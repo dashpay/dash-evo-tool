@@ -55,6 +55,12 @@ pub struct EventBridge {
     /// coordinator wallet-id matches the registered wallet) contribute to the sum —
     /// no orphan inflation.
     platform_balances: Arc<Mutex<HashMap<WalletSeedHash, u64>>>,
+    /// Platform-address sync-cursor push writer: AppContext's frame-safe
+    /// `(last_sync_timestamp, sync_height)` snapshot keyed by `WalletSeedHash`.
+    /// Written by `on_platform_address_sync_completed` from the same pass that
+    /// produces `platform_balances`; read synchronously in the frame loop via
+    /// `AppContext::platform_sync_info` to drive the "Addresses synced" label.
+    platform_sync_cursors: Arc<Mutex<HashMap<WalletSeedHash, (u64, u64)>>>,
 }
 
 impl EventBridge {
@@ -65,6 +71,7 @@ impl EventBridge {
         coordinator_gate: Arc<CoordinatorGate>,
         shielded_balances: Arc<Mutex<HashMap<WalletSeedHash, u64>>>,
         platform_balances: Arc<Mutex<HashMap<WalletSeedHash, u64>>>,
+        platform_sync_cursors: Arc<Mutex<HashMap<WalletSeedHash, (u64, u64)>>>,
     ) -> Self {
         Self {
             connection_status,
@@ -73,6 +80,7 @@ impl EventBridge {
             coordinator_gate,
             shielded_balances,
             platform_balances,
+            platform_sync_cursors,
         }
     }
 
@@ -339,6 +347,17 @@ impl PlatformEventHandler for EventBridge {
             }
         }
 
+        // (1b) Update the frame-safe sync-cursor snapshot so the "Addresses
+        // synced" label tracks the same pass that produced the balances above —
+        // truthful even while the wallet is locked, with no DET-side cursor.
+        if let Ok(mut cursors) = self.platform_sync_cursors.lock() {
+            for (wallet_id, cursor) in summary_ok_sync_cursors(summary) {
+                if let Some(seed_hash) = self.snapshots.seed_hash_for(&wallet_id) {
+                    cursors.insert(seed_hash, cursor);
+                }
+            }
+        }
+
         // (2) Emit the per-address update so `wallet.platform_address_info` stays
         // current without a manual Refresh. Non-blocking; a full channel means
         // the coordinator retries on the next ~15 s pass. The frame-safe total
@@ -441,6 +460,33 @@ fn summary_ok_platform_entries(
         .collect()
 }
 
+/// `(last_sync_timestamp, sync_height)` for every wallet that synced
+/// successfully with at least one found address, keyed by raw wallet id.
+///
+/// Gated on a non-empty `found` set so it tracks the exact wallets that feed
+/// the balance snapshot. The timestamp falls back to the pass wall-clock
+/// (`sync_unix_seconds`) when the per-wallet result carries none, so a
+/// completed pass always yields a non-zero cursor — the value the label uses
+/// to distinguish "synced" from "never synced". Pure — no I/O — so it is
+/// unit-testable without a coordinator.
+fn summary_ok_sync_cursors(summary: &PlatformAddressSyncSummary) -> Vec<([u8; 32], (u64, u64))> {
+    summary
+        .wallet_results
+        .iter()
+        .filter_map(|(wallet_id, outcome)| match outcome {
+            WalletSyncOutcome::Ok(result) if !result.found.is_empty() => {
+                let timestamp = if result.new_sync_timestamp > 0 {
+                    result.new_sync_timestamp
+                } else {
+                    summary.sync_unix_seconds
+                };
+                Some((*wallet_id, (timestamp, result.new_sync_height)))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 /// Collect `(wallet_id, balance_credits)` for every wallet that synced
 /// successfully in `summary`. Skipped (no bound shielded sub-wallet) and
 /// errored wallets are excluded so their snapshot balance is left untouched.
@@ -463,6 +509,8 @@ mod tests {
 
     /// Shorthand for the shielded-balance snapshot handle the helpers wire.
     type ShieldedBalancesHandle = Arc<Mutex<HashMap<WalletSeedHash, u64>>>;
+    /// Shorthand for the platform sync-cursor snapshot handle the helpers wire.
+    type PlatformCursorsHandle = Arc<Mutex<HashMap<WalletSeedHash, (u64, u64)>>>;
     use crate::utils::egui_mpsc::EguiMpscAsync;
     use dash_sdk::dpp::dashcore::{Address, Network, PublicKey, Transaction, TxOut};
     use dash_sdk::dpp::key_wallet::WalletCoreBalance;
@@ -501,6 +549,7 @@ mod tests {
             Arc::clone(&gate),
             Arc::new(Mutex::new(HashMap::new())),
             Arc::new(Mutex::new(HashMap::new())),
+            Arc::new(Mutex::new(HashMap::new())),
         );
         (bridge, cs, rx, gate)
     }
@@ -525,23 +574,27 @@ mod tests {
             gate,
             Arc::clone(&balances),
             Arc::new(Mutex::new(HashMap::new())),
+            Arc::new(Mutex::new(HashMap::new())),
         );
         (bridge, cs, rx, balances)
     }
 
-    /// Like [`make_bridge`] but also returns the platform-balances snapshot Arc
-    /// so platform-address-sync-event tests can assert the push writer's effect.
+    /// Like [`make_bridge`] but also returns the platform-balances and
+    /// sync-cursor snapshot Arcs so platform-address-sync-event tests can
+    /// assert the push writer's effect on both.
     fn make_bridge_with_platform_balances() -> (
         EventBridge,
         Arc<ConnectionStatus>,
         tokio::sync::mpsc::Receiver<TaskResult>,
         ShieldedBalancesHandle, // same type: Arc<Mutex<HashMap<WalletSeedHash, u64>>>
+        PlatformCursorsHandle,
     ) {
         let cs = Arc::new(ConnectionStatus::new());
         let (tx, rx) =
             tokio::sync::mpsc::channel::<TaskResult>(8).with_egui_ctx(egui::Context::default());
         let gate = Arc::new(CoordinatorGate::default());
         let platform_balances = Arc::new(Mutex::new(HashMap::new()));
+        let platform_sync_cursors = Arc::new(Mutex::new(HashMap::new()));
         let bridge = EventBridge::new(
             Arc::clone(&cs),
             tx,
@@ -549,8 +602,9 @@ mod tests {
             gate,
             Arc::new(Mutex::new(HashMap::new())),
             Arc::clone(&platform_balances),
+            Arc::clone(&platform_sync_cursors),
         );
-        (bridge, cs, rx, platform_balances)
+        (bridge, cs, rx, platform_balances, platform_sync_cursors)
     }
 
     fn drained_refresh(rx: &mut tokio::sync::mpsc::Receiver<TaskResult>) -> bool {
@@ -958,12 +1012,17 @@ mod tests {
     fn platform_address_sync_completed_empty_summary_nudges_only() {
         use platform_wallet::manager::platform_address_sync::PlatformAddressSyncSummary;
 
-        let (bridge, _cs, mut rx, platform_balances) = make_bridge_with_platform_balances();
+        let (bridge, _cs, mut rx, platform_balances, platform_sync_cursors) =
+            make_bridge_with_platform_balances();
         bridge.on_platform_address_sync_completed(&PlatformAddressSyncSummary::default());
 
         assert!(
             platform_balances.lock().unwrap().is_empty(),
             "an empty summary must not write any balance"
+        );
+        assert!(
+            platform_sync_cursors.lock().unwrap().is_empty(),
+            "an empty summary must not write any sync cursor"
         );
         assert!(
             drained_refresh(&mut rx),
@@ -979,7 +1038,8 @@ mod tests {
             PlatformAddressSyncSummary, WalletSyncOutcome,
         };
 
-        let (bridge, _cs, mut rx, platform_balances) = make_bridge_with_platform_balances();
+        let (bridge, _cs, mut rx, platform_balances, platform_sync_cursors) =
+            make_bridge_with_platform_balances();
         let mut summary = PlatformAddressSyncSummary::default();
         summary.wallet_results.insert(
             [7u8; 32],
@@ -990,6 +1050,10 @@ mod tests {
         assert!(
             platform_balances.lock().unwrap().is_empty(),
             "an errored wallet must not write a balance"
+        );
+        assert!(
+            platform_sync_cursors.lock().unwrap().is_empty(),
+            "an errored wallet must not write a sync cursor"
         );
         assert!(drained_refresh(&mut rx));
     }
@@ -1065,6 +1129,85 @@ mod tests {
             .expect("entry for p2pkh_b");
         assert_eq!(entry_b.1, 300_000, "balance_credits for p2pkh_b");
         assert_eq!(entry_b.2, 2, "nonce for p2pkh_b");
+    }
+
+    /// `summary_ok_sync_cursors` yields a `(timestamp, height)` cursor for each
+    /// Ok wallet that found at least one address, skips errored and empty-found
+    /// wallets, and backfills a missing per-wallet timestamp from the pass clock.
+    #[test]
+    fn summary_ok_sync_cursors_extracts_cursor_with_timestamp_fallback() {
+        use dash_sdk::dpp::key_wallet::PlatformP2PKHAddress;
+        use dash_sdk::platform::address_sync::{AddressFunds, AddressSyncResult};
+        use platform_wallet::manager::platform_address_sync::{
+            PlatformAddressSyncSummary, WalletSyncOutcome,
+        };
+        use platform_wallet::wallet::PlatformAddressTag;
+
+        let wallet_with_ts: [u8; 32] = [1u8; 32];
+        let wallet_no_ts: [u8; 32] = [2u8; 32];
+        let wallet_err: [u8; 32] = [3u8; 32];
+        let wallet_empty: [u8; 32] = [4u8; 32];
+        let p2pkh = PlatformP2PKHAddress::new([0xAAu8; 20]);
+
+        // Result carries its own timestamp and height — passed straight through.
+        let mut with_ts: AddressSyncResult<PlatformAddressTag, PlatformP2PKHAddress> =
+            AddressSyncResult {
+                new_sync_timestamp: 1_700,
+                new_sync_height: 900,
+                ..Default::default()
+            };
+        with_ts.found.insert(
+            ((wallet_with_ts, 0u32, 0u32), p2pkh),
+            AddressFunds {
+                nonce: 1,
+                balance: 1,
+            },
+        );
+
+        // Found an address but the result carries no timestamp (0) — the pass
+        // wall-clock backfills it so the cursor is non-zero; height stays 0.
+        let mut no_ts: AddressSyncResult<PlatformAddressTag, PlatformP2PKHAddress> =
+            AddressSyncResult::default();
+        no_ts.found.insert(
+            ((wallet_no_ts, 0u32, 0u32), p2pkh),
+            AddressFunds {
+                nonce: 1,
+                balance: 1,
+            },
+        );
+
+        let mut summary = PlatformAddressSyncSummary {
+            sync_unix_seconds: 2_500,
+            ..Default::default()
+        };
+        summary
+            .wallet_results
+            .insert(wallet_with_ts, WalletSyncOutcome::Ok(with_ts));
+        summary
+            .wallet_results
+            .insert(wallet_no_ts, WalletSyncOutcome::Ok(no_ts));
+        summary
+            .wallet_results
+            .insert(wallet_err, WalletSyncOutcome::Err("boom".to_string()));
+        summary.wallet_results.insert(
+            wallet_empty,
+            WalletSyncOutcome::Ok(AddressSyncResult::default()),
+        );
+
+        let cursors: std::collections::BTreeMap<[u8; 32], (u64, u64)> =
+            summary_ok_sync_cursors(&summary).into_iter().collect();
+
+        assert_eq!(
+            cursors.len(),
+            2,
+            "errored and empty-found wallets are skipped"
+        );
+        assert_eq!(cursors.get(&wallet_with_ts), Some(&(1_700, 900)));
+        assert_eq!(
+            cursors.get(&wallet_no_ts),
+            Some(&(2_500, 0)),
+            "missing per-wallet timestamp falls back to the pass clock"
+        );
     }
 
     /// Prove the arithmetic is correct for pathological balances (QA-B2-001):
@@ -1147,7 +1290,8 @@ mod tests {
         };
         use platform_wallet::wallet::PlatformAddressTag;
 
-        let (bridge, _cs, mut rx, platform_balances) = make_bridge_with_platform_balances();
+        let (bridge, _cs, mut rx, platform_balances, platform_sync_cursors) =
+            make_bridge_with_platform_balances();
 
         // Build a result with two found addresses (100 + 200 duffs in credits).
         let wallet_id = [9u8; 32];
@@ -1186,6 +1330,10 @@ mod tests {
         assert!(
             platform_balances.lock().unwrap().is_empty(),
             "an unregistered wallet must not write a balance (no seed_hash mapping)"
+        );
+        assert!(
+            platform_sync_cursors.lock().unwrap().is_empty(),
+            "an unregistered wallet must not write a sync cursor (no seed_hash mapping)"
         );
         assert!(drained_refresh(&mut rx));
     }

@@ -108,6 +108,28 @@ pub enum TaskError {
         source: Box<platform_wallet::error::PlatformWalletError>,
     },
 
+    /// An identity op was attempted against an identity the wallet has not yet
+    /// registered in its active set. Retrying the same op cannot help — the
+    /// identity must be reloaded into the wallet first.
+    #[error(
+        "This identity is not ready to use in this wallet yet. Open the wallet's identities list, reload identity {identity_id}, then try again."
+    )]
+    IdentityNotManaged {
+        identity_id: dash_sdk::platform::Identifier,
+        #[source]
+        source: Box<platform_wallet::error::PlatformWalletError>,
+    },
+
+    /// A top-up specified an HD index that does not match the identity's
+    /// recorded wallet position. Using a wrong index would derive the wrong
+    /// funding account, so the op is stopped before any funds move.
+    #[error(
+        "This identity's wallet position does not match what was requested, so the top-up was stopped to keep your funds safe. Open the wallet's identities list, reload identity {identity_id}, then try again."
+    )]
+    IdentityIndexMismatch {
+        identity_id: dash_sdk::platform::Identifier,
+    },
+
     /// The asset-lock proof finalization (InstantSend → ChainLock fallback)
     /// timed out without producing a usable proof for Platform.
     #[error(

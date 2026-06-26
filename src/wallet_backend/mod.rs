@@ -2332,6 +2332,68 @@ impl WalletBackend {
             .await
     }
 
+    /// Ensure `identity` (wallet-owned at HD `identity_index`) is registered in
+    /// the upstream `IdentityManager` for `seed_hash`, so identity ops that look
+    /// the identity up there (currently: top-up) can find it.
+    ///
+    /// Idempotent: a no-op once the identity is managed, and a concurrent
+    /// `IdentityAlreadyExists` is treated as success. Touches only public-key
+    /// data — never the seed — so it is safe to call while the wallet is LOCKED.
+    ///
+    /// Returns `true` when this call newly registered the identity, `false` when
+    /// it was already managed — so the reconcile driver logs only real changes.
+    ///
+    /// # Errors
+    /// [`TaskError::WalletNotLoaded`] if the wallet is not yet upstream
+    /// registered; [`TaskError::WalletStateInconsistent`] if the resolved wallet
+    /// has no manager entry; [`TaskError::WalletBackend`] on an upstream add
+    /// failure other than the swallowed `IdentityAlreadyExists`.
+    pub(crate) async fn ensure_identity_managed(
+        &self,
+        seed_hash: &WalletSeedHash,
+        identity: &dash_sdk::platform::Identity,
+        identity_index: u32,
+    ) -> Result<bool, TaskError> {
+        use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+        let id = identity.id();
+        let wallet = self.resolve_wallet(seed_hash).await?;
+        let wallet_id = wallet.wallet_id();
+
+        // Read-lock fast path: once the identity is managed (steady state, and
+        // after the first reconcile persists it), skip the write lock entirely.
+        {
+            let wm = wallet.wallet_manager().read().await;
+            if wm
+                .get_wallet_info(&wallet_id)
+                .is_some_and(|info| info.identity_manager.identity(&id).is_some())
+            {
+                return Ok(false);
+            }
+        }
+
+        let persister = wallet.persister().clone();
+        let mut wm = wallet.wallet_manager().write().await;
+        let info = wm
+            .get_wallet_info_mut(&wallet_id)
+            .ok_or(TaskError::WalletStateInconsistent)?;
+        // Re-check under the write lock — another task may have raced us in.
+        if info.identity_manager.identity(&id).is_some() {
+            return Ok(false);
+        }
+        match info.identity_manager.add_identity(
+            identity.clone(),
+            identity_index,
+            wallet_id,
+            &persister,
+        ) {
+            Ok(()) => Ok(true),
+            Err(platform_wallet::error::PlatformWalletError::IdentityAlreadyExists(_)) => Ok(false),
+            Err(e) => Err(TaskError::WalletBackend {
+                source: Box::new(e),
+            }),
+        }
+    }
+
     /// Top up an existing identity's credit balance from this wallet's
     /// UTXOs. Returns the post-top-up identity balance (credits).
     ///
@@ -2347,11 +2409,13 @@ impl WalletBackend {
     pub async fn top_up_identity(
         &self,
         seed_hash: &WalletSeedHash,
-        identity_id: &dash_sdk::platform::Identifier,
+        identity: &dash_sdk::platform::Identity,
         funding: platform_wallet::wallet::asset_lock::AssetLockFunding,
         identity_index: u32,
         settings: Option<dash_sdk::platform::transition::put_settings::PutSettings>,
     ) -> Result<u64, TaskError> {
+        use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+        let identity_id = identity.id();
         let scope = Self::hd_scope(seed_hash);
         self.inner
             .secret_access
@@ -2364,19 +2428,25 @@ impl WalletBackend {
                     .ok_or(TaskError::WalletStateInconsistent)?;
                 self.ensure_identity_funding_accounts(seed_hash, seed, identity_index)
                     .await?;
+                // Op-seam guard: register the identity in the upstream manager
+                // so the top-up lookup finds it, covering the unlock →
+                // immediate-top-up race the reconcile subtask can lose.
+                // Seed-free and idempotent.
+                self.ensure_identity_managed(seed_hash, identity, identity_index)
+                    .await?;
                 let asset_lock_signer =
                     DetSigner::from_held(session.plaintext(), self.inner.network);
                 let wallet = self.resolve_wallet(seed_hash).await?;
                 wallet
                     .identity()
                     .top_up_identity_with_funding(
-                        identity_id,
+                        &identity_id,
                         funding,
                         &asset_lock_signer,
                         settings,
                     )
                     .await
-                    .map_err(|e| map_identity_top_up_error(*identity_id, e))
+                    .map_err(|e| map_identity_top_up_error(identity_id, e))
             })
             .await
     }
@@ -3168,7 +3238,9 @@ fn map_identity_register_error(e: platform_wallet::error::PlatformWalletError) -
         IdentityOpErrorKind::FinalityTimeout => TaskError::AssetLockFinalityTimeout {
             source: Box::new(e),
         },
-        IdentityOpErrorKind::Other => TaskError::WalletBackend {
+        // Registration creates the identity, so it cannot legitimately raise a
+        // "not managed" lookup error — fold into the generic envelope.
+        IdentityOpErrorKind::NotManaged | IdentityOpErrorKind::Other => TaskError::WalletBackend {
             source: Box::new(e),
         },
     }
@@ -3189,17 +3261,16 @@ fn map_identity_top_up_error(
         IdentityOpErrorKind::FinalityTimeout => TaskError::AssetLockFinalityTimeout {
             source: Box::new(e),
         },
+        IdentityOpErrorKind::NotManaged => TaskError::IdentityNotManaged {
+            identity_id,
+            source: Box::new(e),
+        },
         IdentityOpErrorKind::Other => TaskError::WalletBackend {
             source: Box::new(e),
         },
     }
 }
 
-/// Map an orchestrated platform-address funding error to a typed `TaskError`.
-/// Shares the identity-flow bucketing: an asset-lock finality timeout reuses
-/// [`TaskError::AssetLockFinalityTimeout`], a network/broadcast rejection lands
-/// in [`TaskError::PlatformAddressFundRejected`], and everything else falls
-/// through to the generic [`TaskError::WalletBackend`] envelope.
 /// Shape persisted platform-address state into per-wallet warm-start seed data.
 ///
 /// Resolves each upstream wallet id to its DET [`WalletSeedHash`] via `resolve`
@@ -3222,6 +3293,11 @@ fn platform_warm_start_seed(
         .collect()
 }
 
+/// Map an orchestrated platform-address funding error to a typed `TaskError`.
+/// Shares the identity-flow bucketing: an asset-lock finality timeout reuses
+/// [`TaskError::AssetLockFinalityTimeout`], a network/broadcast rejection lands
+/// in [`TaskError::PlatformAddressFundRejected`], and everything else falls
+/// through to the generic [`TaskError::WalletBackend`] envelope.
 fn map_platform_address_fund_error(e: platform_wallet::error::PlatformWalletError) -> TaskError {
     match identity_op_error_kind(&e) {
         IdentityOpErrorKind::Rejected => TaskError::PlatformAddressFundRejected {
@@ -3230,7 +3306,10 @@ fn map_platform_address_fund_error(e: platform_wallet::error::PlatformWalletErro
         IdentityOpErrorKind::FinalityTimeout => TaskError::AssetLockFinalityTimeout {
             source: Box::new(e),
         },
-        IdentityOpErrorKind::Other => TaskError::WalletBackend {
+        // Platform-address funding does not consult the identity manager, so a
+        // "not managed" classification is not meaningful here — fold into the
+        // generic envelope alongside the other preconditions.
+        IdentityOpErrorKind::NotManaged | IdentityOpErrorKind::Other => TaskError::WalletBackend {
             source: Box::new(e),
         },
     }
@@ -3261,6 +3340,10 @@ enum IdentityOpErrorKind {
     /// usable proof — IS deadline elapsed, IS expired with no CL fallback, or
     /// the wait helper itself failed.
     FinalityTimeout,
+    /// The identity is not registered in the wallet's active set, so a lookup
+    /// op (top-up) cannot find it — retrying the same op cannot help; the
+    /// identity must be reloaded.
+    NotManaged,
     /// Anything else — preconditions, wallet state, builder failures.
     Other,
 }
@@ -3280,16 +3363,18 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
         | P::AssetLockExpired(_)
         | P::AssetLockNotChainLocked(_) => IdentityOpErrorKind::FinalityTimeout,
 
+        // The identity is absent from the wallet's active set — a missing
+        // manager registration, not a transient fault.
+        P::IdentityNotFound(_) | P::IdentityIndexNotSet(_) => IdentityOpErrorKind::NotManaged,
+
         // Everything else — preconditions, wallet state, builder errors.
         P::WalletCreation(_)
         | P::WalletNotFound(_)
         | P::WalletAlreadyExists(_)
         | P::IdentityAlreadyExists(_)
-        | P::IdentityNotFound(_)
         | P::NoPrimaryIdentity
         | P::InvalidIdentityData(_)
         | P::ContactRequestNotFound(_)
-        | P::IdentityIndexNotSet(_)
         | P::DashpayReceivingAccountAlreadyExists { .. }
         | P::DashpayExternalAccountAlreadyExists { .. }
         | P::AssetLockTransaction(_)
@@ -3461,6 +3546,61 @@ mod tests {
             } => assert_eq!(got, identity_id, "identity_id must be preserved"),
             other => panic!("Expected IdentityTopUpRejected, got: {other:?}"),
         }
+    }
+
+    /// A top-up against an identity the wallet has not registered
+    /// (`IdentityNotFound` / `IdentityIndexNotSet`) maps to the dedicated
+    /// `IdentityNotManaged` envelope — not the "retry in a moment" fallback —
+    /// carrying the id, and its message names the id and tells the user to
+    /// reload the identity.
+    #[test]
+    fn map_identity_top_up_error_not_managed_is_actionable() {
+        use platform_wallet::error::PlatformWalletError as P;
+        for inner in [
+            P::IdentityNotFound(dash_sdk::platform::Identifier::random()),
+            P::IdentityIndexNotSet(dash_sdk::platform::Identifier::random()),
+        ] {
+            let identity_id = dash_sdk::platform::Identifier::random();
+            let mapped = map_identity_top_up_error(identity_id, inner);
+            let TaskError::IdentityNotManaged {
+                identity_id: got, ..
+            } = &mapped
+            else {
+                panic!("Expected IdentityNotManaged, got: {mapped:?}");
+            };
+            assert_eq!(*got, identity_id, "identity_id must be preserved");
+            let msg = mapped.to_string();
+            assert!(
+                msg.contains(&format!("{identity_id}")),
+                "message must name the identity id: {msg}"
+            );
+            let lower = msg.to_lowercase();
+            assert!(
+                lower.contains("reload"),
+                "message must tell the user to reload the identity: {msg}"
+            );
+            assert!(
+                !lower.contains("retry in a moment"),
+                "must not be the transient-retry fallback: {msg}"
+            );
+        }
+    }
+
+    /// Registration creates the identity, so a `not-managed` classification on
+    /// the register path folds into the generic `WalletBackend` envelope rather
+    /// than the top-up-only `IdentityNotManaged` variant.
+    #[test]
+    fn map_identity_register_error_not_managed_folds_to_generic() {
+        let inner = platform_wallet::error::PlatformWalletError::IdentityNotFound(
+            dash_sdk::platform::Identifier::random(),
+        );
+        assert!(
+            matches!(
+                map_identity_register_error(inner),
+                TaskError::WalletBackend { .. }
+            ),
+            "register path must not produce IdentityNotManaged"
+        );
     }
 
     /// Cold-boot warm-start shaping: a funded wallet seeds its addresses + a

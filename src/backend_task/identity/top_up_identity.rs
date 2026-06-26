@@ -56,9 +56,29 @@ impl AppContext {
 
         let seed_hash = wallet.read().map_err(TaskError::from)?.seed_hash();
         let identity_id = qualified_identity.identity.id();
+        // Fail-closed: the op's HD index must match the identity's recorded
+        // wallet index, or the funding account mis-derives. Reject before any
+        // funds move rather than sign against the wrong slot.
+        if let Some(wallet_index) = qualified_identity.wallet_index
+            && identity_index != wallet_index
+        {
+            tracing::warn!(
+                identity = %identity_id,
+                op_index = identity_index,
+                wallet_index,
+                "Top-up rejected: requested index does not match the identity's wallet index"
+            );
+            return Err(TaskError::IdentityIndexMismatch { identity_id });
+        }
         let backend = self.wallet_backend()?;
         let new_balance = backend
-            .top_up_identity(&seed_hash, &identity_id, funding, identity_index, None)
+            .top_up_identity(
+                &seed_hash,
+                &qualified_identity.identity,
+                funding,
+                identity_index,
+                None,
+            )
             .await?;
         qualified_identity.identity.set_balance(new_balance);
 

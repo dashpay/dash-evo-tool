@@ -774,6 +774,11 @@ impl AppContext {
                             "W2 upstream registration failed; will retry at next cold boot"
                         );
                     }
+                    // Identity G-3 reconcile: register every DET-known wallet-owned
+                    // identity into the upstream manager so identity ops (top-up)
+                    // can find them. Seed-free, idempotent; runs after the wallet
+                    // is upstream-registered. Best-effort — retried next boot/unlock.
+                    self.reconcile_managed_identities(&backend, &seed_hash).await;
                     // Phase C-bind: lazily bind Orchard ZIP-32 keys for this wallet.
                     // Best-effort — a failure only defers the first shielded op prompt.
                     // The upstream ShieldedSyncManager 60s loop picks up any newly
@@ -813,6 +818,59 @@ impl AppContext {
                 wallet = %hex::encode(seed_hash),
                 error = %e,
                 "JIT address bootstrap skipped"
+            );
+        }
+    }
+
+    /// Register every DET-known, wallet-owned identity for `seed_hash` into the
+    /// upstream `IdentityManager`, so identity ops that look identities up there
+    /// (currently: top-up) find them instead of raising `IdentityNotFound`.
+    ///
+    /// Best-effort, idempotent, and **seed-free** — a per-identity failure is
+    /// logged and never aborts the rest. Called inside
+    /// [`Self::bootstrap_wallet_addresses_jit`]'s seed scope after upstream
+    /// registration (the seam reached from both cold boot and unlock); the seed
+    /// is not used, so it is also safe while the wallet is locked.
+    async fn reconcile_managed_identities(
+        &self,
+        backend: &WalletBackend,
+        seed_hash: &WalletSeedHash,
+    ) {
+        use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+        let identities = match self.load_local_qualified_identities_for_wallet(seed_hash) {
+            Ok(identities) => identities,
+            Err(error) => {
+                tracing::warn!(
+                    wallet = %hex::encode(seed_hash),
+                    %error,
+                    "Identity reconcile: sidecar read failed; will retry next boot/unlock"
+                );
+                return;
+            }
+        };
+        let mut added = 0usize;
+        for qi in &identities {
+            let Some(index) = qi.wallet_index else {
+                continue;
+            };
+            match backend
+                .ensure_identity_managed(seed_hash, &qi.identity, index)
+                .await
+            {
+                Ok(true) => added += 1,
+                Ok(false) => {}
+                Err(error) => tracing::debug!(
+                    identity = %qi.identity.id(),
+                    %error,
+                    "Identity reconcile deferred; will retry next boot/unlock"
+                ),
+            }
+        }
+        if added > 0 {
+            tracing::info!(
+                wallet = %hex::encode(seed_hash),
+                added,
+                "Reconciled DET identities into the upstream manager"
             );
         }
     }
@@ -4033,5 +4091,168 @@ mod tests {
             .expect("second call must be idempotent (both accounts already present)");
 
         backend2.shutdown().await;
+    }
+
+    /// Build a minimal basic identity for manager-reconcile tests — only its
+    /// id() and (empty) public_keys() are read by `add_identity`.
+    fn basic_test_identity() -> dash_sdk::dpp::identity::Identity {
+        use dash_sdk::dpp::identity::Identity;
+        use dash_sdk::dpp::version::PlatformVersion;
+        use dash_sdk::platform::Identifier;
+        Identity::create_basic_identity(Identifier::random(), PlatformVersion::latest())
+            .expect("basic identity")
+    }
+
+    /// Wrap a basic identity in a minimal wallet-owned `QualifiedIdentity` for
+    /// sidecar-reconcile tests.
+    fn wallet_owned_qualified_identity(
+        wallet_index: Option<u32>,
+    ) -> crate::model::qualified_identity::QualifiedIdentity {
+        use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
+        use crate::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
+        QualifiedIdentity {
+            identity: basic_test_identity(),
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::User,
+            alias: None,
+            private_keys: KeyStorage::default(),
+            dpns_names: vec![],
+            associated_wallets: std::collections::BTreeMap::new(),
+            secret_access: None,
+            wallet_index,
+            top_ups: std::collections::BTreeMap::new(),
+            status: IdentityStatus::Active,
+            network: Network::Testnet,
+        }
+    }
+
+    /// `ensure_identity_managed` on a wallet that is not upstream-registered
+    /// fails with `WalletNotLoaded` (and the reconcile driver logs-and-skips it
+    /// rather than aborting).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn ensure_identity_managed_unregistered_wallet_is_wallet_not_loaded() {
+        let (ctx, sender, _tmp) = offline_testnet_context();
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("ensure_wallet_backend should succeed offline");
+        let backend = ctx.wallet_backend().expect("backend wired");
+
+        let unknown_seed: WalletSeedHash = [0x5Au8; 32];
+        let identity = basic_test_identity();
+        let err = backend
+            .ensure_identity_managed(&unknown_seed, &identity, 0)
+            .await
+            .expect_err("an unregistered wallet must not resolve");
+        assert!(
+            matches!(err, TaskError::WalletNotLoaded),
+            "expected WalletNotLoaded, got: {err:?}"
+        );
+
+        backend.shutdown().await;
+    }
+
+    /// `ensure_identity_managed` registers a previously-unknown identity (→
+    /// `true`), then a second call is a no-op (→ `false`). Runs with no secret
+    /// session promoted, proving the reconcile is seed-free / locked-safe.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn ensure_identity_managed_registers_then_noops_while_locked() {
+        let (ctx, sender, _tmp) = offline_testnet_context();
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("ensure_wallet_backend should succeed offline");
+        let backend = ctx.wallet_backend().expect("backend wired");
+
+        let seed = [0x2Cu8; 64];
+        let wallet =
+            crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
+                .expect("build wallet");
+        let seed_hash = wallet.seed_hash();
+        backend
+            .register_wallet_from_seed(&seed_hash, &seed, None)
+            .await
+            .expect("register wallet with upstream manager");
+
+        let identity = basic_test_identity();
+
+        // No secret session is open here — the wallet is effectively locked.
+        let first = backend
+            .ensure_identity_managed(&seed_hash, &identity, 0)
+            .await
+            .expect("registering a new identity must succeed while locked");
+        assert!(first, "first call newly registers the identity");
+
+        let second = backend
+            .ensure_identity_managed(&seed_hash, &identity, 0)
+            .await
+            .expect("second call must be idempotent");
+        assert!(!second, "second call is a no-op (already managed)");
+
+        backend.shutdown().await;
+    }
+
+    /// `reconcile_managed_identities` registers exactly the wallet-owned
+    /// identities (`wallet_index.is_some()` and matching `seed_hash`) and leaves
+    /// index-less sidecar entries alone — proven via the idempotent
+    /// `ensure_identity_managed` (already-managed → `false`, never-managed →
+    /// `true`).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn reconcile_managed_identities_registers_only_wallet_owned() {
+        let (ctx, sender, _tmp) = offline_testnet_context();
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("ensure_wallet_backend should succeed offline");
+        let backend = ctx.wallet_backend().expect("backend wired");
+
+        let seed = [0x3Du8; 64];
+        let wallet =
+            crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
+                .expect("build wallet");
+        let seed_hash = wallet.seed_hash();
+        backend
+            .register_wallet_from_seed(&seed_hash, &seed, None)
+            .await
+            .expect("register wallet with upstream manager");
+
+        // Two wallet-owned identities (should be reconciled) and one index-less
+        // identity (should be skipped by the `wallet_index.is_some()` filter).
+        let owned_a = wallet_owned_qualified_identity(Some(0));
+        let owned_b = wallet_owned_qualified_identity(Some(1));
+        let detached = wallet_owned_qualified_identity(None);
+        ctx.insert_local_qualified_identity(&owned_a, &Some((seed_hash, 0)))
+            .expect("insert owned_a");
+        ctx.insert_local_qualified_identity(&owned_b, &Some((seed_hash, 1)))
+            .expect("insert owned_b");
+        ctx.insert_local_qualified_identity(&detached, &None)
+            .expect("insert detached");
+
+        ctx.reconcile_managed_identities(&backend, &seed_hash).await;
+
+        // The two wallet-owned identities are now managed → ensure is a no-op.
+        assert!(
+            !backend
+                .ensure_identity_managed(&seed_hash, &owned_a.identity, 0)
+                .await
+                .expect("owned_a"),
+            "wallet-owned identity A must already be managed after reconcile"
+        );
+        assert!(
+            !backend
+                .ensure_identity_managed(&seed_hash, &owned_b.identity, 1)
+                .await
+                .expect("owned_b"),
+            "wallet-owned identity B must already be managed after reconcile"
+        );
+        // The index-less identity was skipped → ensure newly registers it.
+        assert!(
+            backend
+                .ensure_identity_managed(&seed_hash, &detached.identity, 0)
+                .await
+                .expect("detached"),
+            "index-less identity must have been skipped by the reconcile filter"
+        );
+
+        backend.shutdown().await;
     }
 }

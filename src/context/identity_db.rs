@@ -636,6 +636,22 @@ impl AppContext {
         Ok(identities)
     }
 
+    /// Load the DET-known, wallet-owned qualified identities for one wallet —
+    /// every sidecar entry that carries a `wallet_index` and matches
+    /// `seed_hash`. Drives the cold-boot/unlock reconcile that registers them
+    /// into the upstream `IdentityManager`. Top-up history is intentionally not
+    /// hydrated: the reconcile needs only the identity and its wallet index.
+    pub(crate) fn load_local_qualified_identities_for_wallet(
+        &self,
+        seed_hash: &WalletSeedHash,
+    ) -> std::result::Result<Vec<QualifiedIdentity>, TaskError> {
+        let wallets = self.wallets.read().unwrap_or_else(|e| e.into_inner());
+        let target = Some(*seed_hash);
+        self.load_identities_filtered(&wallets, |s| {
+            s.wallet_index.is_some() && s.wallet_hash == target
+        })
+    }
+
     /// Internal: read every stored identity via the Global enumeration
     /// index, decode it, rehydrate the metadata kept outside the bincode
     /// blob, and apply `keep` as a pre-decode filter on the wrapper.

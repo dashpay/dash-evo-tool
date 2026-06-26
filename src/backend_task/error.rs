@@ -123,10 +123,26 @@ pub enum TaskError {
     /// A top-up specified an HD index that does not match the identity's
     /// recorded wallet position. Using a wrong index would derive the wrong
     /// funding account, so the op is stopped before any funds move.
+    ///
+    /// `requested_index` / `wallet_index` are numeric diagnostics for logs and
+    /// the `Debug` view only — kept out of the user-facing `Display` copy.
     #[error(
         "This identity's wallet position does not match what was requested, so the top-up was stopped to keep your funds safe. Open the wallet's identities list, reload identity {identity_id}, then try again."
     )]
     IdentityIndexMismatch {
+        identity_id: dash_sdk::platform::Identifier,
+        requested_index: u32,
+        wallet_index: u32,
+    },
+
+    /// A wallet-funded top-up targeted an identity this wallet does not own
+    /// (it has no HD funding slot here). Funding it from this wallet would
+    /// derive an unrelated asset-lock account, so the op is stopped before any
+    /// funds move.
+    #[error(
+        "This identity is not part of this wallet, so it cannot be topped up from it. Open the wallet that owns identity {identity_id}, then try again."
+    )]
+    IdentityNotWalletOwned {
         identity_id: dash_sdk::platform::Identifier,
     },
 

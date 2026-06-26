@@ -4,7 +4,6 @@ use crate::framework::fixtures::shared_identity;
 use crate::framework::harness::ctx;
 use crate::framework::identity_helpers::build_identity_registration;
 use crate::framework::task_runner::{run_task, run_task_with_nonce_retry};
-use dash_evo_tool::backend_task::error::TaskError;
 use dash_evo_tool::backend_task::identity::{
     IdentityInputToLoad, IdentityTask, IdentityTopUpInfo, TopUpIdentityFundingMethod,
 };
@@ -776,25 +775,26 @@ async fn tc_021_identity_funding_account_survives_reload() {
     }
 }
 
-// --- TC-022: top-up reaches the network after an identity-manager reconcile ---
+// --- TC-022: top-up succeeds after a reload via the op-seam guard ---
 //
 // Identity G-3: DET persists identities only in its own sidecar, never into the
 // upstream `IdentityManager`, so after a reload the manager holds nothing and a
 // top-up — the one op that looks the identity up there — raised
-// `IdentityNotFound` ~22 ms in, pre-network. The fix registers the identity into
-// the manager (cold-boot/unlock reconcile + the idempotent op-seam guard inside
-// `top_up_identity`). After a reload, the top-up must therefore reach the
-// network step rather than fail synchronously with `IdentityNotManaged`. A
-// pre-fix run reproduces the synchronous `IdentityNotFound`.
+// `IdentityNotFound` ~22 ms in, pre-network. This test simulates the reload with
+// `ensure_wallets_registered` (the cold-boot wallet-load path), which does NOT
+// run `reconcile_managed_identities` (that is hooked into
+// `bootstrap_wallet_addresses_jit`). So it exercises the **op-seam guard** —
+// `ensure_identity_managed` inside `top_up_identity` — which re-registers the
+// identity just-in-time. On a funded wallet the top-up must SUCCEED; a pre-fix
+// run reproduces the synchronous `IdentityNotFound`.
 #[ignore]
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
-async fn tc_022_topup_after_reload_reaches_network_via_reconcile() {
+async fn tc_022_topup_after_reload_succeeds_via_op_seam_guard() {
     let ctx = ctx().await;
     let si = shared_identity().await;
 
-    // Simulate a relaunch: re-run the persisted-wallet load path. The upstream
-    // identity manager is rebuilt from its (empty) on-disk table, so the op-seam
-    // reconcile guard inside `top_up_identity` is what re-registers the identity.
+    // Simulate a relaunch: re-run the persisted-wallet load path, rebuilding the
+    // upstream identity manager from its (empty) on-disk table.
     ctx.app_context
         .wallet_backend()
         .expect("wallet backend must be wired")
@@ -808,29 +808,29 @@ async fn tc_022_topup_after_reload_reaches_network_via_reconcile() {
         identity_funding_method: TopUpIdentityFundingMethod::FundWithWallet(500_000, 0, 1),
     };
 
+    // The op-seam guard must register the identity, so the top-up reaches the
+    // network and completes. Require success — a failure here (especially a
+    // synchronous `IdentityNotManaged`) is the regression this test guards.
     let result = run_task_with_nonce_retry(
         &ctx.app_context,
         BackendTask::IdentityTask(IdentityTask::TopUpIdentity(top_up_info)),
     )
-    .await;
+    .await
+    .expect(
+        "top-up after a manager-clearing reload must succeed via the op-seam \
+         guard; a synchronous IdentityNotManaged means the guard did not run",
+    );
 
-    // The reconcile must make the identity findable, so the op reaches the
-    // network step. A synchronous `IdentityNotManaged` means the reconcile did
-    // not run — the exact pre-fix failure this test guards against.
     match result {
-        Ok(BackendTaskSuccessResult::ToppedUpIdentity(qi, _)) => {
+        BackendTaskSuccessResult::ToppedUpIdentity(qi, fee_result) => {
             assert_eq!(
                 qi.identity.id(),
                 si.qualified_identity.identity.id(),
                 "wrong identity returned"
             );
-            tracing::info!("TC-022 PASSED: top-up reached the network after reconcile");
+            assert!(fee_result.actual_fee > 0, "fee should be > 0");
+            tracing::info!("TC-022 PASSED: top-up succeeded after reload via op-seam guard");
         }
-        Ok(other) => panic!("expected ToppedUpIdentity, got: {:?}", other),
-        Err(e) => assert!(
-            !matches!(e, TaskError::IdentityNotManaged { .. }),
-            "top-up must not fail with a synchronous IdentityNotManaged — the \
-             reconcile should have registered the identity: {e:?}"
-        ),
+        other => panic!("expected ToppedUpIdentity, got: {other:?}"),
     }
 }

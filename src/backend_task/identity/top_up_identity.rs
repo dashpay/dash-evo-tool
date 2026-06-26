@@ -3,6 +3,32 @@ use crate::backend_task::identity::{IdentityTopUpInfo, TopUpIdentityFundingMetho
 use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
+use dash_sdk::platform::Identifier;
+
+/// Validate a wallet-funded top-up's HD index against the identity's recorded
+/// wallet position, fail-secure.
+///
+/// The op derives its asset-lock funding account from the wallet's HD tree at
+/// `identity_index`, so that index must equal the identity's authoritative
+/// `wallet_index`, and the identity must be wallet-owned (`Some`) at all. A
+/// `None` wallet index means the identity is not owned by this wallet — there is
+/// no HD slot to fund from, and the callers pass a sentinel index for it, which
+/// must never reach the derivation. Pure — no I/O — so it is unit-testable.
+fn validate_topup_index(
+    identity_id: Identifier,
+    wallet_index: Option<u32>,
+    identity_index: u32,
+) -> Result<(), TaskError> {
+    match wallet_index {
+        Some(wallet_index) if wallet_index == identity_index => Ok(()),
+        Some(wallet_index) => Err(TaskError::IdentityIndexMismatch {
+            identity_id,
+            requested_index: identity_index,
+            wallet_index,
+        }),
+        None => Err(TaskError::IdentityNotWalletOwned { identity_id }),
+    }
+}
 
 impl AppContext {
     pub(super) async fn top_up_identity(
@@ -56,20 +82,15 @@ impl AppContext {
 
         let seed_hash = wallet.read().map_err(TaskError::from)?.seed_hash();
         let identity_id = qualified_identity.identity.id();
-        // Fail-closed: the op's HD index must match the identity's recorded
-        // wallet index, or the funding account mis-derives. Reject before any
-        // funds move rather than sign against the wrong slot.
-        if let Some(wallet_index) = qualified_identity.wallet_index
-            && identity_index != wallet_index
-        {
-            tracing::warn!(
-                identity = %identity_id,
-                op_index = identity_index,
-                wallet_index,
-                "Top-up rejected: requested index does not match the identity's wallet index"
-            );
-            return Err(TaskError::IdentityIndexMismatch { identity_id });
-        }
+        // Fail-secure: a wallet-funded top-up derives its asset-lock account
+        // from this wallet's HD tree at the identity's index, so the op index
+        // must equal the identity's recorded `wallet_index` AND the identity
+        // must be wallet-owned at all. Reject before any funds move — a foreign
+        // identity has no HD slot here (the UI/MCP pass a sentinel index for
+        // `None`, which must never reach the funding derivation). Verified:
+        // `wallet_index == None` iff the identity is not wallet-owned, so every
+        // valid target carries `Some(index)`.
+        validate_topup_index(identity_id, qualified_identity.wallet_index, identity_index)?;
         let backend = self.wallet_backend()?;
         let new_balance = backend
             .top_up_identity(
@@ -110,5 +131,54 @@ impl AppContext {
             qualified_identity,
             fee_result,
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A wallet-owned identity whose op index matches its wallet index passes.
+    #[test]
+    fn validate_topup_index_accepts_matching_wallet_index() {
+        let id = Identifier::random();
+        assert!(validate_topup_index(id, Some(5), 5).is_ok());
+    }
+
+    /// A divergent op index is rejected with the indices captured as typed
+    /// fields (not a string).
+    #[test]
+    fn validate_topup_index_rejects_mismatch_with_indices() {
+        let id = Identifier::random();
+        let err =
+            validate_topup_index(id, Some(5), 3).expect_err("a divergent op index must reject");
+        match err {
+            TaskError::IdentityIndexMismatch {
+                identity_id,
+                requested_index,
+                wallet_index,
+            } => {
+                assert_eq!(identity_id, id);
+                assert_eq!(requested_index, 3);
+                assert_eq!(wallet_index, 5);
+            }
+            other => panic!("expected IdentityIndexMismatch, got: {other:?}"),
+        }
+    }
+
+    /// A non-wallet-owned identity (`wallet_index == None`) fails closed even
+    /// with the sentinel indices the UI (`u32::MAX >> 1`) and MCP (`0`) pass —
+    /// the funds-safety hole this guard closes.
+    #[test]
+    fn validate_topup_index_rejects_non_wallet_owned() {
+        let id = Identifier::random();
+        for sentinel in [0u32, u32::MAX >> 1] {
+            let err = validate_topup_index(id, None, sentinel)
+                .expect_err("a non-wallet-owned identity must reject");
+            assert!(
+                matches!(err, TaskError::IdentityNotWalletOwned { identity_id } if identity_id == id),
+                "expected IdentityNotWalletOwned, got: {err:?}"
+            );
+        }
     }
 }

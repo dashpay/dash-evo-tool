@@ -138,11 +138,10 @@ pub struct AppContext {
     /// coordinator pass; read synchronously in the frame loop via
     /// [`Self::platform_balance_duffs`].
     ///
-    /// **Cold-start behaviour (QA-B-005, accepted trade-off):** starts empty, so
-    /// `platform_balance_duffs` returns 0 until the first coordinator pass completes
-    /// (~15 s). The DB-restored `platform_address_info` data is available but not used as
-    /// the selector source of truth — a brief zero is deliberately preferred over
-    /// potentially orphan-inflated data from a prior session.
+    /// **Cold-start behaviour:** seeded at boot by [`Self::warm_start_platform_addresses`]
+    /// from the persisted upstream `platform_addresses` rows (clean per-wallet owned
+    /// state — no orphan-inflation risk), so the total renders immediately and
+    /// network-independently; the first coordinator pass then overwrites it.
     ///
     /// **Wallet-removal behaviour (QA-B-004, accepted):** removing a wallet does NOT
     /// evict its entry from this map (consistent with `shielded_balances` — same known
@@ -635,6 +634,51 @@ impl AppContext {
         }
     }
 
+    /// Warm-start the platform-address UI from persisted upstream state.
+    ///
+    /// Runs once at boot, after the wallet backend is wired and before the
+    /// coordinator's first (network) pass. Seeds the per-address tab
+    /// (`platform_address_info`), the frame-safe total balance
+    /// (`platform_balances`), and the "Addresses synced" cursor
+    /// (`platform_sync_cursors`) so the whole platform section renders the
+    /// last-synced snapshot immediately — network-independent, with no
+    /// "never synced" gap on an offline cold boot. Each map is seeded with
+    /// `or_insert`, so a live coordinator push that already landed wins.
+    pub(crate) fn warm_start_platform_addresses(&self) {
+        use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
+        let Ok(backend) = self.wallet_backend() else {
+            return;
+        };
+        let seeds = backend.persisted_platform_address_warm_start();
+        if seeds.is_empty() {
+            return;
+        }
+
+        let updates: PlatformAddressUpdates = seeds
+            .iter()
+            .filter(|(_, entries, _)| !entries.is_empty())
+            .map(|(seed_hash, entries, _)| (*seed_hash, entries.clone()))
+            .collect();
+        self.apply_platform_address_push(updates);
+
+        if let Ok(mut balances) = self.platform_balances.lock() {
+            for (seed_hash, entries, _) in seeds.iter().filter(|(_, e, _)| !e.is_empty()) {
+                let total_credits: u64 = entries.iter().map(|(_, credits, _)| credits).sum();
+                balances
+                    .entry(*seed_hash)
+                    .or_insert(total_credits / CREDITS_PER_DUFF);
+            }
+        }
+
+        if let Ok(mut cursors) = self.platform_sync_cursors.lock() {
+            for (seed_hash, _, cursor) in &seeds {
+                if let Some(cursor) = cursor {
+                    cursors.entry(*seed_hash).or_insert(*cursor);
+                }
+            }
+        }
+    }
+
     /// Get a fee estimator configured with the cached fee multiplier.
     /// Use this instead of `PlatformFeeEstimator::new()` to get accurate fee estimates
     /// that reflect the current network fee multiplier.
@@ -846,10 +890,11 @@ impl AppContext {
         self.wallet_backend.store(Some(Arc::new(backend)));
         drop(_build_guard);
         self.restore_selected_wallet_from_kv();
-        // Platform per-address balances warm-start from the upstream
-        // coordinator's first pass — it loads the persisted `platform_addresses`
-        // rows via `initialize_from_persisted` and pushes balance + nonce — so
-        // DET keeps no parallel at-rest copy to restore here.
+        // Render the platform section (per-address tab, total, "Addresses synced"
+        // label) from persisted upstream state immediately — network-independent,
+        // before the coordinator's first pass, which only fires once a network
+        // sync succeeds.
+        self.warm_start_platform_addresses();
 
         // Bootstrap addresses and promote any verified-open seeds into the
         // JIT chokepoint's session cache for the cold-boot path. Signing no

@@ -114,7 +114,7 @@ use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::context::connection_status::ConnectionStatus;
 use crate::model::selected_wallet::SelectedWallet;
-use crate::model::wallet::WalletSeedHash;
+use crate::model::wallet::{PlatformAddressEntry, WalletSeedHash};
 use crate::utils::egui_mpsc::SenderAsync;
 
 /// The upstream persister DET consumes. Authored upstream (PR #3625) — DET
@@ -172,6 +172,14 @@ const REGISTRATION_RESOLVE_BACKOFF: std::time::Duration = std::time::Duration::f
 /// from DET's `WalletSeedHash` = `SHA256(seed_bytes)`. The map is the bridge:
 /// populated once per wallet at registration, read by every DET-keyed call.
 type WalletId = [u8; 32];
+
+/// Per-wallet platform-address warm-start seed: `(seed_hash, owned
+/// (hash, balance, nonce) entries, optional (timestamp, height) cursor)`.
+type PlatformWarmStartSeed = Vec<(
+    WalletSeedHash,
+    Vec<PlatformAddressEntry>,
+    Option<(u64, u64)>,
+)>;
 
 struct Inner {
     pwm: PlatformWalletManager<DetPersister>,
@@ -1218,6 +1226,42 @@ impl WalletBackend {
     /// the schema-version envelope.
     pub fn kv(&self) -> DetKv {
         DetKv::new(Arc::clone(&self.inner.persister))
+    }
+
+    /// Persisted platform-address warm-start data, read straight from the
+    /// persister so the per-address tab, total balance, and "Addresses synced"
+    /// label can render the last-synced snapshot on cold boot —
+    /// network-independent, before the coordinator's first (network) pass.
+    ///
+    /// Per wallet: owned `(hash, balance, nonce)` entries plus the persisted
+    /// `(timestamp, height)` cursor when a prior sync completed. One full
+    /// persister read; on failure returns empty and the first coordinator push
+    /// warms the UI once the network is reachable.
+    pub(crate) fn persisted_platform_address_warm_start(&self) -> PlatformWarmStartSeed {
+        use platform_wallet::changeset::PlatformWalletPersistence;
+        let start = match self.inner.persister.load() {
+            Ok(start) => start,
+            Err(e) => {
+                tracing::debug!(error = ?e, "platform-address warm-start: persister load failed");
+                return Vec::new();
+            }
+        };
+        let per_wallet: Vec<(WalletId, Vec<PlatformAddressEntry>, u64, u64)> = start
+            .platform_addresses
+            .into_iter()
+            .map(|(wallet_id, state)| {
+                let entries: Vec<PlatformAddressEntry> = state
+                    .per_account
+                    .values()
+                    .flat_map(|account| account.found())
+                    .map(|(p2pkh, funds)| (p2pkh.to_bytes(), funds.balance, funds.nonce))
+                    .collect();
+                (wallet_id, entries, state.sync_timestamp, state.sync_height)
+            })
+            .collect();
+        platform_warm_start_seed(per_wallet, |wallet_id| {
+            self.inner.snapshots.seed_hash_for(wallet_id)
+        })
     }
 
     /// Per-`(identity, token)` balance view (T6 seam). Reads the lock-free
@@ -3156,6 +3200,28 @@ fn map_identity_top_up_error(
 /// [`TaskError::AssetLockFinalityTimeout`], a network/broadcast rejection lands
 /// in [`TaskError::PlatformAddressFundRejected`], and everything else falls
 /// through to the generic [`TaskError::WalletBackend`] envelope.
+/// Shape persisted platform-address state into per-wallet warm-start seed data.
+///
+/// Resolves each upstream wallet id to its DET [`WalletSeedHash`] via `resolve`
+/// and derives the `(timestamp, height)` cursor — present only when a prior sync
+/// completed (`sync_timestamp > 0`), so a never-synced wallet stays "never
+/// synced". Wallets that resolve to no DET seed, or that carry neither owned
+/// addresses nor a cursor, are dropped. Pure — no I/O, no upstream types — so it
+/// is unit-testable without a persister.
+fn platform_warm_start_seed(
+    per_wallet: Vec<(WalletId, Vec<PlatformAddressEntry>, u64, u64)>,
+    resolve: impl Fn(&WalletId) -> Option<WalletSeedHash>,
+) -> PlatformWarmStartSeed {
+    per_wallet
+        .into_iter()
+        .filter_map(|(wallet_id, entries, sync_timestamp, sync_height)| {
+            let seed_hash = resolve(&wallet_id)?;
+            let cursor = (sync_timestamp > 0).then_some((sync_timestamp, sync_height));
+            (!entries.is_empty() || cursor.is_some()).then_some((seed_hash, entries, cursor))
+        })
+        .collect()
+}
+
 fn map_platform_address_fund_error(e: platform_wallet::error::PlatformWalletError) -> TaskError {
     match identity_op_error_kind(&e) {
         IdentityOpErrorKind::Rejected => TaskError::PlatformAddressFundRejected {
@@ -3395,6 +3461,62 @@ mod tests {
             } => assert_eq!(got, identity_id, "identity_id must be preserved"),
             other => panic!("Expected IdentityTopUpRejected, got: {other:?}"),
         }
+    }
+
+    /// Cold-boot warm-start shaping: a funded wallet seeds its addresses + a
+    /// cursor; a successfully-synced-but-empty wallet seeds the cursor alone (so
+    /// the label reads "synced", not "never synced"); a wallet that never
+    /// completed a sync (`sync_timestamp == 0`, no addresses) is dropped; and an
+    /// unresolvable wallet id is dropped.
+    #[test]
+    fn platform_warm_start_seed_shapes_entries_and_gates_cursor() {
+        let funded: WalletId = [1u8; 32];
+        let synced_empty: WalletId = [2u8; 32];
+        let never_synced: WalletId = [3u8; 32];
+        let unresolved: WalletId = [4u8; 32];
+
+        let per_wallet: Vec<(WalletId, Vec<PlatformAddressEntry>, u64, u64)> = vec![
+            (funded, vec![([0xAAu8; 20], 500, 7)], 1_700, 900),
+            (synced_empty, vec![], 1_700, 900),
+            (never_synced, vec![], 0, 0),
+            (unresolved, vec![([0xBBu8; 20], 1, 1)], 1_700, 900),
+        ];
+
+        // Identity resolver, except `unresolved` maps to no DET seed hash.
+        let out: std::collections::BTreeMap<_, _> =
+            platform_warm_start_seed(per_wallet, |w| (*w != unresolved).then_some(*w))
+                .into_iter()
+                .map(|(seed_hash, entries, cursor)| (seed_hash, (entries, cursor)))
+                .collect();
+
+        assert_eq!(
+            out.len(),
+            2,
+            "never-synced and unresolvable wallets are dropped"
+        );
+
+        let funded_out = out.get(&funded).expect("funded wallet seeds");
+        assert_eq!(funded_out.0, vec![([0xAAu8; 20], 500, 7)]);
+        assert_eq!(funded_out.1, Some((1_700, 900)));
+
+        let empty_out = out
+            .get(&synced_empty)
+            .expect("synced-empty wallet seeds a cursor");
+        assert!(empty_out.0.is_empty(), "no addresses to seed");
+        assert_eq!(
+            empty_out.1,
+            Some((1_700, 900)),
+            "a completed sync warm-starts the cursor even with no funds"
+        );
+
+        assert!(
+            !out.contains_key(&never_synced),
+            "no timestamp and no addresses leaves the wallet never-synced"
+        );
+        assert!(
+            !out.contains_key(&unresolved),
+            "an unresolvable wallet id is dropped"
+        );
     }
 
     /// A network/broadcast rejection from the orchestrated platform-address

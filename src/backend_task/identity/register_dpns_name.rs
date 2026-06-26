@@ -2,7 +2,6 @@ use std::collections::BTreeMap;
 
 use crate::backend_task::FeeResult;
 use crate::backend_task::error::TaskError;
-use crate::model::fee_estimation::PlatformFeeEstimator;
 use crate::{context::AppContext, model::qualified_identity::DPNSNameInfo};
 use bip39::rand::{Rng, SeedableRng, rngs::StdRng};
 use dash_sdk::{
@@ -128,7 +127,7 @@ impl AppContext {
             .document_signing_key(&preorder_document_type)
             .ok_or(TaskError::NoDocumentSigningKey)?;
 
-        let fee_estimator = PlatformFeeEstimator::new();
+        let fee_estimator = self.fee_estimator();
         let estimated_fee = fee_estimator.estimate_document_batch(2);
 
         let balance_before = qualified_identity.identity.balance();

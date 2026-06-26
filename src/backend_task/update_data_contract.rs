@@ -3,10 +3,7 @@ use crate::{
     app::TaskResult,
     backend_task::error::TaskError,
     context::AppContext,
-    model::{
-        fee_estimation::PlatformFeeEstimator, proof_log_item::RequestType,
-        qualified_identity::QualifiedIdentity,
-    },
+    model::{proof_log_item::RequestType, qualified_identity::QualifiedIdentity},
 };
 use dash_sdk::{
     Error, Sdk,
@@ -63,7 +60,7 @@ impl AppContext {
         sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, crate::backend_task::error::TaskError> {
         // Estimate fee for contract update
-        let estimated_fee = PlatformFeeEstimator::new().estimate_contract_update();
+        let estimated_fee = self.fee_estimator().estimate_contract_update();
 
         // Increment the version of the data contract
         data_contract.increment_version();

@@ -1,7 +1,6 @@
 use crate::backend_task::FeeResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
-use crate::model::fee_estimation::PlatformFeeEstimator;
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::dpp::dashcore::Address;
 use dash_sdk::dpp::fee::Credits;
@@ -74,7 +73,7 @@ impl AppContext {
         );
 
         let balance_before = qualified_identity.identity.balance();
-        let estimated_fee = PlatformFeeEstimator::new().estimate_credit_withdrawal();
+        let estimated_fee = self.fee_estimator().estimate_credit_withdrawal();
 
         let remaining_balance = qualified_identity
             .identity

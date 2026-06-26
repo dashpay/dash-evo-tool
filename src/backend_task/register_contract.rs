@@ -10,7 +10,6 @@ use tokio::time::sleep;
 use super::{BackendTaskSuccessResult, FeeResult};
 use crate::backend_task::error::TaskError;
 use crate::backend_task::update_data_contract::extract_contract_id_from_error;
-use crate::model::fee_estimation::PlatformFeeEstimator;
 use crate::model::qualified_contract::InsertTokensToo::AllTokensShouldBeAdded;
 use crate::{
     app::TaskResult,
@@ -29,7 +28,7 @@ impl AppContext {
         sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         // Estimate fee for contract creation
-        let estimated_fee = PlatformFeeEstimator::new().estimate_contract_create_base();
+        let estimated_fee = self.fee_estimator().estimate_contract_create_base();
 
         match data_contract
             .put_to_platform_and_wait_for_response(sdk, signing_key.clone(), &identity, None)

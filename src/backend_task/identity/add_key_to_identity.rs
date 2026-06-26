@@ -2,7 +2,6 @@ use super::BackendTaskSuccessResult;
 use crate::backend_task::FeeResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
-use crate::model::fee_estimation::PlatformFeeEstimator;
 use crate::model::qualified_identity::PrivateKeyTarget::PrivateKeyOnMainIdentity;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
@@ -67,7 +66,7 @@ impl AppContext {
         );
         // Track balance before operation for fee calculation
         let balance_before = qualified_identity.identity.balance();
-        let estimated_fee = PlatformFeeEstimator::new().estimate_identity_update();
+        let estimated_fee = self.fee_estimator().estimate_identity_update();
 
         let state_transition = IdentityUpdateTransition::try_from_identity_with_signer(
             &qualified_identity.identity,

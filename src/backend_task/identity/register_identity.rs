@@ -2,7 +2,6 @@ use crate::backend_task::error::TaskError;
 use crate::backend_task::identity::{IdentityRegistrationInfo, RegisterIdentityFundingMethod};
 use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
-use crate::model::fee_estimation::PlatformFeeEstimator;
 use crate::model::proof_log_item::RequestType;
 use crate::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
 use dash_sdk::dash_spv::Network;
@@ -43,7 +42,7 @@ impl AppContext {
             .to_public_keys_map()
             .map_err(|e| TaskError::PublicKeyMapBuildFailed { detail: e })?;
         let key_count = public_keys.len();
-        let estimated_fee = PlatformFeeEstimator::new().estimate_identity_create(key_count);
+        let estimated_fee = self.fee_estimator().estimate_identity_create(key_count);
 
         let wallet_seed_hash = { wallet.read().map_err(TaskError::from)?.seed_hash() };
 
@@ -278,11 +277,9 @@ impl AppContext {
         // Calculate fee estimate for identity creation from platform addresses
         let key_count = public_keys.len();
         let input_count = inputs.len();
-        let estimated_fee = PlatformFeeEstimator::new().estimate_identity_create_from_addresses(
-            input_count,
-            false,
-            key_count,
-        );
+        let estimated_fee = self
+            .fee_estimator()
+            .estimate_identity_create_from_addresses(input_count, false, key_count);
 
         // Clone the wallet for the pure address→path index (needed across the
         // async boundary). The signing key never lives in this snapshot — it is

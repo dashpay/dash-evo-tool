@@ -986,7 +986,6 @@ impl AppContext {
         outputs: BTreeMap<dash_sdk::dpp::address_funds::PlatformAddress, Credits>,
         key_id: Option<KeyID>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
-        use crate::model::fee_estimation::PlatformFeeEstimator;
         use dash_sdk::platform::transition::transfer_to_addresses::TransferToAddresses;
 
         // Get the identity
@@ -997,7 +996,7 @@ impl AppContext {
 
         // Track balance before transfer for fee calculation
         let balance_before = identity.balance();
-        let fee_estimator = PlatformFeeEstimator::new();
+        let fee_estimator = self.fee_estimator();
         let estimated_fee = fee_estimator.estimate_credit_transfer_to_addresses(outputs.len());
 
         // Execute the transfer - qualified_identity is consumed here as the signer

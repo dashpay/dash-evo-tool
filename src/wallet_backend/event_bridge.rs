@@ -365,6 +365,36 @@ impl PlatformEventHandler for EventBridge {
             }
         }
 
+        // (1c) The cursor (1b) advances on every Ok pass, but the balance
+        // snapshot (1) only updates for found-non-empty wallets. On a true
+        // tree-absence (chain/devnet reset — addresses leave the found-set) the
+        // label reads "synced just now" beside the stale cached total until a
+        // later pass re-finds the address or the app restarts. Surface that
+        // divergence in logs. One summary line per pass; fires only on the rare
+        // reset (empty found-set + non-zero cached balance), never on a normal
+        // spend-to-zero (which keeps a zero node in `found`).
+        let stale = stale_after_empty_found(
+            summary,
+            |wallet_id| self.snapshots.seed_hash_for(wallet_id),
+            |seed_hash| {
+                self.platform_balances
+                    .lock()
+                    .ok()
+                    .and_then(|balances| balances.get(seed_hash).copied())
+                    .unwrap_or(0)
+            },
+        );
+        if !stale.is_empty() {
+            let wallets: Vec<String> = stale.iter().map(hex::encode).collect();
+            tracing::warn!(
+                wallets = ?wallets,
+                "Platform address sync completed with an empty found-set while a \
+                 non-zero cached balance remains (possible chain/tree reset); the \
+                 displayed balance may be stale until the next sync re-finds the \
+                 address or the app restarts."
+            );
+        }
+
         // (2) Emit the per-address update so `wallet.platform_address_info` stays
         // current without a manual Refresh. Non-blocking; a full channel means
         // the coordinator retries on the next ~15 s pass. The frame-safe total
@@ -490,6 +520,33 @@ fn summary_ok_sync_cursors(summary: &PlatformAddressSyncSummary) -> Vec<([u8; 32
                 Some((*wallet_id, (timestamp, result.new_sync_height)))
             }
             WalletSyncOutcome::Err(_) => None,
+        })
+        .collect()
+}
+
+/// Wallets whose pass completed successfully with an empty found-set while a
+/// non-zero balance is still cached — the chain/tree-reset signal where the
+/// advancing cursor disagrees with the stale found-gated balance snapshot.
+///
+/// `resolve` maps an upstream wallet id to its DET seed hash (dropping
+/// unregistered ids); `cached_balance` reads the snapshot total. Excludes the
+/// benign cases: a non-empty found-set (normal pass, incl. spend-to-zero) and a
+/// zero cached balance (never-funded). Pure — unit-testable without a
+/// coordinator.
+fn stale_after_empty_found(
+    summary: &PlatformAddressSyncSummary,
+    resolve: impl Fn(&[u8; 32]) -> Option<WalletSeedHash>,
+    cached_balance: impl Fn(&WalletSeedHash) -> u64,
+) -> Vec<WalletSeedHash> {
+    summary
+        .wallet_results
+        .iter()
+        .filter_map(|(wallet_id, outcome)| match outcome {
+            WalletSyncOutcome::Ok(result) if result.found.is_empty() => {
+                let seed_hash = resolve(wallet_id)?;
+                (cached_balance(&seed_hash) > 0).then_some(seed_hash)
+            }
+            _ => None,
         })
         .collect()
 }
@@ -1220,6 +1277,78 @@ mod tests {
         assert!(
             !cursors.contains_key(&wallet_err),
             "an errored pass writes no cursor"
+        );
+    }
+
+    /// `stale_after_empty_found` flags only the chain/tree-reset signal — an Ok
+    /// pass with an empty found-set AND a non-zero cached balance, resolvable to
+    /// a DET wallet. It excludes the benign cases: a non-empty found-set (normal
+    /// pass / spend-to-zero), a zero cached balance (never-funded), an errored
+    /// pass, and an unregistered wallet id.
+    #[test]
+    fn stale_after_empty_found_targets_only_reset_wallets() {
+        use dash_sdk::dpp::key_wallet::PlatformP2PKHAddress;
+        use dash_sdk::platform::address_sync::{AddressFunds, AddressSyncResult};
+        use platform_wallet::manager::platform_address_sync::{
+            PlatformAddressSyncSummary, WalletSyncOutcome,
+        };
+        use platform_wallet::wallet::PlatformAddressTag;
+
+        let reset: [u8; 32] = [1u8; 32];
+        let never_funded: [u8; 32] = [2u8; 32];
+        let normal: [u8; 32] = [3u8; 32];
+        let errored: [u8; 32] = [4u8; 32];
+        let unresolved: [u8; 32] = [5u8; 32];
+
+        let empty = || AddressSyncResult::<PlatformAddressTag, PlatformP2PKHAddress>::default();
+        let mut non_empty = empty();
+        non_empty.found.insert(
+            (
+                (normal, 0u32, 0u32),
+                PlatformP2PKHAddress::new([0xAAu8; 20]),
+            ),
+            AddressFunds {
+                nonce: 1,
+                balance: 100,
+            },
+        );
+
+        let mut summary = PlatformAddressSyncSummary::default();
+        summary
+            .wallet_results
+            .insert(reset, WalletSyncOutcome::Ok(empty()));
+        summary
+            .wallet_results
+            .insert(never_funded, WalletSyncOutcome::Ok(empty()));
+        summary
+            .wallet_results
+            .insert(normal, WalletSyncOutcome::Ok(non_empty));
+        summary
+            .wallet_results
+            .insert(errored, WalletSyncOutcome::Err("boom".to_string()));
+        summary
+            .wallet_results
+            .insert(unresolved, WalletSyncOutcome::Ok(empty()));
+
+        let cached: std::collections::BTreeMap<[u8; 32], u64> = [
+            (reset, 100u64),
+            (never_funded, 0),
+            (normal, 100),
+            (unresolved, 100),
+        ]
+        .into_iter()
+        .collect();
+
+        let flagged = stale_after_empty_found(
+            &summary,
+            |w| (*w != unresolved).then_some(*w),
+            |sh| cached.get(sh).copied().unwrap_or(0),
+        );
+
+        assert_eq!(
+            flagged,
+            vec![reset],
+            "only the empty-found, non-zero-cached, resolvable wallet is flagged"
         );
     }
 

@@ -221,12 +221,12 @@ fn seal_identity_keys(
 }
 
 /// Verify `password` opens EVERY already-`Protected` key in `keys`, before any
-/// sealing mutates the vault. Enforces SEC-001's one-password-per-identity
-/// invariant on a Mixed-state opt-in re-run: if a prior partial run sealed some
-/// keys under password A and the user now supplies password B, the mismatch
+/// vault mutation. Both SEC-001 migrations call this up front so they are atomic
+/// by construction: if `password` fails to open any protected key, the mismatch
 /// surfaces from `get_protected` as [`TaskError::IdentityKeyPassphraseIncorrect`]
-/// (no oracle) with zero state changes. Keyless (`Unprotected`) and `Absent`
-/// keys impose no password constraint and are skipped.
+/// (no oracle) with zero state changes — opt-in can't seal the rest under a
+/// second password, and opt-out can't strip a prefix before aborting. Keyless
+/// (`Unprotected`) and `Absent` keys impose no password constraint and are skipped.
 fn verify_existing_protection_password(
     view: &IdentityKeyView<'_>,
     keys: &IdentityKeySet,
@@ -250,6 +250,11 @@ fn unseal_identity_keys(
     keys: &IdentityKeySet,
     password: &SecretString,
 ) -> Result<usize, TaskError> {
+    // SEC-001 atomic opt-out: prove `password` opens EVERY `Protected` key
+    // BEFORE downgrading any label (mirrors the opt-in preflight), so a password
+    // that opens only a prefix can't leave that prefix stripped. Mismatch → no-op.
+    verify_existing_protection_password(view, keys, password)?;
+
     let mut reverted = 0usize;
     for (target, key_id) in keys {
         if view.scheme(target, *key_id)? == SecretScheme::Protected {
@@ -366,6 +371,50 @@ mod tests {
         // Both keys remain protected — nothing was downgraded.
         assert_eq!(view.scheme(&M, 0).unwrap(), SecretScheme::Protected);
         assert_eq!(view.scheme(&M, 1).unwrap(), SecretScheme::Protected);
+    }
+
+    /// SEC-001 atomic opt-out (CWE-460): on a Mixed-password identity — key 0
+    /// sealed under password A, key 1 under password B — an opt-out with
+    /// password A must NOT downgrade the key it CAN open before aborting on the
+    /// one it cannot. The one-password invariant forbids this state, but a
+    /// tampered or legacy vault could still present it, so opt-out must be
+    /// all-or-nothing by construction. The all-keys preflight rejects up front
+    /// with `IdentityKeyPassphraseIncorrect`, leaving BOTH keys protected — no
+    /// silent partial protection downgrade. Without the preflight, key 0 (which
+    /// password A opens, and which sorts first) would be stripped to keyless
+    /// plaintext while key 1 stayed sealed.
+    #[test]
+    fn unseal_mixed_password_aborts_without_partial_downgrade() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = fresh_store(dir.path());
+        let view = IdentityKeyView::new(&store, [0x08u8; 32]);
+        let pw_a = SecretString::new("password-for-key-zero");
+        let pw_b = SecretString::new("password-for-key-one-");
+        // (M, 0) sorts before (M, 1): a downgrade-as-you-go loop would reach
+        // key 0 first and strip it before failing the password check on key 1.
+        view.store_protected(&M, 0, &[0x80; 32], &pw_a).unwrap();
+        view.store_protected(&M, 1, &[0x81; 32], &pw_b).unwrap();
+        let keys = key_set(&[(M, 0), (M, 1)]);
+
+        let err = unseal_identity_keys(&view, &keys, &pw_a)
+            .expect_err("password A does not open key 1 — opt-out must abort");
+        assert!(
+            matches!(err, TaskError::IdentityKeyPassphraseIncorrect),
+            "expected IdentityKeyPassphraseIncorrect, got {err:?}"
+        );
+        // Neither key was downgraded: key 0 — which password A COULD open — is
+        // still Protected because the preflight ran before any mutation.
+        assert_eq!(view.scheme(&M, 0).unwrap(), SecretScheme::Protected);
+        assert_eq!(view.scheme(&M, 1).unwrap(), SecretScheme::Protected);
+        // The sealed bytes are intact under each key's original password.
+        assert_eq!(
+            *view.get_protected(&M, 0, &pw_a).unwrap().unwrap(),
+            [0x80; 32]
+        );
+        assert_eq!(
+            *view.get_protected(&M, 1, &pw_b).unwrap().unwrap(),
+            [0x81; 32]
+        );
     }
 
     /// A partial-crash mix (some keys Tier-2, some Tier-1) re-runs to a clean,

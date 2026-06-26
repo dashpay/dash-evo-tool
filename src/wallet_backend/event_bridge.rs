@@ -348,13 +348,20 @@ impl PlatformEventHandler for EventBridge {
         }
 
         // (1b) Update the frame-safe sync-cursor snapshot so the "Addresses
-        // synced" label tracks the same pass that produced the balances above —
-        // truthful even while the wallet is locked, with no DET-side cursor.
+        // synced" label tracks every completed pass — independent of whether it
+        // found funds, so a never-funded or emptied wallet reads "synced", not
+        // "never synced". Resolve the seed hashes before locking (mirrors `(1)`).
+        let cursor_updates: Vec<(WalletSeedHash, (u64, u64))> = summary_ok_sync_cursors(summary)
+            .into_iter()
+            .filter_map(|(wallet_id, cursor)| {
+                self.snapshots
+                    .seed_hash_for(&wallet_id)
+                    .map(|seed_hash| (seed_hash, cursor))
+            })
+            .collect();
         if let Ok(mut cursors) = self.platform_sync_cursors.lock() {
-            for (wallet_id, cursor) in summary_ok_sync_cursors(summary) {
-                if let Some(seed_hash) = self.snapshots.seed_hash_for(&wallet_id) {
-                    cursors.insert(seed_hash, cursor);
-                }
+            for (seed_hash, cursor) in cursor_updates {
+                cursors.insert(seed_hash, cursor);
             }
         }
 
@@ -460,21 +467,21 @@ fn summary_ok_platform_entries(
         .collect()
 }
 
-/// `(last_sync_timestamp, sync_height)` for every wallet that synced
-/// successfully with at least one found address, keyed by raw wallet id.
+/// `(last_sync_timestamp, sync_height)` for every wallet whose pass completed
+/// successfully, keyed by raw wallet id — independent of whether the pass found
+/// funds. The cursor tracks "we synced", not "we found funds", so a
+/// never-funded or emptied wallet reads "synced" rather than "never synced".
 ///
-/// Gated on a non-empty `found` set so it tracks the exact wallets that feed
-/// the balance snapshot. The timestamp falls back to the pass wall-clock
-/// (`sync_unix_seconds`) when the per-wallet result carries none, so a
-/// completed pass always yields a non-zero cursor — the value the label uses
-/// to distinguish "synced" from "never synced". Pure — no I/O — so it is
-/// unit-testable without a coordinator.
+/// The timestamp falls back to the pass wall-clock (`sync_unix_seconds`) when
+/// the per-wallet result carries none, so a completed pass always yields a
+/// non-zero cursor. Pure — no I/O — so it is unit-testable without a
+/// coordinator.
 fn summary_ok_sync_cursors(summary: &PlatformAddressSyncSummary) -> Vec<([u8; 32], (u64, u64))> {
     summary
         .wallet_results
         .iter()
         .filter_map(|(wallet_id, outcome)| match outcome {
-            WalletSyncOutcome::Ok(result) if !result.found.is_empty() => {
+            WalletSyncOutcome::Ok(result) => {
                 let timestamp = if result.new_sync_timestamp > 0 {
                     result.new_sync_timestamp
                 } else {
@@ -482,7 +489,7 @@ fn summary_ok_sync_cursors(summary: &PlatformAddressSyncSummary) -> Vec<([u8; 32
                 };
                 Some((*wallet_id, (timestamp, result.new_sync_height)))
             }
-            _ => None,
+            WalletSyncOutcome::Err(_) => None,
         })
         .collect()
 }
@@ -1131,9 +1138,10 @@ mod tests {
         assert_eq!(entry_b.2, 2, "nonce for p2pkh_b");
     }
 
-    /// `summary_ok_sync_cursors` yields a `(timestamp, height)` cursor for each
-    /// Ok wallet that found at least one address, skips errored and empty-found
-    /// wallets, and backfills a missing per-wallet timestamp from the pass clock.
+    /// `summary_ok_sync_cursors` yields a `(timestamp, height)` cursor for every
+    /// Ok wallet — including one that found nothing, so a never-funded/emptied
+    /// wallet reads "synced" not "never synced" — skips only errored wallets, and
+    /// backfills a missing per-wallet timestamp from the pass clock.
     #[test]
     fn summary_ok_sync_cursors_extracts_cursor_with_timestamp_fallback() {
         use dash_sdk::dpp::key_wallet::PlatformP2PKHAddress;
@@ -1197,16 +1205,21 @@ mod tests {
         let cursors: std::collections::BTreeMap<[u8; 32], (u64, u64)> =
             summary_ok_sync_cursors(&summary).into_iter().collect();
 
-        assert_eq!(
-            cursors.len(),
-            2,
-            "errored and empty-found wallets are skipped"
-        );
+        assert_eq!(cursors.len(), 3, "only the errored wallet is skipped");
         assert_eq!(cursors.get(&wallet_with_ts), Some(&(1_700, 900)));
         assert_eq!(
             cursors.get(&wallet_no_ts),
             Some(&(2_500, 0)),
             "missing per-wallet timestamp falls back to the pass clock"
+        );
+        assert_eq!(
+            cursors.get(&wallet_empty),
+            Some(&(2_500, 0)),
+            "a successfully-synced wallet that found nothing still reads as synced"
+        );
+        assert!(
+            !cursors.contains_key(&wallet_err),
+            "an errored pass writes no cursor"
         );
     }
 

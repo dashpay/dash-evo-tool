@@ -1800,10 +1800,6 @@ pub struct WalletAddressProvider {
     highest_found: Option<AddressIndex>,
     /// Results: address -> balance for addresses found with balance
     found_balances: BTreeMap<Address, AddressFunds>,
-    /// Known balances from previous sync for incremental catch-up
-    stored_balances: Vec<(AddressIndex, PlatformAddress, AddressFunds)>,
-    /// Last sync height from previous sync for incremental catch-up
-    stored_sync_height: u64,
 }
 
 impl WalletAddressProvider {
@@ -1850,8 +1846,6 @@ impl WalletAddressProvider {
             resolved: BTreeSet::new(),
             highest_found: None,
             found_balances: BTreeMap::new(),
-            stored_balances: Vec::new(),
-            stored_sync_height: 0,
         };
 
         // Cover at least the bootstrap window (0..gap_limit-1) AND every
@@ -1908,29 +1902,6 @@ impl WalletAddressProvider {
     /// Returns a map of Core Address -> balance (in credits).
     pub fn found_balances(&self) -> &BTreeMap<Address, AddressFunds> {
         &self.found_balances
-    }
-
-    /// Get the found balances with their indices after sync is complete.
-    ///
-    /// Returns an iterator of (index, (&Address, &balance)) for addresses that were found with balance.
-    /// The index can be used to reconstruct the derivation path.
-    pub fn found_balances_with_indices(
-        &self,
-    ) -> impl Iterator<Item = (AddressIndex, (&Address, &AddressFunds))> {
-        // Build a reverse lookup from address to index
-        let address_to_index: BTreeMap<&Address, AddressIndex> = self
-            .pending
-            .iter()
-            .map(|(idx, (_, addr))| (addr, *idx))
-            .collect();
-
-        self.found_balances
-            .iter()
-            .filter_map(move |(addr, balance)| {
-                address_to_index
-                    .get(addr)
-                    .map(|&idx| (idx, (addr, balance)))
-            })
     }
 
     /// Update a balance for an address (used for terminal balance updates).
@@ -1994,41 +1965,6 @@ impl WalletAddressProvider {
                 );
             }
         }
-    }
-
-    /// Populate stored balances and sync height from a wallet's known state.
-    ///
-    /// Call this after construction to enable incremental catch-up.
-    /// The SDK uses `current_balances()` as the baseline and `last_sync_height()`
-    /// as the starting block for applying delta operations.
-    pub fn with_stored_state(
-        mut self,
-        wallet: &Wallet,
-        network: Network,
-        last_sync_height: u64,
-    ) -> Self {
-        self.stored_sync_height = last_sync_height;
-
-        // Populate stored_balances from wallet's known platform addresses
-        for (core_addr, info) in &wallet.platform_address_info {
-            // Find the matching pending address to get the index and key
-            for (index, (key, pending_addr)) in &self.pending {
-                let canonical = Wallet::canonical_address(pending_addr, network);
-                if &canonical == core_addr {
-                    self.stored_balances.push((
-                        *index,
-                        *key,
-                        AddressFunds {
-                            balance: info.balance,
-                            nonce: info.nonce,
-                        },
-                    ));
-                    break;
-                }
-            }
-        }
-
-        self
     }
 
     /// Derive a Platform address at the given index from the account-level
@@ -2156,11 +2092,12 @@ impl AddressProvider for WalletAddressProvider {
     fn current_balances(
         &self,
     ) -> impl Iterator<Item = (AddressIndex, PlatformAddress, AddressFunds)> + '_ {
-        self.stored_balances.iter().copied()
+        // DET carries no incremental baseline — every refresh is a full scan.
+        std::iter::empty()
     }
 
     fn last_sync_height(&self) -> u64 {
-        self.stored_sync_height
+        0
     }
 }
 

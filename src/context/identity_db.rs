@@ -322,6 +322,9 @@ fn migrate_keystore_to_vault(
         return KeystoreMigration::VaultWriteFailed;
     }
     let migrated = taken.len();
+    // The migrated plaintext now lives only in the vault; drop the `taken` copy
+    // (it zeroizes on drop) so its key bytes do not linger across the DB write.
+    drop(taken);
     // SEC-002: the vault write succeeded — the rollback clone is no longer
     // needed. Zeroize its plaintext bytes (Clear/AlwaysClear) before it drops
     // so no identity private key lingers in freed heap.

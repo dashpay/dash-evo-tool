@@ -99,7 +99,7 @@ pub async fn wait_for_spendable_balance(
     })
     .await
     .map_err(|_| {
-        // Report both confirmed and total for diagnostics
+        // Report spendable and total for diagnostics
         let snap = app_context.snapshot_balance(&wallet_hash);
         let (spendable, total) = (snap.spendable(), snap.total);
         format!(

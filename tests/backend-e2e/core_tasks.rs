@@ -227,36 +227,7 @@ async fn test_tc009_send_single_key_wallet_payment() {
     )
     .expect("Failed to create SingleKeyWallet");
 
-    let skw_address = skw.address.to_string();
     let skw_arc = Arc::new(RwLock::new(skw));
-
-    // Fund the single-key wallet from the framework wallet
-    let framework_wallet = {
-        let wallets = app_context.wallets().read().expect("wallets lock");
-        wallets
-            .get(&ctx.framework_wallet_hash)
-            .expect("framework wallet must exist")
-            .clone()
-    };
-
-    run_task(
-        app_context,
-        BackendTask::CoreTask(CoreTask::SendWalletPayment {
-            wallet: framework_wallet,
-            request: WalletPaymentRequest {
-                recipients: vec![PaymentRecipient {
-                    address: skw_address.clone(),
-                    amount_duffs: 500_000,
-                }],
-                override_fee: None,
-            },
-        }),
-    )
-    .await
-    .expect("Funding single-key wallet should succeed");
-
-    // Wait for the transaction to propagate, then refresh UTXOs.
-    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
 
     // Single-key wallets are unsupported this release (PROJ-007): the refresh
     // arm returns the typed `SingleKeyWalletsUnsupported` regardless of network

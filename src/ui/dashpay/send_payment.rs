@@ -245,7 +245,7 @@ impl SendPaymentScreen {
                         if let Ok(wallet_guard) = wallet.read() {
                             self.app_context
                                 .snapshot_balance(&wallet_guard.seed_hash())
-                                .confirmed as f64
+                                .spendable() as f64
                                 / 100_000_000.0
                         } else {
                             0.0
@@ -283,12 +283,14 @@ impl SendPaymentScreen {
 
                 ui.separator();
 
-                // Amount input - use wallet balance for max
+                // Amount input - use the spendable wallet balance for max, so it
+                // matches the coin selector (confirmed + unconfirmed) and does
+                // not understate IS-locked funds awaiting their local flag.
                 let max_balance = if let Some(wallet) = &self.selected_wallet {
                     if let Ok(wallet_guard) = wallet.read() {
                         self.app_context
                             .snapshot_balance(&wallet_guard.seed_hash())
-                            .confirmed
+                            .spendable()
                     } else {
                         0
                     }

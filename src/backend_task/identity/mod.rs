@@ -889,11 +889,11 @@ impl AppContext {
         inputs: BTreeMap<dash_sdk::dpp::address_funds::PlatformAddress, Credits>,
         wallet_seed_hash: WalletSeedHash,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
-        use crate::model::fee_estimation::PlatformFeeEstimator;
         use dash_sdk::platform::transition::top_up_identity_from_addresses::TopUpIdentityFromAddresses;
 
-        // Estimate fee for top-up from platform addresses
-        let estimated_fee = PlatformFeeEstimator::new().estimate_identity_topup();
+        // Estimate the top-up fee with the active network fee multiplier
+        // (context estimator) so the figure shown to the user is accurate.
+        let estimated_fee = self.fee_estimator().estimate_identity_topup();
 
         tracing::info!(
             "top_up_identity_from_platform_addresses: identity={}, inputs={:?}",

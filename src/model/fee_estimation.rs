@@ -406,6 +406,64 @@ impl PlatformFeeEstimator {
         total.saturating_add(total / 5)
     }
 
+    /// Resolve the actual fee paid by a wallet-funded identity top-up.
+    ///
+    /// A top-up converts `amount_duffs` of asset-lock value into
+    /// `amount_duffs × CREDITS_PER_DUFF` credits, less the Platform processing
+    /// fee. That fee is the shortfall between the credits the asset lock should
+    /// have minted and the balance the identity actually gained:
+    ///
+    /// ```text
+    /// actual_fee = expected_credits − (balance_after − balance_before)
+    /// ```
+    ///
+    /// The subtraction is only meaningful when `balance_before` is the
+    /// identity's true pre-top-up balance. After a backend reload the caller may
+    /// hold a stale cached balance — too low (inflating the apparent increase
+    /// and collapsing the delta toward zero) or too high (the apparent increase
+    /// shrinks and the delta swells toward the full minted amount). Either skew
+    /// drifts the measured fee away from what the top-up actually cost, so the
+    /// measured fee is trusted only when it is physically possible **and** lands
+    /// in a plausible band relative to the deterministic estimate; otherwise the
+    /// estimate — the trustworthy value — is returned.
+    pub fn resolve_identity_topup_actual_fee(
+        &self,
+        amount_duffs: u64,
+        balance_before: u64,
+        balance_after: u64,
+    ) -> u64 {
+        let expected_credits = amount_duffs.saturating_mul(CREDITS_PER_DUFF);
+        let balance_increase = balance_after.saturating_sub(balance_before);
+        let delta_fee = expected_credits.saturating_sub(balance_increase);
+
+        let estimate = self.estimate_identity_topup();
+
+        // Plausibility band for the measured fee. Three conditions must all hold:
+        //
+        //  • `0 < delta_fee` — a real top-up always pays a non-zero Platform fee.
+        //    A stale-LOW `balance_before` inflates the apparent increase to ≥100 %
+        //    of the mint and collapses the delta to zero.
+        //  • `delta_fee < expected_credits` — the fee can never exceed what the
+        //    asset lock minted. A stale-HIGH `balance_before` makes the increase
+        //    saturate to zero, swelling the delta to the full minted amount.
+        //  • `delta_fee <= plausible_upper` — the deterministic estimate already
+        //    over-states the fee (it bills the full asset-lock processing cost),
+        //    so a real fee sits at or below it; `×2` leaves headroom for storage
+        //    and epoch variance. A *partial*-stale `balance_before` yields a delta
+        //    that is non-zero and below the mint yet grossly inflated past the
+        //    estimate — caught here where the two boundary checks above miss it.
+        //
+        // The low side stays at `0 < delta_fee`: the estimate over-predicts, so a
+        // legitimately small real fee (well under the estimate) must not be
+        // rejected — no tighter lower bound is defensible.
+        let plausible_upper = estimate.saturating_mul(2);
+        if 0 < delta_fee && delta_fee < expected_credits && delta_fee <= plausible_upper {
+            delta_fee
+        } else {
+            estimate
+        }
+    }
+
     /// Estimate fee for document batch transition
     pub fn estimate_document_batch(&self, transition_count: usize) -> u64 {
         let base_fee = self
@@ -777,6 +835,124 @@ mod tests {
         // Base cost + asset lock cost + 2 keys
         let fee = estimator.estimate_identity_create(2);
         assert_eq!(fee, 2_000_000 + 200_000_000 + 2 * 6_500_000);
+    }
+
+    #[test]
+    fn test_identity_topup_actual_fee_uses_balance_delta_when_consistent() {
+        let estimator = PlatformFeeEstimator::new();
+        // 500_000 duffs → 500_000_000 credits minted; a real top-up loses some
+        // to the processing fee, so the balance gains slightly less.
+        let amount_duffs = 500_000u64;
+        let balance_before = 1_000_000_000u64;
+        let processing_fee = 3_000_000u64;
+        let balance_after = balance_before + amount_duffs * CREDITS_PER_DUFF - processing_fee;
+        assert_eq!(
+            estimator.resolve_identity_topup_actual_fee(
+                amount_duffs,
+                balance_before,
+                balance_after,
+            ),
+            processing_fee,
+            "a consistent balance delta must report the real processing fee"
+        );
+    }
+
+    #[test]
+    fn test_identity_topup_actual_fee_falls_back_to_estimate_on_stale_balance() {
+        let estimator = PlatformFeeEstimator::new();
+        // Stale (too-low) `balance_before` — e.g. after a backend reload — makes
+        // the apparent increase exceed the minted credits, so the naive delta
+        // collapses to zero. The helper must fall back to the estimate instead.
+        let amount_duffs = 500_000u64;
+        let stale_balance_before = 0u64;
+        let balance_after = 9_999_999_999u64; // far more than the lock could mint
+        let resolved = estimator.resolve_identity_topup_actual_fee(
+            amount_duffs,
+            stale_balance_before,
+            balance_after,
+        );
+        assert_ne!(resolved, 0, "a top-up must never report a zero fee");
+        assert_eq!(
+            resolved,
+            estimator.estimate_identity_topup(),
+            "the stale-balance fallback must be the deterministic estimate"
+        );
+    }
+
+    /// RUST-001: stale-HIGH `balance_before` must fall back to the estimate.
+    ///
+    /// If the cached balance is *higher* than the post-top-up balance (e.g.
+    /// because it was read before a spend cleared on-chain), then
+    /// `balance_after.saturating_sub(balance_before)` underflows to 0 and
+    /// `delta_fee` equals the full minted amount — not a fee, just noise.
+    /// The helper must detect this invariant violation and return the estimate.
+    #[test]
+    fn test_identity_topup_actual_fee_falls_back_to_estimate_on_stale_high_balance() {
+        let estimator = PlatformFeeEstimator::new();
+        let amount_duffs = 5_000_000u64; // 5M duffs → 5_000_000_000 credits minted
+        let expected_credits = amount_duffs * CREDITS_PER_DUFF;
+        // balance_before is stale-HIGH: the cached balance is higher than
+        // balance_after, so balance_increase saturates to 0 and delta_fee would
+        // equal the full minted amount without the guard.
+        let stale_balance_before = 10_000_000_000u64;
+        let balance_after = 5_000_000_000u64; // lower than before (stale-HIGH)
+        assert!(
+            balance_after < stale_balance_before,
+            "pre-condition: stale-HIGH scenario"
+        );
+        let resolved = estimator.resolve_identity_topup_actual_fee(
+            amount_duffs,
+            stale_balance_before,
+            balance_after,
+        );
+        assert_ne!(
+            resolved, expected_credits,
+            "stale-HIGH must not report the full minted amount as the fee"
+        );
+        assert_eq!(
+            resolved,
+            estimator.estimate_identity_topup(),
+            "stale-HIGH must fall back to the deterministic estimate (RUST-001)"
+        );
+    }
+
+    /// A *partial*-stale `balance_before` produces a delta that is non-zero and
+    /// below the minted amount — so it slips past the two boundary checks — yet
+    /// is grossly inflated relative to the real fee. The plausibility cap against
+    /// the deterministic estimate must catch it and fall back to the estimate.
+    #[test]
+    fn test_identity_topup_actual_fee_rejects_partial_stale_inflated_delta() {
+        let estimator = PlatformFeeEstimator::new();
+        let amount_duffs = 5_000_000u64; // 5M duffs → 5_000_000_000 credits minted
+        let expected_credits = amount_duffs * CREDITS_PER_DUFF;
+
+        // Truth: a ~3,000,000-credit processing fee on a large prior balance.
+        let true_before = 1_000_000_000u64;
+        let real_fee = 3_000_000u64;
+        let balance_after = true_before + expected_credits - real_fee; // freshly read
+
+        // `balance_before` is PARTIAL-stale-HIGH: higher than truth by 3 billion,
+        // but not high enough to saturate the increase to zero. The naive delta is
+        // positive and below the mint, so the boundary checks alone accept it.
+        let stale_before = 4_000_000_000u64;
+        let naive_increase = balance_after - stale_before;
+        let naive_delta = expected_credits - naive_increase;
+        assert!(
+            naive_delta > 0 && naive_delta < expected_credits,
+            "pre-condition: the inflated delta slips past both boundary checks"
+        );
+        assert!(
+            naive_delta > estimator.estimate_identity_topup() * 2,
+            "pre-condition: the inflated delta is grossly above the estimate"
+        );
+
+        let resolved =
+            estimator.resolve_identity_topup_actual_fee(amount_duffs, stale_before, balance_after);
+        assert_eq!(
+            resolved,
+            estimator.estimate_identity_topup(),
+            "a partial-stale inflated delta must fall back to the deterministic estimate"
+        );
     }
 
     #[test]

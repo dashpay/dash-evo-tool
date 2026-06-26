@@ -1081,8 +1081,8 @@ impl WalletsBalancesScreen {
 
         {
             let seed_hash = wallet.read().map_err(|e| e.to_string())?.seed_hash();
-            if amount_duffs > self.app_context.snapshot_balance(&seed_hash).confirmed {
-                return Err("Insufficient confirmed balance".to_string());
+            if amount_duffs > self.app_context.snapshot_balance(&seed_hash).spendable() {
+                return Err("Insufficient balance".to_string());
             }
         }
 

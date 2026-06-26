@@ -1,5 +1,13 @@
 //! DashPayTask backend E2E tests (TC-031 to TC-044).
 //!
+//! DEFERRED: this module is currently disabled (commented out in
+//! `tests/backend-e2e/main.rs`). The dashpay backend depends on upstream
+//! `platform-wallet` dashpay support that is still incomplete; the completion
+//! lands in `dashpay/platform#3841` ("fix(platform-wallet)!: complete dashpay",
+//! shumkov, branch `feat/dashpay-m1-sync-correctness`). Re-enable the `mod
+//! dashpay_tasks;` declaration once that PR merges and the DET platform-wallet
+//! dep is bumped.
+//!
 //! Tests run serially via `--test-threads=1`. TC-037 through TC-042 form a
 //! sequential contact flow merged into a single lifecycle test:
 //! send request -> load requests -> accept -> register addresses -> update info.
@@ -821,9 +829,18 @@ async fn tc_045_detect_incoming_contact_payment() {
     let contact_1 = Identifier::from([0x5a; 32]);
 
     // Two deterministic, network-valid receiving addresses (distinct pubkeys)
-    // standing in for two freshly-derived contact addresses.
-    let pubkey_0 = dash_sdk::dpp::dashcore::PublicKey::from_slice(&[0x02; 33]).unwrap();
-    let pubkey_1 = dash_sdk::dpp::dashcore::PublicKey::from_slice(&[0x03; 33]).unwrap();
+    // standing in for two freshly-derived contact addresses. Derived from fixed
+    // secret keys so the addresses stay stable across runs while remaining valid
+    // curve points — secp256k1 now rejects raw bytes that are not on the curve,
+    // so a hand-written `[0x02; 33]` is no longer a usable public key.
+    let secp = dash_sdk::dpp::dashcore::secp256k1::Secp256k1::new();
+    let derive_pubkey = |seed: [u8; 32]| {
+        let secret_key = dash_sdk::dpp::dashcore::secp256k1::SecretKey::from_slice(&seed)
+            .expect("fixed test secret key is a valid scalar");
+        dash_sdk::dpp::dashcore::PublicKey::new(secret_key.public_key(&secp))
+    };
+    let pubkey_0 = derive_pubkey([0x01; 32]);
+    let pubkey_1 = derive_pubkey([0x02; 32]);
     let address_0 =
         dash_sdk::dpp::dashcore::Address::p2pkh(&pubkey_0, ctx.app_context.network()).to_string();
     let address_1 =

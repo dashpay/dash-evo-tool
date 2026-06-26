@@ -631,13 +631,23 @@ impl WalletSendScreen {
         }
     }
 
-    /// Get Core wallet balance from the display-only `WalletBackend`
-    /// snapshot (P4a). DISPLAY-ONLY — never feeds coin selection.
+    /// Get the Core wallet's **spendable** balance from the display-only
+    /// `WalletBackend` snapshot (P4a). DISPLAY-ONLY — this number never feeds
+    /// coin selection itself, but it must mirror what coin selection can spend
+    /// so the amount checks here agree with the actual send. `spendable()` is
+    /// the upstream `CoinSelector`'s set (confirmed + unconfirmed); reading
+    /// `confirmed` alone would understate IS-locked funds that have not yet been
+    /// flagged locally (they sit in `unconfirmed`), making "Max" exceed this
+    /// check and the validations reject sends coin selection would accept.
     fn get_core_balance(&self) -> u64 {
         self.selected_wallet
             .as_ref()
             .and_then(|w| w.read().ok())
-            .map(|w| self.app_context.snapshot_balance(&w.seed_hash()).confirmed)
+            .map(|w| {
+                self.app_context
+                    .snapshot_balance(&w.seed_hash())
+                    .spendable()
+            })
             .unwrap_or(0)
     }
 

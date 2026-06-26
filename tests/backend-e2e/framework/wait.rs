@@ -53,11 +53,15 @@ pub async fn wait_for_balance(
     })
 }
 
-/// Wait until a wallet has at least `min_balance` **spendable** (confirmed/IS-locked) duffs.
+/// Wait until a wallet has at least `min_balance` **spendable** duffs.
 ///
-/// This is stricter than `wait_for_balance()` — it ensures the funds are actually
-/// available for transaction building, not just visible as unconfirmed balance.
-/// Triggers SPV reconciliation on each poll.
+/// "Spendable" is `DetWalletBalance::spendable()` — the exact set the upstream
+/// `CoinSelector` draws from (confirmed + unconfirmed), excluding the immature
+/// and locked duffs that only `total` counts. This is the right gate for "can
+/// this wallet fund a transaction now": funds that are IS-locked but not yet
+/// flagged as instant-locked locally land in `unconfirmed`, so polling
+/// `confirmed` alone would miss them and time out even though coin selection
+/// could already spend them. Triggers SPV reconciliation on each poll.
 pub async fn wait_for_spendable_balance(
     app_context: &Arc<AppContext>,
     wallet_hash: WalletSeedHash,
@@ -68,7 +72,7 @@ pub async fn wait_for_spendable_balance(
     timeout(wait_timeout, async {
         let mut poll_count = 0u32;
         loop {
-            let balance = Some(app_context.snapshot_balance(&wallet_hash).confirmed);
+            let balance = Some(app_context.snapshot_balance(&wallet_hash).spendable());
             poll_count += 1;
             if let Some(b) = balance
                 && b >= min_balance
@@ -95,13 +99,13 @@ pub async fn wait_for_spendable_balance(
     })
     .await
     .map_err(|_| {
-        // Report both confirmed and total for diagnostics
+        // Report spendable and total for diagnostics
         let snap = app_context.snapshot_balance(&wallet_hash);
-        let (confirmed, total) = (snap.confirmed, snap.total);
+        let (spendable, total) = (snap.spendable(), snap.total);
         format!(
             "Timed out waiting for spendable balance >= {} duffs \
-             (confirmed: {}, total: {})",
-            min_balance, confirmed, total
+             (spendable: {}, total: {})",
+            min_balance, spendable, total
         )
     })
 }

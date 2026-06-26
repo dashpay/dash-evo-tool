@@ -278,9 +278,26 @@ pub enum TaskError {
     /// migration outcome is logged where it happens; no secret or raw error
     /// string is stored here.
     #[error(
-        "Some of this identity's keys could not be protected this time, so it is not fully protected yet. Check available disk space, then try protecting this identity again."
+        "Some of this identity's keys are not fully protected yet. \
+        Close and reopen the application, then try protecting this identity again."
     )]
     IdentityKeyProtectionIncomplete,
+
+    /// SEC-001 fail-closed guard at the opt-in protect boundary: the identity
+    /// still carries one or more keys saved in the legacy on-disk format this
+    /// version can neither read nor migrate into the protected store. Unlike
+    /// resident plaintext — which the load-path migration finishes on the next
+    /// launch — there is NO automatic migration for these keys, so reopening the
+    /// application would loop on the same error. The only way forward is to add
+    /// the identity again from its recovery phrase or private key, which replaces
+    /// the legacy key entries with ones this version can protect. Fieldless: the
+    /// offending key's presence is logged at the guard; no secret or raw error
+    /// string is stored here.
+    #[error(
+        "Some of this identity's keys are saved in an older format that cannot be protected. \
+        Load this identity again using its recovery phrase or private key, then try protecting it."
+    )]
+    IdentityKeyProtectionLegacyFormat,
 
     /// The DET wallet-metadata sidecar (alias / `is_main` /
     /// `core_wallet_name`) could not be read or written. Distinct from

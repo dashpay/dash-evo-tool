@@ -358,8 +358,8 @@ impl AppContext {
         }
     }
 
-    /// Stop chain sync and drop the wired wallet backend so the next Connect
-    /// rebuilds it from a clean slate.
+    /// Stop chain sync IN PLACE, keeping the wired wallet backend so the next
+    /// Connect restarts the SAME instance.
     ///
     /// This is the disconnect counterpart to
     /// [`Self::ensure_wallet_backend_and_start_spv`] and the single chokepoint
@@ -367,20 +367,30 @@ impl AppContext {
     ///
     /// 1. Flip the SPV indicator to [`SpvStatus::Stopping`] so the UI shows
     ///    "Disconnecting…" immediately, before the async teardown runs.
-    /// 2. Shut the wallet backend down ([`WalletBackend::shutdown`]), stopping
-    ///    the upstream chain-sync run loop and the periodic coordinators.
-    /// 3. Unwire the backend. Its start latch is one-shot, so the dropped
-    ///    instance could never restart sync — the next Connect calls
-    ///    [`Self::ensure_wallet_backend_and_start_spv`], which rebuilds a fresh
-    ///    backend with a fresh latch.
-    /// 4. Flip the indicator to [`SpvStatus::Stopped`] and clear the live peer
-    ///    count, sync progress, and last error, then recompute the overall
-    ///    state — which lands on `Disconnected` now that SPV is inactive.
+    /// 2. Stop the backend IN PLACE ([`WalletBackend::stop_in_place`]): stop the
+    ///    upstream chain-sync run loop and quiesce the three coordinators, but
+    ///    KEEP the `WalletBackend` (and its `Arc<SqlitePersister>`) wired in the
+    ///    AppContext slot, re-arming the one-shot start latch and coordinator
+    ///    gate so the same instance can restart. The backend is NOT shut down or
+    ///    unwired here.
+    /// 3. Flip the indicator to [`SpvStatus::Stopped`] and clear the live peer
+    ///    count, sync progress, and last error; re-arm the quorum gate and the
+    ///    one-shot identity-sweep flag; then recompute the overall state — which
+    ///    lands on `Disconnected` now that SPV is inactive.
+    ///
+    /// Restart-in-place is deliberate: because the persister DB is never closed
+    /// and reopened, the next same-network Connect fast-paths on the populated
+    /// slot and restarts on the re-armed latch, so a reconnect cannot hit
+    /// `WalletStorageError::AlreadyOpen` — impossible by construction, no release
+    /// barrier needed. Full teardown ([`WalletBackend::shutdown`], which drops
+    /// the backend and releases the persister) happens only on the
+    /// network-switch and app-close paths, never here.
     ///
     /// Idempotent: a call with no wired backend still settles the indicator on
-    /// `Stopped`/`Disconnected`. The teardown is async (upstream `shutdown` is
-    /// async), so GUI callers dispatch this via `AppAction::StopSpv` rather than
-    /// blocking the frame loop. That dispatch claims the stop synchronously with
+    /// `Stopped`/`Disconnected`. The teardown is async (upstream `stop_in_place`
+    /// is async), so GUI callers dispatch this via `AppAction::StopSpv` rather
+    /// than blocking the frame loop. That dispatch claims the stop synchronously
+    /// with
     /// [`ConnectionStatus::begin_spv_stop`](crate::context::connection_status::ConnectionStatus::begin_spv_stop)
     /// (button disables on the click frame, second click deduped); the redundant
     /// `Stopping` flip here keeps direct callers self-contained.
@@ -406,6 +416,13 @@ impl AppContext {
         // platform rev (`platform_address_sync` gained it in b4506492, matching
         // `identity_sync`/`shielded_sync`), so a rapid reconnect cannot leak an
         // uncancellable / duplicate sync loop (Q3).
+        //
+        // TODO(dash-spv#824): restart-in-place fully recreates the upstream DashSpvClient
+        // in SpvRuntime::run(), opening a reinit window. A block arriving at tip during
+        // that window can freeze dash-spv's filter committed_height one block below
+        // permanently → is_synced() stuck false → UI stuck on "Syncing…". Upstream bug:
+        // dashpay/rust-dashcore#824; DET's reconnect is the trigger. DET-side mitigations:
+        // quiesce header/block intake until filter init completes, or add a stall watchdog.
         if let Ok(backend) = self.wallet_backend() {
             backend.stop_in_place().await;
         }
@@ -414,10 +431,10 @@ impl AppContext {
         self.connection_status.set_spv_connected_peers(0);
         self.connection_status.set_spv_sync_progress(None);
         self.connection_status.set_spv_last_error(None);
-        // Re-arm the quorum gate: the next reconnect builds a fresh backend
-        // whose SPV session must re-sync the masternode list. Leaving the flag
-        // set would let early proof calls through before quorums exist again,
-        // re-triggering the DAPI self-ban storm.
+        // Re-arm the quorum gate so the next reconnect re-syncs the masternode
+        // list on the same backend instance (`stop_in_place` keeps the backend
+        // wired). Leaving the flag set would let early proof calls through
+        // before quorums exist again, re-triggering the DAPI self-ban storm.
         self.connection_status.set_masternodes_ready(false);
         // Re-arm the automatic identity sweep so it runs once per session.
         self.identity_autodiscovery_fired

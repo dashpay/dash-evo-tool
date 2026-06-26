@@ -3,15 +3,19 @@
 //! Verifies that `stop_spv` + `ensure_wallet_backend_and_start_spv` completes
 //! cleanly without a `WalletStorageError::AlreadyOpen` panic/error.
 //!
-//! **Background**: `WalletBackend::shutdown` must stop the upstream
-//! `SpvRuntime` run-loop *before* the `PlatformWalletManager` tears down its
-//! coordinators.  The run-loop holds a transitive `Arc<SqlitePersister>` whose
-//! path is registered in a global `OPEN_FILES` map (dash-spv
-//! `storage/lockfile.rs`).  If the run-loop is still alive when the next
-//! `WalletBackend::new` tries to open the same persistor, that path is still
-//! registered and the open fails with `AlreadyOpen`. The fix joins / aborts
-//! the background task inside `shutdown` so the persister can drop before the
-//! next `new`.
+//! **Background**: the disconnect → reconnect path is *restart-in-place*.
+//! `stop_spv` stops the upstream `SpvRuntime` run-loop and quiesces the
+//! coordinators but KEEPS the `WalletBackend` (and its transitive
+//! `Arc<SqlitePersister>`) wired in the `AppContext` slot. The next Connect
+//! fast-paths on that populated slot — no `WalletBackend::new`, no
+//! `SqlitePersister::open` — so the SAME instance restarts on a re-armed latch.
+//! Because the persister DB is never closed and reopened, the path registered
+//! in dash-spv's global `OPEN_FILES` map (`storage/lockfile.rs`) is never
+//! re-registered, and `AlreadyOpen` is impossible by construction.
+//!
+//! This is the live-network counterpart to the offline unit test
+//! `reconnect_restart_in_place_reuses_backend` in `src/context/wallet_lifecycle.rs`:
+//! it asserts the same reuse/restart contract against real testnet peers.
 //!
 //! This test drives the full connect → disconnect → reconnect cycle with an
 //! isolated `AppContext` (fresh temp dir, empty DB) to avoid disturbing the
@@ -90,15 +94,34 @@ async fn spv_reconnect_succeeds_without_already_open() {
         .expect("B: SPV did not connect to peers on first boot within 60s");
     tracing::info!("B: first connect — SPV peers found");
 
+    // Record the backend instance so the reconnect can be proven to REUSE it.
+    let first_ptr = {
+        let backend = app_context
+            .wallet_backend()
+            .expect("B: backend must be wired after the first connect");
+        assert!(
+            backend.is_started(),
+            "B: first connect must start chain sync"
+        );
+        Arc::as_ptr(&backend)
+    };
+
     // ── Disconnect ──────────────────────────────────────────────────────────
     app_context.stop_spv().await;
     tracing::info!("B: SPV stopped (disconnect complete)");
 
-    // The backend must have been torn down.
-    assert!(
-        app_context.wallet_backend().is_err(),
-        "B: wallet backend must be None after stop_spv"
-    );
+    // Restart-in-place: the backend stays wired (slot not taken) with its
+    // start latch re-armed, so the next Connect restarts the SAME instance and
+    // never reopens the persister.
+    {
+        let backend = app_context
+            .wallet_backend()
+            .expect("B: stop_spv must KEEP the backend wired for restart-in-place (NOT unwire it)");
+        assert!(
+            !backend.is_started(),
+            "B: stop_spv must re-arm the start latch so the next Connect can restart"
+        );
+    }
 
     // ── Reconnect (must NOT fail with AlreadyOpen) ──────────────────────────
     let (sender2, _rx2) =
@@ -108,10 +131,26 @@ async fn spv_reconnect_succeeds_without_already_open() {
         .await
         .expect(
             "B: second ensure_wallet_backend_and_start_spv must succeed; \
-             if 'AlreadyOpen' appears the fix has been reverted — \
-             WalletBackend::shutdown must stop the SpvRuntime run-loop \
-             before the persister is re-opened",
+             if 'AlreadyOpen' appears the restart-in-place contract has been \
+             broken — stop_spv must keep the backend wired so the persister is \
+             never closed and reopened",
         );
+
+    // The reconnect must reuse the SAME backend instance, not rebuild it.
+    {
+        let backend = app_context
+            .wallet_backend()
+            .expect("B: backend must still be wired after reconnect");
+        assert_eq!(
+            first_ptr,
+            Arc::as_ptr(&backend),
+            "B: restart-in-place must REUSE the same backend, not rebuild it"
+        );
+        assert!(
+            backend.is_started(),
+            "B: reconnect must restart chain sync on the reused backend"
+        );
+    }
 
     tracing::info!("B: reconnect complete; waiting for SPV peers...");
     wait::wait_for_spv_peers(&app_context, Duration::from_secs(60))

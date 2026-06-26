@@ -419,11 +419,13 @@ impl PlatformFeeEstimator {
     ///
     /// The subtraction is only meaningful when `balance_before` is the
     /// identity's true pre-top-up balance. After a backend reload the caller may
-    /// hold a stale (lower) cached balance, which inflates the apparent increase
-    /// and collapses the computed fee to zero — physically impossible for a real
-    /// top-up, since the balance can never grow by more than the asset lock
-    /// mints. When the delta yields no fee, fall back to the deterministic
-    /// estimate so the reported fee stays meaningful.
+    /// hold a stale cached balance — too low (inflating the apparent increase
+    /// and collapsing the delta toward zero) or too high (the apparent increase
+    /// shrinks and the delta swells toward the full minted amount). Either skew
+    /// drifts the measured fee away from what the top-up actually cost, so the
+    /// measured fee is trusted only when it is physically possible **and** lands
+    /// in a plausible band relative to the deterministic estimate; otherwise the
+    /// estimate — the trustworthy value — is returned.
     pub fn resolve_identity_topup_actual_fee(
         &self,
         amount_duffs: u64,
@@ -433,21 +435,32 @@ impl PlatformFeeEstimator {
         let expected_credits = amount_duffs.saturating_mul(CREDITS_PER_DUFF);
         let balance_increase = balance_after.saturating_sub(balance_before);
         let delta_fee = expected_credits.saturating_sub(balance_increase);
-        // Guard: only trust the real-fee delta when it is strictly between zero and the
-        // full minted amount.
+
+        let estimate = self.estimate_identity_topup();
+
+        // Plausibility band for the measured fee. Three conditions must all hold:
         //
-        // Two failure modes require falling back to the estimate:
-        //  • `delta_fee == 0` — the balance grew by exactly the minted amount; a real
-        //    top-up always pays a non-zero Platform fee, so this means `balance_before`
-        //    was stale-LOW (apparent increase inflated to 100 % of minted credits).
-        //  • `delta_fee == expected_credits` — the balance did not grow at all
-        //    (`balance_after <= balance_before`), meaning `balance_before` was stale-HIGH;
-        //    `balance_increase` saturates to 0, so `delta_fee` equals the full minted
-        //    amount and is returned as the "fee", which is nonsensical.
-        if 0 < delta_fee && delta_fee < expected_credits {
+        //  • `0 < delta_fee` — a real top-up always pays a non-zero Platform fee.
+        //    A stale-LOW `balance_before` inflates the apparent increase to ≥100 %
+        //    of the mint and collapses the delta to zero.
+        //  • `delta_fee < expected_credits` — the fee can never exceed what the
+        //    asset lock minted. A stale-HIGH `balance_before` makes the increase
+        //    saturate to zero, swelling the delta to the full minted amount.
+        //  • `delta_fee <= plausible_upper` — the deterministic estimate already
+        //    over-states the fee (it bills the full asset-lock processing cost),
+        //    so a real fee sits at or below it; `×2` leaves headroom for storage
+        //    and epoch variance. A *partial*-stale `balance_before` yields a delta
+        //    that is non-zero and below the mint yet grossly inflated past the
+        //    estimate — caught here where the two boundary checks above miss it.
+        //
+        // The low side stays at `0 < delta_fee`: the estimate over-predicts, so a
+        // legitimately small real fee (well under the estimate) must not be
+        // rejected — no tighter lower bound is defensible.
+        let plausible_upper = estimate.saturating_mul(2);
+        if 0 < delta_fee && delta_fee < expected_credits && delta_fee <= plausible_upper {
             delta_fee
         } else {
-            self.estimate_identity_topup()
+            estimate
         }
     }
 
@@ -900,6 +913,45 @@ mod tests {
             resolved,
             estimator.estimate_identity_topup(),
             "stale-HIGH must fall back to the deterministic estimate (RUST-001)"
+        );
+    }
+
+    /// A *partial*-stale `balance_before` produces a delta that is non-zero and
+    /// below the minted amount — so it slips past the two boundary checks — yet
+    /// is grossly inflated relative to the real fee. The plausibility cap against
+    /// the deterministic estimate must catch it and fall back to the estimate.
+    #[test]
+    fn test_identity_topup_actual_fee_rejects_partial_stale_inflated_delta() {
+        let estimator = PlatformFeeEstimator::new();
+        let amount_duffs = 5_000_000u64; // 5M duffs → 5_000_000_000 credits minted
+        let expected_credits = amount_duffs * CREDITS_PER_DUFF;
+
+        // Truth: a ~3,000,000-credit processing fee on a large prior balance.
+        let true_before = 1_000_000_000u64;
+        let real_fee = 3_000_000u64;
+        let balance_after = true_before + expected_credits - real_fee; // freshly read
+
+        // `balance_before` is PARTIAL-stale-HIGH: higher than truth by 3 billion,
+        // but not high enough to saturate the increase to zero. The naive delta is
+        // positive and below the mint, so the boundary checks alone accept it.
+        let stale_before = 4_000_000_000u64;
+        let naive_increase = balance_after - stale_before;
+        let naive_delta = expected_credits - naive_increase;
+        assert!(
+            naive_delta > 0 && naive_delta < expected_credits,
+            "pre-condition: the inflated delta slips past both boundary checks"
+        );
+        assert!(
+            naive_delta > estimator.estimate_identity_topup() * 2,
+            "pre-condition: the inflated delta is grossly above the estimate"
+        );
+
+        let resolved =
+            estimator.resolve_identity_topup_actual_fee(amount_duffs, stale_before, balance_after);
+        assert_eq!(
+            resolved,
+            estimator.estimate_identity_topup(),
+            "a partial-stale inflated delta must fall back to the deterministic estimate"
         );
     }
 

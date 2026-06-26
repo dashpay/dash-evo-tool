@@ -171,8 +171,19 @@ fn validate_protection_password(password: &Secret) -> Result<(), TaskError> {
 /// Also rejects legacy `Encrypted` keys (decode-only, no current producer):
 /// their vault scheme is also `Absent`, so the seal step would silently skip
 /// them and issue a false-protected result. See [`KeyStorage::has_encrypted_legacy_keys`].
+///
+/// The two rejections carry DIFFERENT recovery actions, so they map to distinct
+/// errors: resident plaintext is finished by the load-path migration on the next
+/// launch ([`TaskError::IdentityKeyProtectionIncomplete`] → "close and reopen"),
+/// whereas a legacy `Encrypted` key has no migration path
+/// ([`TaskError::IdentityKeyProtectionLegacyFormat`] → "load the identity again").
+/// Legacy keys are checked first: re-loading the identity also clears any
+/// resident plaintext, so it is the single action that resolves both.
 fn reject_resident_identity_plaintext(private_keys: &KeyStorage) -> Result<(), TaskError> {
-    if private_keys.has_plaintext_for_vault() || private_keys.has_encrypted_legacy_keys() {
+    if private_keys.has_encrypted_legacy_keys() {
+        return Err(TaskError::IdentityKeyProtectionLegacyFormat);
+    }
+    if private_keys.has_plaintext_for_vault() {
         return Err(TaskError::IdentityKeyProtectionIncomplete);
     }
     Ok(())
@@ -550,6 +561,23 @@ mod tests {
         ks
     }
 
+    /// A `KeyStorage` holding a single legacy `Encrypted` key — the decode-only
+    /// variant an old DET version left behind. Its vault scheme is `Absent` (no
+    /// migration path), so the seal step would silently skip it.
+    fn ks_with_encrypted_legacy() -> KeyStorage {
+        let pv = PlatformVersion::latest();
+        let mut ks = KeyStorage::default();
+        let k = IdentityPublicKey::random_key(1, Some(1), pv);
+        ks.private_keys.insert(
+            (M, k.id()),
+            (
+                QualifiedIdentityPublicKey::from(k),
+                PrivateKeyData::Encrypted(vec![0x33; 48]),
+            ),
+        );
+        ks
+    }
+
     /// A `KeyStorage` whose keys are all legitimately not-resident: one already
     /// vault-backed (`InVault`) and one wallet-derived (`AtWalletDerivationPath`,
     /// whose vault scheme is `Absent` by design, not by a failed migration).
@@ -643,6 +671,22 @@ mod tests {
         assert!(
             matches!(err, TaskError::IdentityKeyProtectionIncomplete),
             "expected IdentityKeyProtectionIncomplete, got {err:?}"
+        );
+    }
+
+    /// SEC-001 fail-closed: an identity carrying a legacy `Encrypted` key (no
+    /// migration path) is rejected with the dedicated
+    /// [`TaskError::IdentityKeyProtectionLegacyFormat`] — NOT the resident-
+    /// plaintext `IdentityKeyProtectionIncomplete` — so the user is told to load
+    /// the identity again rather than uselessly close and reopen.
+    #[test]
+    fn protect_rejects_legacy_encrypted_key_with_distinct_error() {
+        let ks = ks_with_encrypted_legacy();
+        let err = reject_resident_identity_plaintext(&ks)
+            .expect_err("legacy Encrypted key must fail closed");
+        assert!(
+            matches!(err, TaskError::IdentityKeyProtectionLegacyFormat),
+            "expected IdentityKeyProtectionLegacyFormat, got {err:?}"
         );
     }
 

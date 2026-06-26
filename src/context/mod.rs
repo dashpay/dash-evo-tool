@@ -654,12 +654,26 @@ impl AppContext {
             return;
         }
 
-        let updates: PlatformAddressUpdates = seeds
-            .iter()
-            .filter(|(_, entries, _)| !entries.is_empty())
-            .map(|(seed_hash, entries, _)| (*seed_hash, entries.clone()))
-            .collect();
-        self.apply_platform_address_push(updates);
+        // Seed the per-address tab with the same insert-if-absent guard the
+        // balance and cursor maps use below, so a live push that somehow landed
+        // first is never clobbered by staler persisted data.
+        {
+            use dash_sdk::dpp::key_wallet::PlatformP2PKHAddress;
+            let network = self.network;
+            if let Ok(wallets) = self.wallets.read() {
+                for (seed_hash, entries, _) in seeds.iter().filter(|(_, e, _)| !e.is_empty()) {
+                    if let Some(wallet_arc) = wallets.get(seed_hash)
+                        && let Ok(mut wallet) = wallet_arc.write()
+                    {
+                        for (hash, balance, nonce) in entries {
+                            let addr = PlatformP2PKHAddress::new(*hash).to_address(network);
+                            let canonical = Wallet::canonical_address(&addr, network);
+                            wallet.seed_platform_address_info(canonical, *balance, *nonce);
+                        }
+                    }
+                }
+            }
+        }
 
         if let Ok(mut balances) = self.platform_balances.lock() {
             for (seed_hash, entries, _) in seeds.iter().filter(|(_, e, _)| !e.is_empty()) {

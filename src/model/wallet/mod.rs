@@ -1758,6 +1758,21 @@ impl Wallet {
         self.platform_address_info
             .insert(address, PlatformAddressInfo { balance, nonce });
     }
+
+    /// Seed Platform address info only when no entry exists for the canonical
+    /// address — the at-rest warm-start equivalent of `or_insert`, so a live
+    /// push (which overwrites via [`Self::set_platform_address_info`]) is never
+    /// clobbered by staler persisted data.
+    pub fn seed_platform_address_info(
+        &mut self,
+        address: Address,
+        balance: Credits,
+        nonce: AddressNonce,
+    ) {
+        if self.get_platform_address_info(&address).is_none() {
+            self.set_platform_address_info(address, balance, nonce);
+        }
+    }
 }
 
 /// Default gap limit for HD wallet address scanning
@@ -2290,6 +2305,31 @@ mod tests {
         let info = wallet.platform_address_info.get(&addr).unwrap();
         assert_eq!(info.balance, 600_000);
         assert_eq!(info.nonce, 4);
+    }
+
+    #[test]
+    fn test_seed_platform_address_info_is_insert_if_absent() {
+        let mut wallet = test_wallet();
+        let addr = test_address(1);
+
+        // Absent -> seeds the value.
+        wallet.seed_platform_address_info(addr.clone(), 500_000, 3);
+        let info = wallet.get_platform_address_info(&addr).unwrap();
+        assert_eq!((info.balance, info.nonce), (500_000, 3));
+
+        // Present -> no-op: a warm-start seed must not clobber a live value.
+        wallet.seed_platform_address_info(addr.clone(), 999_999, 9);
+        let info = wallet.get_platform_address_info(&addr).unwrap();
+        assert_eq!(
+            (info.balance, info.nonce),
+            (500_000, 3),
+            "seeding an already-present address must leave it untouched"
+        );
+
+        // A genuine live update still overwrites.
+        wallet.set_platform_address_info(addr.clone(), 999_999, 9);
+        let info = wallet.get_platform_address_info(&addr).unwrap();
+        assert_eq!((info.balance, info.nonce), (999_999, 9));
     }
 
     #[test]

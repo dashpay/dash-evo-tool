@@ -2,7 +2,6 @@ use crate::backend_task::error::TaskError;
 use crate::backend_task::identity::{IdentityTopUpInfo, TopUpIdentityFundingMethod};
 use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
-use crate::model::fee_estimation::PlatformFeeEstimator;
 use dash_sdk::dpp::identity::accessors::{IdentityGettersV0, IdentitySettersV0};
 
 impl AppContext {
@@ -17,7 +16,10 @@ impl AppContext {
         } = input;
 
         let balance_before = qualified_identity.identity.balance();
-        let fee_estimator = PlatformFeeEstimator::new();
+        // This estimate is shown to the user and feeds the actual-fee
+        // plausibility band, so it must track the active network fee multiplier —
+        // use the context estimator rather than the hardcoded default.
+        let fee_estimator = self.fee_estimator();
         let estimated_fee = fee_estimator.estimate_identity_topup();
 
         // Both wallet-funded top-up paths (fresh asset lock or resume from a

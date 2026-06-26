@@ -201,10 +201,9 @@ async fn test_tc005_create_top_up_asset_lock() {
 //
 // Single-key wallets are intentionally unsupported this release (PROJ-007 /
 // single-key-mock.md, Decision #7): every single-key task arm returns the typed
-// `SingleKeyWalletsUnsupported`. The funding step still exercises a real send
-// from the framework HD wallet to the single-key address, then the test
-// verifies that `RefreshSingleKeyWalletInfo` returns `SingleKeyWalletsUnsupported`
-// and stops before attempting the single-key send.
+// `SingleKeyWalletsUnsupported`. The test verifies that
+// `RefreshSingleKeyWalletInfo` returns `SingleKeyWalletsUnsupported` and stops;
+// the single-key send flow is unreachable until single-key wallets are reinstated.
 #[ignore]
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
 async fn test_tc009_send_single_key_wallet_payment() {

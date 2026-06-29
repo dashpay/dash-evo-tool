@@ -619,7 +619,7 @@ impl AddressInput {
             );
         }
         match PlatformAddress::from_bech32m_string(&canonical) {
-            Ok((pa, _network)) => (
+            Ok(pa) => (
                 None,
                 Some(ValidatedAddress::Platform {
                     address: pa,
@@ -658,20 +658,12 @@ impl AddressInput {
         }
         use dash_sdk::dpp::address_funds::OrchardAddress;
         match OrchardAddress::from_bech32m_string(trimmed) {
-            Ok((_, network)) => {
-                // Shielded addresses only encode mainnet vs non-mainnet in the HRP.
-                // Testnet, Devnet, and Local all share "tdash1z" and cannot be
-                // distinguished at the address level. Enforce mainnet isolation only.
-                let same_mainnet_class =
-                    (self.network == Network::Mainnet) == (network == Network::Mainnet);
-                if !same_mainnet_class {
-                    (
-                        Some("This address belongs to a different network. Please check you are using the correct network.".to_string()),
-                        None,
-                    )
-                } else {
-                    (None, Some(ValidatedAddress::Shielded(trimmed.to_string())))
-                }
+            Ok(_) => {
+                // Network is already validated above via the expected_prefix check
+                // (dash1z for mainnet, tdash1z for non-mainnet). `from_bech32m_string`
+                // no longer returns the network — the prefix guard is the sole
+                // network discriminator for shielded addresses.
+                (None, Some(ValidatedAddress::Shielded(trimmed.to_string())))
             }
             Err(_) => (
                 Some(

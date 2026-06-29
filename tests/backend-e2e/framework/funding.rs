@@ -53,7 +53,6 @@ pub async fn derive_platform_receive_address(
     };
     PlatformAddress::from_bech32m_string(&address)
         .expect("derived platform address is not valid bech32m")
-        .0
 }
 
 #[allow(dead_code)]

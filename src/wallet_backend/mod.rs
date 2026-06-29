@@ -1052,7 +1052,16 @@ impl WalletBackend {
 
         let config = self.build_client_config();
 
-        self.inner.pwm.spv_arc().spawn_in_background(config);
+        // New API: `start(config)` (async, initializes the SPV client) is called first,
+        // then `spawn_run_loop()` (sync, spawns the background run-loop task).
+        // The old `spawn_in_background(config)` combined both steps.
+        let spv = self.inner.pwm.spv_arc();
+        spv.start(config)
+            .await
+            .map_err(|e| TaskError::WalletBackend {
+                source: Box::new(e),
+            })?;
+        spv.spawn_run_loop();
 
         // Defer the coordinator starts behind the quorum-readiness gate. The
         // gate is reachable from the `EventBridge`, which the long-lived SPV
@@ -3203,10 +3212,10 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
         | P::InputSumOverflow
         | P::AddressNotFound(_)
         | P::KeyDerivation(_)
+        | P::RehydrationPoolMismatch { .. }
         | P::WalletLocked
         | P::SpvAlreadyRunning
         | P::NoWalletsConfigured
-        | P::SpvNotRunning
         | P::SpvError(_)
         | P::TokenError(_)
         | P::ShieldedNoUnspentNotes
@@ -3391,7 +3400,6 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
         | P::WalletLocked
         | P::SpvAlreadyRunning
         | P::NoWalletsConfigured
-        | P::SpvNotRunning
         | P::SpvError(_)
         | P::TokenError(_)
         | P::ShieldedNoUnspentNotes
@@ -3410,7 +3418,8 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
         // caller must not re-submit (the next sync reconciles).
         | P::ShieldedBroadcastUnconfirmed { .. }
         | P::ShieldedSpendUnconfirmed { .. }
-        | P::RehydrationTopologyUnsupported { .. } => IdentityOpErrorKind::Other,
+        | P::RehydrationTopologyUnsupported { .. }
+        | P::RehydrationPoolMismatch { .. } => IdentityOpErrorKind::Other,
     }
 }
 

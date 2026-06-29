@@ -275,7 +275,7 @@ impl TransferScreen {
 
         // Try to parse as Bech32m Platform address first (dash1.../tdash1... per DIP-18)
         if crate::ui::helpers::is_platform_address_string(input) {
-            let (addr, _network) = PlatformAddress::from_bech32m_string(input)
+            let addr = PlatformAddress::from_bech32m_string(input)
                 .map_err(|e| format!("Invalid Bech32m address: {}", e))?;
             return Ok(addr);
         }

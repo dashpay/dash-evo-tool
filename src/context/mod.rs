@@ -1063,11 +1063,18 @@ impl AppContext {
         if let Ok(mut g) = self.selected_identity_id.lock() {
             *g = id;
         }
-        if let Some(id) = id
-            && let Some(hash) = self.owning_wallet_hash(id)
-            && let Ok(mut g) = self.selected_wallet_hash.lock()
-        {
-            *g = Some(hash);
+        // Reconcile the derived wallet to the identity's owner. A wallet-less
+        // (imported-by-id) identity has NO owning wallet, so the pointer must
+        // be cleared to `None` — otherwise the breadcrumb wallet pill keeps
+        // showing the previous identity's wallet while Home/operate-as use the
+        // wallet-less one (the pill and the active identity disagree). Selecting
+        // an identity always writes the owner (`None` included); only clearing
+        // the identity (`id == None`) leaves the wallet pointer untouched.
+        if let Some(id) = id {
+            let owner = self.owning_wallet_hash(id);
+            if let Ok(mut g) = self.selected_wallet_hash.lock() {
+                *g = owner;
+            }
         }
         self.persist_selected_identity_kv(id);
         self.persist_selected_wallet_kv(

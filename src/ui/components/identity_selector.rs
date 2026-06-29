@@ -336,3 +336,32 @@ impl<'a> Widget for IdentitySelector<'a> {
         .inner
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// R2 regression-lock: a selector that did NOT opt in via `with_app_default`
+    /// never reads the app-scoped selection to seed its buffer — so a
+    /// recipient/target/filter picker behaves exactly as before the feature.
+    #[test]
+    fn default_selector_does_not_seed_from_global() {
+        let mut buf = String::from("some-id");
+        let ids: Vec<QualifiedIdentity> = vec![];
+        let sel = IdentitySelector::new("recipient", &mut buf, &ids);
+        assert!(sel.app_default.is_none());
+        assert!(sel.app_default_seed().is_none());
+    }
+
+    /// R2 regression-lock: a selector that did NOT opt in via `syncing_global`
+    /// has no write-back target, so a user change can never touch
+    /// `selected_identity_id` — the 9 no-sync sites stay inert. A regression
+    /// that defaulted `sync_target` to `Some(..)` would fail here.
+    #[test]
+    fn default_selector_has_no_sync_target() {
+        let mut buf = String::new();
+        let ids: Vec<QualifiedIdentity> = vec![];
+        let sel = IdentitySelector::new("recipient", &mut buf, &ids);
+        assert!(sel.sync_target.is_none());
+    }
+}

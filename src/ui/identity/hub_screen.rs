@@ -204,18 +204,25 @@ impl ScreenLike for IdentityHubScreen {
         // / home (the resolved active identity). `landing()` keeps the
         // load-error banner behaviour and a last-known-good fallback.
         let landing = self.landing(ctx);
+        // Load the identity list once per frame and reuse it for the view
+        // computation AND the Picker arm (the Onboarding surface needs no list).
+        // TODO(IDH-003 follow-up): also fold `landing()`'s load and the
+        // breadcrumb switcher's per-frame loads into a single shared snapshot.
+        let frame_identities = if matches!(landing, HubLanding::Onboarding) {
+            Vec::new()
+        } else {
+            self.app_context
+                .load_local_qualified_identities()
+                .unwrap_or_default()
+        };
         let view = if matches!(landing, HubLanding::Onboarding) {
             HubView::Onboarding
         } else {
-            let identities = self
-                .app_context
-                .load_local_qualified_identities()
-                .unwrap_or_default();
             let active = self.app_context.selected_identity_id();
             let has_explicit =
-                active.is_some_and(|id| identities.iter().any(|qi| qi.identity.id() == id));
+                active.is_some_and(|id| frame_identities.iter().any(|qi| qi.identity.id() == id));
             effective_view(
-                identities.len(),
+                frame_identities.len(),
                 has_explicit,
                 self.selection.picker_override(),
             )
@@ -228,18 +235,12 @@ impl ScreenLike for IdentityHubScreen {
             ui.set_min_width(ui.available_width());
             match view {
                 HubView::Onboarding => super::onboarding::render(ui, &self.app_context),
-                HubView::Picker => {
-                    let identities = self
-                        .app_context
-                        .load_local_qualified_identities()
-                        .unwrap_or_default();
-                    super::picker::render(
-                        ui,
-                        &self.app_context,
-                        &identities,
-                        Some(&mut picked_identity),
-                    )
-                }
+                HubView::Picker => super::picker::render(
+                    ui,
+                    &self.app_context,
+                    &frame_identities,
+                    Some(&mut picked_identity),
+                ),
                 HubView::Home => {
                     // `ui.vertical_centered(...).inner` carries the tab's
                     // `AppAction` back out.

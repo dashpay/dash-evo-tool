@@ -139,10 +139,38 @@ pub fn render(
 
     let wallets = gather_wallets(app_context);
     let wallet_count = wallets.len();
-    let active_wallet = app_context
-        .selected_wallet_hash()
-        .filter(|h| wallets.iter().any(|(wh, _)| wh == h))
-        .or_else(|| wallets.first().map(|(h, _)| *h));
+
+    // One per-frame identity load; derive the active identity and the no-wallet
+    // group from it instead of re-querying (QA-005). The wallet-scoped list
+    // still needs its own DB query (the owning `wallet_hash` is not exposed on
+    // `QualifiedIdentity`, only stored — R1).
+    let all_identities = app_context
+        .load_local_qualified_identities()
+        .unwrap_or_default();
+    let all_ids: Vec<Identifier> = all_identities.iter().map(|qi| qi.identity.id()).collect();
+    let active_id = app_context.selected_identity_id();
+    // The identity pill reflects an *explicitly* chosen identity (or a lone
+    // auto-selected one). In the ≥2-none-chosen picker state it stays a
+    // placeholder (§7) — never the first-identity fallback, which would
+    // duplicate a picker-grid label and disagree with "no identity chosen".
+    let pill_target_id = crate::model::selected_identity::keep_if_loaded(active_id, &all_ids)
+        .or_else(|| (all_ids.len() == 1).then(|| all_ids[0]));
+    let pill_identity =
+        pill_target_id.and_then(|id| all_identities.iter().find(|qi| qi.identity.id() == id));
+    // A wallet-less (imported-by-id) shown identity has no owning wallet.
+    let active_is_wallet_less = pill_identity.is_some_and(|qi| qi.wallet_index.is_none());
+
+    // The wallet segment is DERIVED from the active identity (identity-primary).
+    // A wallet-less active identity → no active wallet → empty wallet segment,
+    // so the pill never shows a wallet belonging to a different identity (QA-001).
+    let active_wallet = if active_is_wallet_less {
+        None
+    } else {
+        app_context
+            .selected_wallet_hash()
+            .filter(|h| wallets.iter().any(|(wh, _)| wh == h))
+            .or_else(|| wallets.first().map(|(h, _)| *h))
+    };
     let active_wallet_name = active_wallet
         .and_then(|h| wallets.iter().find(|(wh, _)| *wh == h))
         .map(|(_, n)| n.clone())
@@ -157,20 +185,11 @@ pub fn render(
         })
         .unwrap_or_default();
     // Identities with no wallet on this device (imported by id).
-    let no_wallet: Vec<QualifiedIdentity> = app_context
-        .load_local_qualified_identities()
-        .map(|v| {
-            v.into_iter()
-                .filter(|qi| qi.wallet_index.is_none())
-                .collect()
-        })
-        .unwrap_or_default();
-
-    let active_id = app_context.selected_identity_id();
-    let active_in_scope = active_id.filter(|id| scoped.iter().any(|qi| qi.identity.id() == *id));
-    let pill_identity = active_in_scope
-        .and_then(|id| scoped.iter().find(|qi| qi.identity.id() == id))
-        .or_else(|| scoped.first());
+    let no_wallet: Vec<QualifiedIdentity> = all_identities
+        .iter()
+        .filter(|qi| qi.wallet_index.is_none())
+        .cloned()
+        .collect();
 
     ui.horizontal(|ui| {
         // --- Segment 1: Identities link ---------------------------------
@@ -184,9 +203,21 @@ pub fn render(
         ui.label(RichText::new("›").color(DashColors::text_secondary(dark_mode)));
 
         // --- Segment 2: wallet pill -------------------------------------
-        match wallet_pill_mode(wallet_count) {
+        // A wallet-less active identity has no wallet → empty segment, regardless
+        // of how many HD wallets exist (QA-001).
+        let wallet_mode = if active_is_wallet_less {
+            BreadcrumbPillMode::Placeholder
+        } else {
+            wallet_pill_mode(wallet_count)
+        };
+        match wallet_mode {
             BreadcrumbPillMode::Placeholder => {
-                BreadcrumbPill::placeholder("(no wallet yet)").show(ui);
+                let label = if active_is_wallet_less {
+                    "(no wallet)"
+                } else {
+                    "(no wallet yet)"
+                };
+                BreadcrumbPill::placeholder(label).show(ui);
             }
             BreadcrumbPillMode::Subdued => {
                 BreadcrumbPill::new(active_wallet_name.clone())
@@ -329,10 +360,6 @@ pub fn render(
 mod tests {
     use super::*;
 
-    fn id(b: u8) -> Identifier {
-        Identifier::from([b; 32])
-    }
-
     #[test]
     fn short_hex_is_stable_prefix() {
         let h = [0xABu8; 32];
@@ -372,24 +399,5 @@ mod tests {
             tt_identity("Main Wallet"),
             "Switch between identities in Main Wallet or add a new one."
         );
-    }
-
-    /// Guards R1: the no-wallet group is identified by `wallet_index.is_none()`,
-    /// independent of `associated_wallets` (which clones every loaded wallet).
-    /// The end-to-end scoping is covered by IT-SWITCH-02; this pins the
-    /// discriminator the filter relies on.
-    #[test]
-    fn no_wallet_group_uses_wallet_index_discriminator() {
-        let owned: Option<u32> = Some(3);
-        let imported: Option<u32> = None;
-        assert!(
-            owned.is_some(),
-            "wallet-owned identity carries a wallet_index"
-        );
-        assert!(
-            imported.is_none(),
-            "imported-by-id identity has no wallet_index"
-        );
-        let _ = id(1);
     }
 }

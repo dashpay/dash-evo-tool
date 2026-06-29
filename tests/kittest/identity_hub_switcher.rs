@@ -216,3 +216,92 @@ fn it_switch_stale_selection_falls_back_to_picker() {
         );
     });
 }
+
+/// QA-001 — selecting a wallet-less (imported-by-id) identity clears the derived
+/// wallet pointer, so the breadcrumb wallet segment and the active identity
+/// agree. Pre-fix, `set_selected_identity` left `selected_wallet_hash` stale
+/// (the owner derivation returns `None` for a wallet-less identity) and the
+/// breadcrumb pill showed a different identity than Home/operate-as used.
+#[test]
+fn qa_001_wallet_less_selection_clears_derived_wallet() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let mut harness = mount_hub();
+        let app_context = harness.state().current_app_context().clone();
+
+        let lonely = seed_identity(&app_context, 0x55, "Lonely Identity");
+
+        // Simulate a stale derived wallet from a prior wallet-owned selection.
+        app_context.set_selected_hd_wallet(Some([0x99; 32]));
+        assert_eq!(
+            app_context.selected_wallet_hash(),
+            Some([0x99; 32]),
+            "precondition: a stale wallet pointer is set"
+        );
+
+        // Select the wallet-less identity — the exact call the picker/dropdown
+        // click handler makes.
+        app_context.set_selected_identity(Some(lonely));
+
+        // The derived wallet must reconcile to None (no owning wallet).
+        assert_eq!(
+            app_context.selected_wallet_hash(),
+            None,
+            "selecting a wallet-less identity must clear the derived wallet pointer"
+        );
+        // The active identity is the wallet-less one (what Home/operate-as use).
+        assert_eq!(
+            app_context
+                .resolve_selected_identity()
+                .map(|qi| qi.identity.id()),
+            Some(lonely),
+            "resolve_selected_identity must return the selected wallet-less identity"
+        );
+
+        // The breadcrumb now reflects it: the identity pill shows the alias and
+        // the wallet segment is the wallet-less placeholder — never the stale
+        // "no identity yet" the pre-fix path rendered.
+        harness.run_steps(5);
+        assert!(
+            harness.query_by_label("(no identity yet)").is_none(),
+            "an identity IS selected; the breadcrumb must not claim none"
+        );
+        assert!(
+            harness.query_by_label_contains("Lonely Identity").is_some(),
+            "the breadcrumb must display the selected wallet-less identity"
+        );
+    });
+}
+
+/// QA-002 (replaces a sham tautology test) — the no-wallet group is identified
+/// by `wallet_index.is_none()` on real loaded identities: a seeded wallet-less
+/// identity appears in that filtered group (the exact predicate the breadcrumb
+/// dropdown's "Identities without a wallet on this device" section uses).
+#[test]
+fn qa_002_no_wallet_group_filter_on_real_data() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let harness = mount_hub();
+        let app_context = harness.state().current_app_context().clone();
+
+        let imported = seed_identity(&app_context, 0x77, "Imported By Id");
+
+        let loaded = app_context
+            .load_local_qualified_identities()
+            .expect("load identities");
+        let no_wallet_group: Vec<Identifier> = loaded
+            .iter()
+            .filter(|qi| qi.wallet_index.is_none())
+            .map(|qi| qi.identity.id())
+            .collect();
+
+        assert!(
+            no_wallet_group.contains(&imported),
+            "a wallet-less identity must appear in the wallet_index.is_none() group"
+        );
+    });
+}

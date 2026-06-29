@@ -114,7 +114,7 @@ impl IdentityPickerAddCard {
 
     /// Render and return the response.
     pub fn show(&self, ui: &mut Ui) -> IdentityPickerAddCardResponse {
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.ctx().global_style().visuals.dark_mode;
 
         // We render in two passes because `Frame::stroke` does not support
         // dashed strokes. Pass 1: allocate the card rect + content (no outer

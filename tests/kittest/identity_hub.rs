@@ -6,6 +6,7 @@
 //! This is the minimum kittest coverage for the scaffold. Per-tab assertions on
 //! the full populated layouts arrive as each tab's content lands (T8–T11).
 
+use crate::support::with_isolated_data_dir;
 use dash_evo_tool::ui::RootScreenType;
 use egui_kittest::Harness;
 
@@ -30,9 +31,11 @@ fn mount_hub() -> Harness<'static, dash_evo_tool::app::AppState> {
 /// render the onboarding empty state).
 #[test]
 fn identity_hub_mounts_and_renders() {
-    let _harness = mount_hub();
-    // If `mount_hub` returned without panicking, the hub compiled-in and
-    // rendered. More detailed assertions land with the per-tab content work.
+    with_isolated_data_dir(|| {
+        let _harness = mount_hub();
+        // If `mount_hub` returned without panicking, the hub compiled-in and
+        // rendered. More detailed assertions land with the per-tab content work.
+    });
 }
 
 /// IT-NAV-01: The nav must keep the legacy `Identities` and `Dashpay` entries

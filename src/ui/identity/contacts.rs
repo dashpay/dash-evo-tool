@@ -128,8 +128,9 @@ pub fn render(
     ui: &mut Ui,
     app_context: &Arc<AppContext>,
     state_guard: &mut ContactsState,
+    profiles: &mut super::profile_cache::ProfileCache,
 ) -> AppAction {
-    let state = ContactsTabState::resolve(app_context);
+    let state = ContactsTabState::resolve(app_context, profiles);
     render_state(ui, app_context, &state, state_guard)
 }
 
@@ -154,8 +155,11 @@ pub enum ContactsTabState {
 impl ContactsTabState {
     /// Inspect the app context to decide which state to render. Returns
     /// `Gated` if no identity is loaded, if loading fails, or if the active
-    /// identity has no profile row in the DashPay local cache.
-    pub fn resolve(app_context: &Arc<AppContext>) -> Self {
+    /// identity has no DashPay profile (or one has not loaded yet).
+    pub fn resolve(
+        app_context: &Arc<AppContext>,
+        profiles: &mut super::profile_cache::ProfileCache,
+    ) -> Self {
         // Fetch loaded identities on the active network. A load error falls
         // back to Gated so the hub never draws a half-broken populated UI;
         // the error is surfaced by the hub-level banner in `hub_screen`.
@@ -169,7 +173,7 @@ impl ContactsTabState {
         };
 
         let handle = primary_dpns_handle(&active);
-        if has_social_profile(app_context, &active) {
+        if has_social_profile(profiles, &active) {
             ContactsTabState::Populated {
                 identity: Box::new(active),
             }
@@ -246,7 +250,7 @@ fn render_populated(
     identity: &QualifiedIdentity,
     state_guard: &mut ContactsState,
 ) -> AppAction {
-    let dark_mode = ui.ctx().style().visuals.dark_mode;
+    let dark_mode = ui.ctx().global_style().visuals.dark_mode;
     let mut action = AppAction::None;
 
     action |= header_row(ui, app_context, dark_mode);
@@ -438,20 +442,15 @@ fn primary_dpns_handle(identity: &QualifiedIdentity) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-/// Detect whether the identity has a DashPay social profile. Reads the local
-/// SQLite cache (authoritative for the UI layer — a missing row means we have
-/// not seen a profile yet, which is the signal for the gated state). A load
-/// error returns `false` so the gate is shown and the user is not blocked.
-fn has_social_profile(app_context: &Arc<AppContext>, identity: &QualifiedIdentity) -> bool {
-    use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-    let identity_id = identity.identity.id();
-    let network_str = app_context.network.to_string();
-    matches!(
-        app_context
-            .db
-            .load_dashpay_profile(&identity_id, &network_str),
-        Ok(Some(_))
-    )
+/// Detect whether the identity has a DashPay social profile. Reads the hub's
+/// async profile cache; an entry that is absent (not loaded yet) or holds no
+/// profile yields `false`, so the gate is shown and the user is not blocked
+/// until a profile is confirmed to exist.
+fn has_social_profile(
+    profiles: &mut super::profile_cache::ProfileCache,
+    identity: &QualifiedIdentity,
+) -> bool {
+    matches!(profiles.get_or_request(identity), Some(Some(_)))
 }
 
 #[cfg(test)]

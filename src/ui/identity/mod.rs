@@ -41,6 +41,7 @@ pub mod landing;
 pub mod onboarding;
 pub mod onboarding_checklist;
 pub mod picker;
+pub mod profile_cache;
 pub mod request_card;
 pub mod settings;
 pub mod social_profile_gate_card;

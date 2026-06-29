@@ -283,7 +283,7 @@ impl IdentityHeroCard {
     /// Render the hero card. Returns a [`HeroResponse`] carrying any
     /// user-initiated action.
     pub fn show(&self, ui: &mut Ui) -> HeroResponse {
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.ctx().global_style().visuals.dark_mode;
 
         // Outer gradient-surface frame. We paint a solid surface fill and then
         // overlay a gradient rectangle ourselves because `egui::Frame` does

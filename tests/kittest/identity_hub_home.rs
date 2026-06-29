@@ -21,6 +21,7 @@
 //! will expand here once the kittest harness exposes a fixture identity
 //! builder (tracked alongside T9+ population work).
 
+use crate::support::with_isolated_data_dir;
 use dash_evo_tool::ui::RootScreenType;
 use dash_evo_tool::ui::identity::IdentityHubTab;
 use egui_kittest::Harness;
@@ -54,7 +55,9 @@ fn mount_hub() -> Harness<'static, dash_evo_tool::app::AppState> {
 /// during layout on any of the three glyph branches.
 #[test]
 fn home_tab_mounts_without_panic() {
-    let _harness = mount_hub();
+    with_isolated_data_dir(|| {
+        let _harness = mount_hub();
+    });
     // Returning without panic from `mount_hub` exercises:
     //   * `IdentityHubScreen::new` → `HomeState::default()`.
     //   * `IdentityHubScreen::ui` → left panel, top panel, central panel.

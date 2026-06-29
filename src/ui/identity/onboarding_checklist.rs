@@ -189,7 +189,7 @@ impl OnboardingChecklist {
     /// filled Dash-blue circle with a white check mark; pending rows show an
     /// empty outlined circle.
     pub fn show(&self, ui: &mut Ui) -> ChecklistResponse {
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.ctx().global_style().visuals.dark_mode;
 
         let frame = Frame::new()
             .fill(DashColors::surface(dark_mode))

@@ -182,7 +182,7 @@ impl BreadcrumbPill {
     /// the other modes are non-interactive by design and their response always
     /// has `clicked == false`.
     pub fn show(self, ui: &mut Ui) -> BreadcrumbPillResponse {
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.ctx().global_style().visuals.dark_mode;
         let accessible_name = self
             .accessible_name
             .clone()

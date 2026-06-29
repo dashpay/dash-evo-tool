@@ -69,7 +69,7 @@ impl ActivityFilter {
 /// the shell remains a pure function for T10. A proper component upgrade is
 /// planned when the aggregator lands.
 pub fn render(ui: &mut Ui, _app_context: &Arc<AppContext>) -> AppAction {
-    let dark_mode = ui.ctx().style().visuals.dark_mode;
+    let dark_mode = ui.ctx().global_style().visuals.dark_mode;
     let mut action = AppAction::None;
 
     ui.vertical_centered(|ui| {

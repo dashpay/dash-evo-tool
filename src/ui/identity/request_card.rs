@@ -120,7 +120,7 @@ impl RequestCard {
 
     /// Render the card and return its click response.
     pub fn show(&self, ui: &mut Ui) -> RequestCardResponse {
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.ctx().global_style().visuals.dark_mode;
         let mut response = RequestCardResponse {
             id: self.id.clone(),
             ..Default::default()

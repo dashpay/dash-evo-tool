@@ -215,7 +215,7 @@ impl Component for ActivityRow {
     type Response = ActivityRowResponse;
 
     fn show(&mut self, ui: &mut Ui) -> InnerResponse<Self::Response> {
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.ctx().global_style().visuals.dark_mode;
 
         let accent = self.accent_color(dark_mode);
         let surface = DashColors::surface(dark_mode);

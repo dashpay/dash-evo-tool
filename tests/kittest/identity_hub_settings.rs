@@ -24,6 +24,7 @@
 //! 3. **Tab-bar wiring**: ensure `IdentityHubTab::Settings` is reachable from
 //!    the default selection and that clicking it does not crash the hub.
 
+use crate::support::with_isolated_data_dir;
 use dash_evo_tool::ui::RootScreenType;
 use dash_evo_tool::ui::identity::IdentityHubTab;
 use egui_kittest::Harness;
@@ -55,12 +56,14 @@ fn mount_hub_on_settings() -> Harness<'static, dash_evo_tool::app::AppState> {
 /// bootstrapping a full identity fixture.
 #[test]
 fn settings_tab_renders_without_panicking() {
-    let mut harness = mount_hub_on_settings();
-    // Run a few more steps — if any panic occurs, this assertion never runs.
-    // No extra label queries here: kittest's accessibility tree coverage for
-    // non-interactive RichText labels is inconsistent across platforms, so we
-    // assert only the structural invariant (no panics, no stuck frames).
-    harness.run_steps(5);
+    with_isolated_data_dir(|| {
+        let mut harness = mount_hub_on_settings();
+        // Run a few more steps — if any panic occurs, this assertion never runs.
+        // No extra label queries here: kittest's accessibility tree coverage for
+        // non-interactive RichText labels is inconsistent across platforms, so we
+        // assert only the structural invariant (no panics, no stuck frames).
+        harness.run_steps(5);
+    });
 }
 
 /// Sanity-check that `IdentityHubTab::Settings` is reachable via the public

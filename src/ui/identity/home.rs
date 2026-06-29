@@ -263,8 +263,9 @@ pub fn render(
     ui: &mut Ui,
     app_context: &Arc<AppContext>,
     state: &HomeState,
+    profiles: &mut super::profile_cache::ProfileCache,
 ) -> (AppAction, HomeOutcome) {
-    let dark_mode = ui.ctx().style().visuals.dark_mode;
+    let dark_mode = ui.ctx().global_style().visuals.dark_mode;
     let mut action = AppAction::None;
     let mut outcome = HomeOutcome::None;
 
@@ -291,7 +292,7 @@ pub fn render(
     };
 
     // --- Hero card ----------------------------------------------------
-    let hero = build_hero(app_context, &identity);
+    let hero = build_hero(app_context, &identity, profiles);
     let hero_has_social_profile = hero.has_social_profile();
     let hero_response = hero.show(ui);
     if hero_response.pick_username_clicked() {
@@ -586,7 +587,11 @@ fn first_loaded_identity(app_context: &Arc<AppContext>) -> Option<QualifiedIdent
 
 /// Build the [`IdentityHeroCard`] from a qualified identity. Keeps the
 /// rendering code in `render` readable.
-fn build_hero(app_context: &Arc<AppContext>, qi: &QualifiedIdentity) -> IdentityHeroCard {
+fn build_hero(
+    app_context: &Arc<AppContext>,
+    qi: &QualifiedIdentity,
+    profiles: &mut super::profile_cache::ProfileCache,
+) -> IdentityHeroCard {
     let kind: HeroIdentityKind = qi.identity_type.into();
     let balance_dash = format_credits_as_dash(qi.identity.balance());
     let handle = qi
@@ -595,9 +600,10 @@ fn build_hero(app_context: &Arc<AppContext>, qi: &QualifiedIdentity) -> Identity
         .map(|n| n.name.clone())
         .filter(|n| !n.trim().is_empty());
 
-    // Try to pick up the DashPay display name from the local cache. Silently
-    // skip on any DB error — this is a best-effort read for the hero.
-    let display_name = load_display_name_opt(app_context, qi);
+    // Best-effort DashPay display name. The local profile cache was removed in
+    // the platform-wallet migration; the hub loads profiles asynchronously, so
+    // this is empty until the first load completes and the hero re-renders.
+    let display_name = load_display_name_opt(profiles, qi);
 
     let mut card = IdentityHeroCard::new(kind, balance_dash);
     if let Some(handle) = handle {
@@ -615,25 +621,14 @@ fn build_hero(app_context: &Arc<AppContext>, qi: &QualifiedIdentity) -> Identity
     card
 }
 
-fn load_display_name_opt(app_context: &Arc<AppContext>, qi: &QualifiedIdentity) -> Option<String> {
-    let network = network_db_key(app_context.network());
-    let stored = app_context
-        .db
-        .load_dashpay_profile(&qi.identity.id(), network)
-        .ok()??;
-    stored.display_name.filter(|n| !n.trim().is_empty())
-}
-
-/// DB convention for network keys. Mirrors the existing `dashpay_profiles`
-/// table column usage (see `src/database/dashpay.rs`).
-fn network_db_key(network: Network) -> &'static str {
-    match network {
-        Network::Mainnet => "mainnet",
-        Network::Testnet => "testnet",
-        Network::Devnet => "devnet",
-        Network::Regtest => "regtest",
-        _ => "mainnet",
-    }
+fn load_display_name_opt(
+    profiles: &mut super::profile_cache::ProfileCache,
+    qi: &QualifiedIdentity,
+) -> Option<String> {
+    profiles
+        .get_or_request(qi)
+        .and_then(|p| p.as_ref())
+        .and_then(|fields| fields.display_name_opt().map(str::to_owned))
 }
 
 /// Alex-facing network label, stable across tabs.
@@ -643,7 +638,6 @@ fn network_label(network: Network) -> &'static str {
         Network::Testnet => "Testnet",
         Network::Devnet => "Devnet",
         Network::Regtest => "Regtest",
-        _ => "Unknown",
     }
 }
 
@@ -809,12 +803,6 @@ mod tests {
         assert_eq!(network_label(Network::Testnet), "Testnet");
         assert_eq!(network_label(Network::Devnet), "Devnet");
         assert_eq!(network_label(Network::Regtest), "Regtest");
-    }
-
-    #[test]
-    fn network_db_key_uses_lowercase_conventional_names() {
-        assert_eq!(network_db_key(Network::Mainnet), "mainnet");
-        assert_eq!(network_db_key(Network::Testnet), "testnet");
     }
 
     // -----------------------------------------------------------------

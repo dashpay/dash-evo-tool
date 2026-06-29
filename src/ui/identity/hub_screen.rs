@@ -17,7 +17,7 @@ use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
-use eframe::egui::{Context, RichText};
+use eframe::egui::{self, Context, RichText};
 use std::sync::Arc;
 
 use super::home::HomeState;
@@ -50,6 +50,14 @@ pub struct IdentityHubScreen {
     /// Settings-tab state. Held on the hub so edit fields, unsaved drafts,
     /// and modal state persist across frames.
     settings_tab: SettingsTab,
+    /// Contacts-tab state. Owned here to debounce
+    /// [`crate::backend_task::dashpay::DashPayTask::LoadContacts`] to a
+    /// single dispatch per tab entry, instead of firing every frame.
+    contacts_state: super::contacts::ContactsState,
+    /// DashPay profiles, loaded asynchronously (the local profile cache was
+    /// removed in the platform-wallet migration). Read by the Home, Contacts,
+    /// and Settings tabs; loads are dispatched after rendering each frame.
+    profile_cache: super::profile_cache::ProfileCache,
 }
 
 impl IdentityHubScreen {
@@ -64,6 +72,8 @@ impl IdentityHubScreen {
             last_good_landing: HubLanding::Onboarding,
             home_state: HomeState::default(),
             settings_tab: SettingsTab::new(),
+            contacts_state: super::contacts::ContactsState::default(),
+            profile_cache: super::profile_cache::ProfileCache::default(),
         }
     }
 
@@ -114,32 +124,31 @@ impl ScreenLike for IdentityHubScreen {
         // re-fires the Contacts load.
         self.load_error_banner.take_and_clear();
         self.contacts_state.reset();
+        self.profile_cache.reset();
     }
 
     fn refresh_on_arrival(&mut self) {
         self.refresh();
     }
 
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
         let mut action = AppAction::None;
 
         action |= add_top_panel(
-            ctx,
+            ui,
             &self.app_context,
             vec![("Identities", AppAction::None)],
             vec![],
         );
 
-        action |= add_left_panel(
-            ctx,
-            &self.app_context,
-            RootScreenType::RootScreenIdentityHub,
-        );
+        action |= add_left_panel(ui, &self.app_context, RootScreenType::RootScreenIdentityHub);
 
         let landing = self.landing(ctx);
 
-        action |= island_central_panel(ctx, |ui| {
-            let dark_mode = ui.ctx().style().visuals.dark_mode;
+        action |= island_central_panel(ui, |ui| {
+            let dark_mode = ui.ctx().global_style().visuals.dark_mode;
 
             match landing {
                 HubLanding::Onboarding => super::onboarding::render(ui, &self.app_context),
@@ -183,8 +192,12 @@ impl ScreenLike for IdentityHubScreen {
                         ui.add_space(16.0);
                         match self.selected_tab {
                             IdentityHubTab::Home => {
-                                let (home_action, outcome) =
-                                    super::home::render(ui, &self.app_context, &self.home_state);
+                                let (home_action, outcome) = super::home::render(
+                                    ui,
+                                    &self.app_context,
+                                    &self.home_state,
+                                    &mut self.profile_cache,
+                                );
                                 if let Some(next_tab) =
                                     super::home::apply_outcome(&mut self.home_state, outcome)
                                 {
@@ -199,19 +212,27 @@ impl ScreenLike for IdentityHubScreen {
                                 ui,
                                 &self.app_context,
                                 &mut self.contacts_state,
+                                &mut self.profile_cache,
                             ),
                             IdentityHubTab::Activity => {
                                 super::activity::render(ui, &self.app_context)
                             }
-                            IdentityHubTab::Settings => {
-                                self.settings_tab.render(ui, &self.app_context)
-                            }
+                            IdentityHubTab::Settings => self.settings_tab.render(
+                                ui,
+                                &self.app_context,
+                                &mut self.profile_cache,
+                            ),
                         }
                     });
                     inner.inner
                 }
             }
         });
+
+        // Dispatch any profile load a tab requested this frame (single load
+        // in flight; the local profile cache was removed in the platform-wallet
+        // migration, so profiles resolve asynchronously via the backend).
+        action |= self.profile_cache.dispatch_pending();
 
         action
     }
@@ -222,10 +243,11 @@ impl ScreenLike for IdentityHubScreen {
         // the hub itself). Sub-tab content will override their own lifecycle.
     }
 
-    fn display_task_result(&mut self, _result: BackendTaskSuccessResult) {
-        // No backend tasks are dispatched from the hub root in the scaffold.
-        // Tab submodules take over when they land; until then this is a no-op
-        // so unexpected task results do not corrupt hub state.
+    fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
+        // Feed an async DashPay profile load back into the cache the tabs read.
+        // Other results are no-ops: tab submodules take over their own lifecycle
+        // when they land, so unrecognized results must not corrupt hub state.
+        self.profile_cache.record_result(&result);
     }
 
     fn display_task_error(&mut self, _error: &TaskError) -> bool {

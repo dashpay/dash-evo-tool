@@ -687,10 +687,6 @@ impl AppState {
                 Screen::ContractVisualizerScreen(contract_visualizer_screen),
             ),
             (
-                RootScreenType::RootScreenToolsProofLogScreen,
-                Screen::ProofLogScreen(proof_log_screen),
-            ),
-            (
                 RootScreenType::RootScreenToolsPlatformInfoScreen,
                 Screen::PlatformInfoScreen(platform_info_screen),
             ),
@@ -713,10 +709,6 @@ impl AppState {
             (
                 RootScreenType::RootScreenNetworkChooser,
                 Screen::NetworkChooserScreen(network_chooser_screen),
-            ),
-            (
-                RootScreenType::RootScreenToolsMasternodeListDiffScreen,
-                Screen::MasternodeListDiffScreen(masternode_list_diff_screen),
             ),
             (
                 RootScreenType::RootScreenMyTokenBalances,

@@ -50,7 +50,7 @@ pub fn render(
     identities: &[QualifiedIdentity],
     selected_id_out: Option<&mut Option<String>>,
 ) -> AppAction {
-    let dark_mode = ui.ctx().style().visuals.dark_mode;
+    let dark_mode = ui.ctx().global_style().visuals.dark_mode;
     let mut action = AppAction::None;
     let mut captured_selection: Option<String> = None;
 

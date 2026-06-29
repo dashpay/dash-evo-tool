@@ -19,6 +19,7 @@
 //! `onboarding` module and by UI polish tests that will land alongside the
 //! identity picker work.
 
+use crate::support::with_isolated_data_dir;
 use dash_evo_tool::ui::RootScreenType;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
@@ -50,33 +51,35 @@ fn mount_onboarding_hub() -> Harness<'static, dash_evo_tool::app::AppState> {
 /// when developer mode is off.
 #[test]
 fn it_onboard_01_renders_heading_and_both_ctas() {
-    let harness = mount_onboarding_hub();
+    with_isolated_data_dir(|| {
+        let harness = mount_onboarding_hub();
 
-    // Heading — design-spec §B.1.
-    assert!(
-        harness.query_by_label("Welcome to Identities.").is_some(),
-        "onboarding must render the 'Welcome to Identities.' heading"
-    );
+        // Heading — design-spec §B.1.
+        assert!(
+            harness.query_by_label("Welcome to Identities.").is_some(),
+            "onboarding must render the 'Welcome to Identities.' heading"
+        );
 
-    // Primary CTA.
-    assert!(
-        harness.query_by_label("Create my first identity").is_some(),
-        "onboarding must render the 'Create my first identity' primary button"
-    );
+        // Primary CTA.
+        assert!(
+            harness.query_by_label("Create my first identity").is_some(),
+            "onboarding must render the 'Create my first identity' primary button"
+        );
 
-    // Secondary CTA — exact text per the design spec (em-dash included).
-    assert!(
-        harness
-            .query_by_label("I already have an identity — load it")
-            .is_some(),
-        "onboarding must render the 'I already have an identity — load it' secondary button"
-    );
+        // Secondary CTA — exact text per the design spec (em-dash included).
+        assert!(
+            harness
+                .query_by_label("I already have an identity — load it")
+                .is_some(),
+            "onboarding must render the 'I already have an identity — load it' secondary button"
+        );
 
-    // Developer Mode footer must be absent on the Alex persona default.
-    // The label `Developer tools:` is rendered only when
-    // `AppContext::is_developer_mode()` returns `true`.
-    assert!(
-        harness.query_by_label("Developer tools:").is_none(),
-        "Developer Mode footer must be hidden when developer mode is off"
-    );
+        // Developer Mode footer must be absent on the Alex persona default.
+        // The label `Developer tools:` is rendered only when
+        // `AppContext::is_developer_mode()` returns `true`.
+        assert!(
+            harness.query_by_label("Developer tools:").is_none(),
+            "Developer Mode footer must be hidden when developer mode is off"
+        );
+    });
 }

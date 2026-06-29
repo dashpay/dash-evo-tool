@@ -73,7 +73,7 @@ impl ContactRow {
 
     /// Render the row and return its click response.
     pub fn show(&self, ui: &mut Ui) -> ContactRowResponse {
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.ctx().global_style().visuals.dark_mode;
         let mut response = ContactRowResponse {
             contact_id: Some(self.contact_id.clone()),
             ..Default::default()

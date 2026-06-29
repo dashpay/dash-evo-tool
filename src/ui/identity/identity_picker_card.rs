@@ -248,7 +248,7 @@ impl IdentityPickerCard {
 
     /// Render and return the response.
     pub fn show(&self, ui: &mut Ui) -> IdentityPickerCardResponse {
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.ctx().global_style().visuals.dark_mode;
 
         let border = Stroke::new(1.0, DashColors::border(dark_mode));
         let fill = DashColors::surface(dark_mode);

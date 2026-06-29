@@ -114,7 +114,7 @@ impl SocialProfileGateCard {
     /// Render the card. Returns a response describing which buttons were
     /// clicked this frame; the caller owns the expansion state.
     pub fn show(&self, ui: &mut Ui) -> SocialProfileGateCardResponse {
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.ctx().global_style().visuals.dark_mode;
         let max_width = self.max_width.unwrap_or(520.0);
         let mut response = SocialProfileGateCardResponse::default();
 

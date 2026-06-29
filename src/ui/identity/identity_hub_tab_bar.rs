@@ -103,7 +103,7 @@ impl IdentityHubTabBar {
     /// is responsible for applying `response.clicked()` to its own selection
     /// state — this component never mutates the selection itself.
     pub fn show(self, ui: &mut Ui) -> IdentityHubTabBarResponse {
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.ctx().global_style().visuals.dark_mode;
         let mut response = IdentityHubTabBarResponse::default();
 
         ui.horizontal(|ui| {

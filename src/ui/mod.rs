@@ -85,7 +85,7 @@ pub mod contracts_documents;
 pub mod dashpay;
 pub mod dpns;
 pub mod helpers;
-pub(crate) mod identities;
+pub mod identities;
 pub mod identity;
 pub mod network_chooser_screen;
 pub mod state;

@@ -14,6 +14,7 @@ use crate::database::Database;
 use crate::model::feature_gate::FeatureGate;
 use crate::model::fee_estimation::PlatformFeeEstimator;
 use crate::model::proof_log_item::RequestType;
+use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::single_key::{SingleKeyHash, SingleKeyWallet};
 use crate::model::wallet::{PlatformAddressUpdates, Wallet, WalletSeedHash};
 use crate::sdk_wrapper::initialize_sdk;
@@ -29,13 +30,13 @@ use dash_sdk::dashcore_rpc::{Auth, Client};
 use dash_sdk::dpp::dashcore::Network;
 #[cfg(any(test, feature = "testing"))]
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::state_transition::StateTransitionSigningOptions;
 use dash_sdk::dpp::state_transition::batch_transition::methods::StateTransitionCreationOptions;
 use dash_sdk::dpp::system_data_contracts::{SystemDataContract, load_system_data_contract};
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::dpp::version::v11::PLATFORM_V11;
 use dash_sdk::platform::DataContract;
-#[cfg(any(test, feature = "testing"))]
 use dash_sdk::platform::Identifier;
 use egui::Context;
 use migration_status::MigrationStatus;
@@ -117,6 +118,13 @@ pub struct AppContext {
     pub(crate) selected_wallet_hash: Mutex<Option<WalletSeedHash>>,
     /// Currently selected single key wallet (persisted across screen navigation)
     pub(crate) selected_single_key_hash: Mutex<Option<SingleKeyHash>>,
+    /// App-scoped selected identity — the "who am I operating as" choice,
+    /// persisted per-network. Primary; the operating wallet is reconciled to it.
+    pub(crate) selected_identity_id: Mutex<Option<Identifier>>,
+    /// Pending identity selection — set after creating/loading an identity so
+    /// the hub adopts it on return (forward-courier, mirrors
+    /// `pending_wallet_selection`).
+    pub(crate) pending_identity_selection: Mutex<Option<Identifier>>,
     /// Cached fee multiplier permille from current epoch (1000 = 1x, 2000 = 2x)
     /// Updated when epoch info is fetched from Platform
     fee_multiplier_permille: AtomicU64,
@@ -384,6 +392,8 @@ impl AppContext {
             pending_wallet_selection: Mutex::new(None),
             selected_wallet_hash: Mutex::new(selected_wallet_hash),
             selected_single_key_hash: Mutex::new(selected_single_key_hash),
+            selected_identity_id: Mutex::new(None),
+            pending_identity_selection: Mutex::new(None),
             fee_multiplier_permille: AtomicU64::new(
                 PlatformFeeEstimator::DEFAULT_FEE_MULTIPLIER_PERMILLE,
             ),
@@ -904,6 +914,7 @@ impl AppContext {
         self.wallet_backend.store(Some(Arc::new(backend)));
         drop(_build_guard);
         self.restore_selected_wallet_from_kv();
+        self.restore_selected_identity_from_kv();
         // Render the platform section (per-address tab, total, "Addresses synced"
         // label) from persisted upstream state immediately — network-independent,
         // before the coordinator's first pass, which only fires once a network
@@ -1004,6 +1015,153 @@ impl AppContext {
                 error = ?e,
                 "Failed to persist selected wallet to wallet k/v"
             );
+        }
+    }
+
+    /// The currently selected HD wallet for this network, if any.
+    pub fn selected_wallet_hash(&self) -> Option<WalletSeedHash> {
+        self.selected_wallet_hash.lock().ok().and_then(|g| *g)
+    }
+
+    /// The app-scoped selected identity for this network, if any.
+    pub fn selected_identity_id(&self) -> Option<Identifier> {
+        self.selected_identity_id.lock().ok().and_then(|g| *g)
+    }
+
+    /// Resolve the active identity every operate-as read uses: the selected
+    /// identity when still loaded, else the first loaded identity, else `None`.
+    pub fn resolve_selected_identity(&self) -> Option<QualifiedIdentity> {
+        let identities = self.load_local_qualified_identities().ok()?;
+        let ids: Vec<Identifier> = identities.iter().map(|qi| qi.identity.id()).collect();
+        let chosen =
+            crate::model::selected_identity::resolve_selected(self.selected_identity_id(), &ids)?;
+        identities.into_iter().find(|qi| qi.identity.id() == chosen)
+    }
+
+    /// In-memory single-key selection (read directly for the persist blob).
+    fn current_single_key_hash(&self) -> Option<SingleKeyHash> {
+        self.selected_single_key_hash.lock().ok().and_then(|g| *g)
+    }
+
+    /// Owning HD wallet of an identity, derived from its signing-key
+    /// derivation path (the reliable owner — never
+    /// `associated_wallets.keys().next()`). Best-effort: `None` when the
+    /// identity is unknown or has no wallet-derived signing key.
+    fn owning_wallet_hash(&self, id: Identifier) -> Option<WalletSeedHash> {
+        let identities = self.load_local_qualified_identities().ok()?;
+        let qi = identities.into_iter().find(|qi| qi.identity.id() == id)?;
+        let wallet = crate::ui::identities::get_selected_wallet(&qi, Some(self), None).ok()??;
+        let hash = wallet.read().ok()?.seed_hash();
+        Some(hash)
+    }
+
+    /// Set the app-scoped selected identity and reconcile the operating wallet
+    /// to its owner. Writes both mutexes directly and persists both blobs once;
+    /// never calls a sibling setter (no reconciliation recursion — R5). The
+    /// wallet write is cosmetic — signing always re-derives from the identity.
+    pub fn set_selected_identity(&self, id: Option<Identifier>) {
+        if let Ok(mut g) = self.selected_identity_id.lock() {
+            *g = id;
+        }
+        if let Some(id) = id
+            && let Some(hash) = self.owning_wallet_hash(id)
+            && let Ok(mut g) = self.selected_wallet_hash.lock()
+        {
+            *g = Some(hash);
+        }
+        self.persist_selected_identity_kv(id);
+        self.persist_selected_wallet_kv(
+            self.selected_wallet_hash(),
+            self.current_single_key_hash(),
+        );
+    }
+
+    /// Set the selected HD wallet and reconcile the active identity to that
+    /// wallet's identities (keep-if-owned, else its first identity, else
+    /// `None` → picker). Writes both mutexes directly and persists both blobs
+    /// once; never calls a sibling setter (R5).
+    pub fn set_selected_hd_wallet(&self, hash: Option<WalletSeedHash>) {
+        if let Ok(mut g) = self.selected_wallet_hash.lock() {
+            *g = hash;
+        }
+        let reconciled = match hash {
+            Some(h) => {
+                let ids: Vec<Identifier> = self
+                    .load_local_qualified_identities_for_wallet(&h)
+                    .map(|v| v.iter().map(|qi| qi.identity.id()).collect())
+                    .unwrap_or_default();
+                crate::model::selected_identity::resolve_selected(self.selected_identity_id(), &ids)
+            }
+            None => None,
+        };
+        if let Ok(mut g) = self.selected_identity_id.lock() {
+            *g = reconciled;
+        }
+        self.persist_selected_wallet_kv(hash, self.current_single_key_hash());
+        self.persist_selected_identity_kv(reconciled);
+    }
+
+    /// Set the selected single-key wallet and persist. Single-key wallets own
+    /// no identities, so there is no identity to reconcile; this also closes
+    /// the pre-existing single-key persist gap (R10).
+    pub fn set_selected_single_key_wallet(&self, hash: Option<SingleKeyHash>) {
+        if let Ok(mut g) = self.selected_single_key_hash.lock() {
+            *g = hash;
+        }
+        self.persist_selected_wallet_kv(self.selected_wallet_hash(), hash);
+    }
+
+    /// Stage an identity to become active when the hub is next shown — set
+    /// after creating/loading an identity. Forward-courier; mirrors
+    /// `pending_wallet_selection`.
+    pub fn set_pending_identity_selection(&self, id: Identifier) {
+        if let Ok(mut g) = self.pending_identity_selection.lock() {
+            *g = Some(id);
+        }
+    }
+
+    /// Take any staged pending identity selection, clearing it.
+    pub fn take_pending_identity_selection(&self) -> Option<Identifier> {
+        self.pending_identity_selection
+            .lock()
+            .ok()
+            .and_then(|mut g| g.take())
+    }
+
+    /// Persist the per-network selected-identity pointer. Best-effort, mirrors
+    /// [`Self::persist_selected_wallet_kv`]; the in-memory mutex stays
+    /// authoritative for the running process.
+    pub fn persist_selected_identity_kv(&self, id: Option<Identifier>) {
+        let Ok(backend) = self.wallet_backend() else {
+            tracing::debug!("Skipping selected-identity persist; wallet backend not yet wired");
+            return;
+        };
+        let blob = crate::model::selected_identity::SelectedIdentity { identity_id: id };
+        if let Err(e) = backend.set_selected_identity(&blob) {
+            tracing::warn!(
+                network = ?self.network,
+                error = ?e,
+                "Failed to persist selected identity to wallet k/v"
+            );
+        }
+    }
+
+    /// Populate the in-memory selected-identity pointer from the wallet
+    /// backend's k/v store, keeping it only if the identity is still loaded for
+    /// this network. Called from [`Self::ensure_wallet_backend`] after the
+    /// wallet pointers are restored; idempotent.
+    fn restore_selected_identity_from_kv(&self) {
+        let Ok(backend) = self.wallet_backend() else {
+            return;
+        };
+        let stored = backend.get_selected_identity().identity_id;
+        let loaded: Vec<Identifier> = self
+            .load_local_qualified_identities()
+            .map(|v| v.iter().map(|qi| qi.identity.id()).collect())
+            .unwrap_or_default();
+        let kept = crate::model::selected_identity::keep_if_loaded(stored, &loaded);
+        if let Ok(mut g) = self.selected_identity_id.lock() {
+            *g = kept;
         }
     }
 

@@ -113,6 +113,7 @@ use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::context::connection_status::ConnectionStatus;
+use crate::model::selected_identity::SelectedIdentity;
 use crate::model::selected_wallet::SelectedWallet;
 use crate::model::wallet::{PlatformAddressEntry, WalletSeedHash};
 use crate::utils::egui_mpsc::SenderAsync;
@@ -1514,6 +1515,37 @@ impl WalletBackend {
     pub fn set_selected_wallet(&self, selected: &SelectedWallet) -> Result<(), KvAdapterError> {
         self.kv()
             .put(DetScope::Global, SelectedWallet::KV_KEY, selected)
+    }
+
+    /// Read the persisted [`SelectedIdentity`] pointer for this network.
+    ///
+    /// Returns [`SelectedIdentity::default`] (`None`) when the blob is absent
+    /// (fresh install, never selected) or fails to decode. Backed by the same
+    /// per-network persister as wallet state — selection is per-network by
+    /// construction.
+    pub fn get_selected_identity(&self) -> SelectedIdentity {
+        match self
+            .kv()
+            .get::<SelectedIdentity>(DetScope::Global, SelectedIdentity::KV_KEY)
+        {
+            Ok(Some(s)) => s,
+            Ok(None) => SelectedIdentity::default(),
+            Err(e) => {
+                tracing::warn!(
+                    network = ?self.inner.network,
+                    error = ?e,
+                    "Failed to load SelectedIdentity from wallet k/v; using default"
+                );
+                SelectedIdentity::default()
+            }
+        }
+    }
+
+    /// Persist the [`SelectedIdentity`] pointer to this network's wallet
+    /// k/v store.
+    pub fn set_selected_identity(&self, selected: &SelectedIdentity) -> Result<(), KvAdapterError> {
+        self.kv()
+            .put(DetScope::Global, SelectedIdentity::KV_KEY, selected)
     }
 
     /// Broadcast a raw transaction over the network via the upstream

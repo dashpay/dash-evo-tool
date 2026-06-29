@@ -14,6 +14,7 @@ pub mod proof_log_item;
 pub mod qualified_contract;
 pub mod qualified_identity;
 pub mod secret;
+pub mod selected_identity;
 pub mod selected_wallet;
 pub mod settings;
 pub mod single_key;

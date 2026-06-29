@@ -278,30 +278,11 @@ impl WalletsBalancesScreen {
     }
 
     fn persist_selected_wallet_hash(&self, hash: Option<WalletSeedHash>) {
-        if let Ok(mut guard) = self.app_context.selected_wallet_hash.lock() {
-            *guard = hash;
-        }
-        let single_key_hash = self
-            .app_context
-            .selected_single_key_hash
-            .lock()
-            .ok()
-            .and_then(|g| *g);
-        self.app_context
-            .persist_selected_wallet_kv(hash, single_key_hash);
+        self.app_context.set_selected_hd_wallet(hash);
     }
 
     fn persist_selected_single_key_hash(&self, hash: Option<[u8; 32]>) {
-        if let Ok(mut guard) = self.app_context.selected_single_key_hash.lock() {
-            *guard = hash;
-        }
-        let hd_hash = self
-            .app_context
-            .selected_wallet_hash
-            .lock()
-            .ok()
-            .and_then(|g| *g);
-        self.app_context.persist_selected_wallet_kv(hd_hash, hash);
+        self.app_context.set_selected_single_key_wallet(hash);
     }
 
     /// Set the selected HD wallet and update all associated state (persisted

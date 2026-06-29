@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
+use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::dpp::{
     identity::accessors::IdentityGettersV0, platform_value::string_encoding::Encoding,
@@ -69,6 +71,12 @@ pub struct IdentitySelector<'a> {
     /// Optional label to display before the selector
     label: Option<WidgetText>,
     other_option: bool,
+    /// When set, seed the (empty) buffer from the app-scoped selected identity.
+    /// Opt-in — owner/operate-as pickers only; never recipient/target pickers.
+    app_default: Option<&'a Arc<AppContext>>,
+    /// When set, write the chosen identity back to the app-scoped selection on
+    /// a user change. Opt-in — owner/operate-as pickers only.
+    sync_target: Option<Arc<AppContext>>,
 }
 
 impl<'a> IdentitySelector<'a> {
@@ -93,7 +101,25 @@ impl<'a> IdentitySelector<'a> {
             exclude_identities: &[],
             label: None,
             other_option: true, // Default to showing "Other" option
+            app_default: None,
+            sync_target: None,
         }
+    }
+
+    /// Seed the initial selection from the app-scoped identity when the buffer
+    /// is empty. Opt-in; default behaviour (not called) is byte-identical to
+    /// before. Owner/operate-as pickers only — never recipient/target pickers.
+    pub fn with_app_default(mut self, app_context: &'a Arc<AppContext>) -> Self {
+        self.app_default = Some(app_context);
+        self
+    }
+
+    /// Write the chosen identity back to the app-scoped selection on a user
+    /// change. Opt-in; default behaviour (not called) is byte-identical to
+    /// before. Owner/operate-as pickers only — never recipient/target pickers.
+    pub fn syncing_global(mut self, app_context: Arc<AppContext>) -> Self {
+        self.sync_target = Some(app_context);
+        self
     }
 
     /// This method creates a selector that can update a mutable reference to the selected identity
@@ -160,6 +186,29 @@ impl<'a> IdentitySelector<'a> {
             };
         }
     }
+
+    /// The app-scoped identity to seed the empty buffer with, if `with_app_default`
+    /// is set, the buffer is empty, and the selection is one of our options.
+    fn app_default_seed(&self) -> Option<String> {
+        let ctx = self.app_default?;
+        if !self.identity_str.is_empty() {
+            return None;
+        }
+        let id = ctx.selected_identity_id()?;
+        self.identities
+            .contains_key(&id)
+            .then(|| id.to_string(Encoding::Base58))
+    }
+
+    /// Write the current selection back to the app-scoped global on a user
+    /// change, when `syncing_global` is set and a real identity is resolved.
+    fn sync_to_global(&self) {
+        if let Some(ctx) = &self.sync_target
+            && let Some(qi) = self.get_identity(self.identity_str)
+        {
+            ctx.set_selected_identity(Some(qi.identity.id()));
+        }
+    }
 }
 
 impl<'a> Widget for IdentitySelector<'a> {
@@ -179,6 +228,13 @@ impl<'a> Widget for IdentitySelector<'a> {
                     ui.add_space(15.0);
                     ui.add(egui::Label::new(label.clone()));
                 });
+            }
+
+            // Seed from the app-scoped selection (opt-in) before the
+            // first-identity fallback, so the user's active identity wins.
+            if let Some(seed) = self.app_default_seed() {
+                *self.identity_str = seed;
+                self.on_change();
             }
 
             // If the "Other" option is disabled, we automatically select first identity
@@ -264,6 +320,8 @@ impl<'a> Widget for IdentitySelector<'a> {
             let combo_changed = combo_response.inner.unwrap_or(false);
             if combo_changed || text_response.changed() {
                 self.on_change();
+                // Operate-as write-back, only when `syncing_global` opted in.
+                self.sync_to_global();
             }
 
             // Return a response that indicates if anything changed

@@ -1356,7 +1356,7 @@ impl WalletSendScreen {
             .value();
 
         let recipient = self.destination_address_string();
-        let recipient_bytes = if let Ok((addr, _)) =
+        let recipient_bytes = if let Ok(addr) =
             dash_sdk::dpp::address_funds::OrchardAddress::from_bech32m_string(&recipient)
         {
             addr.to_raw_bytes().to_vec()
@@ -3272,7 +3272,6 @@ impl WalletSendScreen {
         // Parse platform address
         let address_str = output.address.trim();
         let destination = PlatformAddress::from_bech32m_string(address_str)
-            .map(|(addr, _)| addr)
             .map_err(|e| format!("Invalid platform address: {}", e))?;
 
         // Determine fee strategy based on user selection
@@ -3317,7 +3316,6 @@ impl WalletSendScreen {
         let mut outputs: BTreeMap<PlatformAddress, Credits> = BTreeMap::new();
         for output in &self.advanced_outputs {
             let destination = PlatformAddress::from_bech32m_string(output.address.trim())
-                .map(|(addr, _)| addr)
                 .map_err(|e| format!("Invalid platform address: {}", e))?;
             let credits = Self::parse_amount_to_credits(&output.amount)?;
             if credits > 0 {

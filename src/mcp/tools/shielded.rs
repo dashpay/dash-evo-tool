@@ -284,7 +284,7 @@ impl AsyncTool<DashMcpService> for ShieldedTransferTool {
 
         let recipient_bytes =
             dash_sdk::dpp::address_funds::OrchardAddress::from_bech32m_string(&param.to_address)
-                .map(|(addr, _)| addr.to_raw_bytes().to_vec())
+                .map(|addr| addr.to_raw_bytes().to_vec())
                 .map_err(|e| McpToolError::InvalidParam {
                     message: format!("Invalid shielded address: {e}"),
                 })?;
@@ -380,7 +380,7 @@ impl AsyncTool<DashMcpService> for ShieldedUnshield {
         // not Core UTXO spends
         let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
 
-        let (platform_addr, _network) =
+        let platform_addr =
             dash_sdk::dpp::address_funds::PlatformAddress::from_bech32m_string(&param.to_address)
                 .map_err(|e| McpToolError::InvalidParam {
                 message: format!("Invalid Platform address: {e}"),

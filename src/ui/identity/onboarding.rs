@@ -18,6 +18,10 @@ pub fn render(ui: &mut Ui, app_context: &Arc<AppContext>) -> AppAction {
     let dark_mode = ui.ctx().global_style().visuals.dark_mode;
     let mut action = AppAction::None;
 
+    // Claim the island's full width so its bordered panel reaches the window
+    // edges; the readable column below stays centered and capped at 640px.
+    ui.set_min_width(ui.available_width());
+
     ui.vertical_centered(|ui| {
         // Generous vertical space so the card doesn't hug the top.
         ui.add_space(48.0);

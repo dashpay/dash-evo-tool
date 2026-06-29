@@ -153,6 +153,9 @@ impl ScreenLike for IdentityHubScreen {
             match landing {
                 HubLanding::Onboarding => super::onboarding::render(ui, &self.app_context),
                 HubLanding::Home | HubLanding::Picker => {
+                    // Claim the island's full width so its bordered panel reaches
+                    // the window edges; the content below stays centered.
+                    ui.set_min_width(ui.available_width());
                     // `ui.vertical_centered(...).inner` carries the tab's
                     // `AppAction` back out — previously this closure returned
                     // `AppAction::None` unconditionally, swallowing every

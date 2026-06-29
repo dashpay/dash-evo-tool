@@ -197,6 +197,41 @@ pub enum MigrationError {
         /// restored into the modern vault.
         remaining: u32,
     },
+
+    /// Post-migration re-hydration of `ctx.wallets` from the freshly
+    /// populated sidecars failed, so the migrated wallets were not
+    /// reconstructed in memory and could not be registered upstream. The
+    /// completion sentinel is withheld so the next cold boot — which
+    /// re-hydrates from the same sidecars during backend construction —
+    /// retries.
+    #[error("could not re-hydrate migrated wallets")]
+    Hydration {
+        #[source]
+        source: Box<TaskError>,
+    },
+
+    /// At least one open (resolvable) wallet was migrated but did not land
+    /// in the upstream wallet store after bootstrap registration. The
+    /// completion sentinel is withheld so a re-run (the next cold start, or
+    /// the "Retry now" banner) retries the idempotent registration. Locked
+    /// password-protected wallets are excluded — they register on their
+    /// unlock gesture — so this never fires for a protected-only install.
+    #[error("could not finish wallet registration: {unregistered} wallet(s) not yet registered")]
+    RegistrationIncomplete {
+        /// Number of currently-open wallets still missing from the upstream
+        /// store after the bootstrap registration pass.
+        unregistered: usize,
+    },
+}
+
+impl MigrationError {
+    /// `true` for failures that clear themselves once the wallet backend
+    /// finishes wiring. The cold-start dispatcher retries these on a later
+    /// frame instead of burning the per-network guard and stranding the
+    /// network's wallets behind a manual "Retry now".
+    pub fn is_backend_not_ready(&self) -> bool {
+        matches!(self, MigrationError::WalletBackendUnavailable)
+    }
 }
 
 /// Run the FinishUnwire migration. Idempotent — completes a no-op when
@@ -296,42 +331,15 @@ pub async fn run(app_context: &Arc<AppContext>) -> Result<bool, TaskError> {
     status.set_state(MigrationState::Running {
         step: MigrationStep::Finalize,
     });
-    write_sentinel(&app_kv, network, 1)?;
 
-    // F140: the migration just populated the wallet-meta + seed-envelope
-    // sidecars, but `WalletBackend::new` already ran `hydrate_context_wallets`
-    // earlier this boot against the then-EMPTY sidecars — so `ctx.wallets` is
-    // still empty and migrated wallets would stay invisible until the second
-    // restart. Re-hydrate now that the sidecars are populated. Idempotent and
-    // gap-filling: it only inserts wallets missing from the in-memory map, so a
-    // wallet created earlier this session is never clobbered. Best-effort — a
-    // hydration failure must not fail the (already-committed) migration; the
-    // next cold boot hydrates from the same sidecars.
-    if let Ok(backend) = app_context.wallet_backend() {
-        if let Err(e) = backend.hydrate_context_wallets(app_context) {
-            tracing::warn!(
-                target = "migration::finish_unwire",
-                error = ?e,
-                "Post-migration wallet re-hydration failed; wallets will appear on next restart",
-            );
-        }
-        // F140 (resolve half): re-hydration only refills `ctx.wallets` (the
-        // picker / address view). The upstream `id_map` that `resolve_wallet`
-        // keys off is still empty — `WalletBackend::new`'s cold-boot
-        // `bootstrap_loaded_wallets` walked the then-empty `ctx.wallets`, so the
-        // W2 reconciliation never registered these wallets and every seed-keyed
-        // operation returns `WalletNotLoaded` until the next launch. Re-run the
-        // same cold-boot bridge now that `ctx.wallets` is populated, so the
-        // just-migrated unprotected wallets are registered upstream without a
-        // restart. Idempotent (skips already-registered wallets) and prompt-free
-        // (locked protected wallets register on their unlock gesture, as before).
-        app_context.bootstrap_loaded_wallets().await;
-    } else {
-        tracing::debug!(
-            target = "migration::finish_unwire",
-            "Wallet backend not wired; migrated wallets hydrate on next cold boot",
-        );
-    }
+    // Register the migrated wallets upstream BEFORE the completion sentinel,
+    // so the sentinel can never claim "done" while an unprotected wallet is
+    // still absent from `spv/<net>/platform-wallet.sqlite`. On failure this
+    // returns `Err` (the sentinel is skipped) so the next cold start — or the
+    // "Retry now" banner — re-runs the idempotent migration.
+    register_migrated_wallets(app_context).await?;
+
+    write_sentinel(&app_kv, network, 1)?;
 
     tracing::info!(
         target = "migration::finish_unwire",
@@ -340,6 +348,52 @@ pub async fn run(app_context: &Arc<AppContext>) -> Result<bool, TaskError> {
     );
     status.set_state(MigrationState::Success);
     Ok(true)
+}
+
+/// Re-hydrate the just-migrated wallets into `ctx.wallets` and register the
+/// resolvable (open / unprotected) ones with the upstream wallet backend, then
+/// verify every such wallet actually landed upstream.
+///
+/// [`run`] calls this immediately before [`write_sentinel`], so the completion
+/// sentinel is recorded only after this returns `Ok(())`. A "completed" marker
+/// can therefore never be written while an unprotected wallet is still missing
+/// from `spv/<net>/platform-wallet.sqlite`.
+///
+/// Locked password-protected wallets hydrate `Closed` and are intentionally NOT
+/// required: they register on their unlock gesture (the W2 bridge), so
+/// requiring them would wedge the sentinel forever on a protected install.
+///
+/// Idempotent: re-hydration only gap-fills `ctx.wallets` (a wallet created
+/// earlier this session is never clobbered) and registration skips wallets
+/// already known upstream, so a re-run after a partial registration retries
+/// only the wallets still missing.
+async fn register_migrated_wallets(app_context: &Arc<AppContext>) -> Result<(), MigrationError> {
+    let backend = app_context
+        .wallet_backend()
+        .map_err(|_| MigrationError::WalletBackendUnavailable)?;
+
+    // `WalletBackend::new` ran `hydrate_context_wallets` earlier this boot
+    // against the then-EMPTY sidecars; the migration just populated them, so
+    // re-hydrate to make the wallets visible without a restart. A hydration
+    // failure means the wallets are not reconstructed, so do not claim
+    // completion — the next cold boot re-hydrates from the same sidecars.
+    backend
+        .hydrate_context_wallets(app_context)
+        .map_err(|source| MigrationError::Hydration {
+            source: Box::new(source),
+        })?;
+
+    // Re-run the cold-boot W2 bridge now that `ctx.wallets` is populated, so the
+    // just-migrated open wallets are registered upstream (`id_map` + persistor)
+    // without a restart. Idempotent and prompt-free; locked protected wallets
+    // are skipped and register on their unlock gesture.
+    app_context.bootstrap_loaded_wallets().await;
+
+    let unregistered = app_context.unregistered_open_wallet_count();
+    if unregistered > 0 {
+        return Err(MigrationError::RegistrationIncomplete { unregistered });
+    }
+    Ok(())
 }
 
 /// Returns `true` when any of the [`LEGACY_TABLES`] holds at least one
@@ -2820,6 +2874,85 @@ mod tests {
         assert!(
             matches!(*ctx.migration_status().state(), MigrationState::Idle),
             "sentinel short-circuit must stay Idle",
+        );
+    }
+
+    /// Fix-2 transient classification: only `WalletBackendUnavailable` is the
+    /// retryable "backend not yet wired" condition that the cold-start
+    /// dispatcher auto-retries. Every other variant is terminal — surfaced with
+    /// a "Retry now" banner and never auto-looped — so a genuinely-failing
+    /// registration or hydration cannot spin forever.
+    #[test]
+    fn only_wallet_backend_unavailable_is_backend_not_ready() {
+        assert!(MigrationError::WalletBackendUnavailable.is_backend_not_ready());
+        assert!(
+            !MigrationError::RegistrationIncomplete { unregistered: 1 }.is_backend_not_ready(),
+            "incomplete registration is terminal, not an auto-retry",
+        );
+        assert!(
+            !MigrationError::Hydration {
+                source: Box::new(TaskError::WalletNotFound),
+            }
+            .is_backend_not_ready(),
+            "hydration failure is terminal, not an auto-retry",
+        );
+        assert!(
+            !MigrationError::SingleKeyPartialFailure {
+                imported: 0,
+                skipped_password_protected: 0,
+                failed: 1,
+            }
+            .is_backend_not_ready(),
+        );
+        assert!(
+            !MigrationError::ProtectedSingleKeysNotRestored { remaining: 1 }.is_backend_not_ready(),
+        );
+    }
+
+    /// Funds-safety invariant (Fix #3): a run that cannot finish — here because
+    /// no wallet backend is wired in the fixture — MUST return `Err` and MUST
+    /// NOT write the completion sentinel, so the migration retries on a later
+    /// launch instead of falsely recording "done". This is the structural
+    /// guarantee that `write_sentinel` runs only after the backend-dependent
+    /// steps (registration included) succeed.
+    #[tokio::test]
+    async fn run_without_wired_backend_does_not_write_sentinel() {
+        use dash_sdk::dpp::dashcore::Network;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = fresh_app_context(tmp.path());
+
+        // Seed a legacy single-key row so detection trips and the run advances
+        // to the first backend-dependent step. `fresh_app_context` wires no
+        // backend, so that step aborts with `WalletBackendUnavailable`. The
+        // fixture's `single_key_wallet` schema matches `create_legacy_table`.
+        {
+            let conn = Connection::open(tmp.path().join("data.db")).expect("open data.db");
+            seed_legacy_row(
+                &conn,
+                &[7u8; 32],
+                &[1u8; 32],
+                &[],
+                &[],
+                "addr",
+                None,
+                false,
+                Network::Testnet,
+            );
+        }
+
+        let result = run(&ctx).await;
+        assert!(
+            result.is_err(),
+            "a run that cannot reach the wallet backend must fail, not complete",
+        );
+
+        let app_kv = ctx.app_kv();
+        assert!(
+            read_sentinel(&app_kv, ctx.network)
+                .expect("read sentinel")
+                .is_none(),
+            "the completion sentinel must not be written when the migration aborts",
         );
     }
 }

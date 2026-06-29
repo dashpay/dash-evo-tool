@@ -141,6 +141,16 @@ pub fn migration_running_text(step: MigrationStep) -> &'static str {
     }
 }
 
+/// Decide whether to dispatch the cold-start migration for the active network
+/// this frame: only when it has not already been dispatched AND its wallet
+/// backend is wired. The migration's first step needs a wired backend; firing
+/// before it is wired aborts with a transient `WalletBackendUnavailable` and
+/// burns the per-network dispatch guard, so the readiness gate keeps the guard
+/// pending and retries on a later frame once the backend wires.
+fn should_dispatch_cold_start(already_dispatched: bool, backend_ready: bool) -> bool {
+    !already_dispatched && backend_ready
+}
+
 #[derive(Debug, From)]
 pub enum TaskResult {
     Refresh,
@@ -1120,9 +1130,22 @@ impl AppState {
     /// `backend_task::migration::finish_unwire`.
     fn dispatch_cold_start_migration(&mut self) {
         let network = self.chosen_network;
-        if !self.cold_start_migration_dispatched.insert(network) {
+        let already_dispatched = self.cold_start_migration_dispatched.contains(&network);
+        // Readiness gate: on a network SWITCH the switched-to network's wallet
+        // backend wires asynchronously a few frames after the switch, so
+        // dispatching before it is ready aborts the migration's first step with
+        // a transient `WalletBackendUnavailable` AND burns the per-network
+        // guard, stranding that network's wallets behind a manual "Retry now".
+        // We instead poll readiness each frame (a cheap, non-blocking ArcSwap
+        // load) and only dispatch — and only then burn the guard — once the
+        // backend is wired. `current_app_context()` and `handle_backend_task`
+        // both key off `chosen_network`, so the readiness observed here is what
+        // the spawned task will see.
+        let backend_ready = self.current_app_context().wallet_backend().is_ok();
+        if !should_dispatch_cold_start(already_dispatched, backend_ready) {
             return;
         }
+        self.cold_start_migration_dispatched.insert(network);
         tracing::info!(
             target = "migration::cold_start",
             network = ?network,
@@ -1292,6 +1315,22 @@ impl AppState {
                 self.migration_banner_handle = Some(handle);
             }
             MigrationState::Failed { error } => {
+                if error.is_backend_not_ready() {
+                    // Transient: the wallet backend had not finished wiring when
+                    // this run fired. Drop the per-network dispatch guard so the
+                    // frame loop re-dispatches once `wallet_backend()` is ready,
+                    // and reset to Idle so no failure banner flashes — the retry
+                    // is automatic and needs no user action. (With the readiness
+                    // gate this is a rare residual race; keeping the un-burn here
+                    // makes recovery self-healing if it ever fires.)
+                    self.cold_start_migration_dispatched
+                        .remove(&app_context.network);
+                    app_context
+                        .migration_status()
+                        .set_state(MigrationState::Idle);
+                    self.last_migration_state = Some(MigrationState::Idle);
+                    return;
+                }
                 let handle = MessageBanner::set_global(
                     ctx,
                     "Storage update could not complete. Your data is safe.",
@@ -2067,6 +2106,31 @@ mod migration_banner_tests {
     #[test]
     fn migration_retry_action_id_is_stable() {
         assert_eq!(MIGRATION_RETRY_ACTION_ID, "migration:retry:finish_unwire");
+    }
+
+    /// Cold-start dispatch gate (the startup-race fix): dispatch only when the
+    /// network has NOT already been dispatched AND its wallet backend is wired.
+    /// The not-ready row is the regression guard — a switched-to network whose
+    /// backend is still wiring must NOT dispatch (and so must not burn its
+    /// per-network guard), so a later frame retries once the backend wires.
+    #[test]
+    fn cold_start_dispatch_gate_truth_table() {
+        assert!(
+            should_dispatch_cold_start(false, true),
+            "fresh network with a wired backend must dispatch",
+        );
+        assert!(
+            !should_dispatch_cold_start(false, false),
+            "fresh network whose backend is still wiring must wait, not dispatch",
+        );
+        assert!(
+            !should_dispatch_cold_start(true, true),
+            "an already-dispatched network must not re-dispatch",
+        );
+        assert!(
+            !should_dispatch_cold_start(true, false),
+            "already-dispatched and not-ready must not dispatch",
+        );
     }
 }
 

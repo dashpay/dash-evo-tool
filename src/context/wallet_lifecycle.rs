@@ -1161,6 +1161,27 @@ impl AppContext {
             .unwrap_or_default()
     }
 
+    /// Count currently-open wallets not yet registered with the upstream wallet
+    /// backend.
+    ///
+    /// The cold-start migration gates its completion sentinel on this being
+    /// zero, so a "completed" marker is never written while an unprotected
+    /// wallet is still absent from `spv/<net>/platform-wallet.sqlite`. Locked
+    /// password-protected wallets hydrate `Closed`, are excluded by
+    /// [`Self::open_wallets`], and register on their unlock gesture — requiring
+    /// them would wedge the sentinel forever on a protected install. When the
+    /// backend is not yet wired, every open wallet counts as unregistered.
+    pub(crate) fn unregistered_open_wallet_count(self: &Arc<Self>) -> usize {
+        let open = self.open_wallets();
+        let Ok(backend) = self.wallet_backend() else {
+            return open.len();
+        };
+        open.iter()
+            .filter_map(|w| w.read().ok().map(|g| g.seed_hash()))
+            .filter(|seed_hash| backend.registered_wallet_id(seed_hash).is_none())
+            .count()
+    }
+
     pub(crate) fn init_missing_shielded_wallets(self: &Arc<Self>) {
         for wallet in self.open_wallets() {
             let ctx = Arc::clone(self);

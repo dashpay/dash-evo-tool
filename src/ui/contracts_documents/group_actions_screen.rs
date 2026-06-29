@@ -49,7 +49,7 @@ use dash_sdk::dpp::tokens::emergency_action::TokenEmergencyAction;
 use dash_sdk::dpp::tokens::token_event::TokenEvent;
 use dash_sdk::platform::Identifier;
 use dash_sdk::query_types::IndexMap;
-use eframe::egui::{self, Context, RichText};
+use eframe::egui::{self, RichText};
 use egui::{ScrollArea, TextStyle};
 use egui_extras::{Column, TableBuilder};
 use std::collections::BTreeMap;
@@ -474,9 +474,9 @@ impl ScreenLike for GroupActionsScreen {
         }
     }
 
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
         let mut action = add_top_panel(
-            ctx,
+            ui,
             &self.app_context,
             vec![
                 ("Contracts", AppAction::GoToMainScreen),
@@ -486,12 +486,12 @@ impl ScreenLike for GroupActionsScreen {
         );
 
         action |= add_left_panel(
-            ctx,
+            ui,
             &self.app_context,
             RootScreenType::RootScreenDocumentQuery,
         );
 
-        let central_panel_action = island_central_panel(ctx, |ui| {
+        let central_panel_action = island_central_panel(ui, |ui| {
             ui.heading("Active Group Actions");
 
             ui.add_space(10.0);

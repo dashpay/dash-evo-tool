@@ -23,7 +23,7 @@ use dash_sdk::dpp::data_contract::document_type::{DocumentType, Index};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::Start;
 use dash_sdk::platform::{Document, DocumentQuery, Identifier};
-use egui::{CentralPanel, Context, Frame, Margin, ScrollArea, Stroke, Ui};
+use egui::{CentralPanel, Frame, Margin, ScrollArea, Stroke, Ui};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -166,7 +166,7 @@ impl DocumentQueryScreen {
             let available = ui.available_width();
             let text_width = (available - button_width - spacing).max(100.0); // Ensure minimum width
 
-            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            let dark_mode = ui.style().visuals.dark_mode;
             ui.add(
                 egui::TextEdit::singleline(&mut self.document_query)
                     .desired_width(text_width)
@@ -294,7 +294,7 @@ impl DocumentQueryScreen {
                         });
 
                         ui.separator();
-                        let dark_mode = ui.ctx().style().visuals.dark_mode;
+                        let dark_mode = ui.style().visuals.dark_mode;
                         if ComponentStyles::add_secondary_button(ui, "Close", dark_mode).clicked() {
                             self.show_fields_dropdown = false;
                         }
@@ -453,7 +453,7 @@ impl DocumentQueryScreen {
         let mut combined_string = doc_strings.join("\n\n");
 
         // 3) Display in multiline text
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
         ui.add(
             egui::TextEdit::multiline(&mut combined_string)
                 .desired_rows(10)
@@ -579,7 +579,9 @@ impl ScreenLike for DocumentQueryScreen {
         }
     }
 
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
         let load_contract_button = (
             "Load Contracts",
             DesiredAppAction::AddScreenType(Box::new(ScreenType::AddContracts)),
@@ -623,7 +625,7 @@ impl ScreenLike for DocumentQueryScreen {
         let mut action = AppAction::None;
         if self.app_context.network == Network::Mainnet {
             action |= add_top_panel(
-                ctx,
+                ui,
                 &self.app_context,
                 vec![("Contracts", AppAction::None)],
                 vec![
@@ -640,7 +642,7 @@ impl ScreenLike for DocumentQueryScreen {
             );
         } else {
             action |= add_top_panel(
-                ctx,
+                ui,
                 &self.app_context,
                 vec![("Contracts", AppAction::None)],
                 vec![
@@ -659,13 +661,13 @@ impl ScreenLike for DocumentQueryScreen {
         }
 
         action |= add_left_panel(
-            ctx,
+            ui,
             &self.app_context,
             RootScreenType::RootScreenDocumentQuery,
         );
 
         action |= add_contract_chooser_panel(
-            ctx,
+            ui,
             &mut self.contract_search_term,
             &self.app_context,
             &mut self.selected_data_contract,
@@ -687,53 +689,55 @@ impl ScreenLike for DocumentQueryScreen {
         }
 
         // Custom central panel with adjusted margins for Document Query screen
-        let dark_mode = ctx.style().visuals.dark_mode;
+        let dark_mode = ctx.global_style().visuals.dark_mode;
 
-        action |= CentralPanel::default()
-            .frame(
-                Frame::new()
-                    .fill(DashColors::background(dark_mode))
-                    .inner_margin(Margin {
-                        left: 10,
-                        right: 19, // More space on the right
-                        top: 10,
-                        bottom: 0, // Less space on the bottom
-                    }),
-            )
-            .show(ctx, |ui| {
-                // Create an island panel with rounded edges
-                Frame::new()
-                    .fill(DashColors::surface(dark_mode))
-                    .stroke(Stroke::new(1.0, DashColors::border_light(dark_mode)))
-                    .inner_margin(Margin::same(20))
-                    .corner_radius(egui::CornerRadius::same(Shape::RADIUS_LG))
-                    .shadow(Shadow::elevated())
-                    .show(ui, |ui| {
-                        MessageBanner::show_global(ui);
-                        let mut inner_action = AppAction::None;
+        action |= {
+            CentralPanel::default()
+                .frame(
+                    Frame::new()
+                        .fill(DashColors::background(dark_mode))
+                        .inner_margin(Margin {
+                            left: 10,
+                            right: 19, // More space on the right
+                            top: 10,
+                            bottom: 0, // Less space on the bottom
+                        }),
+                )
+                .show(ui, |ui| {
+                    // Create an island panel with rounded edges
+                    Frame::new()
+                        .fill(DashColors::surface(dark_mode))
+                        .stroke(Stroke::new(1.0, DashColors::border_light(dark_mode)))
+                        .inner_margin(Margin::same(20))
+                        .corner_radius(egui::CornerRadius::same(Shape::RADIUS_LG))
+                        .shadow(Shadow::elevated())
+                        .show(ui, |ui| {
+                            MessageBanner::show_global(ui);
+                            let mut inner_action = AppAction::None;
 
-                        // Use a vertical layout that allocates space properly
-                        ui.vertical(|ui| {
-                            // Input field at the top
-                            inner_action |= self.show_input_field(ui);
+                            // Use a vertical layout that allocates space properly
+                            ui.vertical(|ui| {
+                                // Input field at the top
+                                inner_action |= self.show_input_field(ui);
 
-                            // Document display area that expands to fill available space
-                            ui.with_layout(
-                                egui::Layout::top_down_justified(egui::Align::LEFT),
-                                |ui| {
-                                    inner_action |= self.show_output(ui);
-                                },
-                            );
-                        });
+                                // Document display area that expands to fill available space
+                                ui.with_layout(
+                                    egui::Layout::top_down_justified(egui::Align::LEFT),
+                                    |ui| {
+                                        inner_action |= self.show_output(ui);
+                                    },
+                                );
+                            });
 
-                        if self.contract_to_remove.is_some() {
-                            inner_action |= self.show_remove_contract_popup(ui);
-                        }
-                        inner_action
-                    })
-                    .inner
-            })
-            .inner;
+                            if self.contract_to_remove.is_some() {
+                                inner_action |= self.show_remove_contract_popup(ui);
+                            }
+                            inner_action
+                        })
+                        .inner
+                })
+                .inner
+        };
 
         action
     }

@@ -208,7 +208,7 @@ impl SelectionDialog {
             .show(ui.ctx(), |ui| {
                 ui.set_min_width(300.0);
 
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                let dark_mode = ui.style().visuals.dark_mode;
 
                 // Message
                 ui.add_space(10.0);
@@ -259,7 +259,7 @@ impl SelectionDialog {
 
                         // Cancel button
                         if let Some(cancel_text) = &self.cancel_text {
-                            let dark_mode = ui.ctx().style().visuals.dark_mode;
+                            let dark_mode = ui.style().visuals.dark_mode;
                             if ComponentStyles::add_secondary_button(
                                 ui,
                                 cancel_text.clone(),

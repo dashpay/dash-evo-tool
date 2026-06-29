@@ -17,7 +17,7 @@ use dash_sdk::dpp::identity::{
     Identity, IdentityPublicKey, KeyType, Purpose, accessors::IdentityGettersV0,
 };
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
-use egui::{Button, ComboBox, Context, Frame, Grid, Margin, RichText, ScrollArea, TextEdit, Ui};
+use egui::{Button, ComboBox, Frame, Grid, Margin, RichText, ScrollArea, TextEdit, Ui};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -475,7 +475,7 @@ impl GroveSTARKScreen {
     }
 
     fn render_generation_ui(&mut self, ui: &mut Ui, app_context: &AppContext) -> Option<AppAction> {
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
         let debug_build = cfg!(debug_assertions);
 
         ui.label(
@@ -817,7 +817,7 @@ impl GroveSTARKScreen {
         ui: &mut Ui,
         app_context: &AppContext,
     ) -> Option<AppAction> {
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
         let debug_build = cfg!(debug_assertions);
 
         ui.label(
@@ -1012,12 +1012,12 @@ impl ScreenLike for GroveSTARKScreen {
         // Pop on success if needed
     }
 
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
         let mut action = AppAction::None;
 
         // Add top panel with breadcrumb
         action |= add_top_panel(
-            ctx,
+            ui,
             &self.app_context,
             vec![("Tools", AppAction::None)],
             vec![],
@@ -1025,21 +1025,21 @@ impl ScreenLike for GroveSTARKScreen {
 
         // Add left panel
         action |= add_left_panel(
-            ctx,
+            ui,
             &self.app_context,
             RootScreenType::RootScreenToolsGroveSTARKScreen,
         );
 
         // Add tools subscreen chooser panel
-        action |= add_tools_subscreen_chooser_panel(ctx, self.app_context.as_ref());
+        action |= add_tools_subscreen_chooser_panel(ui, self.app_context.as_ref());
 
         // Add central panel with the main UI
-        let panel_action = island_central_panel(ctx, |ui| {
+        let panel_action = island_central_panel(ui, |ui| {
             ui.label(
                 RichText::new("GroveSTARK Zero-Knowledge Proofs")
                     .size(Typography::SCALE_XL)
                     .strong()
-                    .color(DashColors::text_primary(ui.ctx().style().visuals.dark_mode)),
+                    .color(DashColors::text_primary(ui.style().visuals.dark_mode)),
             );
             ui.add_space(5.0);
 
@@ -1047,7 +1047,7 @@ impl ScreenLike for GroveSTARKScreen {
             ui.label(
                 RichText::new("WARNING: GroveSTARK is a research project. It has not been audited and may contain bugs and security flaws. This feature is NOT ready for production usage.")
                     .size(Typography::SCALE_XS)
-                    .color(DashColors::text_primary(ui.ctx().style().visuals.dark_mode))
+                    .color(DashColors::text_primary(ui.style().visuals.dark_mode))
             );
             ui.add_space(Spacing::SM);
             ui.separator();
@@ -1061,11 +1061,11 @@ impl ScreenLike for GroveSTARKScreen {
                     RichText::new("Mode:")
                         .size(Typography::SCALE_LG)
                         .strong()
-                        .color(DashColors::text_primary(ui.ctx().style().visuals.dark_mode)),
+                        .color(DashColors::text_primary(ui.style().visuals.dark_mode)),
                 );
                 ui.add_space(10.0);
 
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                let dark_mode = ui.style().visuals.dark_mode;
 
                 // Generate button
                 let generate_selected = self.mode == ProofMode::Generate;

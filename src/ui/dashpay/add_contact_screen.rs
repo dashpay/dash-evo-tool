@@ -23,7 +23,7 @@ use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike};
 use dash_sdk::platform::IdentityPublicKey;
-use egui::{Context, RichText, ScrollArea, TextEdit, Ui};
+use egui::{RichText, ScrollArea, TextEdit, Ui};
 use std::sync::{Arc, RwLock};
 
 const CONTACT_REQUEST_INFO_TEXT: &str = "About Contact Requests:\n\n\
@@ -188,10 +188,12 @@ impl ScreenLike for AddContactScreen {
         }
     }
 
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
         // Add top panel with navigation breadcrumbs
         let mut action = add_top_panel(
-            ctx,
+            ui,
             &self.app_context,
             vec![
                 ("DashPay", AppAction::None),
@@ -201,12 +203,12 @@ impl ScreenLike for AddContactScreen {
         );
 
         // Highlight DashPay in the main left panel
-        action |= add_left_panel(ctx, &self.app_context, RootScreenType::RootScreenDashpay);
+        action |= add_left_panel(ui, &self.app_context, RootScreenType::RootScreenDashpay);
         action |=
-            add_dashpay_subscreen_chooser_panel(ctx, &self.app_context, DashPaySubscreen::Contacts);
+            add_dashpay_subscreen_chooser_panel(ui, &self.app_context, DashPaySubscreen::Contacts);
 
         // Main content in island central panel
-        action |= island_central_panel(ctx, |ui| {
+        action |= island_central_panel(ui, |ui| {
             let mut inner_action = AppAction::None;
 
             // Show success screen if request was successful
@@ -242,7 +244,7 @@ impl ScreenLike for AddContactScreen {
             }
 
             ui.group(|ui| {
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                let dark_mode = ui.style().visuals.dark_mode;
                 ui.label(
                     RichText::new("From (Sender)")
                         .strong()
@@ -324,7 +326,7 @@ impl ScreenLike for AddContactScreen {
             // Loading indicator
             if matches!(self.status, ContactRequestStatus::Sending) {
                 ui.horizontal(|ui| {
-                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+                    let dark_mode = ui.style().visuals.dark_mode;
                     ui.add(egui::widgets::Spinner::default().color(DashColors::DASH_BLUE));
                     ui.label(
                         RichText::new("Sending contact request...")
@@ -336,7 +338,7 @@ impl ScreenLike for AddContactScreen {
 
             // Show error if any
             if let ContactRequestStatus::Error(ref err) = self.status {
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                let dark_mode = ui.style().visuals.dark_mode;
                 let error_color = if dark_mode {
                     DashColors::ERROR
                 } else {
@@ -401,7 +403,7 @@ impl ScreenLike for AddContactScreen {
             // Contact request form
             ScrollArea::vertical().show(ui, |ui| {
                 ui.group(|ui| {
-                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+                    let dark_mode = ui.style().visuals.dark_mode;
                     ui.label(
                         RichText::new("To (Recipient)")
                             .strong()
@@ -444,7 +446,7 @@ impl ScreenLike for AddContactScreen {
                 // Show summary if all required fields are filled
                 if self.selected_identity.is_some() && !self.username_or_id.is_empty() {
                     ui.group(|ui| {
-                        let dark_mode = ui.ctx().style().visuals.dark_mode;
+                        let dark_mode = ui.style().visuals.dark_mode;
                         ui.label(
                             RichText::new("Request Summary")
                                 .strong()
@@ -495,7 +497,7 @@ impl ScreenLike for AddContactScreen {
                 }
 
                 ui.group(|ui| {
-                    let _dark_mode = ui.ctx().style().visuals.dark_mode;
+                    let _dark_mode = ui.style().visuals.dark_mode;
 
                     // Check wallet lock status before showing send button
                     let wallet_locked = if let Some(wallet) = &self.selected_wallet {
@@ -579,7 +581,7 @@ impl ScreenLike for AddContactScreen {
         if self.show_info_popup {
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
-                .show(ctx, |ui| {
+                .show(ui, |ui| {
                     let mut popup =
                         InfoPopup::new("About Contact Requests", CONTACT_REQUEST_INFO_TEXT);
                     if popup.show(ui).inner {

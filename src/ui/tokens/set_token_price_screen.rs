@@ -40,7 +40,7 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::tokens::token_pricing_schedule::TokenPricingSchedule;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
-use eframe::egui::{self, Color32, Context, Frame, Margin, Ui};
+use eframe::egui::{self, Color32, Frame, Margin, Ui};
 use egui::RichText;
 use egui_extras::{Column, TableBuilder};
 use std::collections::HashSet;
@@ -409,7 +409,7 @@ impl SetTokenPriceScreen {
                 }
             }
             PricingType::TieredPricing => {
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                let dark_mode = ui.style().visuals.dark_mode;
                 let text_primary = DashColors::text_primary(dark_mode);
                 ui.label("Add pricing tiers to offer volume discounts");
                 ui.add_space(10.0);
@@ -855,13 +855,15 @@ impl ScreenLike for SetTokenPriceScreen {
         }
     }
 
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
         let mut action;
 
         // Build a top panel
         if self.group_action_id.is_some() {
             action = add_top_panel(
-                ctx,
+                ui,
                 &self.app_context,
                 vec![
                     ("Contracts", AppAction::GoToMainScreen),
@@ -872,7 +874,7 @@ impl ScreenLike for SetTokenPriceScreen {
             );
         } else {
             action = add_top_panel(
-                ctx,
+                ui,
                 &self.app_context,
                 vec![
                     ("Tokens", AppAction::GoToMainScreen),
@@ -885,15 +887,15 @@ impl ScreenLike for SetTokenPriceScreen {
 
         // Left panel
         action |= add_left_panel(
-            ctx,
+            ui,
             &self.app_context,
             crate::ui::RootScreenType::RootScreenMyTokenBalances,
         );
 
         // Subscreen chooser
-        action |= add_tokens_subscreen_chooser_panel(ctx, &self.app_context);
+        action |= add_tokens_subscreen_chooser_panel(ui, &self.app_context);
 
-        island_central_panel(ctx, |ui| {
+        island_central_panel(ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 // If we are in the "Complete" status, just show success screen
                 if self.status == SetTokenPriceStatus::Complete {
@@ -1099,7 +1101,7 @@ impl ScreenLike for SetTokenPriceScreen {
                 let fee_estimator = self.app_context.fee_estimator();
                 let estimated_fee = fee_estimator.estimate_document_batch(1); // Token operations are document batch transitions
 
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                let dark_mode = ui.style().visuals.dark_mode;
                 Frame::new()
                     .fill(DashColors::surface(dark_mode))
                     .inner_margin(Margin::symmetric(10, 8))

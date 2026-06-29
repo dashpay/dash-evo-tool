@@ -109,7 +109,7 @@ impl ProfileSearchScreen {
 
     pub fn render(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
 
         // Header
         ui.horizontal(|ui| {
@@ -259,12 +259,12 @@ impl ProfileSearchScreen {
 }
 
 impl ScreenLike for ProfileSearchScreen {
-    fn ui(&mut self, ctx: &egui::Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
         let mut action = AppAction::None;
 
         // Add top panel - consistent with other DashPay subscreens
         action |= add_top_panel(
-            ctx,
+            ui,
             &self.app_context,
             vec![
                 ("DashPay", AppAction::None),
@@ -277,17 +277,17 @@ impl ScreenLike for ProfileSearchScreen {
         );
 
         // Highlight DashPay in the main left panel
-        action |= add_left_panel(ctx, &self.app_context, RootScreenType::RootScreenDashpay);
+        action |= add_left_panel(ui, &self.app_context, RootScreenType::RootScreenDashpay);
 
         // Add DashPay subscreen chooser panel
         action |= add_dashpay_subscreen_chooser_panel(
-            ctx,
+            ui,
             &self.app_context,
             DashPaySubscreen::ProfileSearch, // Use ProfileSearch as the active subscreen
         );
 
         // Main content area with island styling
-        action |= island_central_panel(ctx, |ui| self.render(ui));
+        action |= island_central_panel(ui, |ui| self.render(ui));
 
         // Handle custom action from top panel button
         if let AppAction::Custom(command) = &action
@@ -303,7 +303,7 @@ impl ScreenLike for ProfileSearchScreen {
         if self.show_info_popup {
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
-                .show(ctx, |ui| {
+                .show(ui, |ui| {
                     let mut popup =
                         InfoPopup::new("About Profile Search", PROFILE_SEARCH_INFO_TEXT);
                     if popup.show(ui).inner {

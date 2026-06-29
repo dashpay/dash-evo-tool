@@ -53,14 +53,14 @@ impl WalletsBalancesScreen {
         let load_failed = self.asset_lock_cache.is_failed(&seed_hash);
         let mut retry_clicked = false;
 
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
         Frame::new()
             .fill(DashColors::surface(dark_mode))
             .corner_radius(5.0)
             .inner_margin(Margin::same(15))
             .stroke(egui::Stroke::new(1.0, DashColors::border_light(dark_mode)))
             .show(ui, |ui| {
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                let dark_mode = ui.style().visuals.dark_mode;
                 ui.horizontal(|ui| {
                     ui.heading(
                         RichText::new("Asset Locks").color(DashColors::text_primary(dark_mode)),

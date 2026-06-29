@@ -4,16 +4,18 @@ use crate::model::feature_gate::FeatureGate;
 use crate::ui::RootScreenType;
 use crate::ui::dashpay::dashpay_screen::DashPaySubscreen;
 use crate::ui::theme::{DashColors, Shadow, Shape, Spacing, Typography};
-use egui::{Context, Frame, Margin, RichText, SidePanel};
+use egui::{Frame, Margin, Panel, RichText, Ui};
 use std::sync::Arc;
 
 pub fn add_dashpay_subscreen_chooser_panel(
-    ctx: &Context,
+    ui: &mut Ui,
     app_context: &Arc<AppContext>,
     current_subscreen: DashPaySubscreen,
 ) -> AppAction {
+    let ctx = ui.ctx().clone();
+    let ctx = &ctx;
     let mut action = AppAction::None;
-    let dark_mode = ctx.style().visuals.dark_mode;
+    let dark_mode = ctx.global_style().visuals.dark_mode;
 
     // Build subscreens list - Payment History is experimental (developer mode only)
     let mut subscreens = vec![DashPaySubscreen::Profile, DashPaySubscreen::Contacts];
@@ -26,14 +28,14 @@ pub fn add_dashpay_subscreen_chooser_panel(
 
     let active_screen = current_subscreen;
 
-    SidePanel::left("dashpay_subscreen_chooser_panel")
-        .default_width(270.0)
+    Panel::left("dashpay_subscreen_chooser_panel")
+        .default_size(270.0)
         .frame(
             Frame::new()
                 .fill(DashColors::background(dark_mode)) // Light background instead of transparent
                 .inner_margin(Margin::symmetric(10, 10)), // Add margins for island effect
         )
-        .show(ctx, |ui| {
+        .show(ui, |ui| {
             // Fill the entire available height
             let available_height = ui.available_height();
 

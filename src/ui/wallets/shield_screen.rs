@@ -19,7 +19,7 @@ use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
 use dash_sdk::dpp::version::PlatformVersion;
-use eframe::egui::{self, Context};
+use eframe::egui::{self};
 use egui::RichText;
 use std::sync::Arc;
 
@@ -200,9 +200,11 @@ impl ShieldScreen {
 }
 
 impl ScreenLike for ShieldScreen {
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
         let mut action = add_top_panel(
-            ctx,
+            ui,
             &self.app_context,
             vec![
                 ("Wallets", AppAction::PopScreen),
@@ -212,13 +214,13 @@ impl ScreenLike for ShieldScreen {
         );
 
         action |= add_left_panel(
-            ctx,
+            ui,
             &self.app_context,
             RootScreenType::RootScreenWalletsBalances,
         );
 
-        island_central_panel(ctx, |ui| {
-            let dark_mode = ui.ctx().style().visuals.dark_mode;
+        island_central_panel(ui, |ui| {
+            let dark_mode = ui.style().visuals.dark_mode;
             ui.heading("Shield");
             ui.add_space(10.0);
             ui.label("Move funds from a platform or core address into the shielded pool.");

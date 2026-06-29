@@ -39,7 +39,7 @@ use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBound
 use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::IdentityPublicKey;
-use eframe::egui::{self, Context};
+use eframe::egui::{self};
 use egui::{Color32, RichText, ScrollArea};
 use std::sync::{Arc, RwLock};
 use zxcvbn::zxcvbn;
@@ -208,9 +208,11 @@ impl ScreenLike for KeyInfoScreen {
         }
     }
 
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
         let mut action = add_top_panel(
-            ctx,
+            ui,
             &self.app_context,
             vec![
                 ("Identities", AppAction::GoToMainScreen),
@@ -220,16 +222,16 @@ impl ScreenLike for KeyInfoScreen {
         );
 
         action |= add_left_panel(
-            ctx,
+            ui,
             &self.app_context,
             crate::ui::RootScreenType::RootScreenIdentities,
         );
 
-        action |= island_central_panel(ctx, |ui| {
+        action |= island_central_panel(ui, |ui| {
             let inner_action = AppAction::None;
 
             ScrollArea::vertical().show(ui, |ui| {
-                let text_primary = DashColors::text_primary(ui.ctx().style().visuals.dark_mode);
+                let text_primary = DashColors::text_primary(ui.style().visuals.dark_mode);
                 ui.heading(RichText::new("Key Information").color(text_primary));
                 ui.add_space(10.0);
 
@@ -635,7 +637,7 @@ impl ScreenLike for KeyInfoScreen {
         if let Some(show_pop_up_info_text) = self.show_pop_up_info.clone() {
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
-                .show(ctx, |ui| {
+                .show(ui, |ui| {
                     let mut popup = InfoPopup::new("Sign Message Info", &show_pop_up_info_text);
                     if popup.show(ui).inner {
                         self.show_pop_up_info = None;
@@ -843,7 +845,7 @@ impl KeyInfoScreen {
     }
 
     fn render_sign_input(&mut self, ui: &mut egui::Ui) {
-        let text_primary = DashColors::text_primary(ui.ctx().style().visuals.dark_mode);
+        let text_primary = DashColors::text_primary(ui.style().visuals.dark_mode);
         ui.add_space(10.0);
         ui.separator();
         ui.add_space(10.0);
@@ -1080,7 +1082,7 @@ impl KeyInfoScreen {
         if status == IdentityProtectionStatus::NoVaultKeys {
             return;
         }
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
 
         egui::CollapsingHeader::new("Key Protection")
             .default_open(false)
@@ -1133,9 +1135,10 @@ impl KeyInfoScreen {
         }
         if self.protection_in_flight {
             ui.add_space(4.0);
-            ui.label(RichText::new("Working…").color(DashColors::text_secondary(
-                ui.ctx().style().visuals.dark_mode,
-            )));
+            ui.label(
+                RichText::new("Working…")
+                    .color(DashColors::text_secondary(ui.style().visuals.dark_mode)),
+            );
         }
     }
 
@@ -1202,7 +1205,7 @@ impl KeyInfoScreen {
 
     /// The opt-in password form: new password + confirmation + strength + hint.
     fn render_new_password_form(&mut self, ui: &mut egui::Ui) {
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
         ui.label(
             RichText::new(format!(
                 "This password protects the signing keys for {}.",
@@ -1246,7 +1249,7 @@ impl KeyInfoScreen {
 
     /// The opt-out password form: verify the current password.
     fn render_verify_password_form(&mut self, ui: &mut egui::Ui) {
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
         ui.label(
             RichText::new(format!(
                 "Enter the current password for the signing keys for {}.",

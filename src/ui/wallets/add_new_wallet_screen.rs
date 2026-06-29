@@ -167,7 +167,7 @@ impl AddNewWalletScreen {
 
     fn show_success(&mut self, ui: &mut Ui, ctx: &Context) -> AppAction {
         let mut action = AppAction::None;
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
 
         // Check for incoming funds via the display-only WalletBackend snapshot.
         if !self.funds_received {
@@ -367,7 +367,7 @@ impl AddNewWalletScreen {
     }
 
     fn render_seed_phrase_input(&mut self, ui: &mut Ui) {
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
         let surface = DashColors::surface(dark_mode);
         let border = DashColors::border(dark_mode);
         let text_primary = DashColors::text_primary(dark_mode);
@@ -528,11 +528,13 @@ impl AddNewWalletScreen {
 }
 
 impl ScreenLike for AddNewWalletScreen {
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
         let pending_action = AppAction::None;
 
         let mut action = add_top_panel(
-            ctx,
+            ui,
             &self.app_context,
             vec![
                 ("Wallets", AppAction::GoToMainScreen),
@@ -542,12 +544,12 @@ impl ScreenLike for AddNewWalletScreen {
         );
 
         action |= add_left_panel(
-            ctx,
+            ui,
             &self.app_context,
             crate::ui::RootScreenType::RootScreenWalletsBalances,
         );
 
-        action |= island_central_panel(ctx, |ui| {
+        action |= island_central_panel(ui, |ui| {
             let mut inner_action = AppAction::None;
             let ctx = ui.ctx().clone();
 
@@ -714,7 +716,7 @@ impl ScreenLike for AddNewWalletScreen {
                 .show(ctx, |ui| {
                     ui.label(error_message);
                     ui.add_space(10.0);
-                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+                    let dark_mode = ui.style().visuals.dark_mode;
                     if ComponentStyles::add_secondary_button(ui, "Close", dark_mode).clicked() {
                         self.error = None;
                     }

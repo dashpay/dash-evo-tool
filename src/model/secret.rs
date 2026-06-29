@@ -3,6 +3,7 @@ use std::fmt;
 use std::ops::Range;
 
 use egui::TextBuffer;
+use egui::text::CharIndex;
 use zeroize::{Zeroize, Zeroizing};
 
 /// Default pre-allocation capacity for `Secret` buffers.
@@ -183,13 +184,13 @@ impl TextBuffer for Secret {
         self.inner.as_str()
     }
 
-    fn insert_text(&mut self, text: &str, char_index: usize) -> usize {
+    fn insert_text(&mut self, text: &str, char_index: CharIndex) -> usize {
         let n = <String as TextBuffer>::insert_text(&mut *self.inner, text, char_index);
         self.relock_if_moved();
         n
     }
 
-    fn delete_char_range(&mut self, char_range: Range<usize>) {
+    fn delete_char_range(&mut self, char_range: Range<CharIndex>) {
         <String as TextBuffer>::delete_char_range(&mut *self.inner, char_range);
         // Zero deleted bytes in trailing capacity [len..capacity)
         let ptr = self.inner.as_mut_ptr();
@@ -344,12 +345,12 @@ mod tests {
         let mut secret = Secret::new("hello");
 
         // insert_text appends " world"
-        let inserted = secret.insert_text(" world", 5);
+        let inserted = secret.insert_text(" world", CharIndex(5));
         assert_eq!(inserted, 6);
         assert_eq!(secret.expose_secret(), "hello world");
 
         // delete_char_range removes " world"
-        secret.delete_char_range(5..11);
+        secret.delete_char_range(CharIndex(5)..CharIndex(11));
         assert_eq!(secret.expose_secret(), "hello");
     }
 
@@ -450,7 +451,7 @@ mod tests {
     #[test]
     fn test_delete_char_range_zeroes_trailing() {
         let mut secret = Secret::new("abcdef");
-        secret.delete_char_range(3..6);
+        secret.delete_char_range(CharIndex(3)..CharIndex(6));
         assert_eq!(secret.expose_secret(), "abc");
         // Trailing capacity bytes (after len) should be zeroed
         let len = secret.inner.len();

@@ -12,7 +12,7 @@ use crate::ui::theme::DashColors;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use dash_sdk::dpp::document::serialization_traits::DocumentPlatformConversionMethodsV0;
 use dash_sdk::dpp::{data_contract::document_type::DocumentType, document::Document};
-use eframe::egui::{self, Color32, Context, Frame, Margin, RichText, TextEdit, Ui};
+use eframe::egui::{self, Color32, Frame, Margin, RichText, TextEdit, Ui};
 use std::sync::Arc;
 // ======================= 1.  Data & helpers =======================
 
@@ -140,7 +140,7 @@ impl DocumentVisualizerScreen {
 
     fn show_input(&mut self, ui: &mut Ui) {
         ui.label("Enter hex, base64, or comma-separated integers for Document:");
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
         let resp = ui.add(
             TextEdit::multiline(&mut self.input_data_hex)
                 .desired_rows(4)
@@ -200,22 +200,22 @@ impl crate::ui::ScreenLike for DocumentVisualizerScreen {
         // Local parse errors are set directly via self.parse_status.
     }
     fn display_task_result(&mut self, _r: BackendTaskSuccessResult) {}
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
         let mut action = add_top_panel(
-            ctx,
+            ui,
             &self.app_context,
             vec![("Tools", AppAction::None)],
             vec![],
         );
         action |= add_left_panel(
-            ctx,
+            ui,
             &self.app_context,
             crate::ui::RootScreenType::RootScreenToolsDocumentVisualizerScreen,
         );
-        action |= add_tools_subscreen_chooser_panel(ctx, self.app_context.as_ref());
+        action |= add_tools_subscreen_chooser_panel(ui, self.app_context.as_ref());
 
         /* ---------- central panel ---------- */
-        action |= island_central_panel(ctx, |ui| {
+        action |= island_central_panel(ui, |ui| {
             /* ---------- simple dual-combo chooser ---------- */
             //todo cache the contracts
             add_contract_doc_type_chooser_with_filtering(

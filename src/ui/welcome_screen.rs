@@ -4,7 +4,7 @@ use crate::ui::components::left_panel::load_svg_icon;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::theme::{DashColors, Shadow, Shape, Spacing};
 use crate::ui::{RootScreenType, ScreenType};
-use egui::{Context, RichText, ScrollArea, Vec2};
+use egui::{RichText, ScrollArea, Vec2};
 use std::sync::Arc;
 
 /// The action the user wants to take after onboarding
@@ -25,12 +25,14 @@ impl WelcomeScreen {
         Self { app_context }
     }
 
-    pub fn ui(&mut self, ctx: &Context) -> AppAction {
+    pub fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
         let mut action = AppAction::None;
-        let dark_mode = ctx.style().visuals.dark_mode;
+        let dark_mode = ctx.global_style().visuals.dark_mode;
 
         // Central panel with welcome content (using island style like other screens)
-        island_central_panel(ctx, |ui| {
+        island_central_panel(ui, |ui| {
             ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .show(ui, |ui| {

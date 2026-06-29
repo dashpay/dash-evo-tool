@@ -2,7 +2,7 @@ use crate::context::AppContext;
 use crate::ui::RootScreenType;
 use crate::ui::theme::{DashColors, Shadow, Shape, Spacing, Typography};
 use crate::{app::AppAction, ui};
-use egui::{Context, Frame, Margin, RichText, ScrollArea, SidePanel};
+use egui::{Frame, Margin, Panel, RichText, ScrollArea, Ui};
 
 #[derive(PartialEq)]
 pub enum ToolsSubscreen {
@@ -31,9 +31,11 @@ impl ToolsSubscreen {
     }
 }
 
-pub fn add_tools_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext) -> AppAction {
+pub fn add_tools_subscreen_chooser_panel(ui: &mut Ui, app_context: &AppContext) -> AppAction {
+    let ctx = ui.ctx().clone();
+    let ctx = &ctx;
     let mut action = AppAction::None;
-    let dark_mode = ctx.style().visuals.dark_mode;
+    let dark_mode = ctx.global_style().visuals.dark_mode;
 
     let subscreens = vec![
         ToolsSubscreen::PlatformInfo,
@@ -67,15 +69,15 @@ pub fn add_tools_subscreen_chooser_panel(ctx: &Context, app_context: &AppContext
         _ => ToolsSubscreen::PlatformInfo,
     };
 
-    SidePanel::left("tools_subscreen_chooser_panel")
+    Panel::left("tools_subscreen_chooser_panel")
         .resizable(false)
-        .default_width(270.0)
+        .default_size(270.0)
         .frame(
             Frame::new()
                 .fill(DashColors::background(dark_mode))
                 .inner_margin(Margin::symmetric(10, 10)),
         )
-        .show(ctx, |ui| {
+        .show(ui, |ui| {
             let available_height = ui.available_height();
             Frame::new()
                 .fill(DashColors::surface(dark_mode))

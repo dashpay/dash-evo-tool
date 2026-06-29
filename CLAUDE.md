@@ -222,7 +222,7 @@ What each verifies:
 
 - `dash-sdk` - Dash blockchain SDK (git dep from dashpay/platform)
 - `platform-wallet` / `platform-wallet-storage` - Upstream wallet backend (git dep from dashpay/platform): SPV chain sync, address derivation, asset-lock/identity handling, shielded coordinator
-- `egui/eframe 0.33` - Immediate mode GUI framework
+- `egui/eframe 0.35` - Immediate mode GUI framework
 - `tokio` - Async runtime (12 worker threads)
 - `rusqlite` - SQLite with bundled library
 - Rust edition 2024, minimum rust-version 1.92
@@ -247,7 +247,7 @@ The UI and async backend communicate through the action/channel pattern describe
 ## Screen Pattern
 
 All screens implement the `ScreenLike` trait:
-- `ui(&mut self, ctx: &Context) -> AppAction` - Render UI, return actions
+- `ui(&mut self, ui: &mut egui::Ui) -> AppAction` - Render UI, return actions
 - `display_task_result(&mut self, result: BackendTaskSuccessResult)` - Handle async results
 - `display_message(&mut self, msg: &str, type: MessageType)` - Show user feedback
 - `refresh(&mut self)` / `refresh_on_arrival(&mut self)` - Re-fetch data

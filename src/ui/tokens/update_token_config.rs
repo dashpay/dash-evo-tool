@@ -36,7 +36,7 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::{DataContract, Identifier, IdentityPublicKey};
-use eframe::egui::{self, Color32, Context, Ui};
+use eframe::egui::{self, Color32, Ui};
 use egui::RichText;
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
@@ -719,7 +719,7 @@ impl UpdateTokenConfigScreen {
         // Display estimated fee before action button
         let estimated_fee = self.app_context.fee_estimator().estimate_token_transition();
         ui.add_space(10.0);
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
         egui::Frame::new()
             .fill(DashColors::surface(dark_mode))
             .inner_margin(egui::Margin::symmetric(10, 8))
@@ -865,7 +865,7 @@ impl UpdateTokenConfigScreen {
                 authorized_identity_input.get_or_insert_with(String::new);
                 if let Some(id_str) = authorized_identity_input {
                     ui.horizontal(|ui| {
-                        let dark_mode = ui.ctx().style().visuals.dark_mode;
+                        let dark_mode = ui.style().visuals.dark_mode;
                         ui.add_sized(
                             [300.0, 22.0],
                             egui::TextEdit::singleline(id_str)
@@ -946,13 +946,15 @@ impl ScreenLike for UpdateTokenConfigScreen {
         }
     }
 
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
         let mut action;
 
         // Build a top panel
         if self.group_action_id.is_some() {
             action = add_top_panel(
-                ctx,
+                ui,
                 &self.app_context,
                 vec![
                     ("Contracts", AppAction::GoToMainScreen),
@@ -963,7 +965,7 @@ impl ScreenLike for UpdateTokenConfigScreen {
             );
         } else {
             action = add_top_panel(
-                ctx,
+                ui,
                 &self.app_context,
                 vec![
                     ("Tokens", AppAction::GoToMainScreen),
@@ -976,16 +978,16 @@ impl ScreenLike for UpdateTokenConfigScreen {
 
         // Left panel
         action |= add_left_panel(
-            ctx,
+            ui,
             &self.app_context,
             crate::ui::RootScreenType::RootScreenMyTokenBalances,
         );
 
         // Subscreen chooser
-        action |= add_tokens_subscreen_chooser_panel(ctx, &self.app_context);
+        action |= add_tokens_subscreen_chooser_panel(ui, &self.app_context);
 
         // Central panel
-        island_central_panel(ctx, |ui| {
+        island_central_panel(ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 if self.update_status == UpdateTokenConfigStatus::Complete {
                     action |= self.show_success_screen(ui);

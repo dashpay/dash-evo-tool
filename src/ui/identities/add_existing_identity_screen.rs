@@ -20,7 +20,6 @@ use bip39::rand::{prelude::IteratorRandom, thread_rng};
 use dash_sdk::dashcore_rpc::dashcore::Network;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::Identifier;
-use eframe::egui::Context;
 use egui::{Color32, ComboBox, RichText, Ui};
 use serde::Deserialize;
 use std::fs;
@@ -474,7 +473,7 @@ impl AddExistingIdentityScreen {
             .fill(if is_valid_id {
                 DashColors::DASH_BLUE
             } else {
-                ComponentStyles::button_disabled_fill(ui.ctx().style().visuals.dark_mode)
+                ComponentStyles::button_disabled_fill(ui.style().visuals.dark_mode)
             })
             .frame(true)
             .corner_radius(3.0);
@@ -859,7 +858,7 @@ impl AddExistingIdentityScreen {
             .fill(if is_valid {
                 DashColors::DASH_BLUE
             } else {
-                ComponentStyles::button_disabled_fill(ui.ctx().style().visuals.dark_mode)
+                ComponentStyles::button_disabled_fill(ui.style().visuals.dark_mode)
             })
             .frame(true)
             .corner_radius(3.0);
@@ -1089,9 +1088,11 @@ impl ScreenLike for AddExistingIdentityScreen {
         self.add_identity_status = AddIdentityStatus::Complete;
     }
 
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
         let mut action = add_top_panel(
-            ctx,
+            ui,
             &self.app_context,
             vec![
                 ("Identities", AppAction::GoToMainScreen),
@@ -1101,12 +1102,12 @@ impl ScreenLike for AddExistingIdentityScreen {
         );
 
         action |= add_left_panel(
-            ctx,
+            ui,
             &self.app_context,
             crate::ui::RootScreenType::RootScreenIdentities,
         );
 
-        action |= island_central_panel(ctx, |ui| {
+        action |= island_central_panel(ui, |ui| {
             let mut inner_action = AppAction::None;
 
             // Error display is handled by the global MessageBanner
@@ -1184,7 +1185,7 @@ impl ScreenLike for AddExistingIdentityScreen {
         if let Some(show_pop_up_info_text) = self.show_pop_up_info.clone() {
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
-                .show(ctx, |ui| {
+                .show(ui, |ui| {
                     let mut popup =
                         InfoPopup::new("Load Identity Information", &show_pop_up_info_text);
                     if popup.show(ui).inner {

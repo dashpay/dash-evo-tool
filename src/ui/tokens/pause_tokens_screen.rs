@@ -34,7 +34,7 @@ use dash_sdk::dpp::group::{GroupStateTransitionInfo, GroupStateTransitionInfoSta
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::platform::Identifier;
-use eframe::egui::{self, Color32, Context, Frame, Margin, Ui};
+use eframe::egui::{self, Color32, Frame, Margin, Ui};
 use egui::RichText;
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
@@ -307,13 +307,15 @@ impl ScreenLike for PauseTokensScreen {
         }
     }
 
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
         let mut action;
 
         // Build a top panel
         if self.group_action_id.is_some() {
             action = add_top_panel(
-                ctx,
+                ui,
                 &self.app_context,
                 vec![
                     ("Contracts", AppAction::GoToMainScreen),
@@ -324,7 +326,7 @@ impl ScreenLike for PauseTokensScreen {
             );
         } else {
             action = add_top_panel(
-                ctx,
+                ui,
                 &self.app_context,
                 vec![
                     ("Tokens", AppAction::GoToMainScreen),
@@ -337,15 +339,15 @@ impl ScreenLike for PauseTokensScreen {
 
         // Left panel
         action |= add_left_panel(
-            ctx,
+            ui,
             &self.app_context,
             crate::ui::RootScreenType::RootScreenMyTokenBalances,
         );
 
         // Subscreen chooser
-        action |= add_tokens_subscreen_chooser_panel(ctx, &self.app_context);
+        action |= add_tokens_subscreen_chooser_panel(ui, &self.app_context);
 
-        let central_panel_action = island_central_panel(ctx, |ui| {
+        let central_panel_action = island_central_panel(ui, |ui| {
             if self.status == PauseTokensStatus::Complete {
                 return self.show_success_screen(ui);
             }
@@ -480,7 +482,7 @@ impl ScreenLike for PauseTokensScreen {
                 let fee_estimator = self.app_context.fee_estimator();
                 let estimated_fee = fee_estimator.estimate_document_batch(1); // Token operations are document batch transitions
 
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                let dark_mode = ui.style().visuals.dark_mode;
                 Frame::new()
                     .fill(DashColors::surface(dark_mode))
                     .inner_margin(Margin::symmetric(10, 8))

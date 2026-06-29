@@ -16,7 +16,7 @@ use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::serialization::PlatformDeserializable;
 use dash_sdk::dpp::state_transition::StateTransition;
 use dash_sdk::platform::Identifier;
-use eframe::egui::{self, Color32, Context, ScrollArea, TextEdit, Ui, Window};
+use eframe::egui::{self, Color32, ScrollArea, TextEdit, Ui, Window};
 use egui::RichText;
 use serde_json::Value;
 use std::sync::Arc;
@@ -153,7 +153,7 @@ impl TransitionVisualizerScreen {
     fn show_input_field(&mut self, ui: &mut Ui) {
         ui.label("Enter hex, base64, or comma-separated integers for state transition:");
         ui.add_space(5.0);
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
         let response = ui.add(
             TextEdit::multiline(&mut self.input_data)
                 .desired_rows(6)
@@ -207,7 +207,7 @@ impl TransitionVisualizerScreen {
         ScrollArea::vertical().show(ui, |ui| {
             if let Some(ref json) = self.parsed_json {
                 ui.add_space(5.0);
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                let dark_mode = ui.style().visuals.dark_mode;
                 ui.add(
                     TextEdit::multiline(&mut json.clone())
                         .desired_rows(10)
@@ -418,23 +418,25 @@ impl ScreenLike for TransitionVisualizerScreen {
         }
     }
 
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
         let mut action = add_top_panel(
-            ctx,
+            ui,
             &self.app_context,
             vec![("Tools", AppAction::None)],
             vec![],
         );
 
         action |= add_left_panel(
-            ctx,
+            ui,
             &self.app_context,
             RootScreenType::RootScreenToolsTransitionVisualizerScreen,
         );
 
-        action |= add_tools_subscreen_chooser_panel(ctx, self.app_context.as_ref());
+        action |= add_tools_subscreen_chooser_panel(ui, self.app_context.as_ref());
 
-        action |= island_central_panel(ctx, |ui| {
+        action |= island_central_panel(ui, |ui| {
             self.show_input_field(ui);
             self.show_output(ui)
         });

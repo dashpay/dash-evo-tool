@@ -21,7 +21,7 @@ use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::dash_spv::sync::{ProgressPercentage, SyncProgress as SpvSyncProgress, SyncState};
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::TimestampMillis;
-use eframe::egui::{self, Context, Ui};
+use eframe::egui::{self, Ui};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -156,7 +156,7 @@ impl NetworkChooserScreen {
     /// Render the simplified settings interface
     fn render_network_table(&mut self, ui: &mut Ui) -> AppAction {
         let mut app_action = AppAction::None;
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
 
         // Connection Settings Card
         StyledCard::new().padding(24.0).show(ui, |ui| {
@@ -941,7 +941,7 @@ impl NetworkChooserScreen {
             }
         }
 
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
 
         egui::Frame::new()
             .fill(DashColors::glass_white(dark_mode))
@@ -1045,7 +1045,7 @@ impl NetworkChooserScreen {
         snapshot: &SpvStatusSnapshot,
     ) -> AppAction {
         let mut action = AppAction::None;
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
 
         ui.label(
             egui::RichText::new("SPV Maintenance")
@@ -1465,21 +1465,21 @@ impl ScreenLike for NetworkChooserScreen {
         self.theme_preference = settings.theme_mode;
     }
 
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
         let mut action = add_top_panel(
-            ctx,
+            ui,
             self.current_app_context(),
             vec![("Networks", AppAction::None)],
             vec![],
         );
 
         action |= add_left_panel(
-            ctx,
+            ui,
             self.current_app_context(),
             RootScreenType::RootScreenNetworkChooser,
         );
 
-        action |= island_central_panel(ctx, |ui| {
+        action |= island_central_panel(ui, |ui| {
             egui::ScrollArea::vertical()
                 .auto_shrink([true; 2])
                 .show(ui, |ui| self.render_network_table(ui))

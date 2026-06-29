@@ -24,7 +24,7 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
 use dash_sdk::platform::{DataContract, IdentityPublicKey};
-use eframe::egui::{self, Color32, Context, Frame, Margin, TextEdit};
+use eframe::egui::{self, Color32, Frame, Margin, TextEdit};
 use egui::{RichText, ScrollArea, Ui};
 use std::sync::{Arc, RwLock};
 
@@ -156,7 +156,7 @@ impl RegisterDataContractScreen {
     }
 
     fn ui_input_field(&mut self, ui: &mut egui::Ui) {
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
         let response = ui.add(
             TextEdit::multiline(&mut self.contract_json_input)
                 .desired_rows(12)
@@ -179,7 +179,7 @@ impl RegisterDataContractScreen {
         };
 
         if let Some(msg) = error_msg {
-            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            let dark_mode = ui.style().visuals.dark_mode;
             let error_color = DashColors::error_color(dark_mode);
             Frame::new()
                 .fill(error_color.gamma_multiply(0.1))
@@ -224,7 +224,7 @@ impl RegisterDataContractScreen {
                     .estimate_storage_based_fee(contract_size, 20); // ~20 seeks for tree operations
                 let estimated_fee = registration_fee.saturating_add(storage_fee);
                 ui.add_space(10.0);
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                let dark_mode = ui.style().visuals.dark_mode;
                 Frame::new()
                     .fill(DashColors::surface(dark_mode))
                     .inner_margin(Margin::symmetric(10, 8))
@@ -351,9 +351,11 @@ impl ScreenLike for RegisterDataContractScreen {
         }
     }
 
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
         let mut action = add_top_panel(
-            ctx,
+            ui,
             &self.app_context,
             vec![
                 ("Contracts", AppAction::GoToMainScreen),
@@ -363,12 +365,12 @@ impl ScreenLike for RegisterDataContractScreen {
         );
 
         action |= add_left_panel(
-            ctx,
+            ui,
             &self.app_context,
             crate::ui::RootScreenType::RootScreenDocumentQuery,
         );
 
-        action |= island_central_panel(ctx, |ui| {
+        action |= island_central_panel(ui, |ui| {
             if self.broadcast_status == BroadcastStatus::Done {
                 return self.show_success(ui);
             }

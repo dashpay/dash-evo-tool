@@ -301,7 +301,7 @@ impl ContactsList {
 
     pub fn render(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
 
         // Auto-fetch contacts on first render or after identity change.
         if !self.has_loaded && !self.loading && self.selected_identity.is_some() {
@@ -731,7 +731,7 @@ impl ContactsList {
             .id_salt("contacts_list_scroll")
             .show(ui, |ui| {
                 if self.contacts.is_empty() {
-                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+                    let dark_mode = ui.style().visuals.dark_mode;
                     Frame::group(ui.style())
                         .fill(ui.visuals().extreme_bg_color)
                         .corner_radius(5.0)
@@ -766,7 +766,7 @@ impl ContactsList {
                             });
                         });
                 } else if filtered_contacts.is_empty() {
-                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+                    let dark_mode = ui.style().visuals.dark_mode;
                     Frame::group(ui.style())
                         .fill(ui.visuals().extreme_bg_color)
                         .corner_radius(5.0)
@@ -906,7 +906,7 @@ impl ContactsList {
                                         .cloned()
                                         .unwrap_or_else(|| "Unknown".to_string());
 
-                                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+                                    let dark_mode = ui.style().visuals.dark_mode;
 
                                     // Add hidden indicator to name if contact is hidden
                                     let display_name = if contact.is_hidden {
@@ -1054,9 +1054,9 @@ impl ScreenLike for ContactsList {
         }
     }
 
-    fn ui(&mut self, ctx: &egui::Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
         let mut action = AppAction::None;
-        egui::CentralPanel::default().show(ctx, |ui| {
+        egui::CentralPanel::default().show(ui, |ui| {
             action = self.render(ui);
         });
         action

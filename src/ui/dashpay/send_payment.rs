@@ -220,13 +220,13 @@ impl SendPaymentScreen {
             ui.group(|ui| {
                 // From identity
                 ui.horizontal(|ui| {
-                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+                    let dark_mode = ui.style().visuals.dark_mode;
                     ui.label(
                         RichText::new("From:")
                             .strong()
                             .color(DashColors::text_primary(dark_mode)),
                     );
-                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+                    let dark_mode = ui.style().visuals.dark_mode;
                     ui.label(
                         RichText::new(self.from_identity.to_string())
                             .color(DashColors::text_primary(dark_mode)),
@@ -235,7 +235,7 @@ impl SendPaymentScreen {
 
                 // Wallet Balance (from wallet, not identity)
                 ui.horizontal(|ui| {
-                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+                    let dark_mode = ui.style().visuals.dark_mode;
                     ui.label(
                         RichText::new("Wallet Balance:")
                             .strong()
@@ -263,17 +263,17 @@ impl SendPaymentScreen {
 
                 // To contact
                 ui.horizontal(|ui| {
-                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+                    let dark_mode = ui.style().visuals.dark_mode;
                     ui.label(
                         RichText::new("To:")
                             .strong()
                             .color(DashColors::text_primary(dark_mode)),
                     );
                     if let Some(name) = &self.to_contact_name {
-                        let dark_mode = ui.ctx().style().visuals.dark_mode;
+                        let dark_mode = ui.style().visuals.dark_mode;
                         ui.label(RichText::new(name).color(DashColors::text_primary(dark_mode)));
                     } else {
-                        let dark_mode = ui.ctx().style().visuals.dark_mode;
+                        let dark_mode = ui.style().visuals.dark_mode;
                         ui.label(
                             RichText::new(format!("{}", self.to_contact_id))
                                 .color(DashColors::text_primary(dark_mode)),
@@ -317,7 +317,7 @@ impl SendPaymentScreen {
                 ui.add_space(10.0);
 
                 // Memo field
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                let dark_mode = ui.style().visuals.dark_mode;
                 ui.label(
                     RichText::new("Memo (optional):")
                         .strong()
@@ -329,7 +329,7 @@ impl SendPaymentScreen {
                         .desired_rows(3)
                         .desired_width(f32::INFINITY),
                 );
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                let dark_mode = ui.style().visuals.dark_mode;
                 ui.label(
                     RichText::new(format!("{}/100 characters", self.memo.len()))
                         .small()
@@ -391,12 +391,14 @@ impl ScreenLike for SendPaymentScreen {
         self.refresh();
     }
 
-    fn ui(&mut self, ctx: &egui::Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
         let mut action = AppAction::None;
 
         // Add top panel
         action |= add_top_panel(
-            ctx,
+            ui,
             &self.app_context,
             vec![
                 ("DashPay", AppAction::None),
@@ -406,17 +408,17 @@ impl ScreenLike for SendPaymentScreen {
         );
 
         // Highlight DashPay in the main left panel
-        action |= add_left_panel(ctx, &self.app_context, RootScreenType::RootScreenDashpay);
+        action |= add_left_panel(ui, &self.app_context, RootScreenType::RootScreenDashpay);
         action |=
-            add_dashpay_subscreen_chooser_panel(ctx, &self.app_context, DashPaySubscreen::Payments);
+            add_dashpay_subscreen_chooser_panel(ui, &self.app_context, DashPaySubscreen::Payments);
 
-        action |= island_central_panel(ctx, |ui| self.render(ui));
+        action |= island_central_panel(ui, |ui| self.render(ui));
 
         // Show info popup if requested
         if self.show_info_popup {
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
-                .show(ctx, |ui| {
+                .show(ui, |ui| {
                     let mut popup =
                         InfoPopup::new("Payment Guidelines", PAYMENT_GUIDELINES_INFO_TEXT);
                     if popup.show(ui).inner {
@@ -587,7 +589,7 @@ impl PaymentHistory {
         }
 
         if self.selected_identity.is_none() {
-            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            let dark_mode = ui.style().visuals.dark_mode;
             ui.label(
                 RichText::new("Please select an identity to view payment history")
                     .color(DashColors::text_primary(dark_mode)),
@@ -607,7 +609,7 @@ impl PaymentHistory {
         // Payment list
         ScrollArea::vertical().show(ui, |ui| {
             if self.payments.is_empty() {
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                let dark_mode = ui.style().visuals.dark_mode;
                 Frame::group(ui.style())
                     .fill(ui.visuals().extreme_bg_color)
                     .corner_radius(5.0)
@@ -633,7 +635,7 @@ impl PaymentHistory {
             } else {
                 for payment in &self.payments {
                     ui.group(|ui| {
-                        let dark_mode = ui.ctx().style().visuals.dark_mode;
+                        let dark_mode = ui.style().visuals.dark_mode;
                         ui.horizontal(|ui| {
                             // Avatar placeholder
                             ui.vertical(|ui| {

@@ -212,7 +212,7 @@ impl AddNewIdentityScreen {
         let step = *self.step.read().unwrap();
 
         // Display estimated fee before action button (reuse already calculated value)
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
         egui::Frame::new()
             .fill(DashColors::surface(dark_mode))
             .inner_margin(egui::Margin::symmetric(10, 8))

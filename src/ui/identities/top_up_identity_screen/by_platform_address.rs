@@ -26,7 +26,7 @@ impl TopUpIdentityScreen {
         step_number: u32,
     ) -> AppAction {
         let mut action = AppAction::None;
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
 
         ui.heading(format!(
             "{}. Select a Platform address to use for top-up.",

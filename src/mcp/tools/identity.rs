@@ -576,7 +576,7 @@ impl AsyncTool<DashMcpService> for IdentityCreditsToAddress {
 
         let qi = resolve::qualified_identity(&ctx, &param.identity_id)?;
 
-        let (platform_addr, _network) =
+        let platform_addr =
             dash_sdk::dpp::address_funds::PlatformAddress::from_bech32m_string(&param.to_address)
                 .map_err(|e| McpToolError::InvalidParam {
                 message: format!("Invalid Platform address: {e}"),

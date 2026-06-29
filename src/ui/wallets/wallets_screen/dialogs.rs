@@ -1008,14 +1008,31 @@ impl WalletsBalancesScreen {
         // Parse the Platform address (Bech32m format: dash1.../tdash1... per DIP-18)
         let platform_addr = if crate::ui::helpers::is_platform_address_string(selected_addr) {
             match PlatformAddress::from_bech32m_string(selected_addr) {
-                Ok((addr, network)) => {
+                Ok(addr) => {
+                    // `from_bech32m_string` no longer returns the network. Derive
+                    // the mainnet/non-mainnet class from the HRP and synthesise a
+                    // representative `Network` for `networks_address_compatible`:
+                    // mainnet HRP ("dash1…") → `Mainnet`, anything else → `Testnet`
+                    // (testnet and all non-mainnet networks share the "tdash1…" HRP).
+                    let addr_is_mainnet =
+                        PlatformAddress::is_mainnet_bech32m(selected_addr).unwrap_or(false);
+                    let addr_network = if addr_is_mainnet {
+                        Network::Mainnet
+                    } else {
+                        Network::Testnet
+                    };
                     if !crate::model::wallet::networks_address_compatible(
-                        &network,
+                        &addr_network,
                         &self.app_context.network,
                     ) {
+                        let addr_net_label = if addr_is_mainnet {
+                            "mainnet"
+                        } else {
+                            "testnet"
+                        };
                         self.fund_platform_dialog.status = Some(format!(
-                            "Address network mismatch: address is for {:?} but app is on {:?}",
-                            network, self.app_context.network
+                            "Address network mismatch: address is for {} but app is on {:?}",
+                            addr_net_label, self.app_context.network
                         ));
                         self.fund_platform_dialog.status_is_error = true;
                         return AppAction::None;

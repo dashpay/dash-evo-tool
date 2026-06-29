@@ -65,8 +65,7 @@ impl ShieldedSendScreen {
             return None;
         }
         // Try bech32m first (dash1z... or tdash1z...)
-        if let Ok((addr, _network)) =
-            dash_sdk::dpp::address_funds::OrchardAddress::from_bech32m_string(trimmed)
+        if let Ok(addr) = dash_sdk::dpp::address_funds::OrchardAddress::from_bech32m_string(trimmed)
         {
             return Some(addr.to_raw_bytes().to_vec());
         }

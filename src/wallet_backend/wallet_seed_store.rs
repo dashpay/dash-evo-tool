@@ -141,8 +141,11 @@ impl<'a> WalletSeedView<'a> {
     /// Forget the envelope at `seed_hash`. Idempotent — a missing
     /// entry returns `Ok(())`.
     pub fn delete(&self, seed_hash: &WalletSeedHash) -> Result<(), TaskError> {
+        // `delete` now returns `Result<bool, _>` (true = existed, false = absent).
+        // Delete is idempotent here, so we discard the bool.
         self.secret_store
             .delete(&scope_for(seed_hash), ENVELOPE_LABEL)
+            .map(|_| ())
             .map_err(map_err)
     }
 

@@ -333,10 +333,10 @@ pub async fn run(app_context: &Arc<AppContext>) -> Result<bool, TaskError> {
     });
 
     // Register the migrated wallets upstream BEFORE the completion sentinel,
-    // so the sentinel can never claim "done" while an unprotected wallet is
-    // still absent from `spv/<net>/platform-wallet.sqlite`. On failure this
-    // returns `Err` (the sentinel is skipped) so the next cold start — or the
-    // "Retry now" banner — re-runs the idempotent migration.
+    // so the sentinel can never claim "done" while a migratable unprotected
+    // wallet is still absent from `spv/<net>/platform-wallet.sqlite`. On failure
+    // this returns `Err` (the sentinel is skipped) so the next cold start — or
+    // the "Retry now" banner — re-runs the idempotent migration.
     register_migrated_wallets(app_context).await?;
 
     write_sentinel(&app_kv, network, 1)?;
@@ -356,12 +356,21 @@ pub async fn run(app_context: &Arc<AppContext>) -> Result<bool, TaskError> {
 ///
 /// [`run`] calls this immediately before [`write_sentinel`], so the completion
 /// sentinel is recorded only after this returns `Ok(())`. A "completed" marker
-/// can therefore never be written while an unprotected wallet is still missing
-/// from `spv/<net>/platform-wallet.sqlite`.
+/// can therefore never be written while a *migratable* unprotected wallet is
+/// still missing from `spv/<net>/platform-wallet.sqlite`.
 ///
-/// Locked password-protected wallets hydrate `Closed` and are intentionally NOT
-/// required: they register on their unlock gesture (the W2 bridge), so
-/// requiring them would wedge the sentinel forever on a protected install.
+/// Two classes are intentionally excluded from the gate so they cannot wedge
+/// the sentinel forever — and both are genuinely safe to exclude:
+/// - **Locked password-protected wallets** hydrate `Closed`; they register on
+///   their unlock gesture (the W2 bridge). Their seed envelope was already
+///   copied to the vault before this step.
+/// - **Genuinely-unusable rows** (empty/undecodable master xpub, or an
+///   unprotected seed whose length is not 64) are rejected and surfaced by the
+///   copy step ([`hd_seed_row_is_hydratable`]), so they never reach the vault
+///   or `ctx.wallets`. Because the copy step now rejects exactly what hydration
+///   would drop, every wallet that DID land in the vault hydrates and is seen
+///   here — closing the QA-001 copy-vs-hydration asymmetry. The skipped seed
+///   stays in legacy `data.db` (never deleted), so this is exclusion, not loss.
 ///
 /// Idempotent: re-hydration only gap-fills `ctx.wallets` (a wallet created
 /// earlier this session is never clobbered) and registration skips wallets
@@ -813,6 +822,43 @@ fn crypto_field_lengths_ok(salt: &[u8], nonce: &[u8], uses_password: bool) -> bo
     }
 }
 
+/// Expected plaintext length of a BIP-39 seed (64 bytes, PBKDF2 output),
+/// mirroring `wallet_backend::hydration::EXPECTED_SEED_LEN`. An unprotected
+/// wallet whose `encrypted_seed` is a different length is rejected by
+/// hydration, so the copy step rejects it too — see [`hd_seed_row_is_hydratable`].
+const HYDRATABLE_SEED_LEN: usize = 64;
+
+/// Whether a legacy `wallet` row will survive cold-boot hydration, mirroring
+/// the accept/reject rules in `wallet_backend::hydration`:
+///
+/// - the master xpub (`master_ecdsa_bip44_account_0_epk`) must be present AND
+///   decode as an `ExtendedPubKey` — every row (`reconstruct_from_envelope`);
+/// - an UNPROTECTED row's `encrypted_seed` must be exactly 64 bytes
+///   (`wallet_from_envelope`; a protected row hydrates closed from its public
+///   xpub and is never seed-length-checked).
+///
+/// Copy-time validation MUST mirror this so copy-acceptance ⊆
+/// hydration-acceptance: a row the copy step writes is then guaranteed to
+/// hydrate into `ctx.wallets` and be seen by the registration gate. A row that
+/// fails here is genuinely unusable in DET regardless (no derivable xpub or a
+/// corrupt seed) and is explicitly skipped + surfaced rather than silently
+/// copied as if migrated — otherwise it would be invisible to the gate and let
+/// the sentinel falsely read "done".
+fn hd_seed_row_is_hydratable(
+    uses_password: bool,
+    encrypted_seed: &[u8],
+    xpub_encoded: &[u8],
+) -> bool {
+    use dash_sdk::dpp::key_wallet::bip32::ExtendedPubKey;
+    if xpub_encoded.is_empty() || ExtendedPubKey::decode(xpub_encoded).is_err() {
+        return false;
+    }
+    if !uses_password && encrypted_seed.len() != HYDRATABLE_SEED_LEN {
+        return false;
+    }
+    true
+}
+
 /// Returns `true` when `table` exists in the SQLite schema at `conn`.
 /// Propagates a typed static table name into the error variant so
 /// partial-failure paths stay attributable. Used by [`table_has_rows`]
@@ -1062,6 +1108,16 @@ fn wallet_table_has_core_wallet_name(conn: &Connection) -> Result<bool, Migratio
 struct WalletSeedsMigrationOutcome {
     /// Rows whose full envelope was written to the upstream vault.
     imported: u32,
+    /// Rows skipped because they would not survive cold-boot hydration —
+    /// an empty/undecodable master xpub, or an unprotected seed whose length
+    /// is not 64 (see [`hd_seed_row_is_hydratable`]). Non-fatal and surfaced
+    /// (logged + counted): the wallet is genuinely unusable in DET regardless,
+    /// so it is deliberately excluded — like a locked protected wallet —
+    /// instead of silently copied as if migrated. Excluding it keeps
+    /// copy-acceptance ⊆ hydration-acceptance, so the registration gate over
+    /// the hydrated set stays sound. The seed is retained in legacy `data.db`
+    /// (never deleted), so this is exclusion, not loss.
+    skipped_malformed: u32,
     /// Rows that could not be decoded (seed_hash wrong size, blob
     /// length wrong, etc.). Triggers the error path.
     failed: u32,
@@ -1105,6 +1161,7 @@ fn migrate_wallet_seeds_rows(app_context: &Arc<AppContext>) -> Result<(), TaskEr
     tracing::info!(
         target = "migration::finish_unwire",
         imported = outcome.imported,
+        skipped_malformed = outcome.skipped_malformed,
         failed = outcome.failed,
         network = ?app_context.network,
         "Wallet-seed migration pass complete",
@@ -1221,6 +1278,26 @@ where
                 "Skipping wallet row with corrupted crypto field lengths during seed migration",
             );
             outcome.failed = outcome.failed.saturating_add(1);
+            continue;
+        }
+
+        // Hydration symmetry (QA-001). The copy step must not accept a row that
+        // cold-boot hydration would silently drop, or the migrated wallet would
+        // be in neither the registered nor the gate-counted set and the sentinel
+        // would falsely read "done". A row that fails the shared hydratability
+        // check is genuinely unusable (no derivable xpub / corrupt seed); skip
+        // and surface it (non-fatal) rather than copy it. The seed stays in
+        // legacy `data.db`, which the migration never deletes.
+        if !hd_seed_row_is_hydratable(uses_password, &encrypted_seed, &xpub) {
+            tracing::warn!(
+                target = "migration::finish_unwire",
+                seed_hash = %hex::encode(seed_hash),
+                uses_password,
+                seed_len = encrypted_seed.len(),
+                xpub_len = xpub.len(),
+                "Skipping wallet row that cold-boot hydration would drop (xpub absent/undecodable or unprotected seed length != 64); seed retained in legacy data.db",
+            );
+            outcome.skipped_malformed = outcome.skipped_malformed.saturating_add(1);
             continue;
         }
 
@@ -2551,7 +2628,7 @@ mod tests {
         let ciphertext: [u8; 80] = [0x11; 80];
         let salt: [u8; 16] = [0x01; 16];
         let nonce: [u8; 12] = [0x02; 12];
-        let xpub: [u8; 78] = [0x99; 78];
+        let xpub = valid_xpub([0x99u8; 64], Network::Testnet);
         seed_legacy_wallet_seed_row(
             &conn,
             &seed_hash,
@@ -2588,7 +2665,7 @@ mod tests {
         assert_eq!(got.salt, salt.to_vec());
         assert_eq!(got.nonce, nonce.to_vec());
         assert_eq!(got.password_hint.as_deref(), Some("granny's birthday"));
-        assert_eq!(got.xpub_encoded, xpub.to_vec());
+        assert_eq!(got.xpub_encoded, xpub);
     }
 
     /// TC-W-002 — running the seed migration twice is idempotent: the
@@ -2606,13 +2683,14 @@ mod tests {
 
         let seed_hash: crate::model::wallet::WalletSeedHash = [0xBB; 32];
         let ciphertext: [u8; 64] = [0x22; 64];
+        let xpub = valid_xpub([0x88u8; 64], Network::Testnet);
         seed_legacy_wallet_seed_row(
             &conn,
             &seed_hash,
             &ciphertext,
             &[],
             &[],
-            &[0x88; 78],
+            &xpub,
             None,
             false,
             Network::Testnet,
@@ -2664,13 +2742,14 @@ mod tests {
 
         let seed_hash: crate::model::wallet::WalletSeedHash = [0xCC; 32];
         let ciphertext: [u8; 80] = [0xFF; 80];
+        let xpub = valid_xpub([0x77u8; 64], Network::Testnet);
         seed_legacy_wallet_seed_row(
             &conn,
             &seed_hash,
             &ciphertext,
             &[0x01; 16],
             &[0x02; 12],
-            &[0x77; 78],
+            &xpub,
             Some("locked"),
             true,
             Network::Testnet,
@@ -2757,25 +2836,27 @@ mod tests {
         create_legacy_wallet_table_without_core_name(&conn);
 
         let testnet_seed: crate::model::wallet::WalletSeedHash = [0xEE; 32];
+        let testnet_xpub = valid_xpub([0x55u8; 64], Network::Testnet);
         seed_legacy_wallet_seed_row(
             &conn,
             &testnet_seed,
             &[0x33; 64],
             &[],
             &[],
-            &[0x55; 78],
+            &testnet_xpub,
             None,
             false,
             Network::Testnet,
         );
         let mainnet_seed: crate::model::wallet::WalletSeedHash = [0xEF; 32];
+        let mainnet_xpub = valid_xpub([0x66u8; 64], Network::Mainnet);
         seed_legacy_wallet_seed_row(
             &conn,
             &mainnet_seed,
             &[0x44; 64],
             &[],
             &[],
-            &[0x66; 78],
+            &mainnet_xpub,
             None,
             false,
             Network::Mainnet,
@@ -2810,6 +2891,149 @@ mod tests {
             .expect("migrate");
 
         assert_eq!(outcome.imported, 0);
+        assert_eq!(outcome.failed, 0);
+    }
+
+    /// Encode a genuinely-decodable BIP44 master xpub from a seed, so a copy
+    /// test can feed `hd_seed_row_is_hydratable`'s `ExtendedPubKey::decode` a
+    /// real value (a random 78-byte blob would not validate).
+    fn valid_xpub(seed: [u8; 64], network: dash_sdk::dpp::dashcore::Network) -> Vec<u8> {
+        crate::model::wallet::Wallet::new_from_seed(seed, network, None, None)
+            .expect("wallet from seed")
+            .master_bip44_ecdsa_extended_public_key
+            .encode()
+            .to_vec()
+    }
+
+    /// QA-001 regression — the copy step must REJECT exactly the rows that
+    /// cold-boot hydration would silently drop, closing the copy-vs-hydration
+    /// asymmetry that caused the false-complete. An unprotected row with an
+    /// empty/undecodable master xpub, or a non-64-byte seed, must be counted as
+    /// `skipped_malformed` (NOT imported) so it never reaches the vault — where
+    /// it would be invisible to the registration gate yet let the sentinel read
+    /// "done". A well-formed sibling row must still import, proving the skip is
+    /// surgical and non-fatal (no wedge).
+    #[test]
+    fn qa_001_unhydratable_unprotected_rows_are_skipped_not_copied() {
+        use dash_sdk::dpp::dashcore::Network;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conn = Connection::open(dir.path().join("data.db")).expect("open legacy db");
+        create_legacy_wallet_table_without_core_name(&conn);
+        let network = Network::Testnet;
+
+        // Good row: valid 64-byte seed + decodable xpub → hydrates → imports.
+        let good_hash: crate::model::wallet::WalletSeedHash = [0x01; 32];
+        let good_xpub = valid_xpub([0x42u8; 64], network);
+        seed_legacy_wallet_seed_row(
+            &conn,
+            &good_hash,
+            &[0x42u8; 64],
+            &[],
+            &[],
+            &good_xpub,
+            None,
+            false,
+            network,
+        );
+
+        // Adversarial (a): empty master xpub — copy accepts it today, hydration
+        // drops it via `reconstruct_from_envelope`.
+        let empty_xpub_hash: crate::model::wallet::WalletSeedHash = [0x02; 32];
+        seed_legacy_wallet_seed_row(
+            &conn,
+            &empty_xpub_hash,
+            &[0x55u8; 64],
+            &[],
+            &[],
+            &[],
+            None,
+            false,
+            network,
+        );
+
+        // Adversarial (b): decodable xpub but a 32-byte unprotected seed —
+        // hydration drops it via `wallet_from_envelope`'s length check.
+        let short_seed_hash: crate::model::wallet::WalletSeedHash = [0x03; 32];
+        let short_xpub = valid_xpub([0x11u8; 64], network);
+        seed_legacy_wallet_seed_row(
+            &conn,
+            &short_seed_hash,
+            &[0x66u8; 32],
+            &[],
+            &[],
+            &short_xpub,
+            None,
+            false,
+            network,
+        );
+
+        let mut imported = Vec::new();
+        let outcome = migrate_wallet_seeds_rows_from_conn(
+            &conn,
+            |seed_hash, _envelope| {
+                imported.push(seed_hash);
+                Ok(())
+            },
+            network,
+        )
+        .expect("migrate");
+
+        assert_eq!(
+            outcome.imported, 1,
+            "only the well-formed row may be copied"
+        );
+        assert_eq!(
+            outcome.skipped_malformed, 2,
+            "both unhydratable rows are skipped, not silently copied",
+        );
+        assert_eq!(
+            outcome.failed, 0,
+            "skips are non-fatal — no abort, no per-boot wedge",
+        );
+        assert_eq!(
+            imported,
+            vec![good_hash],
+            "the skipped rows never reached the vault",
+        );
+    }
+
+    /// A protected row with a decodable xpub is NOT seed-length-checked (it
+    /// hydrates closed from its public xpub), so it copies even with an
+    /// arbitrary-length ciphertext — mirroring hydration, which only
+    /// length-checks unprotected seeds.
+    #[test]
+    fn qa_001_protected_row_with_valid_xpub_is_not_seed_length_checked() {
+        use dash_sdk::dpp::dashcore::Network;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let conn = Connection::open(dir.path().join("data.db")).expect("open legacy db");
+        create_legacy_wallet_table_without_core_name(&conn);
+        let network = Network::Testnet;
+
+        let hash: crate::model::wallet::WalletSeedHash = [0x04; 32];
+        let xpub = valid_xpub([0x77u8; 64], network);
+        // Protected: 80-byte ciphertext, 16-byte salt, 12-byte nonce.
+        seed_legacy_wallet_seed_row(
+            &conn,
+            &hash,
+            &[0xABu8; 80],
+            &[0x01; 16],
+            &[0x02; 12],
+            &xpub,
+            Some("locked"),
+            true,
+            network,
+        );
+
+        let outcome =
+            migrate_wallet_seeds_rows_from_conn(&conn, |_, _| Ok(()), network).expect("migrate");
+
+        assert_eq!(
+            outcome.imported, 1,
+            "a protected row with a valid xpub copies"
+        );
+        assert_eq!(outcome.skipped_malformed, 0);
         assert_eq!(outcome.failed, 0);
     }
 

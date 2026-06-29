@@ -1165,20 +1165,31 @@ impl AppContext {
     /// backend.
     ///
     /// The cold-start migration gates its completion sentinel on this being
-    /// zero, so a "completed" marker is never written while an unprotected
-    /// wallet is still absent from `spv/<net>/platform-wallet.sqlite`. Locked
+    /// zero, so a "completed" marker is never written while a *migratable*
+    /// unprotected wallet is still absent from `spv/<net>/platform-wallet.sqlite`.
+    /// The count is over hydrated, open wallets; soundness relies on the copy
+    /// step rejecting exactly what hydration drops (see
+    /// `migration::finish_unwire::hd_seed_row_is_hydratable`), so every wallet
+    /// that reached the vault is hydrated and counted here. Locked
     /// password-protected wallets hydrate `Closed`, are excluded by
     /// [`Self::open_wallets`], and register on their unlock gesture — requiring
     /// them would wedge the sentinel forever on a protected install. When the
     /// backend is not yet wired, every open wallet counts as unregistered.
+    ///
+    /// Fail-safe on this funds-safety path: a wallet whose `RwLock` cannot be
+    /// read counts as unregistered (it withholds the sentinel) rather than
+    /// being silently dropped, so a poisoned lock can never green-light a
+    /// premature "completed".
     pub(crate) fn unregistered_open_wallet_count(self: &Arc<Self>) -> usize {
         let open = self.open_wallets();
         let Ok(backend) = self.wallet_backend() else {
             return open.len();
         };
         open.iter()
-            .filter_map(|w| w.read().ok().map(|g| g.seed_hash()))
-            .filter(|seed_hash| backend.registered_wallet_id(seed_hash).is_none())
+            .filter(|w| match w.read() {
+                Ok(guard) => backend.registered_wallet_id(&guard.seed_hash()).is_none(),
+                Err(_) => true,
+            })
             .count()
     }
 

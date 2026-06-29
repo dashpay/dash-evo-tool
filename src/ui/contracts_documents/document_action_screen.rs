@@ -49,7 +49,7 @@ use dash_sdk::drive::query::WhereClause;
 use dash_sdk::platform::{DocumentQuery, Identifier, IdentityPublicKey};
 use dash_sdk::query_types::IndexMap;
 use eframe::epaint::Color32;
-use egui::{Context, Frame, Margin, RichText, Ui};
+use egui::{Frame, Margin, RichText, Ui};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, RwLock};
 
@@ -1561,9 +1561,11 @@ impl DocumentActionScreen {
 }
 
 impl ScreenLike for DocumentActionScreen {
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
         let mut action = add_top_panel(
-            ctx,
+            ui,
             &self.app_context,
             vec![
                 ("Contracts", AppAction::GoToMainScreen),
@@ -1573,12 +1575,12 @@ impl ScreenLike for DocumentActionScreen {
         );
 
         action |= add_left_panel(
-            ctx,
+            ui,
             &self.app_context,
             crate::ui::RootScreenType::RootScreenDocumentQuery,
         );
 
-        action |= island_central_panel(ctx, |ui| match &self.broadcast_status {
+        action |= island_central_panel(ui, |ui| match &self.broadcast_status {
             BroadcastStatus::Broadcasted => {
                 let success_message = format!("{} successful!", self.action_type.display_name());
                 let back_button = ("Back to Contracts".to_string(), AppAction::GoToMainScreen);

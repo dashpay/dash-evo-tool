@@ -1509,8 +1509,8 @@ impl AppState {
 }
 
 impl App for AppState {
-    fn ui(&mut self, _ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        let ctx = _ui.ctx().clone();
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
         let ctx = &ctx;
         // ── Graceful shutdown: intercept window close so the UI stays responsive ──
         // When the user closes the window we cancel the native close, show a banner,
@@ -1553,7 +1553,7 @@ impl App for AppState {
             }
             // Render a minimal UI that shows the shutdown banner.
             self.theme.poll_and_apply(ctx);
-            crate::ui::components::styled::island_central_panel(ctx, |_ui| {});
+            crate::ui::components::styled::island_central_panel(ui, |_ui| {});
             return;
         }
 
@@ -1852,9 +1852,9 @@ impl App for AppState {
         if self.show_welcome_screen
             && let Some(welcome_screen) = &mut self.welcome_screen
         {
-            actions.push(welcome_screen.ui(ctx));
+            actions.push(welcome_screen.ui(ui));
         } else {
-            actions.push(self.visible_screen_mut().ui(ctx));
+            actions.push(self.visible_screen_mut().ui(ui));
         };
 
         // Blocking progress overlay: above banners, below the secret prompt.

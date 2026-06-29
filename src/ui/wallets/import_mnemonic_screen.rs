@@ -7,7 +7,6 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::identities::add_existing_identity_screen::AddExistingIdentityScreen;
 use crate::ui::identities::add_new_identity_screen::AddNewIdentityScreen;
 use crate::ui::{RootScreenType, Screen, ScreenLike};
-use eframe::egui::Context;
 
 use crate::model::wallet::Wallet;
 use crate::ui::components::password_input::PasswordInput;
@@ -440,11 +439,11 @@ impl Drop for ImportMnemonicScreen {
 }
 
 impl ScreenLike for ImportMnemonicScreen {
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
         let pending_action = AppAction::None;
 
         let mut action = add_top_panel(
-            ctx,
+            ui,
             &self.app_context,
             vec![
                 ("Wallets", AppAction::GoToMainScreen),
@@ -454,12 +453,12 @@ impl ScreenLike for ImportMnemonicScreen {
         );
 
         action |= add_left_panel(
-            ctx,
+            ui,
             &self.app_context,
             crate::ui::RootScreenType::RootScreenWalletsBalances,
         );
 
-        action |= island_central_panel(ctx, |ui| {
+        action |= island_central_panel(ui, |ui| {
             let mut inner_action = AppAction::None;
 
             // Show success screen if wallet was imported

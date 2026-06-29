@@ -357,7 +357,9 @@ impl ScreenLike for RegisterDpnsNameScreen {
         }
     }
 
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
         // Build breadcrumbs based on where we came from
         let breadcrumbs = match self.source {
             RegisterDpnsNameSource::Dpns => vec![
@@ -378,18 +380,18 @@ impl ScreenLike for RegisterDpnsNameScreen {
             ],
         };
 
-        let mut action = add_top_panel(ctx, &self.app_context, breadcrumbs, vec![]);
+        let mut action = add_top_panel(ui, &self.app_context, breadcrumbs, vec![]);
 
         // Use the appropriate left panel highlight based on source
         let root_screen = match self.source {
             RegisterDpnsNameSource::Dpns => crate::ui::RootScreenType::RootScreenDPNSActiveContests,
             RegisterDpnsNameSource::Identities => crate::ui::RootScreenType::RootScreenIdentities,
         };
-        action |= add_left_panel(ctx, &self.app_context, root_screen);
+        action |= add_left_panel(ui, &self.app_context, root_screen);
 
         // Don't show the tools/dpns subscreen chooser panels for this screen
 
-        action |= island_central_panel(ctx, |ui| {
+        action |= island_central_panel(ui, |ui| {
             let mut inner_action = AppAction::None;
 
             egui::ScrollArea::vertical()

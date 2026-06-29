@@ -173,23 +173,24 @@ fn add_connection_indicator(ui: &mut Ui, app_context: &Arc<AppContext>) -> AppAc
 }
 
 pub fn add_top_panel(
-    ctx: &Context,
+    ui: &mut Ui,
     app_context: &Arc<AppContext>,
     location: Vec<(&str, AppAction)>,
     right_buttons: Vec<(&str, DesiredAppAction)>,
 ) -> AppAction {
+    let ctx = ui.ctx().clone();
+    let ctx = &ctx;
     let mut action = AppAction::None;
     let dark_mode = ctx.global_style().visuals.dark_mode;
     let network_accent = DashColors::network_accent(app_context.network, dark_mode);
 
-    #[allow(deprecated)]
     Panel::top("top_panel")
         .frame(
             Frame::new()
                 .fill(DashColors::background(dark_mode))
                 .inner_margin(Margin::same(10)), // 10px margin on all sides
         )
-        .show(ctx, |ui| {
+        .show(ui, |ui| {
             // Create an island panel with rounded edges
             Frame::new()
                 .fill(DashColors::surface(dark_mode))

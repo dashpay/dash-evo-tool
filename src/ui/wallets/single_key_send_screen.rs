@@ -829,16 +829,18 @@ impl SingleKeyWalletSendScreen {
 }
 
 impl ScreenLike for SingleKeyWalletSendScreen {
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
         let mut action = add_top_panel(
-            ctx,
+            ui,
             &self.app_context,
             vec![("Wallets", AppAction::PopScreen), ("Send", AppAction::None)],
             vec![],
         );
 
         action |= add_left_panel(
-            ctx,
+            ui,
             &self.app_context,
             RootScreenType::RootScreenWalletsBalances,
         );
@@ -846,7 +848,7 @@ impl ScreenLike for SingleKeyWalletSendScreen {
         // Single-key wallets are unsupported in this version.
         let is_rpc_mode = false;
 
-        action |= island_central_panel(ctx, |ui| {
+        action |= island_central_panel(ui, |ui| {
             let mut inner_action = AppAction::None;
             let dark_mode = ui.style().visuals.dark_mode;
 

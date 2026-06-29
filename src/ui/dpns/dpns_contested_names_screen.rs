@@ -7,7 +7,7 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
 use dash_sdk::platform::Identifier;
-use eframe::egui::{self, Button, Color32, ComboBox, Context, Label, RichText, Ui};
+use eframe::egui::{self, Button, Color32, ComboBox, Label, RichText, Ui};
 use egui_extras::{Column, TableBuilder};
 use itertools::Itertools;
 
@@ -1913,7 +1913,9 @@ impl ScreenLike for DPNSScreen {
         }
     }
 
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
         let has_identity_that_can_register = !self.user_identities.is_empty();
         let has_active_contests = {
             let guard = self.contested_names.lock().unwrap();
@@ -1995,7 +1997,7 @@ impl ScreenLike for DPNSScreen {
         }
 
         let mut action = add_top_panel(
-            ctx,
+            ui,
             &self.app_context,
             vec![("DPNS", AppAction::None)],
             right_buttons,
@@ -2010,19 +2012,19 @@ impl ScreenLike for DPNSScreen {
 
         // Left panel
         action |= add_left_panel(
-            ctx,
+            ui,
             &self.app_context,
             RootScreenType::RootScreenToolsPlatformInfoScreen,
         );
 
         // Tools area chooser
-        action |= add_tools_subscreen_chooser_panel(ctx, self.app_context.as_ref());
+        action |= add_tools_subscreen_chooser_panel(ui, self.app_context.as_ref());
 
         // DPNS subscreen chooser
-        action |= add_dpns_subscreen_chooser_panel(ctx, self.app_context.as_ref());
+        action |= add_dpns_subscreen_chooser_panel(ui, self.app_context.as_ref());
 
         // Main panel
-        action |= island_central_panel(ctx, |ui| {
+        action |= island_central_panel(ui, |ui| {
             let mut inner_action = AppAction::None;
             // Bulk-schedule ephemeral popup
             if self.show_bulk_schedule_popup {

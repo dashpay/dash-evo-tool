@@ -45,7 +45,7 @@ use dash_sdk::dpp::prelude::TimestampMillisInterval;
 use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::Start;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
 use dash_sdk::query_types::IndexMap;
-use eframe::egui::{self, Color32, Context, Ui};
+use eframe::egui::{self, Color32, Ui};
 use crate::ui::theme::{DashColors, ResponseExt};
 use egui::{Checkbox, ColorImage, ComboBox, Response, RichText, TextEdit, TextureHandle};
 use enum_iterator::Sequence;
@@ -2798,7 +2798,9 @@ impl ScreenLike for TokensScreen {
         );
     }
 
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
         let mut action = AppAction::None;
 
         // Build top-right buttons
@@ -2828,7 +2830,7 @@ impl ScreenLike for TokensScreen {
                 .unwrap_or_else(|| token_id.to_string(Encoding::Base58));
 
             action |= add_top_panel(
-                ctx,
+                ui,
                 &self.app_context,
                 vec![
                     ("Tokens", AppAction::Custom("Back to tokens".to_string())),
@@ -2847,7 +2849,7 @@ impl ScreenLike for TokensScreen {
             );
 
             action |= add_top_panel(
-                ctx,
+                ui,
                 &self.app_context,
                 vec![
                     (
@@ -2860,7 +2862,7 @@ impl ScreenLike for TokensScreen {
             );
         } else {
             action |= add_top_panel(
-                ctx,
+                ui,
                 &self.app_context,
                 vec![("Tokens", AppAction::None)],
                 right_buttons.clone(),
@@ -2871,21 +2873,18 @@ impl ScreenLike for TokensScreen {
         match self.tokens_subscreen {
             TokensSubscreen::MyTokens => {
                 action |= add_left_panel(
-                    ctx,
+                    ui,
                     &self.app_context,
                     RootScreenType::RootScreenMyTokenBalances,
                 );
             }
             TokensSubscreen::SearchTokens => {
-                action |= add_left_panel(
-                    ctx,
-                    &self.app_context,
-                    RootScreenType::RootScreenTokenSearch,
-                );
+                action |=
+                    add_left_panel(ui, &self.app_context, RootScreenType::RootScreenTokenSearch);
             }
             TokensSubscreen::TokenCreator => {
                 action |= add_left_panel(
-                    ctx,
+                    ui,
                     &self.app_context,
                     RootScreenType::RootScreenTokenCreator,
                 );
@@ -2893,10 +2892,10 @@ impl ScreenLike for TokensScreen {
         }
 
         // Subscreen chooser
-        action |= add_tokens_subscreen_chooser_panel(ctx, self.app_context.as_ref());
+        action |= add_tokens_subscreen_chooser_panel(ui, self.app_context.as_ref());
 
         // Main panel
-        action |= island_central_panel(ctx, |ui| {
+        action |= island_central_panel(ui, |ui| {
             egui::ScrollArea::vertical()
                 .show(ui, |ui| {
                     let mut inner_action = AppAction::None;

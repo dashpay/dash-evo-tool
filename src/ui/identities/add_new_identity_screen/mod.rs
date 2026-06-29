@@ -35,11 +35,10 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
 use dash_sdk::platform::Identifier;
-use eframe::egui::Context;
-use egui::ahash::HashSet;
 use egui::{Align, Button, Color32, ComboBox, ScrollArea, Ui};
 use egui_extras::{Column, TableBuilder};
 use std::collections::HashMap;
+use std::collections::HashSet;
 
 use crate::model::amount::Amount;
 use crate::ui::components::amount_input::AmountInput;
@@ -1174,9 +1173,11 @@ impl ScreenLike for AddNewIdentityScreen {
         false
     }
 
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
         let mut action = add_top_panel(
-            ctx,
+            ui,
             &self.app_context,
             vec![
                 ("Identities", AppAction::GoToMainScreen),
@@ -1186,12 +1187,12 @@ impl ScreenLike for AddNewIdentityScreen {
         );
 
         action |= add_left_panel(
-            ctx,
+            ui,
             &self.app_context,
             crate::ui::RootScreenType::RootScreenIdentities,
         );
 
-        action |= island_central_panel(ctx, |ui| {
+        action |= island_central_panel(ui, |ui| {
             let mut inner_action = AppAction::None;
 
             ScrollArea::vertical().show(ui, |ui| {
@@ -1388,10 +1389,9 @@ impl ScreenLike for AddNewIdentityScreen {
 
         // Show the info popup if requested
         if let Some(show_pop_up_info_text) = self.show_pop_up_info.clone() {
-            #[allow(deprecated)]
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
-                .show(ctx, |ui| {
+                .show(ui, |ui| {
                     let mut popup = InfoPopup::new("Identity Information", &show_pop_up_info_text);
                     if popup.show(ui).inner {
                         self.show_pop_up_info = None;

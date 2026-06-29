@@ -1079,7 +1079,9 @@ impl ScreenLike for IdentitiesScreen {
         }
     }
 
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
         let mut right_buttons = if !self.app_context.has_wallet.load(Ordering::Relaxed) {
             vec![
                 (
@@ -1120,20 +1122,20 @@ impl ScreenLike for IdentitiesScreen {
         }
 
         let mut action = add_top_panel(
-            ctx,
+            ui,
             &self.app_context,
             vec![("Identities", AppAction::None)],
             right_buttons,
         );
 
-        action |= add_left_panel(ctx, &self.app_context, RootScreenType::RootScreenIdentities);
+        action |= add_left_panel(ui, &self.app_context, RootScreenType::RootScreenIdentities);
 
         let identities_vec = {
             let guard = self.identities.lock().unwrap();
             guard.values().cloned().collect::<Vec<_>>()
         };
 
-        action |= island_central_panel(ctx, |ui| {
+        action |= island_central_panel(ui, |ui| {
             let mut inner_action = AppAction::None;
             if identities_vec.is_empty() {
                 self.render_no_identities_view(ui);

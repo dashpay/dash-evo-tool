@@ -21,7 +21,7 @@ use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::dash_spv::sync::{ProgressPercentage, SyncProgress as SpvSyncProgress, SyncState};
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::TimestampMillis;
-use eframe::egui::{self, Context, Ui};
+use eframe::egui::{self, Ui};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -1465,21 +1465,21 @@ impl ScreenLike for NetworkChooserScreen {
         self.theme_preference = settings.theme_mode;
     }
 
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
         let mut action = add_top_panel(
-            ctx,
+            ui,
             self.current_app_context(),
             vec![("Networks", AppAction::None)],
             vec![],
         );
 
         action |= add_left_panel(
-            ctx,
+            ui,
             self.current_app_context(),
             RootScreenType::RootScreenNetworkChooser,
         );
 
-        action |= island_central_panel(ctx, |ui| {
+        action |= island_central_panel(ui, |ui| {
             egui::ScrollArea::vertical()
                 .auto_shrink([true; 2])
                 .show(ui, |ui| self.render_network_table(ui))

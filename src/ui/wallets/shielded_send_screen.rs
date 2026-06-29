@@ -12,7 +12,7 @@ use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
-use eframe::egui::{self, Context};
+use eframe::egui::{self};
 use egui::{Color32, RichText};
 use std::sync::Arc;
 
@@ -84,11 +84,11 @@ impl ScreenLike for ShieldedSendScreen {
         self.max_balance = self.app_context.shielded_balance_credits(&self.seed_hash);
     }
 
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
         let mut action = AppAction::None;
 
         action |= add_top_panel(
-            ctx,
+            ui,
             &self.app_context,
             vec![
                 ("Wallets", AppAction::PopScreen),
@@ -98,12 +98,12 @@ impl ScreenLike for ShieldedSendScreen {
         );
 
         action |= add_left_panel(
-            ctx,
+            ui,
             &self.app_context,
             RootScreenType::RootScreenWalletsBalances,
         );
 
-        island_central_panel(ctx, |ui| {
+        island_central_panel(ui, |ui| {
             ui.heading("Send (Private)");
             ui.add_space(10.0);
             ui.label("Transfer credits privately within the shielded pool.");

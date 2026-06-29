@@ -6,7 +6,7 @@ use crate::ui::components::styled::GradientButton;
 use crate::ui::theme::{DashColors, ResponseExt, Shadow, Shape, Spacing};
 use dash_sdk::dashcore_rpc::dashcore::Network;
 use eframe::epaint::Margin;
-use egui::{Context, Frame, Image, Panel, RichText, TextureHandle};
+use egui::{Context, Frame, Image, Panel, RichText, TextureHandle, Ui};
 use egui_extras::{Size, StripBuilder};
 use rust_embed::RustEmbed;
 use std::sync::Arc;
@@ -110,10 +110,12 @@ pub fn load_svg_icon(ctx: &Context, path: &str, width: u32, height: u32) -> Opti
 }
 
 pub fn add_left_panel(
-    ctx: &Context,
+    ui: &mut Ui,
     app_context: &Arc<AppContext>,
     selected_screen: RootScreenType,
 ) -> AppAction {
+    let ctx = ui.ctx().clone();
+    let ctx = &ctx;
     let mut action = AppAction::None;
 
     // Define the button details directly in this function.
@@ -166,17 +168,16 @@ pub fn add_left_panel(
 
     let dark_mode = ctx.global_style().visuals.dark_mode;
 
-    #[allow(deprecated)]
     Panel::left("left_panel")
-        .min_width(140.0)
-        .max_width(140.0)
+        .min_size(140.0)
+        .max_size(140.0)
         .resizable(false)
         .frame(
             Frame::new()
                 .fill(DashColors::background(dark_mode))
                 .inner_margin(Margin::symmetric(10, 10)), // Add margins for island effect
         )
-        .show(ctx, |ui| {
+        .show(ui, |ui| {
             // Create an island panel with rounded edges
             Frame::new()
                 .fill(DashColors::surface(dark_mode))

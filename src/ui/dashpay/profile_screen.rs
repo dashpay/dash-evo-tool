@@ -1166,10 +1166,9 @@ impl ProfileScreen {
 
         // Show info popup if requested
         if self.show_info_popup {
-            #[allow(deprecated)]
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
-                .show(ui.ctx(), |ui| {
+                .show(ui, |ui| {
                     let mut popup =
                         InfoPopup::new("Profile Guidelines", PROFILE_GUIDELINES_INFO_TEXT);
                     if popup.show(ui).inner {
@@ -1180,10 +1179,9 @@ impl ProfileScreen {
 
         // Show avatar info popup if requested
         if self.show_avatar_info_popup {
-            #[allow(deprecated)]
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
-                .show(ui.ctx(), |ui| {
+                .show(ui, |ui| {
                     let mut popup = InfoPopup::new("Avatar Image Guidelines", AVATAR_URL_INFO_TEXT);
                     if popup.show(ui).inner {
                         self.show_avatar_info_popup = false;

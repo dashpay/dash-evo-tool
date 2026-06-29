@@ -9,7 +9,7 @@ use crate::ui::theme::DashColors;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use dash_sdk::dpp::serialization::PlatformDeserializableWithPotentialValidationFromVersionedStructure;
 use dash_sdk::platform::DataContract;
-use eframe::egui::{Color32, Context, Frame, Margin, RichText, ScrollArea, TextEdit, Ui};
+use eframe::egui::{Color32, Frame, Margin, RichText, ScrollArea, TextEdit, Ui};
 use std::sync::Arc;
 // ======================= 1.  Data & helpers =======================
 
@@ -178,22 +178,22 @@ impl crate::ui::ScreenLike for ContractVisualizerScreen {
         // Local parse errors are set directly via self.parse_status.
     }
     fn display_task_result(&mut self, _r: BackendTaskSuccessResult) {}
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
         let mut action = add_top_panel(
-            ctx,
+            ui,
             &self.app_context,
             vec![("Tools", AppAction::None)],
             vec![],
         );
         action |= add_left_panel(
-            ctx,
+            ui,
             &self.app_context,
             crate::ui::RootScreenType::RootScreenToolsContractVisualizerScreen,
         );
-        action |= add_tools_subscreen_chooser_panel(ctx, self.app_context.as_ref());
+        action |= add_tools_subscreen_chooser_panel(ui, self.app_context.as_ref());
 
         /* ---------- central panel ---------- */
-        action |= island_central_panel(ctx, |ui| {
+        action |= island_central_panel(ui, |ui| {
             self.show_input(ui);
             self.show_output(ui);
             AppAction::None

@@ -23,7 +23,7 @@ use dash_sdk::dpp::data_contract::document_type::{DocumentType, Index};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::Start;
 use dash_sdk::platform::{Document, DocumentQuery, Identifier};
-use egui::{CentralPanel, Context, Frame, Margin, ScrollArea, Stroke, Ui};
+use egui::{CentralPanel, Frame, Margin, ScrollArea, Stroke, Ui};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -579,7 +579,9 @@ impl ScreenLike for DocumentQueryScreen {
         }
     }
 
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
         let load_contract_button = (
             "Load Contracts",
             DesiredAppAction::AddScreenType(Box::new(ScreenType::AddContracts)),
@@ -623,7 +625,7 @@ impl ScreenLike for DocumentQueryScreen {
         let mut action = AppAction::None;
         if self.app_context.network == Network::Mainnet {
             action |= add_top_panel(
-                ctx,
+                ui,
                 &self.app_context,
                 vec![("Contracts", AppAction::None)],
                 vec![
@@ -640,7 +642,7 @@ impl ScreenLike for DocumentQueryScreen {
             );
         } else {
             action |= add_top_panel(
-                ctx,
+                ui,
                 &self.app_context,
                 vec![("Contracts", AppAction::None)],
                 vec![
@@ -659,13 +661,13 @@ impl ScreenLike for DocumentQueryScreen {
         }
 
         action |= add_left_panel(
-            ctx,
+            ui,
             &self.app_context,
             RootScreenType::RootScreenDocumentQuery,
         );
 
         action |= add_contract_chooser_panel(
-            ctx,
+            ui,
             &mut self.contract_search_term,
             &self.app_context,
             &mut self.selected_data_contract,
@@ -690,7 +692,6 @@ impl ScreenLike for DocumentQueryScreen {
         let dark_mode = ctx.global_style().visuals.dark_mode;
 
         action |= {
-            #[allow(deprecated)]
             CentralPanel::default()
                 .frame(
                     Frame::new()
@@ -702,7 +703,7 @@ impl ScreenLike for DocumentQueryScreen {
                             bottom: 0, // Less space on the bottom
                         }),
                 )
-                .show(ctx, |ui| {
+                .show(ui, |ui| {
                     // Create an island panel with rounded edges
                     Frame::new()
                         .fill(DashColors::surface(dark_mode))

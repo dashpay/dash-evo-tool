@@ -1323,8 +1323,8 @@ mod tests {
     /// Drives one render pass over a bare context so `ctx.data`-level effects
     /// (log-once, focus) can be inspected without a kittest harness.
     fn render_once(ctx: &egui::Context) {
-        #[allow(deprecated)]
-        let _ = ctx.run(egui::RawInput::default(), |ctx| {
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let ctx = ui.ctx();
             ProgressOverlay::render_global(ctx, false);
         });
     }
@@ -1542,8 +1542,8 @@ mod tests {
             ],
             ..Default::default()
         };
-        #[allow(deprecated)]
-        let _ = ctx.run(raw, |ctx| {
+        let _ = ctx.run_ui(raw, |ui| {
+            let ctx = ui.ctx();
             ProgressOverlay::claim_input(ctx);
             ctx.input(|i| {
                 leaked.set(i.events.iter().any(|e| {
@@ -1620,8 +1620,8 @@ mod tests {
             events: vec![key_down(egui::Key::Enter), key_down(egui::Key::Space)],
             ..Default::default()
         };
-        #[allow(deprecated)]
-        let _ = ctx.run(raw, |ctx| {
+        let _ = ctx.run_ui(raw, |ui| {
+            let ctx = ui.ctx();
             ProgressOverlay::claim_input(ctx);
             ctx.input(|i| {
                 leaked.set(i.events.iter().any(|e| {
@@ -1657,8 +1657,8 @@ mod tests {
             events: vec![egui::Event::Text("hi".to_string())],
             ..Default::default()
         };
-        #[allow(deprecated)]
-        let _ = ctx.run(raw, |ctx| {
+        let _ = ctx.run_ui(raw, |ui| {
+            let ctx = ui.ctx();
             ProgressOverlay::claim_input(ctx);
             ctx.input(|i| {
                 kept.set(i.events.iter().any(|e| matches!(e, egui::Event::Text(_))));
@@ -1750,9 +1750,8 @@ mod tests {
         // No interaction has happened yet.
         assert!(overlay.current_value().is_none());
 
-        #[allow(deprecated)]
-        let _ = ctx.run(egui::RawInput::default(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
                 let response = overlay.show(ui).inner;
                 // A frame with no click is unchanged, valid, and value-free.
                 assert!(!response.has_changed());
@@ -1894,9 +1893,8 @@ mod tests {
         let ctx = egui::Context::default();
         let mut overlay = ProgressOverlay::new().with_description("Working.");
         overlay.clear();
-        #[allow(deprecated)]
-        let _ = ctx.run(egui::RawInput::default(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
+        let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+            egui::CentralPanel::default().show(ui, |ui| {
                 let response = overlay.show(ui).inner;
                 assert!(!response.has_changed());
                 assert!(response.changed_value().is_none());

@@ -8,7 +8,7 @@ use dash_sdk::dpp::data_contract::associated_token::token_configuration_conventi
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::DataContract;
 use dash_sdk::platform::Identifier;
-use eframe::egui::{self, Context, Ui};
+use eframe::egui::{self, Ui};
 
 use crate::ui::theme::ComponentStyles;
 
@@ -307,9 +307,9 @@ impl ScreenLike for AddTokenByIdScreen {
         // nothing to refresh
     }
 
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
         let mut action = add_top_panel(
-            ctx,
+            ui,
             &self.app_context,
             vec![
                 ("Tokens", AppAction::GoToMainScreen),
@@ -320,15 +320,15 @@ impl ScreenLike for AddTokenByIdScreen {
 
         // Left panel
         action |= add_left_panel(
-            ctx,
+            ui,
             &self.app_context,
             crate::ui::RootScreenType::RootScreenMyTokenBalances,
         );
 
         // Subscreen chooser
-        action |= add_tokens_subscreen_chooser_panel(ctx, &self.app_context);
+        action |= add_tokens_subscreen_chooser_panel(ui, &self.app_context);
 
-        action |= island_central_panel(ctx, |ui| {
+        action |= island_central_panel(ui, |ui| {
             // If we are in the "Complete" status, just show success screen
             if self.status == AddTokenStatus::Complete {
                 return self.show_success_screen(ui);

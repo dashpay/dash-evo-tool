@@ -11,7 +11,7 @@ use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::dpp::dashcore::OutPoint;
 use dash_sdk::dpp::prelude::AssetLockProof;
-use eframe::egui::{self, Context, Ui};
+use eframe::egui::{self, Ui};
 use egui::{Color32, Frame, Margin, RichText};
 use platform_wallet::wallet::asset_lock::tracked::TrackedAssetLock;
 use std::sync::Arc;
@@ -273,9 +273,9 @@ impl AssetLockDetailScreen {
 }
 
 impl ScreenLike for AssetLockDetailScreen {
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
         let mut action = add_top_panel(
-            ctx,
+            ui,
             &self.app_context,
             vec![
                 (
@@ -290,7 +290,7 @@ impl ScreenLike for AssetLockDetailScreen {
         );
 
         action |= add_left_panel(
-            ctx,
+            ui,
             &self.app_context,
             RootScreenType::RootScreenWalletsBalances,
         );
@@ -304,7 +304,7 @@ impl ScreenLike for AssetLockDetailScreen {
             action |= AppAction::BackendTask(task);
         }
 
-        action |= island_central_panel(ctx, |ui| {
+        action |= island_central_panel(ui, |ui| {
             let mut inner_action = AppAction::None;
             let dark_mode = ui.style().visuals.dark_mode;
 

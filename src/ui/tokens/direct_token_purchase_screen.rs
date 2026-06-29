@@ -6,7 +6,7 @@ use dash_sdk::dpp::data_contract::associated_token::token_configuration::accesso
 use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::accessors::v0::TokenConfigurationConventionV0Getters;
 use dash_sdk::dpp::fee::Credits;
 use dash_sdk::dpp::tokens::token_pricing_schedule::TokenPricingSchedule;
-use eframe::egui::{self, Context, Ui};
+use eframe::egui::{self, Ui};
 use egui::RichText;
 
 use super::tokens_screen::IdentityTokenInfo;
@@ -397,10 +397,12 @@ impl ScreenLike for PurchaseTokenScreen {
         }
     }
 
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
         // Build a top panel
         let mut action = add_top_panel(
-            ctx,
+            ui,
             &self.app_context,
             vec![
                 ("Tokens", AppAction::GoToMainScreen),
@@ -412,15 +414,15 @@ impl ScreenLike for PurchaseTokenScreen {
 
         // Left panel
         action |= add_left_panel(
-            ctx,
+            ui,
             &self.app_context,
             crate::ui::RootScreenType::RootScreenMyTokenBalances,
         );
 
         // Subscreen chooser
-        action |= add_tokens_subscreen_chooser_panel(ctx, &self.app_context);
+        action |= add_tokens_subscreen_chooser_panel(ui, &self.app_context);
 
-        island_central_panel(ctx, |ui| {
+        island_central_panel(ui, |ui| {
             let dark_mode = ui.style().visuals.dark_mode;
             // If we are in the "Complete" status, just show success screen
             if self.status == PurchaseTokensStatus::Complete {

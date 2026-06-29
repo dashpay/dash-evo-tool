@@ -15,7 +15,7 @@ use dash_sdk::dpp::data_contract::{
 };
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::serialization::PlatformSerializableWithPlatformVersion;
-use egui::{Color32, Context as EguiContext, Frame, Margin, Panel, RichText};
+use egui::{Color32, Frame, Margin, Panel, RichText, Ui};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::error;
@@ -145,7 +145,7 @@ fn render_collapsing_header(
 
 #[allow(clippy::too_many_arguments)]
 pub fn add_contract_chooser_panel(
-    ctx: &EguiContext,
+    ui: &mut Ui,
     current_search_term: &mut String,
     app_context: &Arc<AppContext>,
     selected_data_contract: &mut QualifiedContract,
@@ -156,6 +156,8 @@ pub fn add_contract_chooser_panel(
     pending_fields_selection: &mut HashMap<String, bool>,
     chooser_state: &mut ContractChooserState,
 ) -> AppAction {
+    let ctx = ui.ctx().clone();
+    let ctx = &ctx;
     let mut action = AppAction::None;
 
     // Retrieve the list of known contracts
@@ -180,17 +182,16 @@ pub fn add_contract_chooser_panel(
 
     let dark_mode = ctx.global_style().visuals.dark_mode;
 
-    #[allow(deprecated)]
     Panel::left("contract_chooser_panel")
         // Let the user resize this panel horizontally
         .resizable(true)
-        .default_width(270.0)
+        .default_size(270.0)
         .frame(
             Frame::new()
                 .fill(DashColors::background(dark_mode))
                 .inner_margin(Margin::symmetric(10, 10)), // Add margins for island effect
         )
-        .show(ctx, |ui| {
+        .show(ui, |ui| {
             // Fill the entire available height
             let available_height = ui.available_height();
 

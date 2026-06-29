@@ -2240,7 +2240,9 @@ impl WalletsBalancesScreen {
 }
 
 impl ScreenLike for WalletsBalancesScreen {
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
         // Check for pending platform balance refresh (triggered after transfers)
         let pending_refresh_action = if let Some(seed_hash) =
             self.pending_platform_balance_refresh.take()
@@ -2315,19 +2317,19 @@ impl ScreenLike for WalletsBalancesScreen {
             ));
         }
         let mut action = add_top_panel(
-            ctx,
+            ui,
             &self.app_context,
             vec![("Wallets", AppAction::None)],
             right_buttons,
         );
 
         action |= add_left_panel(
-            ctx,
+            ui,
             &self.app_context,
             RootScreenType::RootScreenWalletsBalances,
         );
 
-        action |= island_central_panel(ctx, |ui| {
+        action |= island_central_panel(ui, |ui| {
             let mut inner_action = AppAction::None;
             let dark_mode = ui.style().visuals.dark_mode;
 

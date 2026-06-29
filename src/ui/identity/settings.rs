@@ -654,10 +654,10 @@ impl SettingsTab {
         app_context: &Arc<AppContext>,
         profiles: &mut super::profile_cache::ProfileCache,
     ) {
-        let identities = app_context
-            .load_local_qualified_identities()
-            .unwrap_or_default();
-        let incoming = identities.first().cloned();
+        // Read the app-scoped active identity (selected → first → none), not
+        // `.first()`, so the Settings tab agrees with the breadcrumb/hub and
+        // does not flip-flop across frames (D4).
+        let incoming = app_context.resolve_selected_identity();
 
         let changed = match (&self.selected_identity, &incoming) {
             (Some(a), Some(b)) => a.identity.id() != b.identity.id(),

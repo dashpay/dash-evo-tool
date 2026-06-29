@@ -6,6 +6,7 @@
 //!
 //! See `docs/ai-design/2026-04-23-identity-hub-impl/04-dev-plan.md` Task T3.
 
+use super::breadcrumb_switcher::{self, BreadcrumbEffect};
 use super::identity_hub_tab_bar::IdentityHubTabBar;
 use crate::app::AppAction;
 use crate::backend_task::BackendTaskSuccessResult;
@@ -14,10 +15,12 @@ use crate::context::AppContext;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::message_banner::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::components::styled::island_central_panel;
-use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::theme::DashColors;
-use crate::ui::{MessageType, RootScreenType, ScreenLike};
-use eframe::egui::{self, Context, RichText};
+use crate::ui::components::top_panel::add_top_panel_with_breadcrumb;
+use crate::ui::state::hub_selection::{HubSelection, HubView, effective_view};
+use crate::ui::{MessageType, RootScreenType, ScreenLike, ScreenType};
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::platform::Identifier;
+use eframe::egui::{self, Context};
 use std::sync::Arc;
 
 use super::home::HomeState;
@@ -58,6 +61,9 @@ pub struct IdentityHubScreen {
     /// removed in the platform-wallet migration). Read by the Home, Contacts,
     /// and Settings tabs; loads are dispatched after rendering each frame.
     profile_cache: super::profile_cache::ProfileCache,
+    /// Breadcrumb-switcher view state (picker override + dropdown search
+    /// buffers). The active identity itself is app-scoped on `AppContext`.
+    selection: HubSelection,
 }
 
 impl IdentityHubScreen {
@@ -74,6 +80,7 @@ impl IdentityHubScreen {
             settings_tab: SettingsTab::new(),
             contacts_state: super::contacts::ContactsState::default(),
             profile_cache: super::profile_cache::ProfileCache::default(),
+            selection: HubSelection::default(),
         }
     }
 
@@ -115,6 +122,44 @@ impl IdentityHubScreen {
     pub fn select_tab(&mut self, tab: IdentityHubTab) {
         self.selected_tab = tab;
     }
+
+    /// Apply a breadcrumb-switcher effect: wallet / identity switches mutate the
+    /// app-scoped selection and reset identity-scoped caches; add-flows route to
+    /// the existing screens.
+    fn apply_breadcrumb_effect(&mut self, effect: BreadcrumbEffect) -> AppAction {
+        match effect {
+            BreadcrumbEffect::None => AppAction::None,
+            BreadcrumbEffect::OpenPicker => {
+                self.selection.open_picker();
+                AppAction::None
+            }
+            BreadcrumbEffect::SwitchWallet(hash) => {
+                self.app_context.set_selected_hd_wallet(Some(hash));
+                self.selection.clear_picker_override();
+                self.contacts_state.reset();
+                self.profile_cache.reset();
+                AppAction::None
+            }
+            BreadcrumbEffect::SelectIdentity(id) => {
+                self.app_context.set_selected_identity(Some(id));
+                self.selection.clear_picker_override();
+                self.contacts_state.reset();
+                self.profile_cache.reset();
+                AppAction::None
+            }
+            BreadcrumbEffect::AddWallet => {
+                AppAction::SetMainScreen(RootScreenType::RootScreenWalletsBalances)
+            }
+            // The bulk-create flow is not wired yet; route to the single-create
+            // screen so the dev entry is functional in the interim.
+            BreadcrumbEffect::AddIdentityCreate | BreadcrumbEffect::CreateTestIdentities => {
+                AppAction::AddScreen(ScreenType::AddNewIdentity.create_screen(&self.app_context))
+            }
+            BreadcrumbEffect::AddIdentityLoad => AppAction::AddScreen(
+                ScreenType::AddExistingIdentity.create_screen(&self.app_context),
+            ),
+        }
+    }
 }
 
 impl ScreenLike for IdentityHubScreen {
@@ -125,6 +170,7 @@ impl ScreenLike for IdentityHubScreen {
         self.load_error_banner.take_and_clear();
         self.contacts_state.reset();
         self.profile_cache.reset();
+        self.selection.clear_searches();
     }
 
     fn refresh_on_arrival(&mut self) {
@@ -136,58 +182,75 @@ impl ScreenLike for IdentityHubScreen {
         let ctx = &ctx;
         let mut action = AppAction::None;
 
-        action |= add_top_panel(
+        // Top panel hosts the three-segment breadcrumb switcher on every
+        // landing. The switcher is a pure component returning a typed effect;
+        // the hub applies it below.
+        let app_context = self.app_context.clone();
+        let selection = &mut self.selection;
+        let mut breadcrumb_effect = BreadcrumbEffect::None;
+        action |= add_top_panel_with_breadcrumb(
             ui,
             &self.app_context,
-            vec![("Identities", AppAction::None)],
+            |ui| {
+                breadcrumb_effect = breadcrumb_switcher::render(ui, &app_context, selection);
+                AppAction::None
+            },
             vec![],
         );
 
         action |= add_left_panel(ui, &self.app_context, RootScreenType::RootScreenIdentityHub);
 
+        // Resolve the surface: onboarding (no identities) / picker (choose one)
+        // / home (the resolved active identity). `landing()` keeps the
+        // load-error banner behaviour and a last-known-good fallback.
         let landing = self.landing(ctx);
+        let view = if matches!(landing, HubLanding::Onboarding) {
+            HubView::Onboarding
+        } else {
+            let identities = self
+                .app_context
+                .load_local_qualified_identities()
+                .unwrap_or_default();
+            let active = self.app_context.selected_identity_id();
+            let has_explicit =
+                active.is_some_and(|id| identities.iter().any(|qi| qi.identity.id() == id));
+            effective_view(
+                identities.len(),
+                has_explicit,
+                self.selection.picker_override(),
+            )
+        };
 
+        let mut picked_identity: Option<String> = None;
         action |= island_central_panel(ui, |ui| {
-            let dark_mode = ui.ctx().global_style().visuals.dark_mode;
-
-            match landing {
-                HubLanding::Onboarding => super::onboarding::render(ui, &self.app_context),
-                HubLanding::Home | HubLanding::Picker => {
-                    // Claim the island's full width so its bordered panel reaches
-                    // the window edges; the content below stays centered.
-                    ui.set_min_width(ui.available_width());
+            // Claim the island's full width so its bordered panel reaches the
+            // window edges; the content below stays centered.
+            ui.set_min_width(ui.available_width());
+            match view {
+                HubView::Onboarding => super::onboarding::render(ui, &self.app_context),
+                HubView::Picker => {
+                    let identities = self
+                        .app_context
+                        .load_local_qualified_identities()
+                        .unwrap_or_default();
+                    super::picker::render(
+                        ui,
+                        &self.app_context,
+                        &identities,
+                        Some(&mut picked_identity),
+                    )
+                }
+                HubView::Home => {
                     // `ui.vertical_centered(...).inner` carries the tab's
-                    // `AppAction` back out — previously this closure returned
-                    // `AppAction::None` unconditionally, swallowing every
-                    // `AddScreen` / `BackendTask` produced by the tab content.
+                    // `AppAction` back out.
                     let inner = ui.vertical_centered(|ui| {
-                        ui.add_space(24.0);
-                        ui.label(
-                            RichText::new("Identities hub")
-                                .size(28.0)
-                                .color(DashColors::text_primary(dark_mode)),
-                        );
-                        ui.add_space(12.0);
-                        ui.label(
-                            RichText::new(
-                                "This new section is under active development. Use the legacy \
-                                Identities and Dashpay entries in the sidebar until the \
-                                remaining tabs ship.",
-                            )
-                            .color(DashColors::text_secondary(dark_mode)),
-                        );
-                        ui.add_space(24.0);
-
-                        // Hub tab bar (T5). Reuses the project's theme tokens
-                        // via `IdentityHubTabBar`; selection state lives on
-                        // the screen so refreshes and deep links can update
-                        // it from outside the component.
+                        // Hub tab bar; selection state lives on the screen so
+                        // refreshes and deep links can update it from outside.
                         let tab_response = IdentityHubTabBar::new(self.selected_tab).show(ui);
                         if let Some(clicked) = tab_response.clicked() {
                             if clicked != self.selected_tab {
-                                // Tab-entry transition: reset per-tab load
-                                // guards so the incoming tab re-dispatches
-                                // its initial backend task once.
+                                // Tab-entry transition: reset per-tab load guards
+                                // so the incoming tab re-dispatches once.
                                 self.contacts_state.reset();
                             }
                             self.selected_tab = clicked;
@@ -231,6 +294,18 @@ impl ScreenLike for IdentityHubScreen {
                 }
             }
         });
+
+        // A picker card click sets the active identity and routes to Home.
+        if let Some(id_str) = picked_identity
+            && let Ok(id) = Identifier::from_string_unknown_encoding(&id_str)
+        {
+            self.app_context.set_selected_identity(Some(id));
+            self.selection.clear_picker_override();
+            self.contacts_state.reset();
+            self.profile_cache.reset();
+        }
+
+        action |= self.apply_breadcrumb_effect(breadcrumb_effect);
 
         // Dispatch any profile load a tab requested this frame (single load
         // in flight; the local profile cache was removed in the platform-wallet

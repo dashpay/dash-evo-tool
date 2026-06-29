@@ -24,7 +24,7 @@ use crate::ui::components::component_trait::ComponentResponse;
 use crate::ui::theme::{DashColors, ResponseExt, Shadow, Shape, Spacing};
 use eframe::egui::{
     self, Color32, CornerRadius, FontFamily, FontId, Frame, Margin, Rect, Response, RichText,
-    Sense, Shape as EguiShape, Stroke, StrokeKind, TextStyle, Ui, vec2,
+    Sense, Shape as EguiShape, Stroke, StrokeKind, Ui,
 };
 
 /// One of the three supported identity kinds. Maps 1:1 to the project's
@@ -425,56 +425,12 @@ impl IdentityHeroCard {
     /// Paint the avatar circle (social profile set) or the type-glyph
     /// monogram (no social profile).
     fn paint_avatar_or_monogram(&self, ui: &mut Ui) {
-        let size = 96.0;
-        let (rect, _resp) = ui.allocate_exact_size(vec2(size, size), Sense::hover());
-        let painter = ui.painter();
-        let center = rect.center();
-        let radius = size * 0.5;
-
-        let ring_color = Color32::from_rgba_unmultiplied(
-            DashColors::DASH_BLUE.r(),
-            DashColors::DASH_BLUE.g(),
-            DashColors::DASH_BLUE.b(),
-            (0.20 * 255.0) as u8,
-        );
-
-        if self.has_social_profile() {
-            // Social profile set → avatar circle. Fallback = solid Dash-blue
-            // fill with initials in white. Image rendering would require
-            // async texture decoding — kept for a follow-up; the current
-            // variant always renders the initials fallback if bytes are
-            // present but no texture pipeline is wired here.
-            painter.circle_filled(center, radius, DashColors::DASH_BLUE);
-            painter.circle_stroke(center, radius, Stroke::new(2.0, ring_color));
-            let letter = self.initials_letter().to_string();
-            let font_id = TextStyle::Heading.resolve(ui.style());
-            painter.text(
-                center,
-                egui::Align2::CENTER_CENTER,
-                letter,
-                font_id,
-                Color32::WHITE,
-            );
-        } else {
-            // No social profile → type-glyph monogram.
-            let bg_color = Color32::from_rgba_unmultiplied(
-                DashColors::DASH_BLUE.r(),
-                DashColors::DASH_BLUE.g(),
-                DashColors::DASH_BLUE.b(),
-                (0.08 * 255.0) as u8,
-            );
-            painter.circle_filled(center, radius, bg_color);
-            painter.circle_stroke(center, radius, Stroke::new(2.0, ring_color));
-            let glyph = self.kind.type_glyph();
-            let font_id = FontId::new(40.0, FontFamily::Proportional);
-            painter.text(
-                center,
-                egui::Align2::CENTER_CENTER,
-                glyph,
-                font_id,
-                DashColors::DASH_BLUE,
-            );
-        }
+        // Social profile set → initials monogram (white on Dash-blue); else the
+        // identity-type glyph on a faint tint. Photo rendering is deferred (no
+        // texture pipeline wired here). Shared with the breadcrumb identity pill
+        // via `avatar::paint_identity_monogram`.
+        let initial = self.has_social_profile().then(|| self.initials_letter());
+        super::avatar::paint_identity_monogram(ui, 96.0, self.kind, initial, DashColors::DASH_BLUE);
     }
 
     /// Paint the `No username yet` / `Pick a username` affordance. Returns

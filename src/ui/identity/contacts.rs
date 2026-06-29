@@ -160,15 +160,10 @@ impl ContactsTabState {
         app_context: &Arc<AppContext>,
         profiles: &mut super::profile_cache::ProfileCache,
     ) -> Self {
-        // Fetch loaded identities on the active network. A load error falls
-        // back to Gated so the hub never draws a half-broken populated UI;
-        // the error is surfaced by the hub-level banner in `hub_screen`.
-        let identities = match app_context.load_local_qualified_identities() {
-            Ok(list) => list,
-            Err(_) => return ContactsTabState::Gated { handle: None },
-        };
-
-        let Some(active) = identities.into_iter().next() else {
+        // The app-scoped active identity (selected → first → none). `None` on a
+        // load error or no identities falls back to Gated so the hub never
+        // draws a half-broken populated UI.
+        let Some(active) = app_context.resolve_selected_identity() else {
             return ContactsTabState::Gated { handle: None };
         };
 

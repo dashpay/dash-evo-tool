@@ -46,6 +46,10 @@ pub struct BreadcrumbPillResponse {
     pub clicked: bool,
     pub label: String,
     pub mode: BreadcrumbPillMode,
+    /// The pill's **inner** egui `Response` (the `Label` with click `Sense`),
+    /// for anchoring a dropdown `Popup`. `None` for fabricated responses (tests
+    /// / compositional callers that did not render).
+    pub response: Option<egui::Response>,
     changed_value: Option<String>,
 }
 
@@ -59,6 +63,7 @@ impl BreadcrumbPillResponse {
             clicked,
             label,
             mode,
+            response: None,
             changed_value,
         }
     }
@@ -262,7 +267,9 @@ impl BreadcrumbPill {
         });
 
         let clicked = matches!(self.mode, BreadcrumbPillMode::Interactive) && response.clicked();
-        BreadcrumbPillResponse::new(self.label.clone(), self.mode, clicked)
+        let mut out = BreadcrumbPillResponse::new(self.label.clone(), self.mode, clicked);
+        out.response = Some(response);
+        out
     }
 }
 

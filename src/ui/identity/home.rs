@@ -269,9 +269,9 @@ pub fn render(
     let mut action = AppAction::None;
     let mut outcome = HomeOutcome::None;
 
-    // Pick the first loaded identity for the hero; when the picker lands
-    // (T7), the hub will track a selected identity and pass it in.
-    let identity = match first_loaded_identity(app_context) {
+    // Render the app-scoped active identity (selected → first → none). The
+    // breadcrumb switcher and picker write the selection; this reads it.
+    let identity = match app_context.resolve_selected_identity() {
         Some(qi) => qi,
         None => {
             render_empty(ui, dark_mode);
@@ -578,13 +578,6 @@ pub fn apply_outcome(state: &mut HomeState, outcome: HomeOutcome) -> Option<Iden
 /// the user has no identities. The hub already handles the latter via
 /// `HubLanding::Onboarding`, so this is only reached when at least one
 /// identity exists.
-fn first_loaded_identity(app_context: &Arc<AppContext>) -> Option<QualifiedIdentity> {
-    app_context
-        .load_local_qualified_identities()
-        .ok()
-        .and_then(|list| list.into_iter().next())
-}
-
 /// Build the [`IdentityHeroCard`] from a qualified identity. Keeps the
 /// rendering code in `render` readable.
 fn build_hero(

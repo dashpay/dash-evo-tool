@@ -7,6 +7,8 @@
 //! (`docs/COMPONENT_DESIGN_PATTERN.md`): domain/config fields stored on the
 //! struct, the inner [`BreadcrumbPill`] built on every `show()` call.
 
+use super::avatar::paint_identity_monogram;
+use super::identity_hero_card::HeroIdentityKind;
 use crate::ui::components::breadcrumb_pill::{
     BreadcrumbPill, BreadcrumbPillMode, BreadcrumbPillResponse,
 };
@@ -65,6 +67,9 @@ pub fn shorten_id(id: &str) -> String {
 pub struct IdentityPillResponse {
     pub clicked: bool,
     pub label: String,
+    /// The pill's inner egui `Response`, for anchoring the identity dropdown.
+    /// `None` for fabricated responses (tests).
+    pub response: Option<eframe::egui::Response>,
     changed_value: Option<String>,
 }
 
@@ -74,6 +79,7 @@ impl IdentityPillResponse {
         Self {
             clicked: inner.clicked,
             label: inner.label,
+            response: inner.response,
             changed_value,
         }
     }
@@ -110,6 +116,10 @@ pub struct IdentityPill {
     tooltip: String,
     accessible_name: Option<String>,
     mode: BreadcrumbPillMode,
+    /// Optional avatar: the identity type and an optional monogram initial.
+    /// When set, an 18 px circle is painted to the left and the inner pill omits
+    /// the 👤 emoji icon (avoids a double avatar).
+    avatar: Option<(HeroIdentityKind, Option<char>)>,
 }
 
 impl IdentityPill {
@@ -127,7 +137,15 @@ impl IdentityPill {
             tooltip: String::new(),
             accessible_name: None,
             mode: BreadcrumbPillMode::default(),
+            avatar: None,
         }
+    }
+
+    /// Attach an avatar (identity type + optional monogram initial). Replaces
+    /// the default 👤 emoji icon with an 18 px painted circle.
+    pub fn with_avatar(mut self, kind: HeroIdentityKind, initial: Option<char>) -> Self {
+        self.avatar = Some((kind, initial));
+        self
     }
 
     /// Attach a tooltip.
@@ -162,9 +180,11 @@ impl IdentityPill {
     /// tests; production callers use `show()`.
     fn build_inner(&self) -> BreadcrumbPill {
         let label = self.resolved_label();
-        let mut pill = BreadcrumbPill::new(label)
-            .with_icon("👤")
-            .with_mode(self.mode);
+        let mut pill = BreadcrumbPill::new(label).with_mode(self.mode);
+        // Painted avatar replaces the emoji icon; otherwise keep the 👤 glyph.
+        if self.avatar.is_none() {
+            pill = pill.with_icon("👤");
+        }
         if !self.tooltip.is_empty() {
             pill = pill.with_tooltip(self.tooltip.clone());
         }
@@ -176,7 +196,18 @@ impl IdentityPill {
 
     /// Render and return the response.
     pub fn show(&self, ui: &mut Ui) -> IdentityPillResponse {
-        IdentityPillResponse::from_inner(self.build_inner().show(ui))
+        if let Some((kind, initial)) = self.avatar {
+            let inner = ui
+                .horizontal(|ui| {
+                    paint_identity_monogram(ui, 18.0, kind, initial, kind.badge_accent());
+                    ui.add_space(4.0);
+                    self.build_inner().show(ui)
+                })
+                .inner;
+            IdentityPillResponse::from_inner(inner)
+        } else {
+            IdentityPillResponse::from_inner(self.build_inner().show(ui))
+        }
     }
 }
 

@@ -28,6 +28,8 @@
 
 pub mod activity;
 pub mod activity_row;
+pub mod avatar;
+pub mod breadcrumb_switcher;
 pub mod contact_row;
 pub mod contacts;
 pub mod home;

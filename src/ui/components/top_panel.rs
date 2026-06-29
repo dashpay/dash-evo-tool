@@ -172,10 +172,14 @@ fn add_connection_indicator(ui: &mut Ui, app_context: &Arc<AppContext>) -> AppAc
     action
 }
 
-pub fn add_top_panel(
+/// Shared top-island scaffold: the `Panel::top`, surface Frame + radius +
+/// shadow + network accent, the 2-column layout, the connection indicator, and
+/// the right-button grouping. The `left` closure renders the left/breadcrumb
+/// region. Both public entry points delegate here so they render identically.
+fn render_top_island(
     ui: &mut Ui,
     app_context: &Arc<AppContext>,
-    location: Vec<(&str, AppAction)>,
+    left: impl FnOnce(&mut Ui) -> AppAction,
     right_buttons: Vec<(&str, DesiredAppAction)>,
 ) -> AppAction {
     let ctx = ui.ctx().clone();
@@ -211,7 +215,7 @@ pub fn add_top_panel(
                             egui::Layout::left_to_right(egui::Align::Center),
                             |ui| {
                                 action |= add_connection_indicator(ui, app_context);
-                                action |= add_location_view(ui, location, dark_mode);
+                                action |= left(ui);
                             },
                         );
 
@@ -346,4 +350,36 @@ pub fn add_top_panel(
         });
 
     action
+}
+
+/// Render the standard top panel with a plain-text breadcrumb location and the
+/// grouped right-side action buttons. Unchanged public API — delegates to the
+/// shared [`render_top_island`] scaffold.
+pub fn add_top_panel(
+    ui: &mut Ui,
+    app_context: &Arc<AppContext>,
+    location: Vec<(&str, AppAction)>,
+    right_buttons: Vec<(&str, DesiredAppAction)>,
+) -> AppAction {
+    let dark_mode = ui.ctx().global_style().visuals.dark_mode;
+    render_top_island(
+        ui,
+        app_context,
+        |ui| add_location_view(ui, location, dark_mode),
+        right_buttons,
+    )
+}
+
+/// Render the top panel with a custom left/breadcrumb region — the Identities
+/// hub switcher injects its three-segment breadcrumb here. Same island, accent,
+/// connection indicator, and right column as [`add_top_panel`]. The hub screen
+/// is compiled unconditionally (the `Screen` enum stays exhaustive), so this is
+/// not feature-gated; `identity-hub` gates only nav visibility + registration.
+pub fn add_top_panel_with_breadcrumb(
+    ui: &mut Ui,
+    app_context: &Arc<AppContext>,
+    breadcrumb: impl FnOnce(&mut Ui) -> AppAction,
+    right_buttons: Vec<(&str, DesiredAppAction)>,
+) -> AppAction {
+    render_top_island(ui, app_context, breadcrumb, right_buttons)
 }

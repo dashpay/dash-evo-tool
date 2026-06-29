@@ -222,7 +222,7 @@ What each verifies:
 
 - `dash-sdk` - Dash blockchain SDK (git dep from dashpay/platform)
 - `platform-wallet` / `platform-wallet-storage` - Upstream wallet backend (git dep from dashpay/platform): SPV chain sync, address derivation, asset-lock/identity handling, shielded coordinator
-- `egui/eframe 0.34` - Immediate mode GUI framework
+- `egui/eframe 0.35` - Immediate mode GUI framework
 - `tokio` - Async runtime (12 worker threads)
 - `rusqlite` - SQLite with bundled library
 - Rust edition 2024, minimum rust-version 1.92

@@ -166,7 +166,7 @@ impl RestoreSingleKeyDialog {
     }
 
     fn body(&mut self, ui: &mut Ui, response: &mut RestoreSingleKeyResponse) {
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
         let text_color = DashColors::text_primary(dark_mode);
 
         let Some(target) = self.target.clone() else {

@@ -1081,7 +1081,7 @@ impl KeyInfoScreen {
         if status == IdentityProtectionStatus::NoVaultKeys {
             return;
         }
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
 
         egui::CollapsingHeader::new("Key Protection")
             .default_open(false)
@@ -1134,9 +1134,10 @@ impl KeyInfoScreen {
         }
         if self.protection_in_flight {
             ui.add_space(4.0);
-            ui.label(RichText::new("Working…").color(DashColors::text_secondary(
-                ui.ctx().style().visuals.dark_mode,
-            )));
+            ui.label(
+                RichText::new("Working…")
+                    .color(DashColors::text_secondary(ui.style().visuals.dark_mode)),
+            );
         }
     }
 
@@ -1203,7 +1204,7 @@ impl KeyInfoScreen {
 
     /// The opt-in password form: new password + confirmation + strength + hint.
     fn render_new_password_form(&mut self, ui: &mut egui::Ui) {
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
         ui.label(
             RichText::new(format!(
                 "This password protects the signing keys for {}.",
@@ -1247,7 +1248,7 @@ impl KeyInfoScreen {
 
     /// The opt-out password form: verify the current password.
     fn render_verify_password_form(&mut self, ui: &mut egui::Ui) {
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
         ui.label(
             RichText::new(format!(
                 "Enter the current password for the signing keys for {}.",

@@ -844,7 +844,7 @@ impl ProgressOverlay {
             // cancel directive.
         }
 
-        let dark_mode = ctx.style().visuals.dark_mode;
+        let dark_mode = ctx.global_style().visuals.dark_mode;
         let rect = ctx.content_rect();
 
         // SEC-002: the dim + pointer sink + card render on Order::Foreground so
@@ -916,7 +916,7 @@ impl Component for ProgressOverlay {
         let Some(state) = &mut self.state else {
             return empty_overlay_response(ui);
         };
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
         let elapsed = state.created_at.elapsed();
         let stuck = stuck_reveal(elapsed);
         let show_elapsed = state.show_elapsed || stuck;
@@ -1051,7 +1051,7 @@ fn render_card(
 ) -> Option<String> {
     let mut clicked = None;
     egui::Frame::new()
-        .fill(ui.ctx().style().visuals.window_fill)
+        .fill(ui.style().visuals.window_fill)
         .inner_margin(egui::Margin::same(Spacing::MD as i8))
         .corner_radius(Shape::RADIUS_LG as f32)
         .shadow(Shadow::elevated())
@@ -1323,6 +1323,7 @@ mod tests {
     /// Drives one render pass over a bare context so `ctx.data`-level effects
     /// (log-once, focus) can be inspected without a kittest harness.
     fn render_once(ctx: &egui::Context) {
+        #[allow(deprecated)]
         let _ = ctx.run(egui::RawInput::default(), |ctx| {
             ProgressOverlay::render_global(ctx, false);
         });
@@ -1541,6 +1542,7 @@ mod tests {
             ],
             ..Default::default()
         };
+        #[allow(deprecated)]
         let _ = ctx.run(raw, |ctx| {
             ProgressOverlay::claim_input(ctx);
             ctx.input(|i| {
@@ -1618,6 +1620,7 @@ mod tests {
             events: vec![key_down(egui::Key::Enter), key_down(egui::Key::Space)],
             ..Default::default()
         };
+        #[allow(deprecated)]
         let _ = ctx.run(raw, |ctx| {
             ProgressOverlay::claim_input(ctx);
             ctx.input(|i| {
@@ -1654,6 +1657,7 @@ mod tests {
             events: vec![egui::Event::Text("hi".to_string())],
             ..Default::default()
         };
+        #[allow(deprecated)]
         let _ = ctx.run(raw, |ctx| {
             ProgressOverlay::claim_input(ctx);
             ctx.input(|i| {
@@ -1746,6 +1750,7 @@ mod tests {
         // No interaction has happened yet.
         assert!(overlay.current_value().is_none());
 
+        #[allow(deprecated)]
         let _ = ctx.run(egui::RawInput::default(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
                 let response = overlay.show(ui).inner;
@@ -1889,6 +1894,7 @@ mod tests {
         let ctx = egui::Context::default();
         let mut overlay = ProgressOverlay::new().with_description("Working.");
         overlay.clear();
+        #[allow(deprecated)]
         let _ = ctx.run(egui::RawInput::default(), |ctx| {
             egui::CentralPanel::default().show(ctx, |ui| {
                 let response = overlay.show(ui).inner;

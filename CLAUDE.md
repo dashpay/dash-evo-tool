@@ -110,16 +110,65 @@ User-facing error messages (shown in `MessageBanner` via `Display`) must follow 
 - **docs/ux-design-patterns.md** is the UI/UX reference card — explains **when and how** to use design tokens, buttons, dialogs, forms, accessibility rules, and progressive disclosure. For exact values (sizes, colors, padding), refer to source files (`src/ui/theme.rs`, `src/ui/components/`). Consult when building or reviewing UI.
 - end-user documentation is in a separate repo: https://github.com/dashpay/docs/tree/HEAD/docs/user/network/dash-evo-tool , published at https://docs.dash.org/en/stable/docs/user/network/dash-evo-tool/
 
-### Core Module Structure
+### System Layers (top → bottom)
 
-- **app.rs** - `AppState`: owns all screens, polls task results each frame, dispatches to visible screen
-- **ui/** - Screens and reusable components (`ui/components/`)
-- **backend_task/** - Async business logic, one submodule per domain (identity, wallet, contract, etc.)
-- **model/** - Data types (amounts, fees, settings, wallet/identity models). **All fee estimation logic must be centralized in `model/fee_estimation.rs`** — both platform state transition fees and shielded fee calculations. Never inline fee math in UI or backend task code.
-- **database/** - SQLite persistence (rusqlite), one module per domain
-- **context/** - `AppContext`: network config, SDK client, database, wallets, settings cache (split into submodules: `identity_db.rs`, `wallet_lifecycle.rs`, `settings_db.rs`, etc.)
-- **spv/** - Simplified Payment Verification for light wallet support
-- **components/core_zmq_listener** - Real-time Dash Core event listening via ZMQ
+- **UI (`ui/`)** — Screens (`ui/<domain>/`), reusable components (`ui/components/`), and non-widget view state (`ui/state/`). No business logic. Returns `AppAction`s.
+- **App (`app.rs`)** — `AppState`: owns all screens, polls task results each frame, dispatches to visible screen. Bridges UI and backend.
+- **Backend Tasks (`backend_task/`)** — Async business logic and the authoritative validation/enforcement layer, one submodule per domain (identity, wallet, contract, etc.). Operates through `AppContext`, returns typed `Result<T, TaskError>` over a channel.
+- **Wallet Backend (`wallet_backend/`)** — Wallet orchestration seam: adapters, views, backend-side live caches, signers, the secret chokepoint (`secret_seam.rs`), and the event bridge. A thin adapter over the upstream `platform-wallet` crate.
+- **Context (`context/`)** — `AppContext`: shared state — network config, SDK client, database, wallets, settings cache, connection health (`ConnectionStatus` / `SpvManager`), split into submodules (`identity_db.rs`, `wallet_lifecycle.rs`, `settings_db.rs`, etc.). Glue between layers.
+- **Model (`model/`)** — Pure data types and stateless validation (amounts, fees, settings, wallet/identity models). No side effects, no IO. All fee estimation lives in `model/fee_estimation.rs` — never inline fee math elsewhere.
+- **Database (`database/`)** — SQLite persistence (rusqlite), one module per domain. Typed CRUD, no business decisions.
+- **Platform Integration** — Chain sync, address derivation, asset-lock/identity handling, and the shielded coordinator come from the upstream **`platform-wallet`** crate (git dep, dashpay/platform); DET is a thin adapter over it via `wallet_backend/`. SPV health is surfaced through `SpvManager` → `ConnectionStatus`. (DET's bespoke `src/spv/` stack and the `core_zmq_listener` module were removed in the platform-wallet migration.)
+
+### Layer Rules
+
+**Model rules** (ideal target for new code):
+- UI never calls SDK or database directly — always through `BackendTask`
+- Backend tasks receive `AppContext`, do async work, return typed results
+- Models are shared across all layers — pure data types, no IO
+- Database modules are pure data access — no business logic or domain decisions
+- Context is the glue: UI reads from it, backend tasks operate through it
+- Data types shared between layers belong in `model/`, not in `ui/` or `database/`
+- Wallet secret bytes enter/leave only through the `wallet_backend/secret_seam.rs` chokepoint
+
+**In practice**, the codebase has established patterns that differ from the model:
+- UI may **read** from DB through `AppContext` wrapper methods (e.g., `app_context.load_local_qualified_identities()`)
+- UI may **write** to DB in `display_task_result()` for caching backend results
+- `Wallet` (`model/wallet/`) is a large module that mixes data, address derivation, and SDK/RPC concerns — this is intentional
+- Some data types live in `ui/` and are imported by `backend_task/`
+- Database methods occasionally contain domain logic (e.g., contest state derivation)
+
+These are accepted. Do not refactor existing code to match the model rules.
+
+### Standard Flows
+
+**User action → async work → result displayed:**
+```
+Screen::ui() → AppAction::BackendTask(task)
+  → tokio::spawn → AppContext::run_backend_task()
+  → sender.send(TaskResult::Success(result))
+  → AppState::update() polls → Screen::display_task_result()
+```
+
+**UI needs fresh data on construction/refresh:**
+```
+Screen::new() or refresh() → app_context.read_wrapper_method()
+  → returns cached or DB-read data (read-only, no writes)
+```
+
+**Backend task fetches + persists data:**
+```
+BackendTask variant → AppContext::run_*_task()
+  → SDK/RPC call → persist results to DB → return typed result
+  → Screen::display_task_result() updates in-memory state only
+```
+
+**Anti-patterns (do not add new instances):**
+- `app_context.db.save_*()` / `db.delete_*()` from UI code
+- `tokio::spawn` in UI bypassing the `BackendTask` system
+- Business logic (signing, filtering, state derivation) in UI or database layers
+- Accessing wallet secret bytes outside the `wallet_backend/secret_seam.rs` chokepoint
 
 ### MCP Server & CLI (`src/mcp/`, `src/bin/det_cli/`)
 
@@ -172,6 +221,7 @@ What each verifies:
 ### Key Dependencies
 
 - `dash-sdk` - Dash blockchain SDK (git dep from dashpay/platform)
+- `platform-wallet` / `platform-wallet-storage` - Upstream wallet backend (git dep from dashpay/platform): SPV chain sync, address derivation, asset-lock/identity handling, shielded coordinator
 - `egui/eframe 0.33` - Immediate mode GUI framework
 - `tokio` - Async runtime (12 worker threads)
 - `rusqlite` - SQLite with bundled library
@@ -188,20 +238,7 @@ See `.env.example` for network configuration options.
 
 ## App Task System (Critical Pattern)
 
-The UI and async backend communicate through an action/channel pattern:
-
-1. **Screens return `AppAction`** from their `ui()` method (e.g., `AppAction::BackendTask(task)`)
-2. **`AppState` spawns a tokio task** that calls `app_context.run_backend_task(task, sender)`
-3. **`AppContext::run_backend_task()`** matches on the `BackendTask` enum and dispatches to domain-specific async methods
-4. **Results come back** via tokio MPSC channel as `TaskResult` (Success/Error/Refresh)
-5. **Main `update()` loop** polls `task_result_receiver.try_recv()` each frame and routes results to the visible screen's `display_task_result()`
-
-```
-Screen::ui() → AppAction::BackendTask(task)
-    → tokio::spawn → AppContext::run_backend_task()
-    → sender.send(TaskResult::Success(result))
-    → AppState::update() polls receiver → Screen::display_task_result()
-```
+The UI and async backend communicate through the action/channel pattern described in Standard Flows above.
 
 **Backend task enums**: `BackendTask` has variants like `IdentityTask(IdentityTask)`, `WalletTask(WalletTask)`, `TokenTask(Box<TokenTask>)`, etc. Each sub-enum has its own variants and corresponding `run_*_task()` method. Results are `BackendTaskSuccessResult` with 50+ typed variants.
 

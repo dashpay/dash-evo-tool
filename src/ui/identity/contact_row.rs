@@ -244,10 +244,7 @@ mod tests {
     fn ut_contact_row_04_no_click_means_no_contact_id() {
         // The default response (no click) must have contact_id = None.
         let r = ContactRowResponse::default();
-        assert!(
-            !r.has_changed(),
-            "default response has no clicks"
-        );
+        assert!(!r.has_changed(), "default response has no clicks");
         assert!(
             r.contact_id.is_none(),
             "contact_id must be None when no click occurred — \

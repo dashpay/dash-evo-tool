@@ -313,8 +313,7 @@ pub fn render(
     // "Set a display name" step that routes to Settings — the same action as
     // this card. When the checklist is visible (not dismissed), suppress this
     // card so the user sees exactly one prompt for the action.
-    let checklist_covers_profile =
-        !hero_has_social_profile && !state.dismissed_checklist;
+    let checklist_covers_profile = !hero_has_social_profile && !state.dismissed_checklist;
     if !hero_has_social_profile
         && !state.skipped_social_profile
         && !checklist_covers_profile

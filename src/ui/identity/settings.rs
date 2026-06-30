@@ -1012,7 +1012,10 @@ mod tests {
         // The edit field is unchanged — the user can continue editing.
         assert_eq!(tab.edit_display_name, "Alicia Smith");
         // has_changes() sees "Alicia Smith" vs "Alicia" → Save re-enables.
-        assert!(tab.has_changes(), "Save must re-enable for the in-flight edits");
+        assert!(
+            tab.has_changes(),
+            "Save must re-enable for the in-flight edits"
+        );
         // pending_save is cleared.
         assert!(tab.pending_save.is_none());
     }

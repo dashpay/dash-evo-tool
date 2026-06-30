@@ -298,6 +298,19 @@ pub fn render(
     if hero_response.pick_username_clicked() {
         apply(HomeButton::PickUsernameHero);
     }
+
+    // --- Inline "Set up your social profile" card (no-profile variant) -
+    //
+    // Per wireframe §B.3 this prompt belongs immediately below the hero for
+    // the no-profile variant (V2 visual fix). It was previously rendered after
+    // the secondary-actions row, leaving the hero visually empty and the card
+    // buried. Moved here so the two form a single compact visual group with no
+    // gap between them. With V1 applied (hero sized to content, no min-height
+    // floor) the hero is already compact — no extra space is added before this
+    // card, and the standard Spacing::MD below separates both from the actions.
+    if !hero_has_social_profile && !state.skipped_social_profile && paint_social_profile_card(ui, dark_mode) {
+        apply(HomeButton::SetUpSocialProfile);
+    }
     ui.add_space(Spacing::MD);
 
     // --- Quick actions row --------------------------------------------
@@ -389,19 +402,6 @@ pub fn render(
         }
     });
     ui.add_space(Spacing::MD);
-
-    // --- Inline "Set up your social profile" card (no-profile variant) -
-    //
-    // The "Add a display name" CTA routes to the Settings tab rather than
-    // the DPNS register-a-username flow: DashPay social profile editing
-    // (display name, bio, avatar) lives in §B.8, not §B.5. The hub selects
-    // Settings via `HomeOutcome::GoToSettings` — no backend task needed.
-    if !hero_has_social_profile && !state.skipped_social_profile {
-        if paint_social_profile_card(ui, dark_mode) {
-            apply(HomeButton::SetUpSocialProfile);
-        }
-        ui.add_space(Spacing::MD);
-    }
 
     // --- Onboarding checklist -----------------------------------------
     if !state.dismissed_checklist {

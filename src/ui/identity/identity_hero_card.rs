@@ -24,7 +24,7 @@ use crate::ui::components::component_trait::ComponentResponse;
 use crate::ui::theme::{DashColors, ResponseExt, Shadow, Shape, Spacing};
 use eframe::egui::{
     self, Color32, CornerRadius, FontFamily, FontId, Frame, Margin, Rect, Response, RichText,
-    Sense, Shape as EguiShape, Stroke, StrokeKind, Ui,
+    Sense, Shape as EguiShape, Stroke, StrokeKind, TextureHandle, TextureOptions, Ui,
 };
 
 /// One of the three supported identity kinds. Maps 1:1 to the project's
@@ -299,9 +299,10 @@ impl IdentityHeroCard {
             .inner_margin(Margin::same(Spacing::LG as i8));
 
         let response = frame.show(ui, |ui| {
-            // Reserve the full hero height (~240 px target, min 200).
-            ui.set_min_height(200.0);
-
+            // No fixed minimum height — let the hero size to its content so
+            // the card stays compact and the gradient doesn't produce a large
+            // empty slab (V1 visual fix).
+            //
             // Paint the gradient band before any widgets so the labels sit on
             // top. Two horizontal stops at 14 % opacity.
             self.paint_gradient_band(ui);
@@ -424,13 +425,84 @@ impl IdentityHeroCard {
 
     /// Paint the avatar circle (social profile set) or the type-glyph
     /// monogram (no social profile).
+    ///
+    /// When `avatar_bytes` are present the raw PNG/JPEG bytes are decoded into
+    /// a texture (cached in the egui context by content hash so the decode only
+    /// happens once) and painted as a circle-cropped image. If decoding fails
+    /// the call falls through to the initials monogram. When no bytes are set
+    /// the initials or type-glyph monogram is used directly. (T09)
     fn paint_avatar_or_monogram(&self, ui: &mut Ui) {
+        if let Some(bytes) = &self.avatar_bytes
+            && self.try_paint_avatar_image(ui, bytes)
+        {
+            return;
+        }
         // Social profile set → initials monogram (white on Dash-blue); else the
-        // identity-type glyph on a faint tint. Photo rendering is deferred (no
-        // texture pipeline wired here). Shared with the breadcrumb identity pill
-        // via `avatar::paint_identity_monogram`.
+        // identity-type glyph on a faint tint. Shared with the breadcrumb
+        // identity pill via `avatar::paint_identity_monogram`.
         let initial = self.has_social_profile().then(|| self.initials_letter());
         super::avatar::paint_identity_monogram(ui, 96.0, self.kind, initial, DashColors::DASH_BLUE);
+    }
+
+    /// Attempt to decode `bytes` (PNG / JPEG) and paint a circle-cropped avatar
+    /// at the standard 96 px diameter. Returns `true` on success so the caller
+    /// can skip the initials fallback.
+    ///
+    /// The decoded texture is cached in the egui context keyed by an FNV-1a
+    /// hash of the bytes, so the `image::load_from_memory` decode only runs
+    /// once per unique avatar regardless of how many frames the hero renders.
+    fn try_paint_avatar_image(&self, ui: &mut Ui, bytes: &[u8]) -> bool {
+        let hash = fnv1a_hash(bytes);
+        let cache_id = egui::Id::new(("identity_avatar", hash));
+
+        // Retrieve from the egui context's per-session temp store.
+        let handle: Option<TextureHandle> =
+            ui.ctx().data(|d| d.get_temp::<TextureHandle>(cache_id));
+
+        let handle = match handle {
+            Some(h) => h,
+            None => {
+                // Decode the raw bytes.
+                let Ok(img) = image::load_from_memory(bytes) else {
+                    return false;
+                };
+                let rgba = img.into_rgba8();
+                let (w, h) = (rgba.width() as usize, rgba.height() as usize);
+                let color_image =
+                    egui::ColorImage::from_rgba_unmultiplied([w, h], rgba.as_raw());
+                let tex = ui
+                    .ctx()
+                    .load_texture("identity_avatar", color_image, TextureOptions::LINEAR);
+                ui.ctx().data_mut(|d| d.insert_temp(cache_id, tex.clone()));
+                tex
+            }
+        };
+
+        let diameter = 96.0;
+        let (rect, _resp) =
+            ui.allocate_exact_size(egui::vec2(diameter, diameter), Sense::hover());
+
+        // Paint the image clipped to a circle via egui's `Image::corner_radius`.
+        // A corner radius equal to half the diameter gives a perfect circle clip.
+        // `CornerRadius::same` takes a `u8`, so clamp to 127 max (96 / 2 = 48).
+        let cr = CornerRadius::same((diameter / 2.0).min(127.0) as u8);
+        egui::Image::from_texture(&handle)
+            .corner_radius(cr)
+            .paint_at(ui, rect);
+
+        // Overlay the same accent ring used by the initials monogram so the
+        // avatar integrates visually with the rest of the card.
+        let ring = Color32::from_rgba_unmultiplied(
+            DashColors::DASH_BLUE.r(),
+            DashColors::DASH_BLUE.g(),
+            DashColors::DASH_BLUE.b(),
+            51, // 20 % opacity
+        );
+        let stroke_w = (diameter / 48.0).max(1.0);
+        ui.painter()
+            .circle_stroke(rect.center(), diameter / 2.0, Stroke::new(stroke_w, ring));
+
+        true
     }
 
     /// Paint the `No username yet` / `Pick a username` affordance. Returns
@@ -503,6 +575,18 @@ impl IdentityHeroCard {
             inner.response
         }
     }
+}
+
+/// FNV-1a hash of a byte slice. Used to derive a stable texture cache key for
+/// avatar images so the `image::load_from_memory` decode only runs once per
+/// unique byte content.
+fn fnv1a_hash(data: &[u8]) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325; // FNV offset basis
+    for &b in data {
+        h ^= b as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3); // FNV prime
+    }
+    h
 }
 
 /// Linear interpolate two [`Color32`] values component-wise.

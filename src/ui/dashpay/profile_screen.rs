@@ -164,10 +164,9 @@ impl ProfileScreen {
                 new_self.selected_identity_string
             );
 
-            new_self.selected_wallet =
-                get_selected_wallet(&preferred, Some(&app_context), None)
-                    .or_show_error(app_context.egui_ctx())
-                    .unwrap_or(None);
+            new_self.selected_wallet = get_selected_wallet(&preferred, Some(&app_context), None)
+                .or_show_error(app_context.egui_ctx())
+                .unwrap_or(None);
         }
 
         new_self

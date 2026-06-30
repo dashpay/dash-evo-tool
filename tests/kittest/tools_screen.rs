@@ -99,8 +99,7 @@ fn grovestark_does_not_seed_non_eddsa_identity() {
         let screen = GroveSTARKScreen::new(&ctx);
 
         assert_eq!(
-            screen.selected_identity,
-            None,
+            screen.selected_identity, None,
             "GroveSTARKScreen must not seed an identity that has no EdDSA keys (R4 guard)"
         );
     });

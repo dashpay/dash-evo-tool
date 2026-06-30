@@ -86,10 +86,7 @@ fn token_creator_defaults_to_app_scoped_identity() {
         let screen = TokensScreen::new(&ctx, TokensSubscreen::TokenCreator);
 
         assert_eq!(
-            screen
-                .selected_identity
-                .as_ref()
-                .map(|qi| qi.identity.id()),
+            screen.selected_identity.as_ref().map(|qi| qi.identity.id()),
             Some(second),
             "TokensScreen (TokenCreator) must default to the app-scoped selected identity"
         );

@@ -83,11 +83,7 @@ fn dpns_success_result_clears_overlay() {
 // ── W2 B2 — app-scoped seeding ───────────────────────────────────────────────
 
 /// Seed a wallet-less identity into the live context (mirrors identity_hub_switcher).
-fn seed_identity_for_dpns(
-    app_context: &Arc<AppContext>,
-    byte: u8,
-    alias: &str,
-) -> Identifier {
+fn seed_identity_for_dpns(app_context: &Arc<AppContext>, byte: u8, alias: &str) -> Identifier {
     let pv = PlatformVersion::latest();
     let identity =
         Identity::create_basic_identity(Identifier::from([byte; 32]), pv).expect("basic identity");
@@ -122,13 +118,11 @@ fn dpns_registration_defaults_to_app_scoped_identity() {
         let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
         let _guard = rt.enter();
 
-        let mut harness = Harness::builder()
-            .with_max_steps(100)
-            .build_eframe(|ctx| {
-                dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
-                    .expect("AppState builds")
-                    .with_animations(false)
-            });
+        let mut harness = Harness::builder().with_max_steps(100).build_eframe(|ctx| {
+            dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
+                .expect("AppState builds")
+                .with_animations(false)
+        });
         harness.run_steps(5);
         let app_context = harness.state().current_app_context().clone();
 

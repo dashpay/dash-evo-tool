@@ -153,8 +153,8 @@ impl DocumentActionScreen {
         let selected_contract = known_contracts.into_iter().next();
 
         // Seed from the app-scoped selected identity when none was passed in (W2 SYNC).
-        let selected_identity = selected_identity
-            .or_else(|| app_context.resolve_selected_identity());
+        let selected_identity =
+            selected_identity.or_else(|| app_context.resolve_selected_identity());
 
         let selected_identity_string = selected_identity
             .as_ref()

@@ -109,10 +109,9 @@ impl ContactRequests {
                 .to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58);
 
             // Get wallet for the selected identity
-            new_self.selected_wallet =
-                get_selected_wallet(&preferred, Some(&app_context), None)
-                    .or_show_error(app_context.egui_ctx())
-                    .unwrap_or(None);
+            new_self.selected_wallet = get_selected_wallet(&preferred, Some(&app_context), None)
+                .or_show_error(app_context.egui_ctx())
+                .unwrap_or(None);
         }
 
         new_self
@@ -283,9 +282,10 @@ impl ContactRequests {
                 .and_then(|id| identities.iter().find(|qi| qi.identity.id() == id).cloned())
                 .unwrap_or_else(|| identities[0].clone());
             self.selected_identity = Some(preferred.clone());
-            self.selected_identity_string = preferred.identity.id().to_string(
-                dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58,
-            );
+            self.selected_identity_string = preferred
+                .identity
+                .id()
+                .to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58);
         }
 
         // Mark unfetched so the next render dispatches `LoadContactRequests`.

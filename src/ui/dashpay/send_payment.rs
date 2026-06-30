@@ -538,10 +538,7 @@ impl PaymentHistory {
                 .and_then(|id| identities.iter().find(|qi| qi.identity.id() == id).cloned())
                 .unwrap_or_else(|| identities[0].clone());
             self.selected_identity = Some(preferred.clone());
-            self.selected_identity_string = preferred
-                .identity
-                .id()
-                .to_string(Encoding::Base58);
+            self.selected_identity_string = preferred.identity.id().to_string(Encoding::Base58);
         }
 
         // Reset the fetched flag if we have no payments; next render dispatches

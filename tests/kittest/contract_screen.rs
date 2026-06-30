@@ -193,8 +193,7 @@ fn group_actions_does_not_seed_from_global_identity() {
         let screen = GroupActionsScreen::new(&app_context);
 
         assert_eq!(
-            screen.selected_identity,
-            None,
+            screen.selected_identity, None,
             "GroupActionsScreen is session-local (K3): it must NOT seed from the \
              app-scoped selection — selected_identity must stay None on construction"
         );

@@ -10,9 +10,13 @@
 //! a structural note and a spot-check that `TokensScreen` (Token Creator) does
 //! NOT accidentally apply syncing_global to the N/A sites when rendering.
 //!
+//! Write-back: `syncing_global` component-level write-back is verified by
+//! `identity_selector::tests::syncing_global_writes_selection_to_app_context`
+//! (QA-001).
+//!
 //! # TODO(WalletFixture / private-key fixture)
-//! Add write-back assertions (picker click → `resolve_selected_identity()` moves)
-//! once an identity fixture with loaded AUTH HIGH/CRITICAL private keys exists.
+//! Add screen-level write-back assertions (ComboBox click → `resolve_selected_identity()`
+//! moves) once an identity fixture with loaded AUTH HIGH/CRITICAL private keys exists.
 
 use crate::support::with_isolated_data_dir;
 use dash_evo_tool::context::AppContext;

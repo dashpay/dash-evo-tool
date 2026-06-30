@@ -112,10 +112,13 @@ fn build_ctx() -> (
 
 /// `ContactsList::new()` must default to the app-scoped identity, not identities[0].
 ///
-/// This is the B3 canary for write-back: the IdentitySelector on ContactsList
-/// carries `syncing_global`, so a picker change would propagate to
-/// `resolve_selected_identity()`. Full UI click-through testing requires a
-/// rendering fixture with working private keys; deferred (TODO: WalletFixture).
+/// This is the B3 seeding test: verifies that `ContactsList` opens on the
+/// identity the user last operated as, not always the first DB row.
+///
+/// Write-back (picker change → `resolve_selected_identity()` moves) is covered
+/// at the component level by
+/// `identity_selector::tests::syncing_global_writes_selection_to_app_context`
+/// (QA-001), which tests `sync_to_global()` directly without a screen harness.
 #[test]
 fn contacts_list_defaults_to_app_scoped_identity() {
     with_isolated_data_dir(|| {

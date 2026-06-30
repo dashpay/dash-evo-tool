@@ -16,9 +16,10 @@
 //!
 //! # Note — `create_asset_lock_screen` (READ-only R1)
 //! `CreateAssetLockScreen` uses `IdentitySelector::with_app_default()`, whose
-//! membership guard is already covered by `IdentitySelector` unit tests
-//! (lines 347 and 360 in `src/ui/components/identity_selector.rs`). No additional
-//! kittest is added here to avoid duplicating component-level coverage.
+//! membership guard is covered by unit tests in
+//! `src/ui/components/identity_selector.rs` — specifically
+//! `with_app_default_inert_when_global_id_not_in_candidate_list` (QA-003).
+//! No additional kittest is added here to avoid duplicating component-level coverage.
 //!
 //! # Note — `send_screen` (READ-only R1)
 //! `SendScreen` seeds `selected_identity` at render-time from the wallet-membership

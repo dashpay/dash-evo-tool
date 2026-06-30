@@ -4,17 +4,18 @@
 //! `DocumentActionScreen` must default to the app-scoped selected identity on
 //! construction and write the user's picker choice back via `syncing_global`.
 //!
-//! Seeding test (a): screen defaults to the app-scoped id.
-//! Write-back test (b): a picker change drives `resolve_selected_identity()`.
+//! Seeding test (a): screen defaults to the app-scoped id — covered below.
 //!
-//! Write-back (b) requires identities with loaded private keys so the selector
-//! renders (the screen gates on `has_suitable_keys`). That fixture is out of
-//! reach here (see TI-1 / private-key fixture gap). The seeding direction is
-//! fully covered below.
+//! Write-back (b): `syncing_global` component-level write-back is verified by
+//! `identity_selector::tests::syncing_global_writes_selection_to_app_context`
+//! (QA-001) — fixture-free unit test that calls `sync_to_global()` directly.
+//! Screen-level click-through (ComboBox click → AppContext update) requires a
+//! private-key fixture so the selector renders (the screens gate on
+//! `has_suitable_keys`).
 //!
 //! # TODO(WalletFixture / private-key fixture)
-//! Add write-back assertions (picker click → `resolve_selected_identity()` moves)
-//! once an identity fixture with loaded AUTH HIGH/CRITICAL private keys exists.
+//! Add screen-level write-back assertions (ComboBox click → `resolve_selected_identity()`
+//! moves) once an identity fixture with loaded AUTH HIGH/CRITICAL private keys exists.
 
 use crate::support::with_isolated_data_dir;
 use dash_evo_tool::context::AppContext;

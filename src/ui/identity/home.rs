@@ -308,7 +308,10 @@ pub fn render(
     // gap between them. With V1 applied (hero sized to content, no min-height
     // floor) the hero is already compact — no extra space is added before this
     // card, and the standard Spacing::MD below separates both from the actions.
-    if !hero_has_social_profile && !state.skipped_social_profile && paint_social_profile_card(ui, dark_mode) {
+    if !hero_has_social_profile
+        && !state.skipped_social_profile
+        && paint_social_profile_card(ui, dark_mode)
+    {
         apply(HomeButton::SetUpSocialProfile);
     }
     ui.add_space(Spacing::MD);
@@ -318,8 +321,12 @@ pub fn render(
         // "Send" routes to the identity Transfer screen (identity→identity
         // credit transfer). The tooltip therefore describes that action, not
         // a wallet-Dash send (T30).
-        if primary_quick_action(ui, "Send", "Transfer credits from this identity to another identity.")
-            .clicked()
+        if primary_quick_action(
+            ui,
+            "Send",
+            "Transfer credits from this identity to another identity.",
+        )
+        .clicked()
         {
             apply(HomeButton::Send);
         }

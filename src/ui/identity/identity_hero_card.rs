@@ -468,19 +468,17 @@ impl IdentityHeroCard {
                 };
                 let rgba = img.into_rgba8();
                 let (w, h) = (rgba.width() as usize, rgba.height() as usize);
-                let color_image =
-                    egui::ColorImage::from_rgba_unmultiplied([w, h], rgba.as_raw());
-                let tex = ui
-                    .ctx()
-                    .load_texture("identity_avatar", color_image, TextureOptions::LINEAR);
+                let color_image = egui::ColorImage::from_rgba_unmultiplied([w, h], rgba.as_raw());
+                let tex =
+                    ui.ctx()
+                        .load_texture("identity_avatar", color_image, TextureOptions::LINEAR);
                 ui.ctx().data_mut(|d| d.insert_temp(cache_id, tex.clone()));
                 tex
             }
         };
 
         let diameter = 96.0;
-        let (rect, _resp) =
-            ui.allocate_exact_size(egui::vec2(diameter, diameter), Sense::hover());
+        let (rect, _resp) = ui.allocate_exact_size(egui::vec2(diameter, diameter), Sense::hover());
 
         // Paint the image clipped to a circle via egui's `Image::corner_radius`.
         // A corner radius equal to half the diameter gives a perfect circle clip.

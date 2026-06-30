@@ -126,7 +126,9 @@ impl SettingsTab {
 
     /// Borrow the currently-selected identity, if any. Used by the hub's
     /// `display_task_result` to guard `on_profile_saved` against stale results.
-    pub fn selected_identity(&self) -> Option<&crate::model::qualified_identity::QualifiedIdentity> {
+    pub fn selected_identity(
+        &self,
+    ) -> Option<&crate::model::qualified_identity::QualifiedIdentity> {
         self.selected_identity.as_ref()
     }
 

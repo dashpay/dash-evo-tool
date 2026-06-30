@@ -67,9 +67,7 @@ impl ChecklistStep {
         match self {
             ChecklistStep::PickUsername => "Pick a name so people can pay you by name.",
             ChecklistStep::SetDisplayName => "This is how you appear to contacts.",
-            ChecklistStep::AddFirstContact => {
-                "Add someone by username to send with one click."
-            }
+            ChecklistStep::AddFirstContact => "Add someone by username to send with one click.",
         }
     }
 
@@ -315,75 +313,69 @@ impl OnboardingChecklist {
         // surrounding whitespace are part of the hit area, not just the label
         // text (T10). We still place the inline action button separately so it
         // receives its own visual hover feedback.
-        let row_scope = ui.scope_builder(
-            egui::UiBuilder::new().sense(Sense::click()),
-            |ui| {
-                ui.horizontal(|ui| {
-                    // Circle bullet.
-                    let size = 20.0;
-                    let (rect, _resp) =
-                        ui.allocate_exact_size(egui::vec2(size, size), Sense::hover());
-                    let painter = ui.painter();
-                    let center = rect.center();
-                    let radius = size * 0.5;
+        let row_scope = ui.scope_builder(egui::UiBuilder::new().sense(Sense::click()), |ui| {
+            ui.horizontal(|ui| {
+                // Circle bullet.
+                let size = 20.0;
+                let (rect, _resp) = ui.allocate_exact_size(egui::vec2(size, size), Sense::hover());
+                let painter = ui.painter();
+                let center = rect.center();
+                let radius = size * 0.5;
 
-                    if complete {
-                        painter.circle_filled(center, radius, DashColors::DASH_BLUE);
-                        let check_color = Color32::WHITE;
-                        let p1 = egui::pos2(center.x - 4.0, center.y);
-                        let p2 = egui::pos2(center.x - 1.0, center.y + 3.0);
-                        let p3 = egui::pos2(center.x + 4.0, center.y - 3.0);
-                        painter.line_segment([p1, p2], Stroke::new(1.8, check_color));
-                        painter.line_segment([p2, p3], Stroke::new(1.8, check_color));
+                if complete {
+                    painter.circle_filled(center, radius, DashColors::DASH_BLUE);
+                    let check_color = Color32::WHITE;
+                    let p1 = egui::pos2(center.x - 4.0, center.y);
+                    let p2 = egui::pos2(center.x - 1.0, center.y + 3.0);
+                    let p3 = egui::pos2(center.x + 4.0, center.y - 3.0);
+                    painter.line_segment([p1, p2], Stroke::new(1.8, check_color));
+                    painter.line_segment([p2, p3], Stroke::new(1.8, check_color));
+                } else {
+                    painter.circle_stroke(
+                        center,
+                        radius - 1.0,
+                        Stroke::new(1.5, DashColors::border(dark_mode)),
+                    );
+                }
+
+                ui.add_space(Spacing::SM);
+
+                // Content column: label + subtext [+ action button].
+                ui.vertical(|ui| {
+                    // Label — struck through when complete.
+                    let text_color = if complete {
+                        DashColors::text_secondary(dark_mode)
                     } else {
-                        painter.circle_stroke(
-                            center,
-                            radius - 1.0,
-                            Stroke::new(1.5, DashColors::border(dark_mode)),
-                        );
+                        DashColors::text_primary(dark_mode)
+                    };
+                    let mut rich = RichText::new(step.label()).strong().color(text_color);
+                    if complete {
+                        rich = rich.strikethrough();
                     }
+                    ui.label(rich);
 
-                    ui.add_space(Spacing::SM);
-
-                    // Content column: label + subtext [+ action button].
-                    ui.vertical(|ui| {
-                        // Label — struck through when complete.
-                        let text_color = if complete {
-                            DashColors::text_secondary(dark_mode)
-                        } else {
-                            DashColors::text_primary(dark_mode)
-                        };
-                        let mut rich = RichText::new(step.label()).strong().color(text_color);
-                        if complete {
-                            rich = rich.strikethrough();
-                        }
-                        ui.label(rich);
-
-                        // Descriptive subtext (V3).
-                        let subtext: String = if complete {
-                            // For PickUsername done, prefer "You are @{handle}."
-                            if step == ChecklistStep::PickUsername {
-                                match handle {
-                                    Some(h) => format!("You are @{h}."),
-                                    None => "Your username is set.".to_string(),
-                                }
-                            } else {
-                                step.subtext_done()
-                                    .unwrap_or("Done.")
-                                    .to_string()
+                    // Descriptive subtext (V3).
+                    let subtext: String = if complete {
+                        // For PickUsername done, prefer "You are @{handle}."
+                        if step == ChecklistStep::PickUsername {
+                            match handle {
+                                Some(h) => format!("You are @{h}."),
+                                None => "Your username is set.".to_string(),
                             }
                         } else {
-                            step.subtext_pending().to_string()
-                        };
-                        ui.label(
-                            RichText::new(subtext)
-                                .small()
-                                .color(DashColors::text_secondary(dark_mode)),
-                        );
-                    });
+                            step.subtext_done().unwrap_or("Done.").to_string()
+                        }
+                    } else {
+                        step.subtext_pending().to_string()
+                    };
+                    ui.label(
+                        RichText::new(subtext)
+                            .small()
+                            .color(DashColors::text_secondary(dark_mode)),
+                    );
                 });
-            },
-        );
+            });
+        });
 
         // The inline action button for pending items is placed outside the
         // scope so it gets its own visual affordance, but its click still

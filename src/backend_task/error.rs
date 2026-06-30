@@ -203,8 +203,16 @@ pub enum TaskError {
     /// Imported single-key material lives here; HD-wallet seeds are
     /// surfaced through [`Self::WalletSeedStorage`] for a clearer
     /// banner copy.
+    ///
+    /// The copy avoids guessing a single cause (the failure can be a held
+    /// file lock, a passphrase mismatch, or corrupt data — not disk space):
+    /// it points at the one self-service fix that resolves the common
+    /// "another copy is already running" lock case. A legacy passphrase
+    /// vault (`SecretStoreError::WrongPassphrase`) is intercepted earlier on
+    /// the GUI boot path and never reaches this banner — see
+    /// [`Self::is_secret_store_wrong_passphrase`].
     #[error(
-        "Could not access your imported keys. Check available disk space and restart the application."
+        "Your saved keys could not be opened. Make sure no other copy of Dash Evo Tool is running, then open the app again."
     )]
     SecretStore {
         #[source]
@@ -1904,6 +1912,25 @@ impl TaskError {
             other => Self::WalletStorage { source: other },
         }
     }
+
+    /// Returns `true` when this is a [`Self::SecretStore`] open failure caused
+    /// specifically by a vault passphrase mismatch
+    /// ([`SecretStoreError::WrongPassphrase`]).
+    ///
+    /// The GUI boot path opens the vault keyless; a vault an older build wrote
+    /// with a real passphrase fails that open with `WrongPassphrase`. The boot
+    /// seam matches on this (never on `Display` text) to fall through to a
+    /// passphrase prompt instead of aborting startup. Every other secret-store
+    /// failure — corruption, permissions, a held lock — stays fatal.
+    ///
+    /// [`SecretStoreError::WrongPassphrase`]: platform_wallet_storage::secrets::SecretStoreError::WrongPassphrase
+    pub fn is_secret_store_wrong_passphrase(&self) -> bool {
+        use platform_wallet_storage::secrets::SecretStoreError;
+        matches!(
+            self,
+            Self::SecretStore { source } if matches!(**source, SecretStoreError::WrongPassphrase)
+        )
+    }
 }
 
 /// Escapes control characters in a token name for safe display in error messages.
@@ -2514,6 +2541,54 @@ mod tests {
     use dash_sdk::dpp::consensus::state::identity::identity_public_key_already_exists_for_unique_contract_bounds_error::IdentityPublicKeyAlreadyExistsForUniqueContractBoundsError;
     use dash_sdk::dpp::identity::Purpose;
     use dash_sdk::platform::Identifier;
+
+    #[test]
+    fn wrong_passphrase_classifier_matches_only_secret_store_wrong_passphrase() {
+        use platform_wallet_storage::secrets::SecretStoreError;
+
+        let wrong_pass = TaskError::SecretStore {
+            source: Box::new(SecretStoreError::WrongPassphrase),
+        };
+        assert!(
+            wrong_pass.is_secret_store_wrong_passphrase(),
+            "SecretStore(WrongPassphrase) must route to the passphrase-prompt branch"
+        );
+
+        // Any other secret-store failure stays fatal — never prompts.
+        let corrupt = TaskError::SecretStore {
+            source: Box::new(SecretStoreError::Corruption),
+        };
+        assert!(
+            !corrupt.is_secret_store_wrong_passphrase(),
+            "SecretStore(Corruption) must remain fatal, not prompt"
+        );
+
+        // WrongPassphrase wrapped in a *different* variant must not match —
+        // only the boot-path SecretStore open failure is recoverable.
+        let seed_wrong_pass = TaskError::WalletSeedStorage {
+            source: Box::new(SecretStoreError::WrongPassphrase),
+        };
+        assert!(
+            !seed_wrong_pass.is_secret_store_wrong_passphrase(),
+            "Only the SecretStore variant is the boot open seam"
+        );
+
+        // A wholly unrelated variant is fatal.
+        assert!(!TaskError::ImportedKeyNotFound.is_secret_store_wrong_passphrase());
+    }
+
+    #[test]
+    fn secret_store_copy_drops_misleading_disk_space_claim() {
+        use platform_wallet_storage::secrets::SecretStoreError;
+        let msg = TaskError::SecretStore {
+            source: Box::new(SecretStoreError::WrongPassphrase),
+        }
+        .to_string();
+        assert!(
+            !msg.to_lowercase().contains("disk space"),
+            "secret-store open failure is not a disk-space problem: {msg}"
+        );
+    }
 
     #[test]
     fn rpc_http_401_converts_to_core_rpc_auth_failed() {

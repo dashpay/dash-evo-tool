@@ -476,14 +476,41 @@ impl AppContext {
     /// of the same vault would fail with `AlreadyLocked`. The vault is
     /// cross-network: seeds and imported keys are scoped by hash, not chain.
     pub fn open_secret_store(data_dir: &std::path::Path) -> Result<Arc<SecretStore>, TaskError> {
-        let mut path = data_dir.to_path_buf();
-        path.push("secrets");
-        path.push("det-secrets.pwsvault");
-        crate::wallet_backend::single_key::open_secret_store(&path)
+        crate::wallet_backend::single_key::open_secret_store(&Self::secret_store_path(data_dir))
             .map(Arc::new)
             .map_err(|source| TaskError::SecretStore {
                 source: Box::new(source),
             })
+    }
+
+    /// Open the shared seed vault with an explicit `passphrase` — the
+    /// funds-safe, non-destructive recovery door for a **legacy vault** an
+    /// older build sealed with a passphrase. The keyless [`Self::open_secret_store`]
+    /// fails such a vault with
+    /// [`SecretStoreError::WrongPassphrase`](platform_wallet_storage::secrets::SecretStoreError::WrongPassphrase);
+    /// the GUI boot seam re-opens it in place with this. Same vault file, same
+    /// `Arc<SecretStore>` contract — it never deletes, recreates, or rekeys
+    /// the vault, so wallet seeds are never at risk.
+    pub fn open_secret_store_with_passphrase(
+        data_dir: &std::path::Path,
+        passphrase: platform_wallet_storage::secrets::SecretString,
+    ) -> Result<Arc<SecretStore>, TaskError> {
+        crate::wallet_backend::single_key::open_secret_store_with_passphrase(
+            &Self::secret_store_path(data_dir),
+            passphrase,
+        )
+        .map(Arc::new)
+        .map_err(|source| TaskError::SecretStore {
+            source: Box::new(source),
+        })
+    }
+
+    /// Absolute path of the shared seed vault: `<data_dir>/secrets/det-secrets.pwsvault`.
+    fn secret_store_path(data_dir: &std::path::Path) -> std::path::PathBuf {
+        let mut path = data_dir.to_path_buf();
+        path.push("secrets");
+        path.push("det-secrets.pwsvault");
+        path
     }
 
     pub fn network(&self) -> Network {

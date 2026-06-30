@@ -48,6 +48,7 @@ use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use derive_more::From;
 use eframe::{App, egui};
+use platform_wallet_storage::secrets::SecretStore;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::BitOrAssign;
 use std::path::PathBuf;
@@ -398,13 +399,28 @@ impl BitOrAssign for AppAction {
     }
 }
 impl AppState {
-    /// Creates a new `AppState` using the production database.
+    /// Creates a new `AppState`, opening the seed vault keyless.
     ///
-    /// This constructor is hidden when the `testing` feature is active to prevent
-    /// tests from accidentally using the production database. Use the `testing`
-    /// feature-gated `new()` variant instead.
-    #[cfg(not(feature = "testing"))]
+    /// Database selection is delegated to [`Self::boot_inputs`], which is
+    /// feature-gated so that the `testing` build can never touch the
+    /// production database. The keyless open aborts on a passphrase-protected
+    /// legacy vault; the GUI binary boots through
+    /// [`BootApp`](crate::boot::BootApp) instead, which prompts for the
+    /// passphrase rather than aborting.
     pub fn new(ctx: egui::Context) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let (data_dir, db) = Self::boot_inputs()?;
+        let secret_store = AppContext::open_secret_store(&data_dir)?;
+        Self::new_inner(ctx, db, data_dir, secret_store)
+    }
+
+    /// Prepare the boot inputs (data dir, env file, logging, database).
+    ///
+    /// The non-testing build opens and initializes the on-disk production
+    /// database; the `testing` build substitutes an in-memory database so
+    /// tests never read or write production data.
+    #[cfg(not(feature = "testing"))]
+    pub(crate) fn boot_inputs()
+    -> Result<(PathBuf, Arc<Database>), Box<dyn std::error::Error + Send + Sync>> {
         let data_dir = app_user_data_dir_path()?;
         ensure_data_dir_exists(&data_dir)?;
         ensure_env_file(&data_dir);
@@ -413,15 +429,12 @@ impl AppState {
         let db_file_path = data_file_path(&data_dir, "data.db")?;
         let db = Arc::new(Database::new(&db_file_path)?);
         db.initialize(&db_file_path)?;
-        Self::new_inner(ctx, db, data_dir)
+        Ok((data_dir, db))
     }
 
-    /// Creates a new `AppState` using an in-memory database for testing.
-    ///
-    /// Available only when the `testing` feature is active. This prevents tests
-    /// from reading or writing the production database.
     #[cfg(feature = "testing")]
-    pub fn new(ctx: egui::Context) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+    pub(crate) fn boot_inputs()
+    -> Result<(PathBuf, Arc<Database>), Box<dyn std::error::Error + Send + Sync>> {
         let data_dir = app_user_data_dir_path()?;
         ensure_data_dir_exists(&data_dir)?;
         ensure_env_file(&data_dir);
@@ -430,19 +443,20 @@ impl AppState {
             crate::database::test_helpers::create_test_database()
                 .map_err(|e| format!("Failed to create test database: {}", e))?,
         );
-        Self::new_inner(ctx, db, data_dir)
+        Ok((data_dir, db))
     }
 
-    fn new_inner(
+    pub(crate) fn new_inner(
         ctx: egui::Context,
         db: Arc<Database>,
         data_dir: PathBuf,
+        secret_store: Arc<SecretStore>,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         // Boot path now reads preferences from the shared app k/v store
         // (`<data_dir>/det-app.sqlite`). The store is opened once here and
-        // handed to every per-network `AppContext`.
+        // handed to every per-network `AppContext`. The seed vault was opened
+        // by the caller (keyless, or with a recovered legacy passphrase).
         let app_kv = AppContext::open_app_kv(&data_dir)?;
-        let secret_store = AppContext::open_secret_store(&data_dir)?;
         let settings = match app_kv.get::<AppSettings>(DetScope::Global, AppSettings::KV_KEY) {
             Ok(Some(s)) => s,
             Ok(None) => AppSettings::default(),

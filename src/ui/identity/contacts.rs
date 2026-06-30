@@ -309,24 +309,28 @@ fn render_populated(
         );
     });
 
-    // Fire the backend tasks to populate the list — but only once per tab
-    // entry. Without this guard the populated shell re-dispatches every frame,
-    // which floods the backend channel and hammers the SDK. The hub resets the
-    // guard in `refresh_on_arrival()` so a fresh tab switch or explicit refresh
-    // will trigger another load.
+    // Fire LoadContacts once per tab-entry. Without this guard the call
+    // re-dispatches every frame, flooding the backend channel. The hub resets
+    // the guard in `refresh_on_arrival()` so a tab switch or explicit refresh
+    // triggers another load.
     //
-    // Both `LoadContacts` (active contacts) and `LoadContactRequests` (received
-    // and sent requests) are dispatched together so all three sections can
-    // hydrate in one tab-entry cycle (T29).
+    // TODO(identity-hub/T29): dispatch `DashPayTask::LoadContactRequests`
+    // alongside `LoadContacts` once the hub wires a contact-request cache and
+    // the Received/Sent sections can consume
+    // `BackendTaskSuccessResult::DashPayContactRequests { incoming, outgoing }`.
+    // `display_task_result` on hub_screen currently routes that result nowhere;
+    // shipping the dispatch without consumption adds a wasted SDK round-trip per
+    // tab entry with zero user-visible benefit. Wire when:
+    //   1. ContactsState (or a sibling) grows a `Vec<ContactRequestEntry>` for
+    //      incoming and one for outgoing.
+    //   2. hub_screen::display_task_result matches DashPayContactRequests and
+    //      populates the cache.
+    //   3. The Received and Sent section_card() bodies iterate real RequestCard
+    //      rows instead of the hardcoded empty-state labels.
     if !state_guard.load_requested {
         state_guard.load_requested = true;
         action |= AppAction::BackendTask(BackendTask::DashPayTask(Box::new(
             DashPayTask::LoadContacts {
-                identity: identity.clone(),
-            },
-        )));
-        action |= AppAction::BackendTask(BackendTask::DashPayTask(Box::new(
-            DashPayTask::LoadContactRequests {
                 identity: identity.clone(),
             },
         )));

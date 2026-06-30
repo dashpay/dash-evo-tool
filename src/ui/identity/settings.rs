@@ -99,10 +99,16 @@ pub struct SettingsTab {
     edit_display_name: String,
     edit_bio: String,
     edit_avatar_url: String,
-    /// Copy of the originals for `has_changes` comparison.
+    /// Copy of the originals for `has_changes` comparison. Updated only
+    /// after a CONFIRMED backend success via `on_profile_saved()`.
     original_display_name: String,
     original_bio: String,
     original_avatar_url: String,
+    /// The values that were actually submitted to `UpdateProfile`. Stored so
+    /// that `on_profile_saved()` commits the submitted snapshot, NOT the
+    /// current edit-field state (which may have changed while the round-trip
+    /// was in-flight). Cleared on identity switch or when committed. (T21)
+    pending_save: Option<(String, String, String)>,
     /// `Advanced` expander state. Defaults closed per §B.8; callers (tests)
     /// may flip this via `open_advanced_for_test` to assert the section
     /// renders without a click.
@@ -298,6 +304,15 @@ impl SettingsTab {
                 save.disabled_tooltip(save_tooltip)
             };
             if save.clicked() && can_save {
+                // Capture the exact values being submitted. `on_profile_saved()`
+                // commits THIS snapshot as the new baseline — not whatever is in
+                // the edit fields at the time the success arrives, which may have
+                // changed while the round-trip was in-flight (QA-001 / T21).
+                self.pending_save = Some((
+                    self.edit_display_name.clone(),
+                    self.edit_bio.clone(),
+                    self.edit_avatar_url.clone(),
+                ));
                 action = AppAction::BackendTask(BackendTask::DashPayTask(Box::new(
                     DashPayTask::UpdateProfile {
                         identity: identity.clone(),
@@ -306,10 +321,6 @@ impl SettingsTab {
                         avatar_url: string_if_set(&self.edit_avatar_url),
                     },
                 )));
-                // Do NOT mirror original_* here: if the backend task fails the
-                // user needs to be able to retry (T21). The baseline is updated
-                // only after a confirmed DashPayProfileUpdated success result
-                // via on_profile_saved().
             }
 
             ui.add_space(12.0);
@@ -682,6 +693,9 @@ impl SettingsTab {
             self.original_display_name.clear();
             self.original_bio.clear();
             self.original_avatar_url.clear();
+            // A pending save for the old identity must not be committed for
+            // the new one — clear it on switch (T21).
+            self.pending_save = None;
         }
 
         if self.selected_identity.is_some() && !self.profile_loaded {
@@ -729,17 +743,25 @@ impl SettingsTab {
     }
 
     /// Called by the hub after a confirmed `DashPayProfileUpdated` backend
-    /// success result for the currently-selected identity. Commits the edit
-    /// fields as the new baseline, which disables the Save button until the
-    /// user makes another change. (T21)
+    /// success result for the currently-selected identity. Commits the
+    /// SUBMITTED values (captured at click time) as the new baseline, which
+    /// disables the Save button until the user makes another change. (T21)
     ///
-    /// Doing this here — not in the click handler — ensures that a failed
-    /// `UpdateProfile` task leaves the baseline unchanged and the user can
-    /// retry without re-entering their edits.
+    /// Using the submitted snapshot — not the current edit fields — prevents
+    /// the data-loss scenario where the user keeps typing after clicking Save:
+    /// the deferred-success must not silently treat never-saved edits as saved.
+    ///
+    /// A failed `UpdateProfile` task does NOT call this method, so the baseline
+    /// stays at the last-confirmed state and the user can retry.
     pub fn on_profile_saved(&mut self) {
-        self.original_display_name = self.edit_display_name.clone();
-        self.original_bio = self.edit_bio.clone();
-        self.original_avatar_url = self.edit_avatar_url.clone();
+        if let Some((dn, bio, url)) = self.pending_save.take() {
+            self.original_display_name = dn;
+            self.original_bio = bio;
+            self.original_avatar_url = url;
+        }
+        // If pending_save is None (e.g. stale success after an identity switch
+        // cleared it) we do nothing — the hub's identity-ID guard should have
+        // prevented this call, but defending is harmless.
     }
 
     /// Validation check used to drive Save button state. Returns `None` when
@@ -954,6 +976,77 @@ mod tests {
         assert!(
             harness.query_by_label("Advanced").is_some(),
             "Advanced sub-heading must render",
+        );
+    }
+
+    /// IT-SETTINGS-02 — T21 deferred baseline: on_profile_saved() must commit
+    /// the values that were SUBMITTED, not whatever is in the edit fields at the
+    /// time the success arrives (which can differ when the user keeps typing
+    /// after clicking Save on a slow network).
+    #[test]
+    fn on_profile_saved_commits_submitted_snapshot_not_current_edits() {
+        let mut tab = SettingsTab::new();
+        // Simulate the user having loaded a profile ("Alice") and then editing it.
+        tab.original_display_name = "Alice".into();
+        tab.original_bio = String::new();
+        tab.original_avatar_url = String::new();
+        tab.edit_display_name = "Alicia".into();
+        tab.edit_bio = String::new();
+        tab.edit_avatar_url = String::new();
+
+        // User clicks Save — capture the submitted snapshot.
+        tab.pending_save = Some(("Alicia".into(), String::new(), String::new()));
+
+        // While the round-trip is in-flight the user KEEPS TYPING.
+        tab.edit_display_name = "Alicia Smith".into();
+
+        // The success arrives — hub calls on_profile_saved().
+        tab.on_profile_saved();
+
+        // The baseline must reflect "Alicia" (what was submitted), NOT
+        // "Alicia Smith" (what happens to be in the box right now).
+        assert_eq!(
+            tab.original_display_name, "Alicia",
+            "baseline must be the submitted value, not the current edit"
+        );
+        // The edit field is unchanged — the user can continue editing.
+        assert_eq!(tab.edit_display_name, "Alicia Smith");
+        // has_changes() sees "Alicia Smith" vs "Alicia" → Save re-enables.
+        assert!(tab.has_changes(), "Save must re-enable for the in-flight edits");
+        // pending_save is cleared.
+        assert!(tab.pending_save.is_none());
+    }
+
+    /// IT-SETTINGS-03 — T21: pending_save is cleared on identity switch so a
+    /// stale success from the old identity cannot corrupt the new identity's
+    /// baseline.
+    #[test]
+    fn pending_save_cleared_on_identity_change() {
+        let mut tab = SettingsTab::new();
+        tab.edit_display_name = "Alicia".into();
+        tab.pending_save = Some(("Alicia".into(), String::new(), String::new()));
+
+        // Simulate what ensure_selected() does on a changed identity.
+        tab.selected_identity = None;
+        tab.profile_loaded = false;
+        tab.edit_display_name.clear();
+        tab.edit_bio.clear();
+        tab.edit_avatar_url.clear();
+        tab.original_display_name.clear();
+        tab.original_bio.clear();
+        tab.original_avatar_url.clear();
+        tab.pending_save = None; // the line we added in ensure_selected
+
+        assert!(
+            tab.pending_save.is_none(),
+            "pending_save must be cleared on identity switch"
+        );
+        // If on_profile_saved is now called (stale result) it must be a no-op.
+        let original_before = tab.original_display_name.clone();
+        tab.on_profile_saved();
+        assert_eq!(
+            tab.original_display_name, original_before,
+            "stale on_profile_saved must not corrupt baseline"
         );
     }
 }

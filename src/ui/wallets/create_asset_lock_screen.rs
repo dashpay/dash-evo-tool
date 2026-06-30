@@ -395,12 +395,15 @@ impl ScreenLike for CreateAssetLockScreen {
                                 return;
                             }
 
+                            // READ-only (R1): seed from app-scoped selection iff the global id
+                            // is in this wallet's identity list; no syncing_global (K1 guard).
                             let identity_selector_response = ui.add(IdentitySelector::new(
                                 "top_up_identity_selector",
                                 &mut self.selected_identity_string,
                                 &identities
                             )
                             .selected_identity(&mut self.selected_identity).unwrap()
+                            .with_app_default(&self.app_context)
                             .label("Identity to top up:")
                             .width(300.0));
 

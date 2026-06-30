@@ -22,4 +22,5 @@ mod secret_prompt;
 mod startup;
 mod support;
 mod tokens_screen;
+mod tools_screen;
 mod wallets_screen;

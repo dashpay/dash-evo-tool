@@ -450,14 +450,14 @@ mod tests {
         assert!(sel.sync_target.is_none());
     }
 
-    /// QA-001 — fixture-free write-back: `syncing_global` must propagate a
-    /// picker selection to `AppContext::selected_identity_id()`.
+    /// Method-level lock for `sync_to_global`: when the buffer holds a known
+    /// identity's Base58 and `syncing_global` is set, calling `sync_to_global()`
+    /// must invoke `ctx.set_selected_identity(Some(id))`.
     ///
-    /// Calls `sync_to_global()` directly (private access OK inside this module).
-    /// No private keys or DB insertion needed — the selector's `identities`
-    /// slice is built from in-memory `QualifiedIdentity` structs, and
-    /// `set_selected_identity` with a wallet-less identity only touches
-    /// in-memory mutexes (KV persistence gracefully skips without wallet backend).
+    /// Calls `sync_to_global()` directly (private access inside this module).
+    /// This tests the *mechanism* in isolation; the *rendering gate*
+    /// (`combo_changed || text_response.changed()` at line 321) is covered by
+    /// the kittest at `tests/kittest/identity_selector.rs` (QA-001).
     #[test]
     fn syncing_global_writes_selection_to_app_context() {
         with_isolated_dir(|| {

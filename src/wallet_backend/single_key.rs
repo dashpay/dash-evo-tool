@@ -925,11 +925,40 @@ pub(crate) fn sign_message_with_raw_key(
 /// a real key may instead use [`SecretStore::os`] (OS keyring) or a vault
 /// passphrase via `EncryptedFileStore::rekey`.
 pub fn open_secret_store(path: &std::path::Path) -> Result<SecretStore, SecretStoreError> {
+    prepare_vault_dir(path)?;
+    SecretStore::file_unprotected(path)
+}
+
+/// Open the file-backed secret store at `path` unlocked by `passphrase`.
+///
+/// The funds-safe, non-destructive recovery door for a **legacy vault** an
+/// older build wrote with a real passphrase: the keyless
+/// [`open_secret_store`] fails such a vault with
+/// [`SecretStoreError::WrongPassphrase`], and the GUI boot seam falls through
+/// to this with the user-supplied passphrase. It opens the SAME vault in
+/// place — it never deletes, recreates, or rekeys it, so wallet seeds are
+/// never at risk. Parent-directory creation and owner-only permissions match
+/// [`open_secret_store`] exactly.
+///
+/// A blank passphrase is rejected upstream
+/// ([`SecretStoreError::BlankPassphrase`]); the deliberately keyless door is
+/// [`open_secret_store`].
+pub fn open_secret_store_with_passphrase(
+    path: &std::path::Path,
+    passphrase: SecretString,
+) -> Result<SecretStore, SecretStoreError> {
+    prepare_vault_dir(path)?;
+    SecretStore::file(path, passphrase)
+}
+
+/// Create the vault's parent directory and lock it to owner-only.
+///
+/// The upstream file backend refuses to open a vault whose parent dir is
+/// group/other-writable (a rename-swap threat), so the secrets dir is forced
+/// to `0700` before the vault is opened or created.
+fn prepare_vault_dir(path: &std::path::Path) -> Result<(), SecretStoreError> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|_| SecretStoreError::MalformedVault)?;
-        // The upstream file backend refuses to open a vault whose parent dir is
-        // group/other-writable (a rename-swap threat). Lock the secrets dir to
-        // owner-only so the seed vault is never created under loose perms.
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -937,7 +966,7 @@ pub fn open_secret_store(path: &std::path::Path) -> Result<SecretStore, SecretSt
                 .map_err(|_| SecretStoreError::MalformedVault)?;
         }
     }
-    SecretStore::file_unprotected(path)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -962,6 +991,63 @@ mod tests {
         );
         // Non-secret hint stays visible for diagnostics.
         assert!(dbg.contains("the usual"));
+    }
+
+    /// A vault written WITH a real passphrase: the keyless boot open fails
+    /// `WrongPassphrase`, but the passphrase-accepting open recovers the SAME
+    /// vault and reads back the identical entry — proving the recovery door is
+    /// non-destructive (no delete/recreate/rekey of the seed vault).
+    #[test]
+    fn legacy_passphrase_vault_round_trips_without_destroying_data() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("secrets").join("det-secrets.pwsvault");
+        let scope = single_key_namespace_id();
+        let label = "single_key_priv.roundtrip";
+        let secret = [7u8; 32];
+
+        // Seed a passphrase-protected vault, then release its exclusive lock.
+        {
+            let store = open_secret_store_with_passphrase(&path, SecretString::new("legacy-pass"))
+                .expect("create passphrase vault");
+            store
+                .set(&scope, label, &SecretBytes::from_slice(&secret))
+                .expect("write entry");
+        }
+
+        // Boot opens keyless → the empty-passphrase verify-token fails.
+        let err = open_secret_store(&path).expect_err("keyless open must fail a passphrase vault");
+        assert!(
+            matches!(err, SecretStoreError::WrongPassphrase),
+            "expected WrongPassphrase, got {err:?}"
+        );
+
+        // The correct passphrase re-opens the same vault, data intact.
+        let store = open_secret_store_with_passphrase(&path, SecretString::new("legacy-pass"))
+            .expect("re-open with passphrase");
+        let got = store
+            .get(&scope, label)
+            .expect("read entry")
+            .expect("entry present");
+        assert_eq!(got.expose_secret(), &secret, "recovered bytes must match");
+    }
+
+    /// The deliberately keyless door must reject opening with a passphrase only
+    /// when the vault was sealed with one — and a freshly keyless vault must
+    /// still open keyless (regression guard for the recovery refactor).
+    #[test]
+    fn keyless_vault_still_opens_keyless_after_refactor() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("secrets").join("det-secrets.pwsvault");
+        let scope = single_key_namespace_id();
+        {
+            let store = open_secret_store(&path).expect("create keyless vault");
+            store
+                .set(&scope, "k", &SecretBytes::from_slice(&[1u8; 32]))
+                .expect("write");
+        }
+        // Re-open keyless — the default boot path is unchanged.
+        let store = open_secret_store(&path).expect("re-open keyless");
+        assert!(store.get(&scope, "k").expect("read").is_some());
     }
 
     fn fresh_view(

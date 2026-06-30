@@ -409,22 +409,22 @@ impl PlatformEventHandler for EventBridge {
         self.nudge_refresh();
     }
 
-    fn on_platform_event(&self, event: &platform_wallet::events::PlatformEvent) {
-        match event {
-            platform_wallet::events::PlatformEvent::WalletSkippedOnLoad { wallet_id, reason } => {
-                // Public wallet id + structural reason only; never a secret.
-                // TODO(PROJ-010-T6): surface a calm MessageBanner ("One saved
-                // wallet couldn't be opened. Re-add it from its recovery
-                // phrase to restore it.") once the construction path can reach
-                // an egui context. The skip is logged here in the meantime and
-                // also reported via `LoadedWallets.skipped`.
-                tracing::warn!(
-                    wallet_id = %hex::encode(wallet_id),
-                    %reason,
-                    "A saved wallet was skipped on load because its stored data is corrupt"
-                );
-            }
-        }
+    fn on_wallet_skipped_on_load(
+        &self,
+        wallet_id: platform_wallet::wallet::platform_wallet::WalletId,
+        reason: &platform_wallet::manager::load_outcome::SkipReason,
+    ) {
+        // Public wallet id + structural reason only; never a secret.
+        // TODO(PROJ-010-T6): surface a calm MessageBanner ("One saved
+        // wallet couldn't be opened. Re-add it from its recovery
+        // phrase to restore it.") once the construction path can reach
+        // an egui context. The skip is logged here in the meantime and
+        // also reported via `LoadedWallets.skipped`.
+        tracing::warn!(
+            wallet_id = %hex::encode(wallet_id),
+            %reason,
+            "A saved wallet was skipped on load because its stored data is corrupt"
+        );
     }
 
     fn on_shielded_sync_progress(&self, cumulative_scanned: u64, block_height: u64) {

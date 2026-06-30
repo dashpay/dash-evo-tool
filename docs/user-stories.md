@@ -240,6 +240,17 @@ As a power user who imported a private key under an old per-key password, I want
 - A wrong password fails with a calm, generic message and leaves the key restorable — the old data is never corrupted.
 - After restore the key appears in the wallet list at the same address; a note explains that balance and sending for single-key wallets arrive in a future update.
 
+### WAL-026: Unlock a passphrase-protected vault at startup [Implemented]
+**Persona:** Alex, Priya, Jordan
+
+As a user whose saved keys were sealed with a passphrase by an earlier version, I want the app to ask me for that passphrase at startup so that it opens normally instead of failing to launch.
+
+- When the app cannot open its saved-keys vault because it was sealed with a passphrase, it shows a masked unlock prompt at startup instead of closing.
+- Entering the correct passphrase opens the existing vault in place and the app continues to its normal screen; nothing is deleted, recreated, or re-encrypted.
+- A wrong passphrase re-asks with a calm message and no hint; the vault is never altered, so a later correct passphrase still works.
+- Choosing to quit closes the app cleanly and leaves the vault untouched, so the user can try again next time.
+- The headless command-line and automation paths never show a dialog; they report a calm, actionable message instead.
+
 ---
 
 ## Send and Receive (SND)

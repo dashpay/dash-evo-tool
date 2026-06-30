@@ -48,6 +48,7 @@ use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use derive_more::From;
 use eframe::{App, egui};
+use platform_wallet_storage::secrets::SecretStore;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::BitOrAssign;
 use std::path::PathBuf;
@@ -139,6 +140,16 @@ pub fn migration_running_text(step: MigrationStep) -> &'static str {
         MigrationStep::WalletMeta => "Updating wallet names.",
         MigrationStep::Finalize => "Finishing storage update.",
     }
+}
+
+/// Decide whether to dispatch the cold-start migration for the active network
+/// this frame: only when it has not already been dispatched AND its wallet
+/// backend is wired. The migration's first step needs a wired backend; firing
+/// before it is wired aborts with a transient `WalletBackendUnavailable` and
+/// burns the per-network dispatch guard, so the readiness gate keeps the guard
+/// pending and retries on a later frame once the backend wires.
+fn should_dispatch_cold_start(already_dispatched: bool, backend_ready: bool) -> bool {
+    !already_dispatched && backend_ready
 }
 
 #[derive(Debug, From)]
@@ -394,13 +405,28 @@ impl BitOrAssign for AppAction {
     }
 }
 impl AppState {
-    /// Creates a new `AppState` using the production database.
+    /// Creates a new `AppState`, opening the seed vault keyless.
     ///
-    /// This constructor is hidden when the `testing` feature is active to prevent
-    /// tests from accidentally using the production database. Use the `testing`
-    /// feature-gated `new()` variant instead.
-    #[cfg(not(feature = "testing"))]
+    /// Database selection is delegated to [`Self::boot_inputs`], which is
+    /// feature-gated so that the `testing` build can never touch the
+    /// production database. The keyless open aborts on a passphrase-protected
+    /// legacy vault; the GUI binary boots through
+    /// [`BootApp`](crate::boot::BootApp) instead, which prompts for the
+    /// passphrase rather than aborting.
     pub fn new(ctx: egui::Context) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let (data_dir, db) = Self::boot_inputs()?;
+        let secret_store = AppContext::open_secret_store(&data_dir)?;
+        Self::new_inner(ctx, db, data_dir, secret_store)
+    }
+
+    /// Prepare the boot inputs (data dir, env file, logging, database).
+    ///
+    /// The non-testing build opens and initializes the on-disk production
+    /// database; the `testing` build substitutes an in-memory database so
+    /// tests never read or write production data.
+    #[cfg(not(feature = "testing"))]
+    pub(crate) fn boot_inputs()
+    -> Result<(PathBuf, Arc<Database>), Box<dyn std::error::Error + Send + Sync>> {
         let data_dir = app_user_data_dir_path()?;
         ensure_data_dir_exists(&data_dir)?;
         ensure_env_file(&data_dir);
@@ -409,15 +435,12 @@ impl AppState {
         let db_file_path = data_file_path(&data_dir, "data.db")?;
         let db = Arc::new(Database::new(&db_file_path)?);
         db.initialize(&db_file_path)?;
-        Self::new_inner(ctx, db, data_dir)
+        Ok((data_dir, db))
     }
 
-    /// Creates a new `AppState` using an in-memory database for testing.
-    ///
-    /// Available only when the `testing` feature is active. This prevents tests
-    /// from reading or writing the production database.
     #[cfg(feature = "testing")]
-    pub fn new(ctx: egui::Context) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+    pub(crate) fn boot_inputs()
+    -> Result<(PathBuf, Arc<Database>), Box<dyn std::error::Error + Send + Sync>> {
         let data_dir = app_user_data_dir_path()?;
         ensure_data_dir_exists(&data_dir)?;
         ensure_env_file(&data_dir);
@@ -426,19 +449,20 @@ impl AppState {
             crate::database::test_helpers::create_test_database()
                 .map_err(|e| format!("Failed to create test database: {}", e))?,
         );
-        Self::new_inner(ctx, db, data_dir)
+        Ok((data_dir, db))
     }
 
-    fn new_inner(
+    pub(crate) fn new_inner(
         ctx: egui::Context,
         db: Arc<Database>,
         data_dir: PathBuf,
+        secret_store: Arc<SecretStore>,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         // Boot path now reads preferences from the shared app k/v store
         // (`<data_dir>/det-app.sqlite`). The store is opened once here and
-        // handed to every per-network `AppContext`.
+        // handed to every per-network `AppContext`. The seed vault was opened
+        // by the caller (keyless, or with a recovered legacy passphrase).
         let app_kv = AppContext::open_app_kv(&data_dir)?;
-        let secret_store = AppContext::open_secret_store(&data_dir)?;
         let settings = match app_kv.get::<AppSettings>(DetScope::Global, AppSettings::KV_KEY) {
             Ok(Some(s)) => s,
             Ok(None) => AppSettings::default(),
@@ -1162,9 +1186,22 @@ impl AppState {
     /// `backend_task::migration::finish_unwire`.
     fn dispatch_cold_start_migration(&mut self) {
         let network = self.chosen_network;
-        if !self.cold_start_migration_dispatched.insert(network) {
+        let already_dispatched = self.cold_start_migration_dispatched.contains(&network);
+        // Readiness gate: on a network SWITCH the switched-to network's wallet
+        // backend wires asynchronously a few frames after the switch, so
+        // dispatching before it is ready aborts the migration's first step with
+        // a transient `WalletBackendUnavailable` AND burns the per-network
+        // guard, stranding that network's wallets behind a manual "Retry now".
+        // We instead poll readiness each frame (a cheap, non-blocking ArcSwap
+        // load) and only dispatch — and only then burn the guard — once the
+        // backend is wired. `current_app_context()` and `handle_backend_task`
+        // both key off `chosen_network`, so the readiness observed here is what
+        // the spawned task will see.
+        let backend_ready = self.current_app_context().wallet_backend().is_ok();
+        if !should_dispatch_cold_start(already_dispatched, backend_ready) {
             return;
         }
+        self.cold_start_migration_dispatched.insert(network);
         tracing::info!(
             target = "migration::cold_start",
             network = ?network,
@@ -1334,6 +1371,22 @@ impl AppState {
                 self.migration_banner_handle = Some(handle);
             }
             MigrationState::Failed { error } => {
+                if error.is_backend_not_ready() {
+                    // Transient: the wallet backend had not finished wiring when
+                    // this run fired. Drop the per-network dispatch guard so the
+                    // frame loop re-dispatches once `wallet_backend()` is ready,
+                    // and reset to Idle so no failure banner flashes — the retry
+                    // is automatic and needs no user action. (With the readiness
+                    // gate this is a rare residual race; keeping the un-burn here
+                    // makes recovery self-healing if it ever fires.)
+                    self.cold_start_migration_dispatched
+                        .remove(&app_context.network);
+                    app_context
+                        .migration_status()
+                        .set_state(MigrationState::Idle);
+                    self.last_migration_state = Some(MigrationState::Idle);
+                    return;
+                }
                 let handle = MessageBanner::set_global(
                     ctx,
                     "Storage update could not complete. Your data is safe.",
@@ -2120,6 +2173,31 @@ mod migration_banner_tests {
     #[test]
     fn migration_retry_action_id_is_stable() {
         assert_eq!(MIGRATION_RETRY_ACTION_ID, "migration:retry:finish_unwire");
+    }
+
+    /// Cold-start dispatch gate (the startup-race fix): dispatch only when the
+    /// network has NOT already been dispatched AND its wallet backend is wired.
+    /// The not-ready row is the regression guard — a switched-to network whose
+    /// backend is still wiring must NOT dispatch (and so must not burn its
+    /// per-network guard), so a later frame retries once the backend wires.
+    #[test]
+    fn cold_start_dispatch_gate_truth_table() {
+        assert!(
+            should_dispatch_cold_start(false, true),
+            "fresh network with a wired backend must dispatch",
+        );
+        assert!(
+            !should_dispatch_cold_start(false, false),
+            "fresh network whose backend is still wiring must wait, not dispatch",
+        );
+        assert!(
+            !should_dispatch_cold_start(true, true),
+            "an already-dispatched network must not re-dispatch",
+        );
+        assert!(
+            !should_dispatch_cold_start(true, false),
+            "already-dispatched and not-ready must not dispatch",
+        );
     }
 }
 

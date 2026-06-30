@@ -1166,7 +1166,17 @@ impl WalletBackend {
                 "SPV run loop did not stop cleanly during shutdown; continuing teardown"
             );
         }
-        self.inner.pwm.shutdown().await;
+        // `shutdown()` returns a `#[must_use]` report: a non-clean status flags a
+        // worker that did not terminate or an orphan still parked at the reap
+        // deadline. Inspect it before the runtime is dropped — but teardown is
+        // best-effort, so a non-clean report is logged, not propagated.
+        let report = self.inner.pwm.shutdown().await;
+        if !report.all_clean() {
+            tracing::warn!(
+                report = ?report,
+                "Wallet manager shutdown did not complete cleanly (a worker or orphan may still be live); continuing teardown"
+            );
+        }
     }
 
     /// Stop chain sync **in place**, keeping this backend (and its
@@ -3259,7 +3269,12 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
         | P::ShieldedTreeUpdateFailed(_)
         | P::ShieldedStoreError(_)
         | P::ShieldedMerkleWitnessUnavailable(_)
-        | P::ShieldedKeyDerivation(_)) => TaskError::WalletBackend {
+        | P::ShieldedKeyDerivation(_)
+        // A shielded clear/wipe could not complete because the sync
+        // coordinator did not drain cleanly; the store is left intact and
+        // the caller is expected to retry. Generic envelope preserves the
+        // error chain (incl. the terminal WorkerStatus) for logs/details.
+        | P::ShieldedShutdownIncomplete { .. }) => TaskError::WalletBackend {
             source: Box::new(other),
         },
     }
@@ -3368,7 +3383,15 @@ fn persisted_load_skip_from_upstream(
             CorruptKind::MissingManifest => PersistedLoadSkip::MissingManifest,
             CorruptKind::MalformedXpub => PersistedLoadSkip::MalformedXpub,
             CorruptKind::DecodeError(_) => PersistedLoadSkip::DecodeError,
+            // `CorruptKind` is `#[non_exhaustive]`: a future structural
+            // family folds into the generic decode-failure bucket so no
+            // upstream detail crosses the seam.
+            _ => PersistedLoadSkip::DecodeError,
         },
+        // `SkipReason` is `#[non_exhaustive]`: any future skip reason
+        // surfaces as a generic decode failure rather than breaking the
+        // build or leaking row-derived detail across the seam.
+        _ => PersistedLoadSkip::DecodeError,
     }
 }
 
@@ -3451,7 +3474,11 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
         | P::ShieldedBroadcastUnconfirmed { .. }
         | P::ShieldedSpendUnconfirmed { .. }
         | P::RehydrationTopologyUnsupported { .. }
-        | P::RehydrationPoolMismatch { .. } => IdentityOpErrorKind::Other,
+        | P::RehydrationPoolMismatch { .. }
+        // Shielded clear/wipe could not drain cleanly — a transient
+        // precondition on the shielded coordinator, unrelated to identity
+        // registration; bucket as Other.
+        | P::ShieldedShutdownIncomplete { .. } => IdentityOpErrorKind::Other,
     }
 }
 

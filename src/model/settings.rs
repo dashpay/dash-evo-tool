@@ -84,7 +84,9 @@ pub struct AppSettings {
     pub user_mode: UserMode,
     /// Whether DET closes Dash-Qt automatically when it exits.
     pub close_dash_qt_on_exit: bool,
-    /// Whether SPV sync starts automatically when DET launches.
+    /// SPV sync starts automatically on launch. Default `true` for fresh
+    /// installs (no saved blob); existing installs keep their stored value —
+    /// the Network Settings checkbox is the opt-out.
     pub auto_start_spv: bool,
 }
 
@@ -108,7 +110,10 @@ impl Default for AppSettings {
             show_evonode_tools: false,
             user_mode: UserMode::Advanced,
             close_dash_qt_on_exit: true,
-            auto_start_spv: false,
+            // Default to on so wallets sync without a manual step on fresh installs.
+            // Existing users who stored false explicitly (from the old default) keep
+            // their saved preference — the blob wins over this default.
+            auto_start_spv: true,
         }
     }
 }
@@ -246,11 +251,12 @@ fn detect_dash_qt_path() -> Option<PathBuf> {
 mod tests {
     use super::*;
 
-    /// S1: defaults match the previous database-column defaults so the
-    /// "empty start" path (no blob in k/v yet) lands users on the same
-    /// configuration they would have had with a fresh settings row.
+    /// S1: verify the `AppSettings` defaults for a fresh install (no blob in
+    /// k/v yet). `auto_start_spv` intentionally differs from the old DB column
+    /// default (0/false): new installs sync without a manual step; existing
+    /// users who stored false keep their saved preference (the blob wins).
     #[test]
-    fn default_matches_previous_db_defaults() {
+    fn default_matches_expected_fresh_install_values() {
         let s = AppSettings::default();
         assert_eq!(s.network, Network::Mainnet);
         assert!(matches!(s.theme_mode, ThemeMode::System));
@@ -261,7 +267,46 @@ mod tests {
         assert!(!s.onboarding_completed);
         assert!(!s.show_evonode_tools);
         assert!(s.close_dash_qt_on_exit);
-        assert!(!s.auto_start_spv);
+        assert!(s.auto_start_spv); // on by default for fresh installs
+    }
+
+    /// S6: `auto_start_spv` default-on semantics — fresh installs auto-connect;
+    /// an existing blob with `false` keeps `false` (the struct default does NOT
+    /// override a persisted value).
+    #[test]
+    fn auto_start_spv_default_on_and_stored_false_survives_round_trip() {
+        // Fresh install: no blob → default is true.
+        assert!(
+            AppSettings::default().auto_start_spv,
+            "fresh install must default to auto-connect"
+        );
+
+        // Existing user: blob encodes false → decodes to false regardless of
+        // the current struct default.
+        let wire = AppSettingsWire {
+            network: "testnet".to_string(),
+            root_screen_type: 0,
+            dash_qt_path: None,
+            overwrite_dash_conf: true,
+            disable_zmq: false,
+            theme_mode: "System".to_string(),
+            core_backend_mode: 1,
+            onboarding_completed: true,
+            show_evonode_tools: false,
+            user_mode: "Advanced".to_string(),
+            close_dash_qt_on_exit: true,
+            auto_start_spv: false, // user had auto-connect off
+        };
+        let encoded =
+            bincode::serde::encode_to_vec(AppSettings::from(wire), bincode::config::standard())
+                .expect("encode");
+        let (decoded, _): (AppSettings, _) =
+            bincode::serde::decode_from_slice(&encoded, bincode::config::standard())
+                .expect("decode");
+        assert!(
+            !decoded.auto_start_spv,
+            "a stored false must survive the round-trip — the new default must not override it"
+        );
     }
 
     /// S2: a settings blob round-trips through the bincode wire form

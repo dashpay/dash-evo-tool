@@ -79,7 +79,9 @@ const CARD_MAX_WIDTH: f32 = 420.0;
 const DESCRIPTION_MAX_HEIGHT: f32 = 160.0;
 
 /// Reassurance line revealed once the soft 30 s stuck threshold passes.
-const STUCK_REASSURANCE: &str = "This is taking longer than usual.";
+/// Deliberately neutral — SPV initial sync is expected to take several minutes,
+/// so copy that implies a fault ("longer than usual") would be misleading.
+const STUCK_REASSURANCE: &str = "Still in progress — please keep the app open.";
 
 /// Escalated reassurance shown once the 120 s no-progress watchdog trips,
 /// replacing (not stacking with) [`STUCK_REASSURANCE`].

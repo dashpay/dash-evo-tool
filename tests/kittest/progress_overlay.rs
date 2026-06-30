@@ -1110,7 +1110,7 @@ fn tc_ovl_047_stuck_threshold_is_informational_only() {
     assert!(harness.query_by_label_contains("Elapsed:").is_none());
     assert!(
         harness
-            .query_by_label_contains("This is taking longer than usual.")
+            .query_by_label_contains("Still in progress — please keep the app open.")
             .is_none()
     );
 }
@@ -1127,7 +1127,7 @@ fn tc_ovl_047b_threshold_reveals_via_clock_seam() {
     assert!(harness.query_by_label_contains("Elapsed:").is_none());
     assert!(
         harness
-            .query_by_label("This is taking longer than usual.")
+            .query_by_label("Still in progress — please keep the app open.")
             .is_none()
     );
 
@@ -1141,7 +1141,7 @@ fn tc_ovl_047b_threshold_reveals_via_clock_seam() {
     );
     assert!(
         harness
-            .query_by_label("This is taking longer than usual.")
+            .query_by_label("Still in progress — please keep the app open.")
             .is_some(),
         "the soft reassurance line appears past 30 s"
     );
@@ -1163,7 +1163,7 @@ fn tc_ovl_047b_threshold_reveals_via_clock_seam() {
     );
     assert!(
         harness
-            .query_by_label("This is taking longer than usual.")
+            .query_by_label("Still in progress — please keep the app open.")
             .is_none(),
         "the watchdog line replaces the soft line, never stacks with it"
     );

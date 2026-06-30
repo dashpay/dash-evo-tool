@@ -324,8 +324,22 @@ pub async fn init_app_context() -> Result<Arc<AppContext>, McpError> {
 
     let app_kv = AppContext::open_app_kv(&data_dir)
         .map_err(|e| McpError::internal_error(format!("app k/v open: {e}"), None))?;
-    let secret_store = AppContext::open_secret_store(&data_dir)
-        .map_err(|e| McpError::internal_error(format!("secret store open: {e}"), None))?;
+    let secret_store = AppContext::open_secret_store(&data_dir).map_err(|e| {
+        // A legacy passphrase-protected vault can only be unlocked through the
+        // GUI's boot prompt — name the real cause and the path forward instead
+        // of the generic "another copy is running" lock message.
+        if e.is_secret_store_wrong_passphrase() {
+            McpError::internal_error(
+                "Your saved keys are protected by a passphrase set in an earlier version. \
+                 Open the Dash Evo Tool desktop app and enter the passphrase to unlock them, \
+                 then run this command again."
+                    .to_string(),
+                None,
+            )
+        } else {
+            McpError::internal_error(format!("secret store open: {e}"), None)
+        }
+    })?;
     let network = app_kv
         .get::<crate::model::settings::AppSettings>(
             crate::wallet_backend::DetScope::Global,

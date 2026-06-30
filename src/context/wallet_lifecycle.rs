@@ -1161,6 +1161,57 @@ impl AppContext {
             .unwrap_or_default()
     }
 
+    /// Count wallets that block the cold-start completion sentinel: an OPEN
+    /// wallet not yet registered with the upstream wallet backend, OR any
+    /// wallet whose lock cannot be read.
+    ///
+    /// The migration writes its sentinel only when this is zero. Soundness for
+    /// the registered set relies on the copy step rejecting exactly what
+    /// hydration drops (see
+    /// `migration::finish_unwire::hd_seed_row_is_hydratable`), so every wallet
+    /// that reached the vault is hydrated and seen here.
+    ///
+    /// Counted (sentinel withheld):
+    /// - a readable, open, not-yet-registered wallet;
+    /// - any wallet whose `RwLock` cannot be read — fail-safe, so a poisoned
+    ///   lock can never green-light a premature "completed".
+    ///
+    /// Excluded (does not block):
+    /// - a readable, `Closed` / locked password-protected wallet — it registers
+    ///   on its unlock gesture, so requiring it would wedge the sentinel on a
+    ///   protected install.
+    ///
+    /// Counts over the raw `self.wallets` map, NOT the [`Self::open_wallets`]
+    /// snapshot — that snapshot already drops a poisoned-lock wallet before the
+    /// fail-safe could see it. A poisoned OUTER map lock is recovered via
+    /// `into_inner` so a prior panic elsewhere cannot zero the count. When the
+    /// backend is not yet wired nothing is registered, so every open (or
+    /// unreadable) wallet counts.
+    pub(crate) fn unregistered_open_wallet_count(self: &Arc<Self>) -> usize {
+        let backend = self.wallet_backend().ok();
+        let guard = match self.wallets.read() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        guard
+            .values()
+            .filter(|w| match w.read() {
+                // Unreadable per-wallet lock: cannot prove it is registered, so
+                // fail safe and count it (withholds the sentinel).
+                Err(_) => true,
+                // Readable Closed / locked-protected: excluded — it registers on
+                // its unlock gesture, so requiring it would wedge the sentinel.
+                Ok(g) if !g.is_open() => false,
+                // Readable and open: unregistered unless the wired backend knows
+                // it. With no backend wired nothing is registered, so it counts.
+                Ok(g) => backend
+                    .as_ref()
+                    .map(|b| b.registered_wallet_id(&g.seed_hash()).is_none())
+                    .unwrap_or(true),
+            })
+            .count()
+    }
+
     pub(crate) fn init_missing_shielded_wallets(self: &Arc<Self>) {
         for wallet in self.open_wallets() {
             let ctx = Arc::clone(self);
@@ -2407,6 +2458,46 @@ mod tests {
         );
 
         backend.shutdown().await;
+    }
+
+    /// QA-005 — `unregistered_open_wallet_count` must count a wallet whose
+    /// `RwLock` is poisoned, so a prior panic can never let a premature
+    /// "completed" sentinel through. The pre-QA-005 implementation counted over
+    /// the `open_wallets()` snapshot, which drops a poisoned-lock wallet
+    /// (`read().ok()...unwrap_or(false)`) before the fail-safe could see it —
+    /// that version returns 0 here and fails this test.
+    #[tokio::test]
+    async fn unregistered_count_fails_safe_on_poisoned_wallet_lock() {
+        let (ctx, _sender, _tmp) = offline_testnet_context();
+
+        // One wallet, inserted straight into the map (no backend wired).
+        let wallet =
+            crate::model::wallet::Wallet::new_from_seed([0x42u8; 64], Network::Testnet, None, None)
+                .expect("build wallet");
+        let seed_hash = wallet.seed_hash();
+        let arc = Arc::new(std::sync::RwLock::new(wallet));
+        ctx.wallets
+            .write()
+            .expect("wallets map lock")
+            .insert(seed_hash, Arc::clone(&arc));
+
+        // Poison the wallet's lock by panicking while holding its write guard.
+        let poisoner = Arc::clone(&arc);
+        let _ = std::thread::spawn(move || {
+            let _guard = poisoner.write().expect("acquire write lock");
+            panic!("intentional poison for the fail-safe test");
+        })
+        .join();
+        assert!(
+            arc.read().is_err(),
+            "precondition: the wallet lock must be poisoned",
+        );
+
+        assert_eq!(
+            ctx.unregistered_open_wallet_count(),
+            1,
+            "a poisoned wallet lock must fail safe (counted), not be silently dropped",
+        );
     }
 
     /// PROJ-010 (fresh-install regression): on a truly-fresh install the real

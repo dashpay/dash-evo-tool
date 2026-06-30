@@ -1,6 +1,7 @@
 pub mod app;
 pub mod app_dir;
 pub mod backend_task;
+pub mod boot;
 pub mod bundled;
 pub mod config;
 pub mod context;

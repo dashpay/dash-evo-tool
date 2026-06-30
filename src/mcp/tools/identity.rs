@@ -454,10 +454,13 @@ impl AsyncTool<DashMcpService> for IdentityCreditsWithdraw {
         resolve::require_network(&ctx, Some(&param.network))?;
         resolve::validate_credits(param.amount_credits)?;
         resolve::validate_address(&param.to_address)?;
-        // INTENTIONAL: no SPV sync needed — this tool only dispatches Platform state transitions,
-        // not Core UTXO spends
-        let _seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
 
+        // The backend calls `Identity::fetch_by_identifier` and reads the identity nonce —
+        // both require a synced chain. Gate before `dispatch_task` so the withdrawal
+        // never races ahead of chain sync.
+        resolve::ensure_spv_synced(&ctx).await?;
+
+        let _seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
         let qi = resolve::qualified_identity(&ctx, &param.identity_id)?;
 
         let core_address = param

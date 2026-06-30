@@ -1,4 +1,5 @@
 mod confirmation_dialog;
+mod contract_screen;
 mod create_asset_lock_screen;
 mod dashpay_screen;
 mod identities_screen;

@@ -891,6 +891,11 @@ impl Screen {
             }
             Screen::IdentityHubScreen(screen) => {
                 screen.app_context = app_context;
+                // A network switch invalidates all per-identity caches (contacts
+                // load guard, profile cache, search state). Without this refresh
+                // the Contacts tab would stay permanently "already loaded" after
+                // switching networks (T28).
+                screen.refresh();
                 return;
             }
             _ => {}

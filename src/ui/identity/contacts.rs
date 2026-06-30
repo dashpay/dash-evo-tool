@@ -309,15 +309,24 @@ fn render_populated(
         );
     });
 
-    // Fire the existing backend task to populate the list — but only once per
-    // tab entry. Without this guard the populated shell re-dispatches every
-    // frame, which floods the backend channel and hammers the SDK. The hub
-    // resets the guard in `refresh_on_arrival()` so a fresh tab switch or
-    // explicit refresh will trigger another load.
+    // Fire the backend tasks to populate the list — but only once per tab
+    // entry. Without this guard the populated shell re-dispatches every frame,
+    // which floods the backend channel and hammers the SDK. The hub resets the
+    // guard in `refresh_on_arrival()` so a fresh tab switch or explicit refresh
+    // will trigger another load.
+    //
+    // Both `LoadContacts` (active contacts) and `LoadContactRequests` (received
+    // and sent requests) are dispatched together so all three sections can
+    // hydrate in one tab-entry cycle (T29).
     if !state_guard.load_requested {
         state_guard.load_requested = true;
         action |= AppAction::BackendTask(BackendTask::DashPayTask(Box::new(
             DashPayTask::LoadContacts {
+                identity: identity.clone(),
+            },
+        )));
+        action |= AppAction::BackendTask(BackendTask::DashPayTask(Box::new(
+            DashPayTask::LoadContactRequests {
                 identity: identity.clone(),
             },
         )));

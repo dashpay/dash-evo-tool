@@ -302,16 +302,22 @@ pub fn render(
 
     // --- Quick actions row --------------------------------------------
     ui.horizontal(|ui| {
-        if primary_quick_action(ui, "Send", "Send Dash to a contact, username, or address.")
+        // "Send" routes to the identity Transfer screen (identity→identity
+        // credit transfer). The tooltip therefore describes that action, not
+        // a wallet-Dash send (T30).
+        if primary_quick_action(ui, "Send", "Transfer credits from this identity to another identity.")
             .clicked()
         {
             apply(HomeButton::Send);
         }
         ui.add_space(Spacing::SM);
+        // "Receive" routes to TopUpIdentity (wallet→identity credits). The
+        // tooltip therefore describes adding funds from the wallet, not showing
+        // a QR code for inbound Dash (T30).
         if primary_quick_action(
             ui,
             "Receive",
-            "Show a QR code or your username so someone can pay you.",
+            "Move Dash from your wallet into this identity.",
         )
         .clicked()
         {

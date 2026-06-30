@@ -23,6 +23,7 @@ use dash_evo_tool::model::qualified_identity::{IdentityStatus, IdentityType, Qua
 use dash_evo_tool::ui::contracts_documents::document_action_screen::{
     DocumentActionScreen, DocumentActionType,
 };
+use dash_evo_tool::ui::contracts_documents::group_actions_screen::GroupActionsScreen;
 use dash_evo_tool::ui::contracts_documents::register_contract_screen::RegisterDataContractScreen;
 use dash_evo_tool::ui::contracts_documents::update_contract_screen::UpdateDataContractScreen;
 use dash_sdk::dpp::identity::Identity;
@@ -166,6 +167,43 @@ fn document_action_defaults_to_app_scoped_identity() {
             screen.selected_identity.as_ref().map(|qi| qi.identity.id()),
             Some(second),
             "DocumentActionScreen must seed from the app-scoped selected identity when None is passed"
+        );
+    });
+}
+
+// ── B6 ─ GroupActionsScreen session-local regression lock ────────────────────
+
+/// W5 B6 (K3 regression lock): `GroupActionsScreen` is SESSION-LOCAL — it must
+/// NOT seed `selected_identity` from the global selection on construction, even
+/// when an app-scoped identity is set. The picker is independent per session.
+#[test]
+fn group_actions_does_not_seed_from_global_identity() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let _guard = rt.enter();
+
+        let (_harness, app_context) = mount_context();
+
+        let _first = seed_identity(&app_context, 0x11, "GA Alpha");
+        let second = seed_identity(&app_context, 0x22, "GA Beta");
+
+        // Set the second identity as the app-scoped selection.
+        app_context.set_selected_identity(Some(second));
+
+        let screen = GroupActionsScreen::new(&app_context);
+
+        assert_eq!(
+            screen.selected_identity,
+            None,
+            "GroupActionsScreen is session-local (K3): it must NOT seed from the \
+             app-scoped selection — selected_identity must stay None on construction"
+        );
+
+        // The global selection must be unchanged (no write-back on construction).
+        assert_eq!(
+            app_context.selected_identity_id(),
+            Some(second),
+            "GroupActionsScreen must not alter the app-scoped selection on construction"
         );
     });
 }

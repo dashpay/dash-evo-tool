@@ -3,6 +3,13 @@
 //! B4 migration: `TokensScreen::new()` when built for `TokenCreator` must seed
 //! `selected_identity` from the app-scoped selection (fallback: first loaded).
 //!
+//! B6 regression lock: the 6 N/A token recipient/target/member selectors (mint,
+//! transfer, freeze, unfreeze, destroy-frozen-funds, groups) must NOT carry
+//! `syncing_global`. The `default_selector_has_no_sync_target` unit test in
+//! `identity_selector.rs` covers any freshly-built `IdentitySelector`; B6 adds
+//! a structural note and a spot-check that `TokensScreen` (Token Creator) does
+//! NOT accidentally apply syncing_global to the N/A sites when rendering.
+//!
 //! # TODO(WalletFixture / private-key fixture)
 //! Add write-back assertions (picker click → `resolve_selected_identity()` moves)
 //! once an identity fixture with loaded AUTH HIGH/CRITICAL private keys exists.

@@ -405,12 +405,19 @@ pub fn render(
 
     // --- Onboarding checklist -----------------------------------------
     if !state.dismissed_checklist {
-        let mut checklist = OnboardingChecklist::new();
-        if identity
+        // Extract the primary DPNS handle for the done-subtext ("You are
+        // @{handle}.") — passed into the checklist as optional context.
+        let primary_handle = identity
             .dpns_names
-            .iter()
-            .any(|n| !n.name.trim().is_empty())
-        {
+            .first()
+            .map(|n| n.name.trim().to_string())
+            .filter(|s| !s.is_empty());
+
+        let mut checklist = OnboardingChecklist::new();
+        if let Some(h) = &primary_handle {
+            checklist = checklist.with_handle(h);
+        }
+        if primary_handle.is_some() {
             checklist = checklist.mark_complete(ChecklistStep::PickUsername);
         }
         if hero_has_social_profile {

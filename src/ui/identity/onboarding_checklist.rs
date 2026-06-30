@@ -60,6 +60,40 @@ impl ChecklistStep {
             }
         }
     }
+
+    /// Descriptive sub-line shown below the label when the step is pending.
+    /// Wireframe §B.2 (V3).
+    pub fn subtext_pending(self) -> &'static str {
+        match self {
+            ChecklistStep::PickUsername => "Pick a name so people can pay you by name.",
+            ChecklistStep::SetDisplayName => "This is how you appear to contacts.",
+            ChecklistStep::AddFirstContact => {
+                "Add someone by username to send with one click."
+            }
+        }
+    }
+
+    /// Descriptive sub-line shown below the label when the step is complete.
+    /// Returns `None` for steps where a generic "done" message is sufficient
+    /// (the caller may supply a richer string, e.g. "You are @{handle}." for
+    /// PickUsername via [`OnboardingChecklist::with_handle`]).
+    pub fn subtext_done(self) -> Option<&'static str> {
+        match self {
+            ChecklistStep::PickUsername => None, // caller injects "@handle" via with_handle()
+            ChecklistStep::SetDisplayName => Some("Your display name is set."),
+            ChecklistStep::AddFirstContact => Some("You have contacts."),
+        }
+    }
+
+    /// Label for the inline action button shown next to pending steps.
+    /// Wireframe §B.2 (V3).
+    pub fn action_label(self) -> &'static str {
+        match self {
+            ChecklistStep::PickUsername => "Pick a username",
+            ChecklistStep::SetDisplayName => "Set display name",
+            ChecklistStep::AddFirstContact => "Add a contact",
+        }
+    }
 }
 
 /// Action that the checklist emits in a response.
@@ -136,6 +170,10 @@ impl ComponentResponse for ChecklistResponse {
 pub struct OnboardingChecklist {
     steps: Vec<ChecklistStep>,
     completed: Vec<ChecklistStep>,
+    /// Primary DPNS handle (without the leading `@`). When set, the done-state
+    /// subtext for `PickUsername` reads "You are @{handle}." instead of a
+    /// generic fallback. Set via [`with_handle`](Self::with_handle).
+    handle: Option<String>,
 }
 
 impl OnboardingChecklist {
@@ -146,7 +184,19 @@ impl OnboardingChecklist {
         Self {
             steps: ChecklistStep::ALL.to_vec(),
             completed: Vec::new(),
+            handle: None,
         }
+    }
+
+    /// Attach the identity's primary DPNS handle (without the leading `@`).
+    /// When set, the `PickUsername` done-state subtext reads
+    /// `"You are @{handle}."` instead of a generic message.
+    pub fn with_handle(mut self, handle: impl Into<String>) -> Self {
+        let h = handle.into();
+        if !h.trim().is_empty() {
+            self.handle = Some(h);
+        }
+        self
     }
 
     /// Mark a step as complete. No-op if the step was already complete.
@@ -203,21 +253,21 @@ impl OnboardingChecklist {
         let mut action: Option<ChecklistAction> = None;
 
         frame.show(ui, |ui| {
-            // Header row with heading + dismiss button.
+            // Header row: heading + "Hide this for now" ghost button (V3).
             ui.horizontal(|ui| {
                 ui.label(
-                    RichText::new("Get set up")
+                    RichText::new("Finish setting up your identity")
                         .size(16.0)
                         .strong()
                         .color(DashColors::text_primary(dark_mode)),
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    // `×` dismiss button — compact, ghost styling.
+                    // Wireframe §B.2: "Hide this for now" labeled button so the
+                    // dismiss affordance is clearly worded, not an ambiguous `×`.
                     let dismiss_resp = ui
                         .add(
                             egui::Label::new(
-                                RichText::new("×")
-                                    .size(20.0)
+                                RichText::new("Hide this for now")
                                     .color(DashColors::text_secondary(dark_mode)),
                             )
                             .sense(Sense::click()),
@@ -235,73 +285,131 @@ impl OnboardingChecklist {
 
             for step in &self.steps {
                 let complete = self.completed.contains(step);
-                if self.paint_step_row(ui, dark_mode, *step, complete) {
+                let handle_ref = self.handle.as_deref();
+                if self.paint_step_row(ui, dark_mode, *step, complete, handle_ref) {
                     action = Some(ChecklistAction::Activated(*step));
                 }
+                ui.add_space(Spacing::XS);
             }
         });
 
         ChecklistResponse::new(action)
     }
 
-    /// Paint a single step row. Returns `true` when the user clicked the
-    /// row (regardless of completion state — callers decide whether to
-    /// re-route a completed step to its edit screen).
+    /// Paint a single step row. Returns `true` when the user clicked anywhere
+    /// in the row (the bullet, label, subtext, or inline action button).
+    ///
+    /// Each pending row shows: bullet circle + label + subtext + action button.
+    /// Each complete row shows: filled check circle + struck-through label +
+    /// completion subtext. The entire row region (including the circle and the
+    /// whitespace) is a single click surface (T10 / V3).
     fn paint_step_row(
         &self,
         ui: &mut Ui,
         dark_mode: bool,
         step: ChecklistStep,
         complete: bool,
+        handle: Option<&str>,
     ) -> bool {
-        let mut clicked = false;
-        ui.horizontal(|ui| {
-            // Circle bullet — filled + check mark for complete, outlined
-            // otherwise.
-            let size = 20.0;
-            let (rect, _resp) = ui.allocate_exact_size(egui::vec2(size, size), Sense::hover());
-            let painter = ui.painter();
-            let center = rect.center();
-            let radius = size * 0.5;
+        // Wrap the whole row in a clickable scope so the bullet circle and
+        // surrounding whitespace are part of the hit area, not just the label
+        // text (T10). We still place the inline action button separately so it
+        // receives its own visual hover feedback.
+        let row_scope = ui.scope_builder(
+            egui::UiBuilder::new().sense(Sense::click()),
+            |ui| {
+                ui.horizontal(|ui| {
+                    // Circle bullet.
+                    let size = 20.0;
+                    let (rect, _resp) =
+                        ui.allocate_exact_size(egui::vec2(size, size), Sense::hover());
+                    let painter = ui.painter();
+                    let center = rect.center();
+                    let radius = size * 0.5;
 
-            if complete {
-                painter.circle_filled(center, radius, DashColors::DASH_BLUE);
-                // Draw a white check mark (two-line polyline).
-                let check_color = Color32::WHITE;
-                let p1 = egui::pos2(center.x - 4.0, center.y);
-                let p2 = egui::pos2(center.x - 1.0, center.y + 3.0);
-                let p3 = egui::pos2(center.x + 4.0, center.y - 3.0);
-                painter.line_segment([p1, p2], Stroke::new(1.8, check_color));
-                painter.line_segment([p2, p3], Stroke::new(1.8, check_color));
-            } else {
-                painter.circle_stroke(
-                    center,
-                    radius - 1.0,
-                    Stroke::new(1.5, DashColors::border(dark_mode)),
-                );
-            }
+                    if complete {
+                        painter.circle_filled(center, radius, DashColors::DASH_BLUE);
+                        let check_color = Color32::WHITE;
+                        let p1 = egui::pos2(center.x - 4.0, center.y);
+                        let p2 = egui::pos2(center.x - 1.0, center.y + 3.0);
+                        let p3 = egui::pos2(center.x + 4.0, center.y - 3.0);
+                        painter.line_segment([p1, p2], Stroke::new(1.8, check_color));
+                        painter.line_segment([p2, p3], Stroke::new(1.8, check_color));
+                    } else {
+                        painter.circle_stroke(
+                            center,
+                            radius - 1.0,
+                            Stroke::new(1.5, DashColors::border(dark_mode)),
+                        );
+                    }
 
-            ui.add_space(Spacing::SM);
+                    ui.add_space(Spacing::SM);
 
-            // Label — struck through when complete so the state is obvious
-            // even to color-blind users.
-            let text_color = if complete {
-                DashColors::text_secondary(dark_mode)
-            } else {
-                DashColors::text_primary(dark_mode)
-            };
-            let mut rich = RichText::new(step.label()).color(text_color);
-            if complete {
-                rich = rich.strikethrough();
-            }
-            let label_resp = ui
-                .add(egui::Label::new(rich).sense(Sense::click()))
-                .clickable_tooltip(step.tooltip());
-            if label_resp.clicked() {
-                clicked = true;
-            }
-        });
-        clicked
+                    // Content column: label + subtext [+ action button].
+                    ui.vertical(|ui| {
+                        // Label — struck through when complete.
+                        let text_color = if complete {
+                            DashColors::text_secondary(dark_mode)
+                        } else {
+                            DashColors::text_primary(dark_mode)
+                        };
+                        let mut rich = RichText::new(step.label()).strong().color(text_color);
+                        if complete {
+                            rich = rich.strikethrough();
+                        }
+                        ui.label(rich);
+
+                        // Descriptive subtext (V3).
+                        let subtext: String = if complete {
+                            // For PickUsername done, prefer "You are @{handle}."
+                            if step == ChecklistStep::PickUsername {
+                                match handle {
+                                    Some(h) => format!("You are @{h}."),
+                                    None => "Your username is set.".to_string(),
+                                }
+                            } else {
+                                step.subtext_done()
+                                    .unwrap_or("Done.")
+                                    .to_string()
+                            }
+                        } else {
+                            step.subtext_pending().to_string()
+                        };
+                        ui.label(
+                            RichText::new(subtext)
+                                .small()
+                                .color(DashColors::text_secondary(dark_mode)),
+                        );
+                    });
+                });
+            },
+        );
+
+        // The inline action button for pending items is placed outside the
+        // scope so it gets its own visual affordance, but its click still
+        // counts as a row activation.
+        let mut action_clicked = false;
+        if !complete {
+            ui.horizontal(|ui| {
+                ui.add_space(20.0 + Spacing::SM); // align with content column
+                let btn_resp = ui
+                    .add(
+                        egui::Label::new(
+                            RichText::new(step.action_label())
+                                .small()
+                                .color(DashColors::DASH_BLUE)
+                                .underline(),
+                        )
+                        .sense(Sense::click()),
+                    )
+                    .clickable_tooltip(step.tooltip());
+                if btn_resp.clicked() {
+                    action_clicked = true;
+                }
+            });
+        }
+
+        row_scope.response.clicked() || action_clicked
     }
 }
 

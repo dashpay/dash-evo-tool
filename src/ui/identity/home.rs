@@ -308,8 +308,16 @@ pub fn render(
     // gap between them. With V1 applied (hero sized to content, no min-height
     // floor) the hero is already compact — no extra space is added before this
     // card, and the standard Spacing::MD below separates both from the actions.
+    //
+    // V2/V3 conflict (QA-006): The onboarding checklist already contains a
+    // "Set a display name" step that routes to Settings — the same action as
+    // this card. When the checklist is visible (not dismissed), suppress this
+    // card so the user sees exactly one prompt for the action.
+    let checklist_covers_profile =
+        !hero_has_social_profile && !state.dismissed_checklist;
     if !hero_has_social_profile
         && !state.skipped_social_profile
+        && !checklist_covers_profile
         && paint_social_profile_card(ui, dark_mode)
     {
         apply(HomeButton::SetUpSocialProfile);

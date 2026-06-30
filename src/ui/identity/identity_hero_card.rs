@@ -173,10 +173,15 @@ pub struct IdentityHeroCard {
     network_label: Option<String>,
     /// Tooltip attached to the network pill (verbatim from §D row 15).
     network_tooltip: Option<String>,
-    /// Optional avatar bytes (PNG/JPEG). If present, the hero paints this
-    /// image inside the avatar circle; otherwise an initials fallback is
-    /// drawn for the social-profile-set variant.
+    /// Optional avatar bytes (PNG/JPEG). If present AND decodable, the hero
+    /// paints this image inside the avatar circle; otherwise an initials
+    /// fallback is used.
     avatar_bytes: Option<Vec<u8>>,
+    /// `true` when `avatar_bytes` decoded successfully (checked eagerly in
+    /// `with_avatar_bytes`). `false` on decode failure so that
+    /// `avatar_uses_initials_fallback()` stays honest even without a render
+    /// pass (QA-003 / T09).
+    avatar_decode_ok: bool,
 }
 
 impl IdentityHeroCard {
@@ -192,6 +197,7 @@ impl IdentityHeroCard {
             network_label: None,
             network_tooltip: None,
             avatar_bytes: None,
+            avatar_decode_ok: false,
         }
     }
 
@@ -241,12 +247,19 @@ impl IdentityHeroCard {
         self
     }
 
-    /// Attach raw avatar bytes (PNG / JPEG). When present, they override the
-    /// initials fallback.
+    /// Attach raw avatar bytes (PNG / JPEG). When present and decodable, they
+    /// override the initials fallback. An eager decode check is performed here
+    /// so `avatar_uses_initials_fallback()` stays accurate even before the
+    /// first `show()` call (QA-003 / T09). The bytes are stored for the actual
+    /// GPU-upload decode in `try_paint_avatar_image`.
     pub fn with_avatar_bytes(mut self, bytes: Vec<u8>) -> Self {
-        if !bytes.is_empty() {
-            self.avatar_bytes = Some(bytes);
+        if bytes.is_empty() {
+            return self;
         }
+        // Probe decode: just validate, discard the image data. The full decode
+        // for GPU upload happens lazily in try_paint_avatar_image.
+        self.avatar_decode_ok = image::load_from_memory(&bytes).is_ok();
+        self.avatar_bytes = Some(bytes);
         self
     }
 
@@ -262,9 +275,11 @@ impl IdentityHeroCard {
     }
 
     /// True when the hero will use the initials fallback instead of an image
-    /// (only meaningful in the social-profile-set variant). Exposed for tests.
+    /// (only meaningful in the social-profile-set variant). Returns `true`
+    /// when no avatar bytes were supplied OR when the bytes failed to decode
+    /// (QA-003 / T09: stays honest even without a render pass).
     pub fn avatar_uses_initials_fallback(&self) -> bool {
-        self.has_social_profile() && self.avatar_bytes.is_none()
+        self.has_social_profile() && (self.avatar_bytes.is_none() || !self.avatar_decode_ok)
     }
 
     /// Initial letter for the initials fallback, uppercase. Falls back to
@@ -451,6 +466,13 @@ impl IdentityHeroCard {
     /// The decoded texture is cached in the egui context keyed by an FNV-1a
     /// hash of the bytes, so the `image::load_from_memory` decode only runs
     /// once per unique avatar regardless of how many frames the hero renders.
+    ///
+    /// # Resource note (QA-007)
+    /// Textures accumulate in the egui temp store for the session's lifetime
+    /// (one GPU allocation per distinct avatar viewed). Bounded by the number
+    /// of distinct avatars seen in a session — acceptable for the typical 1-5
+    /// identity case. A bounded LRU eviction policy is a follow-up if memory
+    /// growth becomes a concern.
     fn try_paint_avatar_image(&self, ui: &mut Ui, bytes: &[u8]) -> bool {
         let hash = fnv1a_hash(bytes);
         let cache_id = egui::Id::new(("identity_avatar", hash));
@@ -700,6 +722,62 @@ mod tests {
         assert!(resp.has_changed());
         assert!(resp.pick_username_clicked());
         assert_eq!(resp.changed_value(), &Some(HeroAction::PickUsernameClicked));
+    }
+
+    // ─── T09 / QA-003 avatar readiness tests ──────────────────────────────
+
+    /// UT-HERO-03 — avatar decode success: with_avatar_bytes() accepts valid
+    /// PNG bytes and avatar_uses_initials_fallback() returns false.
+    #[test]
+    fn avatar_valid_bytes_disable_initials_fallback() {
+        // Generate a minimal 1×1 RGBA PNG using the same `image` crate used
+        // in production so the test is never out-of-sync with the decoder.
+        let img = image::DynamicImage::new_rgba8(1, 1);
+        let mut png_bytes = Vec::new();
+        img.write_to(
+            &mut std::io::Cursor::new(&mut png_bytes),
+            image::ImageFormat::Png,
+        )
+        .expect("writing a 1×1 RGBA PNG should always succeed");
+
+        let hero = IdentityHeroCard::new(HeroIdentityKind::User, "0.5")
+            .with_display_name("Alex")
+            .with_avatar_bytes(png_bytes);
+        assert!(
+            hero.has_social_profile(),
+            "display name set → social profile variant"
+        );
+        assert!(
+            !hero.avatar_uses_initials_fallback(),
+            "valid PNG bytes → initials fallback must not fire"
+        );
+        assert!(
+            hero.avatar_decode_ok,
+            "avatar_decode_ok must be true for a valid image"
+        );
+    }
+
+    /// UT-HERO-04 — avatar decode failure: with_avatar_bytes() rejects
+    /// undecodable bytes and avatar_uses_initials_fallback() returns true even
+    /// before any show() call (QA-003 / T09 readiness flag).
+    #[test]
+    fn avatar_corrupt_bytes_keep_initials_fallback_honest() {
+        let garbage: Vec<u8> = vec![0xDE, 0xAD, 0xBE, 0xEF, 0xFF, 0x00];
+        let hero = IdentityHeroCard::new(HeroIdentityKind::User, "0.5")
+            .with_display_name("Alex")
+            .with_avatar_bytes(garbage);
+        assert!(
+            hero.has_social_profile(),
+            "display name set → social profile variant"
+        );
+        assert!(
+            hero.avatar_uses_initials_fallback(),
+            "corrupt bytes must fall back to initials — QA-003: readiness flag stays honest"
+        );
+        assert!(
+            !hero.avatar_decode_ok,
+            "avatar_decode_ok must be false for undecodable bytes"
+        );
     }
 
     #[test]

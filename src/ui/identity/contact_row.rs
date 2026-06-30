@@ -95,12 +95,14 @@ impl ContactRow {
     }
 
     /// Render the row and return its click response.
+    ///
+    /// `contact_id` in the response is populated only when a click is detected
+    /// (body, Send, or overflow), matching the `ComponentResponse::changed_value`
+    /// contract that `changed_value()` is `Some` only when `has_changed()` is
+    /// true (QA-004 / T08).
     pub fn show(&self, ui: &mut Ui) -> ContactRowResponse {
         let dark_mode = ui.ctx().global_style().visuals.dark_mode;
-        let mut response = ContactRowResponse {
-            contact_id: Some(self.contact_id.clone()),
-            ..Default::default()
-        };
+        let mut response = ContactRowResponse::default(); // contact_id stays None until a click
 
         let frame = Frame::new()
             .fill(DashColors::surface_elevated(dark_mode))
@@ -140,6 +142,9 @@ impl ContactRow {
                     });
                 if body_response.response.clicked() {
                     response.clicked = true;
+                    // Echo the id only on actual click — ComponentResponse
+                    // contract: changed_value() Some iff has_changed() (QA-004).
+                    response.contact_id = Some(self.contact_id.clone());
                 }
 
                 // Right-aligned actions.
@@ -151,6 +156,7 @@ impl ContactRow {
                             .clicked()
                         {
                             response.overflow_clicked = true;
+                            response.contact_id = Some(self.contact_id.clone());
                         }
                         ui.add_space(8.0);
                         if ui
@@ -158,6 +164,7 @@ impl ContactRow {
                             .clicked()
                         {
                             response.send_clicked = true;
+                            response.contact_id = Some(self.contact_id.clone());
                         }
                     },
                 );
@@ -207,18 +214,19 @@ mod tests {
 
     /// UT-CONTACT-ROW-01 — Clickable surface. A click on the row body must
     /// produce a response whose `clicked` flag is true and whose `contact_id`
-    /// field carries the id supplied at construction, so the caller can route
-    /// the click without a parallel index.
+    /// field carries the id supplied at construction. Additionally,
+    /// `contact_id` must be None when there is no click, satisfying the
+    /// ComponentResponse contract (has_changed() ↔ changed_value() is Some).
     #[test]
     fn ut_contact_row_01_click_carries_contact_id() {
         let row = ContactRow::new("id-abc", "Alex Kim", "alex.dash");
-        // Simulate what `show()` does on a positive click: build the response
-        // template and set `clicked = true` from the body's click sense.
-        let mut response = ContactRowResponse {
-            contact_id: Some(row.contact_id.clone()),
-            ..Default::default()
-        };
+        // Simulate what `show()` does on a positive click: echo the id
+        // only when the click is detected (QA-004 — id must NOT be set on
+        // every frame).
+        let mut response = ContactRowResponse::default();
         response.clicked = true;
+        response.contact_id = Some(row.contact_id.clone());
+
         assert!(response.clicked);
         assert_eq!(
             response.contact_id.as_deref(),
@@ -228,6 +236,23 @@ mod tests {
         );
         assert!(!response.send_clicked);
         assert!(!response.overflow_clicked);
+    }
+
+    /// UT-CONTACT-ROW-04 — ComponentResponse contract: changed_value() must
+    /// be None when has_changed() is false (QA-004 / T08).
+    #[test]
+    fn ut_contact_row_04_no_click_means_no_contact_id() {
+        // The default response (no click) must have contact_id = None.
+        let r = ContactRowResponse::default();
+        assert!(
+            !r.has_changed(),
+            "default response has no clicks"
+        );
+        assert!(
+            r.contact_id.is_none(),
+            "contact_id must be None when no click occurred — \
+             ComponentResponse contract: changed_value() Some iff has_changed()"
+        );
     }
 
     #[test]

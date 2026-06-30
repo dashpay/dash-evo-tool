@@ -7,12 +7,14 @@
 //! out of `AppState::new` and aborted startup before any window appeared.
 //!
 //! [`BootApp`] wraps the eframe app: when the keyless open fails *specifically*
-//! with a wrong-passphrase, it renders a masked unlock prompt in the SAME
-//! event loop (a second `eframe::run_native` is not portable — winit forbids a
-//! second event loop on macOS) and re-opens the SAME vault in place with the
-//! supplied passphrase. The open is non-destructive — the vault is never
-//! deleted, recreated, or rekeyed — so wallet seeds are never at risk. Every
-//! other boot failure stays fatal exactly as before.
+//! with a wrong-passphrase, it renders the shared
+//! [`passphrase_modal`](crate::ui::components::passphrase_modal) (proper masked
+//! input, zeroized) in the SAME event loop (a second `eframe::run_native` is
+//! not portable — winit forbids a second event loop on macOS) and re-opens the
+//! SAME vault in place with the supplied passphrase. The open is
+//! non-destructive — the vault is never deleted, recreated, or rekeyed — so
+//! wallet seeds are never at risk. Every other boot failure stays fatal exactly
+//! as before.
 //!
 //! Only the GUI binary boots through here; the headless MCP/CLI path keeps the
 //! keyless open and surfaces the typed error instead of popping a dialog.
@@ -22,11 +24,13 @@ use std::sync::Arc;
 
 use eframe::egui;
 use platform_wallet_storage::secrets::SecretString;
-use zeroize::Zeroizing;
 
 use crate::app::AppState;
 use crate::context::AppContext;
 use crate::database::Database;
+use crate::ui::components::passphrase_modal::{
+    PassphraseModalConfig, PassphraseModalOutcome, passphrase_modal,
+};
 
 type BootError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -137,15 +141,15 @@ impl eframe::App for BootApp {
 }
 
 /// State of the legacy-vault unlock prompt.
+///
+/// The masked input buffer and focus tracking live inside the reused
+/// [`passphrase_modal`] (egui data cache), so this carries only the domain
+/// state needed to re-open the vault and the re-prompt reason.
 pub struct UnlockState {
     ctx: egui::Context,
     db: Arc<Database>,
     data_dir: PathBuf,
-    /// Masked input buffer, wiped on drop and after each submit.
-    passphrase: Zeroizing<String>,
     error: Option<UnlockError>,
-    /// Whether the input field has been given focus once.
-    focused: bool,
 }
 
 impl UnlockState {
@@ -154,72 +158,40 @@ impl UnlockState {
             ctx,
             db,
             data_dir,
-            passphrase: Zeroizing::new(String::new()),
             error: None,
-            focused: false,
         }
     }
 
-    /// Render the masked unlock prompt for one frame and report the user's
-    /// action. On submit, the buffer is consumed into a [`SecretString`] and
-    /// cleared; a blank entry re-prompts rather than calling the vault.
+    /// Render the shared masked unlock prompt for one frame and report the
+    /// user's action. The passphrase is masked, zeroized, and extracted by
+    /// [`passphrase_modal`]; a blank entry re-prompts rather than calling the
+    /// vault.
     fn show_modal(&mut self, ctx: &egui::Context) -> UnlockOutcome {
-        let mut submit = false;
-        let mut cancel = false;
+        let config = PassphraseModalConfig {
+            window_title: "Unlock your saved keys",
+            body: "Your saved keys are protected by a passphrase set in an earlier version. \
+                   Enter it to open them, or quit and reopen the app to try again later.",
+            hint: None,
+            error: self.error.map(UnlockError::message),
+            submit_label: "Unlock",
+            input_placeholder: "Enter passphrase",
+            remember_label: None,
+        };
 
-        egui::Modal::new(egui::Id::new("legacy_vault_unlock")).show(ctx, |ui| {
-            ui.set_width(360.0);
-            ui.heading("Unlock your saved keys");
-            ui.add_space(8.0);
-            ui.label(
-                "Your saved keys are protected by a passphrase set in an earlier version. \
-                 Enter it to open them.",
-            );
-            ui.add_space(8.0);
-
-            if let Some(err) = self.error {
-                ui.colored_label(ui.visuals().error_fg_color, err.message());
-                ui.add_space(4.0);
-            }
-
-            let field = ui.add(
-                egui::TextEdit::singleline(&mut *self.passphrase)
-                    .password(true)
-                    .hint_text("Passphrase")
-                    .desired_width(f32::INFINITY),
-            );
-            if !self.focused {
-                field.request_focus();
-                self.focused = true;
-            }
-            let submit_via_enter =
-                field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-
-            ui.add_space(12.0);
-            ui.horizontal(|ui| {
-                if ui.button("Unlock").clicked() || submit_via_enter {
-                    submit = true;
+        match passphrase_modal(ctx, &config, |_ui| {}) {
+            PassphraseModalOutcome::Pending => UnlockOutcome::Pending,
+            PassphraseModalOutcome::Cancel => UnlockOutcome::Cancel,
+            PassphraseModalOutcome::Submit(text) => {
+                let passphrase = SecretString::new(text.to_string());
+                if passphrase.is_blank() {
+                    self.error = Some(UnlockError::Blank);
+                    UnlockOutcome::Pending
+                } else {
+                    self.error = None;
+                    UnlockOutcome::Submit(passphrase)
                 }
-                if ui.button("Quit").clicked() {
-                    cancel = true;
-                }
-            });
-        });
-
-        if cancel {
-            return UnlockOutcome::Cancel;
-        }
-        if submit {
-            let passphrase = SecretString::new(self.passphrase.to_string());
-            self.passphrase.clear();
-            if passphrase.is_blank() {
-                self.error = Some(UnlockError::Blank);
-                return UnlockOutcome::Pending;
             }
-            self.error = None;
-            return UnlockOutcome::Submit(passphrase);
         }
-        UnlockOutcome::Pending
     }
 }
 

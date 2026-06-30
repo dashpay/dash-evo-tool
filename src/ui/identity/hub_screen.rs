@@ -324,9 +324,21 @@ impl ScreenLike for IdentityHubScreen {
 
     fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
         // Feed an async DashPay profile load back into the cache the tabs read.
-        // Other results are no-ops: tab submodules take over their own lifecycle
-        // when they land, so unrecognized results must not corrupt hub state.
         self.profile_cache.record_result(&result);
+
+        // A confirmed profile-save success: commit the edit baseline on the
+        // Settings tab so the Save button re-enables only after the next edit
+        // (T21). We check the saved identity matches the currently-selected
+        // one so a stale result from a prior identity does not corrupt state.
+        if let BackendTaskSuccessResult::DashPayProfileUpdated(saved_id) = &result {
+            let matches = self
+                .settings_tab
+                .selected_identity()
+                .is_some_and(|qi| qi.identity.id() == saved_id);
+            if matches {
+                self.settings_tab.on_profile_saved();
+            }
+        }
     }
 
     fn display_task_error(&mut self, _error: &TaskError) -> bool {

@@ -122,8 +122,12 @@ pub fn render(
     });
 
     // Propagate captured selection to the caller, if they supplied a slot.
-    if let Some(slot) = selected_id_out {
-        *slot = captured_selection;
+    // Only update when an identity was actually clicked — never overwrite with
+    // `None` on frames where no click occurred (T17).
+    if let Some(slot) = selected_id_out
+        && let Some(sel) = captured_selection
+    {
+        *slot = Some(sel);
     }
 
     action

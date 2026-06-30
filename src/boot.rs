@@ -23,7 +23,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use eframe::egui;
-use platform_wallet_storage::secrets::SecretString;
+use platform_wallet_storage::secrets::{SecretStore, SecretString};
 
 use crate::app::AppState;
 use crate::context::AppContext;
@@ -56,18 +56,17 @@ impl BootApp {
     /// exactly as before.
     pub fn new(ctx: egui::Context) -> Result<Self, BootError> {
         let (data_dir, db) = AppState::boot_inputs()?;
-        match AppContext::open_secret_store(&data_dir) {
-            Ok(store) => Ok(BootApp::Running(Box::new(AppState::new_inner(
+        match classify_open(&data_dir)? {
+            BootDecision::Ready(store) => Ok(BootApp::Running(Box::new(AppState::new_inner(
                 ctx, db, data_dir, store,
             )?))),
-            Err(e) if e.is_secret_store_wrong_passphrase() => {
+            BootDecision::Unlock => {
                 tracing::warn!(
                     "Seed vault is protected by a passphrase from an earlier version; \
                      prompting to unlock instead of aborting boot"
                 );
                 Ok(BootApp::Unlocking(UnlockState::new(ctx, db, data_dir)))
             }
-            Err(e) => Err(Box::new(e)),
         }
     }
 
@@ -97,11 +96,14 @@ impl BootApp {
                     state.error = Some(UnlockError::WrongPassphrase);
                 }
             }
+            // Any non-passphrase failure on the keyed open is genuinely fatal —
+            // mirror BootApp::new's classification. Re-prompting can never
+            // resolve it, so abort cleanly instead of trapping the user behind
+            // a futile prompt (the inverse of the bug this fix addresses).
             Err(e) => {
-                tracing::warn!(error = ?e, "Vault unlock attempt failed");
-                if let BootApp::Unlocking(state) = self {
-                    state.error = Some(UnlockError::Storage);
-                }
+                tracing::error!(error = ?e, "Vault open failed with a non-passphrase error; aborting");
+                *self = BootApp::Failed;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
         }
     }
@@ -170,7 +172,7 @@ impl UnlockState {
         let config = PassphraseModalConfig {
             window_title: "Unlock your saved keys",
             body: "Your saved keys are protected by a passphrase set in an earlier version. \
-                   Enter it to open them, or quit and reopen the app to try again later.",
+                   Enter it to open them. The app asks for this passphrase every time it starts.",
             hint: None,
             error: self.error.map(UnlockError::message),
             submit_label: "Unlock",
@@ -205,12 +207,13 @@ enum UnlockOutcome {
     Cancel,
 }
 
-/// User-facing reason the unlock prompt is re-shown.
+/// User-facing reason the unlock prompt is re-shown. Only recoverable reasons
+/// live here — a non-passphrase open failure aborts (see [`BootApp::try_unlock`])
+/// rather than re-prompting, so it is never surfaced through this enum.
 #[derive(Clone, Copy)]
 enum UnlockError {
     WrongPassphrase,
     Blank,
-    Storage,
 }
 
 impl UnlockError {
@@ -218,9 +221,104 @@ impl UnlockError {
         match self {
             UnlockError::WrongPassphrase => "That passphrase is not correct. Try again.",
             UnlockError::Blank => "Enter your passphrase to continue.",
-            UnlockError::Storage => {
-                "Your saved keys could not be opened. Make sure no other copy of Dash Evo Tool is running, then try again."
-            }
         }
+    }
+}
+
+/// The keyless-open classification at boot.
+enum BootDecision {
+    /// The vault opened keyless and is ready to use.
+    Ready(Arc<SecretStore>),
+    /// The vault is passphrase-protected (legacy); the user must unlock it.
+    Unlock,
+}
+
+/// Open the seed vault keyless and classify the result.
+///
+/// A wrong vault passphrase (a legacy passphrase vault) is the ONLY recoverable
+/// case and routes to [`BootDecision::Unlock`]; every other failure is fatal and
+/// propagates, matching the original abort-on-error boot behavior. The same
+/// predicate gates the unlock-retry loop in [`BootApp::try_unlock`], so both
+/// open paths classify fatality identically.
+fn classify_open(data_dir: &std::path::Path) -> Result<BootDecision, BootError> {
+    match AppContext::open_secret_store(data_dir) {
+        Ok(store) => Ok(BootDecision::Ready(store)),
+        Err(e) if e.is_secret_store_wrong_passphrase() => Ok(BootDecision::Unlock),
+        Err(e) => Err(Box::new(e)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::wallet_backend::single_key::{open_secret_store, open_secret_store_with_passphrase};
+
+    /// A normal keyless vault classifies as ready — the happy path never gates.
+    #[test]
+    fn classify_open_ready_for_keyless_vault() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        // Seed a keyless vault at the data dir's secret path, then drop the
+        // handle so its exclusive lock is released before re-opening.
+        AppContext::open_secret_store(tmp.path()).expect("create keyless vault");
+
+        let decision = classify_open(tmp.path()).expect("classify");
+        assert!(
+            matches!(decision, BootDecision::Ready(_)),
+            "keyless vault must classify as Ready"
+        );
+    }
+
+    /// A vault an older build sealed with a passphrase classifies as Unlock —
+    /// the gate fires only here.
+    #[test]
+    fn classify_open_unlock_for_passphrase_vault() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let vault = tmp.path().join("secrets").join("det-secrets.pwsvault");
+        open_secret_store_with_passphrase(&vault, SecretString::new("legacy"))
+            .expect("create passphrase vault");
+
+        let decision = classify_open(tmp.path()).expect("classify");
+        assert!(
+            matches!(decision, BootDecision::Unlock),
+            "passphrase vault must classify as Unlock"
+        );
+    }
+
+    /// A non-passphrase open failure (here a malformed vault) is FATAL — it
+    /// propagates rather than gating to Unlock, mirroring try_unlock's policy.
+    #[test]
+    fn classify_open_propagates_non_passphrase_failure() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let secrets = tmp.path().join("secrets");
+        std::fs::create_dir_all(&secrets).expect("mkdir");
+        std::fs::write(secrets.join("det-secrets.pwsvault"), b"not a vault")
+            .expect("write garbage");
+
+        assert!(
+            classify_open(tmp.path()).is_err(),
+            "a malformed vault must be fatal, never gated to Unlock"
+        );
+    }
+
+    /// Sanity: the keyless open of a passphrase vault is precisely the failure
+    /// the gate keys on — `open_secret_store` (keyless) fails it, while
+    /// `open_secret_store_with_passphrase` recovers it non-destructively. (The
+    /// data round-trip is pinned in single_key.rs; here we only assert the
+    /// classification both helpers feed.)
+    #[test]
+    fn keyless_open_of_passphrase_vault_is_the_gated_failure() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let vault = tmp.path().join("secrets").join("det-secrets.pwsvault");
+        open_secret_store_with_passphrase(&vault, SecretString::new("legacy"))
+            .expect("create passphrase vault");
+
+        let err = open_secret_store(&vault).expect_err("keyless open must fail");
+        let task_err = crate::backend_task::error::TaskError::SecretStore {
+            source: Box::new(err),
+        };
+        assert!(
+            task_err.is_secret_store_wrong_passphrase(),
+            "the keyless failure must be exactly the wrong-passphrase signal the gate keys on"
+        );
     }
 }

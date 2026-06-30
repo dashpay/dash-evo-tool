@@ -207,10 +207,12 @@ pub enum TaskError {
     /// The copy avoids guessing a single cause (the failure can be a held
     /// file lock, a passphrase mismatch, or corrupt data — not disk space):
     /// it points at the one self-service fix that resolves the common
-    /// "another copy is already running" lock case. A legacy passphrase
-    /// vault (`SecretStoreError::WrongPassphrase`) is intercepted earlier on
-    /// the GUI boot path and never reaches this banner — see
-    /// [`Self::is_secret_store_wrong_passphrase`].
+    /// "another copy is already running" lock case. A legacy passphrase vault
+    /// (`SecretStoreError::WrongPassphrase`) does not use this generic copy: on
+    /// the GUI boot path it is intercepted and routed to a passphrase prompt
+    /// (see [`Self::is_secret_store_wrong_passphrase`]), and the headless/CLI
+    /// context init surfaces it with its own passphrase-specific message — so
+    /// this text is shown only for the remaining (non-passphrase) failures.
     #[error(
         "Your saved keys could not be opened. Make sure no other copy of Dash Evo Tool is running, then open the app again."
     )]

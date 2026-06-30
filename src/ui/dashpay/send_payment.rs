@@ -459,7 +459,7 @@ impl ScreenLike for SendPaymentScreen {
 // Payment History Component (used in main DashPay screen)
 pub struct PaymentHistory {
     pub app_context: Arc<AppContext>,
-    selected_identity: Option<QualifiedIdentity>,
+    pub selected_identity: Option<QualifiedIdentity>,
     selected_identity_string: String,
     payments: Vec<PaymentRecord>,
     loading: bool,
@@ -487,14 +487,17 @@ impl PaymentHistory {
             has_searched: false,
         };
 
-        // Auto-select first identity on creation if available
+        // Seed from the app-scoped selected identity (W3 SYNC); fall back to first.
         if let Ok(identities) = app_context.load_local_qualified_identities()
             && !identities.is_empty()
         {
             use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-            new_self.selected_identity = Some(identities[0].clone());
-            new_self.selected_identity_string =
-                identities[0].identity.id().to_string(Encoding::Base58);
+            let selected_id = app_context.selected_identity_id();
+            let preferred = selected_id
+                .and_then(|id| identities.iter().find(|qi| qi.identity.id() == id).cloned())
+                .unwrap_or_else(|| identities[0].clone());
+            new_self.selected_identity = Some(preferred.clone());
+            new_self.selected_identity_string = preferred.identity.id().to_string(Encoding::Base58);
         }
 
         new_self
@@ -524,13 +527,21 @@ impl PaymentHistory {
         // Don't clear if we have data, just clear temporary states
         self.loading = false;
 
-        // Auto-select first identity if none selected
+        // Seed from the app-scoped selected identity if none yet selected (W3 SYNC).
         if self.selected_identity.is_none()
             && let Ok(identities) = self.app_context.load_local_qualified_identities()
             && !identities.is_empty()
         {
-            self.selected_identity = Some(identities[0].clone());
-            self.selected_identity_string = identities[0].display_string();
+            use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+            let selected_id = self.app_context.selected_identity_id();
+            let preferred = selected_id
+                .and_then(|id| identities.iter().find(|qi| qi.identity.id() == id).cloned())
+                .unwrap_or_else(|| identities[0].clone());
+            self.selected_identity = Some(preferred.clone());
+            self.selected_identity_string = preferred
+                .identity
+                .id()
+                .to_string(Encoding::Base58);
         }
 
         // Reset the fetched flag if we have no payments; next render dispatches
@@ -560,6 +571,7 @@ impl PaymentHistory {
 
             if !identities.is_empty() {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    // SYNC: write-back via syncing_global on user pick.
                     let response = ui.add(
                         IdentitySelector::new(
                             "payment_history_identity_selector",
@@ -569,7 +581,8 @@ impl PaymentHistory {
                         .selected_identity(&mut self.selected_identity)
                         .unwrap()
                         .width(300.0)
-                        .other_option(false), // Disable "Other" option
+                        .other_option(false) // Disable "Other" option
+                        .syncing_global(self.app_context.clone()),
                     );
 
                     if response.changed() {

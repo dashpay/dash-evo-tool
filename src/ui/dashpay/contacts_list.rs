@@ -59,7 +59,7 @@ pub enum ContactsTab {
 pub struct ContactsList {
     pub app_context: Arc<AppContext>,
     contacts: BTreeMap<Identifier, Contact>,
-    selected_identity: Option<QualifiedIdentity>,
+    pub selected_identity: Option<QualifiedIdentity>,
     selected_identity_string: String,
     search_query: String,
     message: Option<(String, MessageType)>,
@@ -96,13 +96,16 @@ impl ContactsList {
             contact_requests: ContactRequests::new(app_context.clone()),
         };
 
-        // Auto-select first identity on creation if available
+        // Seed from the app-scoped selected identity (W3 SYNC); fall back to first.
         if let Ok(identities) = app_context.load_local_qualified_identities()
             && !identities.is_empty()
         {
-            new_self.selected_identity = Some(identities[0].clone());
-            new_self.selected_identity_string =
-                identities[0].identity.id().to_string(Encoding::Base58);
+            let selected_id = app_context.selected_identity_id();
+            let preferred = selected_id
+                .and_then(|id| identities.iter().find(|qi| qi.identity.id() == id).cloned())
+                .unwrap_or_else(|| identities[0].clone());
+            new_self.selected_identity = Some(preferred.clone());
+            new_self.selected_identity_string = preferred.identity.id().to_string(Encoding::Base58);
         }
 
         new_self
@@ -196,13 +199,17 @@ impl ContactsList {
         self.message = None;
         self.loading = false;
 
-        // Auto-select first identity if none selected
+        // Seed from the app-scoped selected identity if none yet selected (W3 SYNC).
         if self.selected_identity.is_none()
             && let Ok(identities) = self.app_context.load_local_qualified_identities()
             && !identities.is_empty()
         {
-            self.selected_identity = Some(identities[0].clone());
-            self.selected_identity_string = identities[0].identity.id().to_string(Encoding::Base58);
+            let selected_id = self.app_context.selected_identity_id();
+            let preferred = selected_id
+                .and_then(|id| identities.iter().find(|qi| qi.identity.id() == id).cloned())
+                .unwrap_or_else(|| identities[0].clone());
+            self.selected_identity = Some(preferred.clone());
+            self.selected_identity_string = preferred.identity.id().to_string(Encoding::Base58);
         }
 
         // Trigger backend fetch if we have an identity selected and no contacts loaded.
@@ -321,6 +328,7 @@ impl ContactsList {
 
             if !identities.is_empty() {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    // SYNC: write-back via syncing_global on user pick.
                     let response = ui.add(
                         IdentitySelector::new(
                             "contacts_identity_selector",
@@ -330,7 +338,8 @@ impl ContactsList {
                         .selected_identity(&mut self.selected_identity)
                         .unwrap()
                         .width(300.0)
-                        .other_option(false),
+                        .other_option(false)
+                        .syncing_global(self.app_context.clone()),
                     );
 
                     if response.changed() {

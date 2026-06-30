@@ -79,7 +79,7 @@ impl ValidationError {
 
 pub struct ProfileScreen {
     pub app_context: Arc<AppContext>,
-    selected_identity: Option<QualifiedIdentity>,
+    pub selected_identity: Option<QualifiedIdentity>,
     selected_identity_string: String,
     profile: Option<DashPayProfile>,
     editing: bool,
@@ -141,16 +141,20 @@ impl ProfileScreen {
             confirmation_dialog: None,
         };
 
-        // Auto-select the first identity. Profile is loaded asynchronously by
-        // the `LoadProfile` dispatch in `render()` once `profile_load_attempted`
-        // is false.
+        // Seed from the app-scoped selected identity (W3 SYNC); fall back to first.
+        // Profile is loaded asynchronously by `LoadProfile` dispatch in `render()`.
         if let Ok(identities) = app_context.load_local_qualified_identities()
             && !identities.is_empty()
         {
             use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 
-            new_self.selected_identity = Some(identities[0].clone());
-            new_self.selected_identity_string = identities[0]
+            let selected_id = app_context.selected_identity_id();
+            let preferred = selected_id
+                .and_then(|id| identities.iter().find(|qi| qi.identity.id() == id).cloned())
+                .unwrap_or_else(|| identities[0].clone());
+
+            new_self.selected_identity = Some(preferred.clone());
+            new_self.selected_identity_string = preferred
                 .identity
                 .id()
                 .to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58);
@@ -161,7 +165,7 @@ impl ProfileScreen {
             );
 
             new_self.selected_wallet =
-                get_selected_wallet(&identities[0], Some(&app_context), None)
+                get_selected_wallet(&preferred, Some(&app_context), None)
                     .or_show_error(app_context.egui_ctx())
                     .unwrap_or(None);
         }
@@ -236,13 +240,21 @@ impl ProfileScreen {
         // This prevents stuck loading states
         self.loading = false;
 
-        // Auto-select first identity if none selected
+        // Seed from the app-scoped selected identity if none yet selected (W3 SYNC).
         if self.selected_identity.is_none()
             && let Ok(identities) = self.app_context.load_local_qualified_identities()
             && !identities.is_empty()
         {
-            self.selected_identity = Some(identities[0].clone());
-            self.selected_identity_string = identities[0].display_string();
+            use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+            let selected_id = self.app_context.selected_identity_id();
+            let preferred = selected_id
+                .and_then(|id| identities.iter().find(|qi| qi.identity.id() == id).cloned())
+                .unwrap_or_else(|| identities[0].clone());
+            self.selected_identity = Some(preferred.clone());
+            self.selected_identity_string = preferred
+                .identity
+                .id()
+                .to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58);
         }
 
         // Load profile from database if we have an identity selected and no profile loaded
@@ -508,6 +520,7 @@ impl ProfileScreen {
 
             if !identities.is_empty() {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    // SYNC: write-back via syncing_global on user pick.
                     let response = ui.add(
                         IdentitySelector::new(
                             "profile_identity_selector",
@@ -517,7 +530,8 @@ impl ProfileScreen {
                         .selected_identity(&mut self.selected_identity)
                         .unwrap()
                         .width(300.0)
-                        .other_option(false), // Disable "Other" option
+                        .other_option(false) // Disable "Other" option
+                        .syncing_global(self.app_context.clone()),
                     );
 
                     if response.changed() {

@@ -580,4 +580,23 @@ mod tests {
             ContactsButtonKind::SwitchHubTab(super::super::IdentityHubTab::Settings),
         );
     }
+
+    /// T28 regression guard — `ContactsState::reset()` must clear the load guard
+    /// so the next render re-dispatches `LoadContacts`. This is the low-level
+    /// assertion beneath the `change_context` → `refresh` → `contacts_state.reset()`
+    /// chain that prevents stale contacts from a previous network/identity being
+    /// served after a context switch.
+    #[test]
+    fn t28_reset_clears_load_guard() {
+        let mut state = ContactsState::default();
+        // Simulate the tab having fired its load request.
+        state.load_requested = true;
+
+        state.reset();
+
+        assert!(
+            !state.load_requested,
+            "reset() must clear load_requested so the next render re-fires LoadContacts"
+        );
+    }
 }

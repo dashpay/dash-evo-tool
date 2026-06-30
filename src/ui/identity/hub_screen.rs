@@ -342,8 +342,16 @@ impl ScreenLike for IdentityHubScreen {
     }
 
     fn display_task_error(&mut self, _error: &TaskError) -> bool {
+        // Clear any dangling pending_save so a failed UpdateProfile doesn't
+        // leave a stale snapshot around. If a later DashPayProfileUpdated from
+        // a different path (e.g. the legacy ProfileScreen) arrives it would
+        // otherwise commit the stale submitted values as the new baseline.
+        // Clearing on any error is safe: pending_save is None most of the time,
+        // and clearing it while it's None is a no-op.
+        self.settings_tab.clear_pending_save();
+
         // Let AppState render the default error banner — the hub has no
-        // special-case error handling of its own yet.
+        // other special-case error handling of its own yet.
         false
     }
 }

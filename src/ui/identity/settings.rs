@@ -764,6 +764,14 @@ impl SettingsTab {
         // prevented this call, but defending is harmless.
     }
 
+    /// Clear any in-flight pending save snapshot. Called by the hub's
+    /// `display_task_error` so a failed `UpdateProfile` doesn't leave a stale
+    /// snapshot that would be committed if a later `DashPayProfileUpdated` from
+    /// a different path (e.g. legacy ProfileScreen "Change photo") arrives.
+    pub fn clear_pending_save(&mut self) {
+        self.pending_save = None;
+    }
+
     /// Validation check used to drive Save button state. Returns `None` when
     /// input is valid, else a stable error string. We do not persist this in
     /// a banner because users can self-correct inline using the counter.

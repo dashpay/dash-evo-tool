@@ -326,18 +326,28 @@ impl ScreenLike for IdentityHubScreen {
         // Feed an async DashPay profile load back into the cache the tabs read.
         self.profile_cache.record_result(&result);
 
-        // A confirmed profile-save success: commit the edit baseline on the
-        // Settings tab so the Save button re-enables only after the next edit
-        // (T21). We check the saved identity matches the currently-selected
-        // one so a stale result from a prior identity does not corrupt state.
-        if let BackendTaskSuccessResult::DashPayProfileUpdated(saved_id) = &result {
-            let matches = self
-                .settings_tab
-                .selected_identity()
-                .is_some_and(|qi| qi.identity.id() == saved_id);
-            if matches {
-                self.settings_tab.on_profile_saved();
+        match &result {
+            // A confirmed profile-save success: commit the edit baseline on the
+            // Settings tab so the Save button re-enables only after the next
+            // edit (T21). Guard by identity ID to reject stale results.
+            BackendTaskSuccessResult::DashPayProfileUpdated(saved_id) => {
+                let matches = self
+                    .settings_tab
+                    .selected_identity()
+                    .is_some_and(|qi| qi.identity.id() == saved_id);
+                if matches {
+                    self.settings_tab.on_profile_saved();
+                }
             }
+            // Populate the Received/Sent request caches so the Contacts tab
+            // can render real RequestCard rows instead of hardcoded empties
+            // (T29 / QA-002). The result arrives from LoadContactRequests,
+            // dispatched alongside LoadContacts in contacts::render_populated.
+            BackendTaskSuccessResult::DashPayContactRequests { incoming, outgoing } => {
+                self.contacts_state
+                    .record_requests(incoming.clone(), outgoing.clone());
+            }
+            _ => {}
         }
     }
 

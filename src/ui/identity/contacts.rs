@@ -8,11 +8,15 @@
 //! The tab does **not** introduce any new backend tasks — the populated-state
 //! list feeds off the existing [`DashPayTask::LoadContacts`] and
 //! [`DashPayTask::LoadContactRequests`] variants. Wire-through of the
-//! dispatched action into `AppState` is owned by the hub screen, which is the
-//! caller of [`render`]. The interactive accept / decline / cancel flows
-//! ship in a follow-up task (T10) — this scaffold presents the shell shape
-//! and copy only.
+//! dispatched results is owned by the hub screen via
+//! `hub_screen::display_task_result`, which calls [`ContactsState::record_requests`]
+//! to hydrate the [`ContactsState::incoming`] / [`ContactsState::outgoing`] caches.
+//!
+//! The Received and Sent sections render live rows from those caches (T29). The
+//! interactive Accept / Decline / Cancel button actions ship in a follow-up
+//! task — the rows are currently display-only.
 
+use super::request_card::RequestCard;
 use super::social_profile_gate_card::SocialProfileGateCard;
 use crate::app::AppAction;
 use crate::backend_task::BackendTask;
@@ -21,6 +25,9 @@ use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::ScreenType;
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt, Shape};
+use dash_sdk::dpp::document::DocumentV0Getters;
+use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+use dash_sdk::platform::{Document, Identifier};
 use eframe::egui::{CornerRadius, Frame, Margin, RichText, Stroke, Ui};
 use std::sync::Arc;
 
@@ -94,24 +101,90 @@ pub fn contacts_button_kind(button: ContactsButton) -> ContactsButtonKind {
     }
 }
 
-/// Hub-owned contacts-tab state. Tracks whether the Contacts tab has already
-/// dispatched its `DashPayTask::LoadContacts` request for the current tab
-/// entry. Without this, the populated state would fire a backend task on
-/// every paint — that floods the channel and hammers the SDK. The flag is
-/// reset by the hub when the user leaves the tab (via [`ContactsState::reset`])
-/// or via an explicit refresh affordance.
+/// A single cached contact-request entry, derived from a raw
+/// `DashPayContactRequests` result document.
+#[derive(Debug, Clone)]
+pub struct ContactRequestEntry {
+    /// Base58 identity ID of the counterpart: the sender for incoming
+    /// requests, the recipient for outgoing ones. Used as the display label
+    /// until the profile-fetch chain surfaces a display name.
+    pub counterpart_id: String,
+    /// Base58 request document ID — echoed back into `RequestCardResponse::id`
+    /// so Accept/Decline/Cancel handlers can route to the right task.
+    pub request_id: String,
+    /// Human-relative timestamp (e.g. `"2 minutes ago"`), pre-formatted from
+    /// the document's `created_at`. `None` when the document has no timestamp.
+    pub relative_time: Option<String>,
+}
+
+/// Per-tab-entry state owned by the hub. Holds the load guard flag and the
+/// cached contact-request lists populated by `hub_screen::display_task_result`.
+///
+/// The flag is reset by the hub when the user leaves the tab (via
+/// [`ContactsState::reset`]) or via an explicit refresh affordance.
 #[derive(Debug, Default, Clone)]
 pub struct ContactsState {
     /// Set to `true` after the first paint of the populated shell triggers
-    /// the backend task. Guards all subsequent frames from re-dispatching.
-    load_requested: bool,
+    /// the backend tasks. Guards all subsequent frames from re-dispatching.
+    pub(super) load_requested: bool,
+    /// Cached incoming requests (received by the active identity). Populated
+    /// from `BackendTaskSuccessResult::DashPayContactRequests` via
+    /// `record_requests`. Cleared on `reset()`.
+    pub incoming: Vec<ContactRequestEntry>,
+    /// Cached outgoing requests (sent by the active identity). Same lifecycle.
+    pub outgoing: Vec<ContactRequestEntry>,
 }
 
 impl ContactsState {
-    /// Clear the dispatched flag so the next paint re-issues the load. Call
-    /// this from `refresh()` / `refresh_on_arrival()` on the hub.
+    /// Clear the load guard and cached lists so the next paint re-issues the
+    /// load. Call this from `refresh()` / `refresh_on_arrival()` on the hub.
     pub fn reset(&mut self) {
         self.load_requested = false;
+        self.incoming.clear();
+        self.outgoing.clear();
+    }
+
+    /// Populate the incoming/outgoing caches from a raw
+    /// `DashPayContactRequests` backend result. Called by
+    /// `hub_screen::display_task_result` (T29).
+    ///
+    /// Incoming sender = `doc.owner_id()`; outgoing recipient =
+    /// `doc.properties()["toUserId"]`. Display names are identity IDs until a
+    /// profile-fetch integration wave lands.
+    pub fn record_requests(
+        &mut self,
+        incoming: Vec<(Identifier, Document)>,
+        outgoing: Vec<(Identifier, Document)>,
+    ) {
+        self.incoming = incoming
+            .into_iter()
+            .map(|(req_id, doc)| {
+                let ts = doc.created_at().or_else(|| doc.updated_at()).unwrap_or(0);
+                ContactRequestEntry {
+                    counterpart_id: doc.owner_id().to_string(Encoding::Base58),
+                    request_id: req_id.to_string(Encoding::Base58),
+                    relative_time: crate::ui::dashpay::format_relative_time(ts),
+                }
+            })
+            .collect();
+
+        self.outgoing = outgoing
+            .into_iter()
+            .map(|(req_id, doc)| {
+                let to_id = doc
+                    .properties()
+                    .get("toUserId")
+                    .and_then(|v| v.to_identifier().ok())
+                    .unwrap_or_default()
+                    .to_string(Encoding::Base58);
+                let ts = doc.created_at().or_else(|| doc.updated_at()).unwrap_or(0);
+                ContactRequestEntry {
+                    counterpart_id: to_id,
+                    request_id: req_id.to_string(Encoding::Base58),
+                    relative_time: crate::ui::dashpay::format_relative_time(ts),
+                }
+            })
+            .collect();
     }
 }
 
@@ -236,9 +309,10 @@ pub fn render_gated(ui: &mut Ui, handle: Option<&str>) -> AppAction {
     AppAction::None
 }
 
-/// Populated-state shell — three sections, placeholder empty-state copy, and
-/// a dispatch of [`DashPayTask::LoadContacts`] / [`LoadContactRequests`] on
-/// first paint so the real list can arrive without a new backend task.
+/// Populated-state shell — three sections and a dispatch of
+/// [`DashPayTask::LoadContacts`] + [`DashPayTask::LoadContactRequests`] on
+/// first paint. Results land in `ContactsState` via
+/// `hub_screen::display_task_result` (T29).
 fn render_populated(
     ui: &mut Ui,
     app_context: &Arc<AppContext>,
@@ -248,19 +322,43 @@ fn render_populated(
     let dark_mode = ui.ctx().global_style().visuals.dark_mode;
     let mut action = AppAction::None;
 
+    // Snapshot the lists so the closures below can read them without holding
+    // a borrow on `state_guard` while we also mutate it in the dispatch block.
+    let incoming = state_guard.incoming.clone();
+    let outgoing = state_guard.outgoing.clone();
+
     action |= header_row(ui, app_context, dark_mode);
 
+    // --- Received requests section ---------------------------------------
     ui.add_space(12.0);
-    section_card(ui, dark_mode, RECEIVED_HEADING, |ui| {
-        // TODO(identity-hub): render real `RequestCard::received` rows once a
-        // loaded-contact-requests cache lands on `AppContext`. When wiring,
-        // consume `RequestCardResponse::{accepted, declined}` and dispatch
-        // `DashPayTask::AcceptContactRequest` / `RejectContactRequest` with
-        // the request's `Identifier`. These backend variants already exist at
-        // `src/backend_task/dashpay.rs`; wiring is additive to this file.
-        ui.label(RichText::new(NO_RECEIVED_EMPTY).color(DashColors::text_secondary(dark_mode)));
+    let heading_recv = if incoming.is_empty() {
+        RECEIVED_HEADING.to_string()
+    } else {
+        format!("{RECEIVED_HEADING} · {}", incoming.len())
+    };
+    section_card(ui, dark_mode, &heading_recv, |ui| {
+        if incoming.is_empty() {
+            ui.label(RichText::new(NO_RECEIVED_EMPTY).color(DashColors::text_secondary(dark_mode)));
+        } else {
+            for entry in &incoming {
+                let display = abbreviate_id(&entry.counterpart_id);
+                let card = RequestCard::received(
+                    &display,
+                    &entry.counterpart_id,
+                    entry.relative_time.as_deref().unwrap_or(""),
+                )
+                .with_id(&entry.request_id);
+                card.show(ui);
+                ui.add_space(4.0);
+                // TODO(identity-hub/T29): on Accept/Decline dispatch
+                // DashPayTask::AcceptContactRequest / RejectContactRequest
+                // using `resp.id` as the request identifier. Backend variants
+                // already exist; wiring is additive here.
+            }
+        }
     });
 
+    // --- Active contacts section ----------------------------------------
     ui.add_space(12.0);
     let mut active_add_action = AppAction::None;
     section_card(
@@ -293,40 +391,40 @@ fn render_populated(
     );
     action |= active_add_action;
 
+    // --- Sent requests section ------------------------------------------
+    //
+    // Per design §B.4 the section collapses when empty. Always rendered here
+    // so the heading is visible while data is loading.
     ui.add_space(12.0);
-    // Sent-section collapses entirely when empty (per design §B.4). The
-    // populated shell renders only the heading so the section wiring stays
-    // visible to reviewers; the real list hides it once data is live.
-    section_card(ui, dark_mode, SENT_HEADING, |ui| {
-        // TODO(identity-hub): render real `RequestCard::sent` rows once a
-        // loaded-sent-requests cache lands. Consume
-        // `RequestCardResponse::cancelled` and dispatch a "cancel" task —
-        // requires a new `DashPayTask::CancelContactRequest` variant (not
-        // yet present; do NOT add here — defer until a parallel wallet
-        // refactor wave lands, per the integration constraints).
-        ui.label(
-            RichText::new("No outgoing requests.").color(DashColors::text_secondary(dark_mode)),
-        );
+    let heading_sent = if outgoing.is_empty() {
+        SENT_HEADING.to_string()
+    } else {
+        format!("{SENT_HEADING} · {}", outgoing.len())
+    };
+    section_card(ui, dark_mode, &heading_sent, |ui| {
+        if outgoing.is_empty() {
+            ui.label(
+                RichText::new("No outgoing requests.").color(DashColors::text_secondary(dark_mode)),
+            );
+        } else {
+            for entry in &outgoing {
+                let display = abbreviate_id(&entry.counterpart_id);
+                let card =
+                    RequestCard::sent(&display, &entry.counterpart_id).with_id(&entry.request_id);
+                card.show(ui);
+                ui.add_space(4.0);
+                // TODO(identity-hub/T29): on Cancel dispatch
+                // DashPayTask::CancelContactRequest (variant not yet present —
+                // defer until the parallel wallet-refactor wave lands).
+            }
+        }
     });
 
-    // Fire LoadContacts once per tab-entry. Without this guard the call
-    // re-dispatches every frame, flooding the backend channel. The hub resets
-    // the guard in `refresh_on_arrival()` so a tab switch or explicit refresh
-    // triggers another load.
-    //
-    // TODO(identity-hub/T29): dispatch `DashPayTask::LoadContactRequests`
-    // alongside `LoadContacts` once the hub wires a contact-request cache and
-    // the Received/Sent sections can consume
-    // `BackendTaskSuccessResult::DashPayContactRequests { incoming, outgoing }`.
-    // `display_task_result` on hub_screen currently routes that result nowhere;
-    // shipping the dispatch without consumption adds a wasted SDK round-trip per
-    // tab entry with zero user-visible benefit. Wire when:
-    //   1. ContactsState (or a sibling) grows a `Vec<ContactRequestEntry>` for
-    //      incoming and one for outgoing.
-    //   2. hub_screen::display_task_result matches DashPayContactRequests and
-    //      populates the cache.
-    //   3. The Received and Sent section_card() bodies iterate real RequestCard
-    //      rows instead of the hardcoded empty-state labels.
+    // Fire LoadContacts + LoadContactRequests once per tab-entry. The guard
+    // prevents re-dispatch every frame. The hub resets it in
+    // `refresh_on_arrival()` so a tab switch or explicit refresh triggers
+    // another load. Both tasks dispatch together so all three sections can
+    // hydrate in a single round-trip (T29).
     if !state_guard.load_requested {
         state_guard.load_requested = true;
         action |= AppAction::BackendTask(BackendTask::DashPayTask(Box::new(
@@ -334,9 +432,23 @@ fn render_populated(
                 identity: identity.clone(),
             },
         )));
+        action |= AppAction::BackendTask(BackendTask::DashPayTask(Box::new(
+            DashPayTask::LoadContactRequests {
+                identity: identity.clone(),
+            },
+        )));
     }
 
     action
+}
+
+/// Shorten a Base58 identity ID for display: first 8 chars + "…".
+fn abbreviate_id(id: &str) -> String {
+    if id.len() <= 10 {
+        id.to_string()
+    } else {
+        format!("{}…", &id[..8])
+    }
 }
 
 /// Header row: title on the left, three action buttons right-aligned.
@@ -588,15 +700,79 @@ mod tests {
     /// served after a context switch.
     #[test]
     fn t28_reset_clears_load_guard() {
-        let mut state = ContactsState::default();
-        // Simulate the tab having fired its load request.
-        state.load_requested = true;
-
+        let mut state = ContactsState {
+            load_requested: true,
+            ..Default::default()
+        };
         state.reset();
 
         assert!(
             !state.load_requested,
             "reset() must clear load_requested so the next render re-fires LoadContacts"
         );
+    }
+
+    // ---------------------------------------------------------------
+    // T29 / QA-002: ContactsState cache wiring
+    // ---------------------------------------------------------------
+
+    /// T28 regression guard (extended): reset() must clear the load guard AND
+    /// the request caches so a refresh or network-switch re-fires the load
+    /// and the Received/Sent sections don't show stale data.
+    #[test]
+    fn t28_reset_clears_load_guard_and_caches() {
+        let mut state = ContactsState {
+            load_requested: true,
+            incoming: vec![ContactRequestEntry {
+                counterpart_id: "AAA".into(),
+                request_id: "RRR".into(),
+                relative_time: None,
+            }],
+            outgoing: vec![ContactRequestEntry {
+                counterpart_id: "BBB".into(),
+                request_id: "SSS".into(),
+                relative_time: None,
+            }],
+        };
+        state.reset();
+        assert!(
+            !state.load_requested,
+            "reset() must clear the load guard (T28)"
+        );
+        assert!(
+            state.incoming.is_empty(),
+            "reset() must clear incoming cache"
+        );
+        assert!(
+            state.outgoing.is_empty(),
+            "reset() must clear outgoing cache"
+        );
+    }
+
+    /// QA-002 / T29: abbreviate_id() trims long Base58 IDs to 8 chars + "…".
+    #[test]
+    fn abbreviate_id_shortens_long_ids() {
+        let long = "AbCdEfGhIjKlMnOpQrStUv";
+        assert_eq!(abbreviate_id(long), "AbCdEfGh…");
+        let short = "AbCdEfGh";
+        assert_eq!(abbreviate_id(short), "AbCdEfGh");
+        let empty = "";
+        assert_eq!(abbreviate_id(empty), "");
+    }
+
+    /// QA-002 / T29: received and sent section headings count the entries.
+    #[test]
+    fn section_headings_include_count_when_populated() {
+        let mut state = ContactsState::default();
+        state.incoming.push(ContactRequestEntry {
+            counterpart_id: "AAA".into(),
+            request_id: "RRR".into(),
+            relative_time: Some("1 minute ago".into()),
+        });
+        assert_eq!(
+            format!("{RECEIVED_HEADING} · {}", state.incoming.len()),
+            "Received requests · 1"
+        );
+        assert_eq!(RECEIVED_HEADING, "Received requests");
     }
 }

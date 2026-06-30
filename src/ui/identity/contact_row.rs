@@ -223,9 +223,11 @@ mod tests {
         // Simulate what `show()` does on a positive click: echo the id
         // only when the click is detected (QA-004 — id must NOT be set on
         // every frame).
-        let mut response = ContactRowResponse::default();
-        response.clicked = true;
-        response.contact_id = Some(row.contact_id.clone());
+        let response = ContactRowResponse {
+            clicked: true,
+            contact_id: Some(row.contact_id.clone()),
+            ..Default::default()
+        };
 
         assert!(response.clicked);
         assert_eq!(

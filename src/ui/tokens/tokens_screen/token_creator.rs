@@ -143,7 +143,7 @@ impl TokensScreen {
                             ui.heading("1. Select an identity:");
                             ui.add_space(5.0);
 
-                            // Use IdentitySelector for simple mode
+                            // Use IdentitySelector for simple mode — SYNC: write-back via syncing_global.
                             let response = ui.add(
                                 IdentitySelector::new(
                                     "simple_identity_selector",
@@ -154,7 +154,8 @@ impl TokensScreen {
                                 .expect("selected_identity should not fail")
                                 .other_option(false)
                                 .label("Identity:")
-                                .width(300.0),
+                                .width(300.0)
+                                .syncing_global(self.app_context.clone()),
                             );
 
                             // Auto-select the first eligible key when:
@@ -219,7 +220,12 @@ impl TokensScreen {
                             ui.heading("1. Select an identity and key to register the token contract with:");
                             ui.add_space(5.0);
 
-                            // Use the helper function for identity and key selection
+                            // Use the helper function for identity and key selection.
+                            // SYNC (W4): snapshot before, write-back after on change.
+                            let before_id = self
+                                .selected_identity
+                                .as_ref()
+                                .map(|qi| qi.identity.id());
                             add_identity_key_chooser(
                                 ui,
                                 &self.app_context,
@@ -228,6 +234,14 @@ impl TokensScreen {
                                 &mut self.selected_key,
                                 TransactionType::RegisterContract,
                             );
+                            let after_id = self
+                                .selected_identity
+                                .as_ref()
+                                .map(|qi| qi.identity.id());
+                            if before_id != after_id {
+                                self.app_context
+                                    .set_selected_identity(after_id);
+                            }
 
                             ui.add_space(5.0);
 

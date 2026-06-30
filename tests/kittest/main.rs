@@ -21,4 +21,5 @@ mod restore_single_key;
 mod secret_prompt;
 mod startup;
 mod support;
+mod tokens_screen;
 mod wallets_screen;

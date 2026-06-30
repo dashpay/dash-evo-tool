@@ -11,6 +11,7 @@
 //! (`docs/COMPONENT_DESIGN_PATTERN.md`): domain/config fields stored on the
 //! struct; visual primitives are built on every `show()` call.
 
+use crate::ui::components::component_trait::ComponentResponse;
 use crate::ui::theme::{ComponentStyles, DashColors, Shadow, Shape};
 use eframe::egui::{CornerRadius, Frame, Margin, RichText, Stroke, Ui};
 
@@ -46,13 +47,64 @@ pub(crate) fn interpolate_handle(template: &str, handle: &str) -> String {
     template.replace("{handle}", handle)
 }
 
-/// Response returned by [`SocialProfileGateCard::show`].
+/// Typed action emitted by [`SocialProfileGateCard`] (T12). Replaces the
+/// meaning of the raw booleans with an explicit discriminant while keeping the
+/// booleans for backward-compat call sites.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GateCardAction {
+    /// The primary CTA ("Add a display name") was clicked.
+    PrimaryClicked,
+    /// The "Why?" / "Hide details" toggle was clicked.
+    WhyToggled,
+}
+
+/// Response returned by [`SocialProfileGateCard::show`]. The raw booleans
+/// (`primary_clicked`, `why_toggled`) are kept for backward-compat call sites.
+/// The typed [`GateCardAction`] (T12) is available via
+/// [`action`](Self::action) and via the [`ComponentResponse`] impl.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SocialProfileGateCardResponse {
     /// The primary button was clicked this frame.
     pub primary_clicked: bool,
     /// The `Why?` toggle was clicked this frame.
     pub why_toggled: bool,
+    /// Typed action cache populated by [`SocialProfileGateCard::show`] so that
+    /// `ComponentResponse::changed_value()` can return a borrow. Private.
+    action_cache: Option<GateCardAction>,
+}
+
+impl SocialProfileGateCardResponse {
+    /// Derive the typed [`GateCardAction`] from the raw booleans, if any.
+    pub fn action(&self) -> Option<GateCardAction> {
+        if self.primary_clicked {
+            Some(GateCardAction::PrimaryClicked)
+        } else if self.why_toggled {
+            Some(GateCardAction::WhyToggled)
+        } else {
+            None
+        }
+    }
+}
+
+impl ComponentResponse for SocialProfileGateCardResponse {
+    /// The typed action from this frame's interaction with the gate card.
+    type DomainType = GateCardAction;
+
+    fn has_changed(&self) -> bool {
+        self.primary_clicked || self.why_toggled
+    }
+
+    fn is_valid(&self) -> bool {
+        true
+    }
+
+    fn changed_value(&self) -> &Option<Self::DomainType> {
+        &self.action_cache
+    }
+
+    fn error_message(&self) -> Option<&str> {
+        None
+    }
 }
 
 /// The centered no-profile gate card. Interactive-only state is the `expanded`
@@ -183,6 +235,9 @@ impl SocialProfileGateCard {
             ui.add_space(24.0);
         });
 
+        // Populate the typed action cache so ComponentResponse::changed_value()
+        // can return a borrow (T12).
+        response.action_cache = response.action();
         response
     }
 }

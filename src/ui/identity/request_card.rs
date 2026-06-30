@@ -9,6 +9,7 @@
 //! (`docs/COMPONENT_DESIGN_PATTERN.md`): domain/config fields stored on the
 //! struct; the inner frame is built on every `show()` call.
 
+use crate::ui::components::component_trait::ComponentResponse;
 use crate::ui::theme::{ComponentStyles, DashColors, Shape};
 use eframe::egui::{
     Color32, CornerRadius, Frame, Margin, Pos2, Rect, RichText, Sense, Stroke, Ui, Vec2,
@@ -46,8 +47,24 @@ impl RequestCardVariant {
     }
 }
 
-/// Response returned by [`RequestCard::show`]. Booleans are mutually
-/// exclusive by construction: at most one button can be clicked per frame.
+/// Typed action from a request card. Replaces bare booleans as the
+/// `ComponentResponse::DomainType` (T11). The raw booleans on
+/// [`RequestCardResponse`] are kept for backward-compat call sites.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RequestAction {
+    /// User accepted the incoming contact request.
+    Accepted,
+    /// User declined the incoming contact request.
+    Declined,
+    /// User cancelled their outgoing contact request.
+    Cancelled,
+}
+
+/// Response returned by [`RequestCard::show`]. The ad-hoc booleans
+/// (`accepted`, `declined`, `cancelled`) are kept for backward-compat call
+/// sites. The typed [`RequestAction`] (T11) is available via
+/// [`action`](Self::action) and via the [`ComponentResponse`] impl's
+/// `changed_value()`.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RequestCardResponse {
     pub accepted: bool,
@@ -56,6 +73,49 @@ pub struct RequestCardResponse {
     /// Identifier payload attached by the caller, echoed back verbatim so the
     /// caller can route the click without re-indexing into its own state.
     pub id: Option<String>,
+    /// Typed action cache populated by [`RequestCard::show`] so that
+    /// `ComponentResponse::changed_value()` can return a borrow. Private —
+    /// callers should use `action()` or the public booleans.
+    action_cache: Option<RequestAction>,
+}
+
+impl RequestCardResponse {
+    /// Derive the typed [`RequestAction`] from the ad-hoc booleans, if any.
+    pub fn action(&self) -> Option<RequestAction> {
+        if self.accepted {
+            Some(RequestAction::Accepted)
+        } else if self.declined {
+            Some(RequestAction::Declined)
+        } else if self.cancelled {
+            Some(RequestAction::Cancelled)
+        } else {
+            None
+        }
+    }
+}
+
+impl ComponentResponse for RequestCardResponse {
+    /// The typed action this frame, derived from the card's button cluster.
+    type DomainType = RequestAction;
+
+    fn has_changed(&self) -> bool {
+        self.accepted || self.declined || self.cancelled
+    }
+
+    fn is_valid(&self) -> bool {
+        true
+    }
+
+    /// Returns the typed action that `show()` populated into the cache.
+    /// Callers using the raw booleans (`response.accepted` etc.) are
+    /// unaffected — this is an additive typed view.
+    fn changed_value(&self) -> &Option<Self::DomainType> {
+        &self.action_cache
+    }
+
+    fn error_message(&self) -> Option<&str> {
+        None
+    }
 }
 
 /// A single request card. Call [`received`](Self::received) or
@@ -217,6 +277,9 @@ impl RequestCard {
             border_color,
         );
 
+        // Populate the typed action cache so ComponentResponse::changed_value()
+        // can return a borrow (T11).
+        response.action_cache = response.action();
         response
     }
 }
@@ -362,5 +425,19 @@ mod tests {
         assert!(!r.declined);
         assert!(!r.cancelled);
         assert!(r.id.is_none());
+    }
+
+    #[test]
+    fn action_derives_from_booleans() {
+        let mut r = RequestCardResponse::default();
+        assert_eq!(r.action(), None);
+        r.accepted = true;
+        assert_eq!(r.action(), Some(RequestAction::Accepted));
+        r.accepted = false;
+        r.declined = true;
+        assert_eq!(r.action(), Some(RequestAction::Declined));
+        r.declined = false;
+        r.cancelled = true;
+        assert_eq!(r.action(), Some(RequestAction::Cancelled));
     }
 }

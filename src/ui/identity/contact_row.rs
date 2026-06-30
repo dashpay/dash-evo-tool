@@ -9,6 +9,7 @@
 //! (`docs/COMPONENT_DESIGN_PATTERN.md`): domain/config fields stored on the
 //! struct; the inner frame is built on every `show()` call.
 
+use crate::ui::components::component_trait::ComponentResponse;
 use crate::ui::theme::{ComponentStyles, DashColors, Shape};
 use eframe::egui::{CornerRadius, Frame, Margin, RichText, Sense, Stroke, Ui, Vec2};
 
@@ -31,6 +32,28 @@ pub struct ContactRowResponse {
     /// The contact identifier supplied by the caller, echoed back so the
     /// click routing never depends on the list index.
     pub contact_id: Option<String>,
+}
+
+impl ComponentResponse for ContactRowResponse {
+    /// The domain value is the echoed contact identifier — `Some(id)` when any
+    /// click occurred and the caller supplied an id at construction.
+    type DomainType = String;
+
+    fn has_changed(&self) -> bool {
+        self.clicked || self.send_clicked || self.overflow_clicked
+    }
+
+    fn is_valid(&self) -> bool {
+        true
+    }
+
+    fn changed_value(&self) -> &Option<Self::DomainType> {
+        &self.contact_id
+    }
+
+    fn error_message(&self) -> Option<&str> {
+        None
+    }
 }
 
 /// A single contact row. Direct construction via [`new`](Self::new) keeps the

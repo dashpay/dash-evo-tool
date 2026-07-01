@@ -77,6 +77,34 @@ enum LoadIdentityMode {
     DpnsName,
 }
 
+impl LoadIdentityMode {
+    /// Alex-facing tab label per design-spec §B.11, kept short enough for a
+    /// narrow tab chip. See [`Self::description`] for the fuller caption.
+    fn tab_label(self) -> &'static str {
+        match self {
+            LoadIdentityMode::IdentityId => "Identity ID & key",
+            LoadIdentityMode::Wallet => "From my wallet",
+            LoadIdentityMode::DpnsName => "My username",
+        }
+    }
+
+    /// Full jargon-free sentence shown as a caption under the tab row,
+    /// expanding on the selected tab's intent (design-spec §B.11).
+    fn description(self) -> &'static str {
+        match self {
+            LoadIdentityMode::IdentityId => {
+                "Enter the identity ID and the private key for an identity that already exists on Dash Platform."
+            }
+            LoadIdentityMode::Wallet => {
+                "Look through this wallet for identities you've already registered from it."
+            }
+            LoadIdentityMode::DpnsName => {
+                "Enter a DPNS username to find its identity, then provide the private key."
+            }
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum WalletIdentitySearchMode {
     SpecificIndex,
@@ -1134,24 +1162,23 @@ impl ScreenLike for AddExistingIdentityScreen {
 
                     let mut mode_changed = false;
                     ui.horizontal(|ui| {
-                        mode_changed |= ui
-                            .selectable_value(
-                                &mut self.mode,
-                                LoadIdentityMode::IdentityId,
-                                "By Identity ID",
-                            )
-                            .changed();
-                        mode_changed |= ui
-                            .selectable_value(&mut self.mode, LoadIdentityMode::Wallet, "By Wallet")
-                            .changed();
-                        mode_changed |= ui
-                            .selectable_value(
-                                &mut self.mode,
-                                LoadIdentityMode::DpnsName,
-                                "By DPNS Name",
-                            )
-                            .changed();
+                        for mode in [
+                            LoadIdentityMode::IdentityId,
+                            LoadIdentityMode::Wallet,
+                            LoadIdentityMode::DpnsName,
+                        ] {
+                            mode_changed |= ui
+                                .selectable_value(&mut self.mode, mode, mode.tab_label())
+                                .changed();
+                        }
                     });
+                    ui.add_space(6.0);
+                    let dark_mode = ui.style().visuals.dark_mode;
+                    ui.label(
+                        RichText::new(self.mode.description())
+                            .small()
+                            .color(DashColors::text_secondary(dark_mode)),
+                    );
                     ui.add_space(15.0);
 
                     if mode_changed {
@@ -1207,5 +1234,37 @@ impl ScreenLike for AddExistingIdentityScreen {
         }
 
         action
+    }
+}
+
+#[cfg(test)]
+mod load_identity_mode_tests {
+    use super::LoadIdentityMode;
+
+    const ALL_MODES: [LoadIdentityMode; 3] = [
+        LoadIdentityMode::IdentityId,
+        LoadIdentityMode::Wallet,
+        LoadIdentityMode::DpnsName,
+    ];
+
+    /// Exhaustive over the enum so a new mode forces a copy decision here
+    /// instead of an unlabeled tab.
+    #[test]
+    fn tab_label_and_description_are_jargon_free_for_every_mode() {
+        for mode in ALL_MODES {
+            let label = mode.tab_label();
+            let description = mode.description();
+            assert!(!label.is_empty());
+            assert!(
+                description.ends_with('.'),
+                "description should be a complete sentence: {description}"
+            );
+            for jargon in ["asset lock", "derivation path", "BIP", "SDK"] {
+                assert!(
+                    !description.to_lowercase().contains(&jargon.to_lowercase()),
+                    "description must not leak jargon ({jargon}): {description}"
+                );
+            }
+        }
     }
 }

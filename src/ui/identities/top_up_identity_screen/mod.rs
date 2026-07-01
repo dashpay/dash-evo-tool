@@ -259,7 +259,7 @@ impl TopUpIdentityScreen {
                 ui.selectable_value(
                     &mut *funding_method,
                     FundingMethod::NoSelection,
-                    "Please select funding method",
+                    format!("{}", FundingMethod::NoSelection),
                 );
 
                 ui.add_enabled_ui(has_any_unused_asset_lock, |ui| {
@@ -267,7 +267,7 @@ impl TopUpIdentityScreen {
                         .selectable_value(
                             &mut *funding_method,
                             FundingMethod::UseUnusedAssetLock,
-                            "Unused Asset Locks",
+                            format!("{}", FundingMethod::UseUnusedAssetLock),
                         )
                         .changed()
                     {
@@ -281,7 +281,7 @@ impl TopUpIdentityScreen {
                         .selectable_value(
                             &mut *funding_method,
                             FundingMethod::UseWalletBalance,
-                            "Wallet Balance",
+                            format!("{}", FundingMethod::UseWalletBalance),
                         )
                         .changed()
                     {
@@ -295,7 +295,7 @@ impl TopUpIdentityScreen {
                         .selectable_value(
                             &mut *funding_method,
                             FundingMethod::UsePlatformAddress,
-                            "Platform Address",
+                            format!("{}", FundingMethod::UsePlatformAddress),
                         )
                         .changed()
                     {

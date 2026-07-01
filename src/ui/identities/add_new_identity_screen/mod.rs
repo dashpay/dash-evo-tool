@@ -60,12 +60,14 @@ pub enum FundingMethod {
 }
 
 impl fmt::Display for FundingMethod {
+    /// Alex-facing labels per design-spec §B.9. `UseUnusedAssetLock` deliberately
+    /// avoids "asset lock" jargon — it reads as recovering an interrupted setup.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let output = match self {
-            FundingMethod::NoSelection => "Select funding method",
-            FundingMethod::UseWalletBalance => "Wallet Balance",
-            FundingMethod::UseUnusedAssetLock => "Unused Asset Lock (recommended)",
-            FundingMethod::UsePlatformAddress => "Platform Address",
+            FundingMethod::NoSelection => "Select how to fund",
+            FundingMethod::UseWalletBalance => "From your wallet (recommended)",
+            FundingMethod::UseUnusedAssetLock => "Recover an unfinished funding",
+            FundingMethod::UsePlatformAddress => "Use a Platform address",
         };
         write!(f, "{}", output)
     }
@@ -159,11 +161,13 @@ impl AddNewIdentityScreen {
 
         let mut created = Self {
             identity_id_number: 0, // updated later
-            step: Arc::new(RwLock::new(WalletFundedScreenStep::ChooseFundingMethod)),
+            // Pre-select the same step a manual `UseWalletBalance` pick would
+            // land on (§B.9: it is the recommended, pre-selected primary path).
+            step: Arc::new(RwLock::new(WalletFundedScreenStep::ReadyToCreate)),
             funding_asset_lock: None,
             selected_wallet: None, // updated later
             funding_address: None,
-            funding_method: Arc::new(RwLock::new(FundingMethod::NoSelection)),
+            funding_method: Arc::new(RwLock::new(FundingMethod::UseWalletBalance)),
             funding_amount: None,
             funding_amount_input: None,
             alias_input: String::new(),
@@ -480,7 +484,7 @@ impl AddNewIdentityScreen {
                     .selectable_value(
                         &mut *funding_method,
                         FundingMethod::NoSelection,
-                        "Please select funding method",
+                        format!("{}", FundingMethod::NoSelection),
                     )
                     .changed()
                 {
@@ -507,7 +511,7 @@ impl AddNewIdentityScreen {
                         .selectable_value(
                             &mut *funding_method,
                             FundingMethod::UseUnusedAssetLock,
-                            "Unused Evo Funding Locks (recommended)",
+                            format!("{}", FundingMethod::UseUnusedAssetLock),
                         )
                         .changed()
                 {
@@ -522,7 +526,7 @@ impl AddNewIdentityScreen {
                         .selectable_value(
                             &mut *funding_method,
                             FundingMethod::UseWalletBalance,
-                            "Wallet Balance",
+                            format!("{}", FundingMethod::UseWalletBalance),
                         )
                         .changed()
                 {
@@ -544,7 +548,7 @@ impl AddNewIdentityScreen {
                         .selectable_value(
                             &mut *funding_method,
                             FundingMethod::UsePlatformAddress,
-                            "Platform Address",
+                            format!("{}", FundingMethod::UsePlatformAddress),
                         )
                         .changed()
                 {
@@ -1024,6 +1028,51 @@ impl AddNewIdentityScreen {
         ui.add_space(10.0);
     }
 
+    /// The optional local-alias step (design-spec §B.10: fund-first).
+    ///
+    /// Rendered by each funding-method branch just before its Create/Register
+    /// button, once the amount or lock for that method is chosen. This is a
+    /// Dash Evo Tool nickname stored locally, not a DPNS username.
+    fn render_alias_input(&mut self, ui: &mut egui::Ui, step_number: u32) {
+        ui.add_space(10.0);
+        ui.separator();
+        ui.add_space(10.0);
+
+        ui.horizontal(|ui| {
+            ui.heading(format!("{}. Set a local alias (optional).", step_number));
+            crate::ui::helpers::info_icon_button(
+                ui,
+                "This is a local alias stored only in Dash Evo Tool to help you identify this identity.\n\n\
+                This is NOT a DPNS username. DPNS names are registered on-chain after creating the identity.\n\n\
+                You can change this alias anytime from the identity details screen.",
+            );
+        });
+
+        ui.add_space(8.0);
+
+        ui.horizontal(|ui| {
+            ui.label("Alias:");
+            let dark_mode = ui.style().visuals.dark_mode;
+            ui.add(
+                egui::TextEdit::singleline(&mut self.alias_input)
+                    .hint_text(
+                        egui::RichText::new("e.g., My Main Identity")
+                            .color(DashColors::text_secondary(dark_mode)),
+                    )
+                    .desired_width(250.0),
+            );
+        });
+
+        let dark_mode = ui.style().visuals.dark_mode;
+        ui.label(
+            egui::RichText::new("Note: This is a Dash Evo Tool nickname, not a DPNS username.")
+                .small()
+                .color(DashColors::text_secondary(dark_mode)),
+        );
+
+        ui.add_space(10.0);
+    }
+
     /// The key id (0 = master, others id = index + 1) whose derivation path
     /// matches `path`, used to file a returned WIF into the right row.
     fn key_id_for_path(&self, path: &DerivationPath) -> Option<u32> {
@@ -1319,41 +1368,10 @@ impl ScreenLike for AddNewIdentityScreen {
                 ui.separator();
                 ui.add_space(10.0);
 
-                // Local alias input section
-                ui.horizontal(|ui| {
-                    ui.heading(format!("{}. Set a local alias (optional).", step_number));
-                    crate::ui::helpers::info_icon_button(
-                        ui,
-                        "This is a local alias stored only in Dash Evo Tool to help you identify this identity.\n\n\
-                        This is NOT a DPNS username. DPNS names are registered on-chain after creating the identity.\n\n\
-                        You can change this alias anytime from the identity details screen.",
-                    );
-                });
-                step_number += 1;
-
-                ui.add_space(8.0);
-
-                ui.horizontal(|ui| {
-                    ui.label("Alias:");
-                    let dark_mode = ui.style().visuals.dark_mode;
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.alias_input)
-                            .hint_text(egui::RichText::new("e.g., My Main Identity").color(DashColors::text_secondary(dark_mode)))
-                            .desired_width(250.0),
-                    );
-                });
-
-                let dark_mode = ui.style().visuals.dark_mode;
-                ui.label(
-                    egui::RichText::new("Note: This is a Dash Evo Tool nickname, not a DPNS username.")
-                        .small()
-                        .color(DashColors::text_secondary(dark_mode)),
-                );
-
-                ui.add_space(10.0);
-                ui.separator();
-                ui.add_space(10.0);
-
+                // Fund-first (design-spec §B.10): the funding method chooser is the
+                // first everyday-facing step. The local alias (optional) moves to a
+                // later step, rendered just before the Create button for whichever
+                // funding method is chosen (see `render_alias_input`).
                 ui.heading(
                     format!("{}. Choose your funding method.", step_number).as_str()
                 );
@@ -1465,5 +1483,38 @@ impl ScreenLike for AddNewIdentityScreen {
         }
 
         action
+    }
+}
+
+#[cfg(test)]
+mod funding_method_tests {
+    use super::FundingMethod;
+
+    /// Exhaustive over the enum so a new variant forces a copy decision here
+    /// instead of silently falling back to a Debug render in the UI.
+    #[test]
+    fn display_is_jargon_free_for_every_variant() {
+        for method in [
+            FundingMethod::NoSelection,
+            FundingMethod::UseUnusedAssetLock,
+            FundingMethod::UseWalletBalance,
+            FundingMethod::UsePlatformAddress,
+        ] {
+            let label = format!("{method}");
+            let debug = format!("{method:?}");
+            assert_ne!(label, debug, "label must not be the Debug repr");
+            assert!(
+                !label.contains("Asset Lock") && !label.contains("asset lock"),
+                "label must not leak asset-lock jargon: {label}"
+            );
+        }
+    }
+
+    #[test]
+    fn use_wallet_balance_is_the_recommended_primary_path() {
+        assert_eq!(
+            format!("{}", FundingMethod::UseWalletBalance),
+            "From your wallet (recommended)"
+        );
     }
 }

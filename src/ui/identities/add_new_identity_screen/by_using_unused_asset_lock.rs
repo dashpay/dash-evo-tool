@@ -146,6 +146,8 @@ impl AddNewIdentityScreen {
             });
         ui.add_space(10.0);
 
+        self.render_alias_input(ui, step_number + 1);
+
         if ui.button("Create Identity").clicked() {
             action |= self.register_identity_clicked(FundingMethod::UseUnusedAssetLock);
         }

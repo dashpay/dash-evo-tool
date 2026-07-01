@@ -83,6 +83,8 @@ impl AddNewIdentityScreen {
             });
         ui.add_space(10.0);
 
+        self.render_alias_input(ui, step_number + 1);
+
         let button = egui::Button::new(RichText::new("Create Identity").color(Color32::WHITE))
             .fill(DashColors::DASH_BLUE)
             .frame(true)

@@ -420,8 +420,8 @@ As a developer, I want a one-click "fund this identity with X credits" button so
 
 As a user, I want to register a new identity on Dash Platform so that I can use Platform features like DPNS and DashPay.
 
+- Fund-first wizard: choose a funding method (wallet balance recommended and pre-selected by default), then optionally set a local alias before creating.
 - Multi-stage confirmation flow.
-- Identity funded from an asset lock.
 
 ### IDN-002: Load existing identity by ID [Implemented]
 **Persona:** Priya, Jordan
@@ -1202,7 +1202,7 @@ As a user, while the app connects to and syncs the Dash chain on startup or afte
 
 As Alex, I want to open the Identities section on a fresh device and be offered a single-step path to create my first identity, so I can start using Dash Platform without understanding what an identity is first.
 
-- Onboarding empty state shows a heading, a plain-language explanation, and two primary CTAs: `Create my first identity` and `I already have an identity — load it`.
+- Onboarding empty state shows an abstract avatar silhouette on a soft Dash-blue glow, a heading, a plain-language explanation, and two primary CTAs: `Create my first identity` and `I already have an identity — load it`.
 - Dev-mode footer adds `Create multiple test identities` / `Load identity by ID` tertiary links.
 
 ### IDH-002: Identity home at a glance [Implemented]

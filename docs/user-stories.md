@@ -12,6 +12,7 @@ See [docs/personas/](personas/) for full persona descriptions.
 - [Identity Operations (IDN)](#identity-operations-idn)
 - [DPNS (DPN)](#dpns-dpn)
 - [DashPay (DPY)](#dashpay-dpy)
+- [Identities Hub (IDH)](#identities-hub-idh)
 - [Token Operations (TOK)](#token-operations-tok)
 - [Contracts and Documents (DOC)](#contracts-and-documents-doc)
 - [Developer and Power Tools (DEV)](#developer-and-power-tools-dev)
@@ -1193,3 +1194,56 @@ As a user, while the app connects to and syncs the Dash chain on startup or afte
 - The "Continue in the background" escape is reachable by **keyboard**, not just the mouse: it is the one designated keyboard escape on this otherwise keyboard-blocked block, so a keyboard-only or assistive-technology user can activate it with Enter or Space and is never trapped behind the unbounded sync. Focus is pinned to that button, so Enter/Space (and Tab/clicks) can never reach a widget beneath the block.
 - The block is scoped to *user-initiated* sync (startup auto-start / Connect): it lowers on its own when the chain becomes usable (Synced) or fails (Error), and an **ambient** reconnect or per-block catch-up afterward does not block a working user. Pressing Connect (or a fresh startup) blocks again.
 - This is the overlay's first real adopter (PR #863). Unlike the unsafe-to-interrupt operations in UX-001, SPV sync is **unbounded but safe to background** — so its C2 "never trap the user" guarantee is met by the always-on escape, not by operation boundedness.
+
+## Identities Hub (IDH)
+
+### IDH-001: First-time identity setup [Implemented]
+**Persona:** Alex
+
+As Alex, I want to open the Identities section on a fresh device and be offered a single-step path to create my first identity, so I can start using Dash Platform without understanding what an identity is first.
+
+- Onboarding empty state shows a heading, a plain-language explanation, and two primary CTAs: `Create my first identity` and `I already have an identity — load it`.
+- Dev-mode footer adds `Create multiple test identities` / `Load identity by ID` tertiary links.
+
+### IDH-002: Identity home at a glance [Implemented]
+**Persona:** Alex
+
+As Alex, when I have one identity, opening Identities shows me my balance, username, quick actions, and recent activity without jargon.
+
+- Home tab renders the full layout: `IdentityHeroCard`, quick actions (Send · Receive · Add contact), secondary actions (Add funds · Send to wallet · Send to another identity), `OnboardingChecklist`, and a recent-activity preview.
+- "See all activity" link on Home hops directly to the Activity tab via `HomeOutcome::GoToActivity`.
+
+### IDH-003: Multi-identity switching [Implemented]
+**Persona:** Priya
+
+As Priya, with multiple wallets and identities, I can switch between them from the breadcrumb pill on any tab in under two clicks, and every screen I then open operates as the identity I picked.
+
+- Reusable `BreadcrumbPill` and `IdentityPill` components shipped, including the label priority rule (Local nickname → DPNS handle → shortened Identity ID).
+- Identity picker grid lands with `IdentityPickerCard` + `IdentityPickerAddCard`, so a multi-identity account sees a picker landing.
+- The three-segment breadcrumb switcher (Identities link › wallet pill › identity pill, each with a dropdown) composes the full top-of-hub switcher.
+- The selected identity is app-scoped and persisted per network: every operate-as screen (contracts, documents, DPNS registration, the token creator, and DashPay) defaults to it and writes a change back, so switching once changes who I operate as everywhere. Recipient and target pickers (sending, freezing, transferring to someone else) deliberately leave my active identity unchanged.
+
+### IDH-004: Opt in to DashPay social profile [Implemented]
+**Persona:** Alex
+
+As Alex, setting up a social profile to unlock DashPay contacts is clearly optional and I can keep using payments and usernames without doing it.
+
+- Contacts tab shows `SocialProfileGateCard` when the active identity has no DashPay profile; the primary CTA deep-links to Settings via `AppAction::SwitchIdentityHubTab(Settings)`.
+- Settings tab hosts the social-profile block where display name and avatar can be edited; identities without a profile continue to use payments and usernames untouched.
+- Home tab renders a `Set up your social profile` entry in the onboarding checklist with a skip affordance — opting in is never forced.
+
+### IDH-005: Developer bulk identity creation [Gap]
+**Persona:** Jordan
+
+As Jordan in Developer Mode, I have a single entry point to create many test identities without leaving the Identities section.
+
+- Onboarding screen surfaces a Developer-mode footer mentioning `Create multiple test identities` / `Load identity by ID` as plain text.
+- Planned (follow-up): wire those footer items to the existing `AddNewIdentityScreen` bulk path and dev-mode identity-picker dropdown entries.
+
+### IDH-006: Unified activity timeline [Gap]
+**Persona:** All
+
+As any persona, my payments, funding movements, and platform actions all live in one Activity tab with filters, not in separate screens.
+
+- Activity tab shell ships with filter chips and `ActivityRow` component for rendering timeline entries.
+- Full aggregation across DashPay payments, funding, and platform ops depends on a backend aggregator; gated behind the `identity-hub-activity-feed` Cargo feature until implemented.

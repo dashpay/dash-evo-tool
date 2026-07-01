@@ -18,6 +18,25 @@ Concise catalog of all reusable UI components. Consult before creating new UI el
 | `PasswordInput` | `password_input.rs` | N/A (security) | Masked input with hold-to-reveal, zeroizes on drop. NOT ComponentResponse |
 | `IdentitySelector` | `identity_selector.rs` | N/A (Widget) | ComboBox dropdown for identity selection |
 
+## Breadcrumb Components
+
+| Component | File | DomainType | Description |
+|-----------|------|------------|-------------|
+| `BreadcrumbPill` | `breadcrumb_pill.rs` | `String` | Label + optional icon + chevron. Three modes: Interactive / Subdued / Placeholder. Reusable anywhere a breadcrumb pill is needed (Identities hub breadcrumb, future wallet breadcrumbs). |
+
+## Placement Rule
+
+`src/ui/components/` holds **reusable** components only — widgets that plausibly
+have a second consumer outside their originating screen (Wallets, Tokens,
+Contracts, Tools, Settings, etc.).
+
+Identity Hub-specific widgets (`IdentityHubTabBar`, `IdentityHeroCard`,
+`OnboardingChecklist`, `IdentityPickerCard`, `IdentityPickerAddCard`,
+`SocialProfileGateCard`, `RequestCard`, `ContactRow`, `ActivityRow`,
+`IdentityPill`) live in `src/ui/identity/` alongside the tab modules that
+consume them. If one of those widgets gains a second consumer outside the
+hub, promote it into this directory.
+
 ## Dialog Components
 
 | Component | File | DomainType | Description |

@@ -1,5 +1,6 @@
 pub mod address_input;
 pub mod amount_input;
+pub mod breadcrumb_pill;
 pub mod component_trait;
 pub mod confirmation_dialog;
 pub mod contract_chooser_panel;

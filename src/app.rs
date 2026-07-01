@@ -385,6 +385,12 @@ pub enum AppAction {
         /// Optional sub-screen to push onto the stack
         add_screen: Option<Box<crate::ui::ScreenType>>,
     },
+    /// Switch the active sub-tab inside the Identity Hub root screen. Emitted
+    /// by in-hub deep links (e.g. the Home tab's "See all activity" link, the
+    /// Contacts gate's "Add a display name" CTA). Handled by `AppState::update`
+    /// which looks up the visible `IdentityHubScreen` and calls `select_tab`.
+    #[cfg(feature = "identity-hub")]
+    SwitchIdentityHubTab(crate::ui::identity::IdentityHubTab),
 }
 
 impl BitOrAssign for AppAction {
@@ -580,7 +586,12 @@ impl AppState {
 
         let wallets_balances_screen = WalletsBalancesScreen::new(&active_context);
 
-        let selected_main_screen = settings.root_screen_type;
+        // Persisted setting; the effective `selected_main_screen` is computed
+        // after the screen map is built (below) so we can fall back to a
+        // known-registered screen if the persisted value is no longer
+        // available (e.g. `identity-hub` feature toggled off after a session
+        // selected the hub).
+        let persisted_main_screen = settings.root_screen_type;
 
         // // Create a channel with a buffer size of 32 (adjust as needed)
         let (task_result_sender, task_result_receiver) =
@@ -658,102 +669,133 @@ impl AppState {
             }
         };
 
+        let main_screens: BTreeMap<RootScreenType, Screen> = [
+            (
+                RootScreenType::RootScreenIdentities,
+                Screen::IdentitiesScreen(identities_screen),
+            ),
+            (
+                RootScreenType::RootScreenDPNSActiveContests,
+                Screen::DPNSScreen(dpns_active_contests_screen),
+            ),
+            (
+                RootScreenType::RootScreenDPNSPastContests,
+                Screen::DPNSScreen(dpns_past_contests_screen),
+            ),
+            (
+                RootScreenType::RootScreenDPNSOwnedNames,
+                Screen::DPNSScreen(dpns_my_usernames_screen),
+            ),
+            (
+                RootScreenType::RootScreenDPNSScheduledVotes,
+                Screen::DPNSScreen(dpns_scheduled_votes_screen),
+            ),
+            (
+                RootScreenType::RootScreenWalletsBalances,
+                Screen::WalletsBalancesScreen(wallets_balances_screen),
+            ),
+            (
+                RootScreenType::RootScreenToolsTransitionVisualizerScreen,
+                Screen::TransitionVisualizerScreen(transition_visualizer_screen),
+            ),
+            (
+                RootScreenType::RootScreenToolsProofVisualizerScreen,
+                Screen::ProofVisualizerScreen(proof_visualizer_screen),
+            ),
+            (
+                RootScreenType::RootScreenToolsDocumentVisualizerScreen,
+                Screen::DocumentVisualizerScreen(document_visualizer_screen),
+            ),
+            (
+                RootScreenType::RootScreenToolsContractVisualizerScreen,
+                Screen::ContractVisualizerScreen(contract_visualizer_screen),
+            ),
+            (
+                RootScreenType::RootScreenToolsPlatformInfoScreen,
+                Screen::PlatformInfoScreen(platform_info_screen),
+            ),
+            (
+                RootScreenType::RootScreenToolsAddressBalanceScreen,
+                Screen::AddressBalanceScreen(address_balance_screen),
+            ),
+            (
+                RootScreenType::RootScreenToolsGroveSTARKScreen,
+                Screen::GroveSTARKScreen(grovestark_screen),
+            ),
+            (
+                RootScreenType::RootScreenDocumentQuery,
+                Screen::DocumentQueryScreen(document_query_screen),
+            ),
+            (
+                RootScreenType::RootScreenDashpay,
+                Screen::DashPayScreen(contracts_dashpay_screen),
+            ),
+            (
+                RootScreenType::RootScreenNetworkChooser,
+                Screen::NetworkChooserScreen(network_chooser_screen),
+            ),
+            (
+                RootScreenType::RootScreenMyTokenBalances,
+                Screen::TokensScreen(Box::new(tokens_balances_screen)),
+            ),
+            (
+                RootScreenType::RootScreenTokenSearch,
+                Screen::TokensScreen(Box::new(token_search_screen)),
+            ),
+            (
+                RootScreenType::RootScreenTokenCreator,
+                Screen::TokensScreen(Box::new(token_creator_screen)),
+            ),
+            (
+                RootScreenType::RootScreenDashPayContacts,
+                Screen::DashPayScreen(dashpay_contacts_screen),
+            ),
+            (
+                RootScreenType::RootScreenDashPayProfile,
+                Screen::DashPayScreen(dashpay_profile_screen),
+            ),
+            (
+                RootScreenType::RootScreenDashPayPayments,
+                Screen::DashPayScreen(dashpay_payments_screen),
+            ),
+            (
+                RootScreenType::RootScreenDashPayProfileSearch,
+                Screen::DashPayProfileSearchScreen(dashpay_profile_search_screen),
+            ),
+        ]
+        .into_iter()
+        .chain({
+            // Register the new unified Identities hub screen. Feature-gated:
+            // when `identity-hub` is disabled, nothing is inserted and the
+            // nav entry is absent, so the hub screen is never reachable.
+            #[cfg(feature = "identity-hub")]
+            {
+                let hub = crate::ui::identity::IdentityHubScreen::new(&active_context);
+                vec![(
+                    RootScreenType::RootScreenIdentityHub,
+                    Screen::IdentityHubScreen(hub),
+                )]
+            }
+            #[cfg(not(feature = "identity-hub"))]
+            {
+                Vec::<(RootScreenType, Screen)>::new()
+            }
+        })
+        .collect();
+
+        // Resolve the effective selected root screen. If the persisted value
+        // is no longer registered (e.g. the user selected the Identities hub
+        // in an earlier session and the `identity-hub` Cargo feature has
+        // since been disabled), fall back to the legacy `Identities` screen
+        // so `active_root_screen_mut()` does not panic on first frame.
+        let selected_main_screen = if main_screens.contains_key(&persisted_main_screen) {
+            persisted_main_screen
+        } else {
+            RootScreenType::RootScreenIdentities
+        };
+
         let mut app_state = Self {
-            main_screens: [
-                (
-                    RootScreenType::RootScreenIdentities,
-                    Screen::IdentitiesScreen(identities_screen),
-                ),
-                (
-                    RootScreenType::RootScreenDPNSActiveContests,
-                    Screen::DPNSScreen(dpns_active_contests_screen),
-                ),
-                (
-                    RootScreenType::RootScreenDPNSPastContests,
-                    Screen::DPNSScreen(dpns_past_contests_screen),
-                ),
-                (
-                    RootScreenType::RootScreenDPNSOwnedNames,
-                    Screen::DPNSScreen(dpns_my_usernames_screen),
-                ),
-                (
-                    RootScreenType::RootScreenDPNSScheduledVotes,
-                    Screen::DPNSScreen(dpns_scheduled_votes_screen),
-                ),
-                (
-                    RootScreenType::RootScreenWalletsBalances,
-                    Screen::WalletsBalancesScreen(wallets_balances_screen),
-                ),
-                (
-                    RootScreenType::RootScreenToolsTransitionVisualizerScreen,
-                    Screen::TransitionVisualizerScreen(transition_visualizer_screen),
-                ),
-                (
-                    RootScreenType::RootScreenToolsProofVisualizerScreen,
-                    Screen::ProofVisualizerScreen(proof_visualizer_screen),
-                ),
-                (
-                    RootScreenType::RootScreenToolsDocumentVisualizerScreen,
-                    Screen::DocumentVisualizerScreen(document_visualizer_screen),
-                ),
-                (
-                    RootScreenType::RootScreenToolsContractVisualizerScreen,
-                    Screen::ContractVisualizerScreen(contract_visualizer_screen),
-                ),
-                (
-                    RootScreenType::RootScreenToolsPlatformInfoScreen,
-                    Screen::PlatformInfoScreen(platform_info_screen),
-                ),
-                (
-                    RootScreenType::RootScreenToolsAddressBalanceScreen,
-                    Screen::AddressBalanceScreen(address_balance_screen),
-                ),
-                (
-                    RootScreenType::RootScreenToolsGroveSTARKScreen,
-                    Screen::GroveSTARKScreen(grovestark_screen),
-                ),
-                (
-                    RootScreenType::RootScreenDocumentQuery,
-                    Screen::DocumentQueryScreen(document_query_screen),
-                ),
-                (
-                    RootScreenType::RootScreenDashpay,
-                    Screen::DashPayScreen(contracts_dashpay_screen),
-                ),
-                (
-                    RootScreenType::RootScreenNetworkChooser,
-                    Screen::NetworkChooserScreen(network_chooser_screen),
-                ),
-                (
-                    RootScreenType::RootScreenMyTokenBalances,
-                    Screen::TokensScreen(Box::new(tokens_balances_screen)),
-                ),
-                (
-                    RootScreenType::RootScreenTokenSearch,
-                    Screen::TokensScreen(Box::new(token_search_screen)),
-                ),
-                (
-                    RootScreenType::RootScreenTokenCreator,
-                    Screen::TokensScreen(Box::new(token_creator_screen)),
-                ),
-                (
-                    RootScreenType::RootScreenDashPayContacts,
-                    Screen::DashPayScreen(dashpay_contacts_screen),
-                ),
-                (
-                    RootScreenType::RootScreenDashPayProfile,
-                    Screen::DashPayScreen(dashpay_profile_screen),
-                ),
-                (
-                    RootScreenType::RootScreenDashPayPayments,
-                    Screen::DashPayScreen(dashpay_payments_screen),
-                ),
-                (
-                    RootScreenType::RootScreenDashPayProfileSearch,
-                    Screen::DashPayProfileSearchScreen(dashpay_profile_search_screen),
-                ),
-            ]
-            .into(),
+            main_screens,
             selected_main_screen,
             screen_stack: vec![],
             chosen_network,
@@ -2040,6 +2082,17 @@ impl App for AppState {
                         self.screen_stack.push(screen);
                     }
                     self.try_auto_start_spv();
+                }
+                #[cfg(feature = "identity-hub")]
+                AppAction::SwitchIdentityHubTab(tab) => {
+                    // Resolve the visible screen. In-hub deep links are only
+                    // meaningful when the user is actually on the hub, so we
+                    // silently drop the action otherwise rather than hijack
+                    // navigation.
+                    if let crate::ui::Screen::IdentityHubScreen(hub) = self.visible_screen_mut() {
+                        hub.select_tab(tab);
+                        hub.refresh();
+                    }
                 }
             }
         }

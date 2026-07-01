@@ -39,7 +39,7 @@ const ACCOUNT_INDEX_INFO_TEXT: &str = "Account Index:\n\n\
 
 pub struct QRCodeGeneratorScreen {
     pub app_context: Arc<AppContext>,
-    selected_identity: Option<QualifiedIdentity>,
+    pub selected_identity: Option<QualifiedIdentity>,
     selected_identity_string: String,
     account_index: String,
     validity_hours: String,
@@ -67,22 +67,25 @@ impl QRCodeGeneratorScreen {
             wallet_open_attempted: false,
         };
 
-        // Auto-select first identity on creation if available
+        // Seed from the app-scoped selected identity (W3 SYNC); fall back to first.
         if let Ok(identities) = app_context.load_local_qualified_identities()
             && !identities.is_empty()
         {
             use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
             use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 
-            new_self.selected_identity = Some(identities[0].clone());
-            new_self.selected_identity_string =
-                identities[0].identity.id().to_string(Encoding::Base58);
+            let selected_id = app_context.selected_identity_id();
+            let preferred = selected_id
+                .and_then(|id| identities.iter().find(|qi| qi.identity.id() == id).cloned())
+                .unwrap_or_else(|| identities[0].clone());
+
+            new_self.selected_identity = Some(preferred.clone());
+            new_self.selected_identity_string = preferred.identity.id().to_string(Encoding::Base58);
 
             // Get wallet for the selected identity
-            new_self.selected_wallet =
-                get_selected_wallet(&identities[0], Some(&app_context), None)
-                    .or_show_error(app_context.egui_ctx())
-                    .unwrap_or(None);
+            new_self.selected_wallet = get_selected_wallet(&preferred, Some(&app_context), None)
+                .or_show_error(app_context.egui_ctx())
+                .unwrap_or(None);
         }
 
         new_self
@@ -183,6 +186,7 @@ impl QRCodeGeneratorScreen {
                             RichText::new("Identity:").color(DashColors::text_primary(dark_mode)),
                         );
                         ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                            // SYNC: write-back via syncing_global on user pick.
                             let response = ui.add(
                                 IdentitySelector::new(
                                     "qr_identity_selector",
@@ -192,7 +196,8 @@ impl QRCodeGeneratorScreen {
                                     .selected_identity(&mut self.selected_identity)
                                     .unwrap()
                                     .width(300.0)
-                                    .other_option(false),
+                                    .other_option(false)
+                                    .syncing_global(self.app_context.clone()),
                             );
 
                             if response.changed() {

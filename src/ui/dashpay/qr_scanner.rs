@@ -25,7 +25,7 @@ use std::sync::{Arc, RwLock};
 
 pub struct QRScannerScreen {
     pub app_context: Arc<AppContext>,
-    selected_identity: Option<QualifiedIdentity>,
+    pub selected_identity: Option<QualifiedIdentity>,
     selected_identity_string: String,
     qr_data_input: String,
     parsed_qr_data: Option<AutoAcceptProofData>,
@@ -37,10 +37,31 @@ pub struct QRScannerScreen {
 
 impl QRScannerScreen {
     pub fn new(app_context: Arc<AppContext>) -> Self {
+        // Seed from the app-scoped selected identity (W3 SYNC); fall back to first.
+        let identities = app_context
+            .load_local_qualified_identities()
+            .unwrap_or_default();
+        let selected_identity = {
+            use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+            app_context
+                .selected_identity_id()
+                .and_then(|id| identities.iter().find(|qi| qi.identity.id() == id).cloned())
+                .or_else(|| identities.first().cloned())
+        };
+        let selected_identity_string = selected_identity
+            .as_ref()
+            .map(|qi| {
+                use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+                qi.identity
+                    .id()
+                    .to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58)
+            })
+            .unwrap_or_default();
+
         Self {
             app_context,
-            selected_identity: None,
-            selected_identity_string: String::new(),
+            selected_identity,
+            selected_identity_string,
             qr_data_input: String::new(),
             parsed_qr_data: None,
             sending: false,
@@ -169,6 +190,7 @@ impl QRScannerScreen {
 
                 ui.horizontal(|ui| {
                     ui.label("Identity:");
+                    // SYNC: write-back via syncing_global on user pick.
                     ui.add(
                         IdentitySelector::new(
                             "qr_scanner_identity_selector",
@@ -178,7 +200,8 @@ impl QRScannerScreen {
                         .selected_identity(&mut self.selected_identity)
                         .unwrap()
                         .width(300.0)
-                        .other_option(false),
+                        .other_option(false)
+                        .syncing_global(self.app_context.clone()),
                     );
                 });
 

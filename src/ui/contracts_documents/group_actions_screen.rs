@@ -78,7 +78,7 @@ pub struct GroupActionsScreen {
     contract_search: String,
     qualified_identities: Vec<QualifiedIdentity>,
     identity_token_balances: IndexMap<IdentityTokenIdentifier, IdentityTokenBalance>,
-    selected_identity: Option<QualifiedIdentity>,
+    pub selected_identity: Option<QualifiedIdentity>,
     selected_identity_str: String,
 
     // Backend task status
@@ -537,6 +537,11 @@ impl ScreenLike for GroupActionsScreen {
 
             ui.add_space(10.0);
 
+            // K3 — SESSION-LOCAL: no `with_app_default` and no `syncing_global`.
+            // GroupActions targets a specific group and contract for one session;
+            // writing the user's pick back to the global selection would incorrectly
+            // re-point "who you are" to a group-member identity that may not be
+            // the user's primary operating identity.
             ui.add(
                 IdentitySelector::new(
                     "group_actions_identity_selector",

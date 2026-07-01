@@ -57,6 +57,7 @@ use identities::add_existing_identity_screen::AddExistingIdentityScreen;
 use identities::add_new_identity_screen::AddNewIdentityScreen;
 use identities::identities_screen::IdentitiesScreen;
 use identities::register_dpns_name_screen::{RegisterDpnsNameScreen, RegisterDpnsNameSource};
+use identity::IdentityHubScreen;
 use std::fmt;
 use std::hash::Hash;
 use std::sync::Arc;
@@ -85,6 +86,7 @@ pub mod dashpay;
 pub mod dpns;
 pub mod helpers;
 pub mod identities;
+pub mod identity;
 pub mod network_chooser_screen;
 pub mod state;
 pub mod theme;
@@ -119,6 +121,11 @@ pub enum RootScreenType {
     RootScreenToolsGroveSTARKScreen,
     RootScreenToolsAddressBalanceScreen,
     RootScreenDashpay,
+    /// New unified Identities hub (Home · Contacts · Activity · Settings).
+    /// Coexists with `RootScreenIdentities` and the DashPay entries while the legacy
+    /// screens are still wired. Distinct variant so user selection, persistence, and
+    /// left-nav highlighting stay independent.
+    RootScreenIdentityHub,
 }
 
 impl RootScreenType {
@@ -151,6 +158,7 @@ impl RootScreenType {
             RootScreenType::RootScreenDashpay => 24,
             RootScreenType::RootScreenToolsGroveSTARKScreen => 25,
             RootScreenType::RootScreenToolsAddressBalanceScreen => 26,
+            RootScreenType::RootScreenIdentityHub => 27,
         }
     }
 
@@ -183,8 +191,32 @@ impl RootScreenType {
             24 => Some(RootScreenType::RootScreenDashpay),
             25 => Some(RootScreenType::RootScreenToolsGroveSTARKScreen),
             26 => Some(RootScreenType::RootScreenToolsAddressBalanceScreen),
+            27 => Some(RootScreenType::RootScreenIdentityHub),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod root_screen_type_tests {
+    use super::RootScreenType;
+
+    #[test]
+    fn identity_hub_round_trips() {
+        let rt = RootScreenType::RootScreenIdentityHub;
+        let encoded = rt.to_int();
+        let decoded = RootScreenType::from_int(encoded)
+            .expect("new identity hub variant must round-trip through from_int");
+        assert_eq!(rt, decoded);
+        // Value 27 is the canonical on-disk encoding. Keeping it stable means
+        // existing user settings continue to round-trip correctly as new
+        // variants are added.
+        assert_eq!(encoded, 27);
+    }
+
+    #[test]
+    fn from_int_returns_none_for_unknown_value() {
+        assert!(RootScreenType::from_int(9999).is_none());
     }
 }
 
@@ -220,6 +252,7 @@ impl From<RootScreenType> for ScreenType {
             RootScreenType::RootScreenToolsGroveSTARKScreen => ScreenType::GroveSTARK,
             RootScreenType::RootScreenToolsAddressBalanceScreen => ScreenType::AddressBalance,
             RootScreenType::RootScreenDashpay => ScreenType::Dashpay,
+            RootScreenType::RootScreenIdentityHub => ScreenType::IdentityHub,
         }
     }
 }
@@ -263,6 +296,8 @@ pub enum ScreenType {
     GroveSTARK,
     AddressBalance,
     Dashpay,
+    /// Unified Identities hub (new four-tab section).
+    IdentityHub,
     CreateDocument,
     DeleteDocument,
     ReplaceDocument,
@@ -358,6 +393,7 @@ impl PartialEq for ScreenType {
             (ScreenType::GroveSTARK, ScreenType::GroveSTARK) => true,
             (ScreenType::AddressBalance, ScreenType::AddressBalance) => true,
             (ScreenType::Dashpay, ScreenType::Dashpay) => true,
+            (ScreenType::IdentityHub, ScreenType::IdentityHub) => true,
             (ScreenType::CreateDocument, ScreenType::CreateDocument) => true,
             (ScreenType::DeleteDocument, ScreenType::DeleteDocument) => true,
             (ScreenType::ReplaceDocument, ScreenType::ReplaceDocument) => true,
@@ -520,6 +556,9 @@ impl ScreenType {
             }
             ScreenType::Dashpay => {
                 Screen::DashPayScreen(DashPayScreen::new(app_context, DashPaySubscreen::Profile))
+            }
+            ScreenType::IdentityHub => {
+                Screen::IdentityHubScreen(IdentityHubScreen::new(app_context))
             }
             ScreenType::CreateDocument => Screen::DocumentActionScreen(DocumentActionScreen::new(
                 app_context.clone(),
@@ -751,6 +790,9 @@ pub enum Screen {
     DashPayContactInfoEditorScreen(ContactInfoEditorScreen),
     DashPayQRGeneratorScreen(QRCodeGeneratorScreen),
     DashPayProfileSearchScreen(ProfileSearchScreen),
+
+    // New unified Identities hub
+    IdentityHubScreen(IdentityHubScreen),
 }
 
 impl Screen {
@@ -847,6 +889,15 @@ impl Screen {
                 screen.invalidate_address_input();
                 return;
             }
+            Screen::IdentityHubScreen(screen) => {
+                screen.app_context = app_context;
+                // A network switch invalidates all per-identity caches (contacts
+                // load guard, profile cache, search state). Without this refresh
+                // the Contacts tab would stay permanently "already loaded" after
+                // switching networks (T28).
+                screen.refresh();
+                return;
+            }
             _ => {}
         }
 
@@ -913,6 +964,7 @@ impl Screen {
             ShieldScreen,
             ShieldedSendScreen,
             UnshieldCreditsScreen,
+            IdentityHubScreen,
         );
     }
 }
@@ -1133,6 +1185,7 @@ impl Screen {
             Screen::ShieldScreen(s) => ScreenType::ShieldScreen(s.seed_hash),
             Screen::ShieldedSendScreen(s) => ScreenType::ShieldedSendScreen(s.seed_hash),
             Screen::UnshieldCreditsScreen(s) => ScreenType::UnshieldCreditsScreen(s.seed_hash),
+            Screen::IdentityHubScreen(_) => ScreenType::IdentityHub,
         }
     }
 }
@@ -1203,6 +1256,7 @@ impl ScreenLike for Screen {
             Screen::ShieldScreen(screen) => screen.refresh(),
             Screen::ShieldedSendScreen(screen) => screen.refresh(),
             Screen::UnshieldCreditsScreen(screen) => screen.refresh(),
+            Screen::IdentityHubScreen(screen) => screen.refresh(),
         }
     }
 
@@ -1271,6 +1325,7 @@ impl ScreenLike for Screen {
             Screen::ShieldScreen(screen) => screen.refresh_on_arrival(),
             Screen::ShieldedSendScreen(screen) => screen.refresh_on_arrival(),
             Screen::UnshieldCreditsScreen(screen) => screen.refresh_on_arrival(),
+            Screen::IdentityHubScreen(screen) => screen.refresh_on_arrival(),
         }
     }
 
@@ -1339,6 +1394,7 @@ impl ScreenLike for Screen {
             Screen::ShieldScreen(screen) => screen.ui(ui),
             Screen::ShieldedSendScreen(screen) => screen.ui(ui),
             Screen::UnshieldCreditsScreen(screen) => screen.ui(ui),
+            Screen::IdentityHubScreen(screen) => screen.ui(ui),
         }
     }
 
@@ -1439,6 +1495,7 @@ impl ScreenLike for Screen {
             Screen::ShieldScreen(screen) => screen.display_message(message, message_type),
             Screen::ShieldedSendScreen(screen) => screen.display_message(message, message_type),
             Screen::UnshieldCreditsScreen(screen) => screen.display_message(message, message_type),
+            Screen::IdentityHubScreen(screen) => screen.display_message(message, message_type),
         }
     }
 
@@ -1611,6 +1668,9 @@ impl ScreenLike for Screen {
             Screen::UnshieldCreditsScreen(screen) => {
                 screen.display_task_result(backend_task_success_result)
             }
+            Screen::IdentityHubScreen(screen) => {
+                screen.display_task_result(backend_task_success_result)
+            }
         }
     }
 
@@ -1680,6 +1740,7 @@ impl ScreenLike for Screen {
             Screen::ShieldScreen(screen) => screen.display_task_error(error),
             Screen::ShieldedSendScreen(screen) => screen.display_task_error(error),
             Screen::UnshieldCreditsScreen(screen) => screen.display_task_error(error),
+            Screen::IdentityHubScreen(screen) => screen.display_task_error(error),
         }
     }
 
@@ -1748,6 +1809,7 @@ impl ScreenLike for Screen {
             Screen::ShieldScreen(_) => {}
             Screen::ShieldedSendScreen(_) => {}
             Screen::UnshieldCreditsScreen(_) => {}
+            Screen::IdentityHubScreen(_) => {}
         }
     }
 }

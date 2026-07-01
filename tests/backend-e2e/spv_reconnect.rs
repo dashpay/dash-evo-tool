@@ -23,8 +23,7 @@
 //!
 //! **Run command** (requires testnet egress; no funded wallet needed):
 //! ```bash
-//! RUST_MIN_STACK=16777216 \
-//!   cargo test --test backend-e2e --all-features -- \
+//! cargo test --test backend-e2e --all-features -- \
 //!   --ignored --nocapture spv_reconnect_succeeds_without_already_open
 //! ```
 

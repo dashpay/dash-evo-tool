@@ -82,7 +82,7 @@ impl LoadIdentityMode {
     /// narrow tab chip. See [`Self::description`] for the fuller caption.
     fn tab_label(self) -> &'static str {
         match self {
-            LoadIdentityMode::IdentityId => "Identity ID & key",
+            LoadIdentityMode::IdentityId => "Identity ID & private key",
             LoadIdentityMode::Wallet => "From my wallet",
             LoadIdentityMode::DpnsName => "My username",
         }

@@ -73,6 +73,29 @@ impl fmt::Display for FundingMethod {
     }
 }
 
+/// The funding-method chooser's starting state for a wallet that either does
+/// or doesn't have spendable balance (§B.9: pre-select `UseWalletBalance`
+/// only when it is actually available; otherwise start unselected rather
+/// than land on a method the ComboBox itself wouldn't offer). Shared by
+/// `AddNewIdentityScreen` and `TopUpIdentityScreen`, which both render this
+/// same chooser. A pure function so the decision is testable without
+/// constructing a real wallet/balance snapshot.
+pub(crate) fn default_funding_state(
+    wallet_has_balance: bool,
+) -> (FundingMethod, WalletFundedScreenStep) {
+    if wallet_has_balance {
+        (
+            FundingMethod::UseWalletBalance,
+            WalletFundedScreenStep::ReadyToCreate,
+        )
+    } else {
+        (
+            FundingMethod::NoSelection,
+            WalletFundedScreenStep::ChooseFundingMethod,
+        )
+    }
+}
+
 pub struct AddNewIdentityScreen {
     identity_id_number: u32,
     step: Arc<RwLock<WalletFundedScreenStep>>,
@@ -159,15 +182,24 @@ impl AddNewIdentityScreen {
             }
         }
 
+        // §B.9: `UseWalletBalance` is the recommended, pre-selected primary
+        // path — but only when the wallet actually has funds to offer it
+        // with, matching the same availability gate the ComboBox itself
+        // applies in `render_funding_method` (`has_balance`), so the visibly
+        // "selected" method is never one the dropdown wouldn't actually offer.
+        let wallet_has_balance = selected_wallet.as_ref().is_some_and(|wallet| {
+            let seed_hash = wallet.read().unwrap().seed_hash();
+            app_context.snapshot_has_balance(&seed_hash)
+        });
+        let (default_funding_method, default_step) = default_funding_state(wallet_has_balance);
+
         let mut created = Self {
             identity_id_number: 0, // updated later
-            // Pre-select the same step a manual `UseWalletBalance` pick would
-            // land on (§B.9: it is the recommended, pre-selected primary path).
-            step: Arc::new(RwLock::new(WalletFundedScreenStep::ReadyToCreate)),
+            step: Arc::new(RwLock::new(default_step)),
             funding_asset_lock: None,
             selected_wallet: None, // updated later
             funding_address: None,
-            funding_method: Arc::new(RwLock::new(FundingMethod::UseWalletBalance)),
+            funding_method: Arc::new(RwLock::new(default_funding_method)),
             funding_amount: None,
             funding_amount_input: None,
             alias_input: String::new(),
@@ -1039,7 +1071,7 @@ impl AddNewIdentityScreen {
         ui.add_space(10.0);
 
         ui.horizontal(|ui| {
-            ui.heading(format!("{}. Set a local alias (optional).", step_number));
+            ui.heading(format!("{step_number}. Set a local alias (optional)."));
             crate::ui::helpers::info_icon_button(
                 ui,
                 "This is a local alias stored only in Dash Evo Tool to help you identify this identity.\n\n\
@@ -1269,6 +1301,17 @@ impl ScreenLike for AddNewIdentityScreen {
                 }
 
                 if self.selected_wallet.is_none() {
+                    ui.add_space(10.0);
+                    ui.colored_label(
+                        DashColors::WARNING,
+                        "You need a wallet before you can create an identity.",
+                    );
+                    ui.add_space(8.0);
+                    if ui.button("Set up a wallet").clicked() {
+                        inner_action |= AppAction::SetMainScreenThenGoToMainScreen(
+                            crate::ui::RootScreenType::RootScreenWalletsBalances,
+                        );
+                    }
                     return;
                 };
 
@@ -1488,7 +1531,34 @@ impl ScreenLike for AddNewIdentityScreen {
 
 #[cfg(test)]
 mod funding_method_tests {
-    use super::FundingMethod;
+    use super::{FundingMethod, WalletFundedScreenStep, default_funding_state};
+
+    /// QA-001: a wallet with spendable balance defaults to the recommended
+    /// path, pre-selected and ready to go.
+    #[test]
+    fn default_funding_state_prefers_wallet_balance_when_available() {
+        assert_eq!(
+            default_funding_state(true),
+            (
+                FundingMethod::UseWalletBalance,
+                WalletFundedScreenStep::ReadyToCreate
+            )
+        );
+    }
+
+    /// QA-001: a wallet with nothing to fund from must not default to a
+    /// method the ComboBox itself wouldn't offer — that was the fresh-wallet
+    /// dead end. It starts unselected instead.
+    #[test]
+    fn default_funding_state_falls_back_to_no_selection_without_balance() {
+        assert_eq!(
+            default_funding_state(false),
+            (
+                FundingMethod::NoSelection,
+                WalletFundedScreenStep::ChooseFundingMethod
+            )
+        );
+    }
 
     /// Exhaustive over the enum so a new variant forces a copy decision here
     /// instead of silently falling back to a Debug render in the UI.

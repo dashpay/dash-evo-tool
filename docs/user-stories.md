@@ -420,7 +420,7 @@ As a developer, I want a one-click "fund this identity with X credits" button so
 
 As a user, I want to register a new identity on Dash Platform so that I can use Platform features like DPNS and DashPay.
 
-- Fund-first wizard: choose a funding method (wallet balance recommended and pre-selected by default), then optionally set a local alias before creating.
+- Fund-first wizard: choose a funding method — from your wallet (recommended, pre-selected by default when available), recover an unfinished funding, or use a Platform address — then optionally set a local alias before creating.
 - Multi-stage confirmation flow.
 
 ### IDN-002: Load existing identity by ID [Implemented]

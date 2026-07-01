@@ -23,7 +23,7 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
-use crate::ui::identities::add_new_identity_screen::FundingMethod;
+use crate::ui::identities::add_new_identity_screen::{FundingMethod, default_funding_state};
 use crate::ui::identities::funding_common::WalletFundedScreenStep;
 use crate::ui::state::TrackedAssetLockCache;
 use crate::ui::{MessageType, ScreenLike};
@@ -156,6 +156,21 @@ impl TopUpIdentityScreen {
                 true
             } else if let Some(wallet) = wallets.values().next() {
                 if self.wallet.is_none() {
+                    // §B.9 / QA-006: the very first time a wallet resolves with
+                    // nothing chosen yet, apply the same pre-selection the
+                    // create-identity wizard uses (`default_funding_state`) —
+                    // recommend `UseWalletBalance` only when this wallet
+                    // actually has funds to offer it with.
+                    if *self.funding_method.read().unwrap() == FundingMethod::NoSelection {
+                        let wallet_has_balance = {
+                            let wallet_read = wallet.read().unwrap();
+                            self.app_context
+                                .snapshot_has_balance(&wallet_read.seed_hash())
+                        };
+                        let (recommended, _) = default_funding_state(wallet_has_balance);
+                        *self.funding_method.write().unwrap() = recommended;
+                    }
+
                     // Cache current funding method to avoid holding the lock across updates
                     let funding_method = *self.funding_method.read().unwrap();
 

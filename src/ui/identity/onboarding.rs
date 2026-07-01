@@ -66,8 +66,8 @@ pub fn render(ui: &mut Ui, app_context: &Arc<AppContext>) -> AppAction {
             .fill(DashColors::DASH_BLUE)
             .min_size(egui::vec2(280.0, 40.0));
             let primary_response = ui.add(primary).clickable_tooltip(
-                "Start the short setup: pick a username, fund the identity from your wallet, \
-                 and confirm.",
+                "Start the short setup: fund the identity from your wallet, add an optional \
+                 nickname, and confirm.",
             );
             if primary_response.clicked() {
                 action =

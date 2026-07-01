@@ -1,5 +1,6 @@
 use crate::app::AppAction;
 use crate::model::fee_estimation::format_credits_as_dash;
+use crate::ui::RootScreenType;
 use crate::ui::identities::add_new_identity_screen::{
     AddNewIdentityScreen, FundingMethod, WalletFundedScreenStep,
 };
@@ -23,6 +24,49 @@ impl AddNewIdentityScreen {
         }
     }
 
+    /// If the selected wallet can't cover even the estimated identity-creation
+    /// fee, render design-spec §B.1's "not enough Dash" banner with a link to
+    /// the Wallets screen (design-spec calls it "Go to Receive"; this app has
+    /// no separate top-level Receive screen, so the link goes to Wallets,
+    /// where the user's receiving address lives) and report that the caller
+    /// should stop rendering this step. Returns `None` when the balance is
+    /// sufficient, or when no wallet is selected (handled earlier by the
+    /// caller's own no-wallet gate).
+    fn render_insufficient_wallet_balance_banner(&self, ui: &mut egui::Ui) -> Option<AppAction> {
+        let selected_wallet = self.selected_wallet.as_ref()?;
+        let seed_hash = selected_wallet.read().unwrap().seed_hash();
+        let available_credits = self.app_context.snapshot_balance(&seed_hash).total * 1000; // duffs -> credits
+
+        let key_count = self.identity_keys.others.len() + 1; // +1 for master key
+        let minimum_credits = self
+            .app_context
+            .fee_estimator()
+            .estimate_identity_create(key_count);
+
+        if available_credits >= minimum_credits {
+            return None;
+        }
+
+        ui.add_space(8.0);
+        ui.colored_label(
+            DashColors::WARNING,
+            format!(
+                "Your wallet does not have enough Dash to create an identity yet. \
+                 Add at least {amount} to continue.",
+                amount = format_credits_as_dash(minimum_credits)
+            ),
+        );
+        ui.add_space(8.0);
+        let mut action = AppAction::None;
+        if ui.button("Go to Wallets").clicked() {
+            action = AppAction::SetMainScreenThenGoToMainScreen(
+                RootScreenType::RootScreenWalletsBalances,
+            );
+        }
+        ui.add_space(10.0);
+        Some(action)
+    }
+
     pub fn render_ui_by_using_unused_balance(
         &mut self,
         ui: &mut Ui,
@@ -39,6 +83,10 @@ impl AddNewIdentityScreen {
         ui.add_space(10.0);
         self.show_wallet_balance(ui);
         ui.add_space(5.0);
+
+        if let Some(insufficient_action) = self.render_insufficient_wallet_balance_banner(ui) {
+            return insufficient_action;
+        }
 
         self.render_funding_amount_input(ui);
 

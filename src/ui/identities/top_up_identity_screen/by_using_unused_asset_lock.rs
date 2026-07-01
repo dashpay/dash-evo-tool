@@ -25,7 +25,7 @@ impl TopUpIdentityScreen {
         };
 
         if self.asset_lock_cache.is_failed(&seed_hash) {
-            ui.label("Couldn't load asset locks.");
+            ui.label("Couldn't load your unfinished funding.");
             if ui.button("Retry").clicked() {
                 self.asset_lock_cache.invalidate_one(&seed_hash);
             }
@@ -33,7 +33,7 @@ impl TopUpIdentityScreen {
         }
 
         let Some(all_tracked) = self.asset_lock_cache.get(&seed_hash) else {
-            ui.label("Loading asset locks…");
+            ui.label("Loading your unfinished funding…");
             return;
         };
 
@@ -44,11 +44,11 @@ impl TopUpIdentityScreen {
             .collect();
 
         if tracked.is_empty() {
-            ui.label("No unused asset locks available.");
+            ui.label("No unfinished funding was found.");
             return;
         }
 
-        ui.heading("Select an unused asset lock:");
+        ui.heading("Select the unfinished funding to use:");
 
         egui::ScrollArea::vertical().show(ui, |ui| {
             for lock in &tracked {
@@ -80,7 +80,7 @@ impl TopUpIdentityScreen {
                     } else if ui.button("Select").clicked() {
                         MessageBanner::set_global(
                             ui.ctx(),
-                            "Asset lock proof is not yet available. Wait for the transaction to chain-lock and try again.",
+                            "This funding isn't ready to use yet. Wait for it to be confirmed on the Dash network, then try again.",
                             MessageType::Warning,
                         );
                     }
@@ -99,11 +99,7 @@ impl TopUpIdentityScreen {
         let step = *self.step.read().unwrap();
 
         ui.heading(
-            format!(
-                "{}. Choose the unused asset lock that you would like to use.",
-                step_number
-            )
-            .as_str(),
+            format!("{step_number}. Choose the unfinished funding you'd like to use.").as_str(),
         );
         ui.add_space(10.0);
         self.render_choose_funding_asset_lock(ui);

@@ -1,6 +1,7 @@
 use egui::{
     Button, Color32, CursorIcon, FontFamily, FontId, RichText, Stroke, Ui, Vec2, WidgetText,
 };
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Theme mode enumeration
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -20,16 +21,35 @@ pub fn detect_system_theme() -> Result<ThemeMode, String> {
     }
 }
 
+/// Latches so a persistent detection failure (e.g. no XDG portal on
+/// headless Linux) is logged once instead of on every poll. Cleared on the
+/// next successful detection so a later failure logs again.
+static THEME_DETECTION_FAILURE_LOGGED: AtomicBool = AtomicBool::new(false);
+
+/// Returns `true` the first time it's called since the latch was last reset
+/// by a successful detection, `false` on every subsequent call.
+fn should_log_theme_detection_failure() -> bool {
+    !THEME_DETECTION_FAILURE_LOGGED.swap(true, Ordering::Relaxed)
+}
+
 /// Detect system theme, returning `None` only on detection errors.
 /// Use this for polling: a `None` means "keep the previous theme" rather than
 /// flipping to an arbitrary default. `Unspecified` maps to Light (common on
 /// Linux where `dark_light` often can't determine the theme).
 pub fn try_detect_system_theme() -> Option<ThemeMode> {
     match dark_light::detect() {
-        Ok(dark_light::Mode::Dark) => Some(ThemeMode::Dark),
-        Ok(dark_light::Mode::Light | dark_light::Mode::Unspecified) => Some(ThemeMode::Light),
+        Ok(dark_light::Mode::Dark) => {
+            THEME_DETECTION_FAILURE_LOGGED.store(false, Ordering::Relaxed);
+            Some(ThemeMode::Dark)
+        }
+        Ok(dark_light::Mode::Light | dark_light::Mode::Unspecified) => {
+            THEME_DETECTION_FAILURE_LOGGED.store(false, Ordering::Relaxed);
+            Some(ThemeMode::Light)
+        }
         Err(e) => {
-            tracing::debug!("OS theme detection failed: {e}");
+            if should_log_theme_detection_failure() {
+                tracing::debug!("OS theme detection failed: {e}");
+            }
             None
         }
     }
@@ -1176,4 +1196,34 @@ pub fn apply_theme(ctx: &egui::Context, theme_mode: ThemeMode) {
     style.visuals.faint_bg_color = DashColors::background(dark_mode);
 
     ctx.set_global_style(style);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn theme_detection_failure_logs_once_until_reset() {
+        THEME_DETECTION_FAILURE_LOGGED.store(false, Ordering::Relaxed);
+
+        assert!(
+            should_log_theme_detection_failure(),
+            "first failure should log"
+        );
+        assert!(
+            !should_log_theme_detection_failure(),
+            "repeated failure should be suppressed"
+        );
+        assert!(
+            !should_log_theme_detection_failure(),
+            "still suppressed while failure persists"
+        );
+
+        // A successful detection resets the latch.
+        THEME_DETECTION_FAILURE_LOGGED.store(false, Ordering::Relaxed);
+        assert!(
+            should_log_theme_detection_failure(),
+            "failure after a success should log again"
+        );
+    }
 }

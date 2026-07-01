@@ -4,6 +4,7 @@ use crate::ui::RootScreenType;
 use crate::ui::identities::add_new_identity_screen::{
     AddNewIdentityScreen, FundingMethod, WalletFundedScreenStep,
 };
+use crate::ui::identities::funding_common::spendable_covers_minimum;
 use crate::ui::theme::DashColors;
 use egui::{Color32, RichText, Ui};
 
@@ -34,8 +35,16 @@ impl AddNewIdentityScreen {
     /// caller's own no-wallet gate).
     fn render_insufficient_wallet_balance_banner(&self, ui: &mut egui::Ui) -> Option<AppAction> {
         let selected_wallet = self.selected_wallet.as_ref()?;
-        let seed_hash = selected_wallet.read().unwrap().seed_hash();
-        let available_credits = self.app_context.snapshot_balance(&seed_hash).total * 1000; // duffs -> credits
+        let spendable_duffs = match selected_wallet.read() {
+            Ok(w) => self
+                .app_context
+                .snapshot_balance(&w.seed_hash())
+                .spendable(),
+            Err(_) => {
+                ui.label("Wallet is busy. Try again in a moment.");
+                return Some(AppAction::None);
+            }
+        };
 
         let key_count = self.identity_keys.others.len() + 1; // +1 for master key
         let minimum_credits = self
@@ -43,7 +52,7 @@ impl AddNewIdentityScreen {
             .fee_estimator()
             .estimate_identity_create(key_count);
 
-        if available_credits >= minimum_credits {
+        if spendable_covers_minimum(spendable_duffs, minimum_credits) {
             return None;
         }
 

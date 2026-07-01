@@ -1213,14 +1213,15 @@ As Alex, when I have one identity, opening Identities shows me my balance, usern
 - Home tab renders the full layout: `IdentityHeroCard`, quick actions (Send · Receive · Add contact), secondary actions (Add funds · Send to wallet · Send to another identity), `OnboardingChecklist`, and a recent-activity preview.
 - "See all activity" link on Home hops directly to the Activity tab via `HomeOutcome::GoToActivity`.
 
-### IDH-003: Multi-identity switching [Gap]
+### IDH-003: Multi-identity switching [Implemented]
 **Persona:** Priya
 
-As Priya, with multiple wallets and identities, I can switch between them from the breadcrumb pill on any tab in under two clicks.
+As Priya, with multiple wallets and identities, I can switch between them from the breadcrumb pill on any tab in under two clicks, and every screen I then open operates as the identity I picked.
 
 - Reusable `BreadcrumbPill` and `IdentityPill` components shipped, including the label priority rule (Local nickname → DPNS handle → shortened Identity ID).
 - Identity picker grid lands with `IdentityPickerCard` + `IdentityPickerAddCard`, so a multi-identity account sees a picker landing.
-- The full three-segment switcher composition (wallet pill + identity pill + dropdowns) lands in a follow-up.
+- The three-segment breadcrumb switcher (Identities link › wallet pill › identity pill, each with a dropdown) composes the full top-of-hub switcher.
+- The selected identity is app-scoped and persisted per network: every operate-as screen (contracts, documents, DPNS registration, the token creator, and DashPay) defaults to it and writes a change back, so switching once changes who I operate as everywhere. Recipient and target pickers (sending, freezing, transferring to someone else) deliberately leave my active identity unchanged.
 
 ### IDH-004: Opt in to DashPay social profile [Implemented]
 **Persona:** Alex

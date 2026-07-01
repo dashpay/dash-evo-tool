@@ -63,7 +63,16 @@ impl RegisterDataContractScreen {
         let qualified_identities: Vec<QualifiedIdentity> =
             app_context.load_local_user_identities().unwrap_or_default();
 
-        let selected_qualified_identity = qualified_identities.first().cloned();
+        // Seed from the app-scoped selected identity (W2 SYNC); fall back to first.
+        let selected_qualified_identity = app_context
+            .selected_identity_id()
+            .and_then(|id| {
+                qualified_identities
+                    .iter()
+                    .find(|qi| qi.identity.id() == id)
+                    .cloned()
+            })
+            .or_else(|| qualified_identities.first().cloned());
 
         let selected_wallet = if let Some(ref identity) = selected_qualified_identity {
             get_selected_wallet(identity, Some(app_context), None).unwrap_or(None)
@@ -433,7 +442,8 @@ impl ScreenLike for RegisterDataContractScreen {
                     .unwrap()
                     .width(300.0)
                     .label("Identity:")
-                    .other_option(false),
+                    .other_option(false)
+                    .syncing_global(self.app_context.clone()),
                 );
 
                 // Handle identity change - auto-select key and update wallet

@@ -50,7 +50,7 @@ pub struct GroveSTARKScreen {
     mode: ProofMode,
 
     // Generation fields
-    selected_identity: Option<String>,
+    pub selected_identity: Option<String>,
     selected_key: Option<IdentityPublicKey>,
     selected_contract: Option<String>,
     selected_document_type: Option<String>,
@@ -128,10 +128,32 @@ impl GroveSTARKScreen {
             available_contracts.len()
         );
 
+        // Seed selected_identity from the app-scoped id if it is in the EdDSA-filtered list
+        // (READ-only R4: no syncing_global — a developer tool must not push an EdDSA-only
+        // identity as the global selection).
+        let eddsa_filter = |qi: &&QualifiedIdentity| {
+            qi.identity.public_keys().iter().any(|(_, key)| {
+                matches!(key.key_type(), KeyType::EDDSA_25519_HASH160)
+                    && (key.purpose() == Purpose::AUTHENTICATION
+                        || key.purpose() == Purpose::TRANSFER)
+            })
+        };
+        let selected_identity: Option<String> = {
+            let preferred_id = app_context.selected_identity_id();
+            preferred_id
+                .and_then(|id| {
+                    qualified_identities
+                        .iter()
+                        .find(|qi| eddsa_filter(qi) && qi.identity.id() == id)
+                })
+                .or_else(|| qualified_identities.iter().find(|qi| eddsa_filter(qi)))
+                .map(|qi| qi.identity.id().to_string(Encoding::Base58))
+        };
+
         Self {
             app_context: app_context.clone(),
             mode: ProofMode::Generate,
-            selected_identity: None,
+            selected_identity,
             selected_key: None,
             selected_contract: None,
             selected_document_type: None,
@@ -167,6 +189,21 @@ impl GroveSTARKScreen {
             .iter()
             .map(|qualified_identity| qualified_identity.identity.clone())
             .collect();
+
+        // Re-seed selected_identity from the app-scoped id iff it is in the
+        // refreshed EdDSA-filtered list (READ-only R4: no syncing_global).
+        let preferred_id = app_context.selected_identity_id();
+        let new_selection = preferred_id
+            .and_then(|id| {
+                self.qualified_identities
+                    .iter()
+                    .find(|qi| qi.identity.id() == id)
+            })
+            .or_else(|| self.qualified_identities.first())
+            .map(|qi| qi.identity.id().to_string(Encoding::Base58));
+        if self.selected_identity.is_none() {
+            self.selected_identity = new_selection;
+        }
     }
 
     fn get_qualified_identity(&self, identity_id_str: &str) -> Option<&QualifiedIdentity> {

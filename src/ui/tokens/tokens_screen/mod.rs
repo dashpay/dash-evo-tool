@@ -1238,7 +1238,7 @@ pub struct TokensScreen {
     selected_token_preset: Option<TokenConfigurationPresetFeatures>,
     show_pop_up_info: Option<String>,
     identity_id_string: String,
-    selected_identity: Option<QualifiedIdentity>,
+    pub selected_identity: Option<QualifiedIdentity>,
     selected_key: Option<IdentityPublicKey>,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_open_attempted: bool,
@@ -1776,6 +1776,20 @@ impl TokensScreen {
         if let Ok(saved_ids) = screen.app_context.load_token_order() {
             screen.reorder_vec_to(saved_ids);
             screen.use_custom_order = true;
+        }
+
+        // Seed selected_identity from the app-scoped selection (W4 SYNC); fall back to first.
+        if let Some(preferred_id) = screen.app_context.selected_identity_id()
+            && let Some(qi) = screen.identities.get(&preferred_id)
+        {
+            screen.selected_identity = Some(qi.clone());
+            screen.identity_id_string = preferred_id.to_string(Encoding::Base58);
+        }
+        if screen.selected_identity.is_none()
+            && let Some((id, qi)) = screen.identities.iter().next()
+        {
+            screen.selected_identity = Some(qi.clone());
+            screen.identity_id_string = id.to_string(Encoding::Base58);
         }
 
         screen

@@ -22,6 +22,7 @@ use crate::ui::identities::get_selected_wallet;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike};
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::platform::IdentityPublicKey;
 use egui::{RichText, ScrollArea, TextEdit, Ui};
 use std::sync::{Arc, RwLock};
@@ -42,7 +43,7 @@ enum ContactRequestStatus {
 
 pub struct AddContactScreen {
     pub app_context: Arc<AppContext>,
-    selected_identity: Option<QualifiedIdentity>,
+    pub selected_identity: Option<QualifiedIdentity>,
     selected_identity_string: String,
     selected_key: Option<IdentityPublicKey>,
     username_or_id: String,
@@ -57,10 +58,27 @@ pub struct AddContactScreen {
 
 impl AddContactScreen {
     pub fn new(app_context: Arc<AppContext>) -> Self {
+        // Seed from the app-scoped selected identity (W3 SYNC); fall back to first.
+        let identities = app_context
+            .load_local_qualified_identities()
+            .unwrap_or_default();
+        let selected_identity = app_context
+            .selected_identity_id()
+            .and_then(|id| identities.iter().find(|qi| qi.identity.id() == id).cloned())
+            .or_else(|| identities.first().cloned());
+        let selected_identity_string = selected_identity
+            .as_ref()
+            .map(|qi| {
+                qi.identity
+                    .id()
+                    .to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58)
+            })
+            .unwrap_or_default();
+
         Self {
             app_context,
-            selected_identity: None,
-            selected_identity_string: String::new(),
+            selected_identity,
+            selected_identity_string,
             selected_key: None,
             username_or_id: String::new(),
             account_label: String::new(),
@@ -74,10 +92,27 @@ impl AddContactScreen {
     }
 
     pub fn new_with_identity_id(app_context: Arc<AppContext>, identity_id: String) -> Self {
+        // Seed from the app-scoped selected identity (W3 SYNC); fall back to first.
+        let identities = app_context
+            .load_local_qualified_identities()
+            .unwrap_or_default();
+        let selected_identity = app_context
+            .selected_identity_id()
+            .and_then(|id| identities.iter().find(|qi| qi.identity.id() == id).cloned())
+            .or_else(|| identities.first().cloned());
+        let selected_identity_string = selected_identity
+            .as_ref()
+            .map(|qi| {
+                qi.identity
+                    .id()
+                    .to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58)
+            })
+            .unwrap_or_default();
+
         Self {
             app_context,
-            selected_identity: None,
-            selected_identity_string: String::new(),
+            selected_identity,
+            selected_identity_string,
             selected_key: None,
             username_or_id: identity_id,
             account_label: String::new(),
@@ -252,7 +287,7 @@ impl ScreenLike for AddContactScreen {
                 );
                 ui.separator();
 
-                // Identity selector
+                // Identity selector — SYNC: write-back via syncing_global on user pick.
                 let response = ui.add(
                     IdentitySelector::new(
                         "contact_sender_identity_selector",
@@ -263,7 +298,8 @@ impl ScreenLike for AddContactScreen {
                     .unwrap()
                     .width(300.0)
                     .label("Identity:")
-                    .other_option(false),
+                    .other_option(false)
+                    .syncing_global(self.app_context.clone()),
                 );
 
                 // Handle identity change - auto-select key and update wallet

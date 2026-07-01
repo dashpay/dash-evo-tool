@@ -152,6 +152,10 @@ impl DocumentActionScreen {
 
         let selected_contract = known_contracts.into_iter().next();
 
+        // Seed from the app-scoped selected identity when none was passed in (W2 SYNC).
+        let selected_identity =
+            selected_identity.or_else(|| app_context.resolve_selected_identity());
+
         let selected_identity_string = selected_identity
             .as_ref()
             .map(|qi| qi.identity.id().to_string(Encoding::Base58))
@@ -261,7 +265,7 @@ impl DocumentActionScreen {
 
         let identities_vec: Vec<_> = self.identities_map.values().cloned().collect();
 
-        // Identity selector
+        // Identity selector — SYNC: write-back via syncing_global on user pick.
         let response = ui.add(
             IdentitySelector::new(
                 "document_action_identity_selector",
@@ -272,7 +276,8 @@ impl DocumentActionScreen {
             .unwrap()
             .width(300.0)
             .label("Identity:")
-            .other_option(false),
+            .other_option(false)
+            .syncing_global(self.app_context.clone()),
         );
 
         // Handle identity change - auto-select key and update wallet

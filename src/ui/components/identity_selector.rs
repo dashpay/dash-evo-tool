@@ -340,6 +340,91 @@ impl<'a> Widget for IdentitySelector<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::AppState;
+    use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
+    use crate::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
+    use dash_sdk::dpp::identity::Identity;
+    use dash_sdk::dpp::version::PlatformVersion;
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+
+    // ── Isolation helpers ─────────────────────────────────────────────────────
+    //
+    // `AppState::new()` resolves its data dir through `DASH_EVO_DATA_DIR`. Tests
+    // that construct an `AppContext` must serialize on a process-global lock and
+    // redirect to a throwaway temp dir to avoid opening the real user data dir or
+    // racing with parallel test threads.
+
+    fn data_dir_lock() -> MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// Runs `f` in a unique temp data dir with a Tokio runtime in context.
+    /// Serialized by a module-level lock so that parallel test threads don't
+    /// race on `DASH_EVO_DATA_DIR`. `AppState::new()` internally drives tokio
+    /// tasks, so a runtime must be entered before calling it.
+    fn with_isolated_dir<R>(f: impl FnOnce() -> R) -> R {
+        let lock = data_dir_lock();
+        let tmp = tempfile::tempdir().expect("create temp data dir");
+        let prior = std::env::var("DASH_EVO_DATA_DIR").ok();
+        // Safety: serialized by `lock`; env var restored below before drop.
+        unsafe {
+            std::env::set_var("DASH_EVO_DATA_DIR", tmp.path());
+        }
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let _guard = rt.enter();
+        let result = f();
+        drop(_guard);
+        drop(rt);
+        unsafe {
+            match &prior {
+                Some(v) => std::env::set_var("DASH_EVO_DATA_DIR", v),
+                None => std::env::remove_var("DASH_EVO_DATA_DIR"),
+            }
+        }
+        drop(lock);
+        drop(tmp);
+        result
+    }
+
+    /// Build a minimal `AppContext` from a bare `AppState`. The wallet backend
+    /// is NOT wired (no Harness needed). `set_selected_identity` still works:
+    /// it updates the in-memory mutex and gracefully skips KV persistence
+    /// (see `persist_selected_identity_kv`: early-return with a debug log when
+    /// `wallet_backend()` returns `Err`).
+    fn make_ctx() -> Arc<AppContext> {
+        let app = AppState::new(egui::Context::default()).expect("AppState builds");
+        app.current_app_context().clone()
+    }
+
+    /// Create a wallet-less `QualifiedIdentity` from a raw id byte. Constructed
+    /// in-memory and passed directly to the selector's `identities` slice — no
+    /// DB insertion, no wallet backend needed.
+    fn make_qi(byte: u8) -> QualifiedIdentity {
+        let pv = PlatformVersion::latest();
+        let identity = Identity::create_basic_identity(Identifier::from([byte; 32]), pv)
+            .expect("basic identity");
+        QualifiedIdentity {
+            identity,
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::User,
+            alias: Some(format!("test-{byte:02x}")),
+            private_keys: KeyStorage::default(),
+            dpns_names: vec![],
+            associated_wallets: std::collections::BTreeMap::new(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: std::collections::BTreeMap::new(),
+            status: IdentityStatus::PendingCreation,
+            network: dash_sdk::dpp::dashcore::Network::Testnet,
+        }
+    }
+
+    // ── Tests ─────────────────────────────────────────────────────────────────
 
     /// R2 regression-lock: a selector that did NOT opt in via `with_app_default`
     /// never reads the app-scoped selection to seed its buffer — so a
@@ -363,5 +448,76 @@ mod tests {
         let ids: Vec<QualifiedIdentity> = vec![];
         let sel = IdentitySelector::new("recipient", &mut buf, &ids);
         assert!(sel.sync_target.is_none());
+    }
+
+    /// Method-level lock for `sync_to_global`: when the buffer holds a known
+    /// identity's Base58 and `syncing_global` is set, calling `sync_to_global()`
+    /// must invoke `ctx.set_selected_identity(Some(id))`.
+    ///
+    /// Calls `sync_to_global()` directly (private access inside this module).
+    /// This tests the *mechanism* in isolation; the *rendering gate*
+    /// (`combo_changed || text_response.changed()` at line 321) is covered by
+    /// the kittest at `tests/kittest/identity_selector.rs` (QA-001).
+    #[test]
+    fn syncing_global_writes_selection_to_app_context() {
+        with_isolated_dir(|| {
+            let ctx = make_ctx();
+
+            let first = make_qi(0xAA);
+            let second = make_qi(0xBB);
+            let ids = vec![first.clone(), second.clone()];
+
+            // Global starts pointing at first.
+            ctx.set_selected_identity(Some(first.identity.id()));
+            assert_eq!(ctx.selected_identity_id(), Some(first.identity.id()));
+
+            // Build a selector whose buffer holds the second identity's ID.
+            let mut buf = second.identity.id().to_string(Encoding::Base58);
+            let sel = IdentitySelector::new("write_back_test", &mut buf, &ids)
+                .syncing_global(ctx.clone());
+
+            // Fire the write-back directly (bypasses egui rendering).
+            sel.sync_to_global();
+
+            assert_eq!(
+                ctx.selected_identity_id(),
+                Some(second.identity.id()),
+                "syncing_global must write the chosen identity to AppContext"
+            );
+        });
+    }
+
+    /// QA-003 — `with_app_default` inert guard: when the global selection names
+    /// an identity that is NOT in the selector's candidate list, `app_default_seed`
+    /// must return `None` — the selector must not seed from a foreign identity.
+    ///
+    /// This locks the wallet-membership guard used by `CreateAssetLockScreen`
+    /// (R1): if the app-scoped identity belongs to wallet A but the screen is
+    /// opened for wallet B, wallet B's identity list won't contain the A-identity,
+    /// so no seed occurs.
+    #[test]
+    fn with_app_default_inert_when_global_id_not_in_candidate_list() {
+        with_isolated_dir(|| {
+            let ctx = make_ctx();
+
+            let global_qi = make_qi(0xCC);
+            let other_qi = make_qi(0xDD);
+
+            // Point the global selection at global_qi.
+            ctx.set_selected_identity(Some(global_qi.identity.id()));
+
+            // Candidate list contains ONLY other_qi — global_qi is absent.
+            let candidate_list = vec![other_qi.clone()];
+            let mut buf = String::new(); // empty → with_app_default may attempt a seed
+            let sel = IdentitySelector::new("inert_test", &mut buf, &candidate_list)
+                .with_app_default(&ctx);
+
+            assert_eq!(
+                sel.app_default_seed(),
+                None,
+                "with_app_default must not seed when the global id is absent \
+                 from the selector's candidate list (wallet-membership guard)"
+            );
+        });
     }
 }

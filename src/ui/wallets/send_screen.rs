@@ -1866,6 +1866,18 @@ impl WalletSendScreen {
 
         // Identity source option — visible when identities exist or developer mode
         let identities = self.get_loaded_identities();
+        // READ-only seed (R1, W5): if no identity is pre-selected yet, try the app-scoped
+        // identity — but only if it belongs to this wallet's identity list.
+        // No syncing_global: the send screen is wallet-primary; K1 reconcile would fight it.
+        if self.selected_identity.is_none()
+            && let Some(preferred_id) = self.app_context.selected_identity_id()
+            && let Some(qi) = identities.iter().find(|qi| {
+                use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+                qi.identity.id() == preferred_id
+            })
+        {
+            self.selected_identity = Some(qi.clone());
+        }
         if !identities.is_empty() || self.app_context.is_developer_mode() {
             ui.add_space(5.0);
 

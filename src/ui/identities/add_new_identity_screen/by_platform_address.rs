@@ -103,7 +103,7 @@ impl AddNewIdentityScreen {
             })
             .unwrap_or_else(|| "Select a Platform address".to_string());
 
-        ComboBox::from_label("Platform Address")
+        ComboBox::from_label("Platform address")
             .selected_text(selected_addr_display)
             .show_ui(ui, |ui| {
                 for (bech32_addr_str, platform_addr, balance) in &platform_addresses {

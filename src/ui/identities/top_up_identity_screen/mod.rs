@@ -272,13 +272,13 @@ impl TopUpIdentityScreen {
         };
 
         ComboBox::from_id_salt("funding_method")
-            .selected_text(format!("{}", *funding_method))
+            .selected_text(funding_method.top_up_label())
             .height(200.0)
             .show_ui(ui, |ui| {
                 ui.selectable_value(
                     &mut *funding_method,
                     FundingMethod::NoSelection,
-                    format!("{}", FundingMethod::NoSelection),
+                    FundingMethod::NoSelection.top_up_label(),
                 );
 
                 ui.add_enabled_ui(has_any_unused_asset_lock, |ui| {
@@ -286,7 +286,7 @@ impl TopUpIdentityScreen {
                         .selectable_value(
                             &mut *funding_method,
                             FundingMethod::UseUnusedAssetLock,
-                            format!("{}", FundingMethod::UseUnusedAssetLock),
+                            FundingMethod::UseUnusedAssetLock.top_up_label(),
                         )
                         .changed()
                     {
@@ -300,7 +300,7 @@ impl TopUpIdentityScreen {
                         .selectable_value(
                             &mut *funding_method,
                             FundingMethod::UseWalletBalance,
-                            format!("{}", FundingMethod::UseWalletBalance),
+                            FundingMethod::UseWalletBalance.top_up_label(),
                         )
                         .changed()
                     {
@@ -314,7 +314,7 @@ impl TopUpIdentityScreen {
                         .selectable_value(
                             &mut *funding_method,
                             FundingMethod::UsePlatformAddress,
-                            format!("{}", FundingMethod::UsePlatformAddress),
+                            FundingMethod::UsePlatformAddress.top_up_label(),
                         )
                         .changed()
                     {

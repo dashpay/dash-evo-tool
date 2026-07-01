@@ -62,6 +62,7 @@ pub enum FundingMethod {
 impl fmt::Display for FundingMethod {
     /// Alex-facing labels per design-spec §B.9. `UseUnusedAssetLock` deliberately
     /// avoids "asset lock" jargon — it reads as recovering an interrupted setup.
+    /// Create-Identity context only; Top-Up uses [`FundingMethod::top_up_label`].
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let output = match self {
             FundingMethod::NoSelection => "Select how to fund",
@@ -70,6 +71,21 @@ impl fmt::Display for FundingMethod {
             FundingMethod::UsePlatformAddress => "Use a Platform address",
         };
         write!(f, "{}", output)
+    }
+}
+
+impl FundingMethod {
+    /// Top-Up-context label. Shares [`Display`]'s wording except for
+    /// `UseUnusedAssetLock`: an existing identity being topped up was never
+    /// mid-setup, so "recover an unfinished funding" doesn't fit — it just
+    /// reuses an existing funding transaction.
+    pub(crate) fn top_up_label(&self) -> &'static str {
+        match self {
+            FundingMethod::NoSelection => "Select how to fund",
+            FundingMethod::UseWalletBalance => "From your wallet (recommended)",
+            FundingMethod::UseUnusedAssetLock => "Use an existing funding transaction",
+            FundingMethod::UsePlatformAddress => "Use a Platform address",
+        }
     }
 }
 
@@ -1605,5 +1621,28 @@ mod funding_method_tests {
             format!("{}", FundingMethod::UseWalletBalance),
             "From your wallet (recommended)"
         );
+    }
+
+    /// Top-Up's asset-lock label must not describe "recovering" a funding
+    /// setup — an identity being topped up already exists and was never
+    /// mid-creation. Every other variant keeps `Display`'s wording.
+    #[test]
+    fn top_up_label_differs_only_for_asset_lock() {
+        assert_eq!(
+            FundingMethod::UseUnusedAssetLock.top_up_label(),
+            "Use an existing funding transaction"
+        );
+        assert_ne!(
+            FundingMethod::UseUnusedAssetLock.top_up_label(),
+            format!("{}", FundingMethod::UseUnusedAssetLock)
+        );
+
+        for method in [
+            FundingMethod::NoSelection,
+            FundingMethod::UseWalletBalance,
+            FundingMethod::UsePlatformAddress,
+        ] {
+            assert_eq!(method.top_up_label(), format!("{method}"));
+        }
     }
 }

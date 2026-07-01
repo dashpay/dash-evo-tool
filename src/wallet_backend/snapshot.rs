@@ -361,6 +361,44 @@ impl SnapshotStore {
         }
     }
 
+    /// Upgrade a previously-accumulated record's status to
+    /// `InstantSendLocked`.
+    ///
+    /// `WalletEvent::TransactionInstantLocked` carries only a `txid`, not a
+    /// full `TransactionRecord` (upstream has already recorded the tx
+    /// off-chain via `TransactionDetected`), so this mutates the tracked
+    /// entry in place rather than going through
+    /// [`Self::accumulate_transactions`]. A no-op if the txid isn't tracked
+    /// yet, or if it already carries a stronger status — a block
+    /// confirmation may race the InstantLock notification, and this must
+    /// never regress `Confirmed`/`ChainLocked` back to `InstantSendLocked`.
+    pub(super) fn mark_instant_locked(&self, wallet_id: &WalletId, txid: Txid) {
+        let Ok(mut log) = self.tx_log.lock() else {
+            return;
+        };
+        if let Some(tx) = log.get_mut(wallet_id).and_then(|m| m.get_mut(&txid))
+            && tx.status < TransactionStatus::InstantSendLocked
+        {
+            tx.status = TransactionStatus::InstantSendLocked;
+        }
+    }
+
+    /// Read a single tracked record's current status. Test-only seam for
+    /// asserting the `EventBridge` → `SnapshotStore` upgrade path without a
+    /// full registered-wallet publish.
+    #[cfg(test)]
+    pub(super) fn transaction_status(
+        &self,
+        wallet_id: &WalletId,
+        txid: &Txid,
+    ) -> Option<TransactionStatus> {
+        self.tx_log.lock().ok().and_then(|log| {
+            log.get(wallet_id)
+                .and_then(|m| m.get(txid))
+                .map(|tx| tx.status)
+        })
+    }
+
     /// Recompute and atomically publish the snapshot for one wallet, off the
     /// lock-free upstream balance + non-blocking UTXO state plus the
     /// event-sourced tx log. Called by the `EventBridge` after it has
@@ -683,6 +721,65 @@ mod tests {
         let snap = store.snapshot(&seed(3));
         assert_eq!(snap.transactions.len(), 1);
         assert_eq!(snap.transactions[0].status, TransactionStatus::ChainLocked);
+    }
+
+    /// The bug this fix kills: an InstantLock notification (which carries
+    /// only a `txid`, not a `TransactionRecord`) must still upgrade the
+    /// already-tracked mempool record's status, not leave it `Unconfirmed`
+    /// forever.
+    #[test]
+    fn mark_instant_locked_upgrades_a_pending_record() {
+        let store = SnapshotStore::new();
+        let rec = record(1, 500);
+        let txid = rec.txid;
+        store.accumulate_transactions(&wid(4), [&rec]);
+
+        store.mark_instant_locked(&wid(4), txid);
+        publish_tx_only(&store, seed(4), wid(4));
+
+        let snap = store.snapshot(&seed(4));
+        assert_eq!(snap.transactions.len(), 1);
+        assert_eq!(
+            snap.transactions[0].status,
+            TransactionStatus::InstantSendLocked
+        );
+    }
+
+    /// A block confirmation may race the InstantLock notification. If the
+    /// stronger status already landed first, the InstantLock must not
+    /// regress it back to `InstantSendLocked`.
+    #[test]
+    fn mark_instant_locked_does_not_downgrade_a_stronger_status() {
+        let store = SnapshotStore::new();
+        let mut rec = record(2, 300);
+        rec.context = TransactionContext::InChainLockedBlock(BlockInfo::new(
+            10,
+            BlockHash::from_byte_array([0u8; 32]),
+            123,
+        ));
+        let txid = rec.txid;
+        store.accumulate_transactions(&wid(5), [&rec]);
+
+        store.mark_instant_locked(&wid(5), txid);
+        publish_tx_only(&store, seed(5), wid(5));
+
+        let snap = store.snapshot(&seed(5));
+        assert_eq!(snap.transactions[0].status, TransactionStatus::ChainLocked);
+    }
+
+    /// An InstantLock for a wallet/txid combination the log hasn't seen yet
+    /// (e.g. events arriving out of order) must not panic and must not
+    /// fabricate a phantom entry.
+    #[test]
+    fn mark_instant_locked_for_untracked_txid_is_a_noop() {
+        let store = SnapshotStore::new();
+        let rec = record(1, 1);
+        store.accumulate_transactions(&wid(6), [&rec]);
+
+        store.mark_instant_locked(&wid(9), Txid::all_zeros());
+        publish_tx_only(&store, seed(6), wid(6));
+
+        assert_eq!(store.snapshot(&seed(6)).transactions.len(), 1);
     }
 
     #[test]

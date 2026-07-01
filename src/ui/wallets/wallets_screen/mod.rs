@@ -957,6 +957,13 @@ impl WalletsBalancesScreen {
     }
 
     fn format_transaction_timestamp(ts: u64) -> String {
+        // `0` means "no block yet" (mempool or InstantSend-locked-but-
+        // unconfirmed) — rendering it through `DateTime` would show the Unix
+        // epoch (1970-01-01), which reads as a data bug rather than "still
+        // pending".
+        if ts == 0 {
+            return "Pending…".to_string();
+        }
         DateTime::<Utc>::from_timestamp(ts as i64, 0)
             .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
             .unwrap_or_else(|| "Unknown".to_string())
@@ -3016,5 +3023,28 @@ impl ScreenLike for WalletsBalancesScreen {
         // post-migration refresh surfaces (or clears) the restore banner.
         self.pending_restores_scanned = false;
         self.refresh_on_arrival();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A tx with no block yet (mempool or InstantSend-locked-but-
+    /// unconfirmed) carries `timestamp == 0`. Must render a "still pending"
+    /// placeholder, never the Unix epoch.
+    #[test]
+    fn format_transaction_timestamp_zero_renders_pending_placeholder() {
+        let rendered = WalletsBalancesScreen::format_transaction_timestamp(0);
+        assert_eq!(rendered, "Pending…");
+        assert!(!rendered.contains("1970"));
+    }
+
+    #[test]
+    fn format_transaction_timestamp_nonzero_renders_the_block_date() {
+        assert_eq!(
+            WalletsBalancesScreen::format_transaction_timestamp(1_700_000_000),
+            "2023-11-14 22:13:20"
+        );
     }
 }

@@ -6,7 +6,7 @@
 
 use crate::framework::fixtures::shared_identity;
 use crate::framework::harness::ctx;
-use crate::framework::task_runner::{run_task, run_task_with_nonce_retry};
+use crate::framework::task_runner::{run_on_large_stack, run_task, run_task_with_nonce_retry};
 use dash_evo_tool::backend_task::identity::IdentityTask;
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
 use dash_evo_tool::model::qualified_identity::PrivateKeyTarget::PrivateKeyOnMainIdentity;
@@ -37,7 +37,13 @@ async fn step_broadcast_valid(
     // Fetch the current identity from Platform so we have the latest public
     // keys and revision (other tests may have added keys since registration).
     let sdk = ctx.app_context.sdk();
-    let mut identity = dash_sdk::platform::Identity::fetch_by_identifier(&sdk, identity_id)
+    let mut identity =
+        run_on_large_stack({
+            let sdk = ctx.app_context.sdk();
+            move || async move {
+                dash_sdk::platform::Identity::fetch_by_identifier(&sdk, identity_id).await
+            }
+        })
         .await
         .expect("failed to fetch identity from Platform")
         .expect("identity not found on Platform");
@@ -137,10 +143,15 @@ async fn step_broadcast_valid(
     // appears or the ~10s deadline passes.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     let (fetched, has_new_key) = loop {
-        let fetched = dash_sdk::platform::Identity::fetch_by_identifier(&sdk, identity_id)
-            .await
-            .expect("failed to re-fetch identity")
-            .expect("identity not found on Platform after broadcast");
+        let fetched = run_on_large_stack({
+            let sdk = ctx.app_context.sdk();
+            move || async move {
+                dash_sdk::platform::Identity::fetch_by_identifier(&sdk, identity_id).await
+            }
+        })
+        .await
+        .expect("failed to re-fetch identity")
+        .expect("identity not found on Platform after broadcast");
         let has_new_key = fetched
             .public_keys()
             .values()

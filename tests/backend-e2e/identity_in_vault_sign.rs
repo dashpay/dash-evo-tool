@@ -11,13 +11,13 @@
 //!
 //! `#[ignore]` — requires `E2E_WALLET_MNEMONIC` + live DAPI/SPV. Run with:
 //! ```bash
-//! RUST_MIN_STACK=16777216 cargo test --test backend-e2e --all-features -- \
+//! cargo test --test backend-e2e --all-features -- \
 //!   --ignored --nocapture ts_sign_e2e_01_in_vault_identity_signs_and_broadcasts
 //! ```
 
 use crate::framework::fixtures::shared_identity;
 use crate::framework::harness::ctx;
-use crate::framework::task_runner::run_task_with_nonce_retry;
+use crate::framework::task_runner::{run_on_large_stack, run_task_with_nonce_retry};
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
 use dash_evo_tool::model::qualified_identity::encrypted_key_storage::PrivateKeyData;
 use dash_evo_tool::wallet_backend::IdentityKeyView;
@@ -45,7 +45,13 @@ async fn ts_sign_e2e_01_in_vault_identity_signs_and_broadcasts() {
 
     // Fetch the live identity (latest keys + revision).
     let sdk = ctx.app_context.sdk();
-    let mut identity = dash_sdk::platform::Identity::fetch_by_identifier(&sdk, identity_id)
+    let mut identity =
+        run_on_large_stack({
+            let sdk = ctx.app_context.sdk();
+            move || async move {
+                dash_sdk::platform::Identity::fetch_by_identifier(&sdk, identity_id).await
+            }
+        })
         .await
         .expect("fetch identity")
         .expect("identity present");
@@ -178,10 +184,15 @@ async fn ts_sign_e2e_01_in_vault_identity_signs_and_broadcasts() {
     // before the broadcast has propagated and fail spuriously.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     let key_visible = loop {
-        let fetched = dash_sdk::platform::Identity::fetch_by_identifier(&sdk, identity_id)
-            .await
-            .expect("re-fetch identity")
-            .expect("identity present after broadcast");
+        let fetched = run_on_large_stack({
+            let sdk = ctx.app_context.sdk();
+            move || async move {
+                dash_sdk::platform::Identity::fetch_by_identifier(&sdk, identity_id).await
+            }
+        })
+        .await
+        .expect("re-fetch identity")
+        .expect("identity present after broadcast");
         if fetched
             .public_keys()
             .values()

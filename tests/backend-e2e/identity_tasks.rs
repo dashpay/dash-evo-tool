@@ -3,7 +3,7 @@
 use crate::framework::fixtures::shared_identity;
 use crate::framework::harness::ctx;
 use crate::framework::identity_helpers::build_identity_registration;
-use crate::framework::task_runner::{run_task, run_task_with_nonce_retry};
+use crate::framework::task_runner::{run_on_large_stack, run_task, run_task_with_nonce_retry};
 use dash_evo_tool::backend_task::identity::{
     IdentityInputToLoad, IdentityTask, IdentityTopUpInfo, TopUpIdentityFundingMethod,
 };
@@ -620,9 +620,15 @@ async fn tc_031_incremental_address_discovery() {
     let start = std::time::Instant::now();
 
     let direct_balance = loop {
-        use dash_sdk::platform::Fetch;
-        let sdk = ctx.app_context.sdk();
-        match dash_sdk::query_types::AddressInfo::fetch(&sdk, platform_addr).await {
+        let fetch_result = run_on_large_stack({
+            let sdk = ctx.app_context.sdk();
+            move || async move {
+                use dash_sdk::platform::Fetch;
+                dash_sdk::query_types::AddressInfo::fetch(&sdk, platform_addr).await
+            }
+        })
+        .await;
+        match fetch_result {
             Ok(Some(info)) if info.balance > 0 => {
                 tracing::info!(
                     "Direct query confirmed: balance={} nonce={}",

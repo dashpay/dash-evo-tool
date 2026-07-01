@@ -8,9 +8,10 @@
 //! ```
 //!
 //! The Dash Platform SDK recurses deeply during proof verification, exceeding the
-//! default 8 MB thread stack. The harness drives every SDK-bearing task on a
-//! dedicated 32 MB-stack runtime (see [`framework::task_runner`]), so callers no
-//! longer need to set `RUST_MIN_STACK`.
+//! default 8 MB thread stack. The harness drives every SDK-bearing task —
+//! backend tasks and direct `Fetch` calls in test bodies alike — on a dedicated
+//! 32 MB-stack runtime (see [`framework::task_runner`]), so callers no longer
+//! need to set `RUST_MIN_STACK`.
 
 mod framework;
 

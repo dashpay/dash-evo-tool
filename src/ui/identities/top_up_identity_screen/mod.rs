@@ -161,7 +161,11 @@ impl TopUpIdentityScreen {
                     // create-identity wizard uses (`default_funding_state`) —
                     // recommend `UseWalletBalance` only when this wallet
                     // actually has funds to offer it with.
-                    if *self.funding_method.read().unwrap() == FundingMethod::NoSelection {
+                    let funding_method_is_unset = match self.funding_method.read() {
+                        Ok(m) => *m == FundingMethod::NoSelection,
+                        Err(_) => false,
+                    };
+                    if funding_method_is_unset {
                         let wallet_has_balance = {
                             let wallet_read = wallet.read().unwrap();
                             self.app_context

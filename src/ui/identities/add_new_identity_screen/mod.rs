@@ -23,7 +23,7 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
-use crate::ui::identities::funding_common::WalletFundedScreenStep;
+use crate::ui::identities::funding_common::{WalletFundedScreenStep, spendable_covers_minimum};
 use crate::ui::state::TrackedAssetLockCache;
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, ScreenLike};
@@ -183,15 +183,31 @@ impl AddNewIdentityScreen {
         }
 
         // §B.9: `UseWalletBalance` is the recommended, pre-selected primary
-        // path — but only when the wallet actually has funds to offer it
-        // with, matching the same availability gate the ComboBox itself
-        // applies in `render_funding_method` (`has_balance`), so the visibly
-        // "selected" method is never one the dropdown wouldn't actually offer.
-        let wallet_has_balance = selected_wallet.as_ref().is_some_and(|wallet| {
+        // path — but only when the wallet can actually afford the
+        // identity-creation fee, using the same sufficiency check as the
+        // "not enough Dash" banner in `by_using_unused_balance.rs`. A dust
+        // balance (positive but below the fee) must not pre-select a path
+        // the banner immediately blocks on the very next render.
+        //
+        // TODO(bilby): this is computed once here and never recomputed —
+        // `update_wallet` and the wallet-switch handler in
+        // `render_wallet_selection` don't touch `funding_method`/`step`
+        // after a wallet switch, so switching from a funded wallet to an
+        // underfunded one keeps the stale pre-selection. Recomputing safely
+        // requires tracking "user manually chose a method" so a switch never
+        // clobbers an explicit choice; deferred pending UX confirmation on
+        // that behavior rather than guessing it here.
+        let wallet_can_afford_creation = selected_wallet.as_ref().is_some_and(|wallet| {
             let seed_hash = wallet.read().unwrap().seed_hash();
-            app_context.snapshot_has_balance(&seed_hash)
+            let spendable_duffs = app_context.snapshot_balance(&seed_hash).spendable();
+            let key_count = default_identity_key_specs(app_context.dashpay_contract.id()).len() + 1;
+            let minimum_credits = app_context
+                .fee_estimator()
+                .estimate_identity_create(key_count);
+            spendable_covers_minimum(spendable_duffs, minimum_credits)
         });
-        let (default_funding_method, default_step) = default_funding_state(wallet_has_balance);
+        let (default_funding_method, default_step) =
+            default_funding_state(wallet_can_afford_creation);
 
         let mut created = Self {
             identity_id_number: 0, // updated later
@@ -467,6 +483,9 @@ impl AddNewIdentityScreen {
     /// and identity index.
     ///
     /// This function is called whenever a wallet was changed in the UI or unlocked
+    ///
+    /// TODO(bilby): does not recompute the funding-method pre-selection for
+    /// the new wallet (see the matching TODO in `new_with_wallet`).
     fn update_wallet(&mut self, wallet: Arc<RwLock<Wallet>>) {
         let is_open = wallet.read().expect("wallet lock poisoned").is_open();
 

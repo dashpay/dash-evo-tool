@@ -414,10 +414,8 @@ impl PlatformEventHandler for EventBridge {
         wallet_id: platform_wallet::wallet::platform_wallet::WalletId,
         reason: &platform_wallet::manager::load_outcome::SkipReason,
     ) {
-        // Public wallet id + structural reason only; never a secret. This
-        // handler has no egui context to reach; the user-facing banner is
-        // raised in `WalletBackend::register_persisted_wallets` from
-        // `LoadedWallets.skipped`, which this event also feeds.
+        // Public wallet id + structural reason only; never a secret. The
+        // user-facing banner is raised in `register_persisted_wallets`.
         tracing::warn!(
             wallet_id = %hex::encode(wallet_id),
             %reason,

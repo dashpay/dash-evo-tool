@@ -3396,7 +3396,7 @@ fn persisted_load_skip_from_upstream(
 /// persisted load, or `None` if nothing was skipped. Never includes
 /// row-derived detail (seed hashes, upstream reason strings) — those
 /// stay in the logs.
-fn skipped_wallets_banner_text(skipped: usize) -> Option<String> {
+pub fn skipped_wallets_banner_text(skipped: usize) -> Option<String> {
     match skipped {
         0 => None,
         1 => Some(

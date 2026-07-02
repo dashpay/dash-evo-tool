@@ -36,7 +36,7 @@
 use async_trait::async_trait;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::dashcore::secp256k1::{self, Message, PublicKey, Secp256k1, ecdsa};
-use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
+use dash_sdk::dpp::key_wallet::bip32::{DerivationPath, ExtendedPrivKey, ExtendedPubKey};
 use dash_sdk::dpp::key_wallet::signer::{Signer, SignerMethod};
 use zeroize::Zeroizing;
 
@@ -107,19 +107,24 @@ impl<'a> DetSigner<'a> {
         }
     }
 
+    /// Derive the BIP-32 extended private key at `path` from the held HD
+    /// seed. Errors with [`DetSignerError::WrongSecretKind`] if the held
+    /// secret is a single key (no derivation tree). The returned
+    /// `ExtendedPrivKey` zeroizes its secret scalar on drop.
+    fn derive_xprv(&self, path: &DerivationPath) -> Result<ExtendedPrivKey, DetSignerError> {
+        match &self.secret {
+            HeldSecret::HdSeed(seed) => path
+                .derive_priv_ecdsa_for_master_seed(seed.as_ref(), self.network)
+                .map_err(DetSignerError::Derive),
+            HeldSecret::SingleKey(_) => Err(DetSignerError::WrongSecretKind),
+        }
+    }
+
     /// Derive the secp256k1 secret at `path` from the held HD seed. Errors
     /// with [`DetSignerError::WrongSecretKind`] if the held secret is a
     /// single key (no derivation tree).
     fn derive_secret(&self, path: &DerivationPath) -> Result<secp256k1::SecretKey, DetSignerError> {
-        match &self.secret {
-            HeldSecret::HdSeed(seed) => {
-                let xprv = path
-                    .derive_priv_ecdsa_for_master_seed(seed.as_ref(), self.network)
-                    .map_err(DetSignerError::Derive)?;
-                Ok(xprv.private_key)
-            }
-            HeldSecret::SingleKey(_) => Err(DetSignerError::WrongSecretKind),
-        }
+        Ok(self.derive_xprv(path)?.private_key)
     }
 
     /// Sign `msg` (a 32-byte digest) with the held **single key** directly,
@@ -182,6 +187,21 @@ impl Signer for DetSigner<'_> {
             &Secp256k1::signing_only(),
             &secret,
         ))
+    }
+
+    /// Derive the BIP-32 extended public key at `path` from the held HD seed
+    /// (public point + chain code + parent fingerprint), letting callers
+    /// non-hardened-derive descendants without a re-prompt. A single-key
+    /// secret has no derivation tree, so it returns
+    /// [`DetSignerError::WrongSecretKind`] rather than a leaf-only key — never
+    /// a panic. The derived `ExtendedPrivKey` zeroizes on drop; the returned
+    /// `ExtendedPubKey` carries only public material.
+    async fn extended_public_key(
+        &self,
+        path: &DerivationPath,
+    ) -> Result<ExtendedPubKey, Self::Error> {
+        let xprv = self.derive_xprv(path)?;
+        Ok(ExtendedPubKey::from_priv(&Secp256k1::signing_only(), &xprv))
     }
 }
 
@@ -318,6 +338,58 @@ mod tests {
         }
     }
 
+    /// FUND-SAFETY PARITY: `DetSigner::extended_public_key` (the BIP-32 xpub
+    /// export callers use to non-hardened-derive descendant payment addresses
+    /// without a re-prompt) must reproduce, byte-for-byte, an independent
+    /// reference derivation (seed → `derive_priv_ecdsa_for_master_seed` →
+    /// `ExtendedPubKey::from_priv`) for the same seed, path, and network. A
+    /// silent divergence in the chain code or parent fingerprint would derive
+    /// the wrong descendants and misdirect funds. Its leaf point must also
+    /// agree with `public_key` at the same path.
+    #[tokio::test]
+    async fn hd_signer_extended_public_key_parity_with_reference() {
+        let path: DerivationPath = "m/44'/1'/0'/0/0".parse().unwrap();
+
+        for network in [Network::Testnet, Network::Mainnet] {
+            // Independent reference: derive the xprv straight from the seed at
+            // the path, then convert to the xpub with the same primitive.
+            let secp = Secp256k1::new();
+            let reference_xprv = path
+                .derive_priv_ecdsa_for_master_seed(&PARITY_SEED, network)
+                .expect("reference derive");
+            let reference_xpub = ExtendedPubKey::from_priv(&secp, &reference_xprv);
+
+            let held = Zeroizing::new(PARITY_SEED);
+            let signer = DetSigner::from_held(SecretPlaintext::HdSeed(&held), network);
+            let det_xpub = signer
+                .extended_public_key(&path)
+                .await
+                .expect("det extended_public_key");
+
+            // Field-level checks first so a dropped BIP-32 metadatum fails with
+            // a precise message before the full-struct assert catches the rest.
+            assert_eq!(
+                det_xpub.public_key, reference_xpub.public_key,
+                "extended_public_key point diverged from reference on {network:?}"
+            );
+            assert_eq!(
+                det_xpub.chain_code, reference_xpub.chain_code,
+                "extended_public_key chain code diverged from reference on {network:?}"
+            );
+            assert_eq!(
+                det_xpub, reference_xpub,
+                "extended_public_key diverged from reference on {network:?}"
+            );
+
+            // The xpub's leaf point must agree with the compressed-point surface.
+            let leaf = signer.public_key(&path).await.expect("public_key");
+            assert_eq!(
+                det_xpub.public_key, leaf,
+                "extended_public_key point disagreed with public_key on {network:?}"
+            );
+        }
+    }
+
     /// Pin the exact derived public key so a BIP-32 / coin-type / primitive
     /// regression is caught even if it stays internally consistent. Testnet
     /// path `m/44'/1'/0'/0/0` over [`PARITY_SEED`].
@@ -382,6 +454,13 @@ mod tests {
             // Path-based HD surface rejects a single-key secret.
             let err = signer.sign_ecdsa(&path, msg).await.expect_err("wrong kind");
             assert!(matches!(err, DetSignerError::WrongSecretKind));
+            // Extended-public-key export likewise has no derivation tree to
+            // walk for a single key — it rejects rather than mis-deriving.
+            let xpub_err = signer
+                .extended_public_key(&path)
+                .await
+                .expect_err("wrong kind");
+            assert!(matches!(xpub_err, DetSignerError::WrongSecretKind));
             Ok(())
         })
         .await

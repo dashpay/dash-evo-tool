@@ -1166,17 +1166,11 @@ impl WalletBackend {
                 "SPV run loop did not stop cleanly during shutdown; continuing teardown"
             );
         }
-        // `shutdown()` returns a `#[must_use]` report: a non-clean status flags a
-        // worker that did not terminate or an orphan still parked at the reap
-        // deadline. Inspect it before the runtime is dropped — but teardown is
-        // best-effort, so a non-clean report is logged, not propagated.
-        let report = self.inner.pwm.shutdown().await;
-        if !report.all_clean() {
-            tracing::warn!(
-                report = ?report,
-                "Wallet manager shutdown did not complete cleanly (a worker or orphan may still be live); continuing teardown"
-            );
-        }
+        // `pwm.shutdown()` quiesces the periodic coordinators — draining any
+        // in-flight pass and its persister / host-callback fan-out — then drains
+        // the wallet-event adapter task. It is infallible and best-effort: a task
+        // that refuses to join is logged upstream, not surfaced here.
+        self.inner.pwm.shutdown().await;
     }
 
     /// Stop chain sync **in place**, keeping this backend (and its
@@ -3255,6 +3249,7 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
         | P::AddressNotFound(_)
         | P::KeyDerivation(_)
         | P::RehydrationPoolMismatch { .. }
+        | P::RehydrationPoolTypeMismatch { .. }
         | P::WalletLocked
         | P::SpvAlreadyRunning
         | P::NoWalletsConfigured
@@ -3269,12 +3264,7 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
         | P::ShieldedTreeUpdateFailed(_)
         | P::ShieldedStoreError(_)
         | P::ShieldedMerkleWitnessUnavailable(_)
-        | P::ShieldedKeyDerivation(_)
-        // A shielded clear/wipe could not complete because the sync
-        // coordinator did not drain cleanly; the store is left intact and
-        // the caller is expected to retry. Generic envelope preserves the
-        // error chain (incl. the terminal WorkerStatus) for logs/details.
-        | P::ShieldedShutdownIncomplete { .. }) => TaskError::WalletBackend {
+        | P::ShieldedKeyDerivation(_)) => TaskError::WalletBackend {
             source: Box::new(other),
         },
     }
@@ -3475,10 +3465,10 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
         | P::ShieldedSpendUnconfirmed { .. }
         | P::RehydrationTopologyUnsupported { .. }
         | P::RehydrationPoolMismatch { .. }
-        // Shielded clear/wipe could not drain cleanly — a transient
-        // precondition on the shielded coordinator, unrelated to identity
-        // registration; bucket as Other.
-        | P::ShieldedShutdownIncomplete { .. } => IdentityOpErrorKind::Other,
+        // A rehydration structural invariant broke (a discovery probe and its
+        // real address pool disagreed on chain order); fail-closed as a
+        // precondition, unrelated to identity registration. Bucket as Other.
+        | P::RehydrationPoolTypeMismatch { .. } => IdentityOpErrorKind::Other,
     }
 }
 

@@ -15,6 +15,17 @@ pub fn spendable_covers_minimum(spendable_duffs: u64, minimum_credits: u64) -> b
     spendable_duffs.saturating_mul(CREDITS_PER_DUFF) >= minimum_credits
 }
 
+/// The largest amount, in credits, a "Max" button can safely offer from a
+/// wallet holding `spendable_duffs`, after reserving `fee_credits` for the
+/// platform fee. Built on `spendable_duffs` (not the wallet's `total`, which
+/// also counts immature/locked funds coin selection cannot touch) so the
+/// offered amount never exceeds what the wallet can actually send.
+pub fn max_amount_after_fee_reserve(spendable_duffs: u64, fee_credits: u64) -> u64 {
+    spendable_duffs
+        .saturating_mul(CREDITS_PER_DUFF)
+        .saturating_sub(fee_credits)
+}
+
 #[derive(Debug, Eq, PartialEq, Ord, PartialOrd, Copy, Clone)]
 pub enum WalletFundedScreenStep {
     ChooseFundingMethod,
@@ -135,5 +146,25 @@ mod tests {
     #[test]
     fn conversion_does_not_overflow_on_extreme_values() {
         assert!(spendable_covers_minimum(u64::MAX, u64::MAX));
+    }
+
+    #[test]
+    fn max_amount_reserves_fee_from_spendable_duffs() {
+        let spendable_duffs = 10;
+        let fee_credits = 500;
+        assert_eq!(
+            max_amount_after_fee_reserve(spendable_duffs, fee_credits),
+            spendable_duffs * CREDITS_PER_DUFF - fee_credits
+        );
+    }
+
+    #[test]
+    fn max_amount_saturates_to_zero_when_fee_exceeds_spendable() {
+        assert_eq!(max_amount_after_fee_reserve(1, u64::MAX), 0);
+    }
+
+    #[test]
+    fn max_amount_does_not_overflow_on_extreme_values() {
+        assert_eq!(max_amount_after_fee_reserve(u64::MAX, 0), u64::MAX);
     }
 }

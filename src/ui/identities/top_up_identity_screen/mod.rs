@@ -24,7 +24,7 @@ use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
 use crate::ui::identities::add_new_identity_screen::{FundingMethod, default_funding_state};
-use crate::ui::identities::funding_common::WalletFundedScreenStep;
+use crate::ui::identities::funding_common::{WalletFundedScreenStep, max_amount_after_fee_reserve};
 use crate::ui::state::TrackedAssetLockCache;
 use crate::ui::{MessageType, ScreenLike};
 use dash_sdk::dashcore_rpc::dashcore::Address;
@@ -408,18 +408,20 @@ impl TopUpIdentityScreen {
         // Only apply max amount restriction when using wallet balance.
         let (max_amount, show_max_button, fee_hint) =
             if funding_method == FundingMethod::UseWalletBalance {
-                let max_amount_duffs = self
+                let max_spendable_duffs = self
                     .wallet
                     .as_ref()
                     .and_then(|w| w.read().ok())
-                    .map(|w| self.app_context.snapshot_balance(&w.seed_hash()).total)
+                    .map(|w| {
+                        self.app_context
+                            .snapshot_balance(&w.seed_hash())
+                            .spendable()
+                    })
                     .unwrap_or(0);
-                // Convert Duffs to Credits (1 Duff = 1000 Credits)
-                let total_credits = max_amount_duffs * 1000;
-                // Reserve estimated fees so "Max" doesn't exceed spendable amount
                 let fee_estimator = self.app_context.fee_estimator();
                 let estimated_fee = fee_estimator.estimate_identity_topup();
-                let max_with_fee_reserved = total_credits.saturating_sub(estimated_fee);
+                let max_with_fee_reserved =
+                    max_amount_after_fee_reserve(max_spendable_duffs, estimated_fee);
                 (
                     Some(max_with_fee_reserved),
                     true,

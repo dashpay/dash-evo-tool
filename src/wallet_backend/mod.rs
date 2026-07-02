@@ -461,6 +461,13 @@ impl WalletBackend {
                 "Skipped a corrupt persisted wallet row on load"
             );
         }
+        if let Some(text) = skipped_wallets_banner_text(outcome.skipped.len()) {
+            crate::ui::components::message_banner::MessageBanner::set_global(
+                ctx.egui_ctx(),
+                text,
+                crate::ui::MessageType::Warning,
+            );
+        }
 
         // `load()` rebuilds `IdentityRegistration` from the manifest, but
         // per-index `IdentityTopUp{registration_index}` enters the manifest
@@ -3385,6 +3392,23 @@ fn persisted_load_skip_from_upstream(
     }
 }
 
+/// Builds the calm, user-facing banner text for wallets skipped on
+/// persisted load, or `None` if nothing was skipped. Never includes
+/// row-derived detail (seed hashes, upstream reason strings) — those
+/// stay in the logs.
+fn skipped_wallets_banner_text(skipped: usize) -> Option<String> {
+    match skipped {
+        0 => None,
+        1 => Some(
+            "1 saved wallet couldn't be opened. Re-add it from its recovery phrase to restore it."
+                .to_string(),
+        ),
+        n => Some(format!(
+            "{n} saved wallets couldn't be opened. Re-add them from their recovery phrases to restore them."
+        )),
+    }
+}
+
 /// Bucket for `PlatformWalletError`s coming out of identity register / top-up.
 enum IdentityOpErrorKind {
     /// Network or broadcast rejected the submission (SDK error or asset-lock
@@ -3822,6 +3846,27 @@ mod tests {
         assert!(
             !account.contains_platform_address(&foreign),
             "a foreign address must not be recognised as in-pool"
+        );
+    }
+
+    /// No skips yields no banner; one or many skips yields singular/plural
+    /// text with no row-derived detail.
+    #[test]
+    fn skipped_wallets_banner_text_singular_plural_and_none() {
+        assert_eq!(skipped_wallets_banner_text(0), None);
+        assert_eq!(
+            skipped_wallets_banner_text(1),
+            Some(
+                "1 saved wallet couldn't be opened. Re-add it from its recovery phrase to restore it."
+                    .to_string()
+            )
+        );
+        assert_eq!(
+            skipped_wallets_banner_text(3),
+            Some(
+                "3 saved wallets couldn't be opened. Re-add them from their recovery phrases to restore them."
+                    .to_string()
+            )
         );
     }
 

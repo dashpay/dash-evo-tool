@@ -13,6 +13,7 @@ use crate::backend_task::identity::{
 use crate::backend_task::wallet::WalletTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
+use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::secret::Secret;
 use crate::model::wallet::Wallet;
 use crate::ui::components::MessageBanner;
@@ -23,7 +24,9 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
-use crate::ui::identities::funding_common::{WalletFundedScreenStep, spendable_covers_minimum};
+use crate::ui::identities::funding_common::{
+    WalletFundedScreenStep, max_amount_after_fee_reserve, spendable_covers_minimum,
+};
 use crate::ui::state::TrackedAssetLockCache;
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, ScreenLike};
@@ -1063,18 +1066,40 @@ impl AddNewIdentityScreen {
     fn render_funding_amount_input(&mut self, ui: &mut egui::Ui) {
         let funding_method = *self.funding_method.read().unwrap();
 
-        // Calculate max amount if using wallet balance
-        let max_amount_credits = if funding_method == FundingMethod::UseWalletBalance {
-            self.selected_wallet.as_ref().map(|wallet| {
-                let wallet = wallet.read().unwrap();
-                // Convert duffs to credits (1 duff = 1000 credits)
-                self.app_context.snapshot_balance(&wallet.seed_hash()).total * 1000
-            })
-        } else {
-            None
-        };
-
-        let show_max_button = funding_method == FundingMethod::UseWalletBalance;
+        // Only apply the max-amount restriction when using wallet balance;
+        // reserve the estimated identity-creation fee out of the spendable
+        // balance so "Max" never offers more than the coin selector can
+        // actually use, mirroring the Top-Up wizard's equivalent input.
+        let (max_amount_credits, show_max_button, fee_hint) =
+            if funding_method == FundingMethod::UseWalletBalance {
+                let spendable_duffs = self
+                    .selected_wallet
+                    .as_ref()
+                    .and_then(|wallet| wallet.read().ok())
+                    .map(|wallet| {
+                        self.app_context
+                            .snapshot_balance(&wallet.seed_hash())
+                            .spendable()
+                    })
+                    .unwrap_or(0);
+                let key_count = self.identity_keys.others.len() + 1; // +1 for master key
+                let estimated_fee = self
+                    .app_context
+                    .fee_estimator()
+                    .estimate_identity_create(key_count);
+                let max_with_fee_reserved =
+                    max_amount_after_fee_reserve(spendable_duffs, estimated_fee);
+                (
+                    Some(max_with_fee_reserved),
+                    true,
+                    Some(format!(
+                        "~{} reserved for fees",
+                        format_credits_as_dash(estimated_fee)
+                    )),
+                )
+            } else {
+                (None, false, None)
+            };
 
         let amount_input = self.funding_amount_input.get_or_insert_with(|| {
             AmountInput::new(Amount::new_dash(0.0))
@@ -1087,7 +1112,8 @@ impl AddNewIdentityScreen {
         // Update max amount and max button visibility dynamically
         amount_input
             .set_max_amount(max_amount_credits)
-            .set_show_max_button(show_max_button);
+            .set_show_max_button(show_max_button)
+            .set_max_exceeded_hint(fee_hint);
 
         let response = amount_input.show(ui);
         response.inner.update(&mut self.funding_amount);

@@ -161,11 +161,8 @@ impl TopUpIdentityScreen {
                     // create-identity wizard uses (`default_funding_state`) —
                     // recommend `UseWalletBalance` only when this wallet
                     // actually has funds to offer it with.
-                    let funding_method_is_unset = match self.funding_method.read() {
-                        Ok(m) => *m == FundingMethod::NoSelection,
-                        Err(_) => false,
-                    };
-                    if funding_method_is_unset {
+                    let funding_method_snapshot = self.funding_method.read().ok().map(|m| *m);
+                    if funding_method_snapshot == Some(FundingMethod::NoSelection) {
                         let wallet_has_balance = {
                             let wallet_read = wallet.read().unwrap();
                             self.app_context
@@ -175,27 +172,34 @@ impl TopUpIdentityScreen {
                         *self.funding_method.write().unwrap() = recommended;
                     }
 
-                    // Cache current funding method to avoid holding the lock across updates
-                    let funding_method = *self.funding_method.read().unwrap();
+                    // Re-read to pick up the recommendation just written above.
+                    // Skip the rest of this block if the earlier read already
+                    // failed — RwLock poisoning is sticky, so this read would
+                    // fail the same way and panicking here would defeat the
+                    // graceful degradation above.
+                    let funding_method = funding_method_snapshot
+                        .and_then(|_| self.funding_method.read().ok().map(|m| *m));
 
-                    // Check if the wallet has the required resources
-                    let has_required_resources = {
-                        let wallet_read = wallet.read().unwrap();
-                        match funding_method {
-                            FundingMethod::UseWalletBalance => self
-                                .app_context
-                                .snapshot_has_balance(&wallet_read.seed_hash()),
-                            FundingMethod::UseUnusedAssetLock => {
-                                self.asset_lock_cache.has_unused(&wallet_read.seed_hash())
+                    if let Some(funding_method) = funding_method {
+                        // Check if the wallet has the required resources
+                        let has_required_resources = {
+                            let wallet_read = wallet.read().unwrap();
+                            match funding_method {
+                                FundingMethod::UseWalletBalance => self
+                                    .app_context
+                                    .snapshot_has_balance(&wallet_read.seed_hash()),
+                                FundingMethod::UseUnusedAssetLock => {
+                                    self.asset_lock_cache.has_unused(&wallet_read.seed_hash())
+                                }
+                                _ => true,
                             }
-                            _ => true,
-                        }
-                    };
+                        };
 
-                    if has_required_resources {
-                        // Automatically select the only available wallet from app_context
-                        selected_wallet_update = Some(wallet.clone());
-                        step_update_method = Some(funding_method);
+                        if has_required_resources {
+                            // Automatically select the only available wallet from app_context
+                            selected_wallet_update = Some(wallet.clone());
+                            step_update_method = Some(funding_method);
+                        }
                     }
                 }
                 false

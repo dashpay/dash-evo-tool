@@ -11,7 +11,13 @@ use egui::{Color32, RichText, Ui};
 impl AddNewIdentityScreen {
     fn show_wallet_balance(&self, ui: &mut egui::Ui) {
         if let Some(selected_wallet) = &self.selected_wallet {
-            let wallet = selected_wallet.read().unwrap(); // Read lock on the wallet
+            let wallet = match selected_wallet.read() {
+                Ok(w) => w,
+                Err(_) => {
+                    ui.label("Wallet is busy. Try again in a moment.");
+                    return;
+                }
+            };
 
             let total_balance: u64 = self.app_context.snapshot_balance(&wallet.seed_hash()).total;
 

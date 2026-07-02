@@ -46,7 +46,6 @@
 //! **Run command** (requires a funded testnet wallet):
 //! ```bash
 //! E2E_WALLET_MNEMONIC="word1 word2 ..." \
-//! RUST_MIN_STACK=16777216 \
 //!   cargo test --test backend-e2e --all-features -- \
 //!   --ignored --nocapture cd_cold_boot_identity_register_and_topup
 //! ```

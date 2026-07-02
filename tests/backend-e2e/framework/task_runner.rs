@@ -77,6 +77,25 @@ where
         .expect("large-stack task panicked or was cancelled")
 }
 
+/// Drive an arbitrary SDK-bearing future on the large-stack [`sdk_runtime`].
+///
+/// For test bodies that call `dash_sdk::platform::Fetch` (e.g.
+/// `Identity::fetch_by_identifier`, `AddressInfo::fetch`) DIRECTLY rather than
+/// through [`run_task`]. Such a fetch otherwise runs deep grovedb proof
+/// verification on the default `tokio_shared_rt` worker-thread stack and can
+/// overflow without `RUST_MIN_STACK`. Wrapping it here runs it on the 32 MB
+/// [`sdk_runtime`], matching the guarantee [`run_task`] gives backend tasks.
+/// Build the future inside `make_fut` — it runs on the target thread, so no
+/// future crosses a thread boundary.
+pub async fn run_on_large_stack<F, Fut, T>(make_fut: F) -> T
+where
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: Future<Output = T>,
+    T: Send + 'static,
+{
+    drive_on_large_stack(make_fut).await
+}
+
 #[allow(dead_code)]
 /// Run a backend task with automatic retry on identity nonce conflicts.
 ///

@@ -115,6 +115,17 @@ pub(crate) fn default_funding_state(
     }
 }
 
+/// Compose a wallet-picker entry as `alias — spendable-balance in DASH`.
+///
+/// The balance shown is always the wallet's **spendable** amount (never the
+/// total): only spendable funds can pay for identity creation, so surfacing
+/// the total here would invite the very insufficient-funds surprise this
+/// label exists to prevent. A pure function so the wording is testable
+/// without constructing a real wallet/balance snapshot.
+fn format_wallet_picker_label(alias: &str, spendable_duffs: u64) -> String {
+    format!("{alias} — {}", Amount::dash_from_duffs(spendable_duffs))
+}
+
 pub struct AddNewIdentityScreen {
     identity_id_number: u32,
     step: Arc<RwLock<WalletFundedScreenStep>>,
@@ -430,16 +441,38 @@ impl AddNewIdentityScreen {
         }
     }
 
+    /// Build the wallet-picker label (`alias — spendable balance`) for one
+    /// wallet, reading its spendable balance from the display snapshot.
+    ///
+    /// Poison-tolerant: if the wallet lock is poisoned, falls back to a plain
+    /// "Unnamed Wallet" label rather than panicking. Takes `&AppContext`
+    /// (not `&self`) so the ComboBox closure can call it via a field-level
+    /// borrow, leaving the closure's other `self` field writes undisturbed.
+    fn wallet_picker_label(app_context: &AppContext, wallet: &Arc<RwLock<Wallet>>) -> String {
+        let Some((seed_hash, alias)) = wallet.read().ok().map(|w| {
+            let alias = w
+                .alias
+                .clone()
+                .unwrap_or_else(|| "Unnamed Wallet".to_string());
+            (w.seed_hash(), alias)
+        }) else {
+            return "Unnamed Wallet".to_string();
+        };
+        let spendable_duffs = app_context.snapshot_balance(&seed_hash).spendable();
+        format_wallet_picker_label(&alias, spendable_duffs)
+    }
+
     fn render_wallet_selection(&mut self, ui: &mut Ui) -> bool {
         let mut selected_wallet = None;
         let rendered = if self.app_context.has_wallet.load(Ordering::Relaxed) {
             let wallets = &self.app_context.wallets.read().unwrap();
             if wallets.len() > 1 {
-                // Retrieve the alias of the currently selected wallet, if any
-                let selected_wallet_alias = self
+                // Label the currently selected wallet with its spendable
+                // balance, if a wallet is selected.
+                let selected_wallet_label = self
                     .selected_wallet
                     .as_ref()
-                    .and_then(|wallet| wallet.read().ok()?.alias.clone())
+                    .map(|wallet| Self::wallet_picker_label(&self.app_context, wallet))
                     .unwrap_or_else(|| "Select".to_string());
 
                 ui.heading(
@@ -448,21 +481,19 @@ impl AddNewIdentityScreen {
 
                 // Display the ComboBox for wallet selection
                 ComboBox::from_id_salt("select_wallet")
-                    .selected_text(selected_wallet_alias)
+                    .selected_text(selected_wallet_label)
                     .show_ui(ui, |ui| {
                         for wallet in wallets.values() {
-                            let wallet_alias = wallet
-                                .read()
-                                .ok()
-                                .and_then(|w| w.alias.clone())
-                                .unwrap_or_else(|| "Unnamed Wallet".to_string());
+                            // Show each wallet's spendable balance next to its
+                            // alias so funding sufficiency is visible up front.
+                            let wallet_label = Self::wallet_picker_label(&self.app_context, wallet);
 
                             let is_selected = self
                                 .selected_wallet
                                 .as_ref()
                                 .is_some_and(|selected| Arc::ptr_eq(selected, wallet));
 
-                            if ui.selectable_label(is_selected, wallet_alias).clicked() {
+                            if ui.selectable_label(is_selected, wallet_label).clicked() {
                                 // Update the selected wallet
                                 selected_wallet = Some(wallet.clone());
                                 // Reset the funding address
@@ -1592,7 +1623,37 @@ impl ScreenLike for AddNewIdentityScreen {
 
 #[cfg(test)]
 mod funding_method_tests {
-    use super::{FundingMethod, WalletFundedScreenStep, default_funding_state};
+    use super::{
+        FundingMethod, WalletFundedScreenStep, default_funding_state, format_wallet_picker_label,
+    };
+
+    /// The picker label pairs the wallet alias with its spendable balance,
+    /// rendered in DASH, so the user can compare wallets before choosing one.
+    /// 0.5 DASH == 50_000_000 duffs.
+    #[test]
+    fn wallet_picker_label_shows_spendable_balance_in_dash() {
+        assert_eq!(
+            format_wallet_picker_label("Main", 50_000_000),
+            "Main — 0.5 DASH"
+        );
+    }
+
+    /// A zero-balance wallet still renders a well-formed label rather than an
+    /// empty or unit-less string.
+    #[test]
+    fn wallet_picker_label_renders_zero_balance() {
+        assert_eq!(format_wallet_picker_label("Empty", 0), "Empty — 0 DASH");
+    }
+
+    /// Structural guard: the label keeps the alias, an em-dash separator, and
+    /// the DASH unit — the shape UI code and any future i18n extraction rely on.
+    #[test]
+    fn wallet_picker_label_keeps_alias_separator_and_unit() {
+        let label = format_wallet_picker_label("Savings", 12_345_678);
+        assert!(label.starts_with("Savings"), "keeps the alias: {label}");
+        assert!(label.contains(" — "), "uses an em-dash separator: {label}");
+        assert!(label.ends_with(" DASH"), "shows the DASH unit: {label}");
+    }
 
     /// QA-001: a wallet with spendable balance defaults to the recommended
     /// path, pre-selected and ready to go.

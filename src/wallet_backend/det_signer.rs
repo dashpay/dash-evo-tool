@@ -37,7 +37,7 @@ use async_trait::async_trait;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::dashcore::secp256k1::{self, Message, PublicKey, Secp256k1, ecdsa};
 use dash_sdk::dpp::key_wallet::bip32::{DerivationPath, ExtendedPrivKey, ExtendedPubKey};
-use dash_sdk::dpp::key_wallet::signer::{Signer, SignerMethod};
+use dash_sdk::dpp::key_wallet::signer::{ExtendedPubKeySigner, Signer, SignerMethod};
 use zeroize::Zeroizing;
 
 use crate::wallet_backend::secret_access::SecretPlaintext;
@@ -188,7 +188,10 @@ impl Signer for DetSigner<'_> {
             &secret,
         ))
     }
+}
 
+#[async_trait]
+impl ExtendedPubKeySigner for DetSigner<'_> {
     /// Derive the BIP-32 extended public key at `path` from the held HD seed
     /// (public point + chain code + parent fingerprint), letting callers
     /// non-hardened-derive descendants without a re-prompt. A single-key

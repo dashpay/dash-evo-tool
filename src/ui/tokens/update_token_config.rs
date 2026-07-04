@@ -24,6 +24,7 @@ use crate::ui::{MessageType, Screen, ScreenLike};
 use dash_sdk::dpp::data_contract::GroupContractPosition;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
+use dash_sdk::dpp::data_contract::associated_token::token_configuration::TokenConfiguration;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::TokenConfigurationConvention;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration_item::TokenConfigurationChangeItem;
@@ -74,6 +75,24 @@ pub struct UpdateTokenConfigScreen {
     completed_fee_result: Option<FeeResult>,
     // Banner handle for elapsed time display
     refresh_banner: Option<crate::ui::components::BannerHandle>,
+}
+
+/// Resolves who may apply `change_item` to `token_config`.
+///
+/// The SDK's `authorized_action_takers_for_configuration_item` reports `NoOne`
+/// for `MainControlGroup` changes even when the configuration permits them, so
+/// that item is resolved from `main_control_group_can_be_modified` — the field
+/// Platform actually validates against.
+fn authorized_action_takers_for_change_item(
+    token_config: &TokenConfiguration,
+    change_item: &TokenConfigurationChangeItem,
+) -> AuthorizedActionTakers {
+    match change_item {
+        TokenConfigurationChangeItem::MainControlGroup(_) => {
+            *token_config.main_control_group_can_be_modified()
+        }
+        _ => token_config.authorized_action_takers_for_configuration_item(change_item),
+    }
 }
 
 impl UpdateTokenConfigScreen {
@@ -129,10 +148,10 @@ impl UpdateTokenConfigScreen {
     }
 
     fn update_group_based_on_change_item(&mut self) {
-        let authorized_action_takers = self
-            .identity_token_info
-            .token_config
-            .authorized_action_takers_for_configuration_item(&self.change_item);
+        let authorized_action_takers = authorized_action_takers_for_change_item(
+            &self.identity_token_info.token_config,
+            &self.change_item,
+        );
 
         let group = match authorized_action_takers {
             AuthorizedActionTakers::NoOne => {
@@ -1168,5 +1187,57 @@ fn token_change_item_label(item: &TokenConfigurationChangeItem) -> &'static str 
             "Marketplace Trade Mode Admin Group"
         }
         TokenConfigurationChangeItem::MainControlGroup(_) => "Main Control Group",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Setters;
+    use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationV0;
+
+    #[test]
+    fn main_control_group_authorization_uses_main_control_group_can_be_modified() {
+        let mut token_config =
+            TokenConfiguration::V0(TokenConfigurationV0::default_most_restrictive());
+        token_config.set_main_control_group_can_be_modified(AuthorizedActionTakers::Group(0));
+
+        // The SDK helper reports NoOne for MainControlGroup regardless of config;
+        // the DET helper must resolve it from main_control_group_can_be_modified.
+        assert_eq!(
+            authorized_action_takers_for_change_item(
+                &token_config,
+                &TokenConfigurationChangeItem::MainControlGroup(Some(0)),
+            ),
+            AuthorizedActionTakers::Group(0)
+        );
+    }
+
+    #[test]
+    fn main_control_group_authorization_defaults_to_no_one_when_not_modifiable() {
+        let token_config = TokenConfiguration::V0(TokenConfigurationV0::default_most_restrictive());
+
+        assert_eq!(
+            authorized_action_takers_for_change_item(
+                &token_config,
+                &TokenConfigurationChangeItem::MainControlGroup(Some(0)),
+            ),
+            AuthorizedActionTakers::NoOne
+        );
+    }
+
+    #[test]
+    fn other_change_items_delegate_to_sdk_helper() {
+        let mut token_config =
+            TokenConfiguration::V0(TokenConfigurationV0::default_most_restrictive());
+        token_config.set_main_control_group_can_be_modified(AuthorizedActionTakers::Group(0));
+
+        let item = TokenConfigurationChangeItem::MaxSupplyControlGroup(
+            AuthorizedActionTakers::ContractOwner,
+        );
+        assert_eq!(
+            authorized_action_takers_for_change_item(&token_config, &item),
+            token_config.authorized_action_takers_for_configuration_item(&item)
+        );
     }
 }

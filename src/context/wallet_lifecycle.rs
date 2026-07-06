@@ -382,9 +382,13 @@ impl AppContext {
     /// and reopened, the next same-network Connect fast-paths on the populated
     /// slot and restarts on the re-armed latch, so a reconnect cannot hit
     /// `WalletStorageError::AlreadyOpen` — impossible by construction, no release
-    /// barrier needed. Full teardown ([`WalletBackend::shutdown`], which drops
-    /// the backend and releases the persister) happens only on the
-    /// network-switch and app-close paths, never here.
+    /// barrier needed. Full teardown ([`WalletBackend::shutdown`], which quiesces
+    /// the coordinators so the persister can drop) never runs on a GUI path: a
+    /// GUI network switch keeps the outgoing per-network context cached (only its
+    /// secrets are forgotten), and GUI app-close aborts the subtasks and exits.
+    /// `shutdown` runs only on the MCP network-switch tool (draining the outgoing
+    /// context before the swap) and the headless / MCP-server close — all on a
+    /// different persister path than any live one, so none can race a reopen.
     ///
     /// Idempotent: a call with no wired backend still settles the indicator on
     /// `Stopped`/`Disconnected`. The teardown is async (upstream `stop_in_place`
@@ -1748,6 +1752,56 @@ mod tests {
         );
 
         second.shutdown().await;
+    }
+
+    /// Two genuinely-parallel first-open attempts on the SAME never-wired context
+    /// must NOT race into a double `WalletBackend::new` / `SqlitePersister::open`.
+    /// The upstream persister is single-open-per-path, so a concurrent double-open
+    /// errors — `WalletStorageError::AlreadyOpen` against a live persister (the
+    /// reported production symptom) or a DB-init race on a fresh file.
+    ///
+    /// This guards the GUI's `finalize_network_switch` fast path, which spawns a
+    /// `wallet-backend-eager-init` subtask on every switch with no re-entrancy
+    /// guard: a rapid switch-away-and-back to the same (already-cached) network
+    /// fires a second eager-init for the same context before the first finishes
+    /// wiring. `ensure_wallet_backend` serializes them behind the per-context
+    /// `wallet_backend_build` mutex with a double-checked slot — the first builds
+    /// and stores, the second re-checks under the guard, sees the populated slot,
+    /// and no-ops. One open, one shared backend, no error. The eager-init entry
+    /// `ensure_wallet_backend_and_start_spv` delegates its open to exactly this
+    /// function, so guarding the open here covers that path too.
+    ///
+    /// Deleting the guard (fast-path recheck + build mutex + post-guard recheck)
+    /// makes both racers reach `WalletBackend::new` and the second's open fails —
+    /// verified: the test then panics on the `must succeed` expectation.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_ensure_wallet_backend_does_not_double_open() {
+        let (ctx, sender, _tmp) = offline_testnet_context();
+        assert!(
+            ctx.wallet_backend().is_err(),
+            "precondition: backend must be unwired before the concurrent race"
+        );
+
+        let ctx_a = Arc::clone(&ctx);
+        let ctx_b = Arc::clone(&ctx);
+        let sender_a = sender.clone();
+        let sender_b = sender.clone();
+        let a = tokio::spawn(async move { ctx_a.ensure_wallet_backend(sender_a).await });
+        let b = tokio::spawn(async move { ctx_b.ensure_wallet_backend(sender_b).await });
+        let (ra, rb) = tokio::join!(a, b);
+
+        ra.expect("first-open task A must not panic")
+            .expect("concurrent first-open A must succeed — a double-open would error");
+        rb.expect("first-open task B must not panic")
+            .expect("concurrent first-open B must succeed — a double-open would error");
+
+        // Exactly one backend was built and both racers converged on it (first
+        // writer wins; the second no-ops on the populated slot).
+        let backend = ctx
+            .wallet_backend()
+            .expect("backend must be wired after the concurrent open");
+
+        backend.shutdown().await;
     }
 
     /// A failure at the (fallible) wiring step must surface — the

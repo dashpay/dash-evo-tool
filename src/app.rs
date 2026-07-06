@@ -142,6 +142,26 @@ pub fn migration_running_text(step: MigrationStep) -> &'static str {
     }
 }
 
+/// How long the cold-start readiness gate waits for the wallet backend to wire
+/// before it stops retrying silently and surfaces a visible, actionable banner.
+///
+/// Wiring is a local, non-network operation (open the SQLite sidecar, hydrate
+/// wallets, bootstrap addresses) that normally completes within a few frames of
+/// boot / a network switch — sub-second in the common case. 30 seconds is ~two
+/// orders of magnitude past the expected completion, generous enough never to
+/// false-positive on a slow disk or a large wallet set, yet short enough that a
+/// genuinely wedged backend surfaces within half a minute instead of never. It
+/// sits well below the network-bound waits (the 120 s SPV no-progress watchdog,
+/// the 10 min MCP sync gate), matching that this wait is local, not on the wire.
+const COLD_START_BACKEND_READY_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// User-facing banner shown when the wallet backend never finishes wiring within
+/// [`COLD_START_BACKEND_READY_TIMEOUT`], so the cold-start migration can never
+/// run. Everyday-User copy (no "backend"/"wiring"/"SPV" jargon): what happened +
+/// a self-serviceable action. Complete sentences so i18n extracts it as one unit.
+const COLD_START_STUCK_MESSAGE: &str =
+    "We couldn't finish preparing your wallet. Try restarting the app.";
+
 /// Decide whether to dispatch the cold-start migration for the active network
 /// this frame: only when it has not already been dispatched AND its wallet
 /// backend is wired. The migration's first step needs a wired backend; firing
@@ -150,6 +170,14 @@ pub fn migration_running_text(step: MigrationStep) -> &'static str {
 /// pending and retries on a later frame once the backend wires.
 fn should_dispatch_cold_start(already_dispatched: bool, backend_ready: bool) -> bool {
     !already_dispatched && backend_ready
+}
+
+/// Whether the readiness gate has been waiting on an unwired wallet backend long
+/// enough to surface the stuck-preparation banner. Pure so the timeout is
+/// unit-testable with synthetic durations. `waited == None` means we are not (or
+/// no longer) waiting — that never times out.
+fn cold_start_backend_wait_timed_out(waited: Option<Duration>, timeout: Duration) -> bool {
+    waited.is_some_and(|elapsed| elapsed >= timeout)
 }
 
 #[derive(Debug, From)]
@@ -289,6 +317,17 @@ pub struct AppState {
     /// at most once per process; the orchestrator itself short-circuits
     /// when its own sentinel is present.
     cold_start_migration_dispatched: BTreeSet<Network>,
+    /// Per network, the instant the readiness gate first observed
+    /// "not yet dispatched AND wallet backend not wired". Drives the
+    /// [`COLD_START_BACKEND_READY_TIMEOUT`] watchdog so a backend that never
+    /// wires surfaces a banner instead of retrying silently forever. Cleared
+    /// for a network once its backend wires and the migration dispatches.
+    cold_start_backend_wait_since: BTreeMap<Network, Instant>,
+    /// Networks whose stuck-preparation timeout has already been logged, so the
+    /// warning fires once per network (not every frame) while the gate stays
+    /// wedged. The banner itself is re-asserted every frame (idempotent by text)
+    /// so it survives a network switch; only the log is deduped here.
+    cold_start_timeout_signaled: BTreeSet<Network>,
     /// Async shutdown receiver. `Some` while a graceful shutdown is in progress;
     /// the viewport is closed once the receiver resolves.
     shutdown_receiver: Option<tokio::sync::oneshot::Receiver<()>>,
@@ -821,6 +860,8 @@ impl AppState {
             migration_banner_handle: None,
             last_migration_state: None,
             cold_start_migration_dispatched: BTreeSet::new(),
+            cold_start_backend_wait_since: BTreeMap::new(),
+            cold_start_timeout_signaled: BTreeSet::new(),
             shutdown_receiver: None,
             shutdown_started: None,
             accessibility_enforced,
@@ -979,9 +1020,10 @@ impl AppState {
     /// Complete the network switch after the context is available.
     fn finalize_network_switch(&mut self, network: Network) {
         // Forget any session-cached secrets on the outgoing context before we
-        // leave it. The old per-network `WalletBackend` drops on switch (which
-        // zeroizes its cache), but this is the explicit, eager path the JIT
-        // design mandates so secrets never linger across a network change.
+        // leave it. The outgoing per-network context stays cached in
+        // `network_contexts` (its `WalletBackend` is NOT dropped on switch), so
+        // this explicit, eager zeroize is what the JIT design relies on to keep
+        // secrets from lingering across a network change — not a drop.
         if let Ok(backend) = self.current_app_context().wallet_backend() {
             backend.forget_all_secrets();
         }
@@ -1198,16 +1240,74 @@ impl AppState {
         // both key off `chosen_network`, so the readiness observed here is what
         // the spawned task will see.
         let backend_ready = self.current_app_context().wallet_backend().is_ok();
-        if !should_dispatch_cold_start(already_dispatched, backend_ready) {
+        if should_dispatch_cold_start(already_dispatched, backend_ready) {
+            // Backend wired: retire any stuck-preparation watchdog for this
+            // network (clears the timer + banner if the backend recovered after
+            // being wedged) before burning the guard and dispatching.
+            self.clear_cold_start_backend_wait(network);
+            self.cold_start_migration_dispatched.insert(network);
+            tracing::info!(
+                target = "migration::cold_start",
+                network = ?network,
+                "Dispatching FinishUnwire migration at cold start",
+            );
+            self.handle_backend_task(BackendTask::MigrationTask(MigrationTask::FinishUnwire));
             return;
         }
-        self.cold_start_migration_dispatched.insert(network);
-        tracing::info!(
-            target = "migration::cold_start",
-            network = ?network,
-            "Dispatching FinishUnwire migration at cold start",
+
+        // Already dispatched — nothing to wait on or surface.
+        if already_dispatched {
+            return;
+        }
+
+        // Not dispatched because the wallet backend has not wired yet. Record
+        // when the wait began and, once it exceeds the readiness timeout, surface
+        // a visible, actionable banner instead of polling silently forever — the
+        // gate previously had no timeout and no user-visible signal, so a backend
+        // that never wired left the wallet invisible with zero feedback. Recovery
+        // is still automatic: if the backend wires later, the dispatch branch
+        // above clears the banner and proceeds.
+        let now = Instant::now();
+        let waited = now.duration_since(
+            *self
+                .cold_start_backend_wait_since
+                .entry(network)
+                .or_insert(now),
         );
-        self.handle_backend_task(BackendTask::MigrationTask(MigrationTask::FinishUnwire));
+        if cold_start_backend_wait_timed_out(Some(waited), COLD_START_BACKEND_READY_TIMEOUT) {
+            let app_context = self.current_app_context().clone();
+            let handle = MessageBanner::set_global(
+                app_context.egui_ctx(),
+                COLD_START_STUCK_MESSAGE,
+                MessageType::Error,
+            );
+            // Log + attach the last wiring error once per network; the banner is
+            // re-asserted every frame (idempotent) so it survives a switch, but
+            // the diagnostic warning must not repeat.
+            if self.cold_start_timeout_signaled.insert(network) {
+                if let Some(detail) = app_context.connection_status().spv_last_error() {
+                    handle.with_details(detail);
+                }
+                tracing::warn!(
+                    target = "migration::cold_start",
+                    network = ?network,
+                    waited_secs = waited.as_secs(),
+                    "Wallet backend did not finish wiring within the readiness timeout; showing the wallet-preparation banner. Restart the app if this persists.",
+                );
+            }
+        }
+    }
+
+    /// Retire the stuck-preparation watchdog for `network`: drop the wait timer
+    /// and, if the timeout banner was raised, remove it. Called once the
+    /// network's backend wires so the banner never lingers beside the migration's
+    /// own progress banner.
+    fn clear_cold_start_backend_wait(&mut self, network: Network) {
+        self.cold_start_backend_wait_since.remove(&network);
+        if self.cold_start_timeout_signaled.remove(&network) {
+            let ctx = self.current_app_context().egui_ctx().clone();
+            MessageBanner::clear_global_message(&ctx, COLD_START_STUCK_MESSAGE);
+        }
     }
 
     /// Drive the blocking SPV-sync overlay each frame (Task 9 — the overlay's
@@ -2197,6 +2297,42 @@ mod migration_banner_tests {
         assert!(
             !should_dispatch_cold_start(true, false),
             "already-dispatched and not-ready must not dispatch",
+        );
+    }
+
+    /// Readiness-timeout watchdog: the gate surfaces the stuck-preparation
+    /// banner only after the backend has been unwired for at least the timeout,
+    /// never before (premature firing would flash the banner on a normal boot,
+    /// where wiring lags dispatch by a few frames). Synthetic durations so the
+    /// test needs no real clock.
+    #[test]
+    fn cold_start_backend_wait_timeout_fires_only_after_grace() {
+        let timeout = COLD_START_BACKEND_READY_TIMEOUT;
+
+        // Not waiting at all never times out.
+        assert!(
+            !cold_start_backend_wait_timed_out(None, timeout),
+            "a network that is not waiting must never time out",
+        );
+
+        // Inside the grace window: keep waiting silently.
+        assert!(
+            !cold_start_backend_wait_timed_out(Some(Duration::ZERO), timeout),
+            "a just-started wait must not fire immediately",
+        );
+        assert!(
+            !cold_start_backend_wait_timed_out(Some(timeout - Duration::from_millis(1)), timeout),
+            "a wait one tick short of the timeout must not fire prematurely",
+        );
+
+        // At or past the window: fire.
+        assert!(
+            cold_start_backend_wait_timed_out(Some(timeout), timeout),
+            "a wait that reaches the timeout must fire",
+        );
+        assert!(
+            cold_start_backend_wait_timed_out(Some(timeout * 4), timeout),
+            "a wait well past the timeout must fire",
         );
     }
 }

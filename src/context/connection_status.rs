@@ -725,12 +725,23 @@ fn active_spv_phase(progress: &SpvSyncProgress) -> Option<(u32, u32)> {
 /// Filter Headers=3, Filters=4, Blocks=[`SPV_SYNC_PHASE_COUNT`] — or `None` when
 /// no phase is actively syncing yet. Mirrors the pipeline order of
 /// [`spv_phase_summary`].
+///
+/// The step is always in range by construction (every arm in
+/// [`active_spv_phase`] returns a literal `<= SPV_SYNC_PHASE_COUNT`), but that
+/// invariant lives across two hand-maintained sites — a phase added or removed
+/// from one without updating the other would drift. This is checked at runtime
+/// (not `debug_assert!`, which compiles out in release, silently hiding the
+/// drift from every production build) so a regression is visible in logs
+/// instead of just a vanished "Step N of M" counter downstream.
 pub fn spv_phase_step(progress: &SpvSyncProgress) -> Option<u32> {
     let step = active_spv_phase(progress)?.0;
-    debug_assert!(
-        step <= SPV_SYNC_PHASE_COUNT,
-        "SPV phase step {step} exceeds SPV_SYNC_PHASE_COUNT {SPV_SYNC_PHASE_COUNT} — bump the constant"
-    );
+    if step > SPV_SYNC_PHASE_COUNT {
+        tracing::error!(
+            step,
+            SPV_SYNC_PHASE_COUNT,
+            "SPV phase step exceeds SPV_SYNC_PHASE_COUNT — active_spv_phase and the constant have drifted; bump SPV_SYNC_PHASE_COUNT"
+        );
+    }
     Some(step)
 }
 

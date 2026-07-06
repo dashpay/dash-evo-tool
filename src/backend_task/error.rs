@@ -1339,6 +1339,13 @@ pub enum TaskError {
     #[error("Add at least one recipient before sending a payment.")]
     PaymentNoRecipients,
 
+    /// Tracked-lock funding was invoked with no recipients. The UI always
+    /// supplies at least one, so this is a caller-contract violation (a future
+    /// programmatic caller, not a normal user action) rejected before any
+    /// pool-membership lookup or broadcast.
+    #[error("No funding recipients were provided for this asset lock.")]
+    NoFundingRecipients,
+
     /// A recipient was given a zero amount. Sending nothing wastes the network
     /// fee and is almost always a slip, so it is rejected up front.
     #[error("Enter an amount greater than zero for every recipient, then try again.")]

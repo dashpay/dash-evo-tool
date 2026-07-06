@@ -101,3 +101,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Silent crashes now leave a trace: the app captures stderr output and fatal
   signals to its log file, so an unexpected exit can be diagnosed from the logs
   instead of vanishing without a record.
+- Withdrawing from a Platform address to a Core address could fail with an
+  internal error even though the address's balance was clearly visible in the
+  withdrawal picker. A Platform address discovered by background syncing was
+  not always recognized as one the wallet could sign for. The wallet now
+  reconciles this automatically, so a visible balance can always be withdrawn.
+  No funds were ever at risk — the withdrawal simply failed before anything
+  was sent.

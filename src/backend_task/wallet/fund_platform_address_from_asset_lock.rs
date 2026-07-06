@@ -37,12 +37,13 @@ impl AppContext {
         let backend = self.wallet_backend()?;
 
         // The UI caller always supplies one `None` remainder recipient. A future
-        // programmatic caller passing an empty map routes to the orchestrator
-        // (vacuously all-in-pool) and is rejected by its pre-flight pre-broadcast.
-        debug_assert!(
-            !outputs.is_empty(),
-            "tracked-lock funding expects at least one recipient"
-        );
+        // programmatic caller passing an empty map would otherwise route to the
+        // orchestrator (vacuously all-in-pool) and rely on its pre-flight to
+        // catch it before broadcast — reject it directly here instead, so the
+        // precondition is enforced in every build, not just debug ones.
+        if outputs.is_empty() {
+            return Err(TaskError::NoFundingRecipients);
+        }
 
         // Resolve each recipient's pool membership (short-circuiting on the first
         // miss to skip remaining network-touching queries), then apply the pure

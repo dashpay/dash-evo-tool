@@ -33,7 +33,7 @@ Cross-links: [migration data model](ai-design/2026-05-18-platform-wallet-migrati
 
 | Key | Scope | Store | Value type | Fields |
 |-----|-------|-------|------------|--------|
-| `det:settings:v1` | `None` | `det-app.sqlite` | `AppSettings` via `AppSettingsWire` | `network`, `root_screen_type`, `dash_qt_path`, `overwrite_dash_conf`, `disable_zmq`, `theme_mode`, `core_backend_mode`, `onboarding_completed`, `show_evonode_tools`, `user_mode`, `close_dash_qt_on_exit`, `auto_start_spv` |
+| `det:settings:v1` | `None` | `det-app.sqlite` | `AppSettings` via `AppSettingsWire` | `network`, `root_screen_type`, `dash_qt_path`, `overwrite_dash_conf`, `disable_zmq`, `theme_mode`, `_reserved_core_backend_mode` (retired; reserved byte), `onboarding_completed`, `show_evonode_tools`, `user_mode`, `close_dash_qt_on_exit`, `auto_start_spv` |
 
 Source: `src/model/settings.rs`, `src/context/settings_db.rs`
 

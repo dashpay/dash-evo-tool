@@ -17,3 +17,7 @@ CC_x86_64_pc_windows_gnu = "x86_64-w64-mingw32-gcc-posix"
 CXX_x86_64_pc_windows_gnu = "x86_64-w64-mingw32-g++-posix"
 AR_x86_64_pc_windows_gnu = "x86_64-w64-mingw32-ar"
 CFLAGS_x86_64_pc_windows_gnu = "-O2"
+# 8 MiB minimum stack for spawned threads (incl. tokio worker threads), up from
+# Rust's smaller default. Deep call chains (grovedb proof verification, nested
+# serde/protobuf decoding) can overflow the default on debug builds.
+RUST_MIN_STACK = "8388608"

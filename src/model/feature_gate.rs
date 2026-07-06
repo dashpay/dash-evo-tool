@@ -44,9 +44,6 @@ pub enum FeatureGate {
     /// SPV backend — always active. Chain sync is SPV-only, owned by upstream
     /// `platform-wallet`.
     SpvBackend,
-    /// Dash Core RPC backend — never active. The RPC wallet backend was
-    /// removed; retained as a gate so RPC/ZMQ-only UI is hidden.
-    RpcBackend,
 }
 
 impl FeatureGate {
@@ -75,7 +72,6 @@ impl FeatureGate {
             FeatureGate::DeveloperMode => ctx.is_developer_mode(),
             // Chain sync is SPV-only (owned by upstream platform-wallet).
             FeatureGate::SpvBackend => true,
-            FeatureGate::RpcBackend => false,
         }
     }
 }

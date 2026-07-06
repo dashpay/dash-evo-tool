@@ -35,7 +35,7 @@ impl<T> MigrationResultExt<T> for rusqlite::Result<T> {
     }
 }
 
-pub const DEFAULT_DB_VERSION: u16 = 37;
+pub const DEFAULT_DB_VERSION: u16 = 38;
 
 /// Minimal view of `.env` values the v34 migration needs.
 struct V34EnvSnapshot {
@@ -239,6 +239,16 @@ impl Database {
         data_dir: Option<&Path>,
     ) -> Result<(), MigrationError> {
         match version {
+            38 => {
+                // Drop the retired `core_backend_mode` settings column. The
+                // RPC/SPV backend selector it held was unwired in C3 (user
+                // prefs moved to the upstream k/v store) and chain sync is
+                // SPV-only now, so the column is permanent dead weight.
+                // Existence-guarded and idempotent; mutates ONLY the settings
+                // table and preserves every other column and value.
+                self.drop_core_backend_mode_column(tx)
+                    .migration_err("settings", "v38: drop core_backend_mode column")?;
+            }
             37 => {
                 // Retire DET's home-grown shielded subsystem: the upstream
                 // `platform-wallet` coordinator owns all Orchard state now.
@@ -2955,6 +2965,119 @@ mod test {
                 "try_perform_migration should report no migration needed"
             );
             assert_eq!(db.db_schema_version().unwrap(), 34);
+        }
+    }
+
+    // ── v38 migration: drop the retired core_backend_mode column ─────
+    mod v38 {
+        fn settings_column_exists(db: &super::super::Database, column: &str) -> bool {
+            let conn = db.conn.lock().unwrap();
+            conn.query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('settings') WHERE name = ?1",
+                [column],
+                |row| row.get::<_, i32>(0).map(|c| c > 0),
+            )
+            .unwrap()
+        }
+
+        /// Build a v37 DB whose `settings` table still carries the legacy
+        /// `core_backend_mode` column plus a second legacy column
+        /// (`disable_zmq`) with a distinctive value, so the migration can be
+        /// shown to drop ONLY the target column and preserve the rest.
+        fn v37_db_with_legacy_columns(dir: &std::path::Path) -> super::super::Database {
+            let db_file = dir.join("test_data.db");
+            let db = super::super::Database::new(&db_file).unwrap();
+            db.create_tables(true).unwrap();
+            {
+                let conn = db.conn.lock().unwrap();
+                conn.execute(
+                    "ALTER TABLE settings ADD COLUMN core_backend_mode INTEGER DEFAULT 1",
+                    [],
+                )
+                .unwrap();
+                conn.execute(
+                    "ALTER TABLE settings ADD COLUMN disable_zmq INTEGER DEFAULT 0",
+                    [],
+                )
+                .unwrap();
+            }
+            db.set_default_version().unwrap();
+            db.set_db_version(37).unwrap();
+            {
+                let conn = db.conn.lock().unwrap();
+                conn.execute(
+                    "UPDATE settings SET core_backend_mode = 0, disable_zmq = 1 WHERE id = 1",
+                    [],
+                )
+                .unwrap();
+            }
+            db
+        }
+
+        /// A pre-v38 DB with the legacy column migrates cleanly: the
+        /// `core_backend_mode` column is dropped, the version advances to 38,
+        /// and every other settings value survives.
+        #[test]
+        fn v38_drops_column_and_preserves_other_settings() {
+            let tmp = tempfile::tempdir().unwrap();
+            let db = v37_db_with_legacy_columns(tmp.path());
+            assert!(settings_column_exists(&db, "core_backend_mode"));
+
+            let result = db.try_perform_migration(37, 38, None);
+            assert!(result.is_ok(), "migration failed: {:?}", result.err());
+            assert_eq!(db.db_schema_version().unwrap(), 38);
+
+            // Target column gone.
+            assert!(
+                !settings_column_exists(&db, "core_backend_mode"),
+                "core_backend_mode must be dropped"
+            );
+            // Sibling settings survive untouched.
+            assert!(settings_column_exists(&db, "disable_zmq"));
+            let disable_zmq: i64 = {
+                let conn = db.conn.lock().unwrap();
+                conn.query_row("SELECT disable_zmq FROM settings WHERE id = 1", [], |row| {
+                    row.get(0)
+                })
+                .unwrap()
+            };
+            assert_eq!(disable_zmq, 1, "unrelated settings must be preserved");
+        }
+
+        /// A DB that never had the column (fresh post-C3 schema) migrates to
+        /// v38 without error — the drop is a guarded no-op.
+        #[test]
+        fn v38_is_noop_when_column_absent() {
+            let tmp = tempfile::tempdir().unwrap();
+            let db_file = tmp.path().join("fresh.db");
+            let db = super::super::Database::new(&db_file).unwrap();
+            db.create_tables(false).unwrap();
+            db.set_default_version().unwrap();
+            db.set_db_version(37).unwrap();
+            assert!(!settings_column_exists(&db, "core_backend_mode"));
+
+            let result = db.try_perform_migration(37, 38, None);
+            assert!(result.is_ok(), "migration failed: {:?}", result.err());
+            assert_eq!(db.db_schema_version().unwrap(), 38);
+            assert!(!settings_column_exists(&db, "core_backend_mode"));
+        }
+
+        /// Re-running the migration on an already-migrated DB is a no-op.
+        #[test]
+        fn v38_rerun_is_noop() {
+            let tmp = tempfile::tempdir().unwrap();
+            let db = v37_db_with_legacy_columns(tmp.path());
+
+            db.try_perform_migration(37, 38, None).unwrap();
+            assert_eq!(db.db_schema_version().unwrap(), 38);
+
+            let result = db.try_perform_migration(38, 38, None);
+            assert!(result.is_ok(), "re-run should be no-op: {:?}", result.err());
+            assert!(
+                !result.unwrap(),
+                "try_perform_migration should report no migration needed"
+            );
+            assert_eq!(db.db_schema_version().unwrap(), 38);
         }
     }
 

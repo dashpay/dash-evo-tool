@@ -66,11 +66,21 @@ fn skipped_banner_renders_plural_copy() {
     );
 }
 
-/// Zero skips yields no banner text, so no banner is rendered.
+/// Zero skips yields no banner text, so no warning banner is rendered.
 #[test]
 fn no_skips_renders_no_banner() {
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(600.0, 200.0))
+        .build_ui(|ui| {
+            if let Some(text) = skipped_wallets_banner_text(0) {
+                MessageBanner::set_global(ui.ctx(), text, MessageType::Warning);
+            }
+            MessageBanner::show_global(ui);
+        });
+    harness.run();
+
     assert!(
-        skipped_wallets_banner_text(0).is_none(),
-        "zero skips must not produce banner text",
+        harness.query_by_label("\u{26A0}").is_none(),
+        "zero skips must not render a warning banner",
     );
 }

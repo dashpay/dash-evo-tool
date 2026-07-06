@@ -116,6 +116,8 @@ use crate::context::connection_status::ConnectionStatus;
 use crate::model::selected_identity::SelectedIdentity;
 use crate::model::selected_wallet::SelectedWallet;
 use crate::model::wallet::{PlatformAddressEntry, WalletSeedHash};
+use crate::ui::MessageType;
+use crate::ui::components::message_banner::{BannerHandle, OptionBannerExt};
 use crate::utils::egui_mpsc::SenderAsync;
 
 /// The upstream persister DET consumes. Authored upstream (PR #3625) — DET
@@ -217,6 +219,13 @@ struct Inner {
     /// dispatch is user-initiated and rare relative to lock acquisition
     /// cost.
     dashpay_address_index_lock: std::sync::Mutex<()>,
+    /// Handle to the warning banner raised when persisted wallets are skipped
+    /// on load. A re-entrant load pass (via [`WalletBackend::ensure_wallets_registered`])
+    /// supersedes this banner rather than stacking a second, possibly
+    /// contradictory one. Interior mutability because the backend is
+    /// `Arc`-shared and `register_persisted_wallets` runs on `&self`. See
+    /// [`raise_skipped_wallets_banner`].
+    skipped_wallets_banner: std::sync::Mutex<Option<BannerHandle>>,
     /// Encrypted secret vault. Holds imported single-key WIFs
     /// (`single_key_priv.*` labels, see [`single_key`]) and HD-wallet
     /// BIP-39 seeds (`envelope.v1` labels under `WalletId(seed_hash)`, see
@@ -365,6 +374,7 @@ impl WalletBackend {
                 network,
                 spv_storage_dir,
                 dashpay_address_index_lock: std::sync::Mutex::new(()),
+                skipped_wallets_banner: std::sync::Mutex::new(None),
                 secret_store,
                 single_key_index: std::sync::RwLock::new(std::collections::BTreeMap::new()),
                 app_kv,
@@ -445,7 +455,8 @@ impl WalletBackend {
 
     /// Run the configured loader to bring back persisted wallets watch-only.
     /// Identity-funding re-provision is deferred to the asset-lock chokepoint
-    /// (which obtains the seed just-in-time), so this pass only loads and logs.
+    /// (which obtains the seed just-in-time), so this pass loads, logs, and
+    /// raises a warning banner for any skipped wallet.
     async fn register_persisted_wallets(&self, ctx: &Arc<AppContext>) -> Result<(), TaskError> {
         let loader = Arc::clone(&self.inner.loader);
         let outcome = loader.load(self, ctx).await?;
@@ -461,12 +472,13 @@ impl WalletBackend {
                 "Skipped a corrupt persisted wallet row on load"
             );
         }
-        if let Some(text) = skipped_wallets_banner_text(outcome.skipped.len()) {
-            crate::ui::components::message_banner::MessageBanner::set_global(
-                ctx.egui_ctx(),
-                text,
-                crate::ui::MessageType::Warning,
-            );
+        {
+            let mut handle = self
+                .inner
+                .skipped_wallets_banner
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            raise_skipped_wallets_banner(ctx.egui_ctx(), outcome.skipped.len(), &mut handle);
         }
 
         // `load()` rebuilds `IdentityRegistration` from the manifest, but
@@ -3409,6 +3421,25 @@ pub fn skipped_wallets_banner_text(skipped: usize) -> Option<String> {
     }
 }
 
+/// Raise the skipped-persisted-wallets warning banner for this load pass,
+/// superseding any banner a previous pass left behind so a re-entrant call
+/// (e.g. via [`WalletBackend::ensure_wallets_registered`]) with a different
+/// skip count never stacks a second, contradictory banner alongside the
+/// first. A pass with zero skips clears a stale banner from an earlier pass
+/// rather than leaving it stuck.
+fn raise_skipped_wallets_banner(
+    ctx: &egui::Context,
+    skipped_count: usize,
+    banner_handle: &mut Option<BannerHandle>,
+) {
+    // Fully qualified: the trait's `replace` is shadowed by the inherent
+    // `Option::replace` under method syntax.
+    match skipped_wallets_banner_text(skipped_count) {
+        Some(text) => OptionBannerExt::replace(banner_handle, ctx, text, MessageType::Warning),
+        None => banner_handle.take_and_clear(),
+    }
+}
+
 /// Bucket for `PlatformWalletError`s coming out of identity register / top-up.
 enum IdentityOpErrorKind {
     /// Network or broadcast rejected the submission (SDK error or asset-lock
@@ -3867,6 +3898,63 @@ mod tests {
                 "3 saved wallets couldn't be opened. Re-add them from their recovery phrases to restore them."
                     .to_string()
             )
+        );
+    }
+
+    /// A re-entrant load pass supersedes the previous skipped-wallets banner
+    /// instead of stacking a second one, and a zero-skip pass clears it. Drives
+    /// [`raise_skipped_wallets_banner`] directly (no `WalletBackend`/`AppContext`)
+    /// and asserts against the rendered banner so a regression that drops the
+    /// call, swaps the Warning type, reads the wrong count, or stacks banners
+    /// fails here.
+    #[test]
+    fn raise_skipped_wallets_banner_replaces_and_clears() {
+        use crate::ui::components::MessageBanner;
+        use egui_kittest::Harness;
+        use egui_kittest::kittest::Queryable;
+
+        let singular = skipped_wallets_banner_text(1).expect("one skip yields text");
+        let plural = skipped_wallets_banner_text(3).expect("three skips yield text");
+        let mut handle: Option<BannerHandle> = None;
+
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(600.0, 200.0))
+            .build_ui(MessageBanner::show_global);
+
+        // Pass 1: one skip → singular copy under the Warning icon.
+        raise_skipped_wallets_banner(&harness.ctx, 1, &mut handle);
+        harness.run();
+        assert!(
+            harness.query_by_label(singular.as_str()).is_some(),
+            "first pass must render the singular skip copy",
+        );
+        assert!(
+            harness.query_by_label("\u{26A0}").is_some(),
+            "skip banner must carry the Warning icon, not another type",
+        );
+
+        // Pass 2: re-entrant call with a different count must replace, not stack.
+        raise_skipped_wallets_banner(&harness.ctx, 3, &mut handle);
+        harness.run();
+        assert!(
+            harness.query_by_label(plural.as_str()).is_some(),
+            "second pass must render the new plural copy",
+        );
+        assert!(
+            harness.query_by_label(singular.as_str()).is_none(),
+            "the superseded singular banner must be gone, not stacked",
+        );
+
+        // Pass 3: zero skips clears the banner.
+        raise_skipped_wallets_banner(&harness.ctx, 0, &mut handle);
+        harness.run();
+        assert!(
+            harness.query_by_label(plural.as_str()).is_none(),
+            "a zero-skip pass must clear the banner",
+        );
+        assert!(
+            harness.query_by_label("\u{26A0}").is_none(),
+            "no Warning icon must remain after clearing",
         );
     }
 

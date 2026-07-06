@@ -424,12 +424,8 @@ impl PlatformEventHandler for EventBridge {
         wallet_id: platform_wallet::wallet::platform_wallet::WalletId,
         reason: &platform_wallet::manager::load_outcome::SkipReason,
     ) {
-        // Public wallet id + structural reason only; never a secret.
-        // TODO(PROJ-010-T6): surface a calm MessageBanner ("One saved
-        // wallet couldn't be opened. Re-add it from its recovery
-        // phrase to restore it.") once the construction path can reach
-        // an egui context. The skip is logged here in the meantime and
-        // also reported via `LoadedWallets.skipped`.
+        // Public wallet id + structural reason only; never a secret. The
+        // user-facing banner is raised in `register_persisted_wallets`.
         tracing::warn!(
             wallet_id = %hex::encode(wallet_id),
             %reason,

@@ -1291,12 +1291,14 @@ pub trait OptionOverlayExt {
     /// Take the handle (leaving `None`) and dismiss its overlay entry.
     fn take_and_clear(&mut self);
 
-    /// Clear any existing overlay, raise a new one, and store the handle. The
-    /// banner analogue is [`OptionBannerExt::replace`](super::message_banner::OptionBannerExt::replace),
-    /// but this stays named `raise`: an inherent `Option::replace(value)` already
-    /// exists and wins method resolution, so naming this `replace` would shadow it
-    /// and make every `slot.replace(ctx, desc, config)` call fail to compile
-    /// (arity mismatch against the inherent one-arg method).
+    /// Clear any existing overlay, raise a new one, and store the handle. Named
+    /// to match [`OptionBannerExt::raise`](super::message_banner::OptionBannerExt::raise):
+    /// an inherent `Option::replace(value)` already exists and wins method
+    /// resolution, so naming this (or the banner analogue) `replace` would shadow
+    /// it and make every `slot.replace(ctx, desc, config)` call fail to compile
+    /// (arity mismatch against the inherent one-arg method). `OptionBannerExt`
+    /// keeps a `replace` method too, but only as a backward-compatible alias that
+    /// must be called fully qualified — new code should use `raise`, same as here.
     fn raise(&mut self, ctx: &egui::Context, description: impl fmt::Display, config: OverlayConfig);
 }
 

@@ -108,3 +108,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   reconciles this automatically, so a visible balance can always be withdrawn.
   No funds were ever at risk — the withdrawal simply failed before anything
   was sent.
+- If your wallet's storage was ever unusually slow to finish preparing (e.g.
+  after a network switch or on a cold start), the app could wait forever with
+  no indication anything was wrong. It now tells you after 30 seconds and
+  suggests restarting, instead of leaving the wallet silently invisible.

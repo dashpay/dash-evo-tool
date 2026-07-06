@@ -94,7 +94,8 @@ impl Database {
     }
 
     /// Backfill `core_backend_mode` on an existing `settings` table.
-    /// Kept only for the v15 migration arm.
+    /// Kept only for the v15 migration arm — the column is later dropped by
+    /// [`Self::drop_core_backend_mode_column`] in the v38 arm.
     pub fn add_core_backend_mode_column(&self, conn: &rusqlite::Connection) -> Result<()> {
         let column_exists: bool = conn.query_row(
             "SELECT COUNT(*) FROM pragma_table_info('settings') WHERE name='core_backend_mode'",
@@ -107,6 +108,25 @@ impl Database {
                 "ALTER TABLE settings ADD COLUMN core_backend_mode INTEGER DEFAULT 1;",
                 (),
             )?;
+        }
+
+        Ok(())
+    }
+
+    /// Drop the retired `core_backend_mode` column from the `settings` table.
+    /// The RPC/SPV backend selector it held is gone (chain sync is SPV-only);
+    /// only pre-C3 DBs still carry the column. Existence-guarded and
+    /// idempotent — safe to re-run and a no-op on DBs that never had it.
+    /// Used by the v38 migration arm.
+    pub fn drop_core_backend_mode_column(&self, conn: &rusqlite::Connection) -> Result<()> {
+        let column_exists: bool = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('settings') WHERE name='core_backend_mode'",
+            [],
+            |row| row.get::<_, i32>(0).map(|count| count > 0),
+        )?;
+
+        if column_exists {
+            conn.execute("ALTER TABLE settings DROP COLUMN core_backend_mode;", ())?;
         }
 
         Ok(())

@@ -289,6 +289,9 @@ fn wallet_from_envelope(
         wallet_seed,
         uses_password,
         master_bip44_ecdsa_extended_public_key,
+        // Not persisted: re-derived just-in-time from the seed on first unlock
+        // (see `Wallet::ensure_platform_payment_account_xpub`).
+        platform_payment_account_xpub: None,
         known_addresses: BTreeMap::new(),
         watched_addresses: BTreeMap::new(),
         alias: if meta.alias.is_empty() {

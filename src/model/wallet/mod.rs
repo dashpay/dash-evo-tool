@@ -375,6 +375,14 @@ pub struct Wallet {
     pub wallet_seed: WalletSeed,
     pub uses_password: bool,
     pub master_bip44_ecdsa_extended_public_key: ExtendedPubKey,
+    /// Cached DIP-17 platform-payment account-level extended **public** key at
+    /// `m/9'/coin_type'/17'/0'/0'`. Lets platform-payment addresses be
+    /// reverse-derived to their index without the HD seed, so a balance the
+    /// upstream coordinator reports as a raw P2PKH hash can be registered for
+    /// signing. `None` on wallets created before this cache existed;
+    /// [`Self::ensure_platform_payment_account_xpub`] backfills it the next
+    /// time the seed is borrowed. Mirrors `master_bip44_ecdsa_extended_public_key`.
+    pub platform_payment_account_xpub: Option<ExtendedPubKey>,
     pub known_addresses: BTreeMap<Address, DerivationPath>,
     pub watched_addresses: BTreeMap<DerivationPath, AddressInfo>,
     pub alias: Option<String>,
@@ -429,6 +437,20 @@ impl Wallet {
         let master_bip44_ecdsa_extended_public_key =
             ExtendedPubKey::from_priv(&secp, &account_priv);
 
+        // Cache the DIP-17 platform-payment account xpub up front (like the
+        // BIP44 one above) so platform addresses stay reverse-derivable —
+        // index lookup for signing — without ever re-touching the seed.
+        let platform_payment_account_xpub = derive_platform_payment_account_xpub(
+            &seed,
+            network,
+            PLATFORM_PAYMENT_ACCOUNT,
+            PLATFORM_PAYMENT_KEY_CLASS,
+        )
+        .map(Some)
+        .map_err(|e| TaskError::WalletKeyDerivationFailed {
+            source: Box::new(e),
+        })?;
+
         // Derive the first receive address (m/44'/coin'/0'/0/0)
         let (known_addresses, watched_addresses) =
             Self::derive_first_address(&master_bip44_ecdsa_extended_public_key, network, &secp)
@@ -446,6 +468,7 @@ impl Wallet {
             }),
             uses_password,
             master_bip44_ecdsa_extended_public_key,
+            platform_payment_account_xpub,
             known_addresses,
             watched_addresses,
             alias,
@@ -1776,10 +1799,169 @@ impl Wallet {
             self.set_platform_address_info(address, balance, nonce);
         }
     }
+
+    /// Backfill the cached DIP-17 platform-payment account xpub if it is
+    /// missing. A cheap no-op once cached.
+    ///
+    /// Wallets persisted before the cache existed load with `None`; the next
+    /// time their HD seed is borrowed through the JIT chokepoint, this
+    /// populates the cache so [`Self::reconcile_platform_address`] can
+    /// reverse-derive addresses without the seed. `seed` must be this wallet's
+    /// own 64-byte HD seed and `network` its network. Derivation from a valid
+    /// seed cannot fail in practice; a failure is logged and leaves the cache
+    /// empty, so reconciliation simply stays deferred.
+    pub fn ensure_platform_payment_account_xpub(&mut self, seed: &[u8; 64], network: Network) {
+        if self.platform_payment_account_xpub.is_some() {
+            return;
+        }
+        match derive_platform_payment_account_xpub(
+            seed,
+            network,
+            PLATFORM_PAYMENT_ACCOUNT,
+            PLATFORM_PAYMENT_KEY_CLASS,
+        ) {
+            Ok(xpub) => self.platform_payment_account_xpub = Some(xpub),
+            Err(e) => tracing::warn!(
+                error = ?e,
+                "Could not derive the platform-payment account key; \
+                 platform-address reconciliation stays deferred until the next unlock."
+            ),
+        }
+    }
+
+    /// Register the derivation path for a platform-payment `address` so the JIT
+    /// signer can sign for it, reverse-deriving its DIP-17 index from the
+    /// cached account xpub — no HD seed required.
+    ///
+    /// The upstream coordinator reports discovered balances as raw P2PKH
+    /// hashes with no derivation index, so they populate `platform_address_info`
+    /// (the balance/withdraw UI) without ever registering `known_addresses` /
+    /// `watched_addresses` (the signer's view). That desync is exactly why a
+    /// withdrawal of a visible balance can fail with "address not found in
+    /// wallet". This closes the gap: it walks a bounded window of candidate
+    /// addresses derived from the account xpub and, on a match, registers the
+    /// address exactly as [`WalletAddressProvider::apply_results_to_wallet`]
+    /// does (`CLEAR_FUNDS` / `PlatformPayment`).
+    ///
+    /// Returns `true` when the address is (now) registered — already known, or
+    /// found and registered. Returns `false` when the account xpub is not yet
+    /// cached (an old wallet before its first seed borrow — logged at debug,
+    /// an expected transient state) or the bounded search did not match a
+    /// foreign address (logged at warn, a surfaced inconsistency).
+    pub fn reconcile_platform_address(&mut self, address: &Address, network: Network) -> bool {
+        let canonical = Wallet::canonical_address(address, network);
+        if self.known_addresses.contains_key(&canonical) {
+            return true;
+        }
+
+        let Some(account_xpub) = self.platform_payment_account_xpub else {
+            tracing::debug!(
+                address = %canonical,
+                "Platform-payment account key not cached yet; deferring address reconciliation until the next unlock."
+            );
+            return false;
+        };
+
+        // Cover every already-registered index plus a generous margin, floored
+        // at the default gap limit, so the search always reaches a realistic
+        // hand-out depth while staying bounded for a would-be-foreign address.
+        let ceiling = self
+            .highest_platform_payment_index(network)
+            .unwrap_or(0)
+            .max(DEFAULT_GAP_LIMIT)
+            .saturating_add(PLATFORM_RECONCILE_SCAN_MARGIN);
+
+        let secp = Secp256k1::new();
+        for index in 0..=ceiling {
+            let child = match account_xpub.derive_pub(&secp, &[ChildNumber::Normal { index }]) {
+                Ok(child) => child,
+                Err(e) => {
+                    tracing::warn!(
+                        index,
+                        error = ?e,
+                        "Could not derive a platform-payment candidate while reconciling an address."
+                    );
+                    return false;
+                }
+            };
+            let candidate = Address::p2pkh(&child.to_pub(), network);
+            if Wallet::canonical_address(&candidate, network) == canonical {
+                let path = DerivationPath::platform_payment_path(
+                    network,
+                    PLATFORM_PAYMENT_ACCOUNT,
+                    PLATFORM_PAYMENT_KEY_CLASS,
+                    index,
+                );
+                self.known_addresses.insert(canonical.clone(), path.clone());
+                self.watched_addresses.insert(
+                    path,
+                    AddressInfo {
+                        address: canonical,
+                        path_type: DerivationPathType::CLEAR_FUNDS,
+                        path_reference: DerivationPathReference::PlatformPayment,
+                    },
+                );
+                return true;
+            }
+        }
+
+        tracing::warn!(
+            address = %canonical,
+            ceiling,
+            "Platform-payment address not found within the reverse-derivation window; it cannot be signed for. It may belong to a different wallet or lie beyond the searched index range."
+        );
+        false
+    }
 }
 
 /// Default gap limit for HD wallet address scanning
 const DEFAULT_GAP_LIMIT: AddressIndex = 20;
+
+/// DIP-17 account index for platform-payment addresses. DET uses a single
+/// platform-payment account; shared by the sync provider, the eager cache in
+/// [`Wallet::new_from_seed`], and reverse-lookup reconciliation.
+const PLATFORM_PAYMENT_ACCOUNT: u32 = 0;
+
+/// DIP-17 key class for platform-payment addresses.
+const PLATFORM_PAYMENT_KEY_CLASS: u32 = 0;
+
+/// How far past the highest registered platform-payment index
+/// [`Wallet::reconcile_platform_address`] reverse-derives while searching for
+/// an address's index. A coordinator push only ever reports OWNED addresses,
+/// so a match normally lands within the first handful of indices; this
+/// generous ceiling (25× the default gap limit) covers any realistic hand-out
+/// depth while bounding the search for a would-be-foreign address so it can
+/// never spin unbounded.
+const PLATFORM_RECONCILE_SCAN_MARGIN: AddressIndex = 500;
+
+/// Derive the DIP-17 platform-payment account-level extended **public** key at
+/// `m/9'/coin_type'/17'/account'/key_class'` from a borrowed HD seed.
+///
+/// The hardened account / key-class steps require the private key, so the seed
+/// is needed here once; the resulting xpub then derives every non-hardened
+/// `index` child publicly (used for both balance sync and reverse-lookup).
+/// Single source of truth shared by [`Wallet::new_from_seed`],
+/// [`Wallet::ensure_platform_payment_account_xpub`], and
+/// [`WalletAddressProvider`], so sync and reconciliation always agree on the key.
+pub(crate) fn derive_platform_payment_account_xpub(
+    seed: &[u8; 64],
+    network: Network,
+    account: u32,
+    key_class: u32,
+) -> Result<ExtendedPubKey, dash_sdk::dpp::key_wallet::bip32::Error> {
+    let coin_type = coin_type_for_network(network);
+    let account_path = DerivationPath::from(vec![
+        ChildNumber::Hardened { index: 9 },
+        ChildNumber::Hardened { index: coin_type },
+        ChildNumber::Hardened { index: 17 },
+        ChildNumber::Hardened { index: account },
+        ChildNumber::Hardened { index: key_class },
+    ]);
+    let secp = Secp256k1::new();
+    let master = ExtendedPrivKey::new_master(network, seed)?;
+    let account_priv = master.derive_priv(&secp, &account_path)?;
+    Ok(ExtendedPubKey::from_priv(&secp, &account_priv))
+}
 
 /// Provider for wallet Platform addresses that implements AddressProvider for SDK address sync.
 ///
@@ -1821,11 +2003,6 @@ pub struct WalletAddressProvider {
 }
 
 impl WalletAddressProvider {
-    /// Account / key-class used for Platform payment derivation. Single
-    /// source of truth for the constructors and the xpub derivation.
-    const PLATFORM_ACCOUNT: u32 = 0;
-    const PLATFORM_KEY_CLASS: u32 = 0;
-
     /// Create a new WalletAddressProvider from a borrowed HD seed.
     ///
     /// The `seed` is resolved by the async caller through the JIT secret
@@ -1850,9 +2027,10 @@ impl WalletAddressProvider {
         gap_limit: AddressIndex,
         seed: &[u8; 64],
     ) -> Result<Self, String> {
-        let account = Self::PLATFORM_ACCOUNT;
-        let key_class = Self::PLATFORM_KEY_CLASS;
-        let account_xpub = Self::derive_account_xpub(seed, network, account, key_class)?;
+        let account = PLATFORM_PAYMENT_ACCOUNT;
+        let key_class = PLATFORM_PAYMENT_KEY_CLASS;
+        let account_xpub = derive_platform_payment_account_xpub(seed, network, account, key_class)
+            .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())?;
 
         let mut provider = Self {
             network,
@@ -1879,35 +2057,6 @@ impl WalletAddressProvider {
         provider.ensure_addresses_up_to(max_index)?;
 
         Ok(provider)
-    }
-
-    /// Derive the DIP-17 account-level extended **public** key at
-    /// `m/9'/coin_type'/17'/account'/key_class'` from the borrowed seed.
-    ///
-    /// This is the only place the seed is touched. The hardened account /
-    /// key-class steps require the private key, so the seed is needed here; the
-    /// resulting xpub then derives every non-hardened `index` child publicly.
-    fn derive_account_xpub(
-        seed: &[u8; 64],
-        network: Network,
-        account: u32,
-        key_class: u32,
-    ) -> Result<ExtendedPubKey, String> {
-        let coin_type = Wallet::coin_type(network);
-        let account_path = DerivationPath::from(vec![
-            ChildNumber::Hardened { index: 9 },
-            ChildNumber::Hardened { index: coin_type },
-            ChildNumber::Hardened { index: 17 },
-            ChildNumber::Hardened { index: account },
-            ChildNumber::Hardened { index: key_class },
-        ]);
-        let secp = Secp256k1::new();
-        let master = ExtendedPrivKey::new_master(network, seed)
-            .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())?;
-        let account_priv = master
-            .derive_priv(&secp, &account_path)
-            .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())?;
-        Ok(ExtendedPubKey::from_priv(&secp, &account_priv))
     }
 
     /// Get the network this provider was created for.
@@ -2176,6 +2325,10 @@ mod tests {
             }),
             uses_password: false,
             master_bip44_ecdsa_extended_public_key,
+            // `None` here deliberately models a wallet persisted before the
+            // platform-payment xpub cache existed — the backward-compat state
+            // reconciliation tests backfill.
+            platform_payment_account_xpub: None,
             known_addresses: BTreeMap::new(),
             watched_addresses: BTreeMap::new(),
             alias: Some("Test Wallet".to_string()),
@@ -3428,5 +3581,186 @@ mod tests {
             "a handed-out platform-payment address at index {} must be inside the synced window",
             DEFAULT_GAP_LIMIT
         );
+    }
+
+    // -------------------------------------------------------------------
+    // Platform-address signer reconciliation: closing the two-map desync
+    // between `platform_address_info` (balance/UI) and `watched_addresses`
+    // (signer view) that let a visible balance be unwithdrawable.
+    // -------------------------------------------------------------------
+
+    /// A `new_from_seed` wallet on `network` with the platform-payment xpub
+    /// cache cleared — stands in for a wallet persisted before that cache
+    /// existed (the affected user's live state). Carries no platform-payment
+    /// entries in its watched maps, exactly like the pre-reconciliation bug.
+    fn legacy_wallet(network: Network) -> Wallet {
+        let mut wallet = Wallet::new_from_seed(TEST_SEED, network, None, None).expect("wallet");
+        wallet.platform_payment_account_xpub = None;
+        wallet
+    }
+
+    /// The real platform-payment Core address at `index` derived from
+    /// `TEST_SEED` — the address the upstream coordinator would report a balance
+    /// for. Independent of the reconciliation path under test.
+    fn platform_address_at(index: u32, network: Network) -> Address {
+        let path = DerivationPath::platform_payment_path(network, 0, 0, index);
+        let secp = Secp256k1::new();
+        let xprv = path
+            .derive_priv_ecdsa_for_master_seed(&TEST_SEED, network)
+            .expect("derive platform key");
+        Address::p2pkh(&xprv.to_priv().public_key(&secp), network)
+    }
+
+    /// `new_from_seed` caches the platform-payment account xpub eagerly, and the
+    /// lazy backfill on an old wallet reproduces the identical key — so eager
+    /// and just-in-time paths never disagree on which addresses are ours.
+    #[test]
+    fn new_from_seed_caches_platform_payment_account_xpub() {
+        for network in [Network::Testnet, Network::Mainnet] {
+            let wallet = Wallet::new_from_seed(TEST_SEED, network, None, None).expect("wallet");
+            let eager = wallet
+                .platform_payment_account_xpub
+                .expect("new_from_seed must cache the platform-payment xpub");
+
+            let mut old = legacy_wallet(network);
+            assert!(old.platform_payment_account_xpub.is_none());
+            old.ensure_platform_payment_account_xpub(&TEST_SEED, network);
+            assert_eq!(
+                Some(eager),
+                old.platform_payment_account_xpub,
+                "lazy backfill xpub must match the eager one on {network:?}"
+            );
+        }
+    }
+
+    /// The no-op guard protects an already-cached xpub: a later call (even with
+    /// the wrong seed) must not overwrite it.
+    #[test]
+    fn ensure_platform_payment_account_xpub_is_idempotent() {
+        let network = Network::Testnet;
+        let mut wallet = Wallet::new_from_seed(TEST_SEED, network, None, None).expect("wallet");
+        let first = wallet.platform_payment_account_xpub;
+        assert!(first.is_some());
+        wallet.ensure_platform_payment_account_xpub(&[0u8; 64], network);
+        assert_eq!(wallet.platform_payment_account_xpub, first);
+    }
+
+    /// Reconciliation reverse-derives and registers an address at a NON-trivial
+    /// index (25, past `DEFAULT_GAP_LIMIT`) purely from the cached account
+    /// xpub — no seed at reconcile time — under the correct DIP-17 path, and is
+    /// idempotent.
+    #[test]
+    fn reconcile_registers_platform_address_beyond_gap_limit() {
+        let network = Network::Testnet;
+        let index = 25u32;
+        assert!(index > DEFAULT_GAP_LIMIT, "index must exceed the gap limit");
+
+        let mut wallet = legacy_wallet(network);
+        wallet.ensure_platform_payment_account_xpub(&TEST_SEED, network);
+
+        let addr = platform_address_at(index, network);
+        assert!(
+            !wallet.known_addresses.contains_key(&addr),
+            "precondition: address not yet registered"
+        );
+
+        // Reconcile with NO seed involved — pure public-key reverse-derivation.
+        assert!(wallet.reconcile_platform_address(&addr, network));
+
+        let expected_path = DerivationPath::platform_payment_path(network, 0, 0, index);
+        assert_eq!(wallet.known_addresses.get(&addr), Some(&expected_path));
+        let info = wallet
+            .watched_addresses
+            .get(&expected_path)
+            .expect("reconciled path must be watched");
+        assert_eq!(info.address, addr);
+        assert_eq!(
+            info.path_reference,
+            DerivationPathReference::PlatformPayment
+        );
+        assert_eq!(info.path_type, DerivationPathType::CLEAR_FUNDS);
+
+        // Idempotent: a second call is a no-op that still reports registered.
+        assert!(wallet.reconcile_platform_address(&addr, network));
+    }
+
+    /// BACKWARD-COMPAT / FUND-SAFETY: the exact scenario that unblocks the
+    /// affected user. An old wallet knows an index-25 balance (via the
+    /// coordinator push, so `platform_address_info` is set) but cannot sign for
+    /// it. After the JIT xpub backfill + reconciliation, the same address is
+    /// signable through `PlatformPathIndex` + `DetPlatformSigner`.
+    #[tokio::test]
+    async fn reconciled_address_becomes_signable_backward_compat() {
+        use crate::wallet_backend::{DetPlatformSigner, PlatformPathIndex};
+        use dash_sdk::dpp::identity::signer::Signer;
+
+        let network = Network::Testnet;
+        let index = 25u32;
+
+        let mut wallet = legacy_wallet(network);
+        let addr = platform_address_at(index, network);
+        let platform_addr = PlatformAddress::try_from(addr.clone()).expect("platform address");
+        // Coordinator push landed the balance without a derivation index.
+        wallet.set_platform_address_info(addr.clone(), 20_000_000_000, 0);
+
+        // Before self-heal: the signer has no path for it.
+        {
+            let before = PlatformPathIndex::from_wallet(&wallet, network);
+            let signer = DetPlatformSigner::from_held(&TEST_SEED, network, &before);
+            assert!(
+                !signer.can_sign_with(&platform_addr),
+                "precondition: the balance is visible but not signable"
+            );
+        }
+
+        // Self-heal exactly as the withdrawal / push paths do.
+        wallet.ensure_platform_payment_account_xpub(&TEST_SEED, network);
+        assert!(wallet.reconcile_platform_address(&addr, network));
+
+        // After self-heal: signable, and a real signature is produced.
+        let after = PlatformPathIndex::from_wallet(&wallet, network);
+        let signer = DetPlatformSigner::from_held(&TEST_SEED, network, &after);
+        assert!(
+            signer.can_sign_with(&platform_addr),
+            "reconciled address must be signable"
+        );
+        assert!(
+            signer.sign(&platform_addr, b"withdraw").await.is_ok(),
+            "reconciled address must produce a signature"
+        );
+    }
+
+    /// An old wallet whose xpub is not yet cached cannot reconcile — the call is
+    /// a no-op returning false, registering nothing (the expected transient
+    /// state before the first seed borrow).
+    #[test]
+    fn reconcile_is_noop_without_cached_xpub() {
+        let network = Network::Testnet;
+        let mut wallet = legacy_wallet(network);
+        let addr = platform_address_at(25, network);
+        assert!(!wallet.reconcile_platform_address(&addr, network));
+        assert!(!wallet.known_addresses.contains_key(&addr));
+    }
+
+    /// The bounded search terminates and returns false for a foreign address
+    /// (derived from a different seed) — it never matches this wallet's xpub, so
+    /// the search must exhaust its ceiling without hanging or registering
+    /// anything.
+    #[test]
+    fn reconcile_bounded_search_rejects_foreign_address() {
+        let network = Network::Testnet;
+        let mut wallet = legacy_wallet(network);
+        wallet.ensure_platform_payment_account_xpub(&TEST_SEED, network);
+
+        let foreign_seed = [0x11u8; 64];
+        let path = DerivationPath::platform_payment_path(network, 0, 0, 0);
+        let secp = Secp256k1::new();
+        let xprv = path
+            .derive_priv_ecdsa_for_master_seed(&foreign_seed, network)
+            .expect("derive foreign key");
+        let foreign = Address::p2pkh(&xprv.to_priv().public_key(&secp), network);
+
+        assert!(!wallet.reconcile_platform_address(&foreign, network));
+        assert!(!wallet.known_addresses.contains_key(&foreign));
     }
 }

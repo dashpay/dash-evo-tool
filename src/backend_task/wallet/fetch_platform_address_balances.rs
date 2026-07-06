@@ -43,6 +43,12 @@ impl AppContext {
                     let seed = plaintext
                         .expose_hd_seed()
                         .ok_or(crate::backend_task::error::TaskError::WalletLocked)?;
+                    // Backfill the platform-payment account xpub while the seed
+                    // is borrowed, so later seedless coordinator pushes can
+                    // reconcile addresses for signing. No-op once cached.
+                    wallet_arc
+                        .write()?
+                        .ensure_platform_payment_account_xpub(seed, network);
                     let wallet = wallet_arc.read()?;
                     WalletAddressProvider::new(&wallet, network, seed).map_err(|detail| {
                         crate::backend_task::error::TaskError::WalletAddressProviderSetupFailed {

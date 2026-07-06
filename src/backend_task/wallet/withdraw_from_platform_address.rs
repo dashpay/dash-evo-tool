@@ -3,6 +3,7 @@ use crate::context::AppContext;
 use crate::model::wallet::WalletSeedHash;
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::balances::credits::Credits;
+use dash_sdk::dpp::dashcore::Address;
 use dash_sdk::dpp::identity::core_script::CoreScript;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -22,30 +23,31 @@ impl AppContext {
         use dash_sdk::dpp::withdrawal::Pooling;
         use dash_sdk::platform::transition::address_credit_withdrawal::WithdrawAddressFunds;
 
-        // Clone wallet and SDK before the async operation to avoid holding guards across await
-        let (wallet, sdk) = {
-            let wallet_arc = {
-                let wallets = self.wallets.read()?;
-                wallets
-                    .get(&seed_hash)
-                    .cloned()
-                    .ok_or(crate::backend_task::error::TaskError::WalletNotFound)?
-            };
-            let wallet = wallet_arc.read()?.clone();
-            let sdk = self.sdk.load().as_ref().clone();
-            (wallet, sdk)
+        // Resolve the shared wallet handle and SDK before the async operation.
+        let network = self.network;
+        let wallet_arc = {
+            let wallets = self.wallets.read()?;
+            wallets
+                .get(&seed_hash)
+                .cloned()
+                .ok_or(crate::backend_task::error::TaskError::WalletNotFound)?
         };
+        let sdk = self.sdk.load().as_ref().clone();
 
         // Deduct fee from the specified input (should be the one with highest balance)
         let fee_strategy = vec![AddressFundsFeeStrategyStep::DeductFromInput(
             fee_payer_index,
         )];
 
+        // Core-address form of each spent input, for signer-path reconciliation.
+        let input_addresses: Vec<Address> = inputs
+            .keys()
+            .map(|pa| pa.to_address_with_network(network))
+            .collect();
+
         // Sign each withdrawal input through a JIT platform signer that borrows
-        // the HD seed only for the duration of the SDK call. The pure path
-        // index is built before the secret scope; the seed zeroizes on return.
-        let network = self.network;
-        let path_index = PlatformPathIndex::from_wallet(&wallet, network);
+        // the HD seed only for the duration of the SDK call. The seed zeroizes
+        // on return.
         let backend = self.wallet_backend()?;
         let _result = backend
             .secret_access()
@@ -56,6 +58,20 @@ impl AppContext {
                     let seed = plaintext
                         .expose_hd_seed()
                         .ok_or(crate::backend_task::error::TaskError::WalletLocked)?;
+
+                    // Self-heal before signing: cache the xpub and register each
+                    // input's derivation path if the coordinator reported its
+                    // balance without one, so a visible balance is always
+                    // signable. Guard drops before the SDK await below.
+                    let path_index = {
+                        let mut wallet = wallet_arc.write()?;
+                        wallet.ensure_platform_payment_account_xpub(seed, network);
+                        for addr in &input_addresses {
+                            wallet.reconcile_platform_address(addr, network);
+                        }
+                        PlatformPathIndex::from_wallet(&wallet, network)
+                    };
+
                     let signer = DetPlatformSigner::from_held(seed, network, &path_index);
                     sdk.withdraw_address_funds(
                         inputs,

@@ -664,7 +664,11 @@ impl AppContext {
                     for (hash_bytes, balance, nonce) in entries {
                         let addr = PlatformP2PKHAddress::new(hash_bytes).to_address(network);
                         let canonical = Wallet::canonical_address(&addr, network);
-                        wallet.set_platform_address_info(canonical, balance, nonce);
+                        wallet.set_platform_address_info(canonical.clone(), balance, nonce);
+                        // Register the address for signing: the push carries a
+                        // balance but no derivation index, so without this it is
+                        // visible yet unwithdrawable. Seedless, no-op once known.
+                        wallet.reconcile_platform_address(&canonical, network);
                     }
                 }
             }
@@ -705,7 +709,10 @@ impl AppContext {
                         for (hash, balance, nonce) in entries {
                             let addr = PlatformP2PKHAddress::new(*hash).to_address(network);
                             let canonical = Wallet::canonical_address(&addr, network);
-                            wallet.seed_platform_address_info(canonical, *balance, *nonce);
+                            wallet.seed_platform_address_info(canonical.clone(), *balance, *nonce);
+                            // Same signer-registration reconciliation as the live
+                            // push path above; seedless, no-op once known.
+                            wallet.reconcile_platform_address(&canonical, network);
                         }
                     }
                 }

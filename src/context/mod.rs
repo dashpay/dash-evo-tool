@@ -1296,17 +1296,4 @@ mod tests {
         assert_eq!(url, "http://127.0.0.1:9998/wallet/my%20test%20wallet");
         assert!(!url.contains(' '));
     }
-
-    /// A fresh data directory (no pre-existing app k/v blob) must resolve
-    /// to the SPV backend marker. The marker now lives in
-    /// `AppSettings::core_backend_mode` (the upstream k/v store) — the
-    /// legacy `settings.core_backend_mode` column was unwired in C3.
-    #[test]
-    fn fresh_db_resolves_to_spv_backend_mode() {
-        let s = crate::model::settings::AppSettings::default();
-        assert_eq!(
-            s.core_backend_mode, 1,
-            "fresh state should default to SPV (=1)"
-        );
-    }
 }

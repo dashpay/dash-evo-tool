@@ -1,7 +1,7 @@
 //! User-facing application preferences, persisted to the upstream
 //! platform-wallet-storage key/value store.
 //!
-//! These twelve fields were previously columns of DET's `settings` table
+//! These eleven fields were previously columns of DET's `settings` table
 //! and have moved to a single bincode-encoded blob under
 //! [`AppSettings::KV_KEY`] in the shared application k/v store
 //! (`<data_dir>/det-app.sqlite`). The blob is global (`None` wallet
@@ -47,7 +47,7 @@ impl UserMode {
 /// Application-level user preferences.
 ///
 /// Bincode-serialized as the single blob at [`Self::KV_KEY`] in the
-/// shared app k/v store. The 12 fields are exactly the user-preference
+/// shared app k/v store. The 11 fields are exactly the user-preference
 /// columns previously held in DET's `settings` table — chain sync,
 /// wallet selection, and bootstrap scaffolding are NOT part of this
 /// struct.
@@ -72,10 +72,6 @@ pub struct AppSettings {
     pub disable_zmq: bool,
     /// Light / Dark / System theme preference.
     pub theme_mode: ThemeMode,
-    /// Legacy core-backend selector (0 = RPC, 1 = SPV). Chain sync is
-    /// SPV-only; this is retained for compatibility with code paths that
-    /// still inspect the value.
-    pub core_backend_mode: u8,
     /// Whether the user has completed the initial onboarding flow.
     pub onboarding_completed: bool,
     /// Whether Evonode-related tools are shown in the UI.
@@ -105,7 +101,6 @@ impl Default for AppSettings {
             overwrite_dash_conf: true,
             disable_zmq: false,
             theme_mode: ThemeMode::System,
-            core_backend_mode: 1, // SPV
             onboarding_completed: false,
             show_evonode_tools: false,
             user_mode: UserMode::Advanced,
@@ -121,6 +116,14 @@ impl Default for AppSettings {
 /// Wire-level mirror used for bincode encoding. Domain enums and paths
 /// are flattened to strings / primitives so the existing types do not
 /// need `serde` derives. Translation happens here, in one place.
+///
+/// `bincode::config::standard()` is positional, so this struct's field
+/// order and count *are* the on-disk format for every stored blob. The
+/// `_reserved_core_backend_mode` byte is a retired field (the RPC/SPV
+/// selector — chain sync is SPV-only now) kept solely to preserve that
+/// layout: dropping it would shift every following field and corrupt
+/// existing `det:settings:v1` blobs. It is written as a constant and
+/// ignored on read.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct AppSettingsWire {
     network: String,
@@ -129,7 +132,7 @@ struct AppSettingsWire {
     overwrite_dash_conf: bool,
     disable_zmq: bool,
     theme_mode: String,
-    core_backend_mode: u8,
+    _reserved_core_backend_mode: u8,
     onboarding_completed: bool,
     show_evonode_tools: bool,
     user_mode: String,
@@ -149,7 +152,8 @@ impl From<&AppSettings> for AppSettingsWire {
             overwrite_dash_conf: s.overwrite_dash_conf,
             disable_zmq: s.disable_zmq,
             theme_mode: theme_mode_to_str(s.theme_mode).to_string(),
-            core_backend_mode: s.core_backend_mode,
+            // Retired field; constant preserves the wire layout (SPV marker).
+            _reserved_core_backend_mode: 1,
             onboarding_completed: s.onboarding_completed,
             show_evonode_tools: s.show_evonode_tools,
             user_mode: s.user_mode.as_str().to_string(),
@@ -182,7 +186,6 @@ impl From<AppSettingsWire> for AppSettings {
             overwrite_dash_conf: w.overwrite_dash_conf,
             disable_zmq: w.disable_zmq,
             theme_mode,
-            core_backend_mode: w.core_backend_mode,
             onboarding_completed: w.onboarding_completed,
             show_evonode_tools: w.show_evonode_tools,
             user_mode,
@@ -263,7 +266,6 @@ mod tests {
         assert!(matches!(s.user_mode, UserMode::Advanced));
         assert!(s.overwrite_dash_conf);
         assert!(!s.disable_zmq);
-        assert_eq!(s.core_backend_mode, 1);
         assert!(!s.onboarding_completed);
         assert!(!s.show_evonode_tools);
         assert!(s.close_dash_qt_on_exit);
@@ -290,7 +292,7 @@ mod tests {
             overwrite_dash_conf: true,
             disable_zmq: false,
             theme_mode: "System".to_string(),
-            core_backend_mode: 1,
+            _reserved_core_backend_mode: 1,
             onboarding_completed: true,
             show_evonode_tools: false,
             user_mode: "Advanced".to_string(),
@@ -320,7 +322,6 @@ mod tests {
             overwrite_dash_conf: false,
             disable_zmq: true,
             theme_mode: ThemeMode::Dark,
-            core_backend_mode: 0,
             onboarding_completed: true,
             show_evonode_tools: true,
             user_mode: UserMode::Beginner,
@@ -338,12 +339,49 @@ mod tests {
         assert_eq!(decoded.overwrite_dash_conf, s.overwrite_dash_conf);
         assert_eq!(decoded.disable_zmq, s.disable_zmq);
         assert_eq!(decoded.theme_mode, s.theme_mode);
-        assert_eq!(decoded.core_backend_mode, s.core_backend_mode);
         assert_eq!(decoded.onboarding_completed, s.onboarding_completed);
         assert_eq!(decoded.show_evonode_tools, s.show_evonode_tools);
         assert_eq!(decoded.user_mode, s.user_mode);
         assert_eq!(decoded.close_dash_qt_on_exit, s.close_dash_qt_on_exit);
         assert_eq!(decoded.auto_start_spv, s.auto_start_spv);
+    }
+
+    /// S7: the retired `_reserved_core_backend_mode` byte holds the wire
+    /// layout stable. An existing blob whose reserved byte is `0` (the old
+    /// "RPC" value) must still decode with every following field intact —
+    /// proof that removing the live field did not shift the positional
+    /// bincode format and corrupt already-stored `det:settings:v1` blobs.
+    #[test]
+    fn reserved_core_backend_mode_byte_preserves_wire_layout() {
+        let wire = AppSettingsWire {
+            network: "testnet".to_string(),
+            root_screen_type: 3,
+            dash_qt_path: Some("/opt/dash-qt".to_string()),
+            overwrite_dash_conf: false,
+            disable_zmq: true,
+            theme_mode: "Dark".to_string(),
+            _reserved_core_backend_mode: 0, // legacy "RPC" value from an old blob
+            onboarding_completed: true,
+            show_evonode_tools: true,
+            user_mode: "Beginner".to_string(),
+            close_dash_qt_on_exit: false,
+            auto_start_spv: true,
+        };
+        let encoded =
+            bincode::serde::encode_to_vec(&wire, bincode::config::standard()).expect("encode");
+        let (decoded, _): (AppSettings, _) =
+            bincode::serde::decode_from_slice(&encoded, bincode::config::standard())
+                .expect("decode");
+        // Fields after the reserved byte must be read from the correct
+        // offset — a shifted layout would scramble these.
+        assert!(decoded.onboarding_completed);
+        assert!(decoded.show_evonode_tools);
+        assert_eq!(decoded.user_mode, UserMode::Beginner);
+        assert!(!decoded.close_dash_qt_on_exit);
+        assert!(decoded.auto_start_spv);
+        // Fields before it, for completeness.
+        assert_eq!(decoded.network, Network::Testnet);
+        assert!(matches!(decoded.theme_mode, ThemeMode::Dark));
     }
 
     /// S3: legacy "dash" network value (used by databases predating the
@@ -358,7 +396,7 @@ mod tests {
             overwrite_dash_conf: true,
             disable_zmq: false,
             theme_mode: "System".to_string(),
-            core_backend_mode: 1,
+            _reserved_core_backend_mode: 1,
             onboarding_completed: false,
             show_evonode_tools: false,
             user_mode: "Advanced".to_string(),
@@ -377,7 +415,7 @@ mod tests {
             overwrite_dash_conf: true,
             disable_zmq: false,
             theme_mode: "System".to_string(),
-            core_backend_mode: 1,
+            _reserved_core_backend_mode: 1,
             onboarding_completed: false,
             show_evonode_tools: false,
             user_mode: "Advanced".to_string(),

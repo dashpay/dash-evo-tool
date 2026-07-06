@@ -934,7 +934,7 @@ impl AppContext {
         let backend = self.wallet_backend()?;
 
         // Execute the top-up
-        let (address_infos, new_balance) = backend
+        let (address_infos, new_balance, _height) = backend
             .secret_access()
             .with_secret_session(
                 &SecretScope::HdSeed {
@@ -1000,7 +1000,7 @@ impl AppContext {
         let estimated_fee = fee_estimator.estimate_credit_transfer_to_addresses(outputs.len());
 
         // Execute the transfer - qualified_identity is consumed here as the signer
-        let (address_infos, new_balance) = identity
+        let (address_infos, new_balance, _height) = identity
             .transfer_credits_to_addresses(
                 sdk,
                 outputs.clone(),

@@ -55,7 +55,7 @@ impl AppContext {
         let network = self.network;
         let path_index = PlatformPathIndex::from_wallet(&wallet, network);
         let backend = self.wallet_backend()?;
-        let address_infos = backend
+        let (address_infos, _height) = backend
             .secret_access()
             .with_secret_session(
                 &crate::wallet_backend::SecretScope::HdSeed { seed_hash },

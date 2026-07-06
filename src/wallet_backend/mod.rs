@@ -552,7 +552,7 @@ impl WalletBackend {
                 }
             })?;
             outcome
-                .skipped
+                .skipped()
                 .iter()
                 .map(|(_wallet_id, reason)| (None, persisted_load_skip_from_upstream(reason)))
                 .collect()
@@ -754,7 +754,7 @@ impl WalletBackend {
             .pwm
             .create_wallet_from_seed_bytes(
                 self.inner.network,
-                *seed,
+                seed,
                 WalletAccountCreationOptions::Default,
                 birth_height_override,
             )
@@ -1584,7 +1584,7 @@ impl WalletBackend {
             .broadcast(tx)
             .await
             .map_err(|e| TaskError::WalletBackend {
-                source: Box::new(e),
+                source: Box::new(e.into()),
             })
     }
 
@@ -1870,7 +1870,11 @@ impl WalletBackend {
             .ok_or(TaskError::WalletStateInconsistent)?;
         match info.identity_manager.managed_identity_mut(owner_id) {
             Some(managed) => {
-                managed.add_sent_contact_request(contact_request, &persister);
+                managed
+                    .add_sent_contact_request(contact_request, &persister)
+                    .map_err(|e| TaskError::WalletBackend {
+                        source: Box::new(e.into()),
+                    })?;
             }
             None => {
                 tracing::warn!(
@@ -1919,7 +1923,11 @@ impl WalletBackend {
             .ok_or(TaskError::WalletStateInconsistent)?;
         match info.identity_manager.managed_identity_mut(owner_id) {
             Some(managed) => {
-                managed.add_incoming_contact_request(contact_request, &persister);
+                managed
+                    .add_incoming_contact_request(contact_request, &persister)
+                    .map_err(|e| TaskError::WalletBackend {
+                        source: Box::new(e.into()),
+                    })?;
             }
             None => {
                 tracing::warn!(
@@ -2893,6 +2901,9 @@ impl WalletBackend {
                         None,
                         dummy_outputs,
                         settings,
+                        // User-facing funding: wait indefinitely for the
+                        // ChainLock (the broadcast lock is pending, never failed).
+                        None,
                     )
                     .await
                     .map_err(map_shielded_op_error)
@@ -3256,6 +3267,7 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
         | P::DashpayExternalAccountAlreadyExists { .. }
         | P::AssetLockTransaction(_)
         | P::TransactionBroadcast(_)
+        | P::TransactionBroadcastUnconfirmed(_)
         | P::TransactionBuild(_)
         | P::NoSpendableInputs { .. }
         | P::Sdk(_)
@@ -3269,6 +3281,9 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
         | P::KeyDerivation(_)
         | P::RehydrationPoolMismatch { .. }
         | P::RehydrationPoolTypeMismatch { .. }
+        | P::PersisterLoad(_)
+        | P::Persistence(_)
+        | P::SeedMismatch { .. }
         | P::WalletLocked
         | P::SpvAlreadyRunning
         | P::NoWalletsConfigured
@@ -3279,6 +3294,7 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
         | P::ShieldedBuildError(_)
         | P::ShieldedBroadcastFailed(_)
         | P::ShieldedBroadcastUnconfirmed { .. }
+        | P::ShieldedNoRecordedAnchor(_)
         | P::ShieldedSyncFailed(_)
         | P::ShieldedTreeUpdateFailed(_)
         | P::ShieldedStoreError(_)
@@ -3509,11 +3525,16 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
         | P::ShieldedStoreError(_)
         | P::ShieldedMerkleWitnessUnavailable(_)
         | P::ShieldedKeyDerivation(_)
+        | P::ShieldedNoRecordedAnchor(_)
         | P::ShieldedNotBound
+        | P::PersisterLoad(_)
+        | P::Persistence(_)
+        | P::SeedMismatch { .. }
         // Broadcast was accepted but its execution result is unconfirmed — the
         // op may already be on chain, so it is neither a rejection nor a
         // finality timeout. Bucket as Other; the upstream contract says the
         // caller must not re-submit (the next sync reconciles).
+        | P::TransactionBroadcastUnconfirmed(_)
         | P::ShieldedBroadcastUnconfirmed { .. }
         | P::ShieldedSpendUnconfirmed { .. }
         | P::RehydrationTopologyUnsupported { .. }

@@ -2083,8 +2083,17 @@ impl WalletAddressProvider {
             .map(|funds| funds.nonce)
             .unwrap_or(0);
 
-        self.found_balances
-            .insert(canonical_address, AddressFunds { nonce, balance });
+        self.found_balances.insert(
+            canonical_address,
+            // No block-height provenance at this manual-update call site;
+            // `0` marks the balance unknown-provenance (legacy pin), so any
+            // later height-pinned delta still applies.
+            AddressFunds {
+                nonce,
+                balance,
+                as_of_height: 0,
+            },
+        );
     }
 
     /// Apply the sync results to a wallet, updating Platform address info.

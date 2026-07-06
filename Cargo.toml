@@ -33,7 +33,9 @@ platform-wallet = { git = "https://github.com/dashpay/platform", branch = "dash-
     "serde",
     "shielded",
 ] }
-platform-wallet-storage = { git = "https://github.com/dashpay/platform", branch = "dash-evo-tool" }
+platform-wallet-storage = { git = "https://github.com/dashpay/platform", branch = "dash-evo-tool", features = [
+    "shielded",
+] }
 zip32 = "0.2.0"
 grovestark = { git = "https://www.github.com/dashpay/grovestark", rev = "5b9e289cca54c79b1305d5f4f40bf1148f1eb0e3" }
 rayon = "1.8"

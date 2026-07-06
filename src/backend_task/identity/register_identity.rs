@@ -352,7 +352,7 @@ impl AppContext {
             .await?;
 
         match put_result {
-            Ok((updated_identity, address_infos)) => {
+            Ok((updated_identity, address_infos, _height)) => {
                 qualified_identity.identity = updated_identity;
                 qualified_identity.status = IdentityStatus::Unknown; // Force refresh
 

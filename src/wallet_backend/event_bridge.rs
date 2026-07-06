@@ -1189,6 +1189,7 @@ mod tests {
             AddressFunds {
                 nonce: 1,
                 balance: 500_000,
+                as_of_height: 0,
             },
         );
         result_ok.found.insert(
@@ -1196,6 +1197,7 @@ mod tests {
             AddressFunds {
                 nonce: 2,
                 balance: 300_000,
+                as_of_height: 0,
             },
         );
 
@@ -1269,6 +1271,7 @@ mod tests {
             AddressFunds {
                 nonce: 1,
                 balance: 1,
+                as_of_height: 0,
             },
         );
 
@@ -1281,6 +1284,7 @@ mod tests {
             AddressFunds {
                 nonce: 1,
                 balance: 1,
+                as_of_height: 0,
             },
         );
 
@@ -1353,6 +1357,7 @@ mod tests {
             AddressFunds {
                 nonce: 1,
                 balance: 100,
+                as_of_height: 0,
             },
         );
 
@@ -1426,6 +1431,7 @@ mod tests {
             AddressFunds {
                 nonce: 1,
                 balance: 500,
+                as_of_height: 0,
             },
         );
         result.found.insert(
@@ -1433,6 +1439,7 @@ mod tests {
             AddressFunds {
                 nonce: 2,
                 balance: 500,
+                as_of_height: 0,
             },
         );
 
@@ -1490,6 +1497,7 @@ mod tests {
             AddressFunds {
                 nonce: 0,
                 balance: 100 * CREDITS_PER_DUFF,
+                as_of_height: 0,
             },
         );
         result.found.insert(
@@ -1500,6 +1508,7 @@ mod tests {
             AddressFunds {
                 nonce: 1,
                 balance: 200 * CREDITS_PER_DUFF,
+                as_of_height: 0,
             },
         );
 

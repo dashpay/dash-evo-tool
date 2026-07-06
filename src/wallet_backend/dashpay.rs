@@ -127,12 +127,12 @@ pub(crate) fn derive_contact_xpub_material(
         })?;
 
     let account_reference =
-        calculate_account_reference(sender_secret_key, &data.xpub, account_index, 0);
+        calculate_account_reference(sender_secret_key, &data.compact_xpub(), account_index, 0);
 
     Ok(ContactXpubMaterial {
-        parent_fingerprint: data.parent_fingerprint,
-        chain_code: data.chain_code,
-        public_key: data.public_key,
+        parent_fingerprint: data.compact.parent_fingerprint,
+        chain_code: data.compact.chain_code,
+        public_key: data.compact.public_key,
         account_reference,
     })
 }
@@ -289,11 +289,12 @@ impl<'a> DashpayView<'a> {
         let Some(managed) = info.identity_manager.managed_identity(owner) else {
             return Vec::new();
         };
+        let dashpay = managed.dashpay();
 
         let mut out: Vec<StoredContact> = Vec::new();
 
         // 1. Established (`accepted`) contacts.
-        for contact in managed.established_contacts.values() {
+        for contact in dashpay.established_contacts().values() {
             let contact_id = &contact.contact_identity_id;
             let blocked = kv_contains(&kv, owner, KV_PREFIX_BLOCKED, contact_id);
             let status = if blocked { "blocked" } else { "accepted" };
@@ -305,8 +306,8 @@ impl<'a> DashpayView<'a> {
 
         // 2. Sent-but-not-yet-reciprocated outgoing requests → `pending` contacts.
         //    Skip recipients we already have an established row for above.
-        for (recipient_id, request) in managed.sent_contact_requests.iter() {
-            if managed.established_contacts.contains_key(recipient_id) {
+        for (recipient_id, request) in dashpay.sent_contact_requests().iter() {
+            if dashpay.established_contacts().contains_key(recipient_id) {
                 continue;
             }
             let blocked = kv_contains(&kv, owner, KV_PREFIX_BLOCKED, recipient_id);
@@ -340,18 +341,19 @@ impl<'a> DashpayView<'a> {
         let Some(managed) = info.identity_manager.managed_identity(owner) else {
             return Vec::new();
         };
+        let dashpay = managed.dashpay();
 
         let mut out: Vec<StoredContactRequest> = Vec::new();
 
         let now_ms = chrono::Utc::now().timestamp_millis().max(0) as u64;
 
         // Outgoing requests (`request_type = "sent"`).
-        for (recipient_id, request) in managed.sent_contact_requests.iter() {
+        for (recipient_id, request) in dashpay.sent_contact_requests().iter() {
             let status = derive_request_status(
                 owner,
                 /* request_id_for_sidecar = */ recipient_id,
                 /* has_matching_established = */
-                managed.established_contacts.contains_key(recipient_id),
+                dashpay.established_contacts().contains_key(recipient_id),
                 request.created_at,
                 now_ms,
                 &kv,
@@ -366,11 +368,11 @@ impl<'a> DashpayView<'a> {
         }
 
         // Incoming requests (`request_type = "received"`).
-        for (sender_id, request) in managed.incoming_contact_requests.iter() {
+        for (sender_id, request) in dashpay.incoming_contact_requests().iter() {
             let status = derive_request_status(
                 owner,
                 sender_id,
-                managed.established_contacts.contains_key(sender_id),
+                dashpay.established_contacts().contains_key(sender_id),
                 request.created_at,
                 now_ms,
                 &kv,
@@ -397,7 +399,8 @@ impl<'a> DashpayView<'a> {
         };
 
         let mut out: Vec<StoredPayment> = managed
-            .dashpay_payments
+            .dashpay()
+            .payments
             .iter()
             .map(|(storage_key, entry)| payment_to_det(owner, storage_key, entry, &kv))
             .collect();
@@ -419,7 +422,7 @@ impl<'a> DashpayView<'a> {
         let state = wallet.state().await;
         let info = &*state;
         let managed = info.identity_manager.managed_identity(owner)?;
-        let profile = managed.dashpay_profile.as_ref()?;
+        let profile = managed.dashpay().profile.as_ref()?;
         let (created_at, updated_at) = kv_timestamps(&kv, owner);
         Some(profile_to_det(owner, profile, created_at, updated_at))
     }
@@ -769,11 +772,19 @@ impl WalletBackend {
             );
             return Ok(());
         };
-        wallet.identity().dashpay_sync().await.map_err(|e| {
+        let identity = wallet.identity();
+        let dashpay = identity.dashpay();
+        dashpay.sync_contact_requests().await.map_err(|e| {
             crate::backend_task::error::TaskError::WalletBackend {
                 source: Box::new(e),
             }
-        })
+        })?;
+        dashpay.sync_profiles().await.map_err(|e| {
+            crate::backend_task::error::TaskError::WalletBackend {
+                source: Box::new(e),
+            }
+        })?;
+        Ok(())
     }
 
     /// Persist a DashPay profile against the upstream `ManagedIdentity` for
@@ -828,7 +839,11 @@ impl WalletBackend {
         let Some(managed) = state.identity_manager.managed_identity_mut(owner) else {
             return Ok(());
         };
-        managed.record_dashpay_payment(tx_id, entry, &persister);
+        managed
+            .record_dashpay_payment(tx_id, entry, &persister)
+            .map_err(|e| TaskError::WalletBackend {
+                source: Box::new(e.into()),
+            })?;
         Ok(())
     }
 
@@ -2134,7 +2149,7 @@ mod tests {
     // inputs `(TEST_SEED, Testnet, account_index 0, sender 0x11, recipient
     // 0x22, TEST_SECRET)`. They guard the DashPay derivation seam against a
     // silent upstream drift; update only with a deliberate review.
-    const ACCOUNT_REFERENCE_TESTNET_PINNED: u32 = 14_771_035;
+    const ACCOUNT_REFERENCE_TESTNET_PINNED: u32 = 173_734_745;
     const CONTACT_INFO_KEY1_TESTNET_PINNED: [u8; 32] = [
         158, 54, 59, 142, 202, 216, 7, 142, 110, 245, 93, 36, 97, 242, 74, 190, 160, 34, 128, 221,
         103, 201, 77, 14, 76, 12, 80, 209, 66, 120, 131, 231,

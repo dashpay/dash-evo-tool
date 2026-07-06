@@ -3432,10 +3432,8 @@ fn raise_skipped_wallets_banner(
     skipped_count: usize,
     banner_handle: &mut Option<BannerHandle>,
 ) {
-    // Fully qualified: the trait's `replace` is shadowed by the inherent
-    // `Option::replace` under method syntax.
     match skipped_wallets_banner_text(skipped_count) {
-        Some(text) => OptionBannerExt::replace(banner_handle, ctx, text, MessageType::Warning),
+        Some(text) => banner_handle.raise(ctx, text, MessageType::Warning),
         None => banner_handle.take_and_clear(),
     }
 }

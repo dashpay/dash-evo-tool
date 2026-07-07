@@ -145,3 +145,145 @@ marginal value low relative to the time cost and stopped here.
   code (`harness.rs`) uses a fixed base path with a numbered-slot fallback (no git-hash
   component) and a 30s spendable-balance timeout. Neither is a functional bug, but the
   README no longer matches the code.
+
+---
+
+## 10. Follow-up experiment (same session, later): cold-cache wipe — headline finding
+
+**Prompted by a user hypothesis**: is §6's "stale UTXO" scoped to this long-lived,
+never-wiped E2E workdir (cache/hygiene issue), or a real architectural gap? Tested by
+backing up (renaming, not deleting) the primary workdir
+(`/tmp/dash-evo-e2e-testnet` → `.bak-20260707T084128Z`, later preserved as
+`.cold-synced-20260707T084959Z`) and forcing a genuine cold init. Confirmed genuine:
+`BlockHeadersManager initialized at height 0` (not the cached tip), fresh
+`Registered framework wallet` (not "already registered"), and a real filter/block
+re-matching pass (323→399 historical blocks independently reprocessed across the session).
+
+**Result — far more damning than the single stale UTXO in §4.** After a full genesis
+rescan, `verify_framework_funded` (`framework/funding.rs:77`) reported the framework
+wallet's REAL spendable balance as **36,908,682 duffs (≈0.369 DASH)** — against the
+**15,082,365,339 duffs (≈150.8 DASH)** the stale warm cache had been reporting across every
+run in §1-§9. **The wallet's apparent balance was >99.9% phantom.** This isn't one bad UTXO;
+essentially the entire locally-tracked balance for this wallet does not exist on the real
+chain. This independently and much more broadly corroborates the self-reinforcing
+phantom-chain mechanism already on record in MemCan from the 2026-07-01 session
+(`dispatch_local` injecting unconfirmed self-broadcasts as spendable, with no
+acceptance/rejection reconciliation) — this session's cold rescan is the first time that
+mechanism's *cumulative* damage over ~54 days of unreconciled local state has been measured
+directly rather than inferred from one transaction.
+
+Practical consequence: the harness's own 10 DASH minimum-funding gate (`MIN_BALANCE_DUFFS`)
+now correctly fails fast on the truly-synced workdir — meaning further live testing needed
+either faucet/manual funding or continuing against the (known-tainted) warm cache. The
+cold-synced workdir was preserved (not deleted) for follow-up once real funds land; a fresh,
+independently Insight-verified never-used receive address (`yYqF93Sonfe1ETRPim5vATsNdTa4qztyXf`
+— `balance:0, totalReceived:0, txApperances:0`) was handed off for manual top-up.
+
+## 11. Addition 1 — repeat-run/restart stability: BLOCKED, not inconclusive
+
+Plan was 2-3 more `cargo test` invocations (each a genuine fresh process — satisfies
+"restart between runs") against the now-cold-synced workdir. **Could not be completed as
+scoped**: every subsequent invocation hits the same `verify_framework_funded` panic before
+reaching any asset-lock code, since the real balance (0.369 DASH) is below the hard-coded
+10 DASH gate. This is not "inconclusive" — see §10's headline finding and §13's synthesis
+below, which make repeat-run testing on *this* wallet moot until it holds real funds:
+literally any transaction it builds right now is provably phantom (§13), so "does it pass
+consistently" has a deterministic answer (no, never, until re-funded for real) rather than
+an intermittent one.
+
+## 12. Addition 2 — late-added wallet (permanent test `TC-012`)
+
+Added `test_tc012_create_registration_asset_lock_late_added_wallet` to
+`tests/backend-e2e/core_tasks.rs` (committed; `cargo +nightly fmt` and
+`cargo clippy --all-features --all-targets -- -D warnings` both clean). Uses
+`create_funded_test_wallet` (registers a wallet *into* an already-running, already-synced
+SPV client — the opposite of the framework wallet, which is registered *before*
+`backend.start()` in `BackendTestContext::init`, see §14) then attempts
+`CreateRegistrationAssetLock` from it, same pattern as TC-004.
+
+Three attempts, each informative in a different way:
+
+| Attempt | Wait strategy | Result | Time |
+|---|---|---|---|
+| v1 | none (relied on `create_funded_test_wallet`'s own "spendable" wait) | `AssetLockTransaction("... Coin selection error: No UTXOs available for selection")` | 12.24s |
+| v2 | added explicit poll on `.confirmed` (not `.spendable()`), 180s bound | Timed out: `confirmed=0` for the full 180s | 215.11s |
+| v3 | same poll, bumped to 420s bound | Timed out again: `confirmed=0` for the full 420s — longer than one average Dash block (~2.5 min) | 432.80s |
+
+v1's failure exposed a real, separate harness/product balance-classification mismatch (see
+`DetWalletBalance::spendable()` in `src/wallet_backend/snapshot.rs`: `confirmed +
+unconfirmed`, explicitly a UI-display-only heuristic per that file's "FUND-SAFETY MANDATE"
+banner) — `create_funded_test_wallet`'s wait is satisfied by a plain unconfirmed mempool
+deposit, but the real upstream asset-lock coin-selector requires strictly confirmed/IS-locked
+funds and correctly refuses the unconfirmed ones (`Coin selection error: No UTXOs available`).
+That refusal is *correct*, conservative behavior on the coin-selector's part — not itself a
+bug — but it meant v1 wasn't actually testing Addition 2's real question yet, so TC-012 was
+revised (v2/v3) to wait on `.confirmed` specifically before attempting the asset lock.
+
+v2 and v3 then hit something worse: **the funding transaction itself never confirmed, at
+all, in 420 seconds — three times longer than an average Dash block.** That is not
+plausible IS-lock variance; it demanded direct verification.
+
+## 13. Synthesis: the funding chain itself is phantom, generation after generation
+
+Cross-checked both `create_funded_test_wallet` funding txids (one per TC-012 attempt) against
+Insight, plus each one's *own* input:
+
+| Tx | Role | Insight |
+|---|---|---|
+| `0d3447479d6782005897eb9d2bb8d104de36aaf0312c602e92e9ba23cb1b3b59` | v2's framework→test-wallet funding tx (0.02 DASH) | **Not found** |
+| `1501021799c7087f0dd64a0c5b58d67dd42932d13068cda926daa04bfa1a7071` | v3's framework→test-wallet funding tx (0.02 DASH) — **spends `0d344747…:1`, v2's own change output** | **Not found** |
+
+**v3's funding transaction spends v2's funding transaction's change output — and neither
+transaction ever reached the real network.** This is the exact self-reinforcing phantom
+chain mechanism from the 2026-07-01 MemCan record, caught live, two generations deep, in a
+completely different code path (`CoreTask::SendWalletPayment`, ordinary wallet-to-wallet
+funding — not even the asset-lock builder) than TC-004's asset-lock-specific repro. The
+framework wallet's coin-selection is currently incapable of producing a transaction that
+reaches the real network, *for any purpose* — asset-lock creation, or a plain payment.
+`confirmed` staying at 0 for 420s in TC-012 isn't a timing gap; it's the deterministic
+consequence of funding a wallet from a transaction that never left this machine.
+
+**This reframes Addition 2's answer.** The late-added test wallet does *not* fail because
+of its own history (it has none — a fresh 12-word mnemonic can't have a stale UTXO). It
+fails because it was funded *from* the framework wallet, whose own coin-selection is already
+thoroughly poisoned. The discriminating variable isn't "when was this wallet registered
+relative to SPV startup" (the original framing) — it's "does this wallet's balance trace
+back to a real, network-accepted transaction, or to a chain of purely-local phantom
+self-broadcasts." A late-added wallet funded from a genuinely clean source (e.g. a real
+faucet drip, or the user's pending manual top-up to the address in §10) would very plausibly
+behave differently — that comparison is the natural next step once real funds land, and is
+a cheap re-run of the already-committed TC-012 once they do.
+
+## 14. Init-ordering check (requested, answered from code, not requiring a live repro)
+
+`BackendTestContext::init` (`framework/harness.rs`) registers the framework wallet
+(`register_wallet_with_retry`, ~line 344) **before** `ensure_wallet_backend` /
+`backend.start()` (~line 373-393) — i.e. its addresses are part of the SPV client's very
+first sync pass. `create_funded_test_wallet` (~line 520) registers a new wallet **after**
+the backend is already running, requiring a live bloom-filter rebuild
+(`Wallet monitor revision changed, rebuilding bloom filter` — observed in every TC-012 log)
+to pick it up. This asymmetry is real, but §13 shows it isn't what's driving the current
+failures — both an "early" wallet (framework) and a "late" wallet (TC-012's) are equally
+unable to produce a transaction the network accepts, because the *funding source* is the
+same poisoned framework wallet either way.
+
+Aside: `create_funded_test_wallet` always passes `WalletOrigin::Imported` (full genesis
+filter-matching pass) even though every call generates a brand-new, guaranteed-empty
+12-word mnemonic — `WalletOrigin::Fresh` (birth height = current tip, per
+`model/wallet/birth_height.rs`'s own documented policy: "a freshly generated phrase cannot
+have prior deposits") would be both correct and cheaper. Observed cost: every TC-012 attempt
+paid a multi-hundred-thousand-filter re-match pass (e.g. "Filters: Syncing 1364999/1510083")
+for a wallet that can, by construction, never match anything. Not a correctness bug, but an
+avoidable per-test-wallet tax worth a follow-up.
+
+## 15. Updated verdict
+
+Unchanged at the headline level — **STILL BROKEN** — but the mechanism is now understood
+far more precisely than the original 2026-07-01 doc or even §1-§9 of this one: it is not a
+single bad UTXO or a confirmation-timing race. The framework wallet used by this E2E suite
+is currently running on an entirely self-generated, self-reinforcing chain of phantom
+transactions that has never been reconciled against real chain state, to the point that
+>99.9% of its apparent balance does not exist on-chain, and it is currently incapable of
+producing *any* transaction — asset-lock or plain payment — that the real network accepts.
+Every symptom observed this session (TC-004's FinalityTimeout, TC-012's permanent
+zero-confirmation) is a direct, provable consequence of that one fact, not independent bugs.

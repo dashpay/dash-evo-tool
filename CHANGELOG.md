@@ -118,3 +118,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   indexing into an account tab were counted in the total but missing from the
   per-account breakdown and address list. All known funds now appear in their
   correct account tab.
+- Important messages — a saved wallet that couldn't be reopened, a failed
+  send or identity operation, a lost connection — could disappear on their
+  own after a few seconds, before you had a chance to read them. These now
+  stay on screen until you dismiss them yourself. Routine notices (a
+  successful action, a validation hint, an in-progress status) still clear
+  automatically as before.

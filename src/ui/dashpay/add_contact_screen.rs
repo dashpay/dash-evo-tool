@@ -543,7 +543,8 @@ impl ScreenLike for AddContactScreen {
                                     ui.ctx(),
                                     &e,
                                     MessageType::Error,
-                                );
+                                )
+                                .disable_auto_dismiss();
                             }
                             self.wallet_open_attempted = true;
                         }

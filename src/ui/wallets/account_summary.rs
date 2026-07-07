@@ -481,4 +481,91 @@ mod tests {
             .expect("bip44 summary");
         assert_eq!(bip44.confirmed_balance, 6_000);
     }
+
+    #[test]
+    fn address_in_both_watched_and_balances_is_counted_exactly_once() {
+        let wallet =
+            Wallet::new_from_seed([8u8; 64], Network::Testnet, None, None).expect("test wallet");
+
+        // A single address that is BOTH watched (bootstrapped) and funded.
+        let (watched_path, watched) = {
+            let (path, info) = wallet
+                .watched_addresses
+                .iter()
+                .next()
+                .expect("bootstrapped receive address");
+            (path.clone(), info.address.clone())
+        };
+
+        let mut address_balances = BTreeMap::new();
+        address_balances.insert(watched.clone(), 4_000u64);
+
+        // Its path is also known to the authoritative map — the dedup must rely
+        // on the address already being counted, not on the path being absent.
+        let mut address_paths = BTreeMap::new();
+        address_paths.insert(watched.clone(), watched_path);
+
+        let summaries =
+            collect_account_summaries(&wallet, Network::Testnet, &address_balances, &address_paths);
+
+        let total: u64 = summaries.iter().map(|s| s.confirmed_balance).sum();
+        assert_eq!(
+            total, 4_000,
+            "the shared address is counted once, not twice"
+        );
+    }
+
+    #[test]
+    fn unwatched_funded_address_lands_in_its_tab_without_disturbing_structure() {
+        use crate::model::wallet::{AddressInfo, DerivationPathHelpers, DerivationPathType};
+
+        let mut wallet =
+            Wallet::new_from_seed([9u8; 64], Network::Testnet, None, None).expect("test wallet");
+
+        // An existing zero-balance Platform category tab that must survive: a
+        // watched platform-payment address with no funds.
+        let pp_addr = addr_from_byte(77);
+        let pp_path = DerivationPath::platform_payment_path(Network::Testnet, 0, 0, 0);
+        wallet.watched_addresses.insert(
+            pp_path,
+            AddressInfo {
+                address: pp_addr,
+                path_type: DerivationPathType::CLEAR_FUNDS,
+                path_reference: DerivationPathReference::PlatformPayment,
+            },
+        );
+
+        // A funded BIP44 address the watched set has not indexed.
+        let unwatched = addr_from_byte(43);
+        let unwatched_path = DerivationPath::from(vec![
+            ChildNumber::Hardened { index: 44 },
+            ChildNumber::Hardened { index: 1 },
+            ChildNumber::Hardened { index: 0 },
+            ChildNumber::Normal { index: 0 },
+            ChildNumber::Normal { index: 9 },
+        ]);
+
+        let mut address_balances = BTreeMap::new();
+        address_balances.insert(unwatched.clone(), 2_500u64);
+        let mut address_paths = BTreeMap::new();
+        address_paths.insert(unwatched, unwatched_path);
+
+        let summaries =
+            collect_account_summaries(&wallet, Network::Testnet, &address_balances, &address_paths);
+
+        // The funded unwatched address is categorized as Bip44 and included.
+        let bip44 = summaries
+            .iter()
+            .find(|s| s.category == AccountCategory::Bip44)
+            .expect("bip44 summary");
+        assert_eq!(bip44.confirmed_balance, 2_500);
+
+        // The zero-balance Platform tab is untouched — structure preserved.
+        assert!(
+            summaries
+                .iter()
+                .any(|s| s.category == AccountCategory::PlatformPayment),
+            "the zero-balance Platform category tab must still be present"
+        );
+    }
 }

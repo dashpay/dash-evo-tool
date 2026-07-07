@@ -1768,8 +1768,14 @@ impl AppState {
 /// Calm and factual: states what happened, reassures funds are safe, and gives
 /// a concrete self-service action. No jargon, no dynamic values (so it dedupes
 /// cleanly and is a single i18n translation unit).
+///
+/// Deliberately does NOT call this a "known issue" — the categorization bug
+/// this check was built to catch is already fixed. If this check ever fires
+/// in practice, it means something nobody currently knows about (a fresh
+/// regression, or an unmapped edge case), so the copy must not pre-emptively
+/// reassure the user it's already being handled (QA-101).
 const BALANCE_HEALTH_WARNING: &str = "Some wallet balances didn't fully add up after the last sync. \
-Your funds are safe — this is a known display issue being looked into. \
+Your funds are safe. \
 Refreshing the wallet, or reopening the app, usually resolves it.";
 
 /// Gather Core and Platform balance mismatches across every loaded HD wallet.

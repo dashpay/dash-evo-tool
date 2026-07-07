@@ -3482,7 +3482,7 @@ fn raise_skipped_wallets_banner(
     banner_handle: &mut Option<BannerHandle>,
 ) {
     match skipped_wallets_banner_text(skipped_count) {
-        Some(text) => banner_handle.raise(ctx, text, MessageType::Warning),
+        Some(text) => banner_handle.raise_persistent(ctx, text, MessageType::Warning),
         None => banner_handle.take_and_clear(),
     }
 }

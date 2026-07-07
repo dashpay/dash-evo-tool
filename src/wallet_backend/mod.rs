@@ -177,7 +177,7 @@ const REGISTRATION_RESOLVE_BACKOFF: std::time::Duration = std::time::Duration::f
 type WalletId = [u8; 32];
 
 /// Per-wallet platform-address warm-start seed: `(seed_hash, owned
-/// (hash, balance, nonce) entries, optional (timestamp, height) cursor)`.
+/// [`PlatformAddressEntry`] list, optional (timestamp, height) cursor)`.
 type PlatformWarmStartSeed = Vec<(
     WalletSeedHash,
     Vec<PlatformAddressEntry>,
@@ -1266,10 +1266,11 @@ impl WalletBackend {
     /// label can render the last-synced snapshot on cold boot —
     /// network-independent, before the coordinator's first (network) pass.
     ///
-    /// Per wallet: owned `(hash, balance, nonce)` entries plus the persisted
-    /// `(timestamp, height)` cursor when a prior sync completed. One full
-    /// persister read; on failure returns empty and the first coordinator push
-    /// warms the UI once the network is reachable.
+    /// Per wallet: owned [`PlatformAddressEntry`] values (each carrying its
+    /// DIP-17 `account`/`index` recovered from the persisted provider state)
+    /// plus the persisted `(timestamp, height)` cursor when a prior sync
+    /// completed. One full persister read; on failure returns empty and the
+    /// first coordinator push warms the UI once the network is reachable.
     pub(crate) fn persisted_platform_address_warm_start(&self) -> PlatformWarmStartSeed {
         use platform_wallet::changeset::PlatformWalletPersistence;
         let start = match self.inner.persister.load() {
@@ -1285,9 +1286,23 @@ impl WalletBackend {
             .map(|(wallet_id, state)| {
                 let entries: Vec<PlatformAddressEntry> = state
                     .per_account
-                    .values()
-                    .flat_map(|account| account.found())
-                    .map(|(p2pkh, funds)| (p2pkh.to_bytes(), funds.balance, funds.nonce))
+                    .iter()
+                    .flat_map(|(&account, account_state)| {
+                        account_state.found().iter().map(move |(p2pkh, funds)| {
+                            PlatformAddressEntry {
+                                hash: p2pkh.to_bytes(),
+                                balance: funds.balance,
+                                nonce: funds.nonce,
+                                account,
+                                // Recover the DIP-17 index from the account's
+                                // index↔address bijection so the address is
+                                // registered exactly on warm-start; `None` (a
+                                // found address absent from the bimap should not
+                                // happen) falls back to reverse-derivation.
+                                index: account_state.addresses().get_by_right(p2pkh).copied(),
+                            }
+                        })
+                    })
                     .collect();
                 (wallet_id, entries, state.sync_timestamp, state.sync_height)
             })
@@ -2013,6 +2028,24 @@ impl WalletBackend {
             .snapshots
             .snapshot(seed_hash)
             .address_balances
+            .clone()
+    }
+
+    /// Authoritative derivation path for every generated address of the wallet,
+    /// from the lock-free display snapshot. Lets the account-summary view
+    /// categorize funded addresses DET's `watched_addresses` bookkeeping has not
+    /// indexed yet, so none are dropped from the per-category tab totals.
+    pub fn address_paths(
+        &self,
+        seed_hash: &WalletSeedHash,
+    ) -> std::collections::BTreeMap<
+        dash_sdk::dpp::dashcore::Address,
+        dash_sdk::dpp::key_wallet::bip32::DerivationPath,
+    > {
+        self.inner
+            .snapshots
+            .snapshot(seed_hash)
+            .address_paths
             .clone()
     }
 
@@ -3747,11 +3780,18 @@ mod tests {
         let never_synced: WalletId = [3u8; 32];
         let unresolved: WalletId = [4u8; 32];
 
+        let entry = |hash: [u8; 20], balance: u64, nonce: u32| PlatformAddressEntry {
+            hash,
+            balance,
+            nonce,
+            account: 0,
+            index: Some(0),
+        };
         let per_wallet: Vec<(WalletId, Vec<PlatformAddressEntry>, u64, u64)> = vec![
-            (funded, vec![([0xAAu8; 20], 500, 7)], 1_700, 900),
+            (funded, vec![entry([0xAAu8; 20], 500, 7)], 1_700, 900),
             (synced_empty, vec![], 1_700, 900),
             (never_synced, vec![], 0, 0),
-            (unresolved, vec![([0xBBu8; 20], 1, 1)], 1_700, 900),
+            (unresolved, vec![entry([0xBBu8; 20], 1, 1)], 1_700, 900),
         ];
 
         // Identity resolver, except `unresolved` maps to no DET seed hash.
@@ -3768,7 +3808,7 @@ mod tests {
         );
 
         let funded_out = out.get(&funded).expect("funded wallet seeds");
-        assert_eq!(funded_out.0, vec![([0xAAu8; 20], 500, 7)]);
+        assert_eq!(funded_out.0, vec![entry([0xAAu8; 20], 500, 7)]);
         assert_eq!(funded_out.1, Some((1_700, 900)));
 
         let empty_out = out

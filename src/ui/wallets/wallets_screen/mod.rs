@@ -997,6 +997,19 @@ impl WalletsBalancesScreen {
             .unwrap_or_default()
     }
 
+    /// Authoritative per-address derivation paths from the snapshot. Lets the
+    /// account-summary view categorize funded addresses `watched_addresses`
+    /// has not indexed yet, so none are dropped from the per-category totals.
+    fn snapshot_address_paths(
+        &self,
+        seed_hash: &WalletSeedHash,
+    ) -> std::collections::BTreeMap<Address, dash_sdk::dpp::key_wallet::bip32::DerivationPath> {
+        self.app_context
+            .wallet_backend()
+            .map(|wb| wb.address_paths(seed_hash))
+            .unwrap_or_default()
+    }
+
     /// Full transaction history from the snapshot (P4a). Replaces the
     /// dropped `Wallet.transactions`.
     fn snapshot_transactions(&self, seed_hash: &WalletSeedHash) -> Vec<WalletTransaction> {
@@ -1939,12 +1952,14 @@ impl WalletsBalancesScreen {
 
                         let summaries = {
                             let wallet = wallet_arc.read().unwrap();
-                            let address_balances =
-                                self.snapshot_address_balances(&wallet.seed_hash());
+                            let seed_hash = wallet.seed_hash();
+                            let address_balances = self.snapshot_address_balances(&seed_hash);
+                            let address_paths = self.snapshot_address_paths(&seed_hash);
                             collect_account_summaries(
                                 &wallet,
                                 self.app_context.network,
                                 &address_balances,
+                                &address_paths,
                             )
                         };
                         self.ensure_account_selection(&summaries);

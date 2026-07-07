@@ -112,3 +112,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   after a network switch or on a cold start), the app could wait forever with
   no indication anything was wrong. It now tells you after 30 seconds and
   suggests restarting, instead of leaving the wallet silently invisible.
+- The wallet screen's overall balance could show more Dash than its Core or
+  Platform account tabs added up to, especially on wallets that have handed
+  out many addresses. Funds on addresses the wallet had not yet finished
+  indexing into an account tab were counted in the total but missing from the
+  per-account breakdown and address list. All known funds now appear in their
+  correct account tab.

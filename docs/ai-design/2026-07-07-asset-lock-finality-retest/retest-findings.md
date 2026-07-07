@@ -354,3 +354,116 @@ of waiting, re-syncing, or adding real funds to this wallet has produced a passi
 Fixing this requires correcting the reconciliation/spend-detection defect itself — this
 wallet's local UTXO index cannot currently be trusted to converge on real chain state no
 matter how it is refreshed.
+
+---
+
+## 18. Crate attribution — where does the defect actually live?
+
+Two upstream repos are in play (`Cargo.lock`): `key-wallet` + `dash-spv` (both v0.45.0,
+`dashpay/rust-dashcore@647fa982`) and `platform-wallet` (v4.0.0,
+`dashpay/platform@c213580`, branch `dash-evo-tool`). Read the actual source at both pinned
+revisions (not just log-target prefixes).
+
+### 1. Where the Confirmed/Unconfirmed classification happens
+
+`key-wallet/src/wallet/balance.rs` — `WalletCoreBalance` is a plain struct; both buckets are
+documented as spendable, the split is display-only (`spendable() = confirmed + unconfirmed`,
+lines 52-55). The bucket a UTXO lands in is decided in
+**`key-wallet/src/managed_account/managed_core_funds_account.rs::update_balance`
+(~line 525-543)**:
+
+```rust
+} else if utxo.is_confirmed || utxo.is_instantlocked || utxo.is_trusted {
+    confirmed += value;
+} else {
+    unconfirmed += value;
+}
+```
+
+`is_confirmed` / `is_instantlocked` are set when a UTXO is first inserted, from the
+transaction's `TransactionContext` (`update_utxos`, ~line 241-243, same file). `is_trusted`
+is computed just above (~line 182-195) as a recursive Bitcoin-Core-`IsTrusted`-style check:
+a self-send's change is only trusted if *every* input it spends is itself
+confirmed/IS-locked/already-trusted.
+
+### 2. Does `platform-wallet` trust this as-is, or re-derive it?
+
+**Trusts it as-is — no independent tracking layer.** `platform-wallet`'s
+`AssetLockManager::build_asset_lock_transaction`
+(`packages/rs-platform-wallet/src/wallet/asset_lock/build.rs`) calls straight into
+`info.core_wallet.build_asset_lock_with_signer(...)` — `key-wallet`'s own method
+(`key-wallet/src/wallet/managed_wallet_info/asset_lock_builder.rs:256`), which builds via
+`TransactionBuilder::set_funding(...).require_final_inputs().build_signed(...)`.
+`require_final_inputs` (`transaction_builder.rs:317-318`) filters candidate UTXOs to
+`is_confirmed || is_instantlocked` — key-wallet's own flags, read directly, no
+re-verification. Likewise `wait_for_proof`
+(`packages/rs-platform-wallet/src/wallet/asset_lock/sync/proof.rs`) reads
+`key_wallet`'s `TransactionRecord`/`TransactionContext` off the account's own transaction map
+(`a.transactions().get(&out_point.txid)`) directly. Platform-wallet has no second opinion
+anywhere in this path — if key-wallet's UTXO/transaction bookkeeping is wrong, platform-wallet
+has no way to notice.
+
+### 3. Does the landed fix (417d61da / #836) touch the same code, or a separate guard?
+
+**Same file, adjacent code, but a different bug than §16's.** `git show 417d61da` touches
+exactly `managed_core_funds_account.rs` (the `is_trusted` computation, made recursive —
+previously a flat `has_owned_input && change_addr` check that any self-send could satisfy
+regardless of whether its own inputs were final) and `asset_lock_builder.rs`
+(adds `.require_final_inputs()` to both asset-lock builders). This closes the loophole where
+a chain of *unconfirmed* self-sends could compound trust indefinitely (the original H1/§3-§5
+symptom, and the mechanism behind the doc's early phantom-chain sightings).
+
+**It does not touch, and cannot fix, §16's failure mode.** §16's stale UTXO
+(`5c43cd8957…:1`) was genuinely `is_confirmed = true` — a real, once-correct block
+confirmation flag, not an `is_trusted` mempool inference — so it already satisfies
+`require_final_inputs` and sails past 417d61da's guard entirely. The actual defect there is
+in the **removal** side of the same function, `update_utxos`'s spent-outpoint loop
+(same file, lines 251-267):
+
+```rust
+self.reservations.release(tx.input.iter().map(|input| &input.previous_output));
+for input in &tx.input {
+    self.spent_outpoints.insert(input.previous_output);
+    if self.utxos.remove(&input.previous_output).is_some() { ... "Removed spent UTXO" ... }
+}
+```
+
+This only fires when `update_utxos` is *called* for the spending transaction — i.e. only if
+some upstream layer already decided that transaction was relevant to this account. The
+function's own author-written comment a few lines above (lines 211-217, present in this file
+both before and after 417d61da — untouched by that fix) already flags exactly this class of
+risk:
+
+> "Check if this outpoint was already spent by a transaction we've seen. This handles
+> out-of-order block processing during rescan... TODO: This is mostly needed for wallet
+> rescan from storage — there is a timing issue with event processing which might lead to
+> invalid UTXO set / balances. There might be a way around it."
+
+§16 is a live instance of exactly that acknowledged, still-open gap: a genuinely-once-real
+`is_confirmed` UTXO that was later spent for real (Insight: block 1474746, 35406
+confirmations ago) never got removed from this wallet's local `utxos` map, even after a
+from-genesis rescan given ample time to complete.
+
+### 4. Verdict
+
+**Primary defect: `key-wallet` (`dashpay/rust-dashcore`), file
+`key-wallet/src/managed_account/managed_core_funds_account.rs`, function `update_utxos`
+(spent-outpoint removal loop, lines ~251-267; the acknowledged-but-unfixed rescan/event-timing
+TODO sits at lines 211-217 in the same function).** This is where a UTXO's local record
+should be — but sometimes isn't — invalidated when the network genuinely spends it.
+
+- **`platform-wallet` is not independently at fault.** It correctly gates asset-lock funding
+  on `require_final_inputs` (post-417d61da) and has no separate bookkeeping to get wrong —
+  it fully and reasonably trusts `key-wallet`'s flags. The architecture (platform-wallet
+  as a thin consumer of key-wallet's UTXO/balance state) is sound; the state it consumes is
+  sometimes incorrect.
+- **`dash-spv` is a plausible contributing factor, not conclusively pinned.** For
+  `update_utxos` to run at all for a given transaction, some upstream layer must first decide
+  that transaction is relevant to this account/wallet (address or outpoint match) and hand it
+  over — that relevance-matching lives either in `key-wallet`'s own `wallet_checker.rs` or
+  further upstream in `dash-spv`'s compact-filter/block-fetch pipeline. Tracing that boundary
+  conclusively (e.g. instrumenting exactly why block 1474746's spend of `5c43cd8957…:1` never
+  reached this account's `update_utxos`) would need live debugging beyond a source read and
+  wasn't done here — flagging as the natural next step for whoever picks up the upstream fix,
+  but not required to file the primary issue: `key-wallet`'s own code already documents the
+  risk class in the exact function where §16's symptom originates.

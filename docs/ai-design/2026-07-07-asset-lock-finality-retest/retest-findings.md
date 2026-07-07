@@ -593,3 +593,32 @@ related theme, different mechanism** — ours is intra-batch processing-order, t
 cross-batch commit-pruning. Both point to the same broader class of defect (rescan/event
 delivery ordering assumptions that `key-wallet`'s wallet-state bookkeeping does not correctly
 handle), but are independent bugs requiring independent fixes.
+
+---
+
+## 21. Post-merge retest: DET's display-layer fix does not touch this defect
+
+A separate session fixed an unrelated DET display-layer bug (balance categorization from
+authoritative upstream data — `9c0f94c1`/`077bf73b`/`12ec5bce`/`7392ca47`, merged clean into
+`feat/identity-onboarding-ux` at `5e902024`). Working theory: no effect on the asset-lock
+finality defect (root cause is upstream in `key-wallet`'s UTXO tracking, unrelated to DET's
+display/summary code) — verified rather than assumed.
+
+Reran `test_tc004_create_registration_asset_lock` on the merged HEAD (same shared workdir,
+same instrumentation). **Still fails, same mechanism:**
+
+- `FinalityTimeout(OutPoint { txid: 0x4af391d7…, vout: 0 })`, 317.51s — same shape as every
+  prior attempt.
+- Funding input `9644cccb55a8db7953b1e79d6fb59f6e3aee6b5b76d89a48e9d7de546b12fa76:1` (value
+  47.99899548 DASH) — confirmed via Insight as genuinely spent for real at block **1,479,050**,
+  **31,106 confirmations** (~54 days) before this attempt.
+- The new asset-lock tx itself (`4af391d7…`): **Not found** on Insight — phantom, same fate as
+  every prior attempt.
+- Reported "Framework wallet spendable" at test start: **24,998,446,776 duffs (≈249.98
+  DASH)** — still wildly inflated vs. the ~20.37 DASH true balance (§19); the display fix
+  doesn't touch the underlying reconciliation, only how already-wrong numbers are categorized
+  for the UI.
+
+**Verdict: confirmed, not assumed — the display-layer fix has zero effect on this defect.**
+Same failure mode, same class of stale-already-spent-UTXO selection, a third independent
+instance (different txid/height each time) of the exact mechanism traced in §20.

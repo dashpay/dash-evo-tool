@@ -3798,6 +3798,83 @@ mod tests {
         assert!(!wallet.known_addresses.contains_key(&addr));
     }
 
+    /// `register_platform_payment_address` inserts the exact DIP-17 entries into
+    /// `known_addresses` / `watched_addresses` at the derived path — no
+    /// reverse-derivation, no cached xpub needed.
+    #[test]
+    fn register_platform_payment_address_inserts_exact_dip17_entries() {
+        let network = Network::Testnet;
+        let index = 7u32;
+        let mut wallet = legacy_wallet(network);
+        let addr = platform_address_at(index, network);
+        assert!(
+            !wallet.known_addresses.contains_key(&addr),
+            "precondition: address not yet registered"
+        );
+
+        wallet.register_platform_payment_address(&addr, 0, index, network);
+
+        let expected_path = DerivationPath::platform_payment_path(network, 0, 0, index);
+        assert_eq!(wallet.known_addresses.get(&addr), Some(&expected_path));
+        let info = wallet
+            .watched_addresses
+            .get(&expected_path)
+            .expect("registered path must be watched");
+        assert_eq!(info.address, addr);
+        assert_eq!(
+            info.path_reference,
+            DerivationPathReference::PlatformPayment
+        );
+        assert_eq!(info.path_type, DerivationPathType::CLEAR_FUNDS);
+    }
+
+    /// The doc comment's "idempotent" claim: a second identical registration is
+    /// a no-op — no duplicate entries, no changed state.
+    #[test]
+    fn register_platform_payment_address_is_idempotent() {
+        let network = Network::Testnet;
+        let index = 7u32;
+        let mut wallet = legacy_wallet(network);
+        let addr = platform_address_at(index, network);
+
+        wallet.register_platform_payment_address(&addr, 0, index, network);
+        let known_after_first = wallet.known_addresses.clone();
+        let watched_len = wallet.watched_addresses.len();
+
+        wallet.register_platform_payment_address(&addr, 0, index, network);
+
+        assert_eq!(
+            wallet.watched_addresses.len(),
+            watched_len,
+            "no duplicate watched entry"
+        );
+        assert_eq!(
+            wallet.known_addresses, known_after_first,
+            "second call leaves known_addresses unchanged"
+        );
+    }
+
+    /// The mechanism that actually closes the reported Platform gap: exact
+    /// registration succeeds precisely where the guess-based reconcile path
+    /// DEFERS (no cached xpub) — the exact `(account, index)` from the push
+    /// removes the reverse-derivation dependency entirely.
+    #[test]
+    fn exact_registration_registers_where_reconcile_would_defer() {
+        let network = Network::Testnet;
+        let index = 7u32;
+        let mut wallet = legacy_wallet(network);
+        let addr = platform_address_at(index, network);
+
+        // Guess-based reconcile cannot register without the cached account xpub.
+        assert!(!wallet.reconcile_platform_address(&addr, network));
+        assert!(!wallet.known_addresses.contains_key(&addr));
+
+        // Exact registration needs no xpub — it registers directly.
+        wallet.register_platform_payment_address(&addr, 0, index, network);
+        let expected_path = DerivationPath::platform_payment_path(network, 0, 0, index);
+        assert_eq!(wallet.known_addresses.get(&addr), Some(&expected_path));
+    }
+
     /// The bounded search terminates and returns false for a foreign address
     /// (derived from a different seed) — it never matches this wallet's xpub, so
     /// the search must exhaust its ceiling without hanging or registering

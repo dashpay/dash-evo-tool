@@ -277,7 +277,10 @@ fn categorize_snapshot_address(
 ///    the watched set has NOT indexed yet, categorized via the snapshot's
 ///    `address_paths`. This closes the desync where funds on addresses past
 ///    DET's bookkeeping window were dropped from the tab totals. Each chain
-///    balance is counted exactly once (pass 2 skips addresses pass 1 covered).
+///    balance is counted exactly once (pass 2 skips addresses pass 1 covered),
+///    and Platform credits are threaded from `platform_address_info` — never
+///    hardcoded to zero — so a DIP-17 address surfacing here still lands in the
+///    Platform tab, which sums `platform_credits` rather than `confirmed_balance`.
 pub fn collect_account_summaries(
     wallet: &Wallet,
     network: Network,
@@ -313,9 +316,18 @@ pub fn collect_account_summaries(
         counted.insert(info.address.clone());
     }
 
-    // Pass 2: authoritative funded addresses the watched set missed.
+    // Pass 2: authoritative funded addresses the watched set missed. Thread the
+    // real Platform credits (not a hardcoded 0) so a DIP-17 address that ever
+    // surfaces here is still summed correctly in the Platform tab.
     for (address, &balance) in address_balances {
-        if balance == 0 || counted.contains(address) {
+        if counted.contains(address) {
+            continue;
+        }
+        let platform_credits = wallet
+            .get_platform_address_info(address)
+            .map(|info| info.balance)
+            .unwrap_or_default();
+        if balance == 0 && platform_credits == 0 {
             continue;
         }
         let (category, index) = categorize_snapshot_address(network, address, address_paths);
@@ -325,7 +337,7 @@ pub fn collect_account_summaries(
                 index,
             })
             .or_insert_with(|| AccountSummaryBuilder::new(category, index))
-            .add_address(balance, 0);
+            .add_address(balance, platform_credits);
     }
 
     let mut summaries: Vec<_> = builders
@@ -567,5 +579,40 @@ mod tests {
                 .any(|s| s.category == AccountCategory::PlatformPayment),
             "the zero-balance Platform category tab must still be present"
         );
+    }
+
+    #[test]
+    fn platform_address_surfacing_in_pass_two_keeps_its_credits() {
+        use crate::model::wallet::DerivationPathHelpers;
+
+        let mut wallet =
+            Wallet::new_from_seed([11u8; 64], Network::Testnet, None, None).expect("test wallet");
+
+        // A DIP-17 platform-payment address that is funded on-chain (a stray Core
+        // UTXO puts it in `address_balances`) and carries Platform credits, but is
+        // NOT in `watched_addresses` — the only way it reaches pass 2.
+        let pp_addr = addr_from_byte(55);
+        let pp_path = DerivationPath::platform_payment_path(Network::Testnet, 0, 0, 3);
+        wallet.set_platform_address_info(pp_addr.clone(), 9_000, 1);
+
+        let mut address_balances = BTreeMap::new();
+        address_balances.insert(pp_addr.clone(), 500u64);
+        let mut address_paths = BTreeMap::new();
+        address_paths.insert(pp_addr, pp_path);
+
+        let summaries =
+            collect_account_summaries(&wallet, Network::Testnet, &address_balances, &address_paths);
+
+        // Pass 2 must thread the real credits, not hardcode 0 — otherwise the
+        // Platform tab (which sums platform_credits) would show 0 here.
+        let platform = summaries
+            .iter()
+            .find(|s| s.category == AccountCategory::PlatformPayment)
+            .expect("platform summary");
+        assert_eq!(
+            platform.platform_credits, 9_000,
+            "pass 2 must carry the address's real Platform credits"
+        );
+        assert_eq!(platform.confirmed_balance, 500);
     }
 }

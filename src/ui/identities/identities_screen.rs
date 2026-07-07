@@ -888,7 +888,8 @@ impl IdentitiesScreen {
                                         self.app_context.egui_ctx(),
                                         format!("Failed to remove identity: {}", e),
                                         MessageType::Error,
-                                    );
+                                    )
+                                    .disable_auto_dismiss();
                                 }
                             }
 

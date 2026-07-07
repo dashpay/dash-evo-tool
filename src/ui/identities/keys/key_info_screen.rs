@@ -147,12 +147,13 @@ impl ScreenLike for KeyInfoScreen {
                     Ok(private_key) => self.decrypted_private_key = Some(private_key),
                     Err(e) => {
                         self.key_display_requested = false;
-                        MessageBanner::set_global(
+                        let banner = MessageBanner::set_global(
                             self.app_context.egui_ctx(),
                             "Could not display the private key. Please retry.",
                             MessageType::Error,
-                        )
-                        .with_details(e);
+                        );
+                        banner.with_details(e);
+                        banner.disable_auto_dismiss();
                     }
                 }
             }
@@ -164,12 +165,13 @@ impl ScreenLike for KeyInfoScreen {
                     Ok(private_key) => self.decrypted_private_key = Some(private_key),
                     Err(e) => {
                         self.key_display_requested = false;
-                        MessageBanner::set_global(
+                        let banner = MessageBanner::set_global(
                             self.app_context.egui_ctx(),
                             "Could not display the private key. Please retry.",
                             MessageType::Error,
-                        )
-                        .with_details(e);
+                        );
+                        banner.with_details(e);
+                        banner.disable_auto_dismiss();
                     }
                 }
             }
@@ -591,7 +593,8 @@ impl ScreenLike for KeyInfoScreen {
                 {
                     if !self.wallet_open_attempted {
                         if let Err(e) = try_open_wallet_no_password(&self.app_context, wallet) {
-                            MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                            MessageBanner::set_global(ui.ctx(), &e, MessageType::Error)
+                                .disable_auto_dismiss();
                         }
                         self.wallet_open_attempted = true;
                     }
@@ -833,7 +836,8 @@ impl KeyInfoScreen {
                     self.app_context.egui_ctx(),
                     format!("Issue saving: {}", e),
                     MessageType::Error,
-                );
+                )
+                .disable_auto_dismiss();
             }
         } else {
             MessageBanner::set_global(
@@ -1033,7 +1037,8 @@ impl KeyInfoScreen {
                             ui.ctx(),
                             format!("Issue saving: {}", e),
                             MessageType::Error,
-                        );
+                        )
+                        .disable_auto_dismiss();
                     }
                 }
             }

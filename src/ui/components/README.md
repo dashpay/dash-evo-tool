@@ -14,7 +14,7 @@ Concise catalog of all reusable UI components. Consult before creating new UI el
 | Component | File | DomainType | Description |
 |-----------|------|------------|-------------|
 | `AmountInput` | `amount_input.rs` | `Amount` | Decimal amount with validation, min/max, Max button, unit name |
-| `AddressInput` | `address_input.rs` | `ValidatedAddress` | Unified address with autocomplete, type detection (Core/Platform/Shielded/Identity), DPNS resolution |
+| `AddressInput` | `address_input.rs` | `ValidatedAddress` | Unified address with autocomplete, type detection (Core/Platform/Shielded/Identity), DPNS resolution. GitHub-style tag search (`type:core\|platform\|…`, `wallet:name`; unrecognized tokens are free text). Rows render `[wallet pill] address (name) [type pill] balance`; when no explicit hint is set the placeholder is a live `type:…|… wallet:…|…` legend |
 | `PasswordInput` | `password_input.rs` | N/A (security) | Masked input with hold-to-reveal, zeroizes on drop. NOT ComponentResponse |
 | `IdentitySelector` | `identity_selector.rs` | N/A (Widget) | ComboBox dropdown for identity selection |
 

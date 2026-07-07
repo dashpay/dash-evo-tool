@@ -2135,7 +2135,6 @@ impl WalletSendScreen {
 
                 let mut builder = AddressInput::new(self.app_context.network)
                     .with_label("Send to")
-                    .with_hint_text("Enter address (X.../y.../dash1.../tdash1...)")
                     .with_address_kinds(&allowed_kinds)
                     .with_exclude_change(true);
 

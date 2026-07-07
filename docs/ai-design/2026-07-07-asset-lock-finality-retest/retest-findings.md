@@ -539,3 +539,57 @@ CreateRegistrationAssetLock`/`CreateTopUpAssetLock` actually fund from. Other ac
 the wallet may hold (CoinJoin, DashPay, identity-registration keys) were out of scope; they
 don't participate in asset-lock funding and aren't relevant to the FinalityTimeout symptom
 this investigation is about.
+
+---
+
+## 20. Root mechanism, forensically traced and deterministically confirmed: out-of-order rescan processing
+
+Two live-network synthetic-repro attempts against `rust-dashcore`'s `repro/pr3549-rdc` branch
+both came back green (a single continuous sync, then a two-phase persisted-storage reload —
+see that repo's commit history, `4708d6f2`/`3b1d3117`/`0bd80444`). Per direction, stopped
+guessing structures and traced the actual real failure instead.
+
+**Forensic trace** (`/data/tmp/backend-e2e-tc004-coldstart-JyD9Vy.log`, the cold rescan behind
+§10/§16's findings): during this rescan, block heights are processed in **essentially
+arbitrary order** — not just adjacent-block reordering, but jumps across thousands of blocks
+(e.g. height 1,479,816 followed immediately by 1,480,137, 1,480,358, 1,485,774–1,485,793, then
+back down to 1,477,157, 1,477,190, 1,477,191). This is `key-wallet-manager`'s `parallel-filters`
+feature completing matches in whichever order worker threads finish, not height order.
+
+For the specific failing outpoint (`5c43cd8957…:1`):
+- Its real spend (block **1,474,746**, txid `f9ca52d513…`) was logged as processed at
+  **08:45:45.155707Z**, with the spending transaction showing `sent=0 DASH` — the wallet did
+  **not** recognize this input as its own at that moment, because the funding UTXO did not
+  exist in `self.utxos` yet.
+- The transaction that **created** that UTXO (block **1,474,688**, 58 blocks *earlier* on-chain)
+  was processed **0.87 seconds later**, at **08:45:46.028186Z** — and was inserted as a fresh,
+  spendable UTXO (`WalletEvent: BlockProcessed(height=1474688, …, inserted=1, …)`) despite its
+  own spend having already been observed moments before.
+- Both blocks belong to the **same** committed batch (`1474001-1479000`, committed at
+  08:45:46.735920Z) — this is an **intra-batch** ordering defect, not the cross-batch
+  "committed ranges never reopen" mechanism from the CoinJoin gap-limit precedent already on
+  `repro/pr3549-rdc` (`coinjoin_gap_discovery_tests.rs`). Related in theme (rescan reordering
+  breaking wallet-state invariants), confirmed to be a **different specific mechanism** by
+  direct log evidence, not the same bug wearing a different hat.
+
+**`update_utxos` (`managed_core_funds_account.rs`) already has a guard for exactly this
+ordering** — `is_outpoint_spent(&outpoint)`, checked against `self.spent_outpoints`, which is
+populated unconditionally for every input of every processed transaction (regardless of
+whether that input is recognized as one of the account's own UTXOs). Per the log evidence, this
+guard did not prevent the funding output from being inserted.
+
+**Deterministic, synthetic confirmation** (`key-wallet-manager/tests/
+out_of_order_spend_repro_test.rs`, committed `906fd47d` on `repro/pr3549-rdc`): built a
+minimal, no-mnemonic, no-network test reproducing the *exact same order* — process the
+spending block, then the funding block — via `key-wallet-manager`'s public
+`WalletInterface::process_block_for_wallets`. **Result: RED, confirmed by actually running it
+(`cargo test`, ~0.07s), twice (before and after `cargo +nightly fmt`).** The funding outpoint
+remains in the wallet's tracked UTXO set after this exact ordering. This is the first fully
+self-verified (no classifier block, no real secret, no live network) reproduction in this
+entire investigation — a third party can run it immediately with zero setup.
+
+This settles the "is this the same bug as the CoinJoin precedent" question precisely: **no,
+related theme, different mechanism** — ours is intra-batch processing-order, theirs is
+cross-batch commit-pruning. Both point to the same broader class of defect (rescan/event
+delivery ordering assumptions that `key-wallet`'s wallet-state bookkeeping does not correctly
+handle), but are independent bugs requiring independent fixes.

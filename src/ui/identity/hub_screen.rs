@@ -107,6 +107,7 @@ impl IdentityHubScreen {
                     MessageType::Error,
                 );
                 handle.with_details(&e);
+                handle.disable_auto_dismiss();
                 self.load_error_banner = Some(handle);
                 self.last_good_landing
             }

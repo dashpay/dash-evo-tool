@@ -963,7 +963,12 @@ pub trait OptionBannerExt {
     /// Like [`raise`](OptionBannerExt::raise), but disables auto-dismiss so the banner
     /// stays until manually dismissed. Use for messages that genuinely affect the user
     /// (data loss, a major feature not working) — these must not disappear on a timer.
-    fn raise_persistent(&mut self, ctx: &egui::Context, msg: impl fmt::Display, msg_type: MessageType);
+    fn raise_persistent(
+        &mut self,
+        ctx: &egui::Context,
+        msg: impl fmt::Display,
+        msg_type: MessageType,
+    );
 }
 
 impl OptionBannerExt for Option<BannerHandle> {
@@ -994,7 +999,12 @@ impl OptionBannerExt for Option<BannerHandle> {
         *self = Some(handle);
     }
 
-    fn raise_persistent(&mut self, ctx: &egui::Context, msg: impl fmt::Display, msg_type: MessageType) {
+    fn raise_persistent(
+        &mut self,
+        ctx: &egui::Context,
+        msg: impl fmt::Display,
+        msg_type: MessageType,
+    ) {
         self.take_and_clear();
         let handle = MessageBanner::set_global(ctx, msg.to_string(), msg_type);
         handle.disable_auto_dismiss();

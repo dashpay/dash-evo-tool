@@ -467,3 +467,75 @@ should be — but sometimes isn't — invalidated when the network genuinely spe
   wasn't done here — flagging as the natural next step for whoever picks up the upstream fix,
   but not required to file the primary issue: `key-wallet`'s own code already documents the
   risk class in the exact function where §16's symptom originates.
+
+---
+
+## 19. Independent, key-wallet-bypassing ground-truth balance oracle
+
+Rather than trust key-wallet's own bookkeeping at all (confirmed unreliable, §10-18), built an
+oracle that owes it nothing: derive every candidate address directly from the wallet's public
+BIP44-account-0 xpub via a hard, brute-force index cap (no gap-limit/discovery logic — the
+exact code path under suspicion), then ask the real network directly.
+
+**Method:**
+1. Derived the account-0 xpub once via `key-wallet`'s own `Wallet::from_mnemonic` (standard,
+   well-tested derivation math — a different, simple code path from the buggy stateful
+   UTXO-tracking). The xpub itself is public/watch-only material, safe to use directly.
+2. From that xpub alone, brute-force-derived the first **10,000 external + 10,000 internal
+   (change) addresses** (20,000 total) via `key_wallet::managed_account::address_pool::AddressPool`
+   with `KeySource::Public` — no wallet-side discovery, no gap limit, just raw index 0..9999 on
+   each chain. Sanity check: index `external/86` reproduced `yYqF93Sonfe1ETRPim5vATsNdTa4qztyXf`,
+   the exact address the manual 20 DASH top-up (§16) was sent to — confirms the derivation
+   matches the real wallet exactly.
+3. Queried Insight's bulk `POST addrs/utxo` endpoint (134 batches of ≤150 addresses) for the
+   real, current UTXO set of all 20,000 addresses. Zero-balance addresses recorded too.
+4. Summed confirmed vs unconfirmed satoshis per address, and in total.
+
+**Result — every one of the 20,000 addresses checked, only 10 hold any funds at all:**
+
+| chain | index | address | confirmed (duffs) |
+|---|---|---|---|
+| external | 0 | yXyzNWRRASxYzWwskmqNmb5xFjGc94bn5F | 6,000,000 |
+| external | 80 | ybYG86mrDCiHDpu3489WhZTZPvWHVQo2pB | 500,000 |
+| external | 82 | yNNpkn11SrLd7X5WVJnKgsY9aVMinv8ZRa | 500,000 |
+| external | 84 | yeNdd18uTvXpP3L9TTYwg34E3n1EARJxqo | 2,000 |
+| external | 86 | yYqF93Sonfe1ETRPim5vATsNdTa4qztyXf | 2,000,000,000 (the manual top-up, §16) |
+| internal | 3 | yib81FfrYMMcLiAcsNraT8Yic5DFsGhBtZ | 447,000 |
+| internal | 9 | yYXkbKJ8oRDSct9Zd66wqN1VHN8WbYYXtC | 13,493,322 |
+| internal | 31 | yiwj4YDuzTRxpx8WNkP2Xp9rvjZ9D2Y8gm | 11,894,896 |
+| internal | 300 | yfjZnRhJo4NVnUGW9TdNKmswbRRA911Hv4 | 2,993,488 |
+| internal | 376 | yekuyJS7QNsbV2JFmPu1LgHQSjJ34LWKnV | 1,077,976 |
+
+**TRUE total: 2,036,908,682 duffs = 20.36908682 DASH confirmed, 0 unconfirmed.** The 9
+non-top-up addresses alone sum to exactly 0.36908682 DASH — matching §10's cold-rescan figure
+(0.369 DASH) to 8 decimal places, an exact independent confirmation of that earlier reading.
+
+**Compared against key-wallet's own report** (§16, "real-fund run 1," logged as
+`Framework wallet spendable: 22,998,547,073 duffs` before that run touched anything):
+
+| | duffs | DASH |
+|---|---|---|
+| key-wallet reported | 22,998,547,073 | 229.98547073 |
+| **True (this oracle)** | **2,036,908,682** | **20.36908682** |
+| Phantom discrepancy | 20,961,638,391 | 209.61638391 |
+
+**Key-wallet's reported balance is 11.29× the true balance** — over 209 DASH that does not
+exist anywhere on the real network, across every address this wallet could plausibly hold
+funds at (checked directly, not sampled). This corroborates §10's finding independently and at
+a different point in time, with zero reliance on key-wallet's own state, and is by far the
+strongest single piece of evidence for the upstream bug report: a third party can rerun this
+exact check against the real chain and get the same answer.
+
+**Artifacts** (full per-address data, not reproduced inline here):
+- `/data/artifacts/dash-evo-tool/2026-07-07/framework-wallet-addresses.csv` — the 20,000
+  brute-force-derived addresses (chain, index, address).
+- `/data/artifacts/dash-evo-tool/2026-07-07/framework-wallet-ground-truth-per-address.csv` —
+  full per-address result (chain, index, address, confirmed duffs, unconfirmed duffs, UTXO
+  count), including all zero-balance addresses.
+- `/data/artifacts/dash-evo-tool/2026-07-07/ground_truth_oracle.py` — the query script.
+
+**Scope note:** checked BIP44 standard account 0 only — the account `CoreTask::
+CreateRegistrationAssetLock`/`CreateTopUpAssetLock` actually fund from. Other account types
+the wallet may hold (CoinJoin, DashPay, identity-registration keys) were out of scope; they
+don't participate in asset-lock funding and aren't relevant to the FinalityTimeout symptom
+this investigation is about.

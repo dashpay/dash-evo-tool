@@ -287,3 +287,70 @@ transactions that has never been reconciled against real chain state, to the poi
 producing *any* transaction — asset-lock or plain payment — that the real network accepts.
 Every symptom observed this session (TC-004's FinalityTimeout, TC-012's permanent
 zero-confirmation) is a direct, provable consequence of that one fact, not independent bugs.
+
+---
+
+## 16. Real-money follow-up (same session, later): a genuine, clean deposit does not fix it
+
+At the user's request, sent a real manual top-up (not a faucet) to the framework wallet's
+verified-unused address from §10 (`yYqF93Sonfe1ETRPim5vATsNdTa4qztyXf`). Confirmed via
+Insight within seconds: txid `ad9b30b831de7d2286a1bf9784d5a4e3e06e8cc53af2842376476fee2899931b`,
+**20 DASH**, genuinely InstantSend-locked (`"txlock":true`; `blockheight:-1` — not yet
+block-mined, but IS-lock is the same finality grade DET's coin-selector accepts). A real,
+clean, node-observed deposit, unlike every transaction in §4-§13.
+
+Swapped the preserved cold-synced workdir (§10) back to the primary path and reran
+`test_tc004_create_registration_asset_lock` — a "repeat run" per Addition 1, now against a
+wallet holding real money. **Still `FinalityTimeout`**, same shape as ever:
+`WalletBackend { source: FinalityTimeout(OutPoint { txid: 0xfa5b15ab…, vout: 0 }) }`,
+307s total.
+
+The coin-selector did not even reach for the clean 20 DASH deposit — it built the new
+asset-lock transaction on a *different* input entirely:
+`5c43cd895754b925234950f5e94a7cdfd73b315a6d2eef9eee1b44de03d58de7:1` (value 77.99295932
+DASH). Checked on Insight:
+
+| Item | Insight |
+|---|---|
+| `5c43cd8957…:1` — the input our new asset-lock tx spent | **Confirmed**, block 1474688, 35406 confirmations (~61 days old). But: `"spentTxId":"f9ca52d513f2801a2aec9d222f3d958748254ffb7a4532c6c44b22a111b638c7","spentHeight":1474746"` — **spent for real, 58 blocks after it was created, ~61 days ago.** |
+| `fa5b15ab98…` — our new asset-lock tx | **Not found** — same doomed-double-spend fate as every prior attempt. |
+
+**This is a materially different, and more serious, finding than §10's "the whole balance
+is phantom."** §10 showed a supposedly-complete cold rescan settling on a real balance of
+0.369 DASH — implying the rescan mechanism itself works and the problem was accumulated,
+un-reconciled warm-cache staleness. This run shows the opposite: given more elapsed
+wall-clock time to keep reconciling (the same workdir, resumed ~35 minutes later,
+uninterrupted), the *same, previously-cold-synced* wallet settled on a spendable balance of
+**22,998,547,073 duffs (≈230 DASH)** — logged as "sufficient" at the very first balance
+check of this run, before this run broadcast anything itself — and picked at least one
+UTXO for its next transaction that an independent full node shows was genuinely spent
+~35,406 confirmations ago. A resync that is allowed to run longer does not converge on
+truth; it reintroduces (or never actually eliminated) at least this stale entry. This
+demotes the "cache/hygiene" explanation from §6/§10: the defect is not a property of an
+unreconciled warm cache versus a clean cold one — it reproduces after a from-genesis rescan
+that was given ample time to complete, on a different historical UTXO each time. The
+underlying spend-detection/reconciliation logic in `platform-wallet`/`key-wallet` itself
+does not reliably mark this wallet's own historical outputs as spent, regardless of how
+"cold" or complete the resync is.
+
+**Practical consequence for Addition 1/2's clean-funding comparison:** routing real money
+*through the existing, long-lived framework wallet* does not isolate a clean signal —
+its coin-selector can always reach past the fresh deposit into the same poisoned history.
+A genuinely clean comparison needs a **brand-new wallet funded directly** (bypassing the
+framework wallet as an intermediary), so it has zero prior history to reconcile, correctly,
+or incorrectly. That is a cheap follow-up (fund a fresh address directly, then rerun
+`TC-012` pointed at that wallet) but was not completed in this session for time.
+
+## 17. Final updated verdict
+
+**STILL BROKEN — confirmed with real money, in a genuinely cold-synced context, against a
+different historical UTXO than any prior attempt.** The original H1 (local spendability
+diverges from network truth) is now established at three independent depths: (1) a single
+stale UTXO in a warm, never-wiped cache (§4); (2) the wallet's *entire* apparent balance
+being >99.9% phantom immediately after a cold rescan (§10); and (3) a *different* stale,
+genuinely-spent-61-days-ago UTXO surfacing again after that same cold-synced wallet was
+given more time to reconcile and received a real, clean, IS-locked deposit (§16). No amount
+of waiting, re-syncing, or adding real funds to this wallet has produced a passing run.
+Fixing this requires correcting the reconciliation/spend-detection defect itself — this
+wallet's local UTXO index cannot currently be trusted to converge on real chain state no
+matter how it is refreshed.

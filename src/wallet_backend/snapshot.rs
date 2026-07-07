@@ -35,6 +35,7 @@ use std::sync::Mutex;
 
 use arc_swap::ArcSwap;
 use dash_sdk::dpp::dashcore::{Address, OutPoint, ScriptBuf, Transaction, TxOut, Txid};
+use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
 use dash_sdk::dpp::key_wallet::managed_account::transaction_record::{
     OutputRole, TransactionRecord,
 };
@@ -98,6 +99,24 @@ pub struct WalletSnapshot {
     /// an address inside the watched gap-limit window — never a legacy DET-side
     /// index past it. Lock-free read on the UI hot path.
     pub monitored_receive_addresses: Vec<String>,
+    /// Authoritative derivation path for every address the upstream wallet has
+    /// generated, across all accounts and pools. Lets the account-summary view
+    /// categorize funded addresses that DET's own `watched_addresses`
+    /// bookkeeping has not indexed yet, so no funded address is dropped from the
+    /// per-category tab totals.
+    pub address_paths: BTreeMap<Address, DerivationPath>,
+}
+
+/// Chain-derived parts of a published snapshot — everything except the
+/// event-sourced transaction history, which [`SnapshotStore::publish`]
+/// assembles from the tx log. Bundling these keeps `publish` under the
+/// argument limit and makes the carry-forward-on-contention path explicit.
+struct SnapshotState {
+    balance: DetWalletBalance,
+    utxos: Vec<DetUtxo>,
+    address_balances: BTreeMap<Address, u64>,
+    monitored_receive_addresses: Vec<String>,
+    address_paths: BTreeMap<Address, DerivationPath>,
 }
 
 /// Map a finalized-or-pending upstream `TransactionContext` to DET's richer
@@ -240,6 +259,26 @@ fn external_addresses_from_info(
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// The derivation path of every address the wallet has generated, across all
+/// accounts and every pool (external and internal).
+///
+/// Read straight off each pool's [`AddressInfo`](dash_sdk::dpp::key_wallet::managed_account::address_pool::AddressInfo)
+/// (`address → path`), which the account-summary view uses to categorize funded
+/// addresses DET's own `watched_addresses` bookkeeping has not indexed yet.
+fn address_paths_from_info(
+    info: &dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::ManagedWalletInfo,
+) -> BTreeMap<Address, DerivationPath> {
+    let mut paths = BTreeMap::new();
+    for account in info.accounts.all_accounts() {
+        for pool in account.managed_account_type().address_pools() {
+            for entry in pool.addresses.values() {
+                paths.insert(entry.address.clone(), entry.path.clone());
+            }
+        }
+    }
+    paths
 }
 
 /// Shared store of per-wallet display snapshots plus the event-sourced
@@ -435,7 +474,7 @@ impl SnapshotStore {
         // Non-blocking UTXO read. On contention, carry the prior snapshot's
         // UTXO view forward rather than blocking the event callback.
         let prior = self.snapshot(&seed_hash);
-        let (utxos, address_balances, monitored_receive_addresses) = match wallet.try_state() {
+        let state = match wallet.try_state() {
             Some(state) => {
                 let mut utxos = Vec::new();
                 let mut address_balances: BTreeMap<Address, u64> = BTreeMap::new();
@@ -448,39 +487,31 @@ impl SnapshotStore {
                         address: u.address.clone(),
                     });
                 }
-                let monitored = external_addresses_from_info(&state.core_wallet);
-                (utxos, address_balances, monitored)
+                SnapshotState {
+                    balance,
+                    utxos,
+                    address_balances,
+                    monitored_receive_addresses: external_addresses_from_info(&state.core_wallet),
+                    address_paths: address_paths_from_info(&state.core_wallet),
+                }
             }
-            None => (
-                prior.utxos.clone(),
-                prior.address_balances.clone(),
-                prior.monitored_receive_addresses.clone(),
-            ),
+            None => SnapshotState {
+                balance,
+                utxos: prior.utxos.clone(),
+                address_balances: prior.address_balances.clone(),
+                monitored_receive_addresses: prior.monitored_receive_addresses.clone(),
+                address_paths: prior.address_paths.clone(),
+            },
         };
 
-        self.publish(
-            &seed_hash,
-            wallet_id,
-            balance,
-            utxos,
-            address_balances,
-            monitored_receive_addresses,
-        );
+        self.publish(&seed_hash, wallet_id, state);
     }
 
     /// Assemble the event-sourced tx history with the freshly-read
     /// balance/UTXO state and atomically publish the snapshot. Split from
     /// [`Self::recompute`] so the publish + tx-log assembly is unit-testable
     /// without a live `PlatformWallet`.
-    fn publish(
-        &self,
-        seed_hash: &WalletSeedHash,
-        wallet_id: &WalletId,
-        balance: DetWalletBalance,
-        utxos: Vec<DetUtxo>,
-        address_balances: BTreeMap<Address, u64>,
-        monitored_receive_addresses: Vec<String>,
-    ) {
+    fn publish(&self, seed_hash: &WalletSeedHash, wallet_id: &WalletId, state: SnapshotState) {
         let transactions: Vec<WalletTransaction> = self
             .tx_log
             .lock()
@@ -489,11 +520,12 @@ impl SnapshotStore {
             .unwrap_or_default();
 
         let snapshot = Arc::new(WalletSnapshot {
-            balance,
+            balance: state.balance,
             transactions,
-            utxos,
-            address_balances,
-            monitored_receive_addresses,
+            utxos: state.utxos,
+            address_balances: state.address_balances,
+            monitored_receive_addresses: state.monitored_receive_addresses,
+            address_paths: state.address_paths,
         });
 
         self.snapshots.rcu(|current| {
@@ -559,10 +591,13 @@ mod tests {
         store.publish(
             &seed,
             &wid,
-            DetWalletBalance::default(),
-            Vec::new(),
-            BTreeMap::new(),
-            Vec::new(),
+            SnapshotState {
+                balance: DetWalletBalance::default(),
+                utxos: Vec::new(),
+                address_balances: BTreeMap::new(),
+                monitored_receive_addresses: Vec::new(),
+                address_paths: BTreeMap::new(),
+            },
         );
     }
 
@@ -592,10 +627,13 @@ mod tests {
         store.publish(
             &seed(9),
             &wid(9),
-            DetWalletBalance::default(),
-            Vec::new(),
-            BTreeMap::new(),
-            watched.clone(),
+            SnapshotState {
+                balance: DetWalletBalance::default(),
+                utxos: Vec::new(),
+                address_balances: BTreeMap::new(),
+                monitored_receive_addresses: watched.clone(),
+                address_paths: BTreeMap::new(),
+            },
         );
 
         let snap = store.snapshot(&seed(9));
@@ -643,6 +681,43 @@ mod tests {
                 .expect("a decodable address")
                 .require_network(network);
             assert!(parsed.is_ok(), "every address is on the active network");
+        }
+    }
+
+    /// `address_paths_from_info` must surface a derivation path for every
+    /// generated address — the account-summary view categorizes funded
+    /// addresses through this map, so a missing entry silently drops funds from
+    /// the per-category totals. Every external (receive) address must appear.
+    #[test]
+    fn address_paths_from_info_covers_the_generated_addresses() {
+        use dash_sdk::dpp::dashcore::Address;
+        use dash_sdk::dpp::key_wallet::wallet::Wallet as UpstreamWallet;
+        use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOptions;
+        use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::ManagedWalletInfo;
+
+        let seed = [0x42u8; 64];
+        let network = Network::Testnet;
+        let wallet =
+            UpstreamWallet::from_seed_bytes(seed, network, WalletAccountCreationOptions::Default)
+                .expect("upstream wallet");
+        let info = ManagedWalletInfo::from_wallet(&wallet, 1);
+
+        let paths = address_paths_from_info(&info);
+        assert!(
+            !paths.is_empty(),
+            "generated addresses must carry derivation paths"
+        );
+
+        for addr in external_addresses_from_info(&info) {
+            let parsed = addr
+                .parse::<Address<_>>()
+                .expect("a decodable address")
+                .require_network(network)
+                .expect("address on the active network");
+            assert!(
+                paths.contains_key(&parsed),
+                "external receive address {addr} must have a derivation path"
+            );
         }
     }
 

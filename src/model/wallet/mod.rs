@@ -642,11 +642,24 @@ pub type WalletSeedHash = [u8; 32];
 
 /// A single per-address entry in a coordinator-push balance update.
 ///
-/// `(p2pkh_hash_bytes_20, balance_credits, nonce)` — the raw 20-byte P2PKH
-/// hash is network-agnostic and must be converted to a `dashcore::Address`
-/// by the receiver using the active network before calling
-/// [`Wallet::set_platform_address_info`].
-pub type PlatformAddressEntry = ([u8; 20], u64, u32);
+/// The raw 20-byte P2PKH `hash` is network-agnostic and must be converted to a
+/// `dashcore::Address` by the receiver using the active network before calling
+/// [`Wallet::set_platform_address_info`]. `account` / `index` are the DIP-17
+/// coordinates the address was derived at, letting the receiver register its
+/// derivation path EXACTLY via [`Wallet::register_platform_payment_address`]
+/// instead of reverse-deriving it; `index` is `None` only for legacy data that
+/// predates index threading, which falls back to
+/// [`Wallet::reconcile_platform_address`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PlatformAddressEntry {
+    pub hash: [u8; 20],
+    pub balance: u64,
+    pub nonce: u32,
+    /// DIP-17 account index the address belongs to.
+    pub account: u32,
+    /// DIP-17 derivation index within the account, when known.
+    pub index: Option<AddressIndex>,
+}
 
 /// Batch of coordinator-push balance updates, grouped by wallet.
 ///
@@ -1911,6 +1924,40 @@ impl Wallet {
             "Platform-payment address not found within the reverse-derivation window; it cannot be signed for. It may belong to a different wallet or lie beyond the searched index range."
         );
         false
+    }
+
+    /// Register a platform-payment `address` for signing at its exact DIP-17
+    /// coordinates, with no reverse-derivation scan.
+    ///
+    /// The coordinator push now carries the `(account, index)` the address was
+    /// derived at, so its derivation path is known exactly — unlike
+    /// [`Self::reconcile_platform_address`], which reverse-derives within a
+    /// bounded window and fails past its ceiling. Inserts `known_addresses` /
+    /// `watched_addresses` exactly as the sync provider would
+    /// (`CLEAR_FUNDS` / `PlatformPayment`). Idempotent.
+    pub fn register_platform_payment_address(
+        &mut self,
+        address: &Address,
+        account: u32,
+        index: AddressIndex,
+        network: Network,
+    ) {
+        let canonical = Wallet::canonical_address(address, network);
+        let path = DerivationPath::platform_payment_path(
+            network,
+            account,
+            PLATFORM_PAYMENT_KEY_CLASS,
+            index,
+        );
+        self.known_addresses.insert(canonical.clone(), path.clone());
+        self.watched_addresses.insert(
+            path,
+            AddressInfo {
+                address: canonical,
+                path_type: DerivationPathType::CLEAR_FUNDS,
+                path_reference: DerivationPathReference::PlatformPayment,
+            },
+        );
     }
 }
 
@@ -3749,6 +3796,83 @@ mod tests {
         let addr = platform_address_at(25, network);
         assert!(!wallet.reconcile_platform_address(&addr, network));
         assert!(!wallet.known_addresses.contains_key(&addr));
+    }
+
+    /// `register_platform_payment_address` inserts the exact DIP-17 entries into
+    /// `known_addresses` / `watched_addresses` at the derived path — no
+    /// reverse-derivation, no cached xpub needed.
+    #[test]
+    fn register_platform_payment_address_inserts_exact_dip17_entries() {
+        let network = Network::Testnet;
+        let index = 7u32;
+        let mut wallet = legacy_wallet(network);
+        let addr = platform_address_at(index, network);
+        assert!(
+            !wallet.known_addresses.contains_key(&addr),
+            "precondition: address not yet registered"
+        );
+
+        wallet.register_platform_payment_address(&addr, 0, index, network);
+
+        let expected_path = DerivationPath::platform_payment_path(network, 0, 0, index);
+        assert_eq!(wallet.known_addresses.get(&addr), Some(&expected_path));
+        let info = wallet
+            .watched_addresses
+            .get(&expected_path)
+            .expect("registered path must be watched");
+        assert_eq!(info.address, addr);
+        assert_eq!(
+            info.path_reference,
+            DerivationPathReference::PlatformPayment
+        );
+        assert_eq!(info.path_type, DerivationPathType::CLEAR_FUNDS);
+    }
+
+    /// The doc comment's "idempotent" claim: a second identical registration is
+    /// a no-op — no duplicate entries, no changed state.
+    #[test]
+    fn register_platform_payment_address_is_idempotent() {
+        let network = Network::Testnet;
+        let index = 7u32;
+        let mut wallet = legacy_wallet(network);
+        let addr = platform_address_at(index, network);
+
+        wallet.register_platform_payment_address(&addr, 0, index, network);
+        let known_after_first = wallet.known_addresses.clone();
+        let watched_len = wallet.watched_addresses.len();
+
+        wallet.register_platform_payment_address(&addr, 0, index, network);
+
+        assert_eq!(
+            wallet.watched_addresses.len(),
+            watched_len,
+            "no duplicate watched entry"
+        );
+        assert_eq!(
+            wallet.known_addresses, known_after_first,
+            "second call leaves known_addresses unchanged"
+        );
+    }
+
+    /// The mechanism that actually closes the reported Platform gap: exact
+    /// registration succeeds precisely where the guess-based reconcile path
+    /// DEFERS (no cached xpub) — the exact `(account, index)` from the push
+    /// removes the reverse-derivation dependency entirely.
+    #[test]
+    fn exact_registration_registers_where_reconcile_would_defer() {
+        let network = Network::Testnet;
+        let index = 7u32;
+        let mut wallet = legacy_wallet(network);
+        let addr = platform_address_at(index, network);
+
+        // Guess-based reconcile cannot register without the cached account xpub.
+        assert!(!wallet.reconcile_platform_address(&addr, network));
+        assert!(!wallet.known_addresses.contains_key(&addr));
+
+        // Exact registration needs no xpub — it registers directly.
+        wallet.register_platform_payment_address(&addr, 0, index, network);
+        let expected_path = DerivationPath::platform_payment_path(network, 0, 0, index);
+        assert_eq!(wallet.known_addresses.get(&addr), Some(&expected_path));
     }
 
     /// The bounded search terminates and returns false for a foreign address

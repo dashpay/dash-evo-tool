@@ -184,6 +184,8 @@ pub(crate) fn categorize_account_path(
         AccountCategory::Bip32
     } else if path.is_bip44(network) {
         AccountCategory::Bip44
+    } else if path.is_platform_payment(network) {
+        AccountCategory::PlatformPayment
     } else {
         AccountCategory::from_reference(reference)
     };
@@ -241,21 +243,54 @@ impl AccountSummaryBuilder {
     }
 }
 
-/// Build per-account summaries from the wallet's watched-address derivation
-/// metadata plus the display-only chain balances from the `WalletBackend`
-/// snapshot (`address_balances`, P4a — replaces the dropped
-/// `Wallet.address_balances`). Platform credits come from
-/// `Wallet.platform_address_info`, which is kept current by both the
-/// coordinator-push path (`AppContext::apply_platform_address_push`, fires
-/// every 15 s automatically) and the manual `FetchPlatformAddressBalances`
-/// backend task.
+/// Categorize a funded chain address the watched set hasn't indexed yet, using
+/// the authoritative derivation path from the `WalletBackend` snapshot.
+///
+/// Falls back to an `Other(Unknown)` bucket when no path is known, so a funded
+/// address is still counted in the tab totals rather than silently dropped.
+fn categorize_snapshot_address(
+    network: Network,
+    address: &Address,
+    address_paths: &BTreeMap<Address, DerivationPath>,
+) -> (AccountCategory, Option<u32>) {
+    match address_paths.get(address) {
+        Some(path) => categorize_account_path(path, network, DerivationPathReference::Unknown),
+        None => (
+            AccountCategory::Other(DerivationPathReference::Unknown),
+            None,
+        ),
+    }
+}
+
+/// Build per-account summaries for the wallet.
+///
+/// Two passes feed the per-category totals:
+///
+/// 1. **Watched addresses** — the source of per-category structure, address
+///    labels (via each address's stored `path_reference`), and Platform credits
+///    from `Wallet.platform_address_info` (kept current by the coordinator-push
+///    path `AppContext::apply_platform_address_push` and the manual
+///    `FetchPlatformAddressBalances` task). Chain balances come from the
+///    display-only `WalletBackend` snapshot `address_balances` (P4a — replaces
+///    the dropped `Wallet.address_balances`).
+/// 2. **Authoritative funded addresses** — every address in `address_balances`
+///    the watched set has NOT indexed yet, categorized via the snapshot's
+///    `address_paths`. This closes the desync where funds on addresses past
+///    DET's bookkeeping window were dropped from the tab totals. Each chain
+///    balance is counted exactly once (pass 2 skips addresses pass 1 covered),
+///    and Platform credits are threaded from `platform_address_info` — never
+///    hardcoded to zero — so a DIP-17 address surfacing here still lands in the
+///    Platform tab, which sums `platform_credits` rather than `confirmed_balance`.
 pub fn collect_account_summaries(
     wallet: &Wallet,
     network: Network,
     address_balances: &BTreeMap<Address, u64>,
+    address_paths: &BTreeMap<Address, DerivationPath>,
 ) -> Vec<AccountSummary> {
     let mut builders: BTreeMap<AccountKey, AccountSummaryBuilder> = BTreeMap::new();
 
+    // Pass 1: watched addresses (structure + labels + Platform credits).
+    let mut counted: std::collections::BTreeSet<Address> = std::collections::BTreeSet::new();
     for (path, info) in &wallet.watched_addresses {
         let (category, index) = categorize_account_path(path, network, info.path_reference);
 
@@ -271,6 +306,31 @@ pub fn collect_account_summaries(
             .map(|info| info.balance)
             .unwrap_or_default();
 
+        builders
+            .entry(AccountKey {
+                category: category.clone(),
+                index,
+            })
+            .or_insert_with(|| AccountSummaryBuilder::new(category, index))
+            .add_address(balance, platform_credits);
+        counted.insert(info.address.clone());
+    }
+
+    // Pass 2: authoritative funded addresses the watched set missed. Thread the
+    // real Platform credits (not a hardcoded 0) so a DIP-17 address that ever
+    // surfaces here is still summed correctly in the Platform tab.
+    for (address, &balance) in address_balances {
+        if counted.contains(address) {
+            continue;
+        }
+        let platform_credits = wallet
+            .get_platform_address_info(address)
+            .map(|info| info.balance)
+            .unwrap_or_default();
+        if balance == 0 && platform_credits == 0 {
+            continue;
+        }
+        let (category, index) = categorize_snapshot_address(network, address, address_paths);
         builders
             .entry(AccountKey {
                 category: category.clone(),
@@ -346,5 +406,213 @@ mod tests {
         let (category, _) =
             categorize_account_path(&path, Network::Testnet, DerivationPathReference::Unknown);
         assert_ne!(category, AccountCategory::Bip44);
+    }
+
+    /// A P2PKH testnet address derived from a raw secret-key byte — a distinct,
+    /// valid address to stand in for a funded-but-unindexed chain address.
+    fn addr_from_byte(b: u8) -> Address {
+        use dash_sdk::dpp::dashcore::PublicKey;
+        use dash_sdk::dpp::dashcore::secp256k1::{
+            PublicKey as SecpPublicKey, Secp256k1, SecretKey,
+        };
+        let secp = Secp256k1::new();
+        let mut sk_bytes = [0u8; 32];
+        sk_bytes[0] = if b == 0 { 1 } else { b };
+        let sk = SecretKey::from_slice(&sk_bytes).expect("valid secret key");
+        let pubkey = PublicKey::from_slice(&SecpPublicKey::from_secret_key(&secp, &sk).serialize())
+            .expect("valid pubkey");
+        Address::p2pkh(&pubkey, Network::Testnet)
+    }
+
+    #[test]
+    fn platform_payment_path_shape_is_categorized_without_reference() {
+        use crate::model::wallet::DerivationPathHelpers;
+        // Snapshot-sourced paths carry no DET reference — the DIP-17 shape alone
+        // must categorize them, or a Core-funded platform address buckets wrong.
+        let path = DerivationPath::platform_payment_path(Network::Testnet, 0, 0, 3);
+        let (category, index) =
+            categorize_account_path(&path, Network::Testnet, DerivationPathReference::Unknown);
+        assert_eq!(category, AccountCategory::PlatformPayment);
+        assert_eq!(index, None);
+    }
+
+    #[test]
+    fn snapshot_address_without_a_known_path_still_gets_a_bucket() {
+        let addr = addr_from_byte(9);
+        let paths = BTreeMap::new();
+        let (category, index) = categorize_snapshot_address(Network::Testnet, &addr, &paths);
+        assert_eq!(
+            category,
+            AccountCategory::Other(DerivationPathReference::Unknown)
+        );
+        assert_eq!(index, None);
+    }
+
+    #[test]
+    fn funded_address_missing_from_watched_is_counted_once() {
+        let wallet =
+            Wallet::new_from_seed([7u8; 64], Network::Testnet, None, None).expect("test wallet");
+
+        // The single bootstrapped watched receive address (m/44'/1'/0'/0/0).
+        let watched = wallet
+            .watched_addresses
+            .values()
+            .next()
+            .expect("bootstrapped receive address")
+            .address
+            .clone();
+
+        // A funded address the watched set has not indexed yet (m/44'/1'/0'/0/5).
+        let unwatched = addr_from_byte(42);
+        let unwatched_path = DerivationPath::from(vec![
+            ChildNumber::Hardened { index: 44 },
+            ChildNumber::Hardened { index: 1 },
+            ChildNumber::Hardened { index: 0 },
+            ChildNumber::Normal { index: 0 },
+            ChildNumber::Normal { index: 5 },
+        ]);
+
+        let mut address_balances = BTreeMap::new();
+        address_balances.insert(watched.clone(), 1_000u64);
+        address_balances.insert(unwatched.clone(), 5_000u64);
+
+        let mut address_paths = BTreeMap::new();
+        address_paths.insert(unwatched.clone(), unwatched_path);
+
+        let summaries =
+            collect_account_summaries(&wallet, Network::Testnet, &address_balances, &address_paths);
+
+        // Neither balance is dropped, and the watched address is not
+        // double-counted by the authoritative pass.
+        let core_total: u64 = summaries.iter().map(|s| s.confirmed_balance).sum();
+        assert_eq!(core_total, 6_000);
+
+        let bip44 = summaries
+            .iter()
+            .find(|s| s.category == AccountCategory::Bip44)
+            .expect("bip44 summary");
+        assert_eq!(bip44.confirmed_balance, 6_000);
+    }
+
+    #[test]
+    fn address_in_both_watched_and_balances_is_counted_exactly_once() {
+        let wallet =
+            Wallet::new_from_seed([8u8; 64], Network::Testnet, None, None).expect("test wallet");
+
+        // A single address that is BOTH watched (bootstrapped) and funded.
+        let (watched_path, watched) = {
+            let (path, info) = wallet
+                .watched_addresses
+                .iter()
+                .next()
+                .expect("bootstrapped receive address");
+            (path.clone(), info.address.clone())
+        };
+
+        let mut address_balances = BTreeMap::new();
+        address_balances.insert(watched.clone(), 4_000u64);
+
+        // Its path is also known to the authoritative map — the dedup must rely
+        // on the address already being counted, not on the path being absent.
+        let mut address_paths = BTreeMap::new();
+        address_paths.insert(watched.clone(), watched_path);
+
+        let summaries =
+            collect_account_summaries(&wallet, Network::Testnet, &address_balances, &address_paths);
+
+        let total: u64 = summaries.iter().map(|s| s.confirmed_balance).sum();
+        assert_eq!(
+            total, 4_000,
+            "the shared address is counted once, not twice"
+        );
+    }
+
+    #[test]
+    fn unwatched_funded_address_lands_in_its_tab_without_disturbing_structure() {
+        use crate::model::wallet::{AddressInfo, DerivationPathHelpers, DerivationPathType};
+
+        let mut wallet =
+            Wallet::new_from_seed([9u8; 64], Network::Testnet, None, None).expect("test wallet");
+
+        // An existing zero-balance Platform category tab that must survive: a
+        // watched platform-payment address with no funds.
+        let pp_addr = addr_from_byte(77);
+        let pp_path = DerivationPath::platform_payment_path(Network::Testnet, 0, 0, 0);
+        wallet.watched_addresses.insert(
+            pp_path,
+            AddressInfo {
+                address: pp_addr,
+                path_type: DerivationPathType::CLEAR_FUNDS,
+                path_reference: DerivationPathReference::PlatformPayment,
+            },
+        );
+
+        // A funded BIP44 address the watched set has not indexed.
+        let unwatched = addr_from_byte(43);
+        let unwatched_path = DerivationPath::from(vec![
+            ChildNumber::Hardened { index: 44 },
+            ChildNumber::Hardened { index: 1 },
+            ChildNumber::Hardened { index: 0 },
+            ChildNumber::Normal { index: 0 },
+            ChildNumber::Normal { index: 9 },
+        ]);
+
+        let mut address_balances = BTreeMap::new();
+        address_balances.insert(unwatched.clone(), 2_500u64);
+        let mut address_paths = BTreeMap::new();
+        address_paths.insert(unwatched, unwatched_path);
+
+        let summaries =
+            collect_account_summaries(&wallet, Network::Testnet, &address_balances, &address_paths);
+
+        // The funded unwatched address is categorized as Bip44 and included.
+        let bip44 = summaries
+            .iter()
+            .find(|s| s.category == AccountCategory::Bip44)
+            .expect("bip44 summary");
+        assert_eq!(bip44.confirmed_balance, 2_500);
+
+        // The zero-balance Platform tab is untouched — structure preserved.
+        assert!(
+            summaries
+                .iter()
+                .any(|s| s.category == AccountCategory::PlatformPayment),
+            "the zero-balance Platform category tab must still be present"
+        );
+    }
+
+    #[test]
+    fn platform_address_surfacing_in_pass_two_keeps_its_credits() {
+        use crate::model::wallet::DerivationPathHelpers;
+
+        let mut wallet =
+            Wallet::new_from_seed([11u8; 64], Network::Testnet, None, None).expect("test wallet");
+
+        // A DIP-17 platform-payment address that is funded on-chain (a stray Core
+        // UTXO puts it in `address_balances`) and carries Platform credits, but is
+        // NOT in `watched_addresses` — the only way it reaches pass 2.
+        let pp_addr = addr_from_byte(55);
+        let pp_path = DerivationPath::platform_payment_path(Network::Testnet, 0, 0, 3);
+        wallet.set_platform_address_info(pp_addr.clone(), 9_000, 1);
+
+        let mut address_balances = BTreeMap::new();
+        address_balances.insert(pp_addr.clone(), 500u64);
+        let mut address_paths = BTreeMap::new();
+        address_paths.insert(pp_addr, pp_path);
+
+        let summaries =
+            collect_account_summaries(&wallet, Network::Testnet, &address_balances, &address_paths);
+
+        // Pass 2 must thread the real credits, not hardcode 0 — otherwise the
+        // Platform tab (which sums platform_credits) would show 0 here.
+        let platform = summaries
+            .iter()
+            .find(|s| s.category == AccountCategory::PlatformPayment)
+            .expect("platform summary");
+        assert_eq!(
+            platform.platform_credits, 9_000,
+            "pass 2 must carry the address's real Platform credits"
+        );
+        assert_eq!(platform.confirmed_balance, 500);
     }
 }

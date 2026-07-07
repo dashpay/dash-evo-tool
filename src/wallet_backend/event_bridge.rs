@@ -352,7 +352,7 @@ impl PlatformEventHandler for EventBridge {
         // precision loss is ≤ 0.001 DASH regardless of address count.
         if let Ok(mut balances) = self.platform_balances.lock() {
             for (seed_hash, entries) in &resolved {
-                let total_credits: u64 = entries.iter().map(|(_, credits, _)| credits).sum();
+                let total_credits: u64 = entries.iter().map(|e| e.balance).sum();
                 balances.insert(*seed_hash, total_credits / CREDITS_PER_DUFF);
             }
         }
@@ -479,7 +479,9 @@ impl PlatformEventHandler for EventBridge {
 
 /// Collect per-address `(wallet_id, entries)` for every wallet whose sync
 /// completed successfully in `summary`. Each entry carries the raw 20-byte
-/// P2PKH hash, credits balance, and nonce for one found address.
+/// P2PKH hash, credits balance, nonce, and the DIP-17 `(account, index)`
+/// coordinates from the sync tag — so the receiver can register the address's
+/// derivation path exactly instead of reverse-deriving it.
 ///
 /// `Err` outcomes are skipped so their cached per-address data is left
 /// untouched. Pure — no I/O — so it is unit-testable without a coordinator.
@@ -494,7 +496,15 @@ fn summary_ok_platform_entries(
                 let entries: Vec<PlatformAddressEntry> = result
                     .found
                     .iter()
-                    .map(|((_, p2pkh), funds)| (p2pkh.to_bytes(), funds.balance, funds.nonce))
+                    .map(
+                        |(((_, account, index), p2pkh), funds)| PlatformAddressEntry {
+                            hash: p2pkh.to_bytes(),
+                            balance: funds.balance,
+                            nonce: funds.nonce,
+                            account: *account,
+                            index: Some(*index),
+                        },
+                    )
                     .collect();
                 Some((*wallet_id, entries))
             }
@@ -1219,25 +1229,29 @@ mod tests {
         assert_eq!(entries.len(), 2);
 
         // Check both addresses are present (order not guaranteed for BTreeMap).
-        let mut hash_set: Vec<[u8; 20]> = entries.iter().map(|(h, _, _)| *h).collect();
+        let mut hash_set: Vec<[u8; 20]> = entries.iter().map(|e| e.hash).collect();
         hash_set.sort();
         assert!(hash_set.contains(&[0xAAu8; 20]));
         assert!(hash_set.contains(&[0xBBu8; 20]));
 
-        // Verify funds are passed through correctly.
+        // Verify funds and DIP-17 coordinates are passed through correctly.
         let entry_a = entries
             .iter()
-            .find(|(h, _, _)| h == &[0xAAu8; 20])
+            .find(|e| e.hash == [0xAAu8; 20])
             .expect("entry for p2pkh_a");
-        assert_eq!(entry_a.1, 500_000, "balance_credits for p2pkh_a");
-        assert_eq!(entry_a.2, 1, "nonce for p2pkh_a");
+        assert_eq!(entry_a.balance, 500_000, "balance_credits for p2pkh_a");
+        assert_eq!(entry_a.nonce, 1, "nonce for p2pkh_a");
+        assert_eq!(entry_a.account, 0, "account for p2pkh_a");
+        assert_eq!(entry_a.index, Some(0), "index for p2pkh_a");
 
         let entry_b = entries
             .iter()
-            .find(|(h, _, _)| h == &[0xBBu8; 20])
+            .find(|e| e.hash == [0xBBu8; 20])
             .expect("entry for p2pkh_b");
-        assert_eq!(entry_b.1, 300_000, "balance_credits for p2pkh_b");
-        assert_eq!(entry_b.2, 2, "nonce for p2pkh_b");
+        assert_eq!(entry_b.balance, 300_000, "balance_credits for p2pkh_b");
+        assert_eq!(entry_b.nonce, 2, "nonce for p2pkh_b");
+        assert_eq!(entry_b.account, 0, "account for p2pkh_b");
+        assert_eq!(entry_b.index, Some(1), "index for p2pkh_b");
     }
 
     /// `summary_ok_sync_cursors` yields a `(timestamp, height)` cursor for every
@@ -1454,7 +1468,7 @@ mod tests {
         assert_eq!(entries.len(), 2);
 
         // sum-then-truncate (correct): 1 duff
-        let total_credits: u64 = entries.iter().map(|(_, c, _)| c).sum();
+        let total_credits: u64 = entries.iter().map(|e| e.balance).sum();
         assert_eq!(total_credits, 1000, "total credits = 1000");
         assert_eq!(
             total_credits / CREDITS_PER_DUFF,
@@ -1463,7 +1477,7 @@ mod tests {
         );
 
         // truncate-then-sum (wrong): 0 duffs — demonstrate the bug we fixed
-        let wrong_total: u64 = entries.iter().map(|(_, c, _)| c / CREDITS_PER_DUFF).sum();
+        let wrong_total: u64 = entries.iter().map(|e| e.balance / CREDITS_PER_DUFF).sum();
         assert_eq!(
             wrong_total, 0,
             "truncate-then-sum gives 0 duffs (this was the bug)"

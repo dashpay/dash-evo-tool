@@ -661,14 +661,30 @@ impl AppContext {
                 if let Some(wallet_arc) = wallets.get(&seed_hash)
                     && let Ok(mut wallet) = wallet_arc.write()
                 {
-                    for (hash_bytes, balance, nonce) in entries {
-                        let addr = PlatformP2PKHAddress::new(hash_bytes).to_address(network);
+                    for entry in entries {
+                        let addr = PlatformP2PKHAddress::new(entry.hash).to_address(network);
                         let canonical = Wallet::canonical_address(&addr, network);
-                        wallet.set_platform_address_info(canonical.clone(), balance, nonce);
-                        // Register the address for signing: the push carries a
-                        // balance but no derivation index, so without this it is
-                        // visible yet unwithdrawable. Seedless, no-op once known.
-                        wallet.reconcile_platform_address(&canonical, network);
+                        wallet.set_platform_address_info(
+                            canonical.clone(),
+                            entry.balance,
+                            entry.nonce,
+                        );
+                        // Register the address for signing. The push now carries
+                        // the exact DIP-17 index, so register the derivation path
+                        // directly; only legacy entries without an index fall back
+                        // to the bounded reverse-derivation scan. Without this the
+                        // balance is visible yet unwithdrawable.
+                        match entry.index {
+                            Some(index) => wallet.register_platform_payment_address(
+                                &canonical,
+                                entry.account,
+                                index,
+                                network,
+                            ),
+                            None => {
+                                wallet.reconcile_platform_address(&canonical, network);
+                            }
+                        }
                     }
                 }
             }
@@ -706,13 +722,28 @@ impl AppContext {
                     if let Some(wallet_arc) = wallets.get(seed_hash)
                         && let Ok(mut wallet) = wallet_arc.write()
                     {
-                        for (hash, balance, nonce) in entries {
-                            let addr = PlatformP2PKHAddress::new(*hash).to_address(network);
+                        for entry in entries {
+                            let addr = PlatformP2PKHAddress::new(entry.hash).to_address(network);
                             let canonical = Wallet::canonical_address(&addr, network);
-                            wallet.seed_platform_address_info(canonical.clone(), *balance, *nonce);
-                            // Same signer-registration reconciliation as the live
-                            // push path above; seedless, no-op once known.
-                            wallet.reconcile_platform_address(&canonical, network);
+                            wallet.seed_platform_address_info(
+                                canonical.clone(),
+                                entry.balance,
+                                entry.nonce,
+                            );
+                            // Same signer registration as the live push path:
+                            // exact DIP-17 index when known, reverse-derivation
+                            // fallback otherwise.
+                            match entry.index {
+                                Some(index) => wallet.register_platform_payment_address(
+                                    &canonical,
+                                    entry.account,
+                                    index,
+                                    network,
+                                ),
+                                None => {
+                                    wallet.reconcile_platform_address(&canonical, network);
+                                }
+                            }
                         }
                     }
                 }
@@ -721,7 +752,7 @@ impl AppContext {
 
         if let Ok(mut balances) = self.platform_balances.lock() {
             for (seed_hash, entries, _) in seeds.iter().filter(|(_, e, _)| !e.is_empty()) {
-                let total_credits: u64 = entries.iter().map(|(_, credits, _)| credits).sum();
+                let total_credits: u64 = entries.iter().map(|e| e.balance).sum();
                 balances
                     .entry(*seed_hash)
                     .or_insert(total_credits / CREDITS_PER_DUFF);

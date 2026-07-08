@@ -54,6 +54,12 @@ pub enum DashPayTask {
         identity: QualifiedIdentity,
         contact_id: Identifier,
     },
+    /// Fetch an avatar image for a URL, consulting and populating the DET avatar
+    /// disk cache. Off the egui frame loop; the result flows back to the
+    /// screen's [`AvatarCache`](crate::ui::state::avatar_cache::AvatarCache).
+    FetchAvatar {
+        url: String,
+    },
     SearchProfiles {
         search_query: String,
     },
@@ -148,6 +154,10 @@ impl AppContext {
                 identity,
                 contact_id,
             } => Ok(profile::fetch_contact_profile(self, sdk, identity, contact_id).await?),
+            DashPayTask::FetchAvatar { url } => {
+                let bytes = avatar_processing::fetch_avatar_cached(self, &url).await;
+                Ok(BackendTaskSuccessResult::DashPayAvatar { url, bytes })
+            }
             DashPayTask::SearchProfiles { search_query } => {
                 Ok(profile::search_profiles(self, sdk, search_query).await?)
             }

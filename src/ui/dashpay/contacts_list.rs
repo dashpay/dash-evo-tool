@@ -1,20 +1,22 @@
 use crate::app::AppAction;
 use crate::backend_task::dashpay::DashPayTask;
-use crate::backend_task::error::TaskError;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::ui::components::avatar::Avatar;
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::components::wallet_unlock_popup::WalletUnlockResult;
 use crate::ui::dashpay::contact_requests::ContactRequests;
+use crate::ui::dashpay::persist_contact_private_info;
+use crate::ui::state::AvatarCache;
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, ScreenLike, ScreenType};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::Identifier;
-use egui::{ColorImage, Frame, Margin, RichText, ScrollArea, TextureHandle, Ui};
-use std::collections::{BTreeMap, HashSet};
+use egui::{Frame, Margin, RichText, ScrollArea, Ui};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]
@@ -68,8 +70,7 @@ pub struct ContactsList {
     show_hidden: bool,
     search_filter: SearchFilter,
     sort_order: SortOrder,
-    avatar_textures: BTreeMap<String, TextureHandle>, // Cache for avatar textures by URL
-    avatars_loading: HashSet<String>,                 // Track which avatars are being loaded
+    avatar_cache: AvatarCache,
     /// Current active tab
     active_tab: ContactsTab,
     /// Embedded contact requests component
@@ -90,8 +91,7 @@ impl ContactsList {
             show_hidden: false,
             search_filter: SearchFilter::All,
             sort_order: SortOrder::Name,
-            avatar_textures: BTreeMap::new(),
-            avatars_loading: HashSet::new(),
+            avatar_cache: AvatarCache::new(),
             active_tab: ContactsTab::Contacts,
             contact_requests: ContactRequests::new(app_context.clone()),
         };
@@ -171,13 +171,11 @@ impl ContactsList {
         )))
     }
 
-    /// Drop the in-memory avatar render state — the uploaded textures and the
-    /// per-URL loading flags — so the next render re-derives each avatar from
-    /// the (re-fetched) DET cache. Shared by the explicit Refresh path and the
-    /// identity-change reset.
+    /// Drop the in-memory avatar render state so the next render re-derives each
+    /// avatar from the (re-fetched) cache. Shared by the explicit Refresh path
+    /// and the identity-change reset.
     fn clear_avatar_render_state(&mut self) {
-        self.avatar_textures.clear();
-        self.avatars_loading.clear();
+        self.avatar_cache.invalidate();
     }
 
     pub fn fetch_contacts(&mut self) -> AppAction {
@@ -224,86 +222,6 @@ impl ContactsList {
         let _ = self.contact_requests.refresh();
 
         action
-    }
-
-    /// Load an avatar image for a URL, serving from the DET avatar cache when
-    /// possible so an already-seen avatar renders offline and is not re-fetched
-    /// every view. On a cache miss the image is fetched once, cached, and
-    /// decoded; the decoded `ColorImage` is stashed in egui temp data for the
-    /// UI thread to upload as a texture.
-    fn load_avatar_texture(&mut self, ctx: &egui::Context, url: &str) {
-        // Mark as loading
-        self.avatars_loading.insert(url.to_string());
-
-        let ctx_clone = ctx.clone();
-        let url_clone = url.to_string();
-        let app_context = self.app_context.clone();
-
-        // Cache hit: decode the stored bytes directly — no network round-trip.
-        if let Ok(backend) = app_context.wallet_backend()
-            && let Some(cached) = backend.avatar_cache().get(url)
-        {
-            Self::stash_decoded_avatar(&ctx_clone, &url_clone, &cached.bytes);
-            return;
-        }
-
-        // Cache miss: fetch once, cache the validated bytes, then decode.
-        tokio::spawn(async move {
-            match crate::backend_task::dashpay::avatar_processing::fetch_image_bytes(&url_clone)
-                .await
-            {
-                Ok(image_bytes) => {
-                    // Populate the DET cache so the next view serves offline.
-                    if let Ok(backend) = app_context.wallet_backend()
-                        && let Err(e) = backend.avatar_cache().put(&url_clone, image_bytes.clone())
-                    {
-                        tracing::debug!(error = ?e, "Failed to cache contact avatar; will re-fetch next view");
-                    }
-                    Self::stash_decoded_avatar(&ctx_clone, &url_clone, &image_bytes);
-                }
-                Err(e) => {
-                    tracing::warn!("Failed to fetch contact avatar image: {}", e);
-                }
-            }
-        });
-    }
-
-    /// Decode `image_bytes`, center-crop to square, and stash the resulting
-    /// `ColorImage` in egui temp data keyed by `url` for the UI thread to
-    /// upload. Shared by the cache-hit and post-fetch paths so both render
-    /// identically.
-    fn stash_decoded_avatar(ctx: &egui::Context, url: &str, image_bytes: &[u8]) {
-        let Ok(image) = image::load_from_memory(image_bytes) else {
-            return;
-        };
-        let rgba_image = image.to_rgba8();
-        let width = rgba_image.width();
-        let height = rgba_image.height();
-
-        // Center-crop to square if not already square.
-        let cropped_image = if width != height {
-            let size = width.min(height);
-            let x_offset = (width - size) / 2;
-            let y_offset = (height - size) / 2;
-            image::imageops::crop_imm(&rgba_image, x_offset, y_offset, size, size).to_image()
-        } else {
-            rgba_image
-        };
-
-        let size = [
-            cropped_image.width() as usize,
-            cropped_image.height() as usize,
-        ];
-        let pixels = cropped_image.into_raw();
-        let color_image = ColorImage::from_rgba_unmultiplied(size, &pixels);
-
-        ctx.request_repaint();
-        ctx.data_mut(|data| {
-            data.insert_temp(
-                egui::Id::new(format!("contact_avatar_data_{}", url)),
-                color_image,
-            );
-        });
     }
 
     pub fn render(&mut self, ui: &mut Ui) -> AppAction {
@@ -799,108 +717,15 @@ impl ContactsList {
                             });
                         });
                 } else {
-                    // Collect avatar URLs that need to be loaded
-                    let mut avatars_to_load: Vec<String> = Vec::new();
-
                     for contact in filtered_contacts {
-                        let avatar_url_clone = contact.avatar_url.clone();
                         ui.group(|ui| {
                             ui.horizontal(|ui| {
                                 // Avatar display
                                 ui.vertical(|ui| {
                                     ui.add_space(5.0);
-                                    const AVATAR_SIZE: f32 = 40.0;
-
-                                    if let Some(ref url) = avatar_url_clone {
-                                        if !url.is_empty() {
-                                            let texture_id = format!("contact_avatar_{}", url);
-
-                                            // Check if texture is already cached
-                                            if let Some(texture) =
-                                                self.avatar_textures.get(&texture_id)
-                                            {
-                                                // Display the cached avatar image
-                                                ui.add(
-                                                    egui::Image::new(texture)
-                                                        .fit_to_exact_size(egui::vec2(
-                                                            AVATAR_SIZE,
-                                                            AVATAR_SIZE,
-                                                        ))
-                                                        .corner_radius(AVATAR_SIZE / 2.0),
-                                                );
-                                            } else {
-                                                // Check if image data was loaded by async task
-                                                let data_id =
-                                                    format!("contact_avatar_data_{}", url);
-                                                let color_image = ui.ctx().data_mut(|data| {
-                                                    data.get_temp::<ColorImage>(egui::Id::new(
-                                                        &data_id,
-                                                    ))
-                                                });
-
-                                                if let Some(color_image) = color_image {
-                                                    // Create texture from loaded image
-                                                    let texture = ui.ctx().load_texture(
-                                                        &texture_id,
-                                                        color_image,
-                                                        egui::TextureOptions::LINEAR,
-                                                    );
-
-                                                    // Display the image
-                                                    ui.add(
-                                                        egui::Image::new(&texture)
-                                                            .fit_to_exact_size(egui::vec2(
-                                                                AVATAR_SIZE,
-                                                                AVATAR_SIZE,
-                                                            ))
-                                                            .corner_radius(AVATAR_SIZE / 2.0),
-                                                    );
-
-                                                    // Cache the texture and clear loading state
-                                                    self.avatar_textures
-                                                        .insert(texture_id.clone(), texture);
-                                                    self.avatars_loading.remove(url);
-
-                                                    // Clear the temporary data
-                                                    ui.ctx().data_mut(|data| {
-                                                        data.remove::<ColorImage>(egui::Id::new(
-                                                            &data_id,
-                                                        ));
-                                                    });
-                                                } else if !self.avatars_loading.contains(url) {
-                                                    // Queue for loading
-                                                    avatars_to_load.push(url.clone());
-                                                    // Show spinner while loading
-                                                    ui.add(
-                                                        egui::Spinner::new()
-                                                            .size(AVATAR_SIZE)
-                                                            .color(DashColors::DASH_BLUE),
-                                                    );
-                                                } else {
-                                                    // Show loading indicator
-                                                    ui.add(
-                                                        egui::Spinner::new()
-                                                            .size(AVATAR_SIZE)
-                                                            .color(DashColors::DASH_BLUE),
-                                                    );
-                                                }
-                                            }
-                                        } else {
-                                            // Empty URL, show default emoji
-                                            ui.label(
-                                                RichText::new("👤")
-                                                    .size(AVATAR_SIZE)
-                                                    .color(DashColors::DEEP_BLUE),
-                                            );
-                                        }
-                                    } else {
-                                        // No avatar URL, show default emoji
-                                        ui.label(
-                                            RichText::new("👤")
-                                                .size(AVATAR_SIZE)
-                                                .color(DashColors::DEEP_BLUE),
-                                        );
-                                    }
+                                    action |= Avatar::new(contact.avatar_url.as_deref(), 40.0)
+                                        .show(ui, &mut self.avatar_cache)
+                                        .into_action();
                                 });
 
                                 ui.add_space(10.0);
@@ -974,27 +799,29 @@ impl ContactsList {
                                             let new_hidden = !contact.is_hidden;
                                             if let Some(identity) = &self.selected_identity {
                                                 let owner_id = identity.identity.id();
-                                                let mut sidecar_result: Result<(), TaskError> =
-                                                    Ok(());
-                                                if let Ok(backend) =
-                                                    self.app_context.wallet_backend()
-                                                {
-                                                    let mut info = backend
-                                                        .dashpay_get_private_info(
+                                                // Preserve the existing memo, flipping only the
+                                                // hidden flag.
+                                                let existing = self
+                                                    .app_context
+                                                    .wallet_backend()
+                                                    .ok()
+                                                    .and_then(|b| {
+                                                        b.dashpay_get_private_info(
                                                             &owner_id,
                                                             &contact.identity_id,
                                                         )
                                                         .ok()
                                                         .flatten()
-                                                        .unwrap_or_default();
-                                                    info.is_hidden = new_hidden;
-                                                    sidecar_result = backend
-                                                        .dashpay_set_private_info(
-                                                            &owner_id,
-                                                            &contact.identity_id,
-                                                            &info,
-                                                        );
-                                                }
+                                                    })
+                                                    .unwrap_or_default();
+                                                let sidecar_result = persist_contact_private_info(
+                                                    &self.app_context,
+                                                    &owner_id,
+                                                    &contact.identity_id,
+                                                    existing.nickname,
+                                                    existing.notes,
+                                                    new_hidden,
+                                                );
                                                 if let Err(e) = sidecar_result {
                                                     self.message = Some((
                                                         format!("Failed to update contact: {}", e),
@@ -1039,11 +866,6 @@ impl ContactsList {
                         });
                         ui.add_space(4.0);
                     }
-
-                    // Load any avatars that were queued
-                    for url in avatars_to_load {
-                        self.load_avatar_texture(ui.ctx(), &url);
-                    }
                 }
             });
 
@@ -1077,6 +899,13 @@ impl ScreenLike for ContactsList {
     }
 
     fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
+        // Avatar results arrive independently of the contact-list load; route
+        // them without disturbing the list's loading state.
+        if let BackendTaskSuccessResult::DashPayAvatar { url, bytes } = result {
+            self.avatar_cache.store(url, bytes);
+            return;
+        }
+
         self.loading = false;
 
         match result {

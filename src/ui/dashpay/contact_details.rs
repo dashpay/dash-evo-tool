@@ -183,16 +183,15 @@ impl ContactDetailsScreen {
         // in flight. Best-effort: a sidecar miss never blocks the user
         // action.
         let identity_id = self.identity.identity.id();
-        if let Ok(backend) = self.app_context.wallet_backend() {
-            let info = crate::model::dashpay::ContactPrivateInfo {
-                nickname: self.edit_nickname.clone(),
-                notes: self.edit_note.clone(),
-                is_hidden: self.edit_hidden,
-            };
-            if let Err(e) = backend.dashpay_set_private_info(&identity_id, &self.contact_id, &info)
-            {
-                tracing::warn!("DashPay private-info sidecar write failed: {e:?}");
-            }
+        if let Err(e) = crate::ui::dashpay::persist_contact_private_info(
+            &self.app_context,
+            &identity_id,
+            &self.contact_id,
+            self.edit_nickname.clone(),
+            self.edit_note.clone(),
+            self.edit_hidden,
+        ) {
+            tracing::warn!("DashPay private-info sidecar write failed: {e:?}");
         }
 
         self.editing_info = false;

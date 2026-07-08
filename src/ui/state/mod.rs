@@ -5,7 +5,9 @@
 //! through them; the module placement policy (P14) keeps these out of
 //! `ui/components/`, which is reserved for renderable widget types.
 
+pub mod avatar_cache;
 pub mod hub_selection;
 pub mod tracked_asset_lock_cache;
 
+pub use avatar_cache::AvatarCache;
 pub use tracked_asset_lock_cache::TrackedAssetLockCache;

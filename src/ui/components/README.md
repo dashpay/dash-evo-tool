@@ -24,6 +24,12 @@ Concise catalog of all reusable UI components. Consult before creating new UI el
 |-----------|------|------------|-------------|
 | `BreadcrumbPill` | `breadcrumb_pill.rs` | `String` | Label + optional icon + chevron. Three modes: Interactive / Subdued / Placeholder. Reusable anywhere a breadcrumb pill is needed (Identities hub breadcrumb, future wallet breadcrumbs). |
 
+## Display Components
+
+| Component | File | DomainType | Description |
+|-----------|------|------------|-------------|
+| `Avatar` | `avatar.rs` | N/A (display) | DashPay contact/profile avatar from a URL. Renders image / spinner / `👤` fallback, decoding + uploading the texture on the UI thread. Backed by `ui/state/avatar_cache.rs` (`AvatarCache`), which fetches off-frame via `DashPayTask::FetchAvatar`. `show(ui, &mut AvatarCache)` returns `AvatarResponse { fetch, clicked }`; the caller dispatches `fetch`. Builders: `corner_radius`, `clickable(tooltip)`. |
+
 ## Placement Rule
 
 `src/ui/components/` holds **reusable** components only — widgets that plausibly

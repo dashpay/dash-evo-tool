@@ -23,6 +23,7 @@ use zeroize::Zeroizing;
 use crate::backend_task::error::TaskError;
 use crate::model::qualified_identity::PrivateKeyTarget;
 use crate::model::qualified_identity::encrypted_key_storage::VaultBoundKey;
+use crate::wallet_backend::secret_access::identity_key_from_bytes;
 use crate::wallet_backend::secret_prompt::SecretScope;
 use crate::wallet_backend::secret_seam::{SecretScheme, SecretSeam};
 
@@ -164,14 +165,7 @@ impl<'a> IdentityKeyView<'a> {
         else {
             return Ok(None);
         };
-        let key: [u8; 32] = bytes.expose_secret().try_into().map_err(|_| {
-            tracing::warn!(
-                target = "wallet_backend::identity_key_store",
-                blob_len = bytes.expose_secret().len(),
-                "Protected identity key has wrong length",
-            );
-            TaskError::IdentityKeyMalformed
-        })?;
+        let key = identity_key_from_bytes(bytes.expose_secret())?;
         Ok(Some(Zeroizing::new(key)))
     }
 
@@ -200,14 +194,7 @@ impl<'a> IdentityKeyView<'a> {
         else {
             return Ok(None);
         };
-        let key: [u8; 32] = bytes.expose_secret().try_into().map_err(|_| {
-            tracing::warn!(
-                target = "wallet_backend::identity_key_store",
-                blob_len = bytes.expose_secret().len(),
-                "Stored identity key has wrong length",
-            );
-            TaskError::SecretDecryptFailed
-        })?;
+        let key = identity_key_from_bytes(bytes.expose_secret())?;
         Ok(Some(Zeroizing::new(key)))
     }
 
@@ -235,7 +222,7 @@ impl<'a> IdentityKeyView<'a> {
 /// Re-flavor a generic seam error as the identity-key-domain variant so a vault
 /// failure on an identity key surfaces with identity-specific banner copy. Any
 /// non-`SecretSeam` error passes through unchanged.
-fn identity_flavored(e: TaskError) -> TaskError {
+pub(crate) fn identity_flavored(e: TaskError) -> TaskError {
     match e {
         TaskError::SecretSeam { source } => TaskError::IdentityKeyVault { source },
         other => other,

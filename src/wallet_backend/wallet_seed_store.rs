@@ -42,6 +42,7 @@ use crate::model::wallet::WalletSeedHash;
 use crate::model::wallet::seed_envelope::{STORED_SEED_ENVELOPE_VERSION, StoredSeedEnvelope};
 use crate::wallet_backend::secret_access::SEED_RAW_LABEL;
 use crate::wallet_backend::secret_seam::{SecretScheme, SecretSeam};
+use crate::wallet_backend::versioned_bincode::{decode_tagged_or, encode_tagged};
 
 /// Label under which the bincode-encoded envelope is stored. Versioned
 /// so a future shape change (e.g. an additional field that breaks
@@ -56,16 +57,11 @@ pub(crate) const ENVELOPE_LABEL: &str = "envelope.v1";
 /// boundary case and the reader falls back to legacy decoding when the
 /// tag prefix doesn't match.
 fn encode_with_version(envelope: &StoredSeedEnvelope) -> Result<Vec<u8>, TaskError> {
-    let body =
-        bincode::serde::encode_to_vec(envelope, bincode::config::standard()).map_err(|_| {
-            TaskError::WalletSeedStorage {
-                source: Box::new(SecretStoreError::MalformedVault),
-            }
-        })?;
-    let mut out = Vec::with_capacity(body.len() + 1);
-    out.push(STORED_SEED_ENVELOPE_VERSION);
-    out.extend_from_slice(&body);
-    Ok(out)
+    encode_tagged(STORED_SEED_ENVELOPE_VERSION, envelope).map_err(|_| {
+        TaskError::WalletSeedStorage {
+            source: Box::new(SecretStoreError::MalformedVault),
+        }
+    })
 }
 
 /// Decode the on-disk shape, accepting both the leading-version-byte
@@ -75,23 +71,16 @@ fn decode_with_version(bytes: &[u8]) -> Result<StoredSeedEnvelope, TaskError> {
     let malformed = || TaskError::WalletSeedStorage {
         source: Box::new(SecretStoreError::MalformedVault),
     };
-    if let Some((&tag, rest)) = bytes.split_first()
-        && tag == STORED_SEED_ENVELOPE_VERSION
-        && let Ok((decoded, _)) = bincode::serde::decode_from_slice::<StoredSeedEnvelope, _>(
-            rest,
+    decode_tagged_or(bytes, STORED_SEED_ENVELOPE_VERSION, |bytes| {
+        // Legacy entry: bare bincode of the envelope with no leading
+        // version byte. Treated as v1.
+        bincode::serde::decode_from_slice::<StoredSeedEnvelope, _>(
+            bytes,
             bincode::config::standard(),
         )
-    {
-        return Ok(decoded);
-    }
-    // Legacy entry: bare bincode of the envelope with no leading
-    // version byte. Treated as v1.
-    let (decoded, _) = bincode::serde::decode_from_slice::<StoredSeedEnvelope, _>(
-        bytes,
-        bincode::config::standard(),
-    )
-    .map_err(|_| malformed())?;
-    Ok(decoded)
+        .map(|(decoded, _)| decoded)
+        .map_err(|_| malformed())
+    })
 }
 
 /// View borrowing the shared upstream [`SecretStore`] handle. Cheap to

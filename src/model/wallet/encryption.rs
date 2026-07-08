@@ -2,6 +2,7 @@ use aes_gcm::aead::Aead;
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
 use argon2::{self, Argon2};
 use bip39::rand::{RngCore, rngs::OsRng};
+use zeroize::Zeroizing;
 
 const SALT_SIZE: usize = 16; // 128-bit salt
 const NONCE_SIZE: usize = 12; // 96-bit nonce for AES-GCM
@@ -58,6 +59,75 @@ pub fn encrypt_message(
     Ok((encrypted_seed, salt, nonce))
 }
 
+/// Failure decrypting an AES-256-GCM envelope produced by [`encrypt_message`].
+///
+/// Two outcomes the callers must distinguish: an authentication failure
+/// (`WrongPassword` — the supplied password is wrong or the ciphertext was
+/// tampered with) versus a structurally invalid envelope (`Malformed` — bad
+/// key derivation, cipher init, or nonce length; a corrupt at-rest blob). Each
+/// caller maps these to its own typed domain error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DecryptError {
+    /// The AEAD tag did not verify — wrong password or tampered ciphertext.
+    WrongPassword,
+    /// The envelope is structurally invalid (key derivation, cipher init, or
+    /// nonce length). Diagnostic detail is logged inside [`decrypt_message`].
+    Malformed,
+}
+
+/// Decrypt an AES-256-GCM envelope (`ciphertext` + `salt` + `nonce`) under
+/// `password` — the inverse of [`encrypt_message`]. Returns the plaintext in a
+/// [`Zeroizing`] buffer so it wipes on drop; the caller validates its length.
+///
+/// Shared by every AES-GCM legacy-secret reader (the HD-seed migration reader,
+/// the imported single-key entry, and the deprecated `ClosedKeyItem` seed
+/// store) so the derive-key → init-cipher → checked-nonce → decrypt sequence
+/// exists once. Structural failures are logged with `site` for context and
+/// returned as [`DecryptError::Malformed`]; an authentication failure is
+/// [`DecryptError::WrongPassword`] (no plaintext oracle).
+pub(crate) fn decrypt_message(
+    ciphertext: &[u8],
+    salt: &[u8],
+    nonce: &[u8],
+    password: &str,
+    site: &'static str,
+) -> Result<Zeroizing<Vec<u8>>, DecryptError> {
+    let key = Zeroizing::new(derive_password_key(password, salt).map_err(|detail| {
+        tracing::warn!(
+            target = "model::wallet::encryption",
+            site,
+            %detail,
+            "Argon2 key derivation failed during decrypt",
+        );
+        DecryptError::Malformed
+    })?);
+    let cipher = Aes256Gcm::new_from_slice(&key).map_err(|error| {
+        tracing::warn!(
+            target = "model::wallet::encryption",
+            site,
+            %error,
+            "AES-GCM init failed during decrypt",
+        );
+        DecryptError::Malformed
+    })?;
+    // Checked nonce conversion: an envelope with the wrong nonce length is a
+    // corrupt at-rest blob, not a panic. `Nonce::from_slice` panics on a length
+    // mismatch, which would poison the long-lived secret-store mutex.
+    let nonce_bytes: &[u8; NONCE_SIZE] = nonce.try_into().map_err(|_| {
+        tracing::warn!(
+            target = "model::wallet::encryption",
+            site,
+            nonce_len = nonce.len(),
+            "Envelope nonce is not the expected length",
+        );
+        DecryptError::Malformed
+    })?;
+    let plaintext = cipher
+        .decrypt(Nonce::from_slice(nonce_bytes), ciphertext)
+        .map_err(|_| DecryptError::WrongPassword)?;
+    Ok(Zeroizing::new(plaintext))
+}
+
 impl ClosedKeyItem {
     pub fn compute_seed_hash(seed: &[u8]) -> [u8; 32] {
         let mut hasher = Sha256::new();
@@ -77,29 +147,27 @@ impl ClosedKeyItem {
         encrypt_message(seed, password)
     }
 
-    /// Decrypt the seed using AES-256-GCM.
-    #[allow(deprecated)]
+    /// Decrypt the seed using AES-256-GCM via the shared [`decrypt_message`]
+    /// reader.
     pub fn decrypt_seed(&self, password: &str) -> Result<[u8; 64], String> {
-        // Derive the key
-        let key = derive_password_key(password, &self.salt)?;
-
-        // Create cipher instance
-        let cipher = Aes256Gcm::new_from_slice(&key).map_err(|e| e.to_string())?;
-
-        // Decrypt the seed
-        let nonce_arr = Nonce::from_slice(&self.nonce);
-        let seed = cipher
-            .decrypt(nonce_arr, self.encrypted_seed.as_slice())
-            .map_err(|e| e.to_string())?;
-
-        let sized_seed = seed.try_into().map_err(|e: Vec<u8>| {
-            format!(
-                "invalid seed length, expected 64 bytes, got {} bytes",
-                e.len()
-            )
+        let seed = decrypt_message(
+            &self.encrypted_seed,
+            &self.salt,
+            &self.nonce,
+            password,
+            "closed_key_item::decrypt_seed",
+        )
+        .map_err(|e| match e {
+            DecryptError::WrongPassword => "incorrect password".to_string(),
+            DecryptError::Malformed => "failed to decrypt the wallet seed".to_string(),
         })?;
 
-        Ok(sized_seed)
+        seed.as_slice().try_into().map_err(|_| {
+            format!(
+                "invalid seed length, expected 64 bytes, got {} bytes",
+                seed.len()
+            )
+        })
     }
 }
 #[cfg(test)]

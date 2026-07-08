@@ -1,9 +1,11 @@
 use super::AppContext;
 use crate::backend_task::contested_names::ScheduledDPNSVote;
 use crate::backend_task::error::TaskError;
-use crate::model::qualified_identity::{DPNSNameInfo, IdentityStatus, QualifiedIdentity};
+use crate::model::qualified_identity::{
+    DPNSNameInfo, IdentityStatus, IdentityType, QualifiedIdentity,
+};
 use crate::model::wallet::{Wallet, WalletSeedHash};
-use crate::wallet_backend::DetScope;
+use crate::wallet_backend::{DetKv, DetScope, KvAdapterError};
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
@@ -50,6 +52,21 @@ const TOP_UPS_KEY: &str = "det:top_ups:v1";
 
 fn scheduled_vote_key(contested_name: &str) -> String {
     format!("{SCHEDULED_VOTE_KEY_PREFIX}{contested_name}")
+}
+
+/// Map a k/v adapter failure to the identity-blob storage error.
+fn identity_err(source: KvAdapterError) -> TaskError {
+    TaskError::IdentityStorage { source }
+}
+
+/// Map a k/v adapter failure to the scheduled-vote storage error.
+fn scheduled_vote_err(source: KvAdapterError) -> TaskError {
+    TaskError::ScheduledVoteStorage { source }
+}
+
+/// Map a k/v adapter failure to the top-up-history storage error.
+fn top_up_err(source: KvAdapterError) -> TaskError {
+    TaskError::TopUpHistoryStorage { source }
 }
 
 /// Validate a raw voter id and return it as the `[u8; 32]` the
@@ -182,36 +199,28 @@ impl From<StoredScheduledVote> for ScheduledDPNSVote {
 
 /// Read the Global identity-id enumeration index. Returns an empty
 /// vector when the index has never been written.
-fn load_identity_index(
-    kv: &crate::wallet_backend::DetKv,
-) -> std::result::Result<Vec<[u8; 32]>, TaskError> {
+fn load_identity_index(kv: &DetKv) -> std::result::Result<Vec<[u8; 32]>, TaskError> {
     Ok(kv
         .get::<Vec<[u8; 32]>>(DetScope::Global, IDENTITY_INDEX_KEY)
-        .map_err(|source| TaskError::IdentityStorage { source })?
+        .map_err(identity_err)?
         .unwrap_or_default())
 }
 
 /// Add `identity_id` to the Global enumeration index if absent. No-op
 /// when the id is already tracked, so repeated inserts stay idempotent.
-fn index_add_identity(
-    kv: &crate::wallet_backend::DetKv,
-    identity_id: &[u8; 32],
-) -> std::result::Result<(), TaskError> {
+fn index_add_identity(kv: &DetKv, identity_id: &[u8; 32]) -> std::result::Result<(), TaskError> {
     let mut index = load_identity_index(kv)?;
     if index.contains(identity_id) {
         return Ok(());
     }
     index.push(*identity_id);
     kv.put(DetScope::Global, IDENTITY_INDEX_KEY, &index)
-        .map_err(|source| TaskError::IdentityStorage { source })
+        .map_err(identity_err)
 }
 
 /// Remove `identity_id` from the Global enumeration index. No-op when
 /// the id is not present.
-fn index_remove_identity(
-    kv: &crate::wallet_backend::DetKv,
-    identity_id: &[u8; 32],
-) -> std::result::Result<(), TaskError> {
+fn index_remove_identity(kv: &DetKv, identity_id: &[u8; 32]) -> std::result::Result<(), TaskError> {
     let mut index = load_identity_index(kv)?;
     let before = index.len();
     index.retain(|id| id != identity_id);
@@ -219,7 +228,7 @@ fn index_remove_identity(
         return Ok(());
     }
     kv.put(DetScope::Global, IDENTITY_INDEX_KEY, &index)
-        .map_err(|source| TaskError::IdentityStorage { source })
+        .map_err(identity_err)
 }
 
 /// Delete every Identity-scoped child of `id` (blob, top-up history, all
@@ -389,57 +398,48 @@ fn encode_identity_blob_vault_first(
     Ok(qi.to_bytes())
 }
 
-fn purge_identity_scope(
-    kv: &crate::wallet_backend::DetKv,
-    id: &[u8; 32],
-) -> std::result::Result<(), TaskError> {
+fn purge_identity_scope(kv: &DetKv, id: &[u8; 32]) -> std::result::Result<(), TaskError> {
     let scope = DetScope::Identity(id);
-    kv.delete(scope, IDENTITY_KEY)
-        .map_err(|source| TaskError::IdentityStorage { source })?;
-    kv.delete(scope, TOP_UPS_KEY)
-        .map_err(|source| TaskError::TopUpHistoryStorage { source })?;
+    kv.delete(scope, IDENTITY_KEY).map_err(identity_err)?;
+    kv.delete(scope, TOP_UPS_KEY).map_err(top_up_err)?;
     delete_scheduled_votes_for_voter(kv, id)
 }
 
 /// Read the Global scheduled-vote voter index. Returns an empty vector
 /// when no voter has ever queued a scheduled vote.
-fn load_scheduled_vote_voters(
-    kv: &crate::wallet_backend::DetKv,
-) -> std::result::Result<Vec<[u8; 32]>, TaskError> {
+fn load_scheduled_vote_voters(kv: &DetKv) -> std::result::Result<Vec<[u8; 32]>, TaskError> {
     Ok(kv
         .get::<Vec<[u8; 32]>>(DetScope::Global, SCHEDULED_VOTE_VOTERS_KEY)
-        .map_err(|source| TaskError::ScheduledVoteStorage { source })?
+        .map_err(scheduled_vote_err)?
         .unwrap_or_default())
 }
 
 /// Add `voter` to the Global scheduled-vote voter index if absent.
-fn index_add_vote_voter(
-    kv: &crate::wallet_backend::DetKv,
-    voter: &[u8; 32],
-) -> std::result::Result<(), TaskError> {
+fn index_add_vote_voter(kv: &DetKv, voter: &[u8; 32]) -> std::result::Result<(), TaskError> {
     let mut voters = load_scheduled_vote_voters(kv)?;
     if voters.contains(voter) {
         return Ok(());
     }
     voters.push(*voter);
     kv.put(DetScope::Global, SCHEDULED_VOTE_VOTERS_KEY, &voters)
-        .map_err(|source| TaskError::ScheduledVoteStorage { source })
+        .map_err(scheduled_vote_err)
 }
 
-/// Prune `voter` from the Global scheduled-vote voter index when it no
-/// longer has any scheduled votes left in its Identity scope. Keeps the
-/// index from accumulating dangling voter entries.
-fn prune_vote_voter_if_empty(
-    kv: &crate::wallet_backend::DetKv,
+/// List the scheduled-vote entry keys queued under `voter`'s Identity scope.
+fn scheduled_vote_keys(
+    kv: &DetKv,
+    voter: &[u8; 32],
+) -> std::result::Result<Vec<String>, TaskError> {
+    kv.list(DetScope::Identity(voter), Some(SCHEDULED_VOTE_KEY_PREFIX))
+        .map_err(scheduled_vote_err)
+}
+
+/// Drop `voter` from the Global scheduled-vote voter index. No-op when the
+/// voter is not present, so repeated calls stay idempotent.
+fn remove_vote_voter_from_index(
+    kv: &DetKv,
     voter: &[u8; 32],
 ) -> std::result::Result<(), TaskError> {
-    let still_has = !kv
-        .list(DetScope::Identity(voter), Some(SCHEDULED_VOTE_KEY_PREFIX))
-        .map_err(|source| TaskError::ScheduledVoteStorage { source })?
-        .is_empty();
-    if still_has {
-        return Ok(());
-    }
     let mut voters = load_scheduled_vote_voters(kv)?;
     let before = voters.len();
     voters.retain(|v| v != voter);
@@ -447,32 +447,32 @@ fn prune_vote_voter_if_empty(
         return Ok(());
     }
     kv.put(DetScope::Global, SCHEDULED_VOTE_VOTERS_KEY, &voters)
-        .map_err(|source| TaskError::ScheduledVoteStorage { source })
+        .map_err(scheduled_vote_err)
+}
+
+/// Prune `voter` from the Global scheduled-vote voter index when it no
+/// longer has any scheduled votes left in its Identity scope. Keeps the
+/// index from accumulating dangling voter entries.
+fn prune_vote_voter_if_empty(kv: &DetKv, voter: &[u8; 32]) -> std::result::Result<(), TaskError> {
+    if scheduled_vote_keys(kv, voter)?.is_empty() {
+        remove_vote_voter_from_index(kv, voter)
+    } else {
+        Ok(())
+    }
 }
 
 /// Delete every scheduled vote queued under `voter`'s Identity scope and
 /// drop the voter from the index. Used by the identity-removal cleanup
 /// path.
 fn delete_scheduled_votes_for_voter(
-    kv: &crate::wallet_backend::DetKv,
+    kv: &DetKv,
     voter: &[u8; 32],
 ) -> std::result::Result<(), TaskError> {
     let scope = DetScope::Identity(voter);
-    let keys = kv
-        .list(scope, Some(SCHEDULED_VOTE_KEY_PREFIX))
-        .map_err(|source| TaskError::ScheduledVoteStorage { source })?;
-    for key in keys {
-        kv.delete(scope, &key)
-            .map_err(|source| TaskError::ScheduledVoteStorage { source })?;
+    for key in scheduled_vote_keys(kv, voter)? {
+        kv.delete(scope, &key).map_err(scheduled_vote_err)?;
     }
-    let mut voters = load_scheduled_vote_voters(kv)?;
-    let before = voters.len();
-    voters.retain(|v| v != voter);
-    if voters.len() != before {
-        kv.put(DetScope::Global, SCHEDULED_VOTE_VOTERS_KEY, &voters)
-            .map_err(|source| TaskError::ScheduledVoteStorage { source })?;
-    }
-    Ok(())
+    remove_vote_voter_from_index(kv, voter)
 }
 
 impl AppContext {
@@ -495,7 +495,7 @@ impl AppContext {
         qualified_identity: &QualifiedIdentity,
         wallet_and_identity_id_info: &Option<(WalletSeedHash, u32)>,
     ) -> std::result::Result<(), TaskError> {
-        let kv = self.identity_kv()?;
+        let kv = self.det_kv()?;
         let (wallet_hash, wallet_index) = match wallet_and_identity_id_info {
             Some((seed, idx)) => (Some(*seed), Some(*idx)),
             None => {
@@ -516,13 +516,13 @@ impl AppContext {
         let stored = StoredQualifiedIdentity {
             qi_bytes,
             status: qualified_identity.status.as_u8(),
-            identity_type: format!("{:?}", qualified_identity.identity_type),
+            identity_type: qualified_identity.identity_type.as_tag().to_string(),
             wallet_hash,
             wallet_index,
         };
         index_add_identity(&kv, &id)?;
         kv.put(DetScope::Identity(&id), IDENTITY_KEY, &stored)
-            .map_err(|source| TaskError::IdentityStorage { source })
+            .map_err(identity_err)
     }
 
     /// Update a local qualified identity in place. Wallet association
@@ -533,12 +533,11 @@ impl AppContext {
         &self,
         qualified_identity: &QualifiedIdentity,
     ) -> std::result::Result<(), TaskError> {
-        let kv = self.identity_kv()?;
+        let kv = self.det_kv()?;
         let id = qualified_identity.identity.id().to_buffer();
         let scope = DetScope::Identity(&id);
-        let existing: Option<StoredQualifiedIdentity> = kv
-            .get(scope, IDENTITY_KEY)
-            .map_err(|source| TaskError::IdentityStorage { source })?;
+        let existing: Option<StoredQualifiedIdentity> =
+            kv.get(scope, IDENTITY_KEY).map_err(identity_err)?;
         let (wallet_hash, wallet_index) = existing
             .as_ref()
             .map(|s| (s.wallet_hash, s.wallet_index))
@@ -550,12 +549,11 @@ impl AppContext {
         let stored = StoredQualifiedIdentity {
             qi_bytes,
             status: qualified_identity.status.as_u8(),
-            identity_type: format!("{:?}", qualified_identity.identity_type),
+            identity_type: qualified_identity.identity_type.as_tag().to_string(),
             wallet_hash,
             wallet_index,
         };
-        kv.put(scope, IDENTITY_KEY, &stored)
-            .map_err(|source| TaskError::IdentityStorage { source })?;
+        kv.put(scope, IDENTITY_KEY, &stored).map_err(identity_err)?;
         // Keep the enumeration index consistent even if a caller updates
         // an identity the index never learned about.
         index_add_identity(&kv, &id)
@@ -569,12 +567,12 @@ impl AppContext {
         identifier: &Identifier,
         new_alias: Option<&str>,
     ) -> std::result::Result<(), TaskError> {
-        let kv = self.identity_kv()?;
+        let kv = self.det_kv()?;
         let id = identifier.to_buffer();
         let scope = DetScope::Identity(&id);
         let Some(mut stored) = kv
             .get::<StoredQualifiedIdentity>(scope, IDENTITY_KEY)
-            .map_err(|source| TaskError::IdentityStorage { source })?
+            .map_err(identity_err)?
         else {
             return Ok(());
         };
@@ -583,8 +581,7 @@ impl AppContext {
         // Re-encode vault-first so an alias edit on a not-yet-migrated blob does
         // not rewrite resident plaintext keys back to disk.
         stored.qi_bytes = encode_identity_blob_vault_first(&self.secret_store, &id, &qi)?;
-        kv.put(scope, IDENTITY_KEY, &stored)
-            .map_err(|source| TaskError::IdentityStorage { source })
+        kv.put(scope, IDENTITY_KEY, &stored).map_err(identity_err)
     }
 
     /// Read the user-facing alias for a stored identity, if any.
@@ -592,11 +589,11 @@ impl AppContext {
         &self,
         identifier: &Identifier,
     ) -> std::result::Result<Option<String>, TaskError> {
-        let kv = self.identity_kv()?;
+        let kv = self.det_kv()?;
         let id = identifier.to_buffer();
         let Some(stored) = kv
             .get::<StoredQualifiedIdentity>(DetScope::Identity(&id), IDENTITY_KEY)
-            .map_err(|source| TaskError::IdentityStorage { source })?
+            .map_err(identity_err)?
         else {
             return Ok(None);
         };
@@ -615,21 +612,6 @@ impl AppContext {
     ) -> std::result::Result<Vec<QualifiedIdentity>, TaskError> {
         let wallets = self.wallets.read().unwrap_or_else(|e| e.into_inner());
         let mut identities = self.load_identities_filtered(&wallets, |_| true)?;
-        for identity in &mut identities {
-            self.hydrate_top_ups(identity);
-        }
-        Ok(identities)
-    }
-
-    /// Same as [`Self::load_local_qualified_identities`] but filters to
-    /// identities associated with a wallet.
-    #[allow(dead_code)] // May be used for loading identities in wallets
-    pub fn load_local_qualified_identities_in_wallets(
-        &self,
-    ) -> std::result::Result<Vec<QualifiedIdentity>, TaskError> {
-        let wallets = self.wallets.read().unwrap_or_else(|e| e.into_inner());
-        let mut identities =
-            self.load_identities_filtered(&wallets, |s| s.wallet_index.is_some())?;
         for identity in &mut identities {
             self.hydrate_top_ups(identity);
         }
@@ -669,29 +651,21 @@ impl AppContext {
     where
         F: Fn(&StoredQualifiedIdentity) -> bool,
     {
-        let kv = self.identity_kv()?;
+        let kv = self.det_kv()?;
         let mut ids = load_identity_index(&kv)?;
         ids.sort_unstable();
         let mut out = Vec::with_capacity(ids.len());
         for id in ids {
             let Some(stored) = kv
                 .get::<StoredQualifiedIdentity>(DetScope::Identity(&id), IDENTITY_KEY)
-                .map_err(|source| TaskError::IdentityStorage { source })?
+                .map_err(identity_err)?
             else {
                 continue;
             };
             if !keep(&stored) {
                 continue;
             }
-            let mut qi = decode_stored_identity(&stored.qi_bytes, self.network)?;
-            qi.status = IdentityStatus::from_u8(stored.status);
-            qi.wallet_index = stored.wallet_index;
-            qi.network = self.network;
-            qi.associated_wallets = wallets.clone();
-            qi.secret_access = self.wallet_backend().ok().map(|b| b.secret_access());
-            qi.top_ups = BTreeMap::new();
-            self.migrate_identity_keys_to_vault(&kv, &id, &mut qi);
-            out.push(qi);
+            out.push(self.hydrate_stored_identity(&kv, &id, &stored, wallets)?);
         }
         // Seed the JIT chokepoint's identity prompt-copy index (alias + hint)
         // so the sign-time prompt for an opted-in (Tier-2) identity shows the
@@ -703,19 +677,39 @@ impl AppContext {
         Ok(out)
     }
 
+    /// Decode a stored blob and rehydrate the runtime-only fields the encoder
+    /// skips — status, wallet index, network, wallet map, secret access — then
+    /// run the crash-safe vault migration. Shared by the bulk-load and
+    /// single-get paths so both reconstruct an identity identically. Top-up
+    /// history is left empty; callers hydrate it separately when needed.
+    fn hydrate_stored_identity(
+        &self,
+        kv: &DetKv,
+        id: &[u8; 32],
+        stored: &StoredQualifiedIdentity,
+        wallets: &BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>>,
+    ) -> std::result::Result<QualifiedIdentity, TaskError> {
+        let mut qi = decode_stored_identity(&stored.qi_bytes, self.network)?;
+        qi.status = IdentityStatus::from_u8(stored.status);
+        qi.wallet_index = stored.wallet_index;
+        qi.network = self.network;
+        qi.associated_wallets = wallets.clone();
+        qi.secret_access = self.wallet_backend().ok().map(|b| b.secret_access());
+        qi.top_ups = BTreeMap::new();
+        self.migrate_identity_keys_to_vault(kv, id, &mut qi);
+        Ok(qi)
+    }
+
     /// Populate `identity.top_ups` from the per-network wallet k/v
     /// store. A missing or unreadable entry is logged and treated as an
     /// empty map; pre-C5 SQLite data is intentionally not migrated and
     /// surfaces as empty under the "empty start" policy.
     fn hydrate_top_ups(&self, identity: &mut QualifiedIdentity) {
-        let Ok(backend) = self.wallet_backend() else {
+        let Ok(kv) = self.det_kv() else {
             return;
         };
         let id = identity.identity.id().to_buffer();
-        match backend
-            .kv()
-            .get::<std::collections::BTreeMap<u32, u64>>(DetScope::Identity(&id), TOP_UPS_KEY)
-        {
+        match kv.get::<std::collections::BTreeMap<u32, u64>>(DetScope::Identity(&id), TOP_UPS_KEY) {
             Ok(Some(map)) => identity.top_ups = map,
             Ok(None) => {}
             Err(e) => {
@@ -735,43 +729,30 @@ impl AppContext {
         identity_id: &Identifier,
         top_ups: &std::collections::BTreeMap<u32, u64>,
     ) -> std::result::Result<(), TaskError> {
-        let backend = self.wallet_backend()?;
+        let kv = self.det_kv()?;
         let id = identity_id.to_buffer();
-        backend
-            .kv()
-            .put(DetScope::Identity(&id), TOP_UPS_KEY, top_ups)
-            .map_err(|source| TaskError::TopUpHistoryStorage { source })
+        kv.put(DetScope::Identity(&id), TOP_UPS_KEY, top_ups)
+            .map_err(top_up_err)
     }
 
     pub fn get_identity_by_id(
         &self,
         identity_id: &Identifier,
     ) -> std::result::Result<Option<QualifiedIdentity>, TaskError> {
-        let kv = self.identity_kv()?;
+        let kv = self.det_kv()?;
         let id = identity_id.to_buffer();
         let Some(stored) = kv
             .get::<StoredQualifiedIdentity>(DetScope::Identity(&id), IDENTITY_KEY)
-            .map_err(|source| TaskError::IdentityStorage { source })?
+            .map_err(identity_err)?
         else {
             return Ok(None);
         };
         let wallets = self.wallets.read().unwrap_or_else(|e| e.into_inner());
-        let mut qi = decode_stored_identity(&stored.qi_bytes, self.network)?;
-        qi.status = IdentityStatus::from_u8(stored.status);
-        qi.wallet_index = stored.wallet_index;
-        qi.network = self.network;
-        qi.associated_wallets = wallets.clone();
-        qi.secret_access = self.wallet_backend().ok().map(|b| b.secret_access());
-        qi.top_ups = BTreeMap::new();
-        // Mirror the bulk-load (`load_identities_filtered`) vault migration on
-        // this single-get path too: a legacy blob with resident `Clear` /
-        // `AlwaysClear` keys is migrated to the vault on read, so the identity
-        // key password protection backend tasks (`protect_identity_keys` / `unprotect_identity_keys`)
-        // and every other single-get consumer see vault-backed schemes rather
-        // than re-persisting resident plaintext. Crash-safe (vault-first) and
-        // idempotent; a protected identity's resident plaintext is left in place
-        // (never downgraded to a keyless vault entry).
-        self.migrate_identity_keys_to_vault(&kv, &id, &mut qi);
+        // Shared with the bulk-load path: rehydrates the skipped fields and runs
+        // the crash-safe vault migration so single-get consumers (the identity
+        // key password tasks and others) see vault-backed schemes rather than
+        // re-persisting resident plaintext.
+        let mut qi = self.hydrate_stored_identity(&kv, &id, &stored, &wallets)?;
         self.hydrate_top_ups(&mut qi);
         Ok(Some(qi))
     }
@@ -800,7 +781,12 @@ impl AppContext {
         &self,
     ) -> std::result::Result<Vec<QualifiedIdentity>, TaskError> {
         let wallets = self.wallets.read().unwrap_or_else(|e| e.into_inner());
-        self.load_identities_filtered(&wallets, |s| s.identity_type != "User")
+        self.load_identities_filtered(&wallets, |s| {
+            !matches!(
+                IdentityType::from_tag(&s.identity_type),
+                Some(IdentityType::User)
+            )
+        })
     }
 
     /// Fetches every locally-stored identity whose `identity_type` is
@@ -810,7 +796,12 @@ impl AppContext {
         &self,
     ) -> std::result::Result<Vec<QualifiedIdentity>, TaskError> {
         let wallets = self.wallets.read().unwrap_or_else(|e| e.into_inner());
-        self.load_identities_filtered(&wallets, |s| s.identity_type == "User")
+        self.load_identities_filtered(&wallets, |s| {
+            matches!(
+                IdentityType::from_tag(&s.identity_type),
+                Some(IdentityType::User)
+            )
+        })
     }
 
     /// Return the raw ids of every locally-stored identity, read from the
@@ -818,7 +809,7 @@ impl AppContext {
     /// (e.g. the network-clear sweep) that need to fan an operation out
     /// over each identity's [`DetScope::Identity`] scope.
     pub fn local_identity_ids(&self) -> std::result::Result<Vec<Identifier>, TaskError> {
-        let kv = self.identity_kv()?;
+        let kv = self.det_kv()?;
         Ok(load_identity_index(&kv)?
             .into_iter()
             .map(Identifier::from)
@@ -841,7 +832,7 @@ impl AppContext {
         &self,
         identifier: &Identifier,
     ) -> std::result::Result<(), TaskError> {
-        let kv = self.identity_kv()?;
+        let kv = self.det_kv()?;
         let id = identifier.to_buffer();
         self.clear_identity_vault_keys(&kv, &id);
         purge_identity_scope(&kv, &id)?;
@@ -861,7 +852,7 @@ impl AppContext {
     /// is logged; the next load re-detects the plaintext and retries.
     fn migrate_identity_keys_to_vault(
         &self,
-        kv: &crate::wallet_backend::DetKv,
+        kv: &DetKv,
         id: &[u8; 32],
         qi: &mut QualifiedIdentity,
     ) {
@@ -874,14 +865,13 @@ impl AppContext {
     /// association and status. Used by the eager identity-key migration.
     fn persist_identity_blob(
         &self,
-        kv: &crate::wallet_backend::DetKv,
+        kv: &DetKv,
         id: &[u8; 32],
         qi: &QualifiedIdentity,
     ) -> std::result::Result<(), TaskError> {
         let scope = DetScope::Identity(id);
-        let existing: Option<StoredQualifiedIdentity> = kv
-            .get(scope, IDENTITY_KEY)
-            .map_err(|source| TaskError::IdentityStorage { source })?;
+        let existing: Option<StoredQualifiedIdentity> =
+            kv.get(scope, IDENTITY_KEY).map_err(identity_err)?;
         let (wallet_hash, wallet_index, status) = existing
             .as_ref()
             .map(|s| (s.wallet_hash, s.wallet_index, s.status))
@@ -889,12 +879,11 @@ impl AppContext {
         let stored = StoredQualifiedIdentity {
             qi_bytes: qi.to_bytes(),
             status,
-            identity_type: format!("{:?}", qi.identity_type),
+            identity_type: qi.identity_type.as_tag().to_string(),
             wallet_hash,
             wallet_index,
         };
-        kv.put(scope, IDENTITY_KEY, &stored)
-            .map_err(|source| TaskError::IdentityStorage { source })
+        kv.put(scope, IDENTITY_KEY, &stored).map_err(identity_err)
     }
 
     /// Delete every identity-key raw secret for `id` from the vault. Best
@@ -902,7 +891,7 @@ impl AppContext {
     /// never wedges on an unreadable blob — leaving a stale vault entry is
     /// preferable to blocking the delete, and the entry is unreachable once the
     /// blob is gone. Idempotent (deleting an absent label is `Ok`).
-    fn clear_identity_vault_keys(&self, kv: &crate::wallet_backend::DetKv, id: &[u8; 32]) {
+    fn clear_identity_vault_keys(&self, kv: &DetKv, id: &[u8; 32]) {
         let Ok(Some(stored)) =
             kv.get::<StoredQualifiedIdentity>(DetScope::Identity(id), IDENTITY_KEY)
         else {
@@ -932,14 +921,14 @@ impl AppContext {
         if self.network != Network::Devnet {
             return Ok(());
         }
-        let kv = self.identity_kv()?;
+        let kv = self.det_kv()?;
         let ids = load_identity_index(&kv)?;
         for id in &ids {
             self.clear_identity_vault_keys(&kv, id);
             purge_identity_scope(&kv, id)?;
         }
         kv.delete(DetScope::Global, IDENTITY_INDEX_KEY)
-            .map_err(|source| TaskError::IdentityStorage { source })
+            .map_err(identity_err)
     }
 
     /// Persist the user-chosen identity ordering at `det:identity_order:v1`.
@@ -948,19 +937,19 @@ impl AppContext {
         &self,
         all_ids: Vec<Identifier>,
     ) -> std::result::Result<(), TaskError> {
-        let kv = self.identity_kv()?;
+        let kv = self.det_kv()?;
         let payload: Vec<[u8; 32]> = all_ids.iter().map(Identifier::to_buffer).collect();
         kv.put(DetScope::Global, IDENTITY_ORDER_KEY, &payload)
-            .map_err(|source| TaskError::IdentityStorage { source })
+            .map_err(identity_err)
     }
 
     /// Load the user-chosen identity ordering, dropping any references
     /// that no longer point at a stored identity.
     pub fn load_identity_order(&self) -> std::result::Result<Vec<Identifier>, TaskError> {
-        let kv = self.identity_kv()?;
+        let kv = self.det_kv()?;
         let Some(payload): Option<Vec<[u8; 32]>> = kv
             .get(DetScope::Global, IDENTITY_ORDER_KEY)
-            .map_err(|source| TaskError::IdentityStorage { source })?
+            .map_err(identity_err)?
         else {
             return Ok(Vec::new());
         };
@@ -969,7 +958,7 @@ impl AppContext {
         for buf in payload {
             let exists = kv
                 .get::<StoredQualifiedIdentity>(DetScope::Identity(&buf), IDENTITY_KEY)
-                .map_err(|source| TaskError::IdentityStorage { source })?
+                .map_err(identity_err)?
                 .is_some();
             if exists {
                 kept.push(Identifier::from(buf));
@@ -980,13 +969,9 @@ impl AppContext {
         if needs_rewrite {
             let payload: Vec<[u8; 32]> = kept.iter().map(Identifier::to_buffer).collect();
             kv.put(DetScope::Global, IDENTITY_ORDER_KEY, &payload)
-                .map_err(|source| TaskError::IdentityStorage { source })?;
+                .map_err(identity_err)?;
         }
         Ok(kept)
-    }
-
-    fn identity_kv(&self) -> std::result::Result<crate::wallet_backend::DetKv, TaskError> {
-        Ok(self.wallet_backend()?.kv())
     }
 
     /// Persist a batch of scheduled votes in the per-network wallet k/v
@@ -998,9 +983,8 @@ impl AppContext {
     pub fn insert_scheduled_votes(
         &self,
         scheduled_votes: &Vec<ScheduledDPNSVote>,
-    ) -> std::result::Result<(), crate::backend_task::error::TaskError> {
-        let backend = self.wallet_backend()?;
-        let kv = backend.kv();
+    ) -> std::result::Result<(), TaskError> {
+        let kv = self.det_kv()?;
         for vote in scheduled_votes {
             let voter = vote.voter_id.to_buffer();
             let stored = StoredScheduledVote::from(vote);
@@ -1009,9 +993,7 @@ impl AppContext {
                 &scheduled_vote_key(&vote.contested_name),
                 &stored,
             )
-            .map_err(|source| {
-                crate::backend_task::error::TaskError::ScheduledVoteStorage { source }
-            })?;
+            .map_err(scheduled_vote_err)?;
             index_add_vote_voter(&kv, &voter)?;
         }
         Ok(())
@@ -1019,21 +1001,13 @@ impl AppContext {
 
     /// Fetch every scheduled vote queued for this network from the
     /// wallet k/v store, across all voters in the Global voter index.
-    pub fn get_scheduled_votes(
-        &self,
-    ) -> std::result::Result<Vec<ScheduledDPNSVote>, crate::backend_task::error::TaskError> {
-        let backend = self.wallet_backend()?;
-        let kv = backend.kv();
+    pub fn get_scheduled_votes(&self) -> std::result::Result<Vec<ScheduledDPNSVote>, TaskError> {
+        let kv = self.det_kv()?;
         let voters = load_scheduled_vote_voters(&kv)?;
         let mut out = Vec::new();
         for voter in voters {
             let scope = DetScope::Identity(&voter);
-            let keys = kv
-                .list(scope, Some(SCHEDULED_VOTE_KEY_PREFIX))
-                .map_err(
-                    |source| crate::backend_task::error::TaskError::ScheduledVoteStorage { source },
-                )?;
-            for key in keys {
+            for key in scheduled_vote_keys(&kv, &voter)? {
                 match kv.get::<StoredScheduledVote>(scope, &key) {
                     Ok(Some(stored)) => out.push(stored.into()),
                     Ok(None) => {}
@@ -1051,51 +1025,29 @@ impl AppContext {
     }
 
     /// Drop every scheduled vote queued for this network.
-    pub fn clear_all_scheduled_votes(
-        &self,
-    ) -> std::result::Result<(), crate::backend_task::error::TaskError> {
-        let backend = self.wallet_backend()?;
-        let kv = backend.kv();
+    pub fn clear_all_scheduled_votes(&self) -> std::result::Result<(), TaskError> {
+        let kv = self.det_kv()?;
         let voters = load_scheduled_vote_voters(&kv)?;
         for voter in &voters {
             let scope = DetScope::Identity(voter);
-            let keys = kv
-                .list(scope, Some(SCHEDULED_VOTE_KEY_PREFIX))
-                .map_err(
-                    |source| crate::backend_task::error::TaskError::ScheduledVoteStorage { source },
-                )?;
-            for key in keys {
-                kv.delete(scope, &key).map_err(|source| {
-                    crate::backend_task::error::TaskError::ScheduledVoteStorage { source }
-                })?;
+            for key in scheduled_vote_keys(&kv, voter)? {
+                kv.delete(scope, &key).map_err(scheduled_vote_err)?;
             }
         }
         kv.delete(DetScope::Global, SCHEDULED_VOTE_VOTERS_KEY)
-            .map_err(
-                |source| crate::backend_task::error::TaskError::ScheduledVoteStorage { source },
-            )
+            .map_err(scheduled_vote_err)
     }
 
     /// Drop every scheduled vote that has already been cast successfully.
-    pub fn clear_executed_scheduled_votes(
-        &self,
-    ) -> std::result::Result<(), crate::backend_task::error::TaskError> {
-        let backend = self.wallet_backend()?;
-        let kv = backend.kv();
+    pub fn clear_executed_scheduled_votes(&self) -> std::result::Result<(), TaskError> {
+        let kv = self.det_kv()?;
         let voters = load_scheduled_vote_voters(&kv)?;
         for voter in &voters {
             let scope = DetScope::Identity(voter);
-            let keys = kv
-                .list(scope, Some(SCHEDULED_VOTE_KEY_PREFIX))
-                .map_err(
-                    |source| crate::backend_task::error::TaskError::ScheduledVoteStorage { source },
-                )?;
-            for key in keys {
+            for key in scheduled_vote_keys(&kv, voter)? {
                 match kv.get::<StoredScheduledVote>(scope, &key) {
                     Ok(Some(stored)) if stored.executed_successfully => {
-                        kv.delete(scope, &key).map_err(|source| {
-                            crate::backend_task::error::TaskError::ScheduledVoteStorage { source }
-                        })?;
+                        kv.delete(scope, &key).map_err(scheduled_vote_err)?;
                     }
                     _ => {}
                 }
@@ -1111,15 +1063,14 @@ impl AppContext {
         &self,
         identity_id: &[u8],
         contested_name: &String,
-    ) -> std::result::Result<(), crate::backend_task::error::TaskError> {
-        let backend = self.wallet_backend()?;
+    ) -> std::result::Result<(), TaskError> {
         let voter = voter_buffer(identity_id)?;
-        let kv = backend.kv();
+        let kv = self.det_kv()?;
         kv.delete(
             DetScope::Identity(&voter),
             &scheduled_vote_key(contested_name),
         )
-        .map_err(|source| crate::backend_task::error::TaskError::ScheduledVoteStorage { source })?;
+        .map_err(scheduled_vote_err)?;
         prune_vote_voter_if_empty(&kv, &voter)
     }
 
@@ -1128,23 +1079,18 @@ impl AppContext {
         &self,
         identity_id: &[u8],
         contested_name: String,
-    ) -> std::result::Result<(), crate::backend_task::error::TaskError> {
-        let backend = self.wallet_backend()?;
+    ) -> std::result::Result<(), TaskError> {
         let voter = voter_buffer(identity_id)?;
         let key = scheduled_vote_key(&contested_name);
         let scope = DetScope::Identity(&voter);
-        let kv = backend.kv();
+        let kv = self.det_kv()?;
         let Some(mut stored): Option<StoredScheduledVote> =
-            kv.get(scope, &key).map_err(|source| {
-                crate::backend_task::error::TaskError::ScheduledVoteStorage { source }
-            })?
+            kv.get(scope, &key).map_err(scheduled_vote_err)?
         else {
             return Ok(());
         };
         stored.executed_successfully = true;
-        kv.put(scope, &key, &stored).map_err(|source| {
-            crate::backend_task::error::TaskError::ScheduledVoteStorage { source }
-        })
+        kv.put(scope, &key, &stored).map_err(scheduled_vote_err)
     }
 
     /// Fetches the local identities from the k/v store and maps them to their DPNS names.
@@ -1177,8 +1123,8 @@ impl AppContext {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::wallet_backend::DetKv;
     use crate::wallet_backend::kv_test_support::InMemoryKv;
+    use DetKv;
     use std::sync::Arc;
 
     fn empty_kv() -> DetKv {
@@ -1298,6 +1244,32 @@ mod tests {
         // Removing an absent id is a no-op.
         index_remove_identity(&kv, &id(9)).unwrap();
         assert_eq!(load_identity_index(&kv).unwrap(), vec![id(2)]);
+    }
+
+    // ---------------------------------------------------------------
+    // Identity-type tag: writer and filter share one stable mapping.
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn identity_type_tag_round_trips_writer_to_filter() {
+        // The writer stores `as_tag()`; the load filters classify via
+        // `from_tag()`. They must agree for every variant, independent of the
+        // derived `Debug` representation.
+        for ty in [
+            IdentityType::User,
+            IdentityType::Masternode,
+            IdentityType::Evonode,
+        ] {
+            assert_eq!(IdentityType::from_tag(ty.as_tag()), Some(ty));
+        }
+        // Tags are fixed string constants, not the `Debug` output.
+        assert_eq!(IdentityType::User.as_tag(), "User");
+        assert_eq!(IdentityType::Masternode.as_tag(), "Masternode");
+        assert_eq!(IdentityType::Evonode.as_tag(), "Evonode");
+        // The user / non-user split the load filters depend on. An unknown tag
+        // decodes to `None`, which the filters treat as non-user (voting) —
+        // preserving the pre-tag string-compare behaviour.
+        assert_eq!(IdentityType::from_tag("Bogus"), None);
     }
 
     // ---------------------------------------------------------------
@@ -1760,14 +1732,14 @@ mod tests {
         let qi = qi_with_plaintext_and_derived(high, medium);
         let identity_id = qi.identity.id();
         let id_buf = identity_id.to_buffer();
-        let kv = ctx.identity_kv().expect("identity kv");
+        let kv = ctx.det_kv().expect("identity kv");
         kv.put(
             DetScope::Identity(&id_buf),
             IDENTITY_KEY,
             &StoredQualifiedIdentity {
                 qi_bytes: qi.to_bytes(),
                 status: qi.status.as_u8(),
-                identity_type: format!("{:?}", qi.identity_type),
+                identity_type: qi.identity_type.as_tag().to_string(),
                 wallet_hash: None,
                 wallet_index: None,
             },

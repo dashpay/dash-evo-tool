@@ -14,6 +14,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   before. Each suggestion now shows a small label for its wallet and its
   type, and the field shows a hint listing the tags you can use when it's
   empty.
+- **Wallet balance health check**: after each sync completes, the app quietly
+  cross-checks each wallet's Core and Platform balance totals against its
+  per-account breakdown. If they ever disagree, a warning banner explains
+  that your funds are safe and suggests refreshing the wallet or reopening
+  the app — a safety net for catching a future display discrepancy early,
+  rather than a sign of a known problem today.
 
 ### Changed
 

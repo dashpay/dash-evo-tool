@@ -3,7 +3,7 @@
 //! **Background**: Scenarios C and D cover the watch-only upstream-wallet
 //! identity-provisioning bug fixed in commit `98bc4913`.
 //!
-//! When a wallet is loaded on cold-boot via `UpstreamFromPersisted` it starts
+//! When a wallet is loaded on cold-boot via `load_from_persistor_seedless` it starts
 //! life as a watch-only upstream wallet (no root private key). Identity
 //! registration and top-up both call
 //! `WalletBackend::ensure_identity_funding_accounts`, which in turn calls
@@ -35,7 +35,7 @@
 //! ## How it exercises the watch-only fix
 //!
 //! In the shared e2e harness the framework wallet is loaded watch-only by
-//! `UpstreamFromPersisted` at backend-build time; `bootstrap_wallet_addresses_jit`
+//! `load_from_persistor_seedless` at backend-build time; `bootstrap_wallet_addresses_jit`
 //! later upgrades it to full via `ensure_upstream_registered` / `register_wallet_from_seed`.
 //! For a freshly created test wallet the gap between cold-watch-only load and
 //! the JIT upgrade creates a window where the fix is active.  Regardless,

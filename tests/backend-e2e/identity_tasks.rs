@@ -733,7 +733,7 @@ async fn tc_031_incremental_address_discovery() {
 // Without the loader-side re-provision, a top-up succeeds on first run but
 // fails after every relaunch (`AssetLockTransaction("Identity top-up
 // account for index N not found")`). `ensure_wallets_registered()` is the
-// exact reload chokepoint (re-runs the `UpstreamFromPersisted` load path),
+// exact reload chokepoint (re-runs the `load_from_persistor_seedless` load path),
 // so calling it again faithfully simulates an app restart.
 #[ignore]
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]

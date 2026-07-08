@@ -7,7 +7,7 @@
 //! stale value.
 
 use super::{AppContext, SettingsCacheGuard};
-use crate::model::settings::AppSettings;
+use crate::model::settings::{AppSettings, detect_dash_qt_path};
 use crate::ui::RootScreenType;
 use crate::ui::theme::ThemeMode;
 use crate::wallet_backend::{DetScope, KvAdapterError};
@@ -96,7 +96,7 @@ impl AppContext {
             .app_kv
             .get::<AppSettings>(DetScope::Global, AppSettings::KV_KEY)
         {
-            Ok(Some(s)) => s,
+            Ok(Some(s)) => with_dash_qt_path_fallback(s),
             Ok(None) => AppSettings::default(),
             Err(e) => {
                 tracing::warn!(
@@ -127,6 +127,17 @@ impl AppContext {
     pub fn get_settings(&self) -> Result<Option<AppSettings>, KvAdapterError> {
         Ok(Some(self.get_app_settings()))
     }
+}
+
+/// Fills in an autodetected `dash_qt_path` when a decoded settings blob has
+/// none. `None` means "autodetect" (see `AppSettings::dash_qt_path` docs);
+/// decoding itself stays pure (no filesystem IO), so this fallback runs once
+/// here, at the settings-load call site.
+fn with_dash_qt_path_fallback(mut settings: AppSettings) -> AppSettings {
+    if settings.dash_qt_path.is_none() {
+        settings.dash_qt_path = detect_dash_qt_path();
+    }
+    settings
 }
 
 #[cfg(test)]
@@ -230,5 +241,31 @@ mod tests {
         assert!(got.auto_start_spv);
         assert!(got.disable_zmq);
         assert!(got.onboarding_completed);
+    }
+
+    /// A decoded blob with no stored Dash-Qt path gets one autodetect pass at
+    /// load time, so installing Dash-Qt after first launch is picked up
+    /// without a manual edit.
+    #[test]
+    fn dash_qt_path_fallback_autodetects_when_unset() {
+        let settings = AppSettings {
+            dash_qt_path: None,
+            ..AppSettings::default()
+        };
+        let filled = with_dash_qt_path_fallback(settings);
+        assert_eq!(filled.dash_qt_path, detect_dash_qt_path());
+    }
+
+    /// A stored Dash-Qt path is preserved verbatim — autodetect never
+    /// overrides an explicit user choice.
+    #[test]
+    fn dash_qt_path_fallback_preserves_explicit_value() {
+        let stored = std::path::PathBuf::from("/custom/path/to/dash-qt");
+        let settings = AppSettings {
+            dash_qt_path: Some(stored.clone()),
+            ..AppSettings::default()
+        };
+        let filled = with_dash_qt_path_fallback(settings);
+        assert_eq!(filled.dash_qt_path, Some(stored));
     }
 }

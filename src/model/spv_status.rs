@@ -6,7 +6,6 @@
 //! upstream sync events. Until then they default to `Idle`/empty.
 
 use dash_sdk::dash_spv::sync::SyncProgress as SpvSyncProgress;
-use std::time::SystemTime;
 
 /// High-level status of the SPV client runtime, for UI display.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -65,7 +64,5 @@ pub struct SpvStatusSnapshot {
     pub status: SpvStatus,
     pub sync_progress: Option<SpvSyncProgress>,
     pub last_error: Option<String>,
-    pub started_at: Option<SystemTime>,
-    pub last_updated: Option<SystemTime>,
     pub connected_peers: usize,
 }

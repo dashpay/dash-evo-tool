@@ -369,8 +369,6 @@ impl ConnectionStatus {
             status: self.spv_status(),
             sync_progress: self.spv_sync_progress(),
             last_error: self.spv_last_error(),
-            started_at: None,
-            last_updated: None,
             connected_peers: self.spv_connected_peers() as usize,
         }
     }

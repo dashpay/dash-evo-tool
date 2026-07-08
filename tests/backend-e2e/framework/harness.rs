@@ -128,7 +128,7 @@ fn is_transient_registration_error(error: &TaskError) -> bool {
         TaskError::WalletBackend { .. }
             | TaskError::WalletBackendNotYetWired
             | TaskError::WalletSeedStorage { .. }
-            | TaskError::WalletMetaStorage { .. }
+            | TaskError::KvSidecarStorage { .. }
     )
 }
 
@@ -136,7 +136,7 @@ fn is_transient_registration_error(error: &TaskError) -> bool {
 /// backoff (~30s total).
 ///
 /// Under the shared-runtime backend-e2e harness, the fail-closed sidecar writes
-/// (`WalletSeedStorage` / `WalletMetaStorage`) can briefly lose a SQLite race,
+/// (`WalletSeedStorage` / `KvSidecarStorage`) can briefly lose a SQLite race,
 /// and upstream registration can surface the typed transient `WalletBackend`
 /// ("retry in a moment") signal. A single attempt then panics and masks the test
 /// under exercise (e.g. identity_create / identity_cold_boot). Retry those

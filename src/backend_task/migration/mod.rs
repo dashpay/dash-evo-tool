@@ -3,11 +3,11 @@
 //!
 //! Today the only variant is [`MigrationTask::FinishUnwire`], which
 //! orchestrates the post-PR-#860 cold-start migration. The orchestrator
-//! detects whether legacy rows are still present, walks the per-domain
-//! adapters (filled in by T-SK-02 / T-SH-02), and writes a completion
-//! sentinel so subsequent launches short-circuit. See
-//! [`finish_unwire`] for the orchestrator body and
-//! [`MigrationError`](finish_unwire::MigrationError) for failure shapes.
+//! detects whether legacy rows are still present, drains single-key rows,
+//! wallet seeds and wallet metadata into the upstream store, registers the
+//! migrated wallets, and writes a completion sentinel so subsequent
+//! launches short-circuit. See [`finish_unwire`] for the orchestrator body
+//! and [`MigrationError`](finish_unwire::MigrationError) for failure shapes.
 
 use std::sync::Arc;
 

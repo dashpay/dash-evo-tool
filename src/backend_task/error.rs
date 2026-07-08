@@ -367,15 +367,14 @@ pub enum TaskError {
     )]
     IdentityKeyProtectionLegacyFormat,
 
-    /// The DET wallet-metadata sidecar (alias / `is_main` /
-    /// `core_wallet_name`) could not be read or written. Distinct from
-    /// [`Self::WalletStorage`] because the cause sits in the cross-
-    /// network `det-app.sqlite` k/v file rather than the per-network
-    /// upstream persister — the user-actionable hint is the same.
+    /// A cross-network `det-app.sqlite` sidecar (wallet-metadata or
+    /// auth-pubkey-cache) could not be read or written. Both sidecars share
+    /// this user message; `sidecar` names which one failed for logs.
     #[error(
         "Could not access wallet details. Check available disk space and restart the application."
     )]
-    WalletMetaStorage {
+    KvSidecarStorage {
+        sidecar: &'static str,
         #[source]
         source: Box<crate::wallet_backend::KvAdapterError>,
     },
@@ -383,7 +382,7 @@ pub enum TaskError {
     /// The DET-owned identity-metadata sidecar (the password hint and prompt
     /// copy for an identity whose keys are password-protected) could not be
     /// read or written. Lives in the same cross-network `det-app.sqlite` k/v
-    /// file as [`Self::WalletMetaStorage`]; the sidecar is cosmetic (it never
+    /// file as [`Self::KvSidecarStorage`]; the sidecar is cosmetic (it never
     /// gates whether a password is required — the vault scheme does), so a
     /// failure here only costs the hint, and the user hint is the same calm
     /// disk-space prompt.
@@ -395,23 +394,9 @@ pub enum TaskError {
         source: Box<crate::wallet_backend::KvAdapterError>,
     },
 
-    /// The DET identity-authentication public-key cache (D4b) could not
-    /// be read or written. Lives in the same cross-network
-    /// `det-app.sqlite` k/v file as [`Self::WalletMetaStorage`]; a failure
-    /// here only costs the steady-state optimisation (reads self-heal via
-    /// a just-in-time derivation), so the user hint is the same calm
-    /// disk-space prompt.
-    #[error(
-        "Could not access wallet details. Check available disk space and restart the application."
-    )]
-    AuthPubkeyCacheStorage {
-        #[source]
-        source: Box<crate::wallet_backend::KvAdapterError>,
-    },
-
     /// The DET avatar image cache could not be read or written.
     /// Lives in the same cross-network `det-app.sqlite` k/v file as
-    /// [`Self::WalletMetaStorage`]; a failure here only costs the offline
+    /// [`Self::KvSidecarStorage`]; a failure here only costs the offline
     /// avatar cache (the image re-fetches from the network), so the user hint
     /// is the same calm disk-space prompt.
     #[error(

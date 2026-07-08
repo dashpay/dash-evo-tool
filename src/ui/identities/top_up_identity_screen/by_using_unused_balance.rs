@@ -18,9 +18,10 @@ impl TopUpIdentityScreen {
                 }
             };
 
-            let total_balance: u64 = self.app_context.snapshot_balance(&wallet.seed_hash()).total;
+            let spendable_balance: u64 =
+                self.app_context.snapshot_balance(&wallet.seed_hash()).spendable();
 
-            let dash_balance = total_balance as f64 * 1e-8; // Convert to DASH units
+            let dash_balance = spendable_balance as f64 * 1e-8; // Convert to DASH units
 
             ui.horizontal(|ui| {
                 ui.label(format!("Wallet Balance: {:.8} DASH", dash_balance));

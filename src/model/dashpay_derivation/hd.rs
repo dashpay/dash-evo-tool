@@ -6,8 +6,8 @@ use dash_sdk::dpp::key_wallet::bip32::{
 use dash_sdk::platform::Identifier;
 use std::str::FromStr;
 
-// Import our DIP-14 compliant derivation functions
-use super::dip14_derivation::derive_dashpay_incoming_xpub_dip14;
+use super::DerivationError;
+use super::dip14::derive_dashpay_incoming_xpub_dip14;
 
 /// DashPay auto-accept proof feature index - use the constant from dip9 if available
 const DASHPAY_AUTO_ACCEPT_FEATURE: u32 = 16;
@@ -27,7 +27,7 @@ pub fn derive_dashpay_incoming_xpub(
     account: u32,
     sender_id: &Identifier,
     recipient_id: &Identifier,
-) -> Result<ExtendedPubKey, String> {
+) -> Result<ExtendedPubKey, DerivationError> {
     // Use the DIP-14 compliant implementation
     derive_dashpay_incoming_xpub_dip14(master_seed, network, account, sender_id, recipient_id)
 }
@@ -37,16 +37,11 @@ pub fn derive_dashpay_incoming_xpub(
 pub fn derive_payment_address(
     contact_xpub: &ExtendedPubKey,
     index: u32,
-) -> Result<dash_sdk::dpp::dashcore::Address, String> {
+) -> Result<dash_sdk::dpp::dashcore::Address, DerivationError> {
     let secp = dash_sdk::dpp::dashcore::secp256k1::Secp256k1::new();
 
     // Derive the specific address key
-    let address_key = contact_xpub
-        .derive_pub(
-            &secp,
-            &[ChildNumber::from_normal_idx(index).map_err(|e| format!("Invalid index: {}", e))?],
-        )
-        .map_err(|e| format!("Failed to derive address key: {}", e))?;
+    let address_key = contact_xpub.derive_pub(&secp, &[ChildNumber::from_normal_idx(index)?])?;
 
     // Convert to Dash address
     // The ExtendedPubKey's public_key is a secp256k1::PublicKey
@@ -58,26 +53,6 @@ pub fn derive_payment_address(
     Ok(address)
 }
 
-/// Convert an Identifier to a ChildNumber for compatibility with existing code
-/// Note: This is only used for backwards compatibility. The actual DIP-14
-/// compliant derivation is handled in the dip14_derivation module.
-#[allow(dead_code)]
-fn identity_to_child_number(id: &Identifier, hardened: bool) -> Result<ChildNumber, String> {
-    let id_bytes = id.to_buffer();
-
-    // Take last 4 bytes for ChildNumber representation
-    // This is just for storage/display purposes, actual derivation uses full 256-bit
-    let mut index_bytes = [0u8; 4];
-    index_bytes.copy_from_slice(&id_bytes[28..32]);
-    let index = u32::from_be_bytes(index_bytes);
-
-    if hardened {
-        ChildNumber::from_hardened_idx(index).map_err(|e| format!("Invalid hardened index: {}", e))
-    } else {
-        ChildNumber::from_normal_idx(index).map_err(|e| format!("Invalid normal index: {}", e))
-    }
-}
-
 /// Generate the extended public key data for a contact request
 /// Returns (parent_fingerprint, chain_code, public_key_bytes)
 #[allow(clippy::type_complexity)]
@@ -87,7 +62,7 @@ pub fn generate_contact_xpub_data(
     account: u32,
     sender_id: &Identifier,
     recipient_id: &Identifier,
-) -> Result<([u8; 4], [u8; 32], [u8; 33]), String> {
+) -> Result<([u8; 4], [u8; 32], [u8; 33]), DerivationError> {
     // Derive the extended public key for this contact
     let xpub =
         derive_dashpay_incoming_xpub(master_seed, network, account, sender_id, recipient_id)?;
@@ -108,24 +83,21 @@ pub fn derive_auto_accept_key(
     master_seed: &[u8],
     network: Network,
     timestamp: u32,
-) -> Result<ExtendedPrivKey, String> {
+) -> Result<ExtendedPrivKey, DerivationError> {
     use crate::model::wallet::coin_type_for_network;
 
     // Create extended private key from seed
-    let master_xprv = ExtendedPrivKey::new_master(network, master_seed)
-        .map_err(|e| format!("Failed to create master key: {}", e))?;
+    let master_xprv = ExtendedPrivKey::new_master(network, master_seed)?;
 
     // Build derivation path: m/9'/coin'/16'/timestamp'
     let coin_type = coin_type_for_network(network);
     let path = DerivationPath::from_str(&format!(
         "m/9'/{coin_type}'/{DASHPAY_AUTO_ACCEPT_FEATURE}'/{timestamp}'"
-    ))
-    .map_err(|e| format!("Invalid derivation path: {}", e))?;
+    ))?;
 
     // Derive the key
-    let auto_accept_key = master_xprv
-        .derive_priv(&dash_sdk::dpp::dashcore::secp256k1::Secp256k1::new(), &path)
-        .map_err(|e| format!("Failed to derive auto-accept key: {}", e))?;
+    let auto_accept_key =
+        master_xprv.derive_priv(&dash_sdk::dpp::dashcore::secp256k1::Secp256k1::new(), &path)?;
 
     Ok(auto_accept_key)
 }

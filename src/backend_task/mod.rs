@@ -197,7 +197,7 @@ pub enum BackendTaskSuccessResult {
     ToppedUpIdentity(QualifiedIdentity, FeeResult),
     #[allow(dead_code)] // May be used for reporting successful votes
     SuccessfulVotes(Vec<Vote>),
-    DPNSVoteResults(Vec<(String, ResourceVoteChoice, Result<(), String>)>),
+    DPNSVoteResults(Vec<(String, ResourceVoteChoice, Result<(), Arc<TaskError>>)>),
     CastScheduledVote(ScheduledDPNSVote),
     FetchedContract(DataContract),
     FetchedContractWithTokenPosition(
@@ -242,7 +242,7 @@ pub enum BackendTaskSuccessResult {
     DashPayContactRequestRejected(Identifier), // Request ID that was rejected
     DashPayContactAlreadyEstablished(Identifier), // Contact ID that already exists
     DashPayContactInfoUpdated(Identifier), // Contact ID whose info was updated
-    DashPayPaymentSent(String, String, f64), // (recipient, address, amount)
+    DashPayPaymentSent(String, String, u64), // (recipient, address, amount in duffs)
     /// Received outputs the `EventBridge` saw on a freshly-detected wallet
     /// transaction. The app dispatches `DetectIncomingContactPayments` for
     /// these — the backend resolves each against the per-identity DashPay

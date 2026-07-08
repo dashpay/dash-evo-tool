@@ -1,7 +1,7 @@
-use super::hd_derivation::{derive_dashpay_incoming_xpub, derive_payment_address};
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::dashpay::ContactAddressIndex;
+use crate::model::dashpay_derivation::{derive_dashpay_incoming_xpub, derive_payment_address};
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::dpp::dashcore::{Address, Network};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -50,11 +50,12 @@ pub fn derive_receiving_addresses_for_contact(
         0, // account 0
         our_identity_id,
         contact_id,
-    )?;
+    )
+    .map_err(|e| e.to_string())?;
 
     let mut addresses = Vec::with_capacity(count as usize);
     for i in start_index..(start_index + count) {
-        let address = derive_payment_address(&xpub, i)?;
+        let address = derive_payment_address(&xpub, i).map_err(|e| e.to_string())?;
         addresses.push(DashPayReceivingAddress {
             address,
             contact_id: *contact_id,
@@ -72,7 +73,7 @@ pub fn derive_receiving_addresses_for_contact(
 pub async fn register_dashpay_addresses_for_identity(
     app_context: &Arc<AppContext>,
     identity: &QualifiedIdentity,
-) -> Result<DashPayAddressRegistrationResult, String> {
+) -> Result<DashPayAddressRegistrationResult, TaskError> {
     let mut result = DashPayAddressRegistrationResult::default();
     let our_identity_id = identity.identity.id();
 
@@ -80,18 +81,14 @@ pub async fn register_dashpay_addresses_for_identity(
     // side must pick the SAME wallet the send side published the contact-xpub
     // from, or the contact pays into addresses we never scan — both sides
     // resolve through `QualifiedIdentity::dashpay_wallet` (SEC-W-001).
-    let (seed_hash, wallet) = identity
-        .dashpay_wallet()
-        .ok_or("No wallet associated with identity")?;
+    let (seed_hash, wallet) = identity.dashpay_wallet().ok_or(TaskError::WalletNotFound)?;
     let wallet = wallet.clone();
 
     // Load all contacts for this identity from the WalletBackend DashPay
     // adapter — the upstream-backed source of truth. After D4c there is no
     // DB fallback: registration is meaningful only once the wallet is
     // wired (it needs the wallet's seed and known-address map anyway).
-    let backend = app_context
-        .wallet_backend()
-        .map_err(|e| format!("Wallet backend not yet available: {}", e))?;
+    let backend = app_context.wallet_backend()?;
     let contacts = backend.dashpay_view().contacts(&our_identity_id).await;
 
     if contacts.is_empty() {
@@ -128,8 +125,7 @@ pub async fn register_dashpay_addresses_for_identity(
     // is borrowed for this single registration run and zeroizes when the
     // closure returns; it never enters this layer by value.
     let derived = app_context
-        .wallet_backend()
-        .map_err(|e| format!("Wallet backend not yet available: {}", e))?
+        .wallet_backend()?
         .secret_access()
         .with_secret_session(
             &crate::wallet_backend::SecretScope::HdSeed { seed_hash },
@@ -190,8 +186,7 @@ pub async fn register_dashpay_addresses_for_identity(
                 Ok(derived)
             },
         )
-        .await
-        .map_err(|e| e.to_string())?;
+        .await?;
 
     // Register the derived addresses with the wallet outside the secret scope
     // — registration touches no plaintext seed.

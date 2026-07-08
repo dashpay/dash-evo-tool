@@ -1,4 +1,5 @@
-use super::hd_derivation::derive_auto_accept_key;
+use crate::backend_task::error::TaskError;
+use crate::model::dashpay_derivation::derive_auto_accept_key;
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::dpp::dashcore::secp256k1::{Message, Secp256k1, SecretKey};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -127,11 +128,13 @@ pub async fn generate_auto_accept_proof(
     identity: &QualifiedIdentity,
     account_reference: u32,
     validity_hours: u32,
-) -> Result<AutoAcceptProofData, String> {
+) -> Result<AutoAcceptProofData, TaskError> {
+    use crate::backend_task::dashpay::errors::DashPayError;
+
     // Calculate expiration timestamp
     let expires_at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|e| format!("Time error: {}", e))?
+        .map_err(|_| DashPayError::SystemClockInvalid)?
         .as_secs()
         + (validity_hours as u64 * 3600);
 
@@ -145,9 +148,7 @@ pub async fn generate_auto_accept_proof(
             HashSet::from([KeyType::ECDSA_SECP256K1]),
             false,
         )
-        .ok_or(
-            "No suitable key found. This operation requires a MEDIUM security level ECDSA_SECP256K1 ENCRYPTION key.",
-        )?;
+        .ok_or(DashPayError::MissingEncryptionKey)?;
 
     // Resolve the ENCRYPTION private key through the JIT chokepoint — no
     // parked-seed read.
@@ -156,10 +157,9 @@ pub async fn generate_auto_accept_proof(
             crate::model::qualified_identity::PrivateKeyTarget::PrivateKeyOnMainIdentity,
             signing_key.id(),
         )
-        .await
-        .map_err(|e| format!("Error resolving private key: {}", e))?
+        .await?
         .map(|(_, private_key)| private_key)
-        .ok_or("Private key not found")?;
+        .ok_or(TaskError::WalletLocked)?;
 
     // Determine network from the identity
     let network = identity.network;
@@ -171,7 +171,7 @@ pub async fn generate_auto_accept_proof(
         network,
         expires_at as u32, // Truncate to u32 for derivation
     )
-    .map_err(|e| format!("Failed to derive auto-accept key: {}", e))?;
+    .map_err(|e| TaskError::DashPay(DashPayError::from(e)))?;
 
     // Extract the private key bytes (32 bytes)
     let proof_key = auto_accept_xprv.private_key.secret_bytes();

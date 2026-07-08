@@ -10,11 +10,8 @@ pub mod avatar_processing;
 pub mod contact_info;
 pub mod contact_requests;
 pub mod contacts;
-pub mod dip14_derivation;
 pub mod encryption;
-pub mod encryption_tests;
 pub mod errors;
-pub mod hd_derivation;
 pub mod incoming_payments;
 pub mod payments;
 pub mod profile;
@@ -84,7 +81,7 @@ pub enum DashPayTask {
     SendPaymentToContact {
         identity: QualifiedIdentity,
         contact_id: Identifier,
-        amount_dash: f64,
+        amount_duffs: u64,
         memo: Option<String>,
     },
     UpdateContactInfo {
@@ -208,13 +205,7 @@ impl AppContext {
                     );
                 }
 
-                let records = payments::load_payment_history(self, &identity_id, None)
-                    .await
-                    .map_err(
-                        |e| crate::backend_task::dashpay::errors::DashPayError::Internal {
-                            message: e,
-                        },
-                    )?;
+                let records = payments::load_payment_history(self, &identity_id, None).await?;
 
                 // Post-D4c: the WalletBackend DashPay adapter is the sole
                 // source of truth for contacts. Pre-wire (e.g. cold start)
@@ -263,15 +254,15 @@ impl AppContext {
             DashPayTask::SendPaymentToContact {
                 identity,
                 contact_id,
-                amount_dash,
+                amount_duffs,
                 memo,
             } => {
-                payments::send_payment_to_contact_impl(
+                payments::send_payment_to_contact(
                     self,
                     sdk,
                     identity,
                     contact_id,
-                    amount_dash,
+                    amount_duffs,
                     memo,
                 )
                 .await
@@ -297,12 +288,7 @@ impl AppContext {
             DashPayTask::RegisterDashPayAddresses { identity } => {
                 let result =
                     incoming_payments::register_dashpay_addresses_for_identity(self, &identity)
-                        .await
-                        .map_err(|e| {
-                            crate::backend_task::dashpay::errors::DashPayError::Internal {
-                                message: e,
-                            }
-                        })?;
+                        .await?;
 
                 Ok(BackendTaskSuccessResult::Message(format!(
                     "Registered {} DashPay addresses for {} contacts{}",
@@ -334,10 +320,7 @@ impl AppContext {
                     account_reference,
                     validity_hours,
                 )
-                .await
-                .map_err(|message| {
-                    crate::backend_task::dashpay::errors::DashPayError::Internal { message }
-                })?;
+                .await?;
                 Ok(BackendTaskSuccessResult::DashPayAutoAcceptQrCode(
                     proof.to_qr_string(),
                 ))

@@ -118,12 +118,8 @@ impl AppContext {
         if identity_type != IdentityType::User
             && let Some(owner_private_key_bytes) = owner_private_key_bytes
         {
-            let key = self
-                .verify_owner_key_exists_on_identity(&identity, &owner_private_key_bytes)
-                .map_err(|e| TaskError::KeyInputValidationFailed {
-                    key_name: "Owner".to_string(),
-                    detail: e,
-                })?;
+            let key =
+                self.verify_owner_key_exists_on_identity(&identity, &owner_private_key_bytes)?;
             let key_id = key.id();
             let qualified_key =
                 QualifiedIdentityPublicKey::from_identity_public_key_with_wallets_check(
@@ -143,15 +139,10 @@ impl AppContext {
         if identity_type != IdentityType::User
             && let Some(payout_address_private_key_bytes) = payout_address_private_key_bytes
         {
-            let key = self
-                .verify_payout_address_key_exists_on_identity(
-                    &identity,
-                    &payout_address_private_key_bytes,
-                )
-                .map_err(|e| TaskError::KeyInputValidationFailed {
-                    key_name: "Payout Address".to_string(),
-                    detail: e,
-                })?;
+            let key = self.verify_payout_address_key_exists_on_identity(
+                &identity,
+                &payout_address_private_key_bytes,
+            )?;
             let key_id = key.id();
             let qualified_key =
                 QualifiedIdentityPublicKey::from_identity_public_key_with_wallets_check(
@@ -189,15 +180,10 @@ impl AppContext {
                             Err(e) => return Err(TaskError::from(e)),
                         };
 
-                    let key = self
-                        .verify_voting_key_exists_on_identity(
-                            &voter_identity,
-                            &voting_private_key_bytes,
-                        )
-                        .map_err(|e| TaskError::KeyInputValidationFailed {
-                            key_name: "Voting".to_string(),
-                            detail: e,
-                        })?;
+                    let key = self.verify_voting_key_exists_on_identity(
+                        &voter_identity,
+                        &voting_private_key_bytes,
+                    )?;
                     let qualified_key =
                         QualifiedIdentityPublicKey::from_identity_public_key_with_wallets_check(
                             key.clone(),

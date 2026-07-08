@@ -659,12 +659,29 @@ pub async fn build_identity_registration(
         .await
 }
 
+/// Failure while checking that an identity carries a public key matching a
+/// user-supplied private key.
+#[derive(Debug, thiserror::Error)]
+pub enum KeyVerificationError {
+    /// The identity has no keys of the required purpose.
+    #[error("This identity does not contain any {purpose} keys.")]
+    NoKeysForPurpose { purpose: &'static str },
+
+    /// No public key on the identity matches the supplied private key.
+    #[error("This identity has no {purpose} public key matching this private key.")]
+    NoMatchingKey { purpose: &'static str },
+
+    /// The public key could not be derived from the supplied private key.
+    #[error("The public key could not be derived from the supplied private key.")]
+    PublicKeyDerivation(#[source] Box<ProtocolError>),
+}
+
 impl AppContext {
     fn verify_voting_key_exists_on_identity(
         &self,
         voting_identity: &Identity,
         private_voting_key: &[u8; 32],
-    ) -> Result<IdentityPublicKey, String> {
+    ) -> Result<IdentityPublicKey, KeyVerificationError> {
         // We start by getting all the voting keys
         let voting_keys: Vec<IdentityPublicKey> = voting_identity
             .public_keys()
@@ -677,7 +694,7 @@ impl AppContext {
             })
             .collect();
         if voting_keys.is_empty() {
-            return Err("This identity does not contain any voting keys".to_string());
+            return Err(KeyVerificationError::NoKeysForPurpose { purpose: "voting" });
         }
         // Then we get all the key types of the voting keys
         let key_types: HashSet<KeyType> = voting_keys.iter().map(|key| key.key_type()).collect();
@@ -692,7 +709,7 @@ impl AppContext {
                 ))
             })
             .collect::<Result<HashMap<KeyType, Vec<u8>>, ProtocolError>>()
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| KeyVerificationError::PublicKeyDerivation(Box::new(e)))?;
         let Some(key) = voting_keys.into_iter().find(|key| {
             let Some(public_key_bytes) = public_key_bytes_for_each_key_type.get(&key.key_type())
             else {
@@ -700,9 +717,7 @@ impl AppContext {
             };
             key.data().as_slice() == public_key_bytes.as_slice()
         }) else {
-            return Err(
-                "Identity does not have a voting public key matching this private key".to_string(),
-            );
+            return Err(KeyVerificationError::NoMatchingKey { purpose: "voting" });
         };
         Ok(key)
     }
@@ -711,7 +726,7 @@ impl AppContext {
         &self,
         identity: &Identity,
         private_voting_key: &[u8; 32],
-    ) -> Result<IdentityPublicKey, String> {
+    ) -> Result<IdentityPublicKey, KeyVerificationError> {
         // We start by getting all the voting keys
         let owner_keys: Vec<IdentityPublicKey> = identity
             .public_keys()
@@ -724,7 +739,7 @@ impl AppContext {
             })
             .collect();
         if owner_keys.is_empty() {
-            return Err("This identity does not contain any owner keys".to_string());
+            return Err(KeyVerificationError::NoKeysForPurpose { purpose: "owner" });
         }
         // Then we get all the key types of the voting keys
         let key_types: HashSet<KeyType> = owner_keys.iter().map(|key| key.key_type()).collect();
@@ -739,7 +754,7 @@ impl AppContext {
                 ))
             })
             .collect::<Result<HashMap<KeyType, Vec<u8>>, ProtocolError>>()
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| KeyVerificationError::PublicKeyDerivation(Box::new(e)))?;
         let Some(key) = owner_keys.into_iter().find(|key| {
             let Some(public_key_bytes) = public_key_bytes_for_each_key_type.get(&key.key_type())
             else {
@@ -747,9 +762,7 @@ impl AppContext {
             };
             key.data().as_slice() == public_key_bytes.as_slice()
         }) else {
-            return Err(
-                "Identity does not have an owner public key matching this private key".to_string(),
-            );
+            return Err(KeyVerificationError::NoMatchingKey { purpose: "owner" });
         };
         Ok(key)
     }
@@ -758,7 +771,7 @@ impl AppContext {
         &self,
         identity: &Identity,
         private_voting_key: &[u8; 32],
-    ) -> Result<IdentityPublicKey, String> {
+    ) -> Result<IdentityPublicKey, KeyVerificationError> {
         // We start by getting all the voting keys
         let owner_keys: Vec<IdentityPublicKey> = identity
             .public_keys()
@@ -774,7 +787,9 @@ impl AppContext {
             })
             .collect();
         if owner_keys.is_empty() {
-            return Err("This identity does not contain any owner keys".to_string());
+            return Err(KeyVerificationError::NoKeysForPurpose {
+                purpose: "payout address",
+            });
         }
         // Then we get all the key types of the voting keys
         let key_types: HashSet<KeyType> = owner_keys.iter().map(|key| key.key_type()).collect();
@@ -789,7 +804,7 @@ impl AppContext {
                 ))
             })
             .collect::<Result<HashMap<KeyType, Vec<u8>>, ProtocolError>>()
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| KeyVerificationError::PublicKeyDerivation(Box::new(e)))?;
         let Some(key) = owner_keys.into_iter().find(|key| {
             let Some(public_key_bytes) = public_key_bytes_for_each_key_type.get(&key.key_type())
             else {
@@ -797,9 +812,9 @@ impl AppContext {
             };
             key.data().as_slice() == public_key_bytes.as_slice()
         }) else {
-            return Err(
-                "Identity does not have a payout address matching this private key".to_string(),
-            );
+            return Err(KeyVerificationError::NoMatchingKey {
+                purpose: "payout address",
+            });
         };
         Ok(key)
     }

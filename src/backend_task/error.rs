@@ -1494,6 +1494,12 @@ pub enum TaskError {
     #[error("The {key_name} key is invalid: {detail}. Please check the key format and retry.")]
     KeyInputValidationFailed { key_name: String, detail: String },
 
+    /// A supplied private key could not be verified against the identity's keys.
+    #[error("{0} Please check the key and retry.")]
+    IdentityKeyVerificationFailed(
+        #[from] crate::backend_task::identity::KeyVerificationError,
+    ),
+
     /// The identity's public keys could not be converted to the platform format.
     #[error("Could not process the identity keys. Please check your key configuration and retry.")]
     PublicKeyMapBuildFailed { detail: String },

@@ -779,6 +779,14 @@ mod tests {
     }
 
     #[test]
+    fn home_state_default_flags_are_false() {
+        let state = HomeState::default();
+        assert!(!state.advanced_open);
+        assert!(!state.dismissed_checklist);
+        assert!(!state.skipped_social_profile);
+    }
+
+    #[test]
     fn apply_outcome_none_returns_none() {
         let mut state = HomeState::default();
         assert_eq!(apply_outcome(&mut state, HomeOutcome::None), None);

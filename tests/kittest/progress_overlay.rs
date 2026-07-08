@@ -418,9 +418,11 @@ fn tc_ovl_023_no_buttons_pure_block() {
     assert!(ProgressOverlay::has_global(&harness.ctx));
 }
 
-/// TC-OVL-024 — clicking a generic button enqueues its caller-chosen action id;
-/// the overlay persists. "Cancel" here is just a label the caller picked, not a
-/// built-in concept — the facility is fully generic.
+/// TC-OVL-024 / TC-OVL-025 — clicking a generic button enqueues its
+/// caller-chosen action id; the overlay persists. The label ("Cancel" here)
+/// is just a caller-picked string, not a built-in concept — the facility is
+/// fully generic, so TC-OVL-025 (originally the same assertion under a
+/// different label/action id) added no coverage and was folded in here.
 #[test]
 fn tc_ovl_024_button_click_enqueues_action() {
     let mut harness = overlay_harness();
@@ -441,26 +443,6 @@ fn tc_ovl_024_button_click_enqueues_action() {
     // A-3: the owning handle drains its own click.
     assert_eq!(handle.take_actions(), vec!["overlay.cancel".to_string()]);
     // The click does not auto-dismiss — only the app loop lowers it.
-    assert!(ProgressOverlay::has_global(&harness.ctx));
-}
-
-/// TC-OVL-025 — a generic button click enqueues its action id.
-#[test]
-fn tc_ovl_025_generic_button_click_enqueues_action() {
-    let mut harness = overlay_harness();
-    let handle = ProgressOverlay::set_global(
-        &harness.ctx,
-        "Background-able.",
-        OverlayConfig::new().with_action("Run in background", "overlay.run_in_bg"),
-    );
-    harness.step();
-    harness.step();
-    harness.step();
-    assert!(harness.query_by_label("Run in background").is_some());
-
-    harness.get_by_label("Run in background").click();
-    harness.step();
-    assert_eq!(handle.take_actions(), vec!["overlay.run_in_bg".to_string()]);
     assert!(ProgressOverlay::has_global(&harness.ctx));
 }
 

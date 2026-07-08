@@ -1,66 +1,56 @@
 //! Shared kittest helpers.
-//!
-//! Tests that build a full `AppState` (via `AppState::new`) resolve their data
-//! directory through `app_user_data_dir_path()`, which honors the
-//! `DASH_EVO_DATA_DIR` env var. Without isolation those tests open the real
-//! `~/.config/Dash-Evo-Tool` data dir, crash on a pre-existing
-//! `det-app.sqlite` whose migration checksum diverges from the current schema,
-//! and pollute the user's wallet data. [`with_isolated_data_dir`] redirects the
-//! data dir to a throwaway temp dir for the duration of the closure.
 
-use std::sync::{Mutex, MutexGuard, OnceLock};
+#[path = "../common/data_dir.rs"]
+mod data_dir;
 
-const DATA_DIR_ENV: &str = "DASH_EVO_DATA_DIR";
+use dash_evo_tool::context::AppContext;
+use dash_evo_tool::ui::RootScreenType;
+use egui_kittest::Harness;
+use std::sync::Arc;
 
-/// Serializes data-dir isolation across tests. `DASH_EVO_DATA_DIR` is
-/// process-global, so AppState-constructing tests must not run in parallel.
-fn data_dir_lock() -> MutexGuard<'static, ()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+pub use data_dir::with_isolated_data_dir;
+
+/// Mounts the full `AppState` on `root_screen` and steps the frame loop until
+/// it settles. Skips the app's first-run welcome screen so the requested root
+/// screen renders directly. Owns a private tokio runtime for the duration of
+/// construction only — callers that need a runtime alive afterwards (e.g. to
+/// seed the DB through `AppContext` methods that spawn tasks) must enter their
+/// own around the call, same as any other kittest.
+pub fn mount_app(root_screen: RootScreenType) -> Harness<'static, dash_evo_tool::app::AppState> {
+    let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+    let _guard = rt.enter();
+
+    let mut harness = Harness::builder()
+        .with_max_steps(100)
+        .build_eframe(move |ctx| {
+            let mut app = dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
+                .expect("Failed to create AppState")
+                .with_animations(false);
+            app.show_welcome_screen = false;
+            app.welcome_screen = None;
+            app.selected_main_screen = root_screen;
+            app
+        });
+    harness.set_size(egui::vec2(1280.0, 800.0));
+    harness.run_steps(10);
+    harness
 }
 
-/// RAII guard restoring the prior `DASH_EVO_DATA_DIR` value on drop and
-/// holding the serialization lock for the lifetime of the override.
-struct DataDirGuard {
-    prior: Option<String>,
-    _tempdir: tempfile::TempDir,
-    _lock: MutexGuard<'static, ()>,
-}
-
-impl Drop for DataDirGuard {
-    fn drop(&mut self) {
-        // Safety: the lock held by `_lock` serializes all env mutation; no other
-        // test touches DASH_EVO_DATA_DIR while this guard is alive.
-        unsafe {
-            match &self.prior {
-                Some(value) => std::env::set_var(DATA_DIR_ENV, value),
-                None => std::env::remove_var(DATA_DIR_ENV),
-            }
-        }
-    }
-}
-
-/// Runs `f` with `DASH_EVO_DATA_DIR` pointed at a fresh temp directory, then
-/// restores the prior value and removes the temp dir. Acquires a process-global
-/// lock so concurrent AppState-constructing tests serialize rather than race on
-/// the shared env var.
-pub fn with_isolated_data_dir<R>(f: impl FnOnce() -> R) -> R {
-    let lock = data_dir_lock();
-    let tempdir = tempfile::tempdir().expect("create temp data dir");
-    let prior = std::env::var(DATA_DIR_ENV).ok();
-
-    // Safety: serialized by `lock`; restored by `DataDirGuard::drop`.
-    unsafe {
-        std::env::set_var(DATA_DIR_ENV, tempdir.path());
-    }
-
-    let _guard = DataDirGuard {
-        prior,
-        _tempdir: tempdir,
-        _lock: lock,
-    };
-
-    f()
+/// Builds a real `AppContext` from the default first-run database via the
+/// same `AppState::new` factory `mount_app` uses, without mounting a
+/// particular root screen. Returns the runtime so the caller keeps it alive
+/// for the duration of the test.
+pub fn fresh_app_context() -> (tokio::runtime::Runtime, Arc<AppContext>) {
+    let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+    let guard = rt.enter();
+    let mut bootstrap = Harness::builder().with_max_steps(20).build_eframe(|ctx| {
+        dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
+            .expect("Failed to create AppState")
+            .with_animations(false)
+    });
+    bootstrap.run_steps(5);
+    let app_context = bootstrap.state().current_app_context().clone();
+    drop(bootstrap);
+    drop(guard);
+    (rt, app_context)
 }

@@ -358,7 +358,6 @@ impl AppContext {
         // the platform-payment path, then the signer index is rebuilt to cover
         // it.
         let network = self.network;
-        let ctx = Arc::clone(self);
         backend
             .secret_access()
             .with_secret_session(
@@ -376,11 +375,7 @@ impl AppContext {
                             let change_core_addr = {
                                 let mut wallet_w = wallet_arc.write()?;
                                 wallet_w
-                                    .generate_platform_receive_address_with_seed(
-                                        seed,
-                                        network,
-                                        Some(&ctx),
-                                    )
+                                    .generate_platform_receive_address_with_seed(seed, network)
                                     .map_err(|_| TaskError::WalletPlatformReceiveAddressFailed)?
                             };
                             let change_address = PlatformAddress::try_from(change_core_addr)

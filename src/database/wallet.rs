@@ -524,6 +524,31 @@ pub enum WalletError {
         #[source]
         source: dash_sdk::dpp::dashcore::sighash::Error,
     },
+
+    /// A freshly derived public key could not be parsed.
+    #[error(
+        "Could not read a wallet key. The wallet may be corrupted — try re-importing your recovery phrase."
+    )]
+    PublicKeyParse(#[source] Box<dash_sdk::dpp::dashcore::key::Error>),
+
+    /// The derivation path for a wallet account type could not be built.
+    #[error(
+        "Could not derive a wallet key. The wallet may be corrupted — try re-importing your recovery phrase."
+    )]
+    AccountDerivationPath(#[source] Box<dash_sdk::dpp::key_wallet::Error>),
+
+    /// A derived address could not be converted for platform use.
+    #[error("Could not prepare a wallet address for platform use. Please retry.")]
+    PlatformAddressConversion(#[source] Box<dash_sdk::dpp::ProtocolError>),
+
+    /// A derived address did not validate for the wallet's network.
+    #[error(
+        "The wallet address {address} did not match the {network} network. Switch to the correct network and try again."
+    )]
+    AddressNetworkMismatch {
+        address: dash_sdk::dpp::dashcore::Address,
+        network: Network,
+    },
 }
 
 impl From<WalletError> for rusqlite::Error {

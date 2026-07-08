@@ -938,7 +938,10 @@ pub enum TaskError {
     #[error(
         "Could not prepare wallet addresses for sync. Please close and reopen your wallet, then retry."
     )]
-    WalletAddressProviderSetupFailed { detail: String },
+    WalletAddressProviderSetupFailed {
+        #[source]
+        source: crate::database::WalletError,
+    },
 
     /// A Core address could not be converted to a Platform address.
     #[error("Could not convert a wallet address for platform use. Please retry.")]

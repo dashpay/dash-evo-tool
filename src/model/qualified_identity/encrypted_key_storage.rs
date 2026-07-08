@@ -394,7 +394,8 @@ impl KeyStorage {
                     seed,
                     derivation_path,
                     network,
-                )?
+                )
+                .map_err(|e| e.to_string())?
                 .ok_or(format!(
                     "Wallet for key at derivation path {} not present, we have {} wallets",
                     derivation_path,

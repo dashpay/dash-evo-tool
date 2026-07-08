@@ -366,8 +366,11 @@ mod tests {
         )
         .expect("create legacy table");
 
-        let (ciphertext, salt, nonce) =
-            ClosedSingleKey::encrypt_private_key(raw_key, password).expect("encrypt");
+        let crate::model::wallet::encryption::EncryptedEnvelope {
+            ciphertext,
+            salt,
+            nonce,
+        } = ClosedSingleKey::encrypt_private_key(raw_key, password).expect("encrypt");
         let priv_key = PrivateKey::from_byte_array(raw_key, network).expect("priv");
         let secp = Secp256k1::new();
         let pub_key = PublicKey {

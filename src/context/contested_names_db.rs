@@ -60,11 +60,18 @@ struct StoredContestant {
     document_id: [u8; 32],
 }
 
+/// How long a DPNS name contest stays open before it locks or resolves.
+/// Mainnet runs the two-week production window; every other network uses a
+/// 90-minute fast-cycle window for testing. Mirrors platform's DPNS
+/// contested-name governance parameters (`ACTIVE_VOTE_DURATION`).
+const MAINNET_CONTEST_DURATION: Duration = Duration::from_secs(60 * 60 * 24 * 14);
+const NON_MAINNET_CONTEST_DURATION: Duration = Duration::from_secs(60 * 90);
+
 fn contest_duration_for_network(network: Network) -> Duration {
     if network == Network::Mainnet {
-        Duration::from_secs(60 * 60 * 24 * 14)
+        MAINNET_CONTEST_DURATION
     } else {
-        Duration::from_secs(60 * 90)
+        NON_MAINNET_CONTEST_DURATION
     }
 }
 
@@ -89,6 +96,8 @@ impl StoredContestedName {
                     .as_millis() as u64)
                     .saturating_sub(created_at),
             );
+            // New contenders may join only during the first half of the
+            // contest window; the second half is vote-only.
             if elapsed <= contest_duration / 2 {
                 ContestState::Joinable
             } else {

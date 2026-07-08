@@ -107,39 +107,7 @@ impl<'de, C> BorrowDecode<'de, C> for WalletDerivationPath {
     fn borrow_decode<D: BorrowDecoder<'de, Context = C>>(
         decoder: &mut D,
     ) -> Result<Self, DecodeError> {
-        // Decode `wallet_seed_hash`
-        let wallet_seed_hash = WalletSeedHash::decode(decoder)?;
-
-        // Decode the length of the `DerivationPath`
-        let path_len = usize::decode(decoder)?;
-
-        // Decode each `ChildNumber` in the `DerivationPath`
-        let mut path = Vec::with_capacity(path_len);
-        for _ in 0..path_len {
-            let discriminant = u8::decode(decoder)?;
-            let child_number = match discriminant {
-                0 => ChildNumber::Normal {
-                    index: u32::decode(decoder)?,
-                },
-                1 => ChildNumber::Hardened {
-                    index: u32::decode(decoder)?,
-                },
-                2 => ChildNumber::Normal256 {
-                    index: <[u8; 32]>::decode(decoder)?,
-                },
-                3 => ChildNumber::Hardened256 {
-                    index: <[u8; 32]>::decode(decoder)?,
-                },
-                _ => return Err(DecodeError::OtherString("Invalid ChildNumber type".into())),
-            };
-            path.push(child_number);
-        }
-
-        let derivation_path = DerivationPath::from(path);
-        Ok(Self {
-            wallet_seed_hash,
-            derivation_path,
-        })
+        Self::decode(decoder)
     }
 }
 

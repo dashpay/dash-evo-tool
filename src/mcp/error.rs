@@ -26,6 +26,14 @@ pub enum McpToolError {
     Internal(String),
 }
 
+impl From<crate::model::masternode_input::MasternodeInputError> for McpToolError {
+    fn from(e: crate::model::masternode_input::MasternodeInputError) -> Self {
+        McpToolError::InvalidParam {
+            message: e.to_string(),
+        }
+    }
+}
+
 /// MCP error codes for each variant (using JSON-RPC custom code range).
 const CODE_WALLET_NOT_FOUND: i32 = -32001;
 const CODE_INVALID_PARAM: i32 = -32602; // standard JSON-RPC invalid params

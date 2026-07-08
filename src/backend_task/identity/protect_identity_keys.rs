@@ -155,7 +155,7 @@ impl AppContext {
 /// confirmation here — only the length check is meaningful at this layer.
 fn validate_protection_password(password: &Secret) -> Result<(), TaskError> {
     let pw = password.expose_secret();
-    validate_single_key_passphrase(pw, pw)
+    validate_single_key_passphrase(pw, pw).map_err(TaskError::from)
 }
 
 /// Fail-closed guard for the protect boundary: reject an identity that

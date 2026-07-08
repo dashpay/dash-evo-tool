@@ -1,8 +1,8 @@
 use crate::backend_task::error::TaskError;
 use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
-use crate::model::proof_log_item::RequestType;
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::request_type::RequestType;
 use dash_sdk::Sdk;
 use dash_sdk::dpp::data_contract::document_type::DocumentType;
 use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;

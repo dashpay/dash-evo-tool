@@ -11,7 +11,7 @@ use crate::backend_task::core::CoreTask;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::context::connection_status::spv_phase_summary;
-use crate::model::feature_gate::FeatureGate;
+use crate::context::feature_gate::FeatureGate;
 use crate::model::fee_estimation::format_duffs_as_dash;
 use crate::model::spv_status::SpvStatus;
 use crate::model::wallet::{TransactionStatus, Wallet, WalletSeedHash, WalletTransaction};

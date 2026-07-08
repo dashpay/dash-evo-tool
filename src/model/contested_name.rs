@@ -14,17 +14,6 @@ pub enum ContestState {
     Locked,
 }
 
-impl ContestState {
-    #[allow(dead_code)] // May be used for UI state validation
-    #[allow(clippy::match_like_matches_macro)]
-    pub fn state_is_votable(&self) -> bool {
-        match self {
-            ContestState::Joinable | ContestState::Ongoing => true,
-            _ => false,
-        }
-    }
-}
-
 #[derive(Debug, Encode, Decode, Clone)]
 pub struct ContestedName {
     pub normalized_contested_name: String,

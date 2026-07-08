@@ -58,7 +58,6 @@ use identities::identities_screen::IdentitiesScreen;
 use identities::register_dpns_name_screen::{RegisterDpnsNameScreen, RegisterDpnsNameSource};
 use identity::IdentityHubScreen;
 use std::fmt;
-use std::hash::Hash;
 use std::sync::Arc;
 use std::sync::RwLock;
 use tokens::burn_tokens_screen::BurnTokensScreen;
@@ -94,130 +93,7 @@ pub mod tools;
 pub mod wallets;
 pub mod welcome_screen;
 
-#[derive(Debug, Clone, Copy, Ord, PartialOrd, Eq, PartialEq, Hash)]
-#[allow(clippy::enum_variant_names)]
-pub enum RootScreenType {
-    RootScreenIdentities,
-    RootScreenDPNSActiveContests,
-    RootScreenDPNSPastContests,
-    RootScreenDPNSOwnedNames,
-    RootScreenDPNSScheduledVotes,
-    RootScreenDocumentQuery,
-    RootScreenWalletsBalances,
-    RootScreenToolsTransitionVisualizerScreen,
-    RootScreenToolsDocumentVisualizerScreen,
-    RootScreenNetworkChooser,
-    RootScreenToolsProofVisualizerScreen,
-    RootScreenMyTokenBalances,
-    RootScreenTokenSearch,
-    RootScreenTokenCreator,
-    RootScreenToolsContractVisualizerScreen,
-    RootScreenToolsPlatformInfoScreen,
-    RootScreenDashPayContacts,
-    RootScreenDashPayProfile,
-    RootScreenDashPayPayments,
-    RootScreenDashPayProfileSearch,
-    RootScreenToolsGroveSTARKScreen,
-    RootScreenToolsAddressBalanceScreen,
-    RootScreenDashpay,
-    /// New unified Identities hub (Home · Contacts · Activity · Settings).
-    /// Coexists with `RootScreenIdentities` and the DashPay entries while the legacy
-    /// screens are still wired. Distinct variant so user selection, persistence, and
-    /// left-nav highlighting stay independent.
-    RootScreenIdentityHub,
-}
-
-impl RootScreenType {
-    /// Convert `RootScreenType` to an integer
-    pub fn to_int(self) -> u32 {
-        match self {
-            RootScreenType::RootScreenIdentities => 0,
-            RootScreenType::RootScreenDPNSActiveContests => 1,
-            RootScreenType::RootScreenDPNSPastContests => 2,
-            RootScreenType::RootScreenDPNSOwnedNames => 3,
-            RootScreenType::RootScreenDocumentQuery => 4,
-            RootScreenType::RootScreenWalletsBalances => 5,
-            RootScreenType::RootScreenToolsTransitionVisualizerScreen => 6,
-            RootScreenType::RootScreenNetworkChooser => 7,
-            // 8 used to be the Withdrawals Statuses screen
-            // 9 used to be the Proof Log screen
-            RootScreenType::RootScreenDPNSScheduledVotes => 10,
-            RootScreenType::RootScreenToolsProofVisualizerScreen => 11,
-            RootScreenType::RootScreenMyTokenBalances => 12,
-            RootScreenType::RootScreenTokenSearch => 13,
-            RootScreenType::RootScreenTokenCreator => 14,
-            RootScreenType::RootScreenToolsDocumentVisualizerScreen => 15,
-            RootScreenType::RootScreenToolsContractVisualizerScreen => 16,
-            RootScreenType::RootScreenToolsPlatformInfoScreen => 17,
-            RootScreenType::RootScreenDashPayContacts => 18,
-            // 19 used to be RootScreenDashPayRequests (now consolidated into Contacts)
-            RootScreenType::RootScreenDashPayProfile => 20,
-            RootScreenType::RootScreenDashPayPayments => 21,
-            RootScreenType::RootScreenDashPayProfileSearch => 22,
-            RootScreenType::RootScreenDashpay => 24,
-            RootScreenType::RootScreenToolsGroveSTARKScreen => 25,
-            RootScreenType::RootScreenToolsAddressBalanceScreen => 26,
-            RootScreenType::RootScreenIdentityHub => 27,
-        }
-    }
-
-    /// Convert an integer to a `RootScreenType`
-    pub fn from_int(value: u32) -> Option<Self> {
-        match value {
-            0 => Some(RootScreenType::RootScreenIdentities),
-            1 => Some(RootScreenType::RootScreenDPNSActiveContests),
-            2 => Some(RootScreenType::RootScreenDPNSPastContests),
-            3 => Some(RootScreenType::RootScreenDPNSOwnedNames),
-            4 => Some(RootScreenType::RootScreenDocumentQuery),
-            5 => Some(RootScreenType::RootScreenWalletsBalances),
-            6 => Some(RootScreenType::RootScreenToolsTransitionVisualizerScreen),
-            7 => Some(RootScreenType::RootScreenNetworkChooser),
-            // 8 used to be the Withdrawals Statuses screen
-            // 9 used to be the Proof Log screen
-            10 => Some(RootScreenType::RootScreenDPNSScheduledVotes),
-            11 => Some(RootScreenType::RootScreenToolsProofVisualizerScreen),
-            12 => Some(RootScreenType::RootScreenMyTokenBalances),
-            13 => Some(RootScreenType::RootScreenTokenSearch),
-            14 => Some(RootScreenType::RootScreenTokenCreator),
-            15 => Some(RootScreenType::RootScreenToolsDocumentVisualizerScreen),
-            16 => Some(RootScreenType::RootScreenToolsContractVisualizerScreen),
-            17 => Some(RootScreenType::RootScreenToolsPlatformInfoScreen),
-            18 => Some(RootScreenType::RootScreenDashPayContacts),
-            // 19 used to be RootScreenDashPayRequests (now consolidated into Contacts)
-            20 => Some(RootScreenType::RootScreenDashPayProfile),
-            21 => Some(RootScreenType::RootScreenDashPayPayments),
-            22 => Some(RootScreenType::RootScreenDashPayProfileSearch),
-            24 => Some(RootScreenType::RootScreenDashpay),
-            25 => Some(RootScreenType::RootScreenToolsGroveSTARKScreen),
-            26 => Some(RootScreenType::RootScreenToolsAddressBalanceScreen),
-            27 => Some(RootScreenType::RootScreenIdentityHub),
-            _ => None,
-        }
-    }
-}
-
-#[cfg(test)]
-mod root_screen_type_tests {
-    use super::RootScreenType;
-
-    #[test]
-    fn identity_hub_round_trips() {
-        let rt = RootScreenType::RootScreenIdentityHub;
-        let encoded = rt.to_int();
-        let decoded = RootScreenType::from_int(encoded)
-            .expect("new identity hub variant must round-trip through from_int");
-        assert_eq!(rt, decoded);
-        // Value 27 is the canonical on-disk encoding. Keeping it stable means
-        // existing user settings continue to round-trip correctly as new
-        // variants are added.
-        assert_eq!(encoded, 27);
-    }
-
-    #[test]
-    fn from_int_returns_none_for_unknown_value() {
-        assert!(RootScreenType::from_int(9999).is_none());
-    }
-}
+pub use crate::model::settings::RootScreenType;
 
 impl From<RootScreenType> for ScreenType {
     fn from(value: RootScreenType) -> Self {

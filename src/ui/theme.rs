@@ -3,13 +3,20 @@ use egui::{
 };
 use std::sync::atomic::{AtomicBool, Ordering};
 
-/// Theme mode enumeration
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ThemeMode {
-    Light,
-    Dark,
-    #[default]
-    System,
+pub use crate::model::settings::ThemeMode;
+
+use crate::model::qualified_identity::IdentityStatus;
+
+impl From<IdentityStatus> for Color32 {
+    fn from(value: IdentityStatus) -> Self {
+        match value {
+            IdentityStatus::Active => Color32::from_rgb(0, 128, 0), // Green
+            IdentityStatus::Unknown => Color32::from_rgb(128, 128, 128), // Gray
+            IdentityStatus::PendingCreation => Color32::from_rgb(255, 165, 0), // Orange
+            IdentityStatus::NotFound => Color32::from_rgb(255, 0, 0), // Red
+            IdentityStatus::FailedCreation => Color32::from_rgb(255, 0, 0), // Red
+        }
+    }
 }
 
 /// Detect system theme preference

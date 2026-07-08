@@ -7,7 +7,7 @@ use crate::mcp::resolve;
 
 #[test]
 fn zero_amount_rejected() {
-    let result = resolve::validate_amount(0);
+    let result = resolve::validate_positive_amount(0, "duffs");
     assert!(result.is_err());
     let err = result.unwrap_err();
     assert!(
@@ -19,8 +19,8 @@ fn zero_amount_rejected() {
 
 #[test]
 fn positive_amount_accepted() {
-    assert!(resolve::validate_amount(1).is_ok());
-    assert!(resolve::validate_amount(100_000_000).is_ok());
+    assert!(resolve::validate_positive_amount(1, "duffs").is_ok());
+    assert!(resolve::validate_positive_amount(100_000_000, "duffs").is_ok());
 }
 
 // ── Address validation ─────────────────────────────────────────

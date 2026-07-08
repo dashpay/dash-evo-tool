@@ -41,16 +41,21 @@ pub(crate) fn verify_network(
     Ok(())
 }
 
-/// Verify network is provided and matches (mandatory for destructive ops).
+/// Verify network is provided (non-blank) and matches (mandatory for
+/// destructive ops).
+///
+/// A missing or blank `network` is rejected as "required" rather than compared
+/// against the active network — an empty string means "not provided".
 pub(crate) fn require_network(
     app_context: &AppContext,
     network: Option<&str>,
 ) -> Result<(), McpToolError> {
-    let Some(expected) = network else {
-        return Err(McpToolError::InvalidParam {
+    let expected = network
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| McpToolError::InvalidParam {
             message: "The 'network' parameter is required for fund-sending operations to prevent accidental cross-network transfers.".to_owned(),
-        });
-    };
+        })?;
     let actual = network_display_name(app_context.network());
     if !expected.eq_ignore_ascii_case(actual) {
         return Err(McpToolError::NetworkMismatch {
@@ -264,11 +269,12 @@ pub(crate) async fn ensure_spv_synced(ctx: &Arc<AppContext>) -> Result<(), McpTo
     }
 }
 
-/// Validate amount for sending operations.
-pub(crate) fn validate_amount(amount_duffs: u64) -> Result<(), McpToolError> {
-    if amount_duffs == 0 {
+/// Reject a zero send amount. `unit_label` names the JSON parameter's unit
+/// (e.g. `"duffs"` or `"credits"`) so the message points at the right field.
+pub(crate) fn validate_positive_amount(amount: u64, unit_label: &str) -> Result<(), McpToolError> {
+    if amount == 0 {
         return Err(McpToolError::InvalidParam {
-            message: "amount_duffs must be greater than zero".to_owned(),
+            message: format!("amount_{unit_label} must be greater than zero"),
         });
     }
     Ok(())
@@ -318,14 +324,4 @@ pub(crate) fn qualified_identity(
                  Load the identity first using the identity screen or CLI."
             ),
         })
-}
-
-/// Validate amount in credits for sending operations.
-pub(crate) fn validate_credits(amount_credits: u64) -> Result<(), McpToolError> {
-    if amount_credits == 0 {
-        return Err(McpToolError::InvalidParam {
-            message: "amount_credits must be greater than zero".to_owned(),
-        });
-    }
-    Ok(())
 }

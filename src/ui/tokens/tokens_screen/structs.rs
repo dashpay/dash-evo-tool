@@ -1,5 +1,6 @@
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
+use crate::model::amount::Amount;
 use crate::model::qualified_contract::QualifiedContract;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::tokens::tokens_screen::validate_perpetual_distribution_recipient;
@@ -7,6 +8,7 @@ use dash_sdk::dpp::balances::credits::TokenAmount;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
+use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::accessors::v0::TokenConfigurationConventionV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::accessors::v0::TokenDistributionRulesV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::methods::v0::TokenPerpetualDistributionV0Accessors;
 use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
@@ -553,5 +555,42 @@ pub fn get_available_token_actions_for_identity(
             ),
         can_transfer,
         can_update_config,
+    }
+}
+
+impl Amount {
+    /// Creates an [`Amount`] for a token, taking decimals and unit name from
+    /// the token configuration.
+    pub fn from_token(token_info: &IdentityTokenInfo, value: TokenAmount) -> Self {
+        let decimal_places = token_info.token_config.conventions().decimals();
+        Self::new(value, decimal_places).with_unit_name(&token_info.token_alias)
+    }
+}
+
+impl From<&IdentityTokenBalance> for Amount {
+    /// Uses the token configuration's decimals and the token alias as the unit name.
+    fn from(token_balance: &IdentityTokenBalance) -> Self {
+        let decimal_places = token_balance.token_config.conventions().decimals();
+        Self::new(token_balance.balance, decimal_places).with_unit_name(&token_balance.token_alias)
+    }
+}
+
+impl From<IdentityTokenBalance> for Amount {
+    fn from(token_balance: IdentityTokenBalance) -> Self {
+        Self::from(&token_balance)
+    }
+}
+
+impl From<&IdentityTokenBalanceWithActions> for Amount {
+    /// Uses the token configuration's decimals and the token alias as the unit name.
+    fn from(token_balance: &IdentityTokenBalanceWithActions) -> Self {
+        let decimal_places = token_balance.token_config.conventions().decimals();
+        Self::new(token_balance.balance, decimal_places).with_unit_name(&token_balance.token_alias)
+    }
+}
+
+impl From<IdentityTokenBalanceWithActions> for Amount {
+    fn from(token_balance: IdentityTokenBalanceWithActions) -> Self {
+        Self::from(&token_balance)
     }
 }

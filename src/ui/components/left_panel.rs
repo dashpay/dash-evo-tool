@@ -2,112 +2,14 @@ use crate::app::AppAction;
 use crate::context::AppContext;
 use crate::model::feature_gate::FeatureGate;
 use crate::ui::RootScreenType;
+use crate::ui::components::icons::{load_icon, load_svg_icon};
 use crate::ui::components::styled::GradientButton;
 use crate::ui::theme::{DashColors, ResponseExt, Shadow, Shape, Spacing};
 use dash_sdk::dashcore_rpc::dashcore::Network;
 use eframe::epaint::Margin;
-use egui::{Context, Frame, Image, Panel, RichText, TextureHandle, Ui};
+use egui::{Frame, Image, Panel, RichText, TextureHandle, Ui};
 use egui_extras::{Size, StripBuilder};
-use rust_embed::RustEmbed;
 use std::sync::Arc;
-use tracing::error;
-
-#[derive(RustEmbed)]
-#[folder = "icons/"] // Folder containing embedded assets
-struct Assets;
-
-// Function to load an icon as a texture using embedded assets
-fn load_icon(ctx: &Context, path: &str) -> Option<TextureHandle> {
-    // Use ctx.data_mut to check if texture is already cached
-    ctx.data_mut(|d| d.get_temp::<TextureHandle>(egui::Id::new(path)))
-        .or_else(|| {
-            // Only do expensive operations if texture is not cached
-            if let Some(content) = Assets::get(path) {
-                // Load the image from the embedded bytes
-                if let Ok(image) = image::load_from_memory(&content.data) {
-                    let size = [image.width() as usize, image.height() as usize];
-                    let rgba_image = image.into_rgba8();
-                    let pixels = rgba_image.into_raw();
-
-                    let texture = ctx.load_texture(
-                        path,
-                        egui::ColorImage::from_rgba_unmultiplied(size, &pixels),
-                        egui::TextureOptions::LINEAR, // Use linear filtering for smoother scaling
-                    );
-
-                    // Cache the texture
-                    ctx.data_mut(|d| d.insert_temp(egui::Id::new(path), texture.clone()));
-
-                    Some(texture)
-                } else {
-                    error!("Failed to load image from embedded data at path: {}", path);
-                    None
-                }
-            } else {
-                error!("Image not found in embedded assets at path: {}", path);
-                None
-            }
-        })
-}
-
-// Function to load an SVG as a texture with specified dimensions
-pub fn load_svg_icon(ctx: &Context, path: &str, width: u32, height: u32) -> Option<TextureHandle> {
-    let cache_key = format!("{}_{}_{}", path, width, height);
-    // Use ctx.data_mut to check if texture is already cached
-    ctx.data_mut(|d| d.get_temp::<TextureHandle>(egui::Id::new(&cache_key)))
-        .or_else(|| {
-            // Only do expensive operations if texture is not cached
-            if let Some(content) = Assets::get(path) {
-                // Parse SVG
-                let options = resvg::usvg::Options::default();
-                let tree = match resvg::usvg::Tree::from_data(&content.data, &options) {
-                    Ok(tree) => tree,
-                    Err(e) => {
-                        error!("Failed to parse SVG at {}: {}", path, e);
-                        return None;
-                    }
-                };
-
-                // Create a pixmap to render into
-                let mut pixmap = resvg::tiny_skia::Pixmap::new(width, height)?;
-
-                // Calculate scale to fit the SVG into the desired dimensions
-                let svg_size = tree.size();
-                let scale_x = width as f32 / svg_size.width();
-                let scale_y = height as f32 / svg_size.height();
-                let scale = scale_x.min(scale_y);
-
-                // Center the SVG
-                let offset_x = (width as f32 - svg_size.width() * scale) / 2.0;
-                let offset_y = (height as f32 - svg_size.height() * scale) / 2.0;
-
-                let transform = resvg::tiny_skia::Transform::from_scale(scale, scale)
-                    .post_translate(offset_x, offset_y);
-
-                // Render the SVG
-                resvg::render(&tree, transform, &mut pixmap.as_mut());
-
-                // Convert to egui texture
-                let pixels = pixmap.data().to_vec();
-                let texture = ctx.load_texture(
-                    &cache_key,
-                    egui::ColorImage::from_rgba_unmultiplied(
-                        [width as usize, height as usize],
-                        &pixels,
-                    ),
-                    egui::TextureOptions::LINEAR,
-                );
-
-                // Cache the texture
-                ctx.data_mut(|d| d.insert_temp(egui::Id::new(&cache_key), texture.clone()));
-
-                Some(texture)
-            } else {
-                error!("SVG not found in embedded assets at path: {}", path);
-                None
-            }
-        })
-}
 
 pub fn add_left_panel(
     ui: &mut Ui,
@@ -318,7 +220,6 @@ pub fn add_left_panel(
                                                     if is_selected {
                                                         let response = GradientButton::new(*label, app_context)
                                                             .min_width(60.0)
-                                                            .glow()
                                                             .show(ui);
                                                         response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, is_selected, *label));
                                                         if response.clicked() {

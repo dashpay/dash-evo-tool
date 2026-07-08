@@ -932,24 +932,7 @@ pub trait OptionBannerExt {
     fn take_and_clear(&mut self);
 
     /// Clears any existing banner, sets a new global banner, and stores the handle.
-    ///
-    /// Prefer this over [`replace`](OptionBannerExt::replace) in new code — same
-    /// behavior, but the name doesn't collide with anything.
     fn raise(&mut self, ctx: &egui::Context, msg: impl fmt::Display, msg_type: MessageType);
-
-    /// Backward-compatible alias for [`raise`](OptionBannerExt::raise).
-    ///
-    /// **Do not call this from new code — use `raise` instead.** The name
-    /// collides with the inherent `Option::replace(&mut self, value: T) -> Option<T>`,
-    /// which always wins method-call resolution over a trait method of the same
-    /// name (Rust has no arity-based overload resolution between the two). So
-    /// `opt.replace(ctx, msg, msg_type)` does **not** call this method — it fails
-    /// to compile against the *inherent* one-argument `replace` (E0061, "this
-    /// function takes 1 argument but 3 arguments were supplied"). The only way to
-    /// reach this method is fully qualified: `OptionBannerExt::replace(&mut opt,
-    /// ctx, msg, msg_type)`. Kept only so any such existing call site keeps
-    /// compiling; do not add new ones.
-    fn replace(&mut self, ctx: &egui::Context, msg: impl fmt::Display, msg_type: MessageType);
 
     /// Like [`raise`](OptionBannerExt::raise), but also enables elapsed-time display on
     /// the new banner (useful for long-running operations).
@@ -981,10 +964,6 @@ impl OptionBannerExt for Option<BannerHandle> {
     fn raise(&mut self, ctx: &egui::Context, msg: impl fmt::Display, msg_type: MessageType) {
         self.take_and_clear();
         *self = Some(MessageBanner::set_global(ctx, msg.to_string(), msg_type));
-    }
-
-    fn replace(&mut self, ctx: &egui::Context, msg: impl fmt::Display, msg_type: MessageType) {
-        self.raise(ctx, msg, msg_type);
     }
 
     fn replace_with_elapsed(

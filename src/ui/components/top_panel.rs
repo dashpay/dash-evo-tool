@@ -3,49 +3,8 @@ use crate::context::AppContext;
 use crate::context::connection_status::OverallConnectionState;
 use crate::ui::ScreenType;
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt, Shadow, Shape};
-use egui::{Align2, Context, FontId, Frame, Margin, Panel, RichText, TextureHandle, Ui};
-use rust_embed::RustEmbed;
+use egui::{Align2, FontId, Frame, Margin, Panel, RichText, Ui};
 use std::sync::Arc;
-use tracing::error;
-
-#[derive(RustEmbed)]
-#[folder = "icons/"]
-struct Assets;
-
-// Function to load an icon as a texture using embedded assets
-#[allow(dead_code)]
-fn load_icon(ctx: &Context, path: &str) -> Option<TextureHandle> {
-    // Use ctx.data_mut to check if texture is already cached
-    ctx.data_mut(|d| d.get_temp::<TextureHandle>(egui::Id::new(path)))
-        .or_else(|| {
-            // Only do expensive operations if texture is not cached
-            if let Some(content) = Assets::get(path) {
-                // Load the image from the embedded bytes
-                if let Ok(image) = image::load_from_memory(&content.data) {
-                    let size = [image.width() as usize, image.height() as usize];
-                    let rgba_image = image.into_rgba8();
-                    let pixels = rgba_image.into_raw();
-
-                    let texture = ctx.load_texture(
-                        path,
-                        egui::ColorImage::from_rgba_unmultiplied(size, &pixels),
-                        Default::default(),
-                    );
-
-                    // Cache the texture
-                    ctx.data_mut(|d| d.insert_temp(egui::Id::new(path), texture.clone()));
-
-                    Some(texture)
-                } else {
-                    error!("Failed to load image from embedded data at path: {}", path);
-                    None
-                }
-            } else {
-                error!("Image not found in embedded assets at path: {}", path);
-                None
-            }
-        })
-}
 
 fn add_location_view(ui: &mut Ui, location: Vec<(&str, AppAction)>, dark_mode: bool) -> AppAction {
     let mut action = AppAction::None;
@@ -92,8 +51,7 @@ fn add_location_view(ui: &mut Ui, location: Vec<(&str, AppAction)>, dark_mode: b
     action
 }
 
-fn add_connection_indicator(ui: &mut Ui, app_context: &Arc<AppContext>) -> AppAction {
-    let action = AppAction::None;
+fn add_connection_indicator(ui: &mut Ui, app_context: &Arc<AppContext>) {
     let status = app_context.connection_status();
     let overall = status.overall_state();
 
@@ -169,7 +127,6 @@ fn add_connection_indicator(ui: &mut Ui, app_context: &Arc<AppContext>) -> AppAc
             },
         );
     });
-    action
 }
 
 /// Shared top-island scaffold: the `Panel::top`, surface Frame + radius +
@@ -214,7 +171,7 @@ fn render_top_island(
                         columns[0].with_layout(
                             egui::Layout::left_to_right(egui::Align::Center),
                             |ui| {
-                                action |= add_connection_indicator(ui, app_context);
+                                add_connection_indicator(ui, app_context);
                                 action |= left(ui);
                             },
                         );

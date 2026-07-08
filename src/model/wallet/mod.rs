@@ -1,5 +1,4 @@
 pub mod auth_pubkey_cache;
-pub mod balance_consistency;
 pub mod birth_height;
 pub mod encryption;
 pub mod meta;

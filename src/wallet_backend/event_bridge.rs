@@ -192,15 +192,6 @@ impl EventHandler for EventBridge {
         match event {
             SyncEvent::SyncComplete { .. } => {
                 self.apply_status(SpvStatus::Running);
-                // Edge-triggered (once per not-synced → synced transition), so
-                // this is a cheap signal, not per-frame spam. AppState runs the
-                // balance health check on the main thread, where it has the
-                // AppContext + egui::Context the comparison and banner need.
-                let _ = self
-                    .task_result_sender
-                    .try_send(TaskResult::Success(Box::new(
-                        BackendTaskSuccessResult::WalletBalanceHealthCheckRequested,
-                    )));
                 self.nudge_refresh();
             }
             SyncEvent::ManagerError { manager, error } => {

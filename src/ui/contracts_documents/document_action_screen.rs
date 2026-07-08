@@ -139,7 +139,7 @@ impl DocumentActionScreen {
         selected_identity: Option<QualifiedIdentity>,
         action_type: DocumentActionType,
     ) -> Self {
-        let known_contracts = app_context.get_contracts(None, None).unwrap_or_default();
+        let known_contracts = app_context.get_contracts().unwrap_or_default();
 
         let identities_map = if let Ok(identities) = app_context.load_local_user_identities() {
             identities

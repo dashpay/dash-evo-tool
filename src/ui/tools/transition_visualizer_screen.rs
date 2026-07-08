@@ -461,7 +461,7 @@ impl ScreenLike for TransitionVisualizerScreen {
                             // Check if contract already exists
                             let contract_exists = self
                                 .app_context
-                                .get_contracts(None, None)
+                                .get_contracts()
                                 .unwrap_or_default()
                                 .iter()
                                 .any(|c| {

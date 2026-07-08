@@ -1,7 +1,6 @@
 use super::AppContext;
 use crate::backend_task::error::TaskError;
 use crate::model::qualified_contract::{InsertTokensToo, QualifiedContract};
-use crate::model::wallet::WalletSeedHash;
 use crate::ui::tokens::tokens_screen::{
     IdentityTokenBalance, IdentityTokenIdentifier, TokenInfo, TokenInfoWithDataContract,
 };
@@ -21,8 +20,6 @@ use dash_sdk::dpp::serialization::{
 use dash_sdk::platform::{DataContract, Identifier};
 use dash_sdk::query_types::IndexMap;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
-use std::sync::atomic::Ordering;
 
 /// Key prefix for user-registered contract entries in the per-network
 /// wallet k/v store. The full key is `det:contract:<contract_id_base58>`
@@ -96,57 +93,26 @@ impl AppContext {
     /// Retrieves all user-registered contracts from the per-network k/v
     /// store, prepended with the system contracts (DPNS, token history,
     /// withdrawals, keyword search, DashPay).
-    pub fn get_contracts(
-        &self,
-        _limit: Option<u32>,
-        _offset: Option<u32>,
-    ) -> std::result::Result<Vec<QualifiedContract>, TaskError> {
+    pub fn get_contracts(&self) -> std::result::Result<Vec<QualifiedContract>, TaskError> {
         let mut contracts = self.load_user_contracts()?;
 
-        // Add the DPNS contract to the list
-        let dpns_contract = QualifiedContract {
-            contract: Arc::clone(&self.dpns_contract).as_ref().clone(),
-            alias: Some("dpns".to_string()),
-        };
-
-        // Insert the DPNS contract at 0
-        contracts.insert(0, dpns_contract);
-
-        // Add the token history contract to the list
-        let token_history_contract = QualifiedContract {
-            contract: Arc::clone(&self.token_history_contract).as_ref().clone(),
-            alias: Some("token_history".to_string()),
-        };
-
-        // Insert the token history contract at 1
-        contracts.insert(1, token_history_contract);
-
-        // Add the withdrawal contract to the list
-        let withdraws_contract = QualifiedContract {
-            contract: Arc::clone(&self.withdraws_contract).as_ref().clone(),
-            alias: Some("withdrawals".to_string()),
-        };
-
-        // Insert the withdrawal contract at 2
-        contracts.insert(2, withdraws_contract);
-
-        // Add the keyword search contract to the list
-        let keyword_search_contract = QualifiedContract {
-            contract: Arc::clone(&self.keyword_search_contract).as_ref().clone(),
-            alias: Some("keyword_search".to_string()),
-        };
-
-        // Insert the keyword search contract at 3
-        contracts.insert(3, keyword_search_contract);
-
-        // Add the DashPay contract to the list
-        let dashpay_contract = QualifiedContract {
-            contract: Arc::clone(&self.dashpay_contract).as_ref().clone(),
-            alias: Some("dashpay".to_string()),
-        };
-
-        // Insert the DashPay contract at 4
-        contracts.insert(4, dashpay_contract);
+        // Pin the system contracts at the head of the list, in display order.
+        let system_contracts = [
+            (&self.dpns_contract, "dpns"),
+            (&self.token_history_contract, "token_history"),
+            (&self.withdraws_contract, "withdrawals"),
+            (&self.keyword_search_contract, "keyword_search"),
+            (&self.dashpay_contract, "dashpay"),
+        ];
+        for (index, (contract, alias)) in system_contracts.into_iter().enumerate() {
+            contracts.insert(
+                index,
+                QualifiedContract {
+                    contract: contract.as_ref().clone(),
+                    alias: Some(alias.to_string()),
+                },
+            );
+        }
 
         Ok(contracts)
     }
@@ -434,12 +400,8 @@ impl AppContext {
         token_position: u16,
     ) -> std::result::Result<(), TaskError> {
         let config = config::standard();
-        let Some(config_bytes) = bincode::encode_to_vec(&token_configuration, config).ok() else {
-            // We should always be able to serialize a TokenConfiguration —
-            // matches the pre-C7 behaviour of silently no-oping if encode
-            // fails.
-            return Ok(());
-        };
+        let config_bytes = bincode::encode_to_vec(&token_configuration, config)
+            .map_err(|source| TaskError::TokenConfigSerialization { source })?;
         let stored = StoredToken {
             config_bytes,
             alias: token_name.to_string(),
@@ -509,12 +471,12 @@ impl AppContext {
         Ok(Some(Identifier::from(stored.data_contract_id)))
     }
 
-    /// List every token in the registry alongside its owning data
-    /// contract. Falls back to the per-network k/v contract entry — the
-    /// system-contract pinning lives in [`Self::get_contracts`].
-    pub fn get_all_known_tokens_with_data_contract(
+    /// Read every token registry entry, decode its configuration, and return
+    /// the entries sorted by alias. Entries whose key does not decode back to a
+    /// valid token id are skipped with a warning.
+    fn load_sorted_tokens(
         &self,
-    ) -> std::result::Result<IndexMap<Identifier, TokenInfoWithDataContract>, TaskError> {
+    ) -> std::result::Result<Vec<(Identifier, StoredToken, TokenConfiguration)>, TaskError> {
         let kv = self.det_kv()?;
         let keys = kv
             .list(DetScope::Global, Some(TOKEN_KEY_PREFIX))
@@ -542,9 +504,17 @@ impl AppContext {
             sorted.push((token_id, stored, cfg));
         }
         sorted.sort_by(|a, b| a.1.alias.cmp(&b.1.alias));
+        Ok(sorted)
+    }
 
+    /// List every token in the registry alongside its owning data
+    /// contract. Falls back to the per-network k/v contract entry — the
+    /// system-contract pinning lives in [`Self::get_contracts`].
+    pub fn get_all_known_tokens_with_data_contract(
+        &self,
+    ) -> std::result::Result<IndexMap<Identifier, TokenInfoWithDataContract>, TaskError> {
         let mut result = IndexMap::new();
-        for (token_id, stored, token_config) in sorted {
+        for (token_id, stored, token_config) in self.load_sorted_tokens()? {
             let contract_id = Identifier::from(stored.data_contract_id);
             let Some(qc) = self.get_contract_by_id(&contract_id)? else {
                 tracing::debug!(
@@ -575,32 +545,8 @@ impl AppContext {
     pub fn get_all_known_tokens(
         &self,
     ) -> std::result::Result<IndexMap<Identifier, TokenInfo>, TaskError> {
-        let kv = self.det_kv()?;
-        let keys = kv
-            .list(DetScope::Global, Some(TOKEN_KEY_PREFIX))
-            .map_err(token_err)?;
-        let mut sorted: Vec<(Identifier, StoredToken, TokenConfiguration)> = Vec::new();
-        for key in keys {
-            let Some(stored) = kv
-                .get::<StoredToken>(DetScope::Global, &key)
-                .map_err(token_err)?
-            else {
-                continue;
-            };
-            let suffix = match key.strip_prefix(TOKEN_KEY_PREFIX) {
-                Some(s) => s,
-                None => continue,
-            };
-            let Ok(token_id) = Identifier::from_string(suffix, Encoding::Base58) else {
-                continue;
-            };
-            let cfg = decode_token_config(&stored.config_bytes)?;
-            sorted.push((token_id, stored, cfg));
-        }
-        sorted.sort_by(|a, b| a.1.alias.cmp(&b.1.alias));
-
         let mut result = IndexMap::new();
-        for (token_id, stored, token_config) in sorted {
+        for (token_id, stored, token_config) in self.load_sorted_tokens()? {
             result.insert(
                 token_id,
                 TokenInfo {
@@ -676,63 +622,6 @@ impl AppContext {
         Ok(self.wallet_backend()?.token_balances())
     }
 
-    pub fn remove_wallet(self: &Arc<Self>, seed_hash: &WalletSeedHash) -> Result<(), TaskError> {
-        // Acquire write lock first to ensure atomicity — if the lock fails,
-        // no changes have been made to the database.
-        let mut wallets = self.wallets.write()?;
-        if !wallets.contains_key(seed_hash) {
-            return Err(TaskError::WalletNotFound);
-        }
-
-        self.db.remove_wallet(seed_hash, &self.network)?;
-
-        wallets.remove(seed_hash);
-        let has_wallet = !wallets.is_empty();
-        drop(wallets);
-
-        self.has_wallet.store(has_wallet, Ordering::Relaxed);
-
-        // Evict the wallet's shielded balance snapshot. The seed hash is
-        // deterministic from the seed, so re-importing the same recovery phrase
-        // re-binds this exact key — without eviction the freshly-imported wallet
-        // would surface the removed wallet's stale shielded balance until the
-        // next completed sync overwrites it.
-        if let Ok(mut balances) = self.shielded_balances.lock() {
-            balances.remove(seed_hash);
-        }
-
-        // Permanently wipe the wallet's secret-bearing state so removal is not
-        // recoverable: the encrypted seed-envelope vault, the session secret
-        // cache, the wallet-meta sidecar, and the plaintext shielded-note rows
-        // plus the nullifier cursor (F17/F20). Synchronous so the secrets are
-        // gone before the UI reports success. Best-effort when the backend is
-        // not wired yet — a pre-wire context has none of that state.
-        if let Ok(backend) = self.wallet_backend() {
-            let upstream_id = backend.registered_wallet_id(seed_hash);
-            if let Err(e) = backend.forget_wallet_local_state(seed_hash, upstream_id) {
-                tracing::warn!(
-                    wallet = %hex::encode(seed_hash),
-                    error = ?e,
-                    "Failed to wipe local wallet secret state on removal"
-                );
-            }
-
-            // The upstream (watch-only, seedless) persistor row removal is the
-            // sole async step; it carries no secret, so drive it off-thread.
-            if let Some(wallet_id) = upstream_id {
-                let backend = Arc::clone(&backend);
-                self.subtasks
-                    .spawn_sync("wallet_upstream_removal", async move {
-                        if let Err(error) = backend.remove_upstream_wallet(&wallet_id).await {
-                            tracing::warn!(%error, "Upstream wallet removal failed");
-                        }
-                    });
-            }
-        }
-
-        Ok(())
-    }
-
     /// Drop every user-registered contract entry for this network. Only
     /// applies to devnet contexts — guarded to match the pre-C6
     /// [`Database::remove_all_contracts_in_devnet`] behaviour.
@@ -803,6 +692,7 @@ where
 mod tests {
     use super::*;
     use crate::wallet_backend::kv_test_support::InMemoryKv;
+    use std::sync::Arc;
 
     fn empty_kv() -> DetKv {
         DetKv::from_store(Arc::new(InMemoryKv::default()))

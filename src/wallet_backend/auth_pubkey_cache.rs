@@ -25,47 +25,46 @@
 use std::sync::Arc;
 
 use dash_sdk::dpp::dashcore::Network;
-use dash_sdk::dpp::dashcore::base58;
 
 use crate::backend_task::error::TaskError;
 use crate::model::wallet::WalletSeedHash;
 use crate::model::wallet::auth_pubkey_cache::AuthPubkeyCache;
-use crate::wallet_backend::kv::KvAdapterError;
-use crate::wallet_backend::{DetKv, DetScope};
+use crate::wallet_backend::DetKv;
+use crate::wallet_backend::kv::{KvAdapterError, map_kv_storage_error};
+#[cfg(test)]
+use crate::wallet_backend::sidecar::sidecar_key;
+use crate::wallet_backend::sidecar::{SidecarScope, SidecarValue, SidecarView};
 
 /// Colon-separated namespace for the per-wallet auth-pubkey blob. The
 /// full key is `<network>:auth_pubkeys:<seed_hash_base58>`.
 pub(crate) const KEY_INFIX: &str = ":auth_pubkeys:";
 
-/// Build the canonical k/v key for a wallet's auth-pubkey cache blob.
+/// Build the canonical k/v key for a wallet's auth-pubkey cache blob. The
+/// generic view builds keys itself; this mirror exists for key-shape tests.
+#[cfg(test)]
 pub(crate) fn key_for(network: Network, seed_hash: &WalletSeedHash) -> String {
-    let net = network_prefix(network);
-    let hash = base58::encode_slice(seed_hash);
-    format!("{net}{KEY_INFIX}{hash}")
+    sidecar_key(network, KEY_INFIX, seed_hash)
 }
 
-/// Cross-network prefix `<network>:` used by every entry key. Matches the
-/// vocabulary of [`WalletMetaView`](crate::wallet_backend::WalletMetaView)
-/// and `resolve_spv_storage_dir`.
-fn network_prefix(network: Network) -> &'static str {
-    match network {
-        Network::Mainnet => "mainnet",
-        Network::Testnet => "testnet",
-        Network::Devnet => "devnet",
-        Network::Regtest => "regtest",
-    }
-}
+impl SidecarValue for AuthPubkeyCache {}
 
-/// View borrowing a shared [`DetKv`] handle. Cheap to construct, so
-/// callers build one per operation rather than threading it.
-pub struct AuthPubkeyCacheView<'a> {
-    kv: &'a Arc<DetKv>,
-}
+/// Typed auth-pubkey-cache sidecar (D4b). A thin wrapper over the generic
+/// [`SidecarView`]. Unlike the metadata sidecars it is
+/// [`SidecarScope::WalletById`]-scoped: it is only ever touched from paths that
+/// already resolved the wallet's seed, so the entry cascades on wallet removal.
+/// The cache is an optimisation — a missing or unreadable blob degrades to a
+/// cold [`AuthPubkeyCache::default`] that the read path self-heals.
+pub struct AuthPubkeyCacheView<'a>(SidecarView<'a, AuthPubkeyCache>);
 
 impl<'a> AuthPubkeyCacheView<'a> {
     /// Borrow a [`DetKv`] handle as a typed auth-pubkey-cache view.
     pub fn new(kv: &'a Arc<DetKv>) -> Self {
-        Self { kv }
+        Self(SidecarView::new(
+            kv,
+            KEY_INFIX,
+            SidecarScope::WalletById,
+            map_kv_error_to_task_error,
+        ))
     }
 
     /// Load the cache for one wallet.
@@ -74,23 +73,7 @@ impl<'a> AuthPubkeyCacheView<'a> {
     /// or the blob fails to decode (logged) — the read path self-heals,
     /// so a corrupt blob must never block identity load/discovery.
     pub fn get(&self, network: Network, seed_hash: &WalletSeedHash) -> AuthPubkeyCache {
-        let key = key_for(network, seed_hash);
-        match self
-            .kv
-            .get::<AuthPubkeyCache>(DetScope::Wallet(seed_hash), &key)
-        {
-            Ok(Some(cache)) => cache,
-            Ok(None) => AuthPubkeyCache::default(),
-            Err(e) => {
-                tracing::warn!(
-                    target = "wallet_backend::auth_pubkey_cache",
-                    key = %key,
-                    error = ?e,
-                    "Failed to read auth-pubkey cache; treating as cold",
-                );
-                AuthPubkeyCache::default()
-            }
-        }
+        self.0.get(network, seed_hash).unwrap_or_default()
     }
 
     /// Whole-blob upsert of the cache for one wallet. The map is tiny
@@ -103,10 +86,7 @@ impl<'a> AuthPubkeyCacheView<'a> {
         seed_hash: &WalletSeedHash,
         cache: &AuthPubkeyCache,
     ) -> Result<(), TaskError> {
-        let key = key_for(network, seed_hash);
-        self.kv
-            .put(DetScope::Wallet(seed_hash), &key, cache)
-            .map_err(map_kv_error_to_task_error)
+        self.0.set(network, seed_hash, cache)
     }
 
     /// Delete the cache for one wallet. Idempotent — a missing key
@@ -114,20 +94,17 @@ impl<'a> AuthPubkeyCacheView<'a> {
     /// mechanism in production; this direct delete exists for tests.
     #[cfg(test)]
     pub fn delete(&self, network: Network, seed_hash: &WalletSeedHash) -> Result<(), TaskError> {
-        let key = key_for(network, seed_hash);
-        self.kv
-            .delete(DetScope::Wallet(seed_hash), &key)
-            .map_err(map_kv_error_to_task_error)
+        self.0.delete(network, seed_hash)
     }
 }
 
 /// Auth-pubkey-cache adapter errors funnel into the dedicated
 /// [`TaskError::KvSidecarStorage`] envelope.
 fn map_kv_error_to_task_error(e: KvAdapterError) -> TaskError {
-    TaskError::KvSidecarStorage {
+    map_kv_storage_error(e, |source| TaskError::KvSidecarStorage {
         sidecar: "auth_pubkey_cache",
-        source: Box::new(e),
-    }
+        source,
+    })
 }
 
 #[cfg(test)]
@@ -135,6 +112,7 @@ mod tests {
     use super::*;
 
     use dash_sdk::dpp::dashcore::PublicKey;
+    use dash_sdk::dpp::dashcore::base58;
     use dash_sdk::dpp::dashcore::secp256k1::{
         PublicKey as Secp256k1PublicKey, Secp256k1, SecretKey,
     };

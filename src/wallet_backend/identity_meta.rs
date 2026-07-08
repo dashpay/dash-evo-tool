@@ -2,19 +2,18 @@
 //!
 //! [`IdentityMetaView`] is the only doorway DET code uses to read or write
 //! [`IdentityMeta`] (the password hint shown next to the sign-time prompt) for
-//! an identity whose keys are password-protected. A verbatim twin of
-//! [`WalletMetaView`](crate::wallet_backend::WalletMetaView): it borrows a
-//! shared [`DetKv`] handle pointing at `det-app.sqlite` and serialises every
-//! entry under a colon-prefixed, network-scoped key:
+//! an identity whose keys are password-protected. It is a thin
+//! [`SidecarView`](crate::wallet_backend::sidecar::SidecarView) wrapper over a
+//! shared [`DetKv`] handle pointing at `det-app.sqlite`, serialising every entry
+//! under a colon-prefixed, network-scoped key:
 //!
 //! ```text
 //! <network>:identity_meta:<identity_id_base58>
 //! ```
 //!
-//! Network-prefixed keys + the global (`DetScope::Global`) scope mirror the
-//! `wallet_meta` pattern: the cross-network `det-app.sqlite` file is the right
-//! store (one file, one schema, easy backup), and the 32-byte identity id is
-//! the stable DET-level identifier.
+//! Network-prefixed keys + the global (`DetScope::Global`) scope mean the
+//! cross-network `det-app.sqlite` file is the right store (one file, one schema,
+//! easy backup), and the 32-byte identity id is the stable DET-level identifier.
 //!
 //! This sidecar is **display-only** — it never gates whether a prompt fires
 //! (the at-rest vault scheme does). Every read path is therefore infallible at
@@ -24,112 +23,56 @@
 use std::sync::Arc;
 
 use dash_sdk::dpp::dashcore::Network;
-use dash_sdk::dpp::dashcore::base58;
 
 use crate::backend_task::error::TaskError;
 use crate::model::qualified_identity::identity_meta::IdentityMeta;
-use crate::wallet_backend::kv::KvAdapterError;
-use crate::wallet_backend::{DetKv, DetScope};
+use crate::wallet_backend::DetKv;
+use crate::wallet_backend::kv::{KvAdapterError, map_kv_storage_error};
+#[cfg(test)]
+use crate::wallet_backend::sidecar::{SidecarId, sidecar_key};
+use crate::wallet_backend::sidecar::{SidecarScope, SidecarValue, SidecarView};
 
 /// Colon-separated namespace shared across networks. The full key is
 /// `<network>:identity_meta:<identity_id_base58>`.
 pub(crate) const KEY_INFIX: &str = ":identity_meta:";
 
-/// Build the canonical k/v key for an identity's metadata blob.
-pub(crate) fn key_for(network: Network, identity_id: &[u8; 32]) -> String {
-    let net = network_prefix(network);
-    let id = base58::encode_slice(identity_id);
-    format!("{net}{KEY_INFIX}{id}")
+/// Build the canonical k/v key for an identity's metadata blob. The generic
+/// view builds keys itself; this mirror exists for key-shape tests.
+#[cfg(test)]
+pub(crate) fn key_for(network: Network, identity_id: &SidecarId) -> String {
+    sidecar_key(network, KEY_INFIX, identity_id)
 }
 
-/// Cross-network prefix `<network>:` used by every entry key. Matches the
-/// `wallet_meta` convention so the same vocabulary appears across sidecars.
-fn network_prefix(network: Network) -> &'static str {
-    match network {
-        Network::Mainnet => "mainnet",
-        Network::Testnet => "testnet",
-        Network::Devnet => "devnet",
-        Network::Regtest => "regtest",
-    }
-}
+impl SidecarValue for IdentityMeta {}
 
-/// Build the `<network>:identity_meta:` prefix used to enumerate every identity
-/// meta entry for a single network.
-fn prefix_for(network: Network) -> String {
-    format!("{}{KEY_INFIX}", network_prefix(network))
-}
-
-/// View borrowing a shared [`DetKv`] handle. Cheap to construct, so callers
-/// build one per operation rather than threading it.
-pub struct IdentityMetaView<'a> {
-    kv: &'a Arc<DetKv>,
-}
+/// Typed identity-metadata sidecar. A thin, display-only wrapper over the
+/// generic [`SidecarView`]: identity metadata (the password hint shown next to
+/// the sign-time prompt) is `Global`-scoped and never gates whether a prompt
+/// fires, so every read degrades to `None` on error.
+pub struct IdentityMetaView<'a>(SidecarView<'a, IdentityMeta>);
 
 impl<'a> IdentityMetaView<'a> {
     /// Borrow a [`DetKv`] handle as a typed identity-metadata view.
     pub fn new(kv: &'a Arc<DetKv>) -> Self {
-        Self { kv }
+        Self(SidecarView::new(
+            kv,
+            KEY_INFIX,
+            SidecarScope::Global,
+            map_kv_error_to_task_error,
+        ))
     }
 
     /// All `(identity_id, meta)` pairs persisted for `network`. A single
     /// corrupt row is logged and skipped rather than poisoning the listing.
     pub fn list(&self, network: Network) -> Vec<([u8; 32], IdentityMeta)> {
-        let prefix = prefix_for(network);
-        let keys = match self.kv.list(DetScope::Global, Some(&prefix)) {
-            Ok(k) => k,
-            Err(e) => {
-                tracing::warn!(
-                    target = "wallet_backend::identity_meta",
-                    network = ?network,
-                    error = ?e,
-                    "Failed to list identity-meta keys; returning empty list",
-                );
-                return Vec::new();
-            }
-        };
-        let mut out = Vec::with_capacity(keys.len());
-        for key in keys {
-            let Some(id) = parse_identity_id(&key, &prefix) else {
-                tracing::warn!(
-                    target = "wallet_backend::identity_meta",
-                    key = %key,
-                    "Skipping identity-meta key with non-base58 id suffix",
-                );
-                continue;
-            };
-            match self.kv.get::<IdentityMeta>(DetScope::Global, &key) {
-                Ok(Some(meta)) => out.push((id, meta)),
-                Ok(None) => {}
-                Err(e) => {
-                    tracing::warn!(
-                        target = "wallet_backend::identity_meta",
-                        key = %key,
-                        error = ?e,
-                        "Skipping unreadable identity-meta blob",
-                    );
-                }
-            }
-        }
-        out
+        self.0.list(network)
     }
 
     /// Fetch the metadata for a single identity. `None` when the key is absent
     /// or the blob fails to decode (logged) — the sidecar is cosmetic, so a
     /// read never fails the caller.
     pub fn get(&self, network: Network, identity_id: &[u8; 32]) -> Option<IdentityMeta> {
-        let key = key_for(network, identity_id);
-        match self.kv.get::<IdentityMeta>(DetScope::Global, &key) {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::warn!(
-                    target = "wallet_backend::identity_meta",
-                    key = %key,
-                    error = ?e,
-                    "Failed to read identity meta; treating as absent",
-                );
-                None
-            }
-        }
+        self.0.get(network, identity_id)
     }
 
     /// Upsert the metadata for a single identity. Re-writing the same value is
@@ -140,41 +83,27 @@ impl<'a> IdentityMetaView<'a> {
         identity_id: &[u8; 32],
         meta: &IdentityMeta,
     ) -> Result<(), TaskError> {
-        let key = key_for(network, identity_id);
-        self.kv
-            .put(DetScope::Global, &key, meta)
-            .map_err(map_kv_error_to_task_error)
+        self.0.set(network, identity_id, meta)
     }
 
     /// Delete the metadata for a single identity. Idempotent — a missing key
     /// returns `Ok(())`.
     pub fn delete(&self, network: Network, identity_id: &[u8; 32]) -> Result<(), TaskError> {
-        let key = key_for(network, identity_id);
-        self.kv
-            .delete(DetScope::Global, &key)
-            .map_err(map_kv_error_to_task_error)
+        self.0.delete(network, identity_id)
     }
 }
 
 /// Identity-meta adapter errors funnel into [`TaskError::IdentityMetaStorage`]
 /// so the banner copy matches the surface ("identity details").
 fn map_kv_error_to_task_error(e: KvAdapterError) -> TaskError {
-    TaskError::IdentityMetaStorage {
-        source: Box::new(e),
-    }
-}
-
-/// Extract the base58 identity-id suffix from a key starting with `prefix`.
-/// Returns `None` when the suffix is not 32 bytes of base58.
-fn parse_identity_id(key: &str, prefix: &str) -> Option<[u8; 32]> {
-    let rest = key.strip_prefix(prefix)?;
-    let bytes = base58::decode(rest).ok()?;
-    bytes.try_into().ok()
+    map_kv_storage_error(e, |source| TaskError::IdentityMetaStorage { source })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use dash_sdk::dpp::dashcore::base58;
 
     use crate::wallet_backend::kv_test_support::InMemoryKv;
 

@@ -25,7 +25,7 @@ use dash_sdk::dpp::dashcore::base58;
 use dash_sdk::platform::Identifier;
 
 use crate::backend_task::error::TaskError;
-use crate::wallet_backend::kv::KvAdapterError;
+use crate::wallet_backend::kv::{KvAdapterError, kv_get_logged, map_kv_storage_error};
 use crate::wallet_backend::{DetKv, DetScope};
 
 /// Key prefix for every cached contact profile.
@@ -81,17 +81,12 @@ impl<'a> ContactProfileCacheView<'a> {
     /// absent so the caller falls back to a network fetch).
     pub fn get(&self, contact: &Identifier) -> Option<CachedContactProfile> {
         let key = key_for(contact);
-        match self.kv.get::<CachedContactProfile>(DetScope::Global, &key) {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::warn!(
-                    target = "wallet_backend::contact_profile_cache",
-                    error = ?e,
-                    "Failed to read cached contact profile; treating as absent",
-                );
-                None
-            }
-        }
+        kv_get_logged::<CachedContactProfile>(
+            self.kv,
+            DetScope::Global,
+            &key,
+            "contact_profile_cache",
+        )
     }
 
     /// Upsert the cached profile for `contact`. An all-`None` profile is
@@ -121,12 +116,10 @@ impl<'a> ContactProfileCacheView<'a> {
 }
 
 /// Contact-profile-cache adapter errors funnel into the dedicated
-/// [`TaskError::AvatarCacheStorage`] envelope — the same offline-cache surface
-/// the contact list shows.
+/// [`TaskError::ContactProfileCacheStorage`] envelope — the offline contact-card
+/// surface the contact list shows.
 fn map_kv_error_to_task_error(e: KvAdapterError) -> TaskError {
-    TaskError::AvatarCacheStorage {
-        source: Box::new(e),
-    }
+    map_kv_storage_error(e, |source| TaskError::ContactProfileCacheStorage { source })
 }
 
 #[cfg(test)]

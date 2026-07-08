@@ -26,6 +26,7 @@ use crate::model::single_key::ImportedKey;
 use crate::model::wallet::single_key::{
     ClosedSingleKey, OpenSingleKey, SingleKeyData, SingleKeyHash, SingleKeyWallet,
 };
+use crate::wallet_backend::kv::network_prefix;
 use crate::wallet_backend::secret_seam::{SecretScheme, SecretSeam};
 use crate::wallet_backend::single_key_entry::SingleKeyEntry;
 use crate::wallet_backend::{DetKv, DetScope};
@@ -60,18 +61,6 @@ pub const SINGLE_KEY_PRIV_LABEL_PREFIX: &str = "single_key_priv.";
 /// secret store. Mirrors the [`WalletMetaView`](super::WalletMetaView)
 /// shape (T-W-00) — same network-prefix convention.
 pub(crate) const SINGLE_KEY_META_INFIX: &str = ":single_key_meta:";
-
-/// Cross-network `<network>:` prefix matching the on-disk vocabulary in
-/// `resolve_spv_storage_dir` and the wallet-meta sidecar. Co-located with
-/// the secret-store helpers because every single-key key shape uses it.
-fn network_prefix(network: Network) -> &'static str {
-    match network {
-        Network::Mainnet => "mainnet",
-        Network::Testnet => "testnet",
-        Network::Devnet => "devnet",
-        Network::Regtest => "regtest",
-    }
-}
 
 /// Build the canonical sidecar key for `(network, address)`.
 pub(crate) fn meta_key_for(network: Network, address: &str) -> String {

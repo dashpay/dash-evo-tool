@@ -10,18 +10,14 @@
 //! scope, maps the platform address to its DIP-17 derivation path through a
 //! pre-built pure index, derives the signing key locally, and signs.
 //!
-//! It replaces the legacy `impl Signer<PlatformAddress> for Wallet`, which
-//! read the wallet's parked session-long plaintext seed. The derivation,
-//! coin-type, and signing primitive are **identical** to that impl — the only
-//! change is the seed source (borrowed JIT seed instead of parked seed) and
-//! that the network is known up front rather than brute-forced across all
-//! four networks (R-4 in the R3-completion design: this is safer, not just
-//! equivalent).
+//! The network is known up front (from the wallet context) rather than
+//! brute-forced across all four networks, so signing derives against exactly
+//! one coin type.
 //!
-//! Borrow discipline (Nagatha R-2): the `'a` lifetime ties the signer to both
-//! the held seed and the path index, so the signer cannot outlive the
-//! `with_secret_session` scope. Never `Box`/`Arc`/return it — the SDK takes
-//! `&S`, which the borrow satisfies without any `'static` coercion.
+//! Borrow discipline: the `'a` lifetime ties the signer to both the held seed
+//! and the path index, so the signer cannot outlive the `with_secret_session`
+//! scope. Never `Box`/`Arc`/return it — the SDK takes `&S`, which the borrow
+//! satisfies without any `'static` coercion.
 
 use std::collections::BTreeMap;
 

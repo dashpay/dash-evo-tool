@@ -88,7 +88,7 @@ pub struct ClosedSingleKey {
 impl std::fmt::Debug for ClosedSingleKey {
     /// Redacting `Debug`: `encrypted_private_key` may hold raw 32 key bytes
     /// (the no-password / pre-migration shape), so a derived `Debug` would
-    /// leak them as a decimal byte array (finding `6a2818cd`). Mirrors
+    /// leak them as a decimal byte array. Mirrors
     /// `ClosedKeyItem` / `PrivateKeyData`: prints lengths and the non-secret
     /// `key_hash`, never the protected bytes. Parents `SingleKeyData` /
     /// `SingleKeyWallet` are safe by delegation.
@@ -445,9 +445,8 @@ mod tests {
         assert!(!wallet.address.to_string().is_empty());
     }
 
-    /// TS-DBG-01 (6a2818cd) — `ClosedSingleKey`'s `{:?}` exposes no raw 32
-    /// bytes, in neither hex nor decimal-array form (the latter is the shape
-    /// the pre-fix derived `Debug` actually leaked), and the guarantee holds
+    /// TS-DBG-01 — `ClosedSingleKey`'s `{:?}` exposes no raw 32 bytes, in
+    /// neither hex nor decimal-array form, and the guarantee holds
     /// transitively through `SingleKeyData::Closed` and a `SingleKeyWallet`
     /// that holds it.
     #[test]

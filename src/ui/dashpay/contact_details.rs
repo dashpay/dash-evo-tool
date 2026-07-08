@@ -585,10 +585,10 @@ impl ScreenLike for ContactDetailsScreen {
                     .and_then(|v| v.as_text())
                     .map(|s| s.to_string());
 
-                // Public-profile caching dropped — `FetchContactProfile`
-                // re-queries Platform on each open, and the WalletBackend
-                // mirror covers identities we manage. Out-of-wallet contact
-                // profiles are not cacheable through the upstream seam.
+                // `FetchContactProfile` re-queries Platform on each open, and
+                // the WalletBackend mirror covers identities we manage.
+                // Out-of-wallet contact profiles are not cached through the
+                // upstream seam.
 
                 // Update the in-memory contact info
                 if let Some(info) = &mut self.contact_info {

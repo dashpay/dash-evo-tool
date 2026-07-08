@@ -1147,7 +1147,7 @@ mod tests {
         );
     }
 
-    /// RUST-001: stale-HIGH `balance_before` must fall back to the estimate.
+    /// A stale-HIGH `balance_before` must fall back to the estimate.
     ///
     /// If the cached balance is *higher* than the post-top-up balance (e.g.
     /// because it was read before a spend cleared on-chain), then
@@ -1180,7 +1180,7 @@ mod tests {
         assert_eq!(
             resolved,
             estimator.estimate_identity_topup(),
-            "stale-HIGH must fall back to the deterministic estimate (RUST-001)"
+            "stale-HIGH must fall back to the deterministic estimate"
         );
     }
 

@@ -11,11 +11,10 @@ use std::sync::Arc;
 /// The shielded-pool operations DET dispatches into the upstream
 /// `platform-wallet` coordinator.
 ///
-/// Phase D retired DET's home-grown Orchard subsystem: sync, nullifier
-/// scanning, key derivation and the commitment tree are all owned by the
-/// upstream coordinator now, so only the five fund-moving operations remain.
-/// Balance/notes/activity are read through the push snapshot and the
-/// coordinator store, not through a task.
+/// Sync, nullifier scanning, key derivation and the commitment tree are all
+/// owned by the upstream coordinator, so only the five fund-moving operations
+/// remain here. Balance/notes/activity are read through the push snapshot and
+/// the coordinator store, not through a task.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ShieldedTask {
     /// Shield core DASH directly into the shielded pool via asset lock (Type 18).
@@ -25,8 +24,8 @@ pub enum ShieldedTask {
     },
 
     /// Shield credits from the wallet's platform balance into the shielded
-    /// pool (Type 15). Upstream selects the input addresses — DET no longer
-    /// picks a `from_address` or manages nonces.
+    /// pool (Type 15). Upstream selects the input addresses; DET does not pick
+    /// a `from_address` or manage nonces.
     ShieldFromBalance {
         seed_hash: WalletSeedHash,
         amount: u64,
@@ -58,7 +57,7 @@ pub enum ShieldedTask {
 impl AppContext {
     /// Run a shielded-pool task by forwarding to the upstream coordinator
     /// through the [`WalletBackend`](crate::wallet_backend::WalletBackend)
-    /// shielded ops added in Phase B. Each op already maps upstream errors via
+    /// shielded ops. Each op already maps upstream errors via
     /// `map_shielded_op_error`, so this layer is a thin adapter: it shapes the
     /// task payload into the backend call and refreshes the frame-safe balance
     /// snapshot once the op confirms.
@@ -199,9 +198,8 @@ impl AppContext {
     /// Refresh the frame-safe shielded balance snapshot for `seed_hash` from the
     /// coordinator store after a confirmed operation.
     ///
-    /// This is the read side's producer until the Phase-E
-    /// `on_shielded_sync_completed` push writer lands: it keeps the UI balance
-    /// current immediately after a spend without waiting for the 60-second sync
+    /// Keeps the UI balance current immediately after a spend, without waiting
+    /// for the next `on_shielded_sync_completed` push from the 60-second sync
     /// loop. Best-effort — a failed read leaves the previous snapshot in place.
     async fn refresh_shielded_balance_snapshot(self: &Arc<Self>, seed_hash: &WalletSeedHash) {
         let backend = match self.wallet_backend() {

@@ -1016,11 +1016,10 @@ impl ScreenLike for ContactsList {
                     if let Some(url) = &avatar_url {
                         contact.avatar_url = Some(url.clone());
                     }
-                    // Profile snapshot caching dropped — `DashpayView::contacts`
-                    // reads contact identities from the upstream wallet and
-                    // cross-references the public DashPayProfile via the
-                    // backend task on demand, so the local cache no longer
-                    // earns its keep.
+                    // `DashpayView::contacts` reads contact identities from the
+                    // upstream wallet and cross-references the public
+                    // DashPayProfile via the backend task on demand, so this
+                    // message is not cached locally.
                     let _ = public_message;
                 }
             }

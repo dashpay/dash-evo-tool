@@ -217,10 +217,9 @@ impl AppContext {
 
                 let records = payments::load_payment_history(self, &identity_id, None).await?;
 
-                // Post-D4c: the WalletBackend DashPay adapter is the sole
-                // source of truth for contacts. Pre-wire (e.g. cold start)
-                // we surface an empty list rather than reading from DET —
-                // a missing backend simply means "not loaded yet".
+                // The WalletBackend DashPay adapter is the sole source of truth
+                // for contacts. Before it is wired (e.g. cold start) we surface
+                // an empty list — a missing backend means "not loaded yet".
                 let contacts = match self.wallet_backend() {
                     Ok(backend) => backend.dashpay_view().contacts(&identity_id).await,
                     Err(_) => Vec::new(),

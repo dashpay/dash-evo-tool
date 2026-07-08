@@ -118,7 +118,7 @@ impl AsyncTool<DashMcpService> for IdentityCreditsTopup {
                     identity_id: identity_id_str,
                     amount_duffs: param.amount_duffs,
                     estimated_fee: fee_result.estimated_fee,
-                    actual_fee: fee_result.actual_fee,
+                    actual_fee: fee_result.actual_fee.unwrap_or(fee_result.estimated_fee),
                 })
             }
             other => Err(McpToolError::Internal(format!(
@@ -262,7 +262,7 @@ impl AsyncTool<DashMcpService> for IdentityCreditsTopupFromPlatform {
                     identity_id: identity_id_str,
                     amount_credits: param.amount_credits,
                     estimated_fee: fee_result.estimated_fee,
-                    actual_fee: fee_result.actual_fee,
+                    actual_fee: fee_result.actual_fee.unwrap_or(fee_result.estimated_fee),
                 })
             }
             other => Err(McpToolError::Internal(format!(
@@ -373,7 +373,7 @@ impl AsyncTool<DashMcpService> for IdentityCreditsTransfer {
                     to_identity_id: param.to_identity_id,
                     amount_credits: param.amount_credits,
                     estimated_fee: fee_result.estimated_fee,
-                    actual_fee: fee_result.actual_fee,
+                    actual_fee: fee_result.actual_fee.unwrap_or(fee_result.estimated_fee),
                 })
             }
             other => Err(McpToolError::Internal(format!(
@@ -494,7 +494,7 @@ impl AsyncTool<DashMcpService> for IdentityCreditsWithdraw {
                     to_address: param.to_address,
                     amount_credits: param.amount_credits,
                     estimated_fee: fee_result.estimated_fee,
-                    actual_fee: fee_result.actual_fee,
+                    actual_fee: fee_result.actual_fee.unwrap_or(fee_result.estimated_fee),
                 })
             }
             other => Err(McpToolError::Internal(format!(
@@ -605,7 +605,7 @@ impl AsyncTool<DashMcpService> for IdentityCreditsToAddress {
                     to_address: param.to_address,
                     amount_credits: param.amount_credits,
                     estimated_fee: fee_result.estimated_fee,
-                    actual_fee: fee_result.actual_fee,
+                    actual_fee: fee_result.actual_fee.unwrap_or(fee_result.estimated_fee),
                 })
             }
             other => Err(McpToolError::Internal(format!(

@@ -243,7 +243,7 @@ impl AppContext {
         // table is only consulted on the legacy staged-asset-lock recovery
         // path, so no mirror write is needed here.
 
-        let fee_result = FeeResult::new(estimated_fee, estimated_fee);
+        let fee_result = FeeResult::estimated_only(estimated_fee);
         Ok(BackendTaskSuccessResult::RegisteredIdentity(
             qualified_identity,
             fee_result,
@@ -375,7 +375,7 @@ impl AppContext {
                         .insert(wallet_identity_index, qualified_identity.identity.clone());
                 }
 
-                let fee_result = FeeResult::new(estimated_fee, estimated_fee);
+                let fee_result = FeeResult::estimated_only(estimated_fee);
                 Ok(BackendTaskSuccessResult::RegisteredIdentity(
                     qualified_identity,
                     fee_result,

@@ -1147,9 +1147,41 @@ pub struct TokenBuildArgs {
     pub distribution_rules: TokenDistributionRules,
     pub groups: BTreeMap<u16, Group>,
     pub document_schemas: Option<BTreeMap<String, serde_json::Value>>,
-    pub marketplace_trade_mode: u8,
     pub marketplace_rules: ChangeControlRules,
     pub change_direct_purchase_pricing_rules: ChangeControlRules,
+}
+
+impl TokenBuildArgs {
+    /// Converts parsed UI inputs into the backend token-contract parameters
+    /// consumed by `AppContext::build_data_contract_v1_with_one_token`.
+    pub fn into_contract_params(self) -> crate::backend_task::tokens::TokenContractParams {
+        crate::backend_task::tokens::TokenContractParams {
+            token_names: self.token_names,
+            contract_keywords: self.contract_keywords,
+            token_description: self.token_description,
+            should_capitalize: self.should_capitalize,
+            decimals: self.decimals,
+            base_supply: self.base_supply,
+            max_supply: self.max_supply,
+            start_paused: self.start_paused,
+            allow_transfers_to_frozen_identities: self.allow_transfers_to_frozen_identities,
+            keeps_history: self.keeps_history,
+            main_control_group: self.main_control_group,
+            manual_minting_rules: self.manual_minting_rules,
+            manual_burning_rules: self.manual_burning_rules,
+            freeze_rules: self.freeze_rules,
+            unfreeze_rules: self.unfreeze_rules,
+            destroy_frozen_funds_rules: self.destroy_frozen_funds_rules,
+            emergency_action_rules: self.emergency_action_rules,
+            max_supply_change_rules: self.max_supply_change_rules,
+            conventions_change_rules: self.conventions_change_rules,
+            main_control_group_change_authorized: self.main_control_group_change_authorized,
+            distribution_rules: self.distribution_rules,
+            groups: self.groups,
+            document_schemas: self.document_schemas,
+            marketplace_rules: self.marketplace_rules,
+        }
+    }
 }
 
 pub type TokenSearchable = bool;
@@ -1279,7 +1311,6 @@ pub struct TokensScreen {
     main_control_group_change_authorized_group: Option<String>,
 
     // Marketplace rules
-    marketplace_trade_mode: u8, // 0 = NotTradeable, future values for other modes
     marketplace_rules: ChangeControlRulesUI,
     change_direct_purchase_pricing_rules: ChangeControlRulesUI,
 
@@ -1642,7 +1673,6 @@ impl TokensScreen {
             main_control_group_change_authorized_group: None,
 
             // Marketplace rules
-            marketplace_trade_mode: 0, // NotTradeable
             marketplace_rules: ChangeControlRulesUI::default(),
             change_direct_purchase_pricing_rules: ChangeControlRulesUI::default(),
 
@@ -2419,7 +2449,6 @@ impl TokensScreen {
         self.authorized_main_control_group_change = AuthorizedActionTakers::NoOne;
         self.main_control_group_change_authorized_identity = None;
         self.main_control_group_change_authorized_group = None;
-        self.marketplace_trade_mode = 0;
         self.marketplace_rules = ChangeControlRulesUI::default();
         self.change_direct_purchase_pricing_rules = ChangeControlRulesUI::default();
         self.main_control_group_input = "".to_string();
@@ -3384,35 +3413,9 @@ mod tests {
         let build_args = token_creator_ui
             .parse_token_build_args()
             .expect("parse_token_build_args should succeed");
+        let owner_id = build_args.identity_id;
         let data_contract = app_context
-            .build_data_contract_v1_with_one_token(
-                build_args.identity_id,
-                build_args.token_names,
-                build_args.contract_keywords,
-                build_args.token_description,
-                build_args.should_capitalize,
-                build_args.decimals,
-                build_args.base_supply,
-                build_args.max_supply,
-                build_args.start_paused,
-                build_args.allow_transfers_to_frozen_identities,
-                build_args.keeps_history,
-                build_args.main_control_group,
-                build_args.manual_minting_rules,
-                build_args.manual_burning_rules,
-                build_args.freeze_rules,
-                build_args.unfreeze_rules,
-                build_args.destroy_frozen_funds_rules,
-                build_args.emergency_action_rules,
-                build_args.max_supply_change_rules,
-                build_args.conventions_change_rules,
-                build_args.main_control_group_change_authorized,
-                build_args.distribution_rules,
-                build_args.groups,
-                build_args.document_schemas,
-                build_args.marketplace_trade_mode,
-                build_args.marketplace_rules,
-            )
+            .build_data_contract_v1_with_one_token(owner_id, build_args.into_contract_params())
             .expect("Contract build failed");
 
         // -------------------------------------------------
@@ -3627,35 +3630,9 @@ mod tests {
         let build_args = token_creator_ui
             .parse_token_build_args()
             .expect("Should parse");
+        let owner_id = build_args.identity_id;
         let data_contract = app_context
-            .build_data_contract_v1_with_one_token(
-                build_args.identity_id,
-                build_args.token_names,
-                build_args.contract_keywords,
-                build_args.token_description,
-                build_args.should_capitalize,
-                build_args.decimals,
-                build_args.base_supply,
-                build_args.max_supply,
-                build_args.start_paused,
-                build_args.allow_transfers_to_frozen_identities,
-                build_args.keeps_history,
-                build_args.main_control_group,
-                build_args.manual_minting_rules,
-                build_args.manual_burning_rules,
-                build_args.freeze_rules,
-                build_args.unfreeze_rules,
-                build_args.destroy_frozen_funds_rules,
-                build_args.emergency_action_rules,
-                build_args.max_supply_change_rules,
-                build_args.conventions_change_rules,
-                build_args.main_control_group_change_authorized,
-                build_args.distribution_rules,
-                build_args.groups,
-                build_args.document_schemas,
-                build_args.marketplace_trade_mode,
-                build_args.marketplace_rules,
-            )
+            .build_data_contract_v1_with_one_token(owner_id, build_args.into_contract_params())
             .expect("Should build successfully");
         let contract_v1 = data_contract.as_v1().expect("Expected DataContract::V1");
 

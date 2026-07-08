@@ -519,7 +519,7 @@ impl AsyncTool<DashMcpService> for MasternodeCreditsWithdraw {
             to_address: plan.echo_address.to_string(),
             amount_credits: param.amount_credits,
             estimated_fee: fee_result.estimated_fee,
-            actual_fee: fee_result.actual_fee,
+            actual_fee: fee_result.actual_fee.unwrap_or(fee_result.estimated_fee),
         })
     }
 }

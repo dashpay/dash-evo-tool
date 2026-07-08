@@ -317,7 +317,7 @@ async fn step_mint(
 
     match result {
         BackendTaskSuccessResult::MintedTokens(fee) => {
-            assert!(fee.actual_fee > 0, "Minting fee should be positive");
+            assert!(fee.estimated_fee > 0, "Minting fee should be positive");
             tracing::info!("Step 1: minted 500_000 tokens (fee: {:?})", fee);
         }
         other => panic!("Step 1: expected MintedTokens, got: {:?}", other),
@@ -346,7 +346,7 @@ async fn step_burn(
 
     match result {
         BackendTaskSuccessResult::BurnedTokens(fee) => {
-            assert!(fee.actual_fee > 0, "Burn fee should be positive");
+            assert!(fee.estimated_fee > 0, "Burn fee should be positive");
             tracing::info!("Step 2: burned 100 tokens (fee: {:?})", fee);
         }
         other => panic!("Step 2: expected BurnedTokens, got: {:?}", other),
@@ -376,7 +376,7 @@ async fn step_transfer(
 
     match result {
         BackendTaskSuccessResult::TransferredTokens(fee) => {
-            assert!(fee.actual_fee > 0, "Transfer fee should be positive");
+            assert!(fee.estimated_fee > 0, "Transfer fee should be positive");
             tracing::info!("Step 3: transferred 100 tokens (fee: {:?})", fee);
         }
         other => panic!("Step 3: expected TransferredTokens, got: {:?}", other),
@@ -406,7 +406,7 @@ async fn step_freeze(
 
     match result {
         BackendTaskSuccessResult::FrozeTokens(fee) => {
-            assert!(fee.actual_fee > 0, "Freeze fee should be positive");
+            assert!(fee.estimated_fee > 0, "Freeze fee should be positive");
             tracing::info!("Step 4: froze tokens for second identity (fee: {:?})", fee);
         }
         other => panic!("Step 4: expected FrozeTokens, got: {:?}", other),
@@ -436,7 +436,7 @@ async fn step_unfreeze(
 
     match result {
         BackendTaskSuccessResult::UnfrozeTokens(fee) => {
-            assert!(fee.actual_fee > 0, "Unfreeze fee should be positive");
+            assert!(fee.estimated_fee > 0, "Unfreeze fee should be positive");
             tracing::info!(
                 "Step 5: unfroze tokens for second identity (fee: {:?})",
                 fee
@@ -488,7 +488,7 @@ async fn step_destroy_frozen(
 
     match result {
         BackendTaskSuccessResult::DestroyedFrozenFunds(fee) => {
-            assert!(fee.actual_fee > 0, "Destroy fee should be positive");
+            assert!(fee.estimated_fee > 0, "Destroy fee should be positive");
             tracing::info!("Step 6: destroyed frozen funds (fee: {:?})", fee);
         }
         other => panic!("Step 6: expected DestroyedFrozenFunds, got: {:?}", other),
@@ -516,7 +516,7 @@ async fn step_pause(
 
     match result {
         BackendTaskSuccessResult::PausedTokens(fee) => {
-            assert!(fee.actual_fee > 0, "Pause fee should be positive");
+            assert!(fee.estimated_fee > 0, "Pause fee should be positive");
             tracing::info!("Step 7: paused token (fee: {:?})", fee);
         }
         other => panic!("Step 7: expected PausedTokens, got: {:?}", other),
@@ -544,7 +544,7 @@ async fn step_resume(
 
     match result {
         BackendTaskSuccessResult::ResumedTokens(fee) => {
-            assert!(fee.actual_fee > 0, "Resume fee should be positive");
+            assert!(fee.estimated_fee > 0, "Resume fee should be positive");
             tracing::info!("Step 8: resumed token (fee: {:?})", fee);
         }
         other => panic!("Step 8: expected ResumedTokens, got: {:?}", other),
@@ -575,7 +575,7 @@ async fn step_set_price(
 
     match result {
         BackendTaskSuccessResult::SetTokenPrice(fee) => {
-            assert!(fee.actual_fee > 0, "Set price fee should be positive");
+            assert!(fee.estimated_fee > 0, "Set price fee should be positive");
             tracing::info!("Step 9: set token price (fee: {:?})", fee);
         }
         other => panic!("Step 9: expected SetTokenPrice, got: {:?}", other),
@@ -604,7 +604,7 @@ async fn step_purchase(
 
     match result {
         BackendTaskSuccessResult::PurchasedTokens(fee) => {
-            assert!(fee.actual_fee > 0, "Purchase fee should be positive");
+            assert!(fee.estimated_fee > 0, "Purchase fee should be positive");
             tracing::info!("Step 10: purchased 10 tokens (fee: {:?})", fee);
         }
         other => panic!("Step 10: expected PurchasedTokens, got: {:?}", other),
@@ -652,7 +652,10 @@ async fn step_update_config(
 
     match result {
         BackendTaskSuccessResult::UpdatedTokenConfig(description, fee) => {
-            assert!(fee.actual_fee > 0, "Config update fee should be positive");
+            assert!(
+                fee.estimated_fee > 0,
+                "Config update fee should be positive"
+            );
             tracing::info!(
                 "Step 11: updated token config: {} (fee: {:?})",
                 description,

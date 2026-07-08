@@ -13,10 +13,10 @@
 //!    `Send to another identity`. All three visible for all personas (§B.2).
 //! 4. Onboarding checklist strip (until all three steps are complete or the
 //!    user dismisses it).
-//! 5. Recent activity preview (up to 5 rows). This task T8 scaffolds an
-//!    empty-state preview and wires the `See all activity` link to the
-//!    Activity tab — richer content is parked until the activity aggregator
-//!    lands (feature `identity-hub-activity-feed`).
+//! 5. Recent activity preview (up to 5 rows), currently an empty-state
+//!    preview; the `See all activity` link routes to the Activity tab.
+//!    Richer content is parked until the activity aggregator lands
+//!    (feature `identity-hub-activity-feed`).
 //! 6. Advanced details expander (raw Identity ID, revision, last updated).
 //!
 //! Strings are taken verbatim from §B.2 / §B.3 and the wording audit in §C.
@@ -29,11 +29,12 @@ use super::identity_hero_card::{HeroIdentityKind, IdentityHeroCard};
 use super::onboarding_checklist::{ChecklistAction, ChecklistStep, OnboardingChecklist};
 use crate::app::AppAction;
 use crate::context::AppContext;
-use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
+use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::ScreenType;
 use crate::ui::identities::register_dpns_name_screen::RegisterDpnsNameSource;
 use crate::ui::identity::tabs::IdentityHubTab;
-use crate::ui::theme::{DashColors, ResponseExt, Shape, Spacing};
+use crate::ui::theme::{DashColors, ResponseExt, Shape, Spacing, network_label};
+#[cfg(test)]
 use dash_sdk::dashcore_rpc::dashcore::Network;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
@@ -85,10 +86,9 @@ pub enum HomeOutcome {
 ///
 /// Pairing button identities with this enum lets us unit-test dispatch without
 /// a UI harness: the test iterates every variant and asserts the resulting
-/// action is **not** `AppAction::None` / `HomeOutcome::None`. That is the
-/// ground-truth check the user asked for after the first wave shipped
-/// dead-on-arrival buttons — if the test passes, every button produces a real
-/// side effect.
+/// action is **not** `AppAction::None` / `HomeOutcome::None`. Invariant: every
+/// `HomeButton` must resolve to a non-no-op action — if the test passes,
+/// every button produces a real side effect.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HomeButton {
     /// Quick-action `Send`.
@@ -135,7 +135,7 @@ pub enum HomeButton {
 /// - `Outcome(HomeOutcome)` — hub-local intent (tab switch, dismiss, toggle).
 ///
 /// The test harness uses [`HomeButtonKind::is_dead`] to flag any button that
-/// resolves to a no-op — the exact regression that shipped in T8 Wave 2.
+/// resolves to a no-op.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HomeButtonKind {
     /// Open a screen of the given kind for the hero identity.
@@ -309,7 +309,7 @@ pub fn render(
     // floor) the hero is already compact — no extra space is added before this
     // card, and the standard Spacing::MD below separates both from the actions.
     //
-    // V2/V3 conflict (QA-006): The onboarding checklist already contains a
+    // V2/V3 conflict: the onboarding checklist already contains a
     // "Set a display name" step that routes to Settings — the same action as
     // this card. When the checklist is visible (not dismissed), suppress this
     // card so the user sees exactly one prompt for the action.
@@ -613,7 +613,7 @@ fn build_hero(
     profiles: &mut super::profile_cache::ProfileCache,
 ) -> IdentityHeroCard {
     let kind: HeroIdentityKind = qi.identity_type.into();
-    let balance_dash = format_credits_as_dash(qi.identity.balance());
+    let balance_dash = format_credits_short(qi.identity.balance());
     let handle = qi
         .dpns_names
         .first()
@@ -651,20 +651,12 @@ fn load_display_name_opt(
         .and_then(|fields| fields.display_name_opt().map(str::to_owned))
 }
 
-/// Alex-facing network label, stable across tabs.
-fn network_label(network: Network) -> &'static str {
-    match network {
-        Network::Mainnet => "Mainnet",
-        Network::Testnet => "Testnet",
-        Network::Devnet => "Devnet",
-        Network::Regtest => "Regtest",
-    }
-}
-
-/// Format a credit balance (u64, Platform credits) as a DASH amount string
-/// with four significant decimals. Mirrors the pattern used in the legacy
-/// identities screen so the two hubs agree on the unit conversion.
-fn format_credits_as_dash(credits: u64) -> String {
+/// Format a credit balance (u64, Platform credits) as a bare DASH amount
+/// string with four decimal places and no unit suffix, for embedding in a
+/// `"{amount} DASH"` template. Distinct from
+/// [`crate::model::fee_estimation::format_credits_as_dash`], which returns a
+/// trimmed amount with the unit already appended.
+fn format_credits_short(credits: u64) -> String {
     // 1 DASH = 10^11 credits (DASH_DECIMAL_PLACES). See `model/amount.rs`.
     let dash = credits as f64 * 1e-11;
     format!("{dash:.4}")
@@ -755,27 +747,23 @@ fn paint_social_profile_card(ui: &mut Ui, dark_mode: bool) -> bool {
     clicked
 }
 
-/// Expose the credit-formatter so unit tests (and future callers) can pin
-/// the conversion. Kept crate-private.
-#[cfg(test)]
-fn format_credits_as_dash_for_tests(credits: u64) -> String {
-    format_credits_as_dash(credits)
-}
-
-// Keep IdentityType in scope even when unused elsewhere so the `From` impl
-// above is testable without a qualified path.
-#[allow(dead_code)]
-fn _assert_identity_type_is_in_scope(_t: IdentityType) {}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn format_credits_emits_four_decimals() {
-        assert_eq!(format_credits_as_dash_for_tests(0), "0.0000");
+        assert_eq!(format_credits_short(0), "0.0000");
         // 1.2345 DASH = 123_450_000_000 credits.
-        assert_eq!(format_credits_as_dash_for_tests(123_450_000_000), "1.2345");
+        assert_eq!(format_credits_short(123_450_000_000), "1.2345");
+    }
+
+    #[test]
+    fn home_state_default_flags_are_false() {
+        let state = HomeState::default();
+        assert!(!state.advanced_open);
+        assert!(!state.dismissed_checklist);
+        assert!(!state.skipped_social_profile);
     }
 
     #[test]
@@ -828,19 +816,14 @@ mod tests {
     // -----------------------------------------------------------------
     // Dead-button regression tests.
     //
-    // PR #842 Wave 2 shipped the Home tab with every quick/secondary
-    // action returning `AppAction::None` because the hub screen discarded
-    // the tab's action value (see `hub_screen.rs::ui`). The fix in this
-    // wave reroutes that channel AND adds the pure `home_button_kind`
-    // dispatcher below; these tests pin the behaviour so a future
-    // refactor cannot silently reintroduce a dead button.
-    //
-    // The invariant: **every `HomeButton` variant must produce a
-    // non-dead `HomeButtonKind`** (neither `Outcome(HomeOutcome::None)`
-    // nor some future catch-all). The enum is non-`Default`-constructible
-    // and every variant is enumerated in `ALL_HOME_BUTTONS` — if you add
-    // a new button, you MUST extend this list or the "coverage" test
-    // fails.
+    // Invariant: every `HomeButton` variant must produce a non-dead
+    // `HomeButtonKind` (neither `Outcome(HomeOutcome::None)` nor some
+    // future catch-all). The enum is non-`Default`-constructible and
+    // every variant is enumerated in `ALL_HOME_BUTTONS` — if you add a
+    // new button, you MUST extend this list or the "coverage" test
+    // fails. Guards against #842, where the hub screen discarded the
+    // tab's action value and every quick/secondary action silently
+    // returned `AppAction::None`.
     // -----------------------------------------------------------------
 
     /// Every `HomeButton` variant. The list is hand-maintained so that
@@ -989,9 +972,8 @@ mod tests {
 
     #[test]
     fn apply_outcome_go_to_settings_returns_settings_tab() {
-        // The new `GoToSettings` variant added in this wave must be wired
-        // into `apply_outcome` — the regression case was that the variant
-        // existed but the match arm was missing.
+        // `GoToSettings` must be wired into `apply_outcome`; a missing
+        // match arm would silently drop the outcome.
         let mut state = HomeState::default();
         assert_eq!(
             apply_outcome(&mut state, HomeOutcome::GoToSettings),

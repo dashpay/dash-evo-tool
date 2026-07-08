@@ -20,7 +20,7 @@ use crate::model::wallet::{PlatformAddressUpdates, Wallet, WalletSeedHash};
 use crate::sdk_wrapper::initialize_sdk;
 use crate::utils::tasks::TaskManager;
 use crate::wallet_backend::{
-    DetKv, DetWalletBalance, NullSecretPrompt, SecretPrompt, UpstreamFromPersisted, WalletBackend,
+    DetKv, DetWalletBalance, NullSecretPrompt, SecretPrompt, WalletBackend,
 };
 use arc_swap::{ArcSwap, ArcSwapOption};
 use connection_status::ConnectionStatus;
@@ -100,7 +100,7 @@ pub struct AppContext {
     /// `WalletBackend`, because the file backend takes an exclusive advisory
     /// lock — a second open of the same vault returns `AlreadyLocked`. Holding
     /// the handle here lets `register_wallet` persist the seed-envelope sidecar
-    /// before the wallet backend is wired (PROJ-010). Cross-network: a single
+    /// before the wallet backend is wired. Cross-network: a single
     /// imported WIF / HD seed is keyed by its hash, not by the chain prefix.
     secret_store: Arc<SecretStore>,
     // subtasks started by the app context, used for graceful shutdown
@@ -151,9 +151,9 @@ pub struct AppContext {
     /// state — no orphan-inflation risk), so the total renders immediately and
     /// network-independently; the first coordinator pass then overwrites it.
     ///
-    /// **Wallet-removal behaviour (QA-B-004, accepted):** removing a wallet does NOT
-    /// evict its entry from this map (consistent with `shielded_balances` — same known
-    /// gap, see SEC-003 in the grumpy review). The stale value is never displayed because
+    /// **Wallet-removal behaviour (accepted):** removing a wallet does NOT
+    /// evict its entry from this map (consistent with `shielded_balances` — the
+    /// same known gap). The stale value is never displayed because
     /// removed wallets are not iterated in the UI; this is a memory leak, not a display
     /// bug. A future cleanup pass should mirror `SnapshotStore::forget_wallet`.
     ///
@@ -966,13 +966,11 @@ impl AppContext {
             return Ok(());
         }
         let sdk = std::sync::Arc::new(self.sdk.load().as_ref().clone());
-        let loader = Arc::new(UpstreamFromPersisted::new());
         let backend = WalletBackend::new(
             self,
             sdk,
             Arc::clone(&self.connection_status),
             task_result_sender,
-            loader,
             self.secret_prompt(),
         )
         .await?;

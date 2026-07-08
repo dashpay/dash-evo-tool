@@ -146,7 +146,7 @@ pub fn passphrase_modal(
         .resizable(false)
         // Render on Order::Foreground so the prompt stays above the blocking
         // progress overlay (also Foreground, but drawn earlier this frame) — the
-        // overlay must never cover a secret prompt it triggered (R-1, SEC-002).
+        // overlay must never cover a secret prompt it triggered.
         // Created after the overlay and focus-raised, so it wins within Foreground.
         .order(egui::Order::Foreground)
         .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)

@@ -251,6 +251,16 @@ As a user whose saved keys were sealed with a passphrase by an earlier version, 
 - Choosing to quit closes the app cleanly and leaves the vault untouched, so the user can try again next time.
 - The headless command-line and automation paths never show a dialog; they report a calm, actionable message instead.
 
+### WAL-027: Balance health check after syncing [Implemented]
+**Persona:** Alex, Priya, Jordan
+
+As a user, I want the app to tell me when a wallet's totals don't add up after syncing so that I know about a display glitch and that my funds are still safe.
+
+- When a sync finishes, the app checks every loaded wallet's overall Core and Platform balance against the amounts its account tabs add up to.
+- If they disagree by more than a rounding amount, a single calm warning banner appears explaining that funds are safe, it's a known display issue, and a refresh or reopen usually resolves it.
+- The banner is not repeated on every later sync while the same difference persists, and it clears on its own once the totals agree again.
+- The check runs for all loaded wallets, not just the one currently on screen.
+
 ---
 
 ## Send and Receive (SND)
@@ -1245,5 +1255,5 @@ As Jordan in Developer Mode, I have a single entry point to create many test ide
 
 As any persona, my payments, funding movements, and platform actions all live in one Activity tab with filters, not in separate screens.
 
-- Activity tab shell ships with filter chips and `ActivityRow` component for rendering timeline entries.
+- Activity tab shell ships with filter chips; a reusable row component for rendering timeline entries will be added once the aggregator lands.
 - Full aggregation across DashPay payments, funding, and platform ops depends on a backend aggregator; gated behind the `identity-hub-activity-feed` Cargo feature until implemented.

@@ -20,7 +20,7 @@ use crate::backend_task::error::TaskError;
 use crate::model::single_key::validate_wif;
 use crate::model::wallet::passphrase::validate_single_key_passphrase;
 use crate::ui::components::password_input::PasswordInput;
-use crate::ui::theme::DashColors;
+use crate::ui::theme::{DashColors, network_label};
 
 /// Maximum alias length accepted by the dialog. Matches the legacy
 /// single-key alias limit so list rows stay readable.
@@ -59,7 +59,7 @@ pub struct ImportSingleKeyRequest {
     /// Address preview shown to the user — handed back so the parent can
     /// echo it in a success message without re-deriving.
     pub address_preview: String,
-    /// SEC-002 — optional per-key passphrase. `None` means store the
+    /// Optional per-key passphrase. `None` means store the
     /// key without an additional encryption layer (still inside the
     /// vault); `Some` means encrypt under the user's passphrase. Wrapped
     /// in [`Zeroizing`] so the copy wipes on drop and never lingers as a
@@ -113,7 +113,7 @@ pub struct ImportSingleKeyDialog {
     /// Set when the latest WIF input fails to parse. `None` while the
     /// field is empty so we don't yell at the user on first focus.
     error_message: Option<String>,
-    /// SEC-002 Option C — "Protect with passphrase" toggle.
+    /// Option C — "Protect with passphrase" toggle.
     passphrase_enabled: bool,
     passphrase_input: PasswordInput,
     confirm_passphrase_input: PasswordInput,
@@ -251,7 +251,7 @@ impl ImportSingleKeyDialog {
         );
         ui.add_space(12.0);
 
-        // SEC-002 Option C — passphrase opt-in.
+        // Option C — passphrase opt-in.
         ui.checkbox(&mut self.passphrase_enabled, "Protect with passphrase");
         if self.passphrase_enabled {
             ui.add_space(4.0);
@@ -348,15 +348,6 @@ impl ImportSingleKeyDialog {
                 );
             }
         }
-    }
-}
-
-fn network_label(network: Network) -> &'static str {
-    match network {
-        Network::Mainnet => "Mainnet",
-        Network::Testnet => "Testnet",
-        Network::Devnet => "Devnet",
-        Network::Regtest => "Regtest",
     }
 }
 

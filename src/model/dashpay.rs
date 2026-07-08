@@ -18,6 +18,50 @@ pub struct StoredProfile {
     pub updated_at: i64,
 }
 
+/// Relationship state of a DashPay contact.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContactStatus {
+    Pending,
+    Accepted,
+    Blocked,
+}
+
+/// Direction of a DashPay contact request relative to the local identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContactRequestDirection {
+    Sent,
+    Received,
+}
+
+/// Lifecycle state of a DashPay contact request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContactRequestStatus {
+    Pending,
+    Accepted,
+    Rejected,
+    Expired,
+}
+
+/// Direction of a DashPay payment relative to the local identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PaymentDirection {
+    Sent,
+    Received,
+}
+
+/// Lifecycle state of a DashPay payment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PaymentStatus {
+    Pending,
+    Confirmed,
+    Failed,
+}
+
 /// DashPay contact — an accepted or pending relationship between two identities.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StoredContact {
@@ -27,8 +71,7 @@ pub struct StoredContact {
     pub display_name: Option<String>,
     pub avatar_url: Option<String>,
     pub public_message: Option<String>,
-    /// One of: `"pending"`, `"accepted"`, `"blocked"`.
-    pub contact_status: String,
+    pub contact_status: ContactStatus,
     pub created_at: i64,
     pub updated_at: i64,
     pub last_seen: Option<i64>,
@@ -42,10 +85,8 @@ pub struct StoredContactRequest {
     pub to_identity_id: Vec<u8>,
     pub to_username: Option<String>,
     pub account_label: Option<String>,
-    /// One of: `"sent"`, `"received"`.
-    pub request_type: String,
-    /// One of: `"pending"`, `"accepted"`, `"rejected"`, `"expired"`.
-    pub status: String,
+    pub request_type: ContactRequestDirection,
+    pub status: ContactRequestStatus,
     pub created_at: i64,
     pub responded_at: Option<i64>,
     pub expires_at: Option<i64>,
@@ -60,10 +101,8 @@ pub struct StoredPayment {
     pub to_identity_id: Vec<u8>,
     pub amount: i64,
     pub memo: Option<String>,
-    /// One of: `"sent"`, `"received"`.
-    pub payment_type: String,
-    /// One of: `"pending"`, `"confirmed"`, `"failed"`.
-    pub status: String,
+    pub payment_type: PaymentDirection,
+    pub status: PaymentStatus,
     pub created_at: i64,
     pub confirmed_at: Option<i64>,
 }

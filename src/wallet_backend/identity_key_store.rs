@@ -54,7 +54,7 @@ impl<'a> IdentityKeyView<'a> {
     /// Store one identity key's raw 32 bytes Tier-1 (keyless), overwriting any
     /// prior **unprotected** value.
     ///
-    /// R2 downgrade guard (SEC-001): refuses to overwrite a Tier-2
+    /// R2 downgrade guard: refuses to overwrite a Tier-2
     /// (`Protected`) label with a keyless write, returning
     /// [`TaskError::IdentityKeyProtectionDowngrade`]. This is the keyless
     /// migration write path ([`Self::store_all`]); it must never silently strip
@@ -68,7 +68,7 @@ impl<'a> IdentityKeyView<'a> {
         key: &[u8; 32],
     ) -> Result<(), TaskError> {
         let label = SecretScope::identity_key_label(target, key_id);
-        // SEC-003 (known, LOW): this scheme-probe-then-write is a theoretical
+        // Known, low-risk: this scheme-probe-then-write is a theoretical
         // check-then-act TOCTOU, bounded in practice by the upstream secret
         // store's single-writer lock and the UI in-flight gate that serialises
         // protect/unprotect/add-key on one identity. The identity-level
@@ -365,7 +365,7 @@ mod tests {
         );
     }
 
-    /// SEC-001 opt-in store/read: a key sealed Tier-2 reads back with the
+    /// Opt-in store/read: a key sealed Tier-2 reads back with the
     /// password (`get_protected`), the label reports `Protected`, and a
     /// keyless `get` (Tier-1 read of a protected value) fails rather than
     /// leaking — the seam refuses the implicit downgrade.

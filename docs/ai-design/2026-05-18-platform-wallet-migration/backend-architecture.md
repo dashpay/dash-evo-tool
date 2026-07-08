@@ -6,6 +6,14 @@
 
 ---
 
+> **Deltas from this spec (as shipped).** This document is a dated design record; three points below were superseded during implementation and are NOT repealed here — they're flagged so a reader absorbs current behavior, not a withdrawn rule:
+>
+> - **Type opacity mandate** (below, and again under "Read Accessors"): "no `WalletManager<PlatformWalletInfo>` / `PlatformWallet` / `IdentityManager` type ever escapes it" is **superseded** by **M-PLATFORM-WALLET-FIRST-PARTY** — `wallet_backend` is NOT a type-translation layer; upstream types appear freely on its public surface by design. See `src/wallet_backend/mod.rs` module header and [2026-06-02-jit-secret-access/design.md § 8.3](../2026-06-02-jit-secret-access/design.md).
+> - **Module diagram — `loader`**: `SeedReregistrationLoader` is gone; the G2 swap this diagram anticipated shipped as `UpstreamFromPersisted`. See [g2-mock-boundary.md](g2-mock-boundary.md).
+> - **Module diagram — `seed_store` / `single_key_stub`**: replaced by the JIT `SecretAccess`/`secret_store` chokepoint and a real `SingleKeyView`, respectively. See [2026-06-02-jit-secret-access/design.md](../2026-06-02-jit-secret-access/design.md) and [single-key-mock.md](single-key-mock.md).
+
+---
+
 ## B. Target Backend Architecture
 
 ### New Module: `src/wallet_backend/`

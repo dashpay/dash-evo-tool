@@ -16,7 +16,7 @@
 //! is what IT-SWITCH-01/02 (the wallet dropdown + wallet-scoped identity list)
 //! additionally require; that is still out of reach here (see the QA report).
 
-use crate::support::with_isolated_data_dir;
+use crate::support::{mount_app, with_isolated_data_dir};
 use dash_evo_tool::context::AppContext;
 use dash_evo_tool::model::qualified_identity::encrypted_key_storage::KeyStorage;
 use dash_evo_tool::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
@@ -25,7 +25,6 @@ use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::platform::Identifier;
-use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -35,23 +34,6 @@ use std::sync::Arc;
 const HOME_ONLY_MARKER: &str = "Activity";
 /// The Picker grid heading (verbatim, picker.rs / design-spec §B.14).
 const PICKER_HEADING: &str = "Pick an identity";
-
-/// Mount the full `AppState` on the Identities hub. Returns the harness so the
-/// caller can seed the DB through the live context and step the frame loop.
-fn mount_hub() -> Harness<'static, dash_evo_tool::app::AppState> {
-    let mut harness = Harness::builder().with_max_steps(100).build_eframe(|ctx| {
-        let mut app = dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
-            .expect("Failed to create AppState")
-            .with_animations(false);
-        app.show_welcome_screen = false;
-        app.welcome_screen = None;
-        app.selected_main_screen = RootScreenType::RootScreenIdentityHub;
-        app
-    });
-    harness.set_size(egui::vec2(1280.0, 800.0));
-    harness.run_steps(5);
-    harness
-}
 
 /// Seed one wallet-less basic identity (alias = `alias`, id = `[byte; 32]`)
 /// into the live per-network identity DB, and return its `Identifier`.
@@ -88,20 +70,7 @@ fn seed_identity(app_context: &Arc<AppContext>, byte: u8, alias: &str) -> Identi
 #[test]
 fn it_switch_03_onboarding_shows_placeholder_segments() {
     with_isolated_data_dir(|| {
-        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
-        let _guard = rt.enter();
-
-        let mut harness = Harness::builder().with_max_steps(100).build_eframe(|ctx| {
-            let mut app = dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
-                .expect("Failed to create AppState")
-                .with_animations(false);
-            app.show_welcome_screen = false;
-            app.welcome_screen = None;
-            app.selected_main_screen = RootScreenType::RootScreenIdentityHub;
-            app
-        });
-        harness.set_size(egui::vec2(1280.0, 800.0));
-        harness.run_steps(10);
+        let harness = mount_app(RootScreenType::RootScreenIdentityHub);
 
         assert!(
             harness.query_by_label("(no wallet yet)").is_some(),
@@ -129,7 +98,7 @@ fn it_switch_04_picker_then_selection_drives_home() {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
         let _guard = rt.enter();
 
-        let mut harness = mount_hub();
+        let mut harness = mount_app(RootScreenType::RootScreenIdentityHub);
         let app_context = harness.state().current_app_context().clone();
 
         let alpha = seed_identity(&app_context, 0xA1, "Switch Alpha");
@@ -184,7 +153,7 @@ fn it_switch_stale_selection_falls_back_to_picker() {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
         let _guard = rt.enter();
 
-        let mut harness = mount_hub();
+        let mut harness = mount_app(RootScreenType::RootScreenIdentityHub);
         let app_context = harness.state().current_app_context().clone();
 
         seed_identity(&app_context, 0xC3, "Reconcile A");
@@ -217,7 +186,7 @@ fn it_switch_stale_selection_falls_back_to_picker() {
     });
 }
 
-/// QA-001 — selecting a wallet-less (imported-by-id) identity clears the derived
+/// Selecting a wallet-less (imported-by-id) identity clears the derived
 /// wallet pointer, so the breadcrumb wallet segment and the active identity
 /// agree. Pre-fix, `set_selected_identity` left `selected_wallet_hash` stale
 /// (the owner derivation returns `None` for a wallet-less identity) and the
@@ -228,7 +197,7 @@ fn qa_001_wallet_less_selection_clears_derived_wallet() {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
         let _guard = rt.enter();
 
-        let mut harness = mount_hub();
+        let mut harness = mount_app(RootScreenType::RootScreenIdentityHub);
         let app_context = harness.state().current_app_context().clone();
 
         let lonely = seed_identity(&app_context, 0x55, "Lonely Identity");
@@ -275,7 +244,7 @@ fn qa_001_wallet_less_selection_clears_derived_wallet() {
     });
 }
 
-/// QA-002 (replaces a sham tautology test) — the no-wallet group is identified
+/// Replaces a sham tautology test — the no-wallet group is identified
 /// by `wallet_index.is_none()` on real loaded identities: a seeded wallet-less
 /// identity appears in that filtered group (the exact predicate the breadcrumb
 /// dropdown's "Identities without a wallet on this device" section uses).
@@ -285,7 +254,7 @@ fn qa_002_no_wallet_group_filter_on_real_data() {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
         let _guard = rt.enter();
 
-        let harness = mount_hub();
+        let harness = mount_app(RootScreenType::RootScreenIdentityHub);
         let app_context = harness.state().current_app_context().clone();
 
         let imported = seed_identity(&app_context, 0x77, "Imported By Id");

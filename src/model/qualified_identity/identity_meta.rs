@@ -1,4 +1,4 @@
-//! DET-owned identity-metadata sidecar (SEC-001).
+//! DET-owned identity-metadata sidecar.
 //!
 //! Carries the cosmetic prompt copy for an identity whose keys are
 //! password-protected — currently just the user-set password hint. It is

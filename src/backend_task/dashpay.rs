@@ -43,7 +43,7 @@ pub enum DashPayTask {
     },
     /// Read the contact list from offline state only — rehydrated
     /// relationships + private memos plus the DET contact-profile cache. No
-    /// network round-trip, so a view renders without connectivity (PROJ-040).
+    /// network round-trip, so a view renders without connectivity.
     LoadContactsOffline {
         identity: QualifiedIdentity,
     },

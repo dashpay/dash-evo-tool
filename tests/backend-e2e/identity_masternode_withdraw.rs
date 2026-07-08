@@ -733,6 +733,6 @@ async fn test_mn053_compose_through_db() {
 }
 
 // TC-MN-022 (load SPV-gate presence) is intentionally deferred per coverage gap
-// G-3: asserting the gate fires needs a forced-SPV-error harness. The gate is
+// Asserting the gate fires needs a forced-SPV-error harness. The gate is
 // present at the load tool's `ensure_spv_synced` call; TC-MN-042 proves cheap
 // validation runs before it.

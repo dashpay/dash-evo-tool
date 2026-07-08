@@ -17,6 +17,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **Wallet balance breakdown is single-sourced**: the per-account tabs and the
+  wallet header now derive every balance from one place — the Core per-account
+  breakdown comes from the synced wallet data, and the Platform tab shows the
+  exact same Platform total as the header. This removes an earlier internal
+  cross-check (and its occasional "balances didn't fully add up" warning), which
+  is no longer needed now that the figures come from a single source and cannot
+  disagree.
+
 - **Sign-time wallet unlock**: the passphrase is now requested just-in-time, the
   moment an operation actually needs your secret (sending funds, registering an
   identity, signing). The prompt offers an optional "Keep this wallet unlocked

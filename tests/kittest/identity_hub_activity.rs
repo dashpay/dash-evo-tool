@@ -18,27 +18,10 @@
 //! This exercises the component stack, theme, and egui storage while keeping
 //! the test scoped to the Activity tab's own contract.
 
-use crate::support::with_isolated_data_dir;
-use dash_evo_tool::context::AppContext;
+use crate::support::{fresh_app_context, with_isolated_data_dir};
 use dash_evo_tool::ui::identity::activity;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
-use std::sync::Arc;
-
-fn fresh_app_context() -> (tokio::runtime::Runtime, Arc<AppContext>) {
-    let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
-    let guard = rt.enter();
-    let mut bootstrap = Harness::builder().with_max_steps(20).build_eframe(|ctx| {
-        dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
-            .expect("Failed to create AppState")
-            .with_animations(false)
-    });
-    bootstrap.run_steps(5);
-    let app_context = bootstrap.state().current_app_context().clone();
-    drop(bootstrap);
-    drop(guard);
-    (rt, app_context)
-}
 
 /// IT-ACTIVITY-01
 #[test]

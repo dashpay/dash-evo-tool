@@ -39,13 +39,18 @@ pub mod identity_key_store;
 pub mod identity_meta;
 #[cfg(not(any(test, feature = "bench")))]
 pub(crate) mod identity_meta;
+mod identity_ops;
 mod kv;
+#[cfg(test)]
+pub(crate) mod kv_test_support;
 #[cfg(test)]
 pub(crate) mod leak_test_support;
 mod loader;
+mod payments;
 pub mod secret_access;
 pub mod secret_prompt;
 pub mod secret_seam;
+mod shielded;
 #[cfg(any(test, feature = "bench"))]
 pub mod single_key;
 #[cfg(not(any(test, feature = "bench")))]
@@ -86,12 +91,12 @@ pub use avatar_cache::AvatarCacheView;
 pub use contact_profile_cache::{CachedContactProfile, ContactProfileCacheView};
 pub use event_bridge::EventBridge;
 pub use kv::{DetKv, DetScope, KvAdapterError, SCHEMA_VERSION as KV_SCHEMA_VERSION};
-pub use loader::{LoadedWallets, PersistedLoadSkip, PersistedWalletLoader, UpstreamFromPersisted};
+pub use loader::{LoadedWallets, PersistedLoadSkip};
 pub use single_key::SingleKeyView;
 use snapshot::SnapshotStore;
 pub use snapshot::{DetUtxo, DetWalletBalance, WalletSnapshot};
 use token_balance::TokenBalanceStore;
-pub use token_balance::{TokenBalanceSnapshot, TokenBalanceView, UpstreamTokenBalances};
+pub use token_balance::{TokenBalanceSnapshot, UpstreamTokenBalances};
 pub use wallet_meta::WalletMetaView;
 pub use wallet_seed_store::WalletSeedView;
 
@@ -190,7 +195,6 @@ struct Inner {
     /// typed key/value adapter ([`DetKv`]) can read/write app data
     /// alongside wallet state without opening a second connection.
     persister: Arc<DetPersister>,
-    loader: Arc<dyn PersistedWalletLoader>,
     /// Display-only snapshot store (balance/tx/utxo), pushed by the
     /// `EventBridge`. See [`snapshot`]. DISPLAY-ONLY — never feeds coin
     /// selection (A04 fund-safety gate).
@@ -284,9 +288,9 @@ impl std::fmt::Debug for WalletBackend {
 impl WalletBackend {
     /// Construct the backend: open the upstream SQLite persister, build the
     /// `PlatformWalletManager` with the DET `EventBridge`, then register every
-    /// wallet the loader yields (per registration, upstream
-    /// `create_wallet_from_seed_bytes` also rehydrates persisted
-    /// identity/address state — see g2-mock-boundary.md §G2.1 and the
+    /// persisted wallet via [`Self::load_from_persistor_seedless`] (per
+    /// registration, upstream `create_wallet_from_seed_bytes` also rehydrates
+    /// persisted identity/address state — see g2-mock-boundary.md §G2.1 and the
     /// upstream-reality note in the P2 recommendation).
     ///
     /// Does NOT start chain sync — call [`Self::start`] after construction.
@@ -295,7 +299,6 @@ impl WalletBackend {
         sdk: Arc<Sdk>,
         connection_status: Arc<ConnectionStatus>,
         task_result_sender: SenderAsync<TaskResult>,
-        loader: Arc<dyn PersistedWalletLoader>,
         prompt: Arc<dyn SecretPrompt>,
     ) -> Result<Self, TaskError> {
         let network = ctx.network;
@@ -312,7 +315,7 @@ impl WalletBackend {
         // backend holds an exclusive advisory lock for the handle's lifetime,
         // so opening a second handle here would fail with `AlreadyLocked` — and
         // `register_wallet` must be able to write seed-envelope sidecars through
-        // the same handle before the backend is wired (PROJ-010).
+        // the same handle before the backend is wired.
         let secret_store = ctx.secret_store();
 
         let snapshots = Arc::new(SnapshotStore::new());
@@ -365,7 +368,6 @@ impl WalletBackend {
             inner: Arc::new(Inner {
                 pwm,
                 persister,
-                loader,
                 snapshots,
                 token_balances: Arc::new(TokenBalanceStore::new()),
                 id_map: std::sync::RwLock::new(std::collections::BTreeMap::new()),
@@ -453,13 +455,12 @@ impl WalletBackend {
         Ok(())
     }
 
-    /// Run the configured loader to bring back persisted wallets watch-only.
+    /// Run the seedless load to bring back persisted wallets watch-only.
     /// Identity-funding re-provision is deferred to the asset-lock chokepoint
     /// (which obtains the seed just-in-time), so this pass loads, logs, and
     /// raises a warning banner for any skipped wallet.
     async fn register_persisted_wallets(&self, ctx: &Arc<AppContext>) -> Result<(), TaskError> {
-        let loader = Arc::clone(&self.inner.loader);
-        let outcome = loader.load(self, ctx).await?;
+        let outcome = self.load_from_persistor_seedless(ctx).await?;
         tracing::info!(
             loaded = outcome.loaded.len(),
             skipped = outcome.skipped.len(),
@@ -675,7 +676,7 @@ impl WalletBackend {
         Ok((wallet.wallet_id, account_xpub))
     }
 
-    // TODO(PROJ-015): TC-012 receive-address reuse (QA-005). Two consecutive
+    // TODO: receive-address reuse (tracked by TC-012). Two consecutive
     //   `next_receive_address()` calls return the SAME address: upstream
     //   `next_unused` returns the lowest UNUSED receive address until it is
     //   actually used on-chain — funds-safe BIP-44 keypool behavior, but not the
@@ -695,7 +696,7 @@ impl WalletBackend {
     //   PENDING; tc_012b's gap-window funds-safety assertion stays active.
     /// Register a wallet with the upstream SPV backend from its seed, so the
     /// upstream persistor is populated and the wallet's addresses are watched
-    /// (W1 — create/import write path; PROJ-010 regression fix).
+    /// (W1 — create/import write path; regression fix).
     ///
     /// The upstream `create_wallet_from_seed_bytes` is the only writer to the
     /// `platform-wallet.sqlite` persistor; the seedless cold-boot loader only
@@ -785,7 +786,7 @@ impl WalletBackend {
     }
 
     /// Cold-boot / first-unlock reconciliation: register a wallet present in
-    /// DET sidecars but absent from the upstream persistor (W2; PROJ-010).
+    /// DET sidecars but absent from the upstream persistor (W2).
     ///
     /// Migrated installs, wallets created before this fix, and post-reset
     /// states land with an empty upstream persistor, so the seedless cold-boot
@@ -928,7 +929,7 @@ impl WalletBackend {
         // Plaintext Orchard state (notes + nullifier cursor) now lives in the
         // upstream coordinator store; `remove_upstream_wallet` detaches it.
 
-        // DET-side avatar cache (PROJ-040). Avatars live in the cross-network
+        // DET-side avatar cache. Avatars live in the cross-network
         // Global scope keyed by URL, not partitioned per wallet, so a forgotten
         // wallet's contact avatars would otherwise survive deletion forever.
         // It is a rebuild-on-view cache, so clearing the whole thing on any
@@ -1187,9 +1188,16 @@ impl WalletBackend {
         }
         // `pwm.shutdown()` quiesces the periodic coordinators — draining any
         // in-flight pass and its persister / host-callback fan-out — then drains
-        // the wallet-event adapter task. It is infallible and best-effort: a task
-        // that refuses to join is logged upstream, not surfaced here.
-        self.inner.pwm.shutdown().await;
+        // the wallet-event adapter task. Best-effort: a non-clean report flags a
+        // still-live worker or orphan, which teardown proceeds past regardless —
+        // log it rather than surface it.
+        let report = self.inner.pwm.shutdown().await;
+        if !report.all_clean() {
+            tracing::warn!(
+                ?report,
+                "Wallet manager shutdown did not complete cleanly; continuing teardown"
+            );
+        }
     }
 
     /// Stop chain sync **in place**, keeping this backend (and its
@@ -1437,7 +1445,7 @@ impl WalletBackend {
     }
 
     /// View over the DET-owned identity-metadata sidecar (the password hint for
-    /// an identity whose keys are password-protected, SEC-001). Backed by the
+    /// an identity whose keys are password-protected). Backed by the
     /// same cross-network app-level k/v store as [`Self::wallet_meta`]; see
     /// [`IdentityMetaView`] for the key schema. Display-only — it never gates
     /// whether a sign-time prompt fires (the vault scheme does).
@@ -1486,7 +1494,7 @@ impl WalletBackend {
         AuthPubkeyCacheView::new(&self.inner.app_kv)
     }
 
-    /// View over the DET-owned avatar image cache (PROJ-040). Backed by the
+    /// View over the DET-owned avatar image cache. Backed by the
     /// same cross-network app-level k/v store as [`Self::wallet_meta`], keyed
     /// by avatar URL under [`DetScope::Global`]. Upstream persists only the
     /// avatar hash and fingerprint, never the bytes, so this is the only place
@@ -1495,7 +1503,7 @@ impl WalletBackend {
         AvatarCacheView::new(&self.inner.app_kv)
     }
 
-    /// View over the DET-owned contact-profile cache (PROJ-040). A contact's
+    /// View over the DET-owned contact-profile cache. A contact's
     /// profile belongs to an out-of-wallet identity and is never rehydrated
     /// upstream, so this cache is the only offline source of a contact's
     /// display name, avatar URL, bio, and DPNS username between network reads.
@@ -1584,23 +1592,6 @@ impl WalletBackend {
     pub fn set_selected_identity(&self, selected: &SelectedIdentity) -> Result<(), KvAdapterError> {
         self.kv()
             .put(DetScope::Global, SelectedIdentity::KV_KEY, selected)
-    }
-
-    /// Broadcast a raw transaction over the network via the upstream
-    /// `SpvRuntime`. Network-level (not tied to a specific wallet); used for
-    /// asset-lock transactions built outside the per-wallet send path.
-    pub async fn broadcast_transaction(
-        &self,
-        tx: &dash_sdk::dpp::dashcore::Transaction,
-    ) -> Result<dash_sdk::dpp::dashcore::Txid, TaskError> {
-        use platform_wallet::broadcaster::{SpvBroadcaster, TransactionBroadcaster};
-        let broadcaster = SpvBroadcaster::new(self.inner.pwm.spv_arc());
-        broadcaster
-            .broadcast(tx)
-            .await
-            .map_err(|e| TaskError::WalletBackend {
-                source: Box::new(e.into()),
-            })
     }
 
     /// Resolve a quorum public key from the upstream SPV masternode state.
@@ -1960,7 +1951,7 @@ impl WalletBackend {
     /// strictly-last legacy-table DROP so the new persister is durable
     /// before any legacy data is destroyed.
     //
-    // TODO(PROJ-007 T7): remove the legacy `single_key_wallet` table ONLY
+    // TODO: remove the legacy `single_key_wallet` table ONLY
     // via
     // `crate::backend_task::migration::finish_unwire::drop_legacy_single_key_table_when_safe`,
     // which runs the data-loss gate internally and aborts on error. A
@@ -2206,974 +2197,6 @@ impl WalletBackend {
         }
     }
 
-    /// Derive the secp256k1 [`PrivateKey`] at `path` from a held HD seed.
-    /// Used after `create_asset_lock_proof` to obtain the one-time
-    /// credit-output key needed to sign DET-retained non-identity state
-    /// transitions (Platform-address top-up, shielded deposit). The seed is
-    /// the one already held open by the surrounding `with_secret_session`
-    /// scope, so this never re-prompts.
-    fn derive_private_key_from_held(
-        &self,
-        plaintext: SecretPlaintext<'_>,
-        path: &dash_sdk::dpp::key_wallet::bip32::DerivationPath,
-    ) -> Result<dash_sdk::dpp::dashcore::PrivateKey, TaskError> {
-        let seed = plaintext.expose_hd_seed().ok_or(TaskError::WalletLocked)?;
-        let xprv = path
-            .derive_priv_ecdsa_for_master_seed(seed, self.inner.network)
-            .map_err(|source| TaskError::WalletBackend {
-                source: Box::new(platform_wallet::error::PlatformWalletError::KeyDerivation(
-                    source.to_string(),
-                )),
-            })?;
-        Ok(xprv.to_priv())
-    }
-
-    /// Test-only probe that the chokepoint can decrypt the seed for
-    /// `seed_hash` without a prompt (the no-password / unprotected fast-path)
-    /// AND that the resulting [`DetSigner`] actually produces a signature.
-    /// Mirrors the production signing precondition so a regression on the
-    /// no-password cold-boot path — decrypt or sign — is caught. The
-    /// unprotected seed resolves with no interaction.
-    #[cfg(test)]
-    pub(crate) async fn assert_can_sign(
-        &self,
-        seed_hash: &WalletSeedHash,
-    ) -> Result<(), TaskError> {
-        use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
-        use dash_sdk::dpp::key_wallet::signer::Signer;
-
-        let scope = Self::hd_scope(seed_hash);
-        let path: DerivationPath = "m/44'/1'/0'/0/0"
-            .parse()
-            .expect("static derivation path parses");
-        self.inner
-            .secret_access
-            .with_secret_session(&scope, async |session| {
-                let signer = DetSigner::from_held(session.plaintext(), self.inner.network);
-                // Drive a real sign, not just signer construction: a derive or
-                // sign regression must fail here.
-                signer
-                    .sign_ecdsa(&path, [0x11u8; 32])
-                    .await
-                    .map_err(|_| TaskError::SingleKeyCryptoFailure)?;
-                Ok(())
-            })
-            .await
-    }
-
-    /// Build, sign, and broadcast a payment from the wallet's default BIP-44
-    /// account to `recipients` (`(address, duffs)`). Returns the txid.
-    ///
-    /// One [`SecretAccess::with_secret_session`] scope wraps the whole build:
-    /// the seed is decrypted just-in-time (one prompt for a passphrase-
-    /// protected wallet, none for a no-password wallet), borrowed by the
-    /// [`DetSigner`] for every input sign, and zeroized when the scope ends.
-    pub async fn send_payment(
-        &self,
-        seed_hash: &WalletSeedHash,
-        recipients: Vec<(dash_sdk::dpp::dashcore::Address, u64)>,
-    ) -> Result<dash_sdk::dpp::dashcore::Txid, TaskError> {
-        use dash_sdk::dpp::key_wallet::account::account_type::StandardAccountType;
-        let scope = Self::hd_scope(seed_hash);
-        self.inner
-            .secret_access
-            .with_secret_session(&scope, async |session| {
-                let signer = DetSigner::from_held(session.plaintext(), self.inner.network);
-                let wallet = self.resolve_wallet(seed_hash).await?;
-                let tx = wallet
-                    .core()
-                    .send_to_addresses(
-                        StandardAccountType::BIP44Account,
-                        DEFAULT_BIP44_ACCOUNT,
-                        recipients,
-                        &signer,
-                    )
-                    .await
-                    .map_err(|e| TaskError::WalletBackend {
-                        source: Box::new(e),
-                    })?;
-                Ok(tx.txid())
-            })
-            .await
-    }
-
-    /// Build, track, and broadcast a **non-identity** asset lock via the
-    /// upstream `AssetLockManager`. `funding_type` selects the funding
-    /// derivation; `identity_index` is the funding-account derivation index
-    /// (ignored for non-identity funding types). Returns the finalized
-    /// asset-lock proof, its one-time credit-output private key (derived
-    /// locally from the wallet seed at the path upstream selected), and the
-    /// txid.
-    ///
-    /// For identity-funded asset locks
-    /// (`AssetLockFundingType::IdentityRegistration` /
-    /// `AssetLockFundingType::IdentityTopUp`) the upstream
-    /// `IdentityWallet::*_with_funding` orchestrators submit the
-    /// Platform-side state transition themselves and never expose a
-    /// credit-output `PrivateKey` — use [`Self::register_identity`] /
-    /// [`Self::top_up_identity`] instead.
-    pub(crate) async fn create_asset_lock_proof(
-        &self,
-        seed_hash: &WalletSeedHash,
-        amount_duffs: u64,
-        funding_type: platform_wallet::AssetLockFundingType,
-        identity_index: u32,
-    ) -> Result<
-        (
-            dash_sdk::dpp::prelude::AssetLockProof,
-            dash_sdk::dpp::dashcore::PrivateKey,
-            dash_sdk::dpp::dashcore::Txid,
-        ),
-        TaskError,
-    > {
-        use platform_wallet::AssetLockFundingType;
-
-        // One held-seed scope covers account provisioning, the funding-input
-        // signer, and the credit-output key derivation, so the whole operation
-        // prompts at most once and the seed zeroizes when the scope ends.
-        let scope = Self::hd_scope(seed_hash);
-        self.inner
-            .secret_access
-            .with_secret_session(&scope, async |session| {
-                // Identity asset locks fund from the IdentityRegistration /
-                // IdentityTopUp HD accounts, which the upstream persister never
-                // reconstructs (a5538dc8). Provision them here — the single
-                // chokepoint every asset-lock caller funnels through — so no
-                // call site can bypass it. Idempotent. Non-identity funding
-                // types are no-ops. Exhaustive — a new upstream variant must
-                // force a review here instead of silently falling through.
-                // Must run inside the session so the seed is available for
-                // hardened xpub derivation (the live wallet is watch-only).
-                match funding_type {
-                    AssetLockFundingType::IdentityRegistration
-                    | AssetLockFundingType::IdentityTopUp => {
-                        let plaintext = session.plaintext();
-                        let seed = plaintext
-                            .expose_hd_seed()
-                            .ok_or(TaskError::WalletStateInconsistent)?;
-                        self.ensure_identity_funding_accounts(seed_hash, seed, identity_index)
-                            .await?;
-                    }
-                    AssetLockFundingType::IdentityTopUpNotBound
-                    | AssetLockFundingType::IdentityInvitation
-                    | AssetLockFundingType::AssetLockAddressTopUp
-                    | AssetLockFundingType::AssetLockShieldedAddressTopUp => {}
-                }
-                let signer = DetSigner::from_held(session.plaintext(), self.inner.network);
-                let wallet = self.resolve_wallet(seed_hash).await?;
-                let (proof, credit_output_path, out_point) = wallet
-                    .asset_locks()
-                    .create_funded_asset_lock_proof(
-                        amount_duffs,
-                        DEFAULT_BIP44_ACCOUNT,
-                        funding_type,
-                        identity_index,
-                        &signer,
-                    )
-                    .await
-                    .map_err(|e| TaskError::WalletBackend {
-                        source: Box::new(e),
-                    })?;
-                let private_key =
-                    self.derive_private_key_from_held(session.plaintext(), &credit_output_path)?;
-                Ok((proof, private_key, out_point.txid))
-            })
-            .await
-    }
-
-    /// Register a new identity on Platform funded by an asset lock built and
-    /// tracked-to-finality by the upstream `AssetLockManager`. Returns the
-    /// persisted [`Identity`].
-    ///
-    /// Wraps upstream `IdentityWallet::register_identity_with_funding` —
-    /// upstream handles asset-lock build/broadcast, IS→CL fallback with the
-    /// CL-height-too-low retry, the actual `PutIdentity` submission, and the
-    /// asset-lock cleanup. The DET retry loop around `UnknownVersionError`
-    /// and the manual IS-proof-invalid fallback are no longer needed at the
-    /// caller — upstream owns both paths.
-    ///
-    /// `funding` is the upstream funding selector — `FromWalletBalance`
-    /// builds a fresh asset lock, `FromExistingAssetLock` resumes from a
-    /// tracked outpoint (the wallet-backend tracker is the single source of
-    /// asset-lock state).
-    pub async fn register_identity(
-        &self,
-        seed_hash: &WalletSeedHash,
-        identity_index: u32,
-        funding: platform_wallet::wallet::asset_lock::AssetLockFunding,
-        keys_map: std::collections::BTreeMap<u32, dash_sdk::dpp::identity::IdentityPublicKey>,
-        identity_signer: &crate::model::qualified_identity::QualifiedIdentity,
-        settings: Option<dash_sdk::platform::transition::put_settings::PutSettings>,
-    ) -> Result<dash_sdk::platform::Identity, TaskError> {
-        let scope = Self::hd_scope(seed_hash);
-        self.inner
-            .secret_access
-            .with_secret_session(&scope, async |session| {
-                // Re-provisioning idempotent. Run inside the session so the
-                // seed is available for hardened xpub derivation (the live
-                // wallet is watch-only).
-                let plaintext = session.plaintext();
-                let seed = plaintext
-                    .expose_hd_seed()
-                    .ok_or(TaskError::WalletStateInconsistent)?;
-                self.ensure_identity_funding_accounts(seed_hash, seed, identity_index)
-                    .await?;
-                let asset_lock_signer =
-                    DetSigner::from_held(session.plaintext(), self.inner.network);
-                let wallet = self.resolve_wallet(seed_hash).await?;
-                wallet
-                    .identity()
-                    .register_identity_with_funding(
-                        funding,
-                        identity_index,
-                        keys_map,
-                        identity_signer,
-                        &asset_lock_signer,
-                        settings,
-                    )
-                    .await
-                    .map_err(map_identity_register_error)
-            })
-            .await
-    }
-
-    /// Ensure `identity` (wallet-owned at HD `identity_index`) is registered in
-    /// the upstream `IdentityManager` for `seed_hash`, so identity ops that look
-    /// the identity up there (currently: top-up) can find it.
-    ///
-    /// Idempotent: a no-op once the identity is managed, and a concurrent
-    /// `IdentityAlreadyExists` is treated as success. Touches only public-key
-    /// data — never the seed — so it is safe to call while the wallet is LOCKED.
-    ///
-    /// Returns `true` when this call newly registered the identity, `false` when
-    /// it was already managed — so the reconcile driver logs only real changes.
-    ///
-    /// # Errors
-    /// [`TaskError::WalletNotLoaded`] if the wallet is not yet upstream
-    /// registered; [`TaskError::WalletStateInconsistent`] if the resolved wallet
-    /// has no manager entry; [`TaskError::WalletBackend`] on an upstream add
-    /// failure other than the swallowed `IdentityAlreadyExists`.
-    pub(crate) async fn ensure_identity_managed(
-        &self,
-        seed_hash: &WalletSeedHash,
-        identity: &dash_sdk::platform::Identity,
-        identity_index: u32,
-    ) -> Result<bool, TaskError> {
-        use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-        let id = identity.id();
-        let wallet = self.resolve_wallet(seed_hash).await?;
-        let wallet_id = wallet.wallet_id();
-
-        // Read-lock fast path: once the identity is managed (steady state, and
-        // after the first reconcile persists it), skip the write lock entirely.
-        {
-            let wm = wallet.wallet_manager().read().await;
-            if wm
-                .get_wallet_info(&wallet_id)
-                .is_some_and(|info| info.identity_manager.identity(&id).is_some())
-            {
-                return Ok(false);
-            }
-        }
-
-        let persister = wallet.persister().clone();
-        let mut wm = wallet.wallet_manager().write().await;
-        let info = wm
-            .get_wallet_info_mut(&wallet_id)
-            .ok_or(TaskError::WalletStateInconsistent)?;
-        // Re-check under the write lock — another task may have raced us in.
-        if info.identity_manager.identity(&id).is_some() {
-            return Ok(false);
-        }
-        match info.identity_manager.add_identity(
-            identity.clone(),
-            identity_index,
-            wallet_id,
-            &persister,
-        ) {
-            Ok(()) => Ok(true),
-            Err(platform_wallet::error::PlatformWalletError::IdentityAlreadyExists(_)) => Ok(false),
-            Err(e) => Err(TaskError::WalletBackend {
-                source: Box::new(e),
-            }),
-        }
-    }
-
-    /// Top up an existing identity's credit balance from this wallet's
-    /// UTXOs. Returns the post-top-up identity balance (credits).
-    ///
-    /// Wraps upstream `IdentityWallet::top_up_identity_with_funding` —
-    /// upstream handles asset-lock build/broadcast, IS→CL fallback, the
-    /// `TopUpIdentity` submission, and the asset-lock cleanup. The
-    /// caller-side IS-proof-invalid fallback and `UnknownVersionError`
-    /// retry are no longer needed.
-    ///
-    /// `funding` is the upstream funding selector — `FromWalletBalance`
-    /// builds a fresh asset lock, `FromExistingAssetLock` resumes from a
-    /// tracked outpoint.
-    pub async fn top_up_identity(
-        &self,
-        seed_hash: &WalletSeedHash,
-        identity: &dash_sdk::platform::Identity,
-        funding: platform_wallet::wallet::asset_lock::AssetLockFunding,
-        identity_index: u32,
-        settings: Option<dash_sdk::platform::transition::put_settings::PutSettings>,
-    ) -> Result<u64, TaskError> {
-        use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-        let identity_id = identity.id();
-        let scope = Self::hd_scope(seed_hash);
-        self.inner
-            .secret_access
-            .with_secret_session(&scope, async |session| {
-                // Run inside the session so the seed is available for
-                // hardened xpub derivation (the live wallet is watch-only).
-                let plaintext = session.plaintext();
-                let seed = plaintext
-                    .expose_hd_seed()
-                    .ok_or(TaskError::WalletStateInconsistent)?;
-                self.ensure_identity_funding_accounts(seed_hash, seed, identity_index)
-                    .await?;
-                // Op-seam guard: register the identity in the upstream manager
-                // so the top-up lookup finds it, covering the unlock →
-                // immediate-top-up race the reconcile subtask can lose.
-                // Seed-free and idempotent.
-                self.ensure_identity_managed(seed_hash, identity, identity_index)
-                    .await?;
-                let asset_lock_signer =
-                    DetSigner::from_held(session.plaintext(), self.inner.network);
-                let wallet = self.resolve_wallet(seed_hash).await?;
-                wallet
-                    .identity()
-                    .top_up_identity_with_funding(
-                        &identity_id,
-                        funding,
-                        &asset_lock_signer,
-                        settings,
-                    )
-                    .await
-                    .map_err(|e| map_identity_top_up_error(identity_id, e))
-            })
-            .await
-    }
-
-    /// Whether `address` is already revealed in this wallet's upstream
-    /// platform-payment pool (account 0). This is the exact membership query the
-    /// orchestrated `fund_from_asset_lock` pre-flight runs, so a `true` here
-    /// means the orchestrator will accept the recipient. The pool holds only the
-    /// wallet's own revealed platform addresses, so a `true` also implies
-    /// ownership. No reveal side effect: an owned-but-unrevealed address reads
-    /// `false`, and the caller falls back to the manual path.
-    pub(crate) async fn platform_address_in_pool(
-        &self,
-        seed_hash: &WalletSeedHash,
-        address: &dash_sdk::dpp::address_funds::PlatformAddress,
-    ) -> Result<bool, TaskError> {
-        use dash_sdk::dpp::address_funds::PlatformAddress;
-        use dash_sdk::dpp::key_wallet::PlatformP2PKHAddress;
-
-        let PlatformAddress::P2pkh(hash) = address else {
-            return Ok(false);
-        };
-        let p2pkh = PlatformP2PKHAddress::new(*hash);
-
-        let wallet = self.resolve_wallet(seed_hash).await?;
-        let wallet_id = wallet.wallet_id();
-        let manager = wallet.wallet_manager().read().await;
-        Ok(manager
-            .get_wallet_info(&wallet_id)
-            .and_then(|info| {
-                info.core_wallet
-                    .platform_payment_managed_account_at_index(0)
-            })
-            .is_some_and(|account| account.contains_platform_address(&p2pkh)))
-    }
-
-    /// Fund wallet-owned platform addresses from a Core asset lock through the
-    /// upstream orchestration pipeline.
-    ///
-    /// Wraps `PlatformAddressWallet::fund_from_asset_lock` — upstream owns the
-    /// full recovery pipeline: asset-lock build/broadcast (for
-    /// `FromWalletBalance`), `submit_with_cl_height_retry`, the InstantSend →
-    /// ChainLock fallback, and `consume_asset_lock` on acceptance (so the lock
-    /// is never left reusable on an ambiguous failure).
-    ///
-    /// Callers must pass only destination addresses already revealed in this
-    /// wallet's upstream platform-payment pool (gate with
-    /// [`Self::platform_address_in_pool`]) — the orchestrator's pre-flight
-    /// rejects any other recipient. The `address_signer` authorises per-output
-    /// witnesses; the `asset_lock_signer` signs the outer state transition
-    /// against the lock's credit-output key. Neither signer copies the seed —
-    /// both borrow it from the held session.
-    ///
-    /// `platform_account_index` selects the platform-payment account (DET uses
-    /// 0). The `addresses` map must contain exactly one `None`-amount entry (the
-    /// remainder recipient); the lock is consumed in full.
-    // Mirrors the upstream `fund_from_asset_lock` surface; each argument is a
-    // distinct, required input to that orchestrator.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn fund_platform_address(
-        &self,
-        seed_hash: &WalletSeedHash,
-        funding: platform_wallet::wallet::asset_lock::AssetLockFunding,
-        platform_account_index: u32,
-        addresses: std::collections::BTreeMap<
-            dash_sdk::dpp::address_funds::PlatformAddress,
-            Option<dash_sdk::dpp::balances::credits::Credits>,
-        >,
-        fee_strategy: dash_sdk::dpp::address_funds::AddressFundsFeeStrategy,
-        path_index: &PlatformPathIndex,
-        settings: Option<dash_sdk::platform::transition::put_settings::PutSettings>,
-    ) -> Result<(), TaskError> {
-        let scope = Self::hd_scope(seed_hash);
-        self.inner
-            .secret_access
-            .with_secret_session(&scope, async |session| {
-                let plaintext = session.plaintext();
-                let seed = plaintext.expose_hd_seed().ok_or(TaskError::WalletLocked)?;
-                let address_signer =
-                    DetPlatformSigner::from_held(seed, self.inner.network, path_index);
-                let asset_lock_signer =
-                    DetSigner::from_held(session.plaintext(), self.inner.network);
-                let wallet = self.resolve_wallet(seed_hash).await?;
-                wallet
-                    .platform()
-                    .fund_from_asset_lock(
-                        funding,
-                        platform_account_index,
-                        addresses,
-                        fee_strategy,
-                        &address_signer,
-                        &asset_lock_signer,
-                        settings,
-                    )
-                    .await
-                    .map(|_changeset| ())
-                    .map_err(map_platform_address_fund_error)
-            })
-            .await
-    }
-
-    // UPSTREAM GAP: rs-platform-wallet has no identity-funding-account
-    // registrar (sibling to register_contact_account). Contained exception —
-    // key_wallet plumbing lives ONLY here, never leaks past WalletBackend.
-    // Do not replicate; do not collapse the dual-insert; do not use the
-    // funds-bearing API. Tracked: upstream-contribution TODO 9cdcfb25.
-    //
-    // `peek_next_funding_address` reads BOTH `wallet.accounts.*` (xpub
-    // source) AND `wallet_info.accounts.*` (mutable managed account), so the
-    // account must exist in both collections. `load()` rebuilds
-    // `IdentityRegistration` from the manifest; per-index
-    // `IdentityTopUp{registration_index}` enters the manifest only after a
-    // register/top-up, so a reloaded already-registered identity needs this
-    // re-provision. Idempotent: probes both collections and no-ops if present
-    // (no error-string parsing — direct membership checks).
-    //
-    // `seed` must be the wallet's HD seed so the hardened account xpub can be
-    // derived — the live wallet is watch-only and cannot derive hardened paths
-    // itself. Mirrors the pattern in `register_contact_receiving_accounts`.
-    async fn provision_identity_funding_account(
-        &self,
-        seed_hash: &WalletSeedHash,
-        seed: &[u8; 64],
-        account_type: dash_sdk::dpp::key_wallet::AccountType,
-    ) -> Result<(), TaskError> {
-        use dash_sdk::dpp::key_wallet::AccountType;
-        use dash_sdk::dpp::key_wallet::managed_account::ManagedCoreKeysAccount;
-        use dash_sdk::dpp::key_wallet::wallet::Wallet as UpstreamWallet;
-        use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOptions;
-        use platform_wallet::error::PlatformWalletError;
-
-        // Restrict to the two identity-funding flavours; everything else is a
-        // misuse — keeping the match exhaustive forces a review if a new
-        // upstream identity-funding variant appears.
-        match account_type {
-            AccountType::IdentityRegistration | AccountType::IdentityTopUp { .. } => {}
-            _ => return Err(TaskError::UnsupportedIdentityFundingAccount),
-        }
-
-        let wallet = self.resolve_wallet(seed_hash).await?;
-        let wallet_id = wallet.wallet_id();
-        let mut wm = wallet.wallet_manager().write().await;
-        let (kw, info) = wm
-            .get_wallet_mut_and_info_mut(&wallet_id)
-            .ok_or(TaskError::WalletStateInconsistent)?;
-
-        let in_wallet = match account_type {
-            AccountType::IdentityRegistration => kw.accounts.identity_registration.is_some(),
-            AccountType::IdentityTopUp { registration_index } => {
-                kw.accounts.identity_topup.contains_key(&registration_index)
-            }
-            _ => unreachable!("checked above"),
-        };
-        let in_managed = match account_type {
-            AccountType::IdentityRegistration => {
-                info.core_wallet.accounts.identity_registration.is_some()
-            }
-            AccountType::IdentityTopUp { registration_index } => info
-                .core_wallet
-                .accounts
-                .identity_topup
-                .contains_key(&registration_index),
-            _ => unreachable!("checked above"),
-        };
-        if in_wallet && in_managed {
-            return Ok(());
-        }
-
-        if !in_wallet {
-            // The live wallet is watch-only: calling `add_account(…, None)` would
-            // try to derive a hardened path from an absent private key and fail
-            // with "Watch-only wallet has no private key". Derive the xpub from a
-            // short-lived seed wallet instead and pass it as `Some(xpub)`.
-            let seed_wallet = UpstreamWallet::from_seed_bytes(
-                *seed,
-                self.inner.network,
-                WalletAccountCreationOptions::Default,
-            )
-            .map_err(|e| TaskError::WalletBackend {
-                source: Box::new(PlatformWalletError::WalletCreation(e.to_string())),
-            })?;
-
-            let path = account_type
-                .derivation_path(self.inner.network)
-                .map_err(|e| TaskError::WalletBackend {
-                    source: Box::new(PlatformWalletError::WalletCreation(e.to_string())),
-                })?;
-
-            let account_xpub = seed_wallet.derive_extended_public_key(&path).map_err(|e| {
-                TaskError::WalletBackend {
-                    source: Box::new(PlatformWalletError::WalletCreation(e.to_string())),
-                }
-            })?;
-
-            kw.add_account(account_type, Some(account_xpub))
-                .map_err(|e| TaskError::WalletBackend {
-                    source: Box::new(PlatformWalletError::AssetLockTransaction(e.to_string())),
-                })?;
-        }
-
-        let derived = match account_type {
-            AccountType::IdentityRegistration => kw.accounts.identity_registration.as_ref(),
-            AccountType::IdentityTopUp { registration_index } => {
-                kw.accounts.identity_topup.get(&registration_index)
-            }
-            _ => unreachable!("checked above"),
-        }
-        .ok_or(TaskError::WalletStateInconsistent)?;
-
-        let managed = ManagedCoreKeysAccount::from_account(derived);
-        info.core_wallet
-            .accounts
-            .insert_keys_bearing_account(managed)
-            .map_err(|e| TaskError::WalletBackend {
-                source: Box::new(
-                    platform_wallet::error::PlatformWalletError::AssetLockTransaction(
-                        e.to_string(),
-                    ),
-                ),
-            })?;
-        Ok(())
-    }
-
-    /// Provision the identity-registration funding account and the per-
-    /// identity top-up funding account for the given wallet identity index.
-    /// Idempotent; safe to call before every asset-lock and on every reload.
-    ///
-    /// `seed` must be held for the duration of this call (obtained from
-    /// `SecretPlaintext::expose_hd_seed` inside a `with_secret_session` scope).
-    pub async fn ensure_identity_funding_accounts(
-        &self,
-        seed_hash: &WalletSeedHash,
-        seed: &[u8; 64],
-        registration_index: u32,
-    ) -> Result<(), TaskError> {
-        use dash_sdk::dpp::key_wallet::AccountType;
-        self.provision_identity_funding_account(seed_hash, seed, AccountType::IdentityRegistration)
-            .await?;
-        self.provision_identity_funding_account(
-            seed_hash,
-            seed,
-            AccountType::IdentityTopUp { registration_index },
-        )
-        .await
-    }
-
-    // ── Shielded-pool methods ──────────────────────────────────────────────────
-    //
-    // `platform-wallet` is always built with the `shielded` Cargo feature in
-    // DET (added in Phase A).  No DET-level opt-out exists, so these methods
-    // are unconditionally available.  The fund-moving ops and reads consumed by
-    // `run_shielded_task` / `ensure_shielded_bound` are wired (Phase D); the
-    // activity/notes list reads remain `#[allow(dead_code)]` until the Phase-F
-    // upstream-coordinator read path lands.
-
-    /// Resolve the network-scoped shielded coordinator.
-    ///
-    /// Returns `ShieldedNotConfigured` when `configure_shielded` was not called
-    /// during backend construction (should never happen in practice — it is
-    /// called unconditionally in `WalletBackend::new`).
-    async fn shielded_coordinator_arc(
-        &self,
-    ) -> Result<
-        std::sync::Arc<platform_wallet::wallet::shielded::NetworkShieldedCoordinator>,
-        TaskError,
-    > {
-        self.inner
-            .pwm
-            .shielded_coordinator()
-            .await
-            .ok_or(TaskError::ShieldedNotConfigured)
-    }
-
-    /// Idempotently bind Orchard ZIP-32 keys for `seed_hash` to the shielded
-    /// coordinator.  A no-op when the wallet is already bound; one call needed
-    /// per wallet per process lifetime.
-    ///
-    /// Called from `bootstrap_wallet_addresses_jit` (Phase C-bind) inside the
-    /// existing `with_secret_session` scope; also callable directly for the
-    /// MCP headless path.
-    pub(crate) async fn ensure_shielded_bound(
-        &self,
-        seed_hash: &WalletSeedHash,
-        seed: &[u8],
-    ) -> Result<(), TaskError> {
-        let wallet = self.resolve_wallet(seed_hash).await?;
-        if wallet.is_shielded_bound().await {
-            return Ok(());
-        }
-        let coordinator = self.shielded_coordinator_arc().await?;
-        wallet
-            .bind_shielded(seed, &[0], &coordinator)
-            .await
-            .map_err(|e| TaskError::WalletBackend {
-                source: Box::new(e),
-            })
-    }
-
-    /// Bind Orchard keys for `seed_hash` by resolving its HD seed just-in-time
-    /// through the [`SecretAccess`] chokepoint, then delegating to
-    /// [`Self::ensure_shielded_bound`].
-    ///
-    /// The headless sibling of the Phase-C-bind call in
-    /// `bootstrap_wallet_addresses_jit`: an unprotected wallet resolves
-    /// prompt-free via the no-passphrase fast-path; a protected one needs its
-    /// seed already promoted to the session cache. Idempotent — exits
-    /// immediately when the wallet is already bound. The Phase-G `shielded_init`
-    /// MCP tool uses this so an agent can bind a wallet without a GUI prompt.
-    #[cfg(any(feature = "mcp", feature = "cli"))]
-    pub(crate) async fn ensure_shielded_bound_jit(
-        &self,
-        seed_hash: &WalletSeedHash,
-    ) -> Result<(), TaskError> {
-        let scope = Self::hd_scope(seed_hash);
-        self.inner
-            .secret_access
-            .with_secret_session(&scope, async |session| {
-                let plaintext = session.plaintext();
-                let seed = plaintext.expose_hd_seed().ok_or(TaskError::WalletLocked)?;
-                self.ensure_shielded_bound(seed_hash, seed).await
-            })
-            .await
-    }
-
-    /// Warm the Orchard proving key so the first shielded spend does not block.
-    ///
-    /// The Halo2 proving key takes ~30 s to build on first use; this primes the
-    /// process-global cache ahead of time. Runs on a blocking thread so the
-    /// async runtime keeps serving other work during the build, and is
-    /// idempotent — a second call returns immediately. Returns whether the key
-    /// is ready afterwards (a `spawn_blocking` panic leaves it unbuilt → `false`).
-    /// The Phase-G `shielded_init` MCP tool calls this during headless setup.
-    #[cfg(any(feature = "mcp", feature = "cli"))]
-    pub(crate) async fn warm_shielded_prover(&self) -> bool {
-        tokio::task::spawn_blocking(|| {
-            let prover = platform_wallet::wallet::shielded::CachedOrchardProver::new();
-            prover.warm_up();
-            prover.is_ready()
-        })
-        .await
-        .unwrap_or(false)
-    }
-
-    /// Fund the shielded pool from a Core asset lock through the upstream
-    /// orchestrator pipeline.
-    ///
-    /// Mirrors `fund_platform_address` exactly: the `asset_lock_signer` is a
-    /// `DetSigner` borrowed from the held JIT session, and the upstream method
-    /// owns the full IS→CL fallback + `consume_asset_lock` path.  A single
-    /// `(recipient, None)` entry passes the whole lock value (minus the flat
-    /// shielded fee) to `recipient`.
-    ///
-    /// The Orchard prover is created internally via
-    /// `CachedOrchardProver::new()` — callers do not supply a prover.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn shield_from_asset_lock(
-        &self,
-        seed_hash: &WalletSeedHash,
-        funding: platform_wallet::wallet::asset_lock::AssetLockFunding,
-        recipient: dash_sdk::dpp::address_funds::OrchardAddress,
-        dummy_outputs: usize,
-        settings: Option<dash_sdk::platform::transition::put_settings::PutSettings>,
-    ) -> Result<(), TaskError> {
-        let coordinator = self.shielded_coordinator_arc().await?;
-        let scope = Self::hd_scope(seed_hash);
-        self.inner
-            .secret_access
-            .with_secret_session(&scope, async |session| {
-                let asset_lock_signer =
-                    DetSigner::from_held(session.plaintext(), self.inner.network);
-                let wallet = self.resolve_wallet(seed_hash).await?;
-                let prover = platform_wallet::wallet::shielded::CachedOrchardProver::new();
-                wallet
-                    .shielded_fund_from_asset_lock(
-                        &coordinator,
-                        funding,
-                        vec![(recipient, None)],
-                        &asset_lock_signer,
-                        &prover,
-                        None,
-                        dummy_outputs,
-                        settings,
-                        // User-facing funding: wait indefinitely for the
-                        // ChainLock (the broadcast lock is pending, never failed).
-                        None,
-                    )
-                    .await
-                    .map_err(map_shielded_op_error)
-            })
-            .await
-    }
-
-    /// Shield platform-address credits (Type 15) into the Orchard pool.
-    ///
-    /// The `signer` authorises the per-address `AddressWitness`; it is a
-    /// `DetPlatformSigner` built from the held JIT seed and `path_index`.
-    /// Build `path_index` via `PlatformPathIndex::from_wallet` before calling —
-    /// the same pattern as `fund_platform_address`.
-    ///
-    /// The Orchard prover is created internally via
-    /// `CachedOrchardProver::new()` — callers do not supply a prover.
-    pub(crate) async fn shield_from_balance(
-        &self,
-        seed_hash: &WalletSeedHash,
-        path_index: &PlatformPathIndex,
-        shielded_account: u32,
-        payment_account: u32,
-        amount: u64,
-    ) -> Result<(), TaskError> {
-        let coordinator = self.shielded_coordinator_arc().await?;
-        let scope = Self::hd_scope(seed_hash);
-        self.inner
-            .secret_access
-            .with_secret_session(&scope, async |session| {
-                let plaintext = session.plaintext();
-                let seed = plaintext.expose_hd_seed().ok_or(TaskError::WalletLocked)?;
-                let signer = DetPlatformSigner::from_held(seed, self.inner.network, path_index);
-                let wallet = self.resolve_wallet(seed_hash).await?;
-                let prover = platform_wallet::wallet::shielded::CachedOrchardProver::new();
-                wallet
-                    .shielded_shield_from_account(
-                        &coordinator,
-                        shielded_account,
-                        payment_account,
-                        amount,
-                        &signer,
-                        &prover,
-                    )
-                    .await
-                    .map_err(map_shielded_op_error)
-            })
-            .await
-    }
-
-    /// Shielded → shielded transfer from `account`'s notes to `recipient`.
-    ///
-    /// No seed scope needed — the Orchard ASK is already resident in the
-    /// wallet's bound `shielded_keys` slot from `ensure_shielded_bound`.
-    ///
-    /// The Orchard prover is created internally via
-    /// `CachedOrchardProver::new()` — callers do not supply a prover.
-    pub(crate) async fn shielded_transfer(
-        &self,
-        seed_hash: &WalletSeedHash,
-        account: u32,
-        recipient_raw_43: &[u8; 43],
-        amount: u64,
-        memo: [u8; 36],
-    ) -> Result<(), TaskError> {
-        let coordinator = self.shielded_coordinator_arc().await?;
-        let wallet = self.resolve_wallet(seed_hash).await?;
-        let prover = platform_wallet::wallet::shielded::CachedOrchardProver::new();
-        wallet
-            .shielded_transfer_to(
-                &coordinator,
-                account,
-                recipient_raw_43,
-                amount,
-                memo,
-                &prover,
-            )
-            .await
-            .map_err(map_shielded_op_error)
-    }
-
-    /// Unshield from `account`'s notes to a transparent platform address
-    /// (bech32m `"dash1…"` / `"tdash1…"` string).
-    ///
-    /// No seed scope needed — keys are already bound.
-    ///
-    /// The Orchard prover is created internally via
-    /// `CachedOrchardProver::new()` — callers do not supply a prover.
-    pub(crate) async fn shielded_unshield(
-        &self,
-        seed_hash: &WalletSeedHash,
-        account: u32,
-        to_platform_addr_bech32m: &str,
-        amount: u64,
-    ) -> Result<(), TaskError> {
-        let coordinator = self.shielded_coordinator_arc().await?;
-        let wallet = self.resolve_wallet(seed_hash).await?;
-        let prover = platform_wallet::wallet::shielded::CachedOrchardProver::new();
-        wallet
-            .shielded_unshield_to(
-                &coordinator,
-                account,
-                to_platform_addr_bech32m,
-                amount,
-                &prover,
-            )
-            .await
-            .map_err(map_shielded_op_error)
-    }
-
-    /// Withdraw from `account`'s notes to a Core L1 address (Base58Check).
-    ///
-    /// No seed scope needed — keys are already bound.
-    ///
-    /// The Orchard prover is created internally via
-    /// `CachedOrchardProver::new()` — callers do not supply a prover.
-    pub(crate) async fn shielded_withdraw(
-        &self,
-        seed_hash: &WalletSeedHash,
-        account: u32,
-        to_core_address: &str,
-        amount: u64,
-        core_fee_per_byte: u32,
-    ) -> Result<(), TaskError> {
-        let coordinator = self.shielded_coordinator_arc().await?;
-        let wallet = self.resolve_wallet(seed_hash).await?;
-        let prover = platform_wallet::wallet::shielded::CachedOrchardProver::new();
-        wallet
-            .shielded_withdraw_to(
-                &coordinator,
-                account,
-                to_core_address,
-                amount,
-                core_fee_per_byte,
-                &prover,
-            )
-            .await
-            .map_err(map_shielded_op_error)
-    }
-
-    /// Per-account unspent shielded balance for `seed_hash`'s wallet.
-    ///
-    /// Returns an empty map when the wallet is not bound or has no shielded
-    /// balance.  This is the push-snapshot producer (Phase E): the result is
-    /// written into `AppContext::shielded_balances` by `on_shielded_sync_completed`.
-    pub(crate) async fn shielded_balances(
-        &self,
-        seed_hash: &WalletSeedHash,
-    ) -> Result<std::collections::BTreeMap<u32, u64>, TaskError> {
-        let coordinator = self.shielded_coordinator_arc().await?;
-        let wallet = self.resolve_wallet(seed_hash).await?;
-        wallet
-            .shielded_balances(&coordinator)
-            .await
-            .map_err(|e| TaskError::WalletBackend {
-                source: Box::new(e),
-            })
-    }
-
-    /// The default Orchard payment address for `account` on `seed_hash`'s wallet
-    /// (raw 43-byte representation).  Returns `None` if the wallet is not bound
-    /// or `account` is not registered.
-    pub async fn shielded_default_address(
-        &self,
-        seed_hash: &WalletSeedHash,
-        account: u32,
-    ) -> Result<Option<[u8; 43]>, TaskError> {
-        let wallet = self.resolve_wallet(seed_hash).await?;
-        Ok(wallet.shielded_default_address(account).await)
-    }
-
-    /// A page of shielded activity for `account` on `seed_hash`'s wallet,
-    /// sorted for display (pending first, then descending block height).
-    ///
-    /// `offset` / `limit` mirror the coordinator store's pagination contract.
-    #[allow(dead_code)]
-    pub(crate) async fn shielded_activity(
-        &self,
-        seed_hash: &WalletSeedHash,
-        account: u32,
-        offset: usize,
-        limit: usize,
-    ) -> Result<Vec<platform_wallet::wallet::shielded::ShieldedActivityEntry>, TaskError> {
-        use platform_wallet::wallet::shielded::{ShieldedStore, SubwalletId};
-
-        let coordinator = self.shielded_coordinator_arc().await?;
-        let wallet = self.resolve_wallet(seed_hash).await?;
-        let wallet_id = wallet.wallet_id();
-        let subwallet = SubwalletId::new(wallet_id, account);
-
-        coordinator
-            .store()
-            .read()
-            .await
-            .get_activity(subwallet, offset, limit)
-            .map_err(|source| TaskError::ShieldedStoreReadFailed { source })
-    }
-
-    /// Unspent shielded notes for `account` on `seed_hash`'s wallet.
-    ///
-    /// Note: for spendability checks, prefer `shielded_balances`; this method
-    /// exposes the raw note list for diagnostic and display purposes.
-    #[allow(dead_code)]
-    pub(crate) async fn shielded_notes(
-        &self,
-        seed_hash: &WalletSeedHash,
-        account: u32,
-    ) -> Result<Vec<platform_wallet::wallet::shielded::ShieldedNote>, TaskError> {
-        use platform_wallet::wallet::shielded::{ShieldedStore, SubwalletId};
-
-        let coordinator = self.shielded_coordinator_arc().await?;
-        let wallet = self.resolve_wallet(seed_hash).await?;
-        let wallet_id = wallet.wallet_id();
-        let subwallet = SubwalletId::new(wallet_id, account);
-
-        coordinator
-            .store()
-            .read()
-            .await
-            .get_unspent_notes(subwallet)
-            .map_err(|source| TaskError::ShieldedStoreReadFailed { source })
-    }
-
-    /// Force an immediate shielded sync pass (network-wide across every bound
-    /// wallet on the coordinator).
-    ///
-    /// `sync_now` fires `on_shielded_sync_completed` synchronously before it
-    /// returns, so the [`EventBridge`] has already written the post-sync
-    /// per-wallet balances into `AppContext::shielded_balances` (Phase E) by the
-    /// time this resolves — a subsequent `shielded_balance_credits` read sees
-    /// the fresh figure. The 60-second background loop is the normal driver;
-    /// this is the explicit-refresh primitive for the backend-e2e lifecycle test
-    /// and the Phase-G `shielded_sync` MCP tool. A no-op when shielded support
-    /// was never configured (empty coordinator → empty pass).
-    pub async fn sync_shielded_now(&self, force: bool) {
-        self.inner.pwm.shielded_sync_arc().sync_now(force).await;
-    }
-
     fn build_client_config(&self) -> ClientConfig {
         // Scan from genesis so historical wallet transactions are found via
         // compact block filters.
@@ -3332,7 +2355,9 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
         | P::ShieldedTreeUpdateFailed(_)
         | P::ShieldedStoreError(_)
         | P::ShieldedMerkleWitnessUnavailable(_)
-        | P::ShieldedKeyDerivation(_)) => TaskError::WalletBackend {
+        | P::ShieldedKeyDerivation(_)
+        | P::AddressNonceMismatch { .. }
+        | P::ShieldedShutdownIncomplete { .. }) => TaskError::WalletBackend {
             source: Box::new(other),
         },
     }
@@ -3575,7 +2600,11 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
         // A rehydration structural invariant broke (a discovery probe and its
         // real address pool disagreed on chain order); fail-closed as a
         // precondition, unrelated to identity registration. Bucket as Other.
-        | P::RehydrationPoolTypeMismatch { .. } => IdentityOpErrorKind::Other,
+        | P::RehydrationPoolTypeMismatch { .. }
+        // Address nonce desync and an incomplete shielded-worker shutdown are
+        // both precondition/state faults unrelated to identity registration.
+        | P::AddressNonceMismatch { .. }
+        | P::ShieldedShutdownIncomplete { .. } => IdentityOpErrorKind::Other,
     }
 }
 

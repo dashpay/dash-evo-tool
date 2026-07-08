@@ -349,7 +349,7 @@ impl RegisterDpnsNameScreen {
 impl ScreenLike for RegisterDpnsNameScreen {
     fn display_message(&mut self, _message: &str, message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
-        // SEC-001: tear down the blocking overlay on the error terminal path so a
+        // Tear down the blocking overlay on the error terminal path so a
         // failed registration can never hard-lock the window.
         if matches!(message_type, MessageType::Error | MessageType::Warning) {
             self.op_overlay.take_and_clear();
@@ -358,7 +358,7 @@ impl ScreenLike for RegisterDpnsNameScreen {
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
-        // SEC-001: tear down the blocking overlay on the success terminal path.
+        // Tear down the blocking overlay on the success terminal path.
         if let BackendTaskSuccessResult::RegisteredDpnsName(fee_result) =
             backend_task_success_result
         {

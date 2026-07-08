@@ -71,7 +71,7 @@ async fn test_tc002_refresh_wallet_info_core_and_platform() {
 
 // TC-003: RefreshSingleKeyWalletInfo
 //
-// Single-key wallets are intentionally unsupported this release (PROJ-007 /
+// Single-key wallets are intentionally unsupported this release (see
 // single-key-mock.md, Decision #7): every single-key task arm returns the typed
 // `SingleKeyWalletsUnsupported`. The test asserts that typed outcome rather than
 // an unconditional success.
@@ -200,7 +200,7 @@ async fn test_tc005_create_top_up_asset_lock() {
 
 // TC-009: SendSingleKeyWalletPayment
 //
-// Single-key wallets are intentionally unsupported this release (PROJ-007 /
+// Single-key wallets are intentionally unsupported this release (see
 // single-key-mock.md, Decision #7): every single-key task arm returns the typed
 // `SingleKeyWalletsUnsupported`. The test verifies that
 // `RefreshSingleKeyWalletInfo` returns `SingleKeyWalletsUnsupported` and stops;
@@ -229,7 +229,7 @@ async fn test_tc009_send_single_key_wallet_payment() {
 
     let skw_arc = Arc::new(RwLock::new(skw));
 
-    // Single-key wallets are unsupported this release (PROJ-007): the refresh
+    // Single-key wallets are unsupported this release: the refresh
     // arm returns the typed `SingleKeyWalletsUnsupported` regardless of network
     // mode. We verify the typed error and stop; the send step is unreachable
     // until single-key wallets are reinstated.

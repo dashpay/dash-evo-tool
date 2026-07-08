@@ -3,6 +3,9 @@ use super::hd_derivation::derive_payment_address;
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
+use crate::model::dashpay::{
+    PaymentDirection as StoredPaymentDirection, PaymentStatus as StoredPaymentStatus,
+};
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::Sdk;
 use dash_sdk::dpp::dashcore::Address;
@@ -375,11 +378,10 @@ pub async fn load_payment_history(
             continue;
         }
 
-        let status = match sp.status.as_str() {
-            "confirmed" => PaymentStatus::Confirmed(1),
-            "failed" => PaymentStatus::Failed("Transaction failed".to_string()),
-            "pending" => PaymentStatus::Pending,
-            _ => PaymentStatus::Broadcast,
+        let status = match sp.status {
+            StoredPaymentStatus::Confirmed => PaymentStatus::Confirmed(1),
+            StoredPaymentStatus::Failed => PaymentStatus::Failed("Transaction failed".to_string()),
+            StoredPaymentStatus::Pending => PaymentStatus::Pending,
         };
 
         let amount = if sp.amount < 0 {
@@ -484,7 +486,7 @@ pub async fn update_payment_status(
         return Ok(());
     };
 
-    let counterparty_bytes = if existing.payment_type == "sent" {
+    let counterparty_bytes = if existing.payment_type == StoredPaymentDirection::Sent {
         existing.to_identity_id
     } else {
         existing.from_identity_id
@@ -492,7 +494,7 @@ pub async fn update_payment_status(
     let counterparty = Identifier::from_bytes(&counterparty_bytes)
         .map_err(|e| format!("Invalid counterparty identity in payment record: {}", e))?;
 
-    let direction = if existing.payment_type == "sent" {
+    let direction = if existing.payment_type == StoredPaymentDirection::Sent {
         PaymentDirection::Sent
     } else {
         PaymentDirection::Received

@@ -26,7 +26,7 @@ impl AppContext {
             return Err(TaskError::NoIdentitiesFound);
         }
 
-        // TODO(PROJ-041): 'Stop tracking balance' undone by 'Refresh My Tokens' (re-registers full
+        // TODO: 'Stop tracking balance' undone by 'Refresh My Tokens' (re-registers full
         //   known-token registry × every identity). File an upstream feature request in
         //   dashpay/platform; fix is DET-side (persist dismissed pairs) since platform-wallet's
         //   token watch set is in-memory only.

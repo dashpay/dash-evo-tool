@@ -33,7 +33,6 @@ use crate::ui::wallets::account_summary::{
 use crate::ui::{MessageType, RootScreenType, ScreenLike, ScreenType};
 use chrono::{DateTime, Utc};
 use dash_sdk::dashcore_rpc::dashcore::Address;
-use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
 use eframe::egui::{self, ComboBox, Context, Ui};
 use egui::{Color32, Frame, Margin, RichText};
 use egui_extras::{Column, TableBuilder};
@@ -992,6 +991,13 @@ impl WalletsBalancesScreen {
             .unwrap_or(0)
     }
 
+    /// Seed hash of the currently selected wallet, if any. Frame-safe read.
+    fn selected_wallet_seed_hash(&self) -> Option<WalletSeedHash> {
+        self.selected_wallet
+            .as_ref()
+            .and_then(|w| w.read().ok().map(|g| g.seed_hash()))
+    }
+
     /// UTXO-derived per-address balances from the snapshot (P4a). Replaces
     /// the dropped `Wallet.address_balances`.
     fn snapshot_address_balances(
@@ -1133,7 +1139,9 @@ impl WalletsBalancesScreen {
         let developer_mode = self.app_context.is_developer_mode();
         let mut tabs: Vec<AccountTab> = Vec::new();
 
-        // Always-visible primary tabs: all BIP44 accounts and Platform
+        // Always-visible primary tabs: all BIP44 accounts (the per-category
+        // Core breakdown). Platform is added separately below — its total comes
+        // from the authoritative coordinator snapshot, not this Core breakdown.
         for summary in summaries {
             if !summary.category.is_visible_in_default_mode() {
                 continue;
@@ -1150,6 +1158,16 @@ impl WalletsBalancesScreen {
             .any(|t| matches!(t, AccountTab::Category(AccountCategory::Bip44, Some(0))))
         {
             tabs.insert(0, AccountTab::Category(AccountCategory::Bip44, Some(0)));
+        }
+
+        // Platform tab: shown once the wallet holds Platform funds or has
+        // completed a Platform-address sync (so the receive/empty tab still
+        // appears). Ordered right after the BIP-44 accounts.
+        if let Some(seed_hash) = self.selected_wallet_seed_hash()
+            && (self.platform_balance_duffs(&seed_hash) > 0
+                || self.app_context.platform_sync_info(&seed_hash).is_some())
+        {
+            tabs.push(AccountTab::Category(AccountCategory::PlatformPayment, None));
         }
 
         // Add the Shielded tab only when the connected network supports it.
@@ -1271,11 +1289,12 @@ impl WalletsBalancesScreen {
                 let (base_label, balance_duffs) = match tab {
                     AccountTab::Category(cat, idx) => {
                         let balance = if matches!(cat, AccountCategory::PlatformPayment) {
-                            summaries
-                                .iter()
-                                .filter(|s| s.category == *cat && s.index == *idx)
-                                .map(|s| s.platform_credits / CREDITS_PER_DUFF)
-                                .sum::<u64>()
+                            // Single authoritative Platform total — the same
+                            // figure the wallet header shows, so the two cannot
+                            // diverge.
+                            self.selected_wallet_seed_hash()
+                                .map(|seed_hash| self.platform_balance_duffs(&seed_hash))
+                                .unwrap_or(0)
                         } else {
                             summaries
                                 .iter()
@@ -1357,11 +1376,16 @@ impl WalletsBalancesScreen {
                 action |= self.render_system_tab_content(ui, summaries);
             }
             (AccountTab::Category(..), Some((cat, idx))) => {
-                // Show empty state if no summaries match this category
+                // Show empty state if no summaries match this category. Dash
+                // Core and Platform always render their address tables — Platform
+                // is driven by the coordinator snapshot, not the Core summaries.
                 if !summaries
                     .iter()
                     .any(|s| s.category == cat && s.index == idx)
-                    && !matches!(cat, AccountCategory::Bip44)
+                    && !matches!(
+                        cat,
+                        AccountCategory::Bip44 | AccountCategory::PlatformPayment
+                    )
                 {
                     ui.label(
                         RichText::new("No account activity yet.")
@@ -1958,12 +1982,10 @@ impl WalletsBalancesScreen {
                         ui.separator();
 
                         let summaries = {
-                            let wallet = wallet_arc.read().unwrap();
-                            let seed_hash = wallet.seed_hash();
+                            let seed_hash = wallet_arc.read().unwrap().seed_hash();
                             let address_balances = self.snapshot_address_balances(&seed_hash);
                             let address_paths = self.snapshot_address_paths(&seed_hash);
                             collect_account_summaries(
-                                &wallet,
                                 self.app_context.network,
                                 &address_balances,
                                 &address_paths,
@@ -2801,12 +2823,13 @@ impl ScreenLike for WalletsBalancesScreen {
                 self.refreshing = false;
                 self.cached_tx_indices = None;
                 self.cached_tx_source_len = None;
-                if let Some(warn_msg) = warning {
+                if let Some(err) = warning {
                     MessageBanner::set_global(
                         self.app_context.egui_ctx(),
-                        format!("Wallet refreshed with warning: {}", warn_msg),
+                        "Wallet refreshed, but platform balances could not be updated. Retry in a moment.",
                         MessageType::Info,
-                    );
+                    )
+                    .with_details(err.as_ref());
                 } else {
                     MessageBanner::set_global(
                         self.app_context.egui_ctx(),

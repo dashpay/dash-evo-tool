@@ -6,25 +6,8 @@
 //! This is the minimum kittest coverage for the scaffold. Per-tab assertions on
 //! the full populated layouts arrive as each tab's content lands (T8–T11).
 
-use crate::support::with_isolated_data_dir;
+use crate::support::{mount_app, with_isolated_data_dir};
 use dash_evo_tool::ui::RootScreenType;
-use egui_kittest::Harness;
-
-fn mount_hub() -> Harness<'static, dash_evo_tool::app::AppState> {
-    let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
-    let _guard = rt.enter();
-
-    let mut harness = Harness::builder().with_max_steps(100).build_eframe(|ctx| {
-        let mut app = dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
-            .expect("Failed to create AppState")
-            .with_animations(false);
-        app.selected_main_screen = RootScreenType::RootScreenIdentityHub;
-        app
-    });
-    harness.set_size(egui::vec2(1280.0, 800.0));
-    harness.run_steps(10);
-    harness
-}
 
 /// IT-ONBOARD-01 / IT-HOME-01 combined smoke: the hub renders without
 /// panicking on the default first-run database (no identities loaded → should
@@ -32,8 +15,8 @@ fn mount_hub() -> Harness<'static, dash_evo_tool::app::AppState> {
 #[test]
 fn identity_hub_mounts_and_renders() {
     with_isolated_data_dir(|| {
-        let _harness = mount_hub();
-        // If `mount_hub` returned without panicking, the hub compiled-in and
+        let _harness = mount_app(RootScreenType::RootScreenIdentityHub);
+        // If `mount_app` returned without panicking, the hub compiled-in and
         // rendered. More detailed assertions land with the per-tab content work.
     });
 }

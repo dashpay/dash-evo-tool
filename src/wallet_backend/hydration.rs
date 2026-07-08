@@ -310,6 +310,7 @@ fn wallet_from_envelope(
 mod tests {
     use super::*;
     use crate::model::wallet::{ClosedKeyItem, Wallet};
+    use crate::wallet_backend::kv_test_support::InMemoryKv;
     use crate::wallet_backend::wallet_seed_store::WalletSeedView;
     use dash_sdk::dpp::dashcore::Network;
     use platform_wallet_storage::secrets::SecretStore;
@@ -716,69 +717,6 @@ mod tests {
         );
         assert!(wallet.is_main);
         assert_eq!(wallet.alias.as_deref(), Some("new"));
-    }
-
-    /// In-memory `KvStore` backing a [`WalletMetaView`] so the cold-boot
-    /// enumeration path can be exercised without a real DET database.
-    #[derive(Default)]
-    struct InMemoryKv {
-        slots: std::sync::Mutex<Vec<(platform_wallet_storage::ObjectId, String, Vec<u8>)>>,
-    }
-
-    impl platform_wallet_storage::KvStore for InMemoryKv {
-        fn get(
-            &self,
-            scope: &platform_wallet_storage::ObjectId,
-            key: &str,
-        ) -> Result<Option<Vec<u8>>, platform_wallet_storage::KvError> {
-            Ok(self
-                .slots
-                .lock()
-                .unwrap()
-                .iter()
-                .find(|(s, k, _)| s == scope && k == key)
-                .map(|(_, _, v)| v.clone()))
-        }
-        fn put(
-            &self,
-            scope: &platform_wallet_storage::ObjectId,
-            key: &str,
-            value: &[u8],
-        ) -> Result<(), platform_wallet_storage::KvError> {
-            let mut slots = self.slots.lock().unwrap();
-            if let Some(slot) = slots.iter_mut().find(|(s, k, _)| s == scope && k == key) {
-                slot.2 = value.to_vec();
-            } else {
-                slots.push((scope.clone(), key.to_string(), value.to_vec()));
-            }
-            Ok(())
-        }
-        fn delete(
-            &self,
-            scope: &platform_wallet_storage::ObjectId,
-            key: &str,
-        ) -> Result<(), platform_wallet_storage::KvError> {
-            self.slots
-                .lock()
-                .unwrap()
-                .retain(|(s, k, _)| !(s == scope && k == key));
-            Ok(())
-        }
-        fn list_keys(
-            &self,
-            scope: &platform_wallet_storage::ObjectId,
-            prefix: Option<&str>,
-        ) -> Result<Vec<String>, platform_wallet_storage::KvError> {
-            let pred = |k: &str| -> bool { prefix.is_none_or(|p| k.starts_with(p)) };
-            Ok(self
-                .slots
-                .lock()
-                .unwrap()
-                .iter()
-                .filter(|(s, k, _)| s == scope && pred(k))
-                .map(|(_, k, _)| k.clone())
-                .collect())
-        }
     }
 
     /// Regression for the cold-boot disappearance of a Tier-2-protected HD

@@ -8,6 +8,13 @@
 //! The hub coexists with the legacy `src/ui/identities/` and `src/ui/dashpay/`
 //! screens during the transition; both old nav entries remain visible.
 //!
+//! TODO: `identity/` (this new hub) vs `identities/` (the legacy tree) is a
+//! one-letter module-name collision that will keep confusing imports, greps,
+//! and file-picker jumps as long as both exist. Either rename this tree to
+//! something unambiguous (e.g. `identity_hub/`) or open a tracked issue with
+//! a target release for folding `identities/` into the hub, so the near-miss
+//! naming is bounded in time rather than permanent.
+//!
 //! See the planning artifacts at
 //! `docs/ai-design/2026-04-23-identity-hub-impl/` (requirements, UX plan,
 //! test-case spec, dev plan).
@@ -27,10 +34,8 @@
 //! back to a registered screen (handled by the resolver in `AppState::new`).
 
 pub mod activity;
-pub mod activity_row;
 pub mod avatar;
 pub mod breadcrumb_switcher;
-pub mod contact_row;
 pub mod contacts;
 pub mod home;
 pub mod hub_screen;

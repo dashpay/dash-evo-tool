@@ -76,7 +76,7 @@ pub fn create_database_at_path(path: &std::path::Path) -> rusqlite::Result<Datab
 /// a "migrated-on-disk" wallet without raw SQL.
 ///
 /// `encrypted_seed` carries the verbatim 64-byte seed (salt/nonce stay empty
-/// for an unprotected wallet, per SEC-007); `epk_encoded` is the BIP44 ECDSA
+/// for an unprotected wallet); `epk_encoded` is the BIP44 ECDSA
 /// account-0 extended-public-key bytes the W2 fund-routing gate matches.
 pub fn seed_legacy_unprotected_hd_wallet_row(
     db: &Database,
@@ -114,7 +114,7 @@ pub fn seed_legacy_unprotected_hd_wallet_row(
 /// `encrypted_seed`/`salt`/`nonce` are the AES-GCM envelope quartet produced by
 /// [`encrypt_message`](crate::model::wallet::encryption::encrypt_message) for
 /// the seed under the user's password: a 16-byte Argon2 salt and a 12-byte GCM
-/// nonce, as the migration's `crypto_field_lengths_ok` (SEC-007) gate requires
+/// nonce, as the migration's `crypto_field_lengths_ok` gate requires
 /// for a protected row. `epk_encoded` is the BIP44 ECDSA account-0
 /// extended-public-key bytes the W2 fund-routing gate matches.
 #[allow(clippy::too_many_arguments)]

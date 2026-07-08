@@ -7,7 +7,6 @@ use crate::backend_task::error::TaskError;
 use crate::backend_task::wallet::dash_signed_message;
 use crate::context::AppContext;
 use crate::model::qualified_identity::PrivateKeyTarget;
-use dash_sdk::dpp::dashcore::secp256k1::SecretKey;
 use dash_sdk::dpp::identity::{KeyID, KeyType};
 use dash_sdk::platform::Identifier;
 use std::sync::Arc;
@@ -32,25 +31,8 @@ impl AppContext {
             return Err(TaskError::WalletMessageSignUnsupportedKeyType);
         }
 
-        let scope = crate::wallet_backend::SecretScope::IdentityKey {
-            identity_id: identity_id.to_buffer(),
-            target: target.clone(),
-            key_id,
-        };
-        let backend = self.wallet_backend()?;
-        let signature = backend
-            .secret_access()
-            .with_secret(&scope, |plaintext| {
-                let key = plaintext
-                    .expose_identity_key()
-                    .ok_or(TaskError::IdentityKeyMissing)?;
-                // Present-but-malformed key bytes are distinct from a genuinely
-                // absent key and from a signing failure — same mapping as the
-                // display sibling.
-                let secret_key = SecretKey::from_byte_array(key).map_err(|detail| {
-                    tracing::warn!(error = %detail, "Identity-key sign secret construction failed");
-                    TaskError::IdentityKeyMalformed
-                })?;
+        let signature = self
+            .with_identity_secret_key(identity_id, target.clone(), key_id, |secret_key| {
                 // Identity keys are compressed by convention.
                 Ok(dash_signed_message(message.as_str(), &secret_key, true))
             })

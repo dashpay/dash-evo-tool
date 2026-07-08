@@ -528,7 +528,7 @@ pub async fn send_contact_request_with_proof(
         }
     };
 
-    // Mirror the sent request in the local wallet-manager (QA-025 fix).
+    // Mirror the sent request in the local wallet-manager.
     //
     // `dashpay_sync` auto-establishes a contact only when
     // `sent_contact_requests[peer]` already exists locally.
@@ -694,7 +694,7 @@ pub async fn accept_contact_request(
         .ok_or_else(|| TaskError::DashPay(DashPayError::MissingAuthenticationKey))?
         .clone();
 
-    // Option A fix (QA-025): record A's incoming CR into B's wallet-manager
+    // Option A fix: record A's incoming CR into B's wallet-manager
     // BEFORE sending the reciprocal.
     //
     // After record_sent_contact_request populates sent[A], upstream

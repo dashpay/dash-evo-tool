@@ -2304,7 +2304,7 @@ mod tests {
     /// DET's local DIP-14 path where they agree (both use coin-type 5').
     #[test]
     fn seam_xpub_matches_receive_side_derivation_on_mainnet() {
-        use crate::backend_task::dashpay::hd_derivation::derive_dashpay_incoming_xpub;
+        use crate::model::dashpay_derivation::derive_dashpay_incoming_xpub;
 
         let (sender, recipient) = contact_ids();
         let seam = derive_contact_xpub_material(
@@ -2345,7 +2345,7 @@ mod tests {
     /// pays into addresses the user's wallet actually scans.
     #[test]
     fn seam_xpub_matches_receive_side_on_testnet() {
-        use crate::backend_task::dashpay::hd_derivation::derive_dashpay_incoming_xpub;
+        use crate::model::dashpay_derivation::derive_dashpay_incoming_xpub;
 
         let (sender, recipient) = contact_ids();
         let seam = derive_contact_xpub_material(
@@ -2387,7 +2387,7 @@ mod tests {
     /// contact pays into addresses the recipient never scans.
     #[test]
     fn seam_matches_receive_side_full_fields_on_both_networks() {
-        use crate::backend_task::dashpay::hd_derivation::derive_dashpay_incoming_xpub;
+        use crate::model::dashpay_derivation::derive_dashpay_incoming_xpub;
 
         let (sender, recipient) = contact_ids();
         for network in [Network::Mainnet, Network::Testnet] {
@@ -2476,7 +2476,7 @@ mod tests {
     ///    wrong wallet would route funds astray, so the agreement is load-bearing.
     #[test]
     fn multi_wallet_send_and_receive_select_same_wallet() {
-        use crate::backend_task::dashpay::hd_derivation::derive_dashpay_incoming_xpub;
+        use crate::model::dashpay_derivation::derive_dashpay_incoming_xpub;
         use crate::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
         use crate::model::wallet::Wallet;
         use dash_sdk::dpp::identity::Identity;

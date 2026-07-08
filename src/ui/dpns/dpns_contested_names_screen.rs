@@ -1849,7 +1849,7 @@ impl ScreenLike for DPNSScreen {
             BackendTaskSuccessResult::DPNSVoteResults(results) => {
                 let errors: Vec<String> = results
                     .iter()
-                    .filter_map(|(_, _, r)| r.as_ref().err().cloned())
+                    .filter_map(|(_, _, r)| r.as_ref().err().map(|e| e.to_string()))
                     .collect();
                 let successes: Vec<String> = results
                     .iter()

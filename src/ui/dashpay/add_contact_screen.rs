@@ -384,7 +384,7 @@ impl ScreenLike for AddContactScreen {
                 ui.group(|ui| {
                 ui.horizontal(|ui| {
                     ui.vertical(|ui| {
-                        ui.label(RichText::new(err.user_message()).color(error_color));
+                        ui.label(RichText::new(err.to_string()).color(error_color));
 
                         // Show retry suggestion for recoverable errors
                         if err.is_recoverable() {

@@ -425,7 +425,7 @@ impl ContactRequests {
             } else {
                 egui::Color32::DARK_RED
             };
-            let error_msg = err.user_message();
+            let error_msg = err.to_string();
             let is_missing_encryption_key = matches!(err, DashPayError::MissingEncryptionKey);
 
             ui.group(|ui| {

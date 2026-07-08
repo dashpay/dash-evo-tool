@@ -1,10 +1,21 @@
 //! Legacy `data.db` table surface guard tests (TC-DEV-001/002/003).
 //!
-//! These tests encode the *revised* spec from
-//! `/tmp/marvin-finish-unwire-test-spec.md` (Phase 2 retry): the cold-boot
-//! read path must never touch the legacy `wallet`, `utxos`, or
-//! `single_key_wallet` tables; the only call sites that may still
-//! mention those tables are an explicit allow-list documented in the
+//! Normative text (inlined from the finish-unwire test-case spec, a scratch
+//! file that was never committed — see
+//! `docs/ai-design/2026-05-29-finish-unwire/notes.md` §5 for the retained
+//! domain summary):
+//!
+//! - **TC-DEV-001**: non-test cold-boot code must not contain `FROM wallet`
+//!   SELECTs against the legacy `wallet` table, outside the allow-list below.
+//! - **TC-DEV-002**: non-test cold-boot code must not read or write the
+//!   legacy `utxos` table (`FROM`/`INTO`/`UPDATE`/`DELETE FROM utxos`),
+//!   outside the allow-list.
+//! - **TC-DEV-003**: non-test cold-boot code must not contain SQL touching
+//!   the legacy `single_key_wallet` table, outside the allow-list.
+//!
+//! In short: the cold-boot read path must never touch the legacy `wallet`,
+//! `utxos`, or `single_key_wallet` tables; the only call sites that may
+//! still mention those tables are the allow-list below, tethered to the
 //! T-DEV-02 commit log (`42b88a15`).
 //!
 //! The test is intentionally a "spec freeze": if a new file in `src/`
@@ -75,42 +86,17 @@ fn collect_rs_files(root: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// Returns the line numbers of `pat` in `text` that are NOT inside a
-/// `#[cfg(test)]` mod block or under a `#[test]` attribute heuristic.
-/// This is a deliberately coarse heuristic — false positives are caught
-/// by the allow-list, and false negatives are fine because the live
-/// production paths are what we care about.
+/// Returns the line numbers of `pat` in `text`. Deliberately does not try to
+/// exempt `#[cfg(test)]` blocks — any false positive that surfaces is caught
+/// by the allow-list, and a per-file allow-list entry is a cheaper, more
+/// reliable escape hatch than parsing Rust brace structure with string
+/// matching.
 fn live_matches(text: &str, pat: &str) -> Vec<(usize, String)> {
-    let mut in_test_mod = 0usize;
-    let mut brace_depth = 0i32;
-    let mut hits = Vec::new();
-    let mut next_attr_is_test_mod = false;
-    for (idx, line) in text.lines().enumerate() {
-        let trimmed = line.trim();
-        // Heuristic: track `#[cfg(test)] mod foo {` blocks by brace depth.
-        if next_attr_is_test_mod && trimmed.starts_with("mod ") && trimmed.ends_with('{') {
-            in_test_mod += 1;
-            brace_depth = 1;
-            next_attr_is_test_mod = false;
-            continue;
-        }
-        if trimmed.starts_with("#[cfg(test)]") || trimmed.contains("cfg(test)") {
-            next_attr_is_test_mod = true;
-        }
-        if in_test_mod > 0 {
-            brace_depth += line.matches('{').count() as i32;
-            brace_depth -= line.matches('}').count() as i32;
-            if brace_depth <= 0 {
-                in_test_mod -= 1;
-                brace_depth = 0;
-            }
-            continue;
-        }
-        if line.contains(pat) {
-            hits.push((idx + 1, line.to_string()));
-        }
-    }
-    hits
+    text.lines()
+        .enumerate()
+        .filter(|(_, line)| line.contains(pat))
+        .map(|(idx, line)| (idx + 1, line.to_string()))
+        .collect()
 }
 
 fn scan_for_pattern(pat: &str) -> Vec<(PathBuf, usize, String)> {

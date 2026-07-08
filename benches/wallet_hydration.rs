@@ -33,11 +33,11 @@ use platform_wallet_storage::{SqlitePersister, SqlitePersisterConfig};
 use dash_evo_tool::model::wallet::Wallet;
 use dash_evo_tool::model::wallet::meta::WalletMeta;
 use dash_evo_tool::model::wallet::seed_envelope::StoredSeedEnvelope;
+use dash_evo_tool::wallet_backend::DetKv;
 use dash_evo_tool::wallet_backend::hydration::hydrate_hd_wallets_from_views;
 use dash_evo_tool::wallet_backend::single_key::{SingleKeyView, open_secret_store};
 use dash_evo_tool::wallet_backend::wallet_meta::WalletMetaView;
 use dash_evo_tool::wallet_backend::wallet_seed_store::WalletSeedView;
-use dash_evo_tool::wallet_backend::{DetKv, KvAdapterError};
 
 /// Wall-clock budget per measured sample. The 100-wallet case writes
 /// the most sidecar rows at setup and benefits from the longer window;
@@ -134,7 +134,7 @@ fn seed_hd_wallets(
 /// Seed N single-key entries through `SingleKeyView::import_wif`. The
 /// in-memory index is populated as a side-effect; callers that want to
 /// measure cold hydration clear it explicitly.
-fn seed_single_key_wallets(view: &SingleKeyView<'_>, count: usize) -> Result<(), KvAdapterError> {
+fn seed_single_key_wallets(view: &SingleKeyView<'_>, count: usize) {
     for i in 0..count {
         let bytes = priv_key_bytes_for(i);
         let priv_key =
@@ -143,7 +143,6 @@ fn seed_single_key_wallets(view: &SingleKeyView<'_>, count: usize) -> Result<(),
         view.import_wif(&wif, Some(format!("bench-sk-{i}")))
             .expect("import wif");
     }
-    Ok(())
 }
 
 fn bench_hydrate_hd_wallets(c: &mut Criterion) {
@@ -201,7 +200,7 @@ fn bench_hydrate_single_key_wallets(c: &mut Criterion) {
                     {
                         let view =
                             SingleKeyView::from_views(&store, &index, BENCH_NETWORK, Some(&kv));
-                        seed_single_key_wallets(&view, n).expect("seed");
+                        seed_single_key_wallets(&view, n);
                     }
                     drop(kv);
                     drop(store);

@@ -24,28 +24,9 @@
 //! 3. **Tab-bar wiring**: ensure `IdentityHubTab::Settings` is reachable from
 //!    the default selection and that clicking it does not crash the hub.
 
-use crate::support::with_isolated_data_dir;
+use crate::support::{mount_app, with_isolated_data_dir};
 use dash_evo_tool::ui::RootScreenType;
 use dash_evo_tool::ui::identity::IdentityHubTab;
-use egui_kittest::Harness;
-
-fn mount_hub_on_settings() -> Harness<'static, dash_evo_tool::app::AppState> {
-    let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
-    let _guard = rt.enter();
-
-    let mut harness = Harness::builder().with_max_steps(100).build_eframe(|ctx| {
-        let mut app = dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
-            .expect("Failed to create AppState")
-            .with_animations(false);
-        app.selected_main_screen = RootScreenType::RootScreenIdentityHub;
-        app
-    });
-    harness.set_size(egui::vec2(1280.0, 800.0));
-    // Run a few frames so the onboarding landing renders first; later steps
-    // simulate the user clicking the Settings tab.
-    harness.run_steps(5);
-    harness
-}
 
 /// IT-SETTINGS-01 (adapted) — mounting the hub with `Settings` pre-selected
 /// must not panic, regardless of whether the harness starts on the Onboarding
@@ -57,7 +38,7 @@ fn mount_hub_on_settings() -> Harness<'static, dash_evo_tool::app::AppState> {
 #[test]
 fn settings_tab_renders_without_panicking() {
     with_isolated_data_dir(|| {
-        let mut harness = mount_hub_on_settings();
+        let mut harness = mount_app(RootScreenType::RootScreenIdentityHub);
         // Run a few more steps — if any panic occurs, this assertion never runs.
         // No extra label queries here: kittest's accessibility tree coverage for
         // non-interactive RichText labels is inconsistent across platforms, so we

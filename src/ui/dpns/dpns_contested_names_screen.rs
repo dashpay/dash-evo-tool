@@ -1894,6 +1894,20 @@ impl ScreenLike for DPNSScreen {
                 self.bulk_schedule_message =
                     Some((MessageType::Success, "Votes scheduled".to_string()));
             }
+            BackendTaskSuccessResult::ScheduledVotesInProgress(votes) => {
+                // The periodic sweep is about to cast these votes; reflect that
+                // in the list so the user sees them move before results land.
+                self.scheduled_vote_cast_in_progress = true;
+                if let Ok(mut guard) = self.scheduled_votes.lock() {
+                    for vote in &votes {
+                        if let Some((_, status)) = guard.iter_mut().find(|(v, _)| {
+                            v.contested_name == vote.contested_name && v.voter_id == vote.voter_id
+                        }) {
+                            *status = ScheduledVoteCastingStatus::InProgress;
+                        }
+                    }
+                }
+            }
             BackendTaskSuccessResult::CastScheduledVote(vote) => {
                 self.scheduled_vote_cast_in_progress = false;
                 if let Ok(mut guard) = self.scheduled_votes.lock()

@@ -23,10 +23,10 @@ pub fn add_left_panel(
     // Define the button details directly in this function.
     // The optional FeatureGate controls visibility — entries where the gate
     // evaluates to false are filtered out before rendering.
-    // The button ordering below stays stable for existing users. The new
-    // Identities hub entry (design-spec §A.1) is appended via `extend` below
-    // when the `identity-hub` Cargo feature is enabled. Both legacy entries
-    // (Dashpay, Identities) remain visible during the coexistence period.
+    // The button ordering below stays stable for existing users. The
+    // Identities hub entry (design-spec §A.1) is inserted after the legacy
+    // `Identities` entry below. Both legacy entries (Dashpay, Identities)
+    // remain visible during the coexistence period.
     let legacy_buttons: &[(&str, RootScreenType, &str, Option<FeatureGate>)] = &[
         (
             "Dashpay",
@@ -80,7 +80,6 @@ pub fn add_left_panel(
         Vec::with_capacity(legacy_buttons.len() + 1);
     for entry in legacy_buttons.iter() {
         buttons.push(*entry);
-        #[cfg(feature = "identity-hub")]
         if entry.1 == RootScreenType::RootScreenIdentities {
             buttons.push((
                 "Identity Hub",
@@ -90,10 +89,6 @@ pub fn add_left_panel(
             ));
         }
     }
-    // Avoid an unused variable warning when the feature is disabled and the
-    // hub entry is never pushed inside the loop.
-    #[cfg(not(feature = "identity-hub"))]
-    let _ = RootScreenType::RootScreenIdentities;
 
     let dark_mode = ctx.global_style().visuals.dark_mode;
 

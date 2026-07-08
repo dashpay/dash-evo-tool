@@ -15,8 +15,7 @@
 //!    user dismisses it).
 //! 5. Recent activity preview (up to 5 rows), currently an empty-state
 //!    preview; the `See all activity` link routes to the Activity tab.
-//!    Richer content is parked until the activity aggregator lands
-//!    (feature `identity-hub-activity-feed`).
+//!    Richer content is parked until the activity aggregator lands.
 //! 6. Advanced details expander (raw Identity ID, revision, last updated).
 //!
 //! Strings are taken verbatim from §B.2 / §B.3 and the wording audit in §C.
@@ -483,10 +482,8 @@ pub fn render(
             ui.add_space(Spacing::SM);
 
             // Empty-state preview — wiring to real data is parked until the
-            // unified activity aggregator lands under
-            // `identity-hub-activity-feed`. We explicitly render the design-
-            // spec empty-state sentence so reviewers can see the copy is
-            // correct.
+            // unified activity aggregator lands. We render the design-spec
+            // empty-state sentence so the copy is visible.
             ui.label(
                 RichText::new(
                     "No activity yet. When you send or receive Dash, it will show up here.",

@@ -11,7 +11,7 @@ use crate::app_dir::core_cookie_path;
 use crate::backend_task::error::{TaskError, is_rpc_connection_error};
 use crate::config::{Config, NetworkConfig};
 use crate::context::feature_gate::FeatureGate;
-use crate::context_provider_spv::SpvProvider;
+use crate::context_provider::SpvProvider;
 use crate::database::Database;
 use crate::model::fee_estimation::PlatformFeeEstimator;
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -234,13 +234,7 @@ impl AppContext {
 
         // Create the SDK context provider; bind to app context later
         // (post construction) due to circularity.
-        let spv_provider = match SpvProvider::new(db.clone(), network) {
-            Ok(p) => p,
-            Err(e) => {
-                tracing::error!(?network, "Failed to initialize SPV provider: {e}");
-                return None;
-            }
-        };
+        let spv_provider = SpvProvider::new(network);
 
         // Parse configured DAPI addresses directly (no auto-discovery at startup)
         let address_list = match &network_config.dapi_addresses {
@@ -414,14 +408,12 @@ impl AppContext {
         // Bind the SDK context provider. Chain sync is SPV-only (owned by
         // upstream platform-wallet); the SPV provider is the sole SDK
         // quorum/context provider.
-        if let Err(e) = app_context
-            .spv_context_provider
-            .read()
-            .map_err(|e| e.to_string())
-            .and_then(|provider| provider.bind_app_context(app_context.clone()))
-        {
-            tracing::error!("Failed to bind SPV provider: {}", e);
-            return None;
+        match app_context.spv_context_provider.read() {
+            Ok(provider) => provider.bind_app_context(app_context.clone()),
+            Err(e) => {
+                tracing::error!("Failed to bind SPV provider: {}", e);
+                return None;
+            }
         }
 
         Some(app_context)
@@ -868,8 +860,7 @@ impl AppContext {
         // bind_app_context also registers the provider with the SDK.
         self.spv_context_provider
             .read()?
-            .bind_app_context(self.clone())
-            .map_err(|e| TaskError::SdkInitializationFailed { detail: e })?;
+            .bind_app_context(self.clone());
 
         Ok(())
     }

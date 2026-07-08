@@ -1,7 +1,6 @@
 //! IT-ACTIVITY-01 — Activity tab shell renders.
 //!
-//! Verifies the default (feature `identity-hub-activity-feed` off) path of
-//! the Activity tab:
+//! Verifies the Activity tab shell:
 //!
 //! - Filter chips `All`, `Payments`, and `Funding` are present.
 //! - The gated empty-state message `Unified activity is coming soon.` is
@@ -52,26 +51,14 @@ fn activity_tab_shell_renders_filter_chips_and_gated_message() {
             "Activity tab must render the `Funding` filter chip"
         );
 
-        // Gated empty-state message — exact string required by the spec when
-        // the `identity-hub-activity-feed` feature is off (default). We use
-        // `query_by_label_contains` so trailing punctuation / whitespace
+        // Gated empty-state message — exact string required by the spec. We
+        // use `query_by_label_contains` so trailing punctuation / whitespace
         // variations in the accessibility tree do not make the test brittle.
-        #[cfg(not(feature = "identity-hub-activity-feed"))]
         assert!(
             harness
                 .query_by_label_contains("Unified activity is coming soon")
                 .is_some(),
-            "Default (feature off) path must show the gated empty-state message"
-        );
-
-        // When the feature is on, the placeholder copy is different — we still
-        // assert the shell renders something meaningful in that configuration.
-        #[cfg(feature = "identity-hub-activity-feed")]
-        assert!(
-            harness
-                .query_by_label_contains("Unified activity feed coming soon")
-                .is_some(),
-            "Feature-on path must show the aggregator placeholder"
+            "Activity tab must show the gated empty-state message"
         );
     });
 }

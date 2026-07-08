@@ -16,8 +16,6 @@
 //! settings and per-wallet data respectively. [`DetScope::Identity`] is
 //! active: identities, top-up history, scheduled votes, and the DashPay
 //! `private` / `address_index` overlays are all identity-scoped.
-//! [`DetScope::Token`] is defined and mapped but currently unused — the
-//! token-balance cache was removed; balances are read live from upstream.
 //!
 //! All keys carried by this adapter follow a colon-separated namespace
 //! convention, with a mandatory `<network>:` prefix for global slots so
@@ -65,9 +63,7 @@ pub const SCHEMA_VERSION: u8 = 1;
 /// a [`WalletSeedHash`] (transparently the same `[u8; 32]` the upstream
 /// store uses as its `WalletId`). `Identity` is active — identities,
 /// top-up history, scheduled votes, and the DashPay `private` /
-/// `address_index` overlays are all identity-scoped. `Token` is defined
-/// and mapped but currently unused (token balances are read live from
-/// upstream, not cached in DET).
+/// `address_index` overlays are all identity-scoped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DetScope<'a> {
     /// Global app metadata; no parent, survives wallet deletion.
@@ -78,12 +74,6 @@ pub enum DetScope<'a> {
     /// identities, top-up history, scheduled votes, and the DashPay
     /// `private` / `address_index` overlays are all identity-scoped.
     Identity(&'a [u8; 32]),
-    /// Per-token-balance metadata. Defined and mapped but currently unused —
-    /// token balances are read live from upstream rather than cached in DET.
-    Token {
-        identity_id: &'a [u8; 32],
-        token_id: &'a [u8; 32],
-    },
 }
 
 /// Map a DET-side [`DetScope`] onto the upstream [`ObjectId`]. The single
@@ -94,13 +84,6 @@ fn to_object_id(scope: DetScope<'_>) -> ObjectId {
         DetScope::Global => ObjectId::Global,
         DetScope::Wallet(seed_hash) => ObjectId::Wallet(*seed_hash),
         DetScope::Identity(identity_id) => ObjectId::Identity(*identity_id),
-        DetScope::Token {
-            identity_id,
-            token_id,
-        } => ObjectId::Token {
-            identity_id: *identity_id,
-            token_id: *token_id,
-        },
     }
 }
 

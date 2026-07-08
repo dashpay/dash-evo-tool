@@ -25,7 +25,8 @@ use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
 use crate::ui::identities::funding_common::{
-    WalletFundedScreenStep, max_amount_after_fee_reserve, spendable_covers_minimum,
+    FundingMethod, WalletFundedScreenStep, funding_method_after_switch,
+    max_amount_after_fee_reserve, spendable_covers_minimum, wallet_selection_combo,
 };
 use crate::ui::state::TrackedAssetLockCache;
 use crate::ui::theme::DashColors;
@@ -46,74 +47,10 @@ use std::collections::HashSet;
 use crate::model::amount::Amount;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::component_trait::{Component, ComponentResponse};
-use std::cmp::PartialEq;
-use std::fmt;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
 
 pub const MAX_IDENTITY_INDEX: u32 = 30;
-
-#[derive(Debug, PartialEq, Eq, Copy, Clone)]
-pub enum FundingMethod {
-    NoSelection,
-    UseUnusedAssetLock,
-    UseWalletBalance,
-    /// Use Platform Address credits
-    UsePlatformAddress,
-}
-
-impl fmt::Display for FundingMethod {
-    /// Alex-facing labels per design-spec §B.9. `UseUnusedAssetLock` deliberately
-    /// avoids "asset lock" jargon — it reads as recovering an interrupted setup.
-    /// Create-Identity context only; Top-Up uses [`FundingMethod::top_up_label`].
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let output = match self {
-            FundingMethod::NoSelection => "Select how to fund",
-            FundingMethod::UseWalletBalance => "From your wallet (recommended)",
-            FundingMethod::UseUnusedAssetLock => "Recover an unfinished funding",
-            FundingMethod::UsePlatformAddress => "Use a Platform address",
-        };
-        write!(f, "{}", output)
-    }
-}
-
-impl FundingMethod {
-    /// Top-Up-context label. Shares [`Display`]'s wording except for
-    /// `UseUnusedAssetLock`: an existing identity being topped up was never
-    /// mid-setup, so "recover an unfinished funding" doesn't fit — it just
-    /// reuses an existing funding transaction.
-    pub(crate) fn top_up_label(&self) -> &'static str {
-        match self {
-            FundingMethod::NoSelection => "Select how to fund",
-            FundingMethod::UseWalletBalance => "From your wallet (recommended)",
-            FundingMethod::UseUnusedAssetLock => "Use an existing funding transaction",
-            FundingMethod::UsePlatformAddress => "Use a Platform address",
-        }
-    }
-}
-
-/// The funding-method chooser's starting state for a wallet that either does
-/// or doesn't have spendable balance (§B.9: pre-select `UseWalletBalance`
-/// only when it is actually available; otherwise start unselected rather
-/// than land on a method the ComboBox itself wouldn't offer). Shared by
-/// `AddNewIdentityScreen` and `TopUpIdentityScreen`, which both render this
-/// same chooser. A pure function so the decision is testable without
-/// constructing a real wallet/balance snapshot.
-pub(crate) fn default_funding_state(
-    wallet_has_balance: bool,
-) -> (FundingMethod, WalletFundedScreenStep) {
-    if wallet_has_balance {
-        (
-            FundingMethod::UseWalletBalance,
-            WalletFundedScreenStep::ReadyToCreate,
-        )
-    } else {
-        (
-            FundingMethod::NoSelection,
-            WalletFundedScreenStep::ChooseFundingMethod,
-        )
-    }
-}
 
 /// Compose a wallet-picker entry as `alias — spendable-balance in DASH`.
 ///
@@ -137,6 +74,10 @@ pub struct AddNewIdentityScreen {
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     funding_address: Option<Address>,
     funding_method: Arc<RwLock<FundingMethod>>,
+    /// Whether the user has explicitly picked a funding method (as opposed to
+    /// the screen's own default pre-selection). Once true, a wallet switch
+    /// preserves the chosen method instead of recomputing the default.
+    user_chose_funding_method: bool,
     funding_amount: Option<Amount>,
     funding_amount_input: Option<AmountInput>,
     alias_input: String,
@@ -212,40 +153,18 @@ impl AddNewIdentityScreen {
             }
         }
 
-        // §B.9: `UseWalletBalance` is the recommended, pre-selected primary
-        // path — but only when the wallet can actually afford the
-        // identity-creation fee, using the same sufficiency check as the
-        // "not enough Dash" banner in `by_using_unused_balance.rs`. A dust
-        // balance (positive but below the fee) must not pre-select a path
-        // the banner immediately blocks on the very next render.
-        //
-        // TODO(bilby): this is computed once here and never recomputed —
-        // `update_wallet` and the wallet-switch handler in
-        // `render_wallet_selection` don't touch `funding_method`/`step`
-        // after a wallet switch, so switching from a funded wallet to an
-        // underfunded one keeps the stale pre-selection. Recomputing safely
-        // requires tracking "user manually chose a method" so a switch never
-        // clobbers an explicit choice; deferred pending UX confirmation on
-        // that behavior rather than guessing it here.
-        let wallet_can_afford_creation = selected_wallet.as_ref().is_some_and(|wallet| {
-            let seed_hash = wallet.read().unwrap().seed_hash();
-            let spendable_duffs = app_context.snapshot_balance(&seed_hash).spendable();
-            let key_count = default_identity_key_specs(app_context.dashpay_contract.id()).len() + 1;
-            let minimum_credits = app_context
-                .fee_estimator()
-                .estimate_identity_create(key_count);
-            spendable_covers_minimum(spendable_duffs, minimum_credits)
-        });
-        let (default_funding_method, default_step) =
-            default_funding_state(wallet_can_afford_creation);
-
+        // The funding-method pre-selection is applied by `update_wallet` below
+        // (and re-applied on every later wallet switch while the user has not
+        // made an explicit choice), so the chooser always tracks a wallet the
+        // pre-selection can actually be funded from.
         let mut created = Self {
             identity_id_number: 0, // updated later
-            step: Arc::new(RwLock::new(default_step)),
+            step: Arc::new(RwLock::new(WalletFundedScreenStep::ChooseFundingMethod)),
             funding_asset_lock: None,
             selected_wallet: None, // updated later
             funding_address: None,
-            funding_method: Arc::new(RwLock::new(default_funding_method)),
+            funding_method: Arc::new(RwLock::new(FundingMethod::NoSelection)),
+            user_chose_funding_method: false,
             funding_amount: None,
             funding_amount_input: None,
             alias_input: String::new(),
@@ -463,56 +382,34 @@ impl AddNewIdentityScreen {
     }
 
     fn render_wallet_selection(&mut self, ui: &mut Ui) -> bool {
-        let mut selected_wallet = None;
+        let mut clicked_wallet = None;
         let rendered = if self.app_context.has_wallet.load(Ordering::Relaxed) {
-            let wallets = &self.app_context.wallets.read().unwrap();
+            let wallets: Vec<_> = self
+                .app_context
+                .wallets
+                .read()
+                .map(|guard| guard.values().cloned().collect())
+                .unwrap_or_default();
+
             if wallets.len() > 1 {
-                // Label the currently selected wallet with its spendable
-                // balance, if a wallet is selected.
-                let selected_wallet_label = self
-                    .selected_wallet
-                    .as_ref()
-                    .map(|wallet| Self::wallet_picker_label(&self.app_context, wallet))
-                    .unwrap_or_else(|| "Select".to_string());
+                ui.heading("1. Choose which wallet this identity's keys will come from.");
 
-                ui.heading(
-                    "1. Choose the wallet to use in which this identities keys will come from.",
+                // Show each wallet's spendable balance next to its alias so
+                // funding sufficiency is visible before choosing.
+                let app_context = self.app_context.clone();
+                clicked_wallet = wallet_selection_combo(
+                    ui,
+                    "select_wallet",
+                    &wallets,
+                    self.selected_wallet.as_ref(),
+                    |wallet| Self::wallet_picker_label(&app_context, wallet),
+                    |_| true,
                 );
-
-                // Display the ComboBox for wallet selection
-                ComboBox::from_id_salt("select_wallet")
-                    .selected_text(selected_wallet_label)
-                    .show_ui(ui, |ui| {
-                        for wallet in wallets.values() {
-                            // Show each wallet's spendable balance next to its
-                            // alias so funding sufficiency is visible up front.
-                            let wallet_label = Self::wallet_picker_label(&self.app_context, wallet);
-
-                            let is_selected = self
-                                .selected_wallet
-                                .as_ref()
-                                .is_some_and(|selected| Arc::ptr_eq(selected, wallet));
-
-                            if ui.selectable_label(is_selected, wallet_label).clicked() {
-                                // Update the selected wallet
-                                selected_wallet = Some(wallet.clone());
-                                // Reset the funding address
-                                self.funding_address = None;
-                                // Reset the funding asset lock
-                                self.funding_asset_lock = None;
-                                // Reset the copied to clipboard state
-                                self.copied_to_clipboard = None;
-                                // Reset the step to choose funding method
-                                let mut step = self.step.write().unwrap();
-                                *step = WalletFundedScreenStep::ChooseFundingMethod;
-                            }
-                        }
-                    });
                 true
-            } else if let Some(wallet) = wallets.values().next() {
+            } else if let Some(wallet) = wallets.first() {
                 if self.selected_wallet.is_none() {
-                    // Automatically select the only available wallet
-                    selected_wallet = Some(wallet.clone());
+                    // Automatically select the only available wallet.
+                    clicked_wallet = Some(wallet.clone());
                 }
                 false
             } else {
@@ -522,26 +419,71 @@ impl AddNewIdentityScreen {
             false
         };
 
-        if let Some(wallet) = selected_wallet {
+        if let Some(wallet) = clicked_wallet {
+            // A wallet switch invalidates funding chosen for the previous
+            // wallet; `update_wallet` re-derives the funding method/step.
+            self.funding_address = None;
+            self.funding_asset_lock = None;
+            self.copied_to_clipboard = None;
             self.update_wallet(wallet);
         }
 
         rendered
     }
 
-    /// Update selected wallet and trigger all dependent actions, like updating identity keys
-    /// and identity index.
+    /// Whether `wallet` can cover the estimated identity-creation fee out of its
+    /// spendable balance — the same sufficiency check as the "not enough Dash"
+    /// banner in `by_using_unused_balance.rs`, so a dust balance (positive but
+    /// below the fee) is never treated as fundable. Poison-tolerant: a busy
+    /// wallet lock reads as "cannot afford" rather than panicking.
+    fn wallet_can_afford_creation(app_context: &AppContext, wallet: &Arc<RwLock<Wallet>>) -> bool {
+        let Ok(w) = wallet.read() else {
+            return false;
+        };
+        let spendable_duffs = app_context.snapshot_balance(&w.seed_hash()).spendable();
+        let key_count = default_identity_key_specs(app_context.dashpay_contract.id()).len() + 1;
+        let minimum_credits = app_context
+            .fee_estimator()
+            .estimate_identity_create(key_count);
+        spendable_covers_minimum(spendable_duffs, minimum_credits)
+    }
+
+    /// Update selected wallet and trigger all dependent actions, like updating
+    /// identity keys and identity index.
     ///
-    /// This function is called whenever a wallet was changed in the UI or unlocked
-    ///
-    /// TODO(bilby): does not recompute the funding-method pre-selection for
-    /// the new wallet (see the matching TODO in `new_with_wallet`).
+    /// Called whenever the wallet changes in the UI or is unlocked. While the
+    /// user has not explicitly chosen a funding method, the default
+    /// pre-selection is recomputed for the new wallet; an explicit choice is
+    /// preserved across the switch.
     fn update_wallet(&mut self, wallet: Arc<RwLock<Wallet>>) {
-        let is_open = wallet.read().expect("wallet lock poisoned").is_open();
+        let is_open = wallet.read().is_ok_and(|w| w.is_open());
 
         self.selected_wallet = Some(wallet);
         self.wallet_open_attempted = false;
         self.identity_id_number = self.next_identity_id();
+
+        let can_afford = self
+            .selected_wallet
+            .as_ref()
+            .is_some_and(|wallet| Self::wallet_can_afford_creation(&self.app_context, wallet));
+        let current = (
+            self.funding_method
+                .read()
+                .map(|m| *m)
+                .unwrap_or(FundingMethod::NoSelection),
+            self.step
+                .read()
+                .map(|s| *s)
+                .unwrap_or(WalletFundedScreenStep::ChooseFundingMethod),
+        );
+        let (method, step) =
+            funding_method_after_switch(self.user_chose_funding_method, current, can_afford);
+        if let Ok(mut m) = self.funding_method.write() {
+            *m = method;
+        }
+        if let Ok(mut s) = self.step.write() {
+            *s = step;
+        }
 
         if is_open {
             // A new wallet/index resets any in-flight warm so the cold cache
@@ -575,7 +517,9 @@ impl AddNewIdentityScreen {
             return;
         };
         let funding_method_arc = self.funding_method.clone();
-        let mut funding_method = funding_method_arc.write().unwrap(); // Write lock on funding_method
+        let Ok(mut funding_method) = funding_method_arc.write() else {
+            return;
+        };
 
         ComboBox::from_id_salt("funding_method")
             .selected_text(format!("{}", *funding_method))
@@ -589,8 +533,12 @@ impl AddNewIdentityScreen {
                     )
                     .changed()
                 {
-                    let mut step = self.step.write().unwrap();
-                    *step = WalletFundedScreenStep::ChooseFundingMethod;
+                    // Deselecting returns to auto-default behavior so a later
+                    // wallet switch may re-recommend a method.
+                    self.user_chose_funding_method = false;
+                    if let Ok(mut step) = self.step.write() {
+                        *step = WalletFundedScreenStep::ChooseFundingMethod;
+                    }
                     self.funding_amount = None;
                     self.funding_amount_input = None;
                 }
@@ -616,9 +564,11 @@ impl AddNewIdentityScreen {
                         )
                         .changed()
                 {
+                    self.user_chose_funding_method = true;
                     self.ensure_correct_identity_keys();
-                    let mut step = self.step.write().unwrap();
-                    *step = WalletFundedScreenStep::ReadyToCreate;
+                    if let Ok(mut step) = self.step.write() {
+                        *step = WalletFundedScreenStep::ReadyToCreate;
+                    }
                     self.funding_amount = None;
                     self.funding_amount_input = None;
                 }
@@ -631,10 +581,12 @@ impl AddNewIdentityScreen {
                         )
                         .changed()
                 {
+                    self.user_chose_funding_method = true;
                     self.funding_amount = None;
                     self.funding_amount_input = None;
-                    let mut step = self.step.write().unwrap(); // Write lock on step
-                    *step = WalletFundedScreenStep::ReadyToCreate;
+                    if let Ok(mut step) = self.step.write() {
+                        *step = WalletFundedScreenStep::ReadyToCreate;
+                    }
                 }
                 // Check if wallet has Platform address balance
                 let has_platform_balance = {
@@ -653,9 +605,11 @@ impl AddNewIdentityScreen {
                         )
                         .changed()
                 {
+                    self.user_chose_funding_method = true;
                     self.ensure_correct_identity_keys();
-                    let mut step = self.step.write().unwrap();
-                    *step = WalletFundedScreenStep::ReadyToCreate;
+                    if let Ok(mut step) = self.step.write() {
+                        *step = WalletFundedScreenStep::ReadyToCreate;
+                    }
                     self.platform_funding_amount = None;
                     self.platform_funding_amount_input = None;
                     self.selected_platform_address_for_funding = None;
@@ -1624,9 +1578,7 @@ impl ScreenLike for AddNewIdentityScreen {
 
 #[cfg(test)]
 mod funding_method_tests {
-    use super::{
-        FundingMethod, WalletFundedScreenStep, default_funding_state, format_wallet_picker_label,
-    };
+    use super::format_wallet_picker_label;
 
     /// The picker label pairs the wallet alias with its spendable balance,
     /// rendered in DASH, so the user can compare wallets before choosing one.
@@ -1654,83 +1606,5 @@ mod funding_method_tests {
         assert!(label.starts_with("Savings"), "keeps the alias: {label}");
         assert!(label.contains(" — "), "uses an em-dash separator: {label}");
         assert!(label.ends_with(" DASH"), "shows the DASH unit: {label}");
-    }
-
-    /// QA-001: a wallet with spendable balance defaults to the recommended
-    /// path, pre-selected and ready to go.
-    #[test]
-    fn default_funding_state_prefers_wallet_balance_when_available() {
-        assert_eq!(
-            default_funding_state(true),
-            (
-                FundingMethod::UseWalletBalance,
-                WalletFundedScreenStep::ReadyToCreate
-            )
-        );
-    }
-
-    /// QA-001: a wallet with nothing to fund from must not default to a
-    /// method the ComboBox itself wouldn't offer — that was the fresh-wallet
-    /// dead end. It starts unselected instead.
-    #[test]
-    fn default_funding_state_falls_back_to_no_selection_without_balance() {
-        assert_eq!(
-            default_funding_state(false),
-            (
-                FundingMethod::NoSelection,
-                WalletFundedScreenStep::ChooseFundingMethod
-            )
-        );
-    }
-
-    /// Exhaustive over the enum so a new variant forces a copy decision here
-    /// instead of silently falling back to a Debug render in the UI.
-    #[test]
-    fn display_is_jargon_free_for_every_variant() {
-        for method in [
-            FundingMethod::NoSelection,
-            FundingMethod::UseUnusedAssetLock,
-            FundingMethod::UseWalletBalance,
-            FundingMethod::UsePlatformAddress,
-        ] {
-            let label = format!("{method}");
-            let debug = format!("{method:?}");
-            assert_ne!(label, debug, "label must not be the Debug repr");
-            assert!(
-                !label.contains("Asset Lock") && !label.contains("asset lock"),
-                "label must not leak asset-lock jargon: {label}"
-            );
-        }
-    }
-
-    #[test]
-    fn use_wallet_balance_is_the_recommended_primary_path() {
-        assert_eq!(
-            format!("{}", FundingMethod::UseWalletBalance),
-            "From your wallet (recommended)"
-        );
-    }
-
-    /// Top-Up's asset-lock label must not describe "recovering" a funding
-    /// setup — an identity being topped up already exists and was never
-    /// mid-creation. Every other variant keeps `Display`'s wording.
-    #[test]
-    fn top_up_label_differs_only_for_asset_lock() {
-        assert_eq!(
-            FundingMethod::UseUnusedAssetLock.top_up_label(),
-            "Use an existing funding transaction"
-        );
-        assert_ne!(
-            FundingMethod::UseUnusedAssetLock.top_up_label(),
-            format!("{}", FundingMethod::UseUnusedAssetLock)
-        );
-
-        for method in [
-            FundingMethod::NoSelection,
-            FundingMethod::UseWalletBalance,
-            FundingMethod::UsePlatformAddress,
-        ] {
-            assert_eq!(method.top_up_label(), format!("{method}"));
-        }
     }
 }

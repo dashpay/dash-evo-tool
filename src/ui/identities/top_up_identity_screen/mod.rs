@@ -23,8 +23,10 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
-use crate::ui::identities::add_new_identity_screen::{FundingMethod, default_funding_state};
-use crate::ui::identities::funding_common::{WalletFundedScreenStep, max_amount_after_fee_reserve};
+use crate::ui::identities::funding_common::{
+    FundingMethod, WalletFundedScreenStep, default_funding_state, max_amount_after_fee_reserve,
+    spendable_covers_minimum, wallet_selection_combo,
+};
 use crate::ui::state::TrackedAssetLockCache;
 use crate::ui::{MessageType, ScreenLike};
 use dash_sdk::dashcore_rpc::dashcore::Address;
@@ -96,110 +98,119 @@ impl TopUpIdentityScreen {
         }
     }
 
+    /// Current funding step, defaulting to the initial chooser step if the lock
+    /// is momentarily poisoned rather than panicking.
+    fn current_step(&self) -> WalletFundedScreenStep {
+        self.step
+            .read()
+            .map(|s| *s)
+            .unwrap_or(WalletFundedScreenStep::ChooseFundingMethod)
+    }
+
+    /// Set the funding step, silently skipping the write if the lock is
+    /// poisoned (a poisoned step lock never blocks the UI).
+    fn set_step(&self, step: WalletFundedScreenStep) {
+        if let Ok(mut s) = self.step.write() {
+            *s = step;
+        }
+    }
+
+    /// Current funding method, defaulting to `NoSelection` if the lock is
+    /// momentarily poisoned rather than panicking.
+    fn current_funding_method(&self) -> FundingMethod {
+        self.funding_method
+            .read()
+            .map(|m| *m)
+            .unwrap_or(FundingMethod::NoSelection)
+    }
+
+    /// Whether `wallet` currently has the resources the given funding method
+    /// needs. A busy wallet lock reads as "no resources" rather than panicking.
+    fn wallet_has_resources_for(
+        &self,
+        wallet: &Arc<RwLock<Wallet>>,
+        method: FundingMethod,
+    ) -> bool {
+        let Ok(w) = wallet.read() else {
+            return false;
+        };
+        match method {
+            FundingMethod::UseWalletBalance => {
+                self.app_context.snapshot_has_balance(&w.seed_hash())
+            }
+            FundingMethod::UseUnusedAssetLock => self.asset_lock_cache.has_unused(&w.seed_hash()),
+            _ => true,
+        }
+    }
+
     fn render_wallet_selection(&mut self, ui: &mut Ui) -> bool {
         let mut selected_wallet_update: Option<Arc<RwLock<Wallet>>> = None;
         let mut step_update_method: Option<FundingMethod> = None;
 
         let rendered = if self.app_context.has_wallet.load(Ordering::Relaxed) {
-            let wallets_guard = self.app_context.wallets.read().unwrap();
-            let wallets = &*wallets_guard;
+            let wallets: Vec<_> = self
+                .app_context
+                .wallets
+                .read()
+                .map(|guard| guard.values().cloned().collect())
+                .unwrap_or_default();
 
             if wallets.len() > 1 {
-                // Cache current funding method to avoid holding the lock across UI callbacks
-                let funding_method = *self.funding_method.read().unwrap();
-
-                // Retrieve the alias of the currently selected wallet, if any
-                let selected_wallet_alias = self
-                    .wallet
-                    .as_ref()
-                    .and_then(|wallet| wallet.read().ok()?.alias.clone())
-                    .unwrap_or_else(|| "Select".to_string());
-
-                // Display the ComboBox for wallet selection
-                ComboBox::from_id_salt("select_wallet")
-                    .selected_text(selected_wallet_alias)
-                    .show_ui(ui, |ui| {
-                        for wallet in wallets.values() {
-                            let (wallet_alias, has_required_resources) = {
-                                let wallet_read = wallet.read().unwrap();
-                                let alias = wallet_read
-                                    .alias
-                                    .clone()
-                                    .unwrap_or_else(|| "Unnamed Wallet".to_string());
-
-                                let has_resources = match funding_method {
-                                    FundingMethod::UseWalletBalance => self
-                                        .app_context
-                                        .snapshot_has_balance(&wallet_read.seed_hash()),
-                                    FundingMethod::UseUnusedAssetLock => {
-                                        self.asset_lock_cache.has_unused(&wallet_read.seed_hash())
-                                    }
-                                    _ => true,
-                                };
-
-                                (alias, has_resources)
-                            };
-
-                            let is_selected = self
-                                .wallet
-                                .as_ref()
-                                .is_some_and(|selected| Arc::ptr_eq(selected, wallet));
-
-                            ui.add_enabled_ui(has_required_resources, |ui| {
-                                if ui.selectable_label(is_selected, wallet_alias).clicked() {
-                                    selected_wallet_update = Some(wallet.clone());
-                                    step_update_method = Some(funding_method);
-                                }
-                            });
-                        }
-                    });
+                let funding_method = self.current_funding_method();
+                selected_wallet_update = wallet_selection_combo(
+                    ui,
+                    "select_wallet",
+                    &wallets,
+                    self.wallet.as_ref(),
+                    |wallet| {
+                        wallet
+                            .read()
+                            .ok()
+                            .and_then(|w| w.alias.clone())
+                            .unwrap_or_else(|| "Unnamed Wallet".to_string())
+                    },
+                    |wallet| self.wallet_has_resources_for(wallet, funding_method),
+                );
+                if selected_wallet_update.is_some() {
+                    step_update_method = Some(funding_method);
+                }
                 true
-            } else if let Some(wallet) = wallets.values().next() {
+            } else if let Some(wallet) = wallets.first() {
                 if self.wallet.is_none() {
                     // §B.9 / QA-006: the very first time a wallet resolves with
                     // nothing chosen yet, apply the same pre-selection the
                     // create-identity wizard uses (`default_funding_state`) —
-                    // recommend `UseWalletBalance` only when this wallet
-                    // actually has funds to offer it with.
-                    let funding_method_snapshot = self.funding_method.read().ok().map(|m| *m);
-                    if funding_method_snapshot == Some(FundingMethod::NoSelection) {
-                        let wallet_has_balance = {
-                            let wallet_read = wallet.read().unwrap();
-                            self.app_context
-                                .snapshot_has_balance(&wallet_read.seed_hash())
-                        };
-                        let (recommended, _) = default_funding_state(wallet_has_balance);
-                        *self.funding_method.write().unwrap() = recommended;
+                    // recommend `UseWalletBalance` only when this wallet can
+                    // actually cover the estimated top-up fee. A dust or locked
+                    // balance (positive but below the fee) must not pre-select a
+                    // path the next render blocks on.
+                    if self.current_funding_method() == FundingMethod::NoSelection {
+                        let can_afford = wallet
+                            .read()
+                            .ok()
+                            .map(|w| {
+                                let spendable = self
+                                    .app_context
+                                    .snapshot_balance(&w.seed_hash())
+                                    .spendable();
+                                let minimum =
+                                    self.app_context.fee_estimator().estimate_identity_topup();
+                                spendable_covers_minimum(spendable, minimum)
+                            })
+                            .unwrap_or(false);
+                        let (recommended, _) = default_funding_state(can_afford);
+                        if let Ok(mut m) = self.funding_method.write() {
+                            *m = recommended;
+                        }
                     }
 
-                    // Re-read to pick up the recommendation just written above.
-                    // Skip the rest of this block if the earlier read already
-                    // failed — RwLock poisoning is sticky, so this read would
-                    // fail the same way and panicking here would defeat the
-                    // graceful degradation above.
-                    let funding_method = funding_method_snapshot
-                        .and_then(|_| self.funding_method.read().ok().map(|m| *m));
-
-                    if let Some(funding_method) = funding_method {
-                        // Check if the wallet has the required resources
-                        let has_required_resources = {
-                            let wallet_read = wallet.read().unwrap();
-                            match funding_method {
-                                FundingMethod::UseWalletBalance => self
-                                    .app_context
-                                    .snapshot_has_balance(&wallet_read.seed_hash()),
-                                FundingMethod::UseUnusedAssetLock => {
-                                    self.asset_lock_cache.has_unused(&wallet_read.seed_hash())
-                                }
-                                _ => true,
-                            }
-                        };
-
-                        if has_required_resources {
-                            // Automatically select the only available wallet from app_context
-                            selected_wallet_update = Some(wallet.clone());
-                            step_update_method = Some(funding_method);
-                        }
+                    let funding_method = self.current_funding_method();
+                    if funding_method != FundingMethod::NoSelection
+                        && self.wallet_has_resources_for(wallet, funding_method)
+                    {
+                        // Automatically select the only available wallet.
+                        selected_wallet_update = Some(wallet.clone());
+                        step_update_method = Some(funding_method);
                     }
                 }
                 false
@@ -221,8 +232,7 @@ impl TopUpIdentityScreen {
             if let Some(method) = step_update_method {
                 self.update_step_after_wallet_change(method);
             } else {
-                let mut step = self.step.write().unwrap();
-                *step = WalletFundedScreenStep::ChooseFundingMethod;
+                self.set_step(WalletFundedScreenStep::ChooseFundingMethod);
             }
         }
 
@@ -231,44 +241,48 @@ impl TopUpIdentityScreen {
 
     /// Adjust the current step to match the funding method after a wallet switch.
     fn update_step_after_wallet_change(&mut self, funding_method: FundingMethod) {
-        let mut step = self.step.write().unwrap();
-        *step = match funding_method {
+        self.set_step(match funding_method {
             FundingMethod::UseUnusedAssetLock
             | FundingMethod::UseWalletBalance
             | FundingMethod::UsePlatformAddress => WalletFundedScreenStep::ReadyToCreate,
             FundingMethod::NoSelection => WalletFundedScreenStep::ChooseFundingMethod,
-        };
+        });
     }
 
     fn render_funding_method(&mut self, ui: &mut egui::Ui) {
         let funding_method_arc = self.funding_method.clone();
-        let mut funding_method = funding_method_arc.write().unwrap();
+        let Ok(mut funding_method) = funding_method_arc.write() else {
+            return;
+        };
 
         // Check if any wallet has unused asset locks, balance, or Platform address balance
         let (has_any_unused_asset_lock, has_any_balance, has_any_platform_balance) = {
-            let wallets = self.app_context.wallets.read().unwrap();
             let mut has_unused_asset_lock = false;
             let mut has_balance = false;
             let mut has_platform_balance = false;
 
-            for wallet in wallets.values() {
-                let wallet = wallet.read().unwrap();
-                let seed_hash = wallet.seed_hash();
-                // Offer the option on a failed fetch too, so the user can reach
-                // the picker's Retry rather than the option vanishing.
-                if self.asset_lock_cache.has_unused(&seed_hash)
-                    || self.asset_lock_cache.is_failed(&seed_hash)
-                {
-                    has_unused_asset_lock = true;
-                }
-                if self.app_context.snapshot_has_balance(&seed_hash) {
-                    has_balance = true;
-                }
-                if wallet.total_platform_balance() > 0 {
-                    has_platform_balance = true;
-                }
-                if has_unused_asset_lock && has_balance && has_platform_balance {
-                    break; // No need to check further
+            if let Ok(wallets) = self.app_context.wallets.read() {
+                for wallet in wallets.values() {
+                    let Ok(wallet) = wallet.read() else {
+                        continue;
+                    };
+                    let seed_hash = wallet.seed_hash();
+                    // Offer the option on a failed fetch too, so the user can
+                    // reach the picker's Retry rather than the option vanishing.
+                    if self.asset_lock_cache.has_unused(&seed_hash)
+                        || self.asset_lock_cache.is_failed(&seed_hash)
+                    {
+                        has_unused_asset_lock = true;
+                    }
+                    if self.app_context.snapshot_has_balance(&seed_hash) {
+                        has_balance = true;
+                    }
+                    if wallet.total_platform_balance() > 0 {
+                        has_platform_balance = true;
+                    }
+                    if has_unused_asset_lock && has_balance && has_platform_balance {
+                        break; // No need to check further
+                    }
                 }
             }
 
@@ -294,8 +308,7 @@ impl TopUpIdentityScreen {
                         )
                         .changed()
                     {
-                        let mut step = self.step.write().unwrap();
-                        *step = WalletFundedScreenStep::ReadyToCreate;
+                        self.set_step(WalletFundedScreenStep::ReadyToCreate);
                     }
                 });
 
@@ -308,8 +321,7 @@ impl TopUpIdentityScreen {
                         )
                         .changed()
                     {
-                        let mut step = self.step.write().unwrap();
-                        *step = WalletFundedScreenStep::ReadyToCreate;
+                        self.set_step(WalletFundedScreenStep::ReadyToCreate);
                     }
                 });
 
@@ -322,8 +334,7 @@ impl TopUpIdentityScreen {
                         )
                         .changed()
                     {
-                        let mut step = self.step.write().unwrap();
-                        *step = WalletFundedScreenStep::ReadyToCreate;
+                        self.set_step(WalletFundedScreenStep::ReadyToCreate);
                     }
                 });
             });
@@ -355,8 +366,7 @@ impl TopUpIdentityScreen {
                         },
                     };
 
-                    let mut step = self.step.write().unwrap();
-                    *step = WalletFundedScreenStep::WaitingForPlatformAcceptance;
+                    self.set_step(WalletFundedScreenStep::WaitingForPlatformAcceptance);
 
                     AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::TopUpIdentity(
                         identity_input,
@@ -390,8 +400,7 @@ impl TopUpIdentityScreen {
                     ),
                 };
 
-                let mut step = self.step.write().unwrap();
-                *step = WalletFundedScreenStep::WaitingForAssetLock;
+                self.set_step(WalletFundedScreenStep::WaitingForAssetLock);
 
                 // Create the backend task to top_up the identity
                 AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::TopUpIdentity(
@@ -403,7 +412,7 @@ impl TopUpIdentityScreen {
     }
 
     fn top_up_funding_amount_input(&mut self, ui: &mut egui::Ui) {
-        let funding_method = *self.funding_method.read().unwrap();
+        let funding_method = self.current_funding_method();
 
         // Only apply max amount restriction when using wallet balance.
         let (max_amount, show_max_button, fee_hint) =
@@ -468,11 +477,11 @@ impl ScreenLike for TopUpIdentityScreen {
         // Banner display is handled globally by AppState; this is only for side-effects.
         if matches!(message_type, MessageType::Error | MessageType::Warning) {
             // Reset step so UI is not stuck on waiting messages
-            let mut step = self.step.write().unwrap();
-            if *step == WalletFundedScreenStep::WaitingForPlatformAcceptance
-                || *step == WalletFundedScreenStep::WaitingForAssetLock
+            let step = self.current_step();
+            if step == WalletFundedScreenStep::WaitingForPlatformAcceptance
+                || step == WalletFundedScreenStep::WaitingForAssetLock
             {
-                *step = WalletFundedScreenStep::ReadyToCreate;
+                self.set_step(WalletFundedScreenStep::ReadyToCreate);
             }
         }
     }
@@ -495,43 +504,32 @@ impl ScreenLike for TopUpIdentityScreen {
             self.funding_amount_input = None;
             self.copied_to_clipboard = None;
 
-            let mut step = self.step.write().unwrap();
-            *step = WalletFundedScreenStep::Success;
+            self.set_step(WalletFundedScreenStep::Success);
             return;
         }
 
-        let mut step = self.step.write().unwrap();
-        let current_step = *step;
-        match current_step {
-            WalletFundedScreenStep::ChooseFundingMethod => {}
-            WalletFundedScreenStep::WaitingOnFunds => {}
-            WalletFundedScreenStep::FundsReceived => {}
-            WalletFundedScreenStep::ReadyToCreate => {}
-            WalletFundedScreenStep::WaitingForAssetLock => {
-                if let BackendTaskSuccessResult::CoreItem(
-                    CoreItem::ReceivedAvailableUTXOTransaction(tx, _),
-                ) = &backend_task_success_result
-                    && let Some(TransactionPayload::AssetLockPayloadType(asset_lock_payload)) =
-                        &tx.special_transaction_payload
-                    && asset_lock_payload.credit_outputs.iter().any(|tx_out| {
-                        let Ok(address) =
-                            Address::from_script(&tx_out.script_pubkey, self.app_context.network)
-                        else {
-                            return false;
-                        };
-                        if let Some(wallet) = &self.wallet {
-                            let wallet = wallet.read().unwrap();
-                            wallet.known_addresses.contains_key(&address)
-                        } else {
-                            false
-                        }
-                    })
-                {
-                    *step = WalletFundedScreenStep::WaitingForPlatformAcceptance;
+        if self.current_step() == WalletFundedScreenStep::WaitingForAssetLock
+            && let BackendTaskSuccessResult::CoreItem(CoreItem::ReceivedAvailableUTXOTransaction(
+                tx,
+                _,
+            )) = &backend_task_success_result
+            && let Some(TransactionPayload::AssetLockPayloadType(asset_lock_payload)) =
+                &tx.special_transaction_payload
+            && asset_lock_payload.credit_outputs.iter().any(|tx_out| {
+                let Ok(address) =
+                    Address::from_script(&tx_out.script_pubkey, self.app_context.network)
+                else {
+                    return false;
+                };
+                match &self.wallet {
+                    Some(wallet) => wallet
+                        .read()
+                        .is_ok_and(|w| w.known_addresses.contains_key(&address)),
+                    None => false,
                 }
-            }
-            WalletFundedScreenStep::WaitingForPlatformAcceptance => {}
-            WalletFundedScreenStep::Success => {}
+            })
+        {
+            self.set_step(WalletFundedScreenStep::WaitingForPlatformAcceptance);
         }
     }
 
@@ -565,7 +563,7 @@ impl ScreenLike for TopUpIdentityScreen {
             let mut inner_action = AppAction::None;
 
             ScrollArea::vertical().show(ui, |ui| {
-                let step = { *self.step.read().unwrap() };
+                let step = self.current_step();
                 if step == WalletFundedScreenStep::Success {
                     inner_action |= self.show_success(ui);
                     return;
@@ -611,7 +609,7 @@ impl ScreenLike for TopUpIdentityScreen {
                 ui.add_space(10.0);
 
                 // Extract the funding method from the RwLock to minimize borrow scope
-                let funding_method = *self.funding_method.read().unwrap();
+                let funding_method = self.current_funding_method();
                 if funding_method == FundingMethod::NoSelection {
                     return;
                 }
@@ -621,7 +619,12 @@ impl ScreenLike for TopUpIdentityScreen {
                     || funding_method == FundingMethod::UsePlatformAddress
                 {
                     // Check if there's more than one wallet to show selection UI
-                    let wallet_count = self.app_context.wallets.read().unwrap().len();
+                    let wallet_count = self
+                        .app_context
+                        .wallets
+                        .read()
+                        .map(|w| w.len())
+                        .unwrap_or(0);
 
                     if wallet_count > 1 {
                         ui.horizontal(|ui| {

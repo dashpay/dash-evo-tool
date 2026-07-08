@@ -2,51 +2,21 @@ use crate::app::AppAction;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::ui::MessageType;
 use crate::ui::components::message_banner::MessageBanner;
-use crate::ui::identities::add_new_identity_screen::FundingMethod;
-use crate::ui::identities::funding_common::{asset_lock_address, asset_lock_status_label};
+use crate::ui::identities::funding_common::{
+    FundingAssetLockPicker, FundingMethod, actionable_asset_locks, asset_lock_address,
+    asset_lock_status_label,
+};
 use crate::ui::identities::top_up_identity_screen::{TopUpIdentityScreen, WalletFundedScreenStep};
 use crate::ui::theme::DashColors;
 use egui::{Color32, Frame, Margin, RichText, Ui};
-use platform_wallet::wallet::asset_lock::tracked::{AssetLockStatus, TrackedAssetLock};
 
 impl TopUpIdentityScreen {
     fn render_choose_funding_asset_lock(&mut self, ui: &mut egui::Ui) {
-        let Some(selected_wallet) = self.wallet.clone() else {
-            ui.label("No wallet selected.");
-            return;
-        };
-
-        let seed_hash = match selected_wallet.read() {
-            Ok(w) => w.seed_hash(),
-            Err(_) => {
-                ui.label("Wallet is busy. Try again in a moment.");
-                return;
-            }
-        };
-
-        if self.asset_lock_cache.is_failed(&seed_hash) {
-            ui.label("Couldn't load your unfinished funding.");
-            if ui.button("Retry").clicked() {
-                self.asset_lock_cache.invalidate_one(&seed_hash);
-            }
-            return;
-        }
-
-        let Some(all_tracked) = self.asset_lock_cache.get(&seed_hash) else {
-            ui.label("Loading your unfinished funding…");
-            return;
-        };
-
-        let tracked: Vec<TrackedAssetLock> = all_tracked
-            .iter()
-            .filter(|t| !matches!(t.status, AssetLockStatus::Consumed))
-            .cloned()
-            .collect();
-
-        if tracked.is_empty() {
-            ui.label("No unfinished funding was found.");
-            return;
-        }
+        let tracked =
+            match actionable_asset_locks(ui, &mut self.asset_lock_cache, self.wallet.as_ref()) {
+                FundingAssetLockPicker::Handled => return,
+                FundingAssetLockPicker::Available(tracked) => tracked,
+            };
 
         ui.heading("Select the unfinished funding to use:");
 
@@ -74,8 +44,7 @@ impl TopUpIdentityScreen {
                     if lock.proof.is_some() {
                         if ui.button("Select").clicked() {
                             self.funding_asset_lock = Some(lock.out_point);
-                            let mut step = self.step.write().unwrap();
-                            *step = WalletFundedScreenStep::ReadyToCreate;
+                            self.set_step(WalletFundedScreenStep::ReadyToCreate);
                         }
                     } else if ui.button("Select").clicked() {
                         MessageBanner::set_global(
@@ -96,7 +65,7 @@ impl TopUpIdentityScreen {
         step_number: u32,
     ) -> AppAction {
         let mut action = AppAction::None;
-        let step = *self.step.read().unwrap();
+        let step = self.current_step();
 
         ui.heading(
             format!("{step_number}. Choose the unfinished funding you'd like to use.").as_str(),

@@ -178,7 +178,7 @@ impl TopUpIdentityScreen {
         let can_top_up =
             self.selected_platform_address.is_some() && has_valid_amount && self.wallet.is_some();
 
-        let step = { *self.step.read().unwrap() };
+        let step = self.current_step();
 
         ui.horizontal(|ui| {
             let button_text = match step {
@@ -276,11 +276,7 @@ impl TopUpIdentityScreen {
         let mut inputs: BTreeMap<PlatformAddress, Credits> = BTreeMap::new();
         inputs.insert(platform_addr, amount);
 
-        // Update step
-        {
-            let mut step = self.step.write().unwrap();
-            *step = WalletFundedScreenStep::WaitingForPlatformAcceptance;
-        }
+        self.set_step(WalletFundedScreenStep::WaitingForPlatformAcceptance);
 
         Ok(AppAction::BackendTask(BackendTask::IdentityTask(
             IdentityTask::TopUpIdentityFromPlatformAddresses {

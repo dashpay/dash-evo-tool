@@ -174,7 +174,7 @@ async fn cd_cold_boot_identity_register_and_topup() {
                 "CD scenario D: top-up returned wrong identity id"
             );
             assert!(
-                fee_result.actual_fee > 0,
+                fee_result.actual_fee.unwrap_or(0) > 0,
                 "CD scenario D: top-up fee must be > 0"
             );
         }

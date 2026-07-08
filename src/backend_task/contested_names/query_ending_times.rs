@@ -61,24 +61,7 @@ impl AppContext {
                 }
                 Err(e) => {
                     tracing::error!("Error fetching vote polls: {}", e);
-                    if let dash_sdk::Error::Proof(dash_sdk::ProofVerifierError::GroveDBError {
-                        proof_bytes,
-                        height,
-                        time_ms,
-                        error,
-                        ..
-                    }) = &e
-                    {
-                        tracing::error!(
-                            target: "proof_log",
-                            request_type = ?RequestType::GetVotePollsByEndDate,
-                            height = *height,
-                            time_ms = *time_ms,
-                            proof_bytes_len = proof_bytes.len(),
-                            error = %error,
-                            "drive proof verification failed while querying vote poll end times",
-                        );
-                    }
+                    super::log_contested_proof_error(&e, RequestType::GetVotePollsByEndDate);
                     // TODO: Replace the "contract not found" string match with a
                     // structural SDK variant when one is available.
                     if matches!(e, dash_sdk::Error::StaleNode(_))

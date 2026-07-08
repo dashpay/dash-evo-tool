@@ -95,20 +95,30 @@ fn is_terminal_storage_open_error(error: &TaskError) -> bool {
     )
 }
 
-/// Information about fees paid for a platform state transition
+/// Information about fees for a platform state transition.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FeeResult {
-    /// The fee that was estimated before the operation
+    /// The fee that was estimated before the operation.
     pub estimated_fee: u64,
-    /// The actual fee that was paid (in credits)
-    pub actual_fee: u64,
+    /// The actual fee paid, in credits. `None` when the operation only knows
+    /// the estimate (the platform did not report a settled fee).
+    pub actual_fee: Option<u64>,
 }
 
 impl FeeResult {
+    /// Records both an estimate and the settled actual fee.
     pub fn new(estimated_fee: u64, actual_fee: u64) -> Self {
         Self {
             estimated_fee,
-            actual_fee,
+            actual_fee: Some(actual_fee),
+        }
+    }
+
+    /// Records only the estimate; no actual fee is known.
+    pub fn estimated_only(estimated_fee: u64) -> Self {
+        Self {
+            estimated_fee,
+            actual_fee: None,
         }
     }
 }

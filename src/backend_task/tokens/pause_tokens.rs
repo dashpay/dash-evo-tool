@@ -45,24 +45,22 @@ impl AppContext {
             builder = builder.with_state_transition_creation_options(options);
         }
 
-        let state_transition = builder
-            .sign(sdk, &signing_key, actor_identity, self.platform_version())
-            .await
-            .map_err(TaskError::from)?;
-
-        // Broadcast
-        let proof_result = state_transition
-            .broadcast_and_wait::<StateTransitionProofResult>(sdk, None)
-            .await
-            .map_err(|e| self.log_drive_proof_error(e, RequestType::BroadcastStateTransition))?;
-
-        // Log proof result for audit trail
-        tracing::info!("PauseTokens proof result: {}", proof_result);
-
-        // Return success with fee result
-        use crate::backend_task::FeeResult;
-        let estimated_fee = self.fee_estimator().estimate_document_batch(1);
-        let fee_result = FeeResult::new(estimated_fee, estimated_fee);
-        Ok(BackendTaskSuccessResult::PausedTokens(fee_result))
+        self.execute_token_op(
+            async {
+                let state_transition = builder
+                    .sign(sdk, &signing_key, actor_identity, self.platform_version())
+                    .await
+                    .map_err(TaskError::from)?;
+                state_transition
+                    .broadcast_and_wait::<StateTransitionProofResult>(sdk, None)
+                    .await
+                    .map_err(|e| {
+                        self.log_drive_proof_error(e, RequestType::BroadcastStateTransition)
+                    })
+            },
+            |proof_result| tracing::info!("PauseTokens proof result: {}", proof_result),
+            BackendTaskSuccessResult::PausedTokens,
+        )
+        .await
     }
 }

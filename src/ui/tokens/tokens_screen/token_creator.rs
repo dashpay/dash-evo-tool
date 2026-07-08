@@ -654,30 +654,6 @@ impl TokensScreen {
                                             crate::ui::helpers::info_icon_button(ui, "The decimal places of the token, for example Dash and Bitcoin use 8. The minimum indivisible amount is a Duff or a Satoshi respectively. If you put a value greater than 0 this means that it is indicated that the consensus is that 10^(number entered) is what represents 1 full unit of the token.");
                                         });
                                         ui.end_row();
-
-                                        // Marketplace Trade Mode
-                                        ui.horizontal(|ui| {
-                                            ui.label("Marketplace Trade Mode:");
-                                            ComboBox::from_id_salt("marketplace_trade_mode_selector")
-                                                .selected_text("Not Tradeable")
-                                                .show_ui(ui, |ui| {
-                                                    ui.selectable_value(
-                                                        &mut self.marketplace_trade_mode,
-                                                        0,
-                                                        "Not Tradeable",
-                                                    );
-                                                    // Future trade modes can be added here when SDK supports them
-                                                });
-
-                                            crate::ui::helpers::info_icon_button(ui,
-                                                "Currently, all tokens are created as 'Not Tradeable'. \
-                                                Future updates will add more trade mode options.\n\n\
-                                                IMPORTANT: If you want to enable marketplace trading in the future, \
-                                                make sure to set the 'Marketplace Trade Mode Change' rules in the Action Rules \
-                                                section to something other than 'No One'. Otherwise, trading can never be enabled."
-                                            );
-                                        });
-                                        ui.end_row();
                                     });
                             });
                         }
@@ -905,33 +881,10 @@ impl TokensScreen {
                                         // We have the parsed token creation arguments
                                         // We can now call build_data_contract_v1_with_one_token using `args`
                                         self.cached_build_args = Some(args.clone());
+                                        let owner_id = args.identity_id;
                                         let data_contract = match self.app_context.build_data_contract_v1_with_one_token(
-                                            args.identity_id,
-                                            args.token_names,
-                                            args.contract_keywords,
-                                            args.token_description,
-                                            args.should_capitalize,
-                                            args.decimals,
-                                            args.base_supply,
-                                            args.max_supply,
-                                            args.start_paused,
-                                            args.allow_transfers_to_frozen_identities,
-                                            args.keeps_history,
-                                            args.main_control_group,
-                                            args.manual_minting_rules,
-                                            args.manual_burning_rules,
-                                            args.freeze_rules,
-                                            args.unfreeze_rules,
-                                            args.destroy_frozen_funds_rules,
-                                            args.emergency_action_rules,
-                                            args.max_supply_change_rules,
-                                            args.conventions_change_rules,
-                                            args.main_control_group_change_authorized,
-                                            args.distribution_rules,
-                                            args.groups,
-                                            args.document_schemas,
-                                            args.marketplace_trade_mode,
-                                            args.marketplace_rules,
+                                            owner_id,
+                                            args.into_contract_params(),
                                         ) {
                                             Ok(dc) => dc,
                                             Err(e) => {
@@ -1202,7 +1155,6 @@ impl TokensScreen {
             distribution_rules: TokenDistributionRules::V0(distribution_rules),
             groups,
             document_schemas: self.parsed_document_schemas.clone(),
-            marketplace_trade_mode: self.marketplace_trade_mode,
             marketplace_rules,
             change_direct_purchase_pricing_rules,
         })
@@ -1435,10 +1387,9 @@ impl TokensScreen {
             self.estimate_registration_cost() as f64 / 100_000_000_000.0
         ));
 
-        // Check if marketplace is locked to NotTradeable forever
+        // Tokens are always created NotTradeable; warn if that can never change.
         let mut is_danger_mode = false;
         if let Some(args) = &self.cached_build_args {
-            let is_not_tradeable = args.marketplace_trade_mode == 0;
             let marketplace_rules_locked = matches!(
                 args.marketplace_rules,
                 ChangeControlRules::V0(ChangeControlRulesV0 {
@@ -1448,7 +1399,7 @@ impl TokensScreen {
                 })
             );
 
-            if is_not_tradeable && marketplace_rules_locked {
+            if marketplace_rules_locked {
                 confirmation_message.push_str("\n\nWARNING: This token will be permanently set to NotTradeable and can NEVER be made tradeable in the future!");
                 is_danger_mode = true;
             }
@@ -1503,35 +1454,7 @@ impl TokensScreen {
                         BackendTask::TokenTask(Box::new(TokenTask::RegisterTokenContract {
                             identity,
                             signing_key: Box::new(signing_key),
-
-                            token_names: args.token_names,
-                            contract_keywords: args.contract_keywords,
-                            token_description: args.token_description,
-                            should_capitalize: args.should_capitalize,
-                            decimals: args.decimals,
-                            base_supply: args.base_supply,
-                            max_supply: args.max_supply,
-                            start_paused: args.start_paused,
-                            allow_transfers_to_frozen_identities: args
-                                .allow_transfers_to_frozen_identities,
-                            keeps_history: args.keeps_history,
-                            main_control_group: args.main_control_group,
-
-                            manual_minting_rules: args.manual_minting_rules,
-                            manual_burning_rules: args.manual_burning_rules,
-                            freeze_rules: args.freeze_rules,
-                            unfreeze_rules: Box::new(args.unfreeze_rules),
-                            destroy_frozen_funds_rules: Box::new(args.destroy_frozen_funds_rules),
-                            emergency_action_rules: Box::new(args.emergency_action_rules),
-                            max_supply_change_rules: Box::new(args.max_supply_change_rules),
-                            conventions_change_rules: Box::new(args.conventions_change_rules),
-                            main_control_group_change_authorized: args
-                                .main_control_group_change_authorized,
-                            distribution_rules: args.distribution_rules,
-                            groups: args.groups,
-                            document_schemas: args.document_schemas,
-                            marketplace_trade_mode: args.marketplace_trade_mode,
-                            marketplace_rules: args.marketplace_rules,
+                            params: Box::new(args.into_contract_params()),
                         })),
                         BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances)),
                     ];

@@ -971,7 +971,7 @@ impl AppContext {
         // Store the updated identity (use update to preserve wallet association)
         self.update_local_qualified_identity(&updated_identity)?;
 
-        let fee_result = FeeResult::new(estimated_fee, estimated_fee);
+        let fee_result = FeeResult::estimated_only(estimated_fee);
         Ok(BackendTaskSuccessResult::ToppedUpIdentity(
             updated_identity,
             fee_result,

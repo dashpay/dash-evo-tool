@@ -726,7 +726,10 @@ async fn test_mn053_compose_through_db() {
     match result {
         BackendTaskSuccessResult::WithdrewFromIdentity(fee) => {
             tracing::info!("A->B compose withdraw, fee: {fee:?}");
-            assert!(fee.actual_fee > 0, "actual fee should be positive");
+            assert!(
+                fee.actual_fee.unwrap_or(0) > 0,
+                "actual fee should be positive"
+            );
         }
         other => panic!("Expected WithdrewFromIdentity, got: {other:?}"),
     }

@@ -953,6 +953,53 @@ impl AppContext {
         }
     }
 
+    /// Recovers from a Drive proof error on a contract put/update.
+    ///
+    /// Logs the proof failure via [`Self::log_drive_proof_error`], notifies the
+    /// UI, then re-fetches the contract by id — the transition may have
+    /// committed despite the proof error — and persists it through `persist`.
+    /// Returns [`BackendTaskSuccessResult::ContractSavedAfterProofError`] when
+    /// the contract is found, otherwise the original proof error.
+    pub(crate) async fn recover_contract_after_proof_error(
+        &self,
+        sdk: &Sdk,
+        contract_id: Identifier,
+        proof_error: dash_sdk::Error,
+        sender: &crate::utils::egui_mpsc::SenderAsync<crate::app::TaskResult>,
+        persist: impl FnOnce(&Self, &DataContract),
+    ) -> Result<crate::backend_task::BackendTaskSuccessResult, TaskError> {
+        use crate::app::TaskResult;
+        use crate::backend_task::BackendTaskSuccessResult;
+        use dash_sdk::platform::Fetch;
+
+        // Give the network time to propagate the block before re-fetching.
+        const REFETCH_DELAY_REGTEST: std::time::Duration = std::time::Duration::from_secs(3);
+        const REFETCH_DELAY_DEFAULT: std::time::Duration = std::time::Duration::from_secs(10);
+
+        let task_error =
+            self.log_drive_proof_error(proof_error, RequestType::BroadcastStateTransition);
+
+        sender
+            .send(TaskResult::Success(Box::new(
+                BackendTaskSuccessResult::ProofErrorLogged,
+            )))
+            .await
+            .map_err(|_| TaskError::InternalSendError)?;
+
+        let delay = match self.network {
+            Network::Regtest => REFETCH_DELAY_REGTEST,
+            _ => REFETCH_DELAY_DEFAULT,
+        };
+        tokio::time::sleep(delay).await;
+
+        if let Ok(Some(contract)) = DataContract::fetch(sdk, contract_id).await {
+            persist(self, &contract);
+            return Ok(BackendTaskSuccessResult::ContractSavedAfterProofError);
+        }
+
+        Err(task_error)
+    }
+
     /// Lazily build the wallet seam, idempotently.
     ///
     /// `WalletBackend::new` is async and needs the `TaskResult` sender, which

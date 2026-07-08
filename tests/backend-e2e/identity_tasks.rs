@@ -53,7 +53,7 @@ async fn step_top_up(
                 si.qualified_identity.identity.id(),
                 "wrong identity returned"
             );
-            assert!(fee_result.actual_fee > 0, "fee should be > 0");
+            assert!(fee_result.actual_fee.unwrap_or(0) > 0, "fee should be > 0");
         }
         other => panic!("expected ToppedUpIdentity, got: {:?}", other),
     }
@@ -221,7 +221,7 @@ async fn step_add_key(
     match result {
         BackendTaskSuccessResult::AddedKeyToIdentity(fee_result) => {
             tracing::info!("added key, fee={:?}", fee_result);
-            assert!(fee_result.actual_fee > 0, "fee should be > 0");
+            assert!(fee_result.actual_fee.unwrap_or(0) > 0, "fee should be > 0");
         }
         other => panic!("expected AddedKeyToIdentity, got: {:?}", other),
     }
@@ -268,7 +268,7 @@ async fn step_transfer_credits(
     match result {
         BackendTaskSuccessResult::TransferredCredits(fee_result) => {
             tracing::info!(
-                "transfer succeeded, estimated_fee={}, actual_fee={}",
+                "transfer succeeded, estimated_fee={}, actual_fee={:?}",
                 fee_result.estimated_fee,
                 fee_result.actual_fee
             );
@@ -774,7 +774,7 @@ async fn tc_021_identity_funding_account_survives_reload() {
                 si.qualified_identity.identity.id(),
                 "wrong identity returned"
             );
-            assert!(fee_result.actual_fee > 0, "fee should be > 0");
+            assert!(fee_result.actual_fee.unwrap_or(0) > 0, "fee should be > 0");
             tracing::info!("TC-021 PASSED: top-up survived backend reload");
         }
         other => panic!("expected ToppedUpIdentity, got: {:?}", other),
@@ -834,7 +834,7 @@ async fn tc_022_topup_after_reload_succeeds_via_op_seam_guard() {
                 si.qualified_identity.identity.id(),
                 "wrong identity returned"
             );
-            assert!(fee_result.actual_fee > 0, "fee should be > 0");
+            assert!(fee_result.actual_fee.unwrap_or(0) > 0, "fee should be > 0");
             tracing::info!("TC-022 PASSED: top-up succeeded after reload via op-seam guard");
         }
         other => panic!("expected ToppedUpIdentity, got: {other:?}"),

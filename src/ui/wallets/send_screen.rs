@@ -508,6 +508,23 @@ impl WalletSendScreen {
         format!("{:.8} DASH", dash)
     }
 
+    /// Renders the fee summary appended to a completed-send message. Shows the
+    /// settled fee only when the platform reported one; otherwise labels the
+    /// value as an estimate.
+    fn format_fee_info(fee_result: &crate::backend_task::FeeResult) -> String {
+        match fee_result.actual_fee {
+            Some(actual) => format!(
+                "\n\nFee: Estimated {} • Actual {}",
+                format_credits_as_dash(fee_result.estimated_fee),
+                format_credits_as_dash(actual)
+            ),
+            None => format!(
+                "\n\nFee: Estimated {}",
+                format_credits_as_dash(fee_result.estimated_fee)
+            ),
+        }
+    }
+
     fn parse_amount_to_duffs(input: &str) -> Result<u64, String> {
         let amount = Amount::parse(input, DASH_DECIMAL_PLACES)?.with_unit_name("DASH");
         amount.dash_to_duffs()
@@ -3530,11 +3547,7 @@ impl ScreenLike for WalletSendScreen {
                 self.send_status = SendStatus::Complete(msg);
             }
             crate::backend_task::BackendTaskSuccessResult::TransferredCredits(fee_result) => {
-                let fee_info = format!(
-                    "\n\nFee: Estimated {} • Actual {}",
-                    format_credits_as_dash(fee_result.estimated_fee),
-                    format_credits_as_dash(fee_result.actual_fee)
-                );
+                let fee_info = Self::format_fee_info(&fee_result);
                 self.send_status =
                     SendStatus::Complete(format!("Credits transferred successfully!{}", fee_info));
             }
@@ -3578,21 +3591,13 @@ impl ScreenLike for WalletSendScreen {
                 _identity,
                 fee_result,
             ) => {
-                let fee_info = format!(
-                    "\n\nFee: Estimated {} • Actual {}",
-                    format_credits_as_dash(fee_result.estimated_fee),
-                    format_credits_as_dash(fee_result.actual_fee)
-                );
+                let fee_info = Self::format_fee_info(&fee_result);
                 self.send_status =
                     SendStatus::Complete(format!("Identity topped up successfully!{}", fee_info));
             }
             // Identity->Core withdrawal result
             crate::backend_task::BackendTaskSuccessResult::WithdrewFromIdentity(fee_result) => {
-                let fee_info = format!(
-                    "\n\nFee: Estimated {} • Actual {}",
-                    format_credits_as_dash(fee_result.estimated_fee),
-                    format_credits_as_dash(fee_result.actual_fee)
-                );
+                let fee_info = Self::format_fee_info(&fee_result);
                 self.send_status = SendStatus::Complete(format!(
                     "Identity withdrawal initiated. Funds will appear on the Core chain after confirmation.{}",
                     fee_info

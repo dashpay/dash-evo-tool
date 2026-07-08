@@ -50,83 +50,83 @@ impl AppContext {
             builder = builder.with_state_transition_creation_options(options);
         }
 
-        let result = sdk
-            .token_burn(builder, &signing_key, owner_identity)
-            .await
-            .map_err(|e| self.log_drive_proof_error(e, RequestType::BroadcastStateTransition))?;
-
-        // Using the result, update the balance of the owner identity
-        if let Some(token_id) = data_contract.token_id(token_position) {
-            match result {
-                // Standard burn result - direct balance update
-                BurnResult::TokenBalance(identity_id, amount) => {
-                    if let Err(e) =
-                        self.insert_token_identity_balance(&token_id, &identity_id, amount)
-                    {
-                        tracing::error!("Failed to update token balance: {}", e);
-                    }
-                }
-
-                // Historical document - extract owner and amount from document
-                BurnResult::HistoricalDocument(document) => {
-                    if let (Some(owner_value), Some(amount_value)) =
-                        (document.get("ownerId"), document.get("amount"))
-                        && let (Value::Identifier(owner_bytes), Value::U64(amount)) =
-                            (owner_value, amount_value)
-                        && let Ok(owner_id) = Identifier::from_bytes(owner_bytes)
-                        && let Err(e) =
-                            self.insert_token_identity_balance(&token_id, &owner_id, *amount)
-                    {
-                        tracing::error!(
-                            "Failed to update token balance from historical document: {}",
-                            e
-                        );
-                    }
-                }
-
-                // Group action with document - assume completed if document exists
-                BurnResult::GroupActionWithDocument(_, Some(document)) => {
-                    if let (Some(owner_value), Some(amount_value)) =
-                        (document.get("ownerId"), document.get("amount"))
-                        && let (Value::Identifier(owner_bytes), Value::U64(amount)) =
-                            (owner_value, amount_value)
-                        && let Ok(owner_id) = Identifier::from_bytes(owner_bytes)
-                        && let Err(e) =
-                            self.insert_token_identity_balance(&token_id, &owner_id, *amount)
-                    {
-                        tracing::error!(
-                            "Failed to update token balance from group action document: {}",
-                            e
-                        );
-                    }
-                }
-
-                // Group action with balance - only update if action is closed
-                BurnResult::GroupActionWithBalance(_, status, Some(amount)) => {
-                    if matches!(status, GroupActionStatus::ActionClosed) {
-                        let owner_id = owner_identity.identity.id();
-                        if let Err(e) =
-                            self.insert_token_identity_balance(&token_id, &owner_id, amount)
-                        {
-                            tracing::error!(
-                                "Failed to update token balance from group action: {}",
-                                e
-                            );
+        self.execute_token_op(
+            async {
+                sdk.token_burn(builder, &signing_key, owner_identity)
+                    .await
+                    .map_err(|e| {
+                        self.log_drive_proof_error(e, RequestType::BroadcastStateTransition)
+                    })
+            },
+            |result| {
+                // Using the result, update the balance of the owner identity
+                if let Some(token_id) = data_contract.token_id(token_position) {
+                    match result {
+                        // Standard burn result - direct balance update
+                        BurnResult::TokenBalance(identity_id, amount) => {
+                            if let Err(e) =
+                                self.insert_token_identity_balance(&token_id, &identity_id, amount)
+                            {
+                                tracing::error!("Failed to update token balance: {}", e);
+                            }
                         }
+
+                        // Historical document - extract owner and amount from document
+                        BurnResult::HistoricalDocument(document) => {
+                            if let (Some(owner_value), Some(amount_value)) =
+                                (document.get("ownerId"), document.get("amount"))
+                                && let (Value::Identifier(owner_bytes), Value::U64(amount)) =
+                                    (owner_value, amount_value)
+                                && let Ok(owner_id) = Identifier::from_bytes(owner_bytes)
+                                && let Err(e) = self
+                                    .insert_token_identity_balance(&token_id, &owner_id, *amount)
+                            {
+                                tracing::error!(
+                                    "Failed to update token balance from historical document: {}",
+                                    e
+                                );
+                            }
+                        }
+
+                        // Group action with document - assume completed if document exists
+                        BurnResult::GroupActionWithDocument(_, Some(document)) => {
+                            if let (Some(owner_value), Some(amount_value)) =
+                                (document.get("ownerId"), document.get("amount"))
+                                && let (Value::Identifier(owner_bytes), Value::U64(amount)) =
+                                    (owner_value, amount_value)
+                                && let Ok(owner_id) = Identifier::from_bytes(owner_bytes)
+                                && let Err(e) = self
+                                    .insert_token_identity_balance(&token_id, &owner_id, *amount)
+                            {
+                                tracing::error!(
+                                    "Failed to update token balance from group action document: {}",
+                                    e
+                                );
+                            }
+                        }
+
+                        // Group action with balance - only update if action is closed
+                        BurnResult::GroupActionWithBalance(_, status, Some(amount)) => {
+                            if matches!(status, GroupActionStatus::ActionClosed) {
+                                let owner_id = owner_identity.identity.id();
+                                if let Err(e) =
+                                    self.insert_token_identity_balance(&token_id, &owner_id, amount)
+                                {
+                                    tracing::error!(
+                                        "Failed to update token balance from group action: {}",
+                                        e
+                                    );
+                                }
+                            }
+                        }
+
+                        // Other variants don't require balance updates
+                        _ => {}
                     }
                 }
-
-                // Other variants don't require balance updates
-                _ => {}
-            }
-        }
-
-        // Return success with fee result
-        // For token operations, we use the estimated fee as a placeholder
-        // TODO: Add proper fee tracking when SDK provides this information
-        use crate::backend_task::FeeResult;
-        let estimated_fee = self.fee_estimator().estimate_document_batch(1);
-        let fee_result = FeeResult::new(estimated_fee, estimated_fee);
-        Ok(BackendTaskSuccessResult::BurnedTokens(fee_result))
+            },
+            BackendTaskSuccessResult::BurnedTokens,
+        )
+        .await
     }
 }

@@ -1,38 +1,34 @@
-//! DashPay read-only adapter for `WalletBackend`.
+//! DashPay adapter for `WalletBackend`.
 //!
-//! Translates upstream presence-based DashPay reads
+//! Translates upstream presence-based DashPay state
 //! (`platform_wallet::wallet::identity::types::dashpay::*`) into the
-//! DET-shape `Stored*` records the existing UI and backend-task layer
-//! already understand. Read-only foundation for the unwire stack: D2
-//! routes existing read paths through this view; D3 wires writes; D4
-//! drops the DET DashPay tables.
+//! DET-shape `Stored*` records the UI and backend-task layer understand, and
+//! owns the DET-local overlays those records need but upstream does not model.
 //!
 //! ## What this adapter owns
 //!
 //! - **Status derivation**: upstream stores DashPay state as presence
-//!   (a row exists in `sent_contact_requests` ⇒ outgoing pending; a
-//!   row exists in `established_contacts` ⇒ accepted; etc.). DET's
-//!   schema models the same state as an explicit `status` string.
-//!   This module performs that translation at read time — there is
-//!   no cache and no extra source of truth.
-//! - **DET-local overlays via the k/v sidecar**: a small set of
-//!   contact / contact-request attributes have no upstream surface
-//!   yet (`blocked`, `rejected`, DET-local `created_at` /
-//!   `updated_at` timestamps). D1 only *reads* these keys; missing
-//!   keys yield safe defaults (not blocked, not rejected, timestamps
-//!   `0`). D3 will start writing them.
+//!   (a row in `sent_contact_requests` ⇒ outgoing pending; a row in
+//!   `established_contacts` ⇒ accepted; etc.). DET's `Stored*` records model
+//!   the same state as an explicit `status`. This module performs that
+//!   translation at read time — there is no cache and no extra source of
+//!   truth.
+//! - **DET-local overlays via the k/v sidecar**: a small set of contact /
+//!   contact-request attributes have no upstream surface — `blocked`,
+//!   `rejected`, DET-local `created_at` / `updated_at` timestamps, private
+//!   memos, and per-contact address-index cursors. This module both reads and
+//!   writes them; missing keys yield safe defaults (not blocked, not rejected,
+//!   timestamps `0`).
+//! - **Sync trigger**: [`WalletBackend::dashpay_sync`] refreshes upstream
+//!   contact requests and profiles before a read; the view itself observes
+//!   whatever state upstream holds afterwards.
 //!
 //! ## What this adapter does NOT do
 //!
-//! - It never calls [`platform_wallet::IdentityWallet::dashpay_sync`].
-//!   Reads observe whatever state upstream has after its own sync.
-//! - It does not fetch profile / DPNS data from the network. Fields
-//!   that DET historically populated from cross-references (a
-//!   contact's display name from their DashPay profile, a contact
-//!   request's `to_username` from DPNS) come through as `None` until
-//!   D2 wires those joins.
-//! - It does not touch the DET SQLite DashPay tables — D4 drops
-//!   those, but D1 leaves them alone.
+//! - It does not fetch profile / DPNS data from the network. Fields DET
+//!   populates from cross-references (a contact's display name from their
+//!   DashPay profile, a contact request's `to_username` from DPNS) come
+//!   through as `None`; those joins live outside this adapter.
 
 use std::sync::Arc;
 
@@ -114,13 +110,7 @@ pub(crate) fn derive_contact_xpub_material(
     sender_secret_key: &[u8; 32],
 ) -> Result<ContactXpubMaterial, TaskError> {
     let wallet = Wallet::from_seed_bytes(*seed_bytes, network, WalletAccountCreationOptions::None)
-        .map_err(|e| TaskError::WalletBackend {
-            source: Box::new(
-                platform_wallet::error::PlatformWalletError::InvalidIdentityData(format!(
-                    "Failed to build wallet for contact derivation: {e}"
-                )),
-            ),
-        })?;
+        .map_err(|source| TaskError::SeedWalletBuildFailed { source })?;
 
     let data = derive_contact_xpub(&wallet, network, account_index, sender_id, recipient_id)
         .map_err(|e| TaskError::WalletBackend {
@@ -216,12 +206,12 @@ pub(crate) fn derive_contact_info_encryption_keys(
 // K/V sidecar key prefixes
 // ---------------------------------------------------------------------------
 //
-// Four sidecar families (`blocked`, `rejected`, `timestamps`, `addr_map`)
-// use `DetScope::Global` against the per-network upstream persister. The
-// network already partitions the database file, so no `<network>:` prefix
-// is needed inside the key. Two families (`private`, `address_index`) use
+// Two sidecar families (`timestamps`, `addr_map`) use `DetScope::Global`
+// against the per-network upstream persister. The network already partitions
+// the database file, so no `<network>:` prefix is needed inside the key. Four
+// families (`blocked`, `rejected`, `private`, `address_index`) use
 // `DetScope::Identity(&owner)` — the owner is carried by the scope, so the
-// key contains only the contact id; the upstream soft-cascade reaps them
+// key contains only the counterparty id; the upstream soft-cascade reaps them
 // when the owner identity row is deleted.
 
 /// Mark a contact as blocked. Value: empty (`()`). Presence is the signal.
@@ -276,63 +266,75 @@ impl<'a> DashpayView<'a> {
         Self { backend }
     }
 
+    /// Resolve the `ManagedIdentity` for `owner` in whichever registered
+    /// wallet manages it, and hand it — together with the DET k/v sidecar — to
+    /// `f`. Returns `None` when no registered wallet manages `owner` (unknown
+    /// or wrong-network identity), so each caller maps that to its own empty
+    /// default. The wallet-state read guard is held for the closure's
+    /// duration, so `f` must stay synchronous (pure translation only).
+    async fn with_managed<R>(
+        &self,
+        owner: &Identifier,
+        f: impl FnOnce(&platform_wallet::wallet::identity::state::ManagedIdentity, &DetKv) -> R,
+    ) -> Option<R> {
+        let wallet = self.backend.find_wallet_for_identity(owner).await?;
+        let kv = self.backend.kv();
+        let state = wallet.state().await;
+        let managed = state.identity_manager.managed_identity(owner)?;
+        Some(f(managed, &kv))
+    }
+
     /// All contacts for `owner` — established (`accepted`), outstanding
     /// outgoing (`pending`), and DET-local sidecar (`blocked`).
     ///
     /// Returns an empty vector when `owner` is unknown to upstream.
     pub async fn contacts(&self, owner: &Identifier) -> Vec<StoredContact> {
-        let Some(wallet) = self.backend.find_wallet_for_identity(owner).await else {
-            return Vec::new();
-        };
-        let kv = self.backend.kv();
-        let state = wallet.state().await;
-        let info = &*state;
-        let Some(managed) = info.identity_manager.managed_identity(owner) else {
-            return Vec::new();
-        };
-        let dashpay = managed.dashpay();
+        self.with_managed(owner, |managed, kv| {
+            let dashpay = managed.dashpay();
+            let mut out: Vec<StoredContact> = Vec::new();
 
-        let mut out: Vec<StoredContact> = Vec::new();
-
-        // 1. Established (`accepted`) contacts.
-        for contact in dashpay.established_contacts().values() {
-            let contact_id = &contact.contact_identity_id;
-            let blocked = kv_contains(&kv, owner, KV_PREFIX_BLOCKED, contact_id);
-            let status = if blocked {
-                ContactStatus::Blocked
-            } else {
-                ContactStatus::Accepted
-            };
-            let (created_at, updated_at) = kv_timestamps(&kv, contact_id);
-            out.push(established_to_det(
-                owner, contact, status, created_at, updated_at,
-            ));
-        }
-
-        // 2. Sent-but-not-yet-reciprocated outgoing requests → `pending` contacts.
-        //    Skip recipients we already have an established row for above.
-        for (recipient_id, request) in dashpay.sent_contact_requests().iter() {
-            if dashpay.established_contacts().contains_key(recipient_id) {
-                continue;
+            // 1. Established (`accepted`) contacts.
+            for contact in dashpay.established_contacts().values() {
+                let contact_id = &contact.contact_identity_id;
+                let blocked = kv_contains(kv, owner, KV_PREFIX_BLOCKED, contact_id);
+                let status = if blocked {
+                    ContactStatus::Blocked
+                } else {
+                    ContactStatus::Accepted
+                };
+                let (created_at, updated_at) = kv_timestamps(kv, contact_id);
+                out.push(established_to_det(
+                    owner, contact, status, created_at, updated_at,
+                ));
             }
-            let blocked = kv_contains(&kv, owner, KV_PREFIX_BLOCKED, recipient_id);
-            let status = if blocked {
-                ContactStatus::Blocked
-            } else {
-                ContactStatus::Pending
-            };
-            let (created_at, updated_at) = kv_timestamps(&kv, recipient_id);
-            out.push(request_to_det_contact(
-                owner,
-                recipient_id,
-                request,
-                status,
-                created_at,
-                updated_at,
-            ));
-        }
 
-        out
+            // 2. Sent-but-not-yet-reciprocated outgoing requests → `pending` contacts.
+            //    Skip recipients we already have an established row for above.
+            for (recipient_id, request) in dashpay.sent_contact_requests().iter() {
+                if dashpay.established_contacts().contains_key(recipient_id) {
+                    continue;
+                }
+                let blocked = kv_contains(kv, owner, KV_PREFIX_BLOCKED, recipient_id);
+                let status = if blocked {
+                    ContactStatus::Blocked
+                } else {
+                    ContactStatus::Pending
+                };
+                let (created_at, updated_at) = kv_timestamps(kv, recipient_id);
+                out.push(request_to_det_contact(
+                    owner,
+                    recipient_id,
+                    request,
+                    status,
+                    created_at,
+                    updated_at,
+                ));
+            }
+
+            out
+        })
+        .await
+        .unwrap_or_default()
     }
 
     /// Outstanding contact requests for `owner` — sent (outgoing, status
@@ -341,103 +343,90 @@ impl<'a> DashpayView<'a> {
     ///
     /// Returns an empty vector when `owner` is unknown to upstream.
     pub async fn contact_requests(&self, owner: &Identifier) -> Vec<StoredContactRequest> {
-        let Some(wallet) = self.backend.find_wallet_for_identity(owner).await else {
-            return Vec::new();
-        };
-        let kv = self.backend.kv();
-        let state = wallet.state().await;
-        let info = &*state;
-        let Some(managed) = info.identity_manager.managed_identity(owner) else {
-            return Vec::new();
-        };
-        let dashpay = managed.dashpay();
+        self.with_managed(owner, |managed, kv| {
+            let dashpay = managed.dashpay();
+            let mut out: Vec<StoredContactRequest> = Vec::new();
 
-        let mut out: Vec<StoredContactRequest> = Vec::new();
+            let now_ms = chrono::Utc::now().timestamp_millis().max(0) as u64;
 
-        let now_ms = chrono::Utc::now().timestamp_millis().max(0) as u64;
+            // Outgoing requests (`request_type = "sent"`).
+            for (recipient_id, request) in dashpay.sent_contact_requests().iter() {
+                let status = derive_request_status(
+                    owner,
+                    /* request_id_for_sidecar = */ recipient_id,
+                    /* has_matching_established = */
+                    dashpay.established_contacts().contains_key(recipient_id),
+                    request.created_at,
+                    now_ms,
+                    kv,
+                );
+                out.push(request_to_det_request(
+                    owner,
+                    recipient_id,
+                    request,
+                    ContactRequestDirection::Sent,
+                    status,
+                ));
+            }
 
-        // Outgoing requests (`request_type = "sent"`).
-        for (recipient_id, request) in dashpay.sent_contact_requests().iter() {
-            let status = derive_request_status(
-                owner,
-                /* request_id_for_sidecar = */ recipient_id,
-                /* has_matching_established = */
-                dashpay.established_contacts().contains_key(recipient_id),
-                request.created_at,
-                now_ms,
-                &kv,
-            );
-            out.push(request_to_det_request(
-                owner,
-                recipient_id,
-                request,
-                ContactRequestDirection::Sent,
-                status,
-            ));
-        }
+            // Incoming requests (`request_type = "received"`).
+            for (sender_id, request) in dashpay.incoming_contact_requests().iter() {
+                let status = derive_request_status(
+                    owner,
+                    sender_id,
+                    dashpay.established_contacts().contains_key(sender_id),
+                    request.created_at,
+                    now_ms,
+                    kv,
+                );
+                out.push(request_to_det_request(
+                    owner,
+                    sender_id,
+                    request,
+                    ContactRequestDirection::Received,
+                    status,
+                ));
+            }
 
-        // Incoming requests (`request_type = "received"`).
-        for (sender_id, request) in dashpay.incoming_contact_requests().iter() {
-            let status = derive_request_status(
-                owner,
-                sender_id,
-                dashpay.established_contacts().contains_key(sender_id),
-                request.created_at,
-                now_ms,
-                &kv,
-            );
-            out.push(request_to_det_request(
-                owner,
-                sender_id,
-                request,
-                ContactRequestDirection::Received,
-                status,
-            ));
-        }
-
-        out
+            out
+        })
+        .await
+        .unwrap_or_default()
     }
 
     /// Payment history for `owner`, newest entries first. Returns an
     /// empty vector when `owner` is unknown to upstream.
     pub async fn payments(&self, owner: &Identifier) -> Vec<StoredPayment> {
-        let Some(wallet) = self.backend.find_wallet_for_identity(owner).await else {
-            return Vec::new();
-        };
-        let kv = self.backend.kv();
-        let state = wallet.state().await;
-        let info = &*state;
-        let Some(managed) = info.identity_manager.managed_identity(owner) else {
-            return Vec::new();
-        };
-
-        let mut out: Vec<StoredPayment> = managed
-            .dashpay()
-            .payments
-            .iter()
-            .map(|(storage_key, entry)| payment_to_det(owner, storage_key, entry, &kv))
-            .collect();
-        // Upstream stores payments keyed by the storage key in a BTreeMap
-        // (lexicographic order). DET's UI sorts by `created_at DESC`; since
-        // sidecar timestamps default to 0 when unset, fall back to that
-        // ordering — newest first when timestamps exist, otherwise stable on
-        // the storage key.
-        out.sort_by(|a, b| b.created_at.cmp(&a.created_at));
-        out
+        self.with_managed(owner, |managed, kv| {
+            let mut out: Vec<StoredPayment> = managed
+                .dashpay()
+                .payments
+                .iter()
+                .map(|(storage_key, entry)| payment_to_det(owner, storage_key, entry, kv))
+                .collect();
+            // Upstream stores payments keyed by the storage key in a BTreeMap
+            // (lexicographic order). DET's UI sorts by `created_at DESC`; since
+            // sidecar timestamps default to 0 when unset, fall back to that
+            // ordering — newest first when timestamps exist, otherwise stable on
+            // the storage key.
+            out.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+            out
+        })
+        .await
+        .unwrap_or_default()
     }
 
     /// DashPay profile for `owner`, or `None` when upstream has none
     /// (either `owner` is unknown, or its identity bucket has no
     /// `DashPayProfile` yet).
     pub async fn profile(&self, owner: &Identifier) -> Option<StoredProfile> {
-        let wallet = self.backend.find_wallet_for_identity(owner).await?;
-        let kv = self.backend.kv();
-        let state = wallet.state().await;
-        let info = &*state;
-        let managed = info.identity_manager.managed_identity(owner)?;
-        let profile = managed.dashpay().profile.as_ref()?;
-        let (created_at, updated_at) = kv_timestamps(&kv, owner);
-        Some(profile_to_det(owner, profile, created_at, updated_at))
+        self.with_managed(owner, |managed, kv| {
+            let profile = managed.dashpay().profile.as_ref()?;
+            let (created_at, updated_at) = kv_timestamps(kv, owner);
+            Some(profile_to_det(owner, profile, created_at, updated_at))
+        })
+        .await
+        .flatten()
     }
 }
 
@@ -659,7 +648,7 @@ pub(super) fn increment_send_index_locked(
 
     let owner_buf = owner.to_buffer();
     let scope = DetScope::Identity(&owner_buf);
-    let key = contact_sidecar_key(KV_PREFIX_ADDRESS_INDEX, contact);
+    let key = sidecar_key(KV_PREFIX_ADDRESS_INDEX, contact);
     let mut state: ContactAddressIndex = kv
         .get::<ContactAddressIndex>(scope, &key)
         .map_err(|e| TaskError::DashpaySidecarStorage { source: e })?
@@ -681,19 +670,15 @@ pub(super) fn increment_send_index_locked(
 // K/V sidecar helpers
 // ---------------------------------------------------------------------------
 
+/// Build a sidecar key as `<prefix><id_b58>`. The scope
+/// ([`DetScope::Global`] vs [`DetScope::Identity`]) is applied by the caller,
+/// not encoded here — a Global-scoped key carries the full entity id while an
+/// Identity-scoped key carries only the counterparty id (the owner rides on
+/// the scope), but in both cases the key body is identical, so one builder
+/// serves both.
 fn sidecar_key(prefix: &str, id: &Identifier) -> String {
-    format!(
-        "{prefix}{}",
-        id.to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58)
-    )
-}
-
-/// Sidecar key for a per-contact overlay (private memo, address index)
-/// scoped to [`DetScope::Identity`] of the owner. The owner is carried by
-/// the scope, so the key is `<prefix><contact_b58>`.
-fn contact_sidecar_key(prefix: &str, contact: &Identifier) -> String {
     use dash_sdk::dpp::platform_value::string_encoding::Encoding;
-    format!("{prefix}{}", contact.to_string(Encoding::Base58))
+    format!("{prefix}{}", id.to_string(Encoding::Base58))
 }
 
 /// Sidecar key for a `(owner, address)` reverse lookup. `address` is the
@@ -716,7 +701,7 @@ fn kv_contains(kv: &DetKv, owner: &Identifier, prefix: &str, counterparty: &Iden
     matches!(
         kv.get::<()>(
             DetScope::Identity(&owner_buf),
-            &contact_sidecar_key(prefix, counterparty)
+            &sidecar_key(prefix, counterparty)
         ),
         Ok(Some(()))
     )
@@ -873,7 +858,7 @@ impl WalletBackend {
         contact_id: &Identifier,
     ) -> Result<(), TaskError> {
         let owner_buf = owner.to_buffer();
-        let key = contact_sidecar_key(KV_PREFIX_BLOCKED, contact_id);
+        let key = sidecar_key(KV_PREFIX_BLOCKED, contact_id);
         self.kv()
             .put::<()>(DetScope::Identity(&owner_buf), &key, &())
             .map_err(|e| TaskError::DashpaySidecarStorage { source: e })
@@ -887,7 +872,7 @@ impl WalletBackend {
         contact_id: &Identifier,
     ) -> Result<(), TaskError> {
         let owner_buf = owner.to_buffer();
-        let key = contact_sidecar_key(KV_PREFIX_BLOCKED, contact_id);
+        let key = sidecar_key(KV_PREFIX_BLOCKED, contact_id);
         self.kv()
             .delete(DetScope::Identity(&owner_buf), &key)
             .map_err(|e| TaskError::DashpaySidecarStorage { source: e })
@@ -904,7 +889,7 @@ impl WalletBackend {
         counterparty_id: &Identifier,
     ) -> Result<(), TaskError> {
         let owner_buf = owner.to_buffer();
-        let key = contact_sidecar_key(KV_PREFIX_REJECTED, counterparty_id);
+        let key = sidecar_key(KV_PREFIX_REJECTED, counterparty_id);
         self.kv()
             .put::<()>(DetScope::Identity(&owner_buf), &key, &())
             .map_err(|e| TaskError::DashpaySidecarStorage { source: e })
@@ -950,7 +935,7 @@ impl WalletBackend {
         contact: &Identifier,
     ) -> Result<Option<ContactPrivateInfo>, TaskError> {
         let owner_buf = owner.to_buffer();
-        let key = contact_sidecar_key(KV_PREFIX_PRIVATE, contact);
+        let key = sidecar_key(KV_PREFIX_PRIVATE, contact);
         self.kv()
             .get::<ContactPrivateInfo>(DetScope::Identity(&owner_buf), &key)
             .map_err(|e| TaskError::DashpaySidecarStorage { source: e })
@@ -964,7 +949,7 @@ impl WalletBackend {
         info: &ContactPrivateInfo,
     ) -> Result<(), TaskError> {
         let owner_buf = owner.to_buffer();
-        let key = contact_sidecar_key(KV_PREFIX_PRIVATE, contact);
+        let key = sidecar_key(KV_PREFIX_PRIVATE, contact);
         self.kv()
             .put::<ContactPrivateInfo>(DetScope::Identity(&owner_buf), &key, info)
             .map_err(|e| TaskError::DashpaySidecarStorage { source: e })
@@ -979,7 +964,7 @@ impl WalletBackend {
         contact: &Identifier,
     ) -> Result<Option<ContactAddressIndex>, TaskError> {
         let owner_buf = owner.to_buffer();
-        let key = contact_sidecar_key(KV_PREFIX_ADDRESS_INDEX, contact);
+        let key = sidecar_key(KV_PREFIX_ADDRESS_INDEX, contact);
         self.kv()
             .get::<ContactAddressIndex>(DetScope::Identity(&owner_buf), &key)
             .map_err(|e| TaskError::DashpaySidecarStorage { source: e })
@@ -998,7 +983,7 @@ impl WalletBackend {
         index: &ContactAddressIndex,
     ) -> Result<(), TaskError> {
         let owner_buf = owner.to_buffer();
-        let key = contact_sidecar_key(KV_PREFIX_ADDRESS_INDEX, contact);
+        let key = sidecar_key(KV_PREFIX_ADDRESS_INDEX, contact);
         self.kv()
             .put::<ContactAddressIndex>(DetScope::Identity(&owner_buf), &key, index)
             .map_err(|e| TaskError::DashpaySidecarStorage { source: e })
@@ -1338,7 +1323,7 @@ mod tests {
         let owner_buf = owner.to_buffer();
         kv.put::<()>(
             DetScope::Identity(&owner_buf),
-            &contact_sidecar_key(KV_PREFIX_REJECTED, &counterparty),
+            &sidecar_key(KV_PREFIX_REJECTED, &counterparty),
             &(),
         )
         .unwrap();
@@ -1409,7 +1394,7 @@ mod tests {
         let owner_buf = owner.to_buffer();
         kv.put::<()>(
             DetScope::Identity(&owner_buf),
-            &contact_sidecar_key(KV_PREFIX_BLOCKED, &contact_id),
+            &sidecar_key(KV_PREFIX_BLOCKED, &contact_id),
             &(),
         )
         .unwrap();
@@ -1477,7 +1462,7 @@ mod tests {
         let owner = id_from_byte(1);
         let owner_buf = owner.to_buffer();
         let contact = id_from_byte(7);
-        let key = contact_sidecar_key(KV_PREFIX_BLOCKED, &contact);
+        let key = sidecar_key(KV_PREFIX_BLOCKED, &contact);
         // What `dashpay_mark_blocked` writes:
         kv.put::<()>(DetScope::Identity(&owner_buf), &key, &())
             .unwrap();
@@ -1498,7 +1483,7 @@ mod tests {
         // What `dashpay_mark_rejected` writes:
         kv.put::<()>(
             DetScope::Identity(&owner_buf),
-            &contact_sidecar_key(KV_PREFIX_REJECTED, &counterparty),
+            &sidecar_key(KV_PREFIX_REJECTED, &counterparty),
             &(),
         )
         .unwrap();
@@ -1563,7 +1548,7 @@ mod tests {
         // What `dashpay_mark_blocked(&owner, &contact_id)` writes:
         kv.put::<()>(
             DetScope::Identity(&owner_buf),
-            &contact_sidecar_key(KV_PREFIX_BLOCKED, &contact_id),
+            &sidecar_key(KV_PREFIX_BLOCKED, &contact_id),
             &(),
         )
         .unwrap();
@@ -1592,7 +1577,7 @@ mod tests {
         let counterparty = id_from_byte(2);
         kv.put::<()>(
             DetScope::Identity(&owner_buf),
-            &contact_sidecar_key(KV_PREFIX_REJECTED, &counterparty),
+            &sidecar_key(KV_PREFIX_REJECTED, &counterparty),
             &(),
         )
         .unwrap();
@@ -1644,13 +1629,13 @@ mod tests {
         // Owner A blocks and rejects the counterparty.
         kv.put::<()>(
             DetScope::Identity(&a_buf),
-            &contact_sidecar_key(KV_PREFIX_BLOCKED, &counterparty),
+            &sidecar_key(KV_PREFIX_BLOCKED, &counterparty),
             &(),
         )
         .unwrap();
         kv.put::<()>(
             DetScope::Identity(&a_buf),
-            &contact_sidecar_key(KV_PREFIX_REJECTED, &counterparty),
+            &sidecar_key(KV_PREFIX_REJECTED, &counterparty),
             &(),
         )
         .unwrap();
@@ -1700,7 +1685,7 @@ mod tests {
         // Wave 2: the owner moved into the `DetScope::Identity` scope, so
         // the per-contact key carries only the contact, not `<owner>:<contact>`.
         let contact = id_from_byte(2);
-        let key = contact_sidecar_key(KV_PREFIX_PRIVATE, &contact);
+        let key = sidecar_key(KV_PREFIX_PRIVATE, &contact);
         use dash_sdk::dpp::platform_value::string_encoding::Encoding;
         let expected = format!(
             "det:dashpay:private:{}",
@@ -1733,7 +1718,7 @@ mod tests {
             notes: "met at conf".into(),
             is_hidden: true,
         };
-        let key = contact_sidecar_key(KV_PREFIX_PRIVATE, &contact);
+        let key = sidecar_key(KV_PREFIX_PRIVATE, &contact);
         let scope = DetScope::Identity(&owner);
         kv.put::<ContactPrivateInfo>(scope, &key, &info).unwrap();
         let got: ContactPrivateInfo = kv
@@ -1754,7 +1739,7 @@ mod tests {
         let kv = empty_kv();
         let owner = id_from_byte(1).to_buffer();
         let contact = id_from_byte(2);
-        let key = contact_sidecar_key(KV_PREFIX_PRIVATE, &contact);
+        let key = sidecar_key(KV_PREFIX_PRIVATE, &contact);
         assert!(
             kv.get::<ContactPrivateInfo>(DetScope::Identity(&owner), &key)
                 .unwrap()
@@ -1775,7 +1760,7 @@ mod tests {
             highest_receive_index: 3,
             bloom_registered_count: 20,
         };
-        let key = contact_sidecar_key(KV_PREFIX_ADDRESS_INDEX, &contact);
+        let key = sidecar_key(KV_PREFIX_ADDRESS_INDEX, &contact);
         let scope = DetScope::Identity(&owner);
         kv.put::<ContactAddressIndex>(scope, &key, &idx).unwrap();
         let got = kv
@@ -1795,7 +1780,7 @@ mod tests {
         let owner_a = id_from_byte(1).to_buffer();
         let owner_b = id_from_byte(2).to_buffer();
         let contact = id_from_byte(3);
-        let key = contact_sidecar_key(KV_PREFIX_PRIVATE, &contact);
+        let key = sidecar_key(KV_PREFIX_PRIVATE, &contact);
         kv.put::<ContactPrivateInfo>(
             DetScope::Identity(&owner_a),
             &key,
@@ -1837,8 +1822,8 @@ mod tests {
         // contacts within one owner's Identity scope.
         let a = id_from_byte(1);
         let b = id_from_byte(2);
-        let key_a = contact_sidecar_key(KV_PREFIX_PRIVATE, &a);
-        let key_b = contact_sidecar_key(KV_PREFIX_PRIVATE, &b);
+        let key_a = sidecar_key(KV_PREFIX_PRIVATE, &a);
+        let key_b = sidecar_key(KV_PREFIX_PRIVATE, &b);
         assert_ne!(key_a, key_b, "distinct contacts must yield distinct keys");
     }
 
@@ -1888,7 +1873,7 @@ mod tests {
         // Final persisted counter advances to 100, read back from the
         // owner's Identity scope where the increment helper now writes.
         let owner_buf = owner.to_buffer();
-        let key = contact_sidecar_key(KV_PREFIX_ADDRESS_INDEX, &contact);
+        let key = sidecar_key(KV_PREFIX_ADDRESS_INDEX, &contact);
         let final_state: ContactAddressIndex = kv
             .get::<ContactAddressIndex>(DetScope::Identity(&owner_buf), &key)
             .expect("kv read")
@@ -1943,13 +1928,13 @@ mod tests {
         // Four Identity-scoped overlays under the owner.
         kv.put::<ContactPrivateInfo>(
             DetScope::Identity(&owner),
-            &contact_sidecar_key(KV_PREFIX_PRIVATE, &contact),
+            &sidecar_key(KV_PREFIX_PRIVATE, &contact),
             &ContactPrivateInfo::default(),
         )
         .unwrap();
         kv.put::<ContactAddressIndex>(
             DetScope::Identity(&owner),
-            &contact_sidecar_key(KV_PREFIX_ADDRESS_INDEX, &contact),
+            &sidecar_key(KV_PREFIX_ADDRESS_INDEX, &contact),
             &ContactAddressIndex {
                 owner_identity_id: owner_id.to_buffer().to_vec(),
                 contact_identity_id: contact.to_buffer().to_vec(),
@@ -1961,13 +1946,13 @@ mod tests {
         .unwrap();
         kv.put::<()>(
             DetScope::Identity(&owner),
-            &contact_sidecar_key(KV_PREFIX_BLOCKED, &contact),
+            &sidecar_key(KV_PREFIX_BLOCKED, &contact),
             &(),
         )
         .unwrap();
         kv.put::<()>(
             DetScope::Identity(&owner),
-            &contact_sidecar_key(KV_PREFIX_REJECTED, &contact),
+            &sidecar_key(KV_PREFIX_REJECTED, &contact),
             &(),
         )
         .unwrap();
@@ -2010,19 +1995,19 @@ mod tests {
         .unwrap();
         kv.put::<()>(
             DetScope::Identity(&owner),
-            &contact_sidecar_key(KV_PREFIX_BLOCKED, &contact),
+            &sidecar_key(KV_PREFIX_BLOCKED, &contact),
             &(),
         )
         .unwrap();
         kv.put::<()>(
             DetScope::Identity(&owner),
-            &contact_sidecar_key(KV_PREFIX_REJECTED, &contact),
+            &sidecar_key(KV_PREFIX_REJECTED, &contact),
             &(),
         )
         .unwrap();
         kv.put::<ContactPrivateInfo>(
             DetScope::Identity(&owner),
-            &contact_sidecar_key(KV_PREFIX_PRIVATE, &contact),
+            &sidecar_key(KV_PREFIX_PRIVATE, &contact),
             &ContactPrivateInfo {
                 nickname: "alice".into(),
                 notes: "n".into(),
@@ -2032,7 +2017,7 @@ mod tests {
         .unwrap();
         kv.put::<ContactAddressIndex>(
             DetScope::Identity(&owner),
-            &contact_sidecar_key(KV_PREFIX_ADDRESS_INDEX, &contact),
+            &sidecar_key(KV_PREFIX_ADDRESS_INDEX, &contact),
             &ContactAddressIndex {
                 owner_identity_id: owner.to_vec(),
                 contact_identity_id: contact.to_buffer().to_vec(),

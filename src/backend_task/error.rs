@@ -49,14 +49,30 @@ pub enum TaskError {
     )]
     WalletStateInconsistent,
 
-    /// An account type that this build does not support for identity funding
-    /// was supplied. Guards over [`dash_sdk::dpp::key_wallet::AccountType`],
-    /// which may gain variants upstream, so it is a typed error rather than a
-    /// panic. Not reachable from current call sites.
+    /// A short-lived signable wallet could not be built from the HD seed. DET
+    /// needs it to derive the hardened account xpubs the watch-only live
+    /// wallet cannot derive itself, so a failure here means the seed material
+    /// could not be turned into a usable wallet. The technical cause lives in
+    /// `Debug` and the logs.
     #[error(
-        "This wallet operation is not supported in this version. Update to the latest version to continue."
+        "Your wallet data could not be read correctly. Please restart the application and try again."
     )]
-    UnsupportedIdentityFundingAccount,
+    SeedWalletBuildFailed {
+        #[source]
+        source: dash_sdk::dpp::key_wallet::Error,
+    },
+
+    /// Provisioning an identity-funding account (the registration account or a
+    /// per-identity top-up account) failed while deriving its key or
+    /// registering it with the wallet. The technical cause lives in `Debug`
+    /// and the logs.
+    #[error(
+        "Your wallet data could not be read correctly. Please restart the application and try again."
+    )]
+    IdentityFundingAccountProvisionFailed {
+        #[source]
+        source: dash_sdk::dpp::key_wallet::Error,
+    },
 
     /// Single-key wallets are not supported in this version. Their data is
     /// preserved; HD (recovery-phrase) wallets remain fully functional.
@@ -565,13 +581,6 @@ pub enum TaskError {
     WalletSyncStartFailed {
         #[source]
         source: Box<platform_wallet::error::PlatformWalletError>,
-    },
-
-    /// Buffered wallet data could not be durably written to storage.
-    #[error("Could not save wallet data. Check available disk space and restart the application.")]
-    WalletPersistenceFlushFailed {
-        #[source]
-        source: platform_wallet::changeset::PersistenceError,
     },
 
     /// A wallet just registered with the SPV backend produced an address
@@ -1839,6 +1848,16 @@ pub enum TaskError {
         "Could not protect this imported key with a passphrase. Try again, or import it without a passphrase for now."
     )]
     SingleKeyCryptoFailure,
+
+    /// Raw ECDSA signing with an imported single key failed inside the JIT
+    /// signer. Distinct from [`Self::SingleKeyCryptoFailure`] (which covers
+    /// passphrase encrypt/decrypt): this carries the typed signer cause so the
+    /// failing digest / secret-kind mismatch is preserved in `Debug` and logs.
+    #[error("Could not sign with this imported key. Please try again.")]
+    SingleKeySignFailed {
+        #[source]
+        source: crate::wallet_backend::DetSignerError,
+    },
 
     /// A protected single-key restore (T-SK-03) was requested for an
     /// address that is not present as an un-restored `uses_password=1`

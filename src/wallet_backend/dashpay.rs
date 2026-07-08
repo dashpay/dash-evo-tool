@@ -56,7 +56,7 @@ use crate::model::dashpay::{
     ContactStatus, PaymentDirection as DetPaymentDirection, PaymentStatus as DetPaymentStatus,
     StoredContact, StoredContactRequest, StoredPayment, StoredProfile,
 };
-use crate::wallet_backend::kv::DetKv;
+use crate::wallet_backend::kv::{DetKv, kv_get_or_default};
 use crate::wallet_backend::{DetScope, WalletBackend};
 
 // ---------------------------------------------------------------------------
@@ -724,38 +724,12 @@ fn kv_contains(kv: &DetKv, owner: &Identifier, prefix: &str, counterparty: &Iden
 
 fn kv_timestamps(kv: &DetKv, id: &Identifier) -> (i64, i64) {
     let key = sidecar_key(KV_PREFIX_TIMESTAMPS, id);
-    match kv.get::<(i64, i64)>(DetScope::Global, &key) {
-        Ok(Some(ts)) => ts,
-        // Missing or decode error → safe default. Fresh users on a
-        // pre-D3 build will hit this; an explicit log is intentional
-        // only on decode failure since plain absence is the steady
-        // state today.
-        Ok(None) => (0, 0),
-        Err(e) => {
-            tracing::debug!(
-                key = %key,
-                error = ?e,
-                "DashpayView timestamp sidecar decode failed; defaulting to zeros"
-            );
-            (0, 0)
-        }
-    }
+    kv_get_or_default(kv, DetScope::Global, &key, "dashpay_contact_timestamps")
 }
 
 fn kv_payment_timestamps(kv: &DetKv, tx_id: &str) -> (i64, Option<i64>) {
     let key = format!("{KV_PREFIX_TIMESTAMPS}tx:{tx_id}");
-    match kv.get::<(i64, Option<i64>)>(DetScope::Global, &key) {
-        Ok(Some(ts)) => ts,
-        Ok(None) => (0, None),
-        Err(e) => {
-            tracing::debug!(
-                key = %key,
-                error = ?e,
-                "DashpayView payment timestamp sidecar decode failed; defaulting to zeros"
-            );
-            (0, None)
-        }
-    }
+    kv_get_or_default(kv, DetScope::Global, &key, "dashpay_payment_timestamps")
 }
 
 // ---------------------------------------------------------------------------

@@ -51,6 +51,7 @@ pub mod secret_access;
 pub mod secret_prompt;
 pub mod secret_seam;
 mod shielded;
+mod sidecar;
 #[cfg(any(test, feature = "bench"))]
 pub mod single_key;
 #[cfg(not(any(test, feature = "bench")))]
@@ -90,6 +91,7 @@ pub use auth_pubkey_cache::AuthPubkeyCacheView;
 pub use avatar_cache::AvatarCacheView;
 pub use contact_profile_cache::{CachedContactProfile, ContactProfileCacheView};
 pub use event_bridge::EventBridge;
+pub(crate) use kv::network_prefix;
 pub use kv::{DetKv, DetScope, KvAdapterError, SCHEMA_VERSION as KV_SCHEMA_VERSION};
 pub use loader::{LoadedWallets, PersistedLoadSkip};
 pub use single_key::SingleKeyView;
@@ -612,23 +614,8 @@ impl WalletBackend {
         &self,
         pw: &platform_wallet::PlatformWallet,
     ) -> Option<Vec<u8>> {
-        use dash_sdk::dpp::key_wallet::account::{AccountType, StandardAccountType};
         let guard = pw.state().await;
-        guard
-            .wallet()
-            .accounts
-            .all_accounts()
-            .into_iter()
-            .find(|a| {
-                matches!(
-                    a.account_type,
-                    AccountType::Standard {
-                        index: 0,
-                        standard_account_type: StandardAccountType::BIP44Account,
-                    }
-                )
-            })
-            .map(|a| a.account_xpub.encode().to_vec())
+        bip44_account0_xpub(guard.wallet().accounts.all_accounts()).map(|x| x.encode().to_vec())
     }
 
     /// The upstream `WalletId = SHA256(root_xpub ‖ chaincode)` and BIP44
@@ -645,7 +632,6 @@ impl WalletBackend {
         &self,
         seed: &[u8; 64],
     ) -> Result<(WalletId, Vec<u8>), TaskError> {
-        use dash_sdk::dpp::key_wallet::account::{AccountType, StandardAccountType};
         use dash_sdk::dpp::key_wallet::wallet::Wallet as UpstreamWallet;
         use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOptions;
         let wallet = UpstreamWallet::from_seed_bytes(
@@ -658,20 +644,8 @@ impl WalletBackend {
                 e.to_string(),
             )),
         })?;
-        let account_xpub = wallet
-            .accounts
-            .all_accounts()
-            .into_iter()
-            .find(|a| {
-                matches!(
-                    a.account_type,
-                    AccountType::Standard {
-                        index: 0,
-                        standard_account_type: StandardAccountType::BIP44Account,
-                    }
-                )
-            })
-            .map(|a| a.account_xpub.encode().to_vec())
+        let account_xpub = bip44_account0_xpub(wallet.accounts.all_accounts())
+            .map(|x| x.encode().to_vec())
             .ok_or(TaskError::WalletRegistrationXpubMismatch)?;
         Ok((wallet.wallet_id, account_xpub))
     }
@@ -1539,21 +1513,12 @@ impl WalletBackend {
     /// same per-network [`SqlitePersister`] as wallet state — selection
     /// is per-network by construction, no key prefix needed.
     pub fn get_selected_wallet(&self) -> SelectedWallet {
-        match self
-            .kv()
-            .get::<SelectedWallet>(DetScope::Global, SelectedWallet::KV_KEY)
-        {
-            Ok(Some(s)) => s,
-            Ok(None) => SelectedWallet::default(),
-            Err(e) => {
-                tracing::warn!(
-                    network = ?self.inner.network,
-                    error = ?e,
-                    "Failed to load SelectedWallet from wallet k/v; using default"
-                );
-                SelectedWallet::default()
-            }
-        }
+        kv::kv_get_or_default(
+            &self.kv(),
+            DetScope::Global,
+            SelectedWallet::KV_KEY,
+            "selected_wallet",
+        )
     }
 
     /// Persist the [`SelectedWallet`] pointer to this network's wallet
@@ -1570,21 +1535,12 @@ impl WalletBackend {
     /// per-network persister as wallet state — selection is per-network by
     /// construction.
     pub fn get_selected_identity(&self) -> SelectedIdentity {
-        match self
-            .kv()
-            .get::<SelectedIdentity>(DetScope::Global, SelectedIdentity::KV_KEY)
-        {
-            Ok(Some(s)) => s,
-            Ok(None) => SelectedIdentity::default(),
-            Err(e) => {
-                tracing::warn!(
-                    network = ?self.inner.network,
-                    error = ?e,
-                    "Failed to load SelectedIdentity from wallet k/v; using default"
-                );
-                SelectedIdentity::default()
-            }
-        }
+        kv::kv_get_or_default(
+            &self.kv(),
+            DetScope::Global,
+            SelectedIdentity::KV_KEY,
+            "selected_identity",
+        )
     }
 
     /// Persist the [`SelectedIdentity`] pointer to this network's wallet
@@ -2239,15 +2195,35 @@ impl WalletBackend {
     ) -> Result<std::path::PathBuf, TaskError> {
         let mut dir = app_data_dir.to_path_buf();
         dir.push("spv");
-        dir.push(match network {
-            Network::Mainnet => "mainnet",
-            Network::Testnet => "testnet",
-            Network::Devnet => "devnet",
-            Network::Regtest => "regtest",
-        });
+        dir.push(kv::network_prefix(network));
         std::fs::create_dir_all(&dir).map_err(|source| TaskError::FileSystem { source })?;
         Ok(dir)
     }
+}
+
+/// The BIP44 account-0 extended public key among `accounts`, or `None` when
+/// there is no BIP44 account-0.
+///
+/// The single definition of the fund-routing gate's account predicate: DET
+/// resolves a watch-only wallet to its seed by matching this exact account
+/// xpub, so the predicate must not drift between the seedless-load path and the
+/// pre-registration probe.
+fn bip44_account0_xpub<'a>(
+    accounts: impl IntoIterator<Item = &'a dash_sdk::dpp::key_wallet::Account>,
+) -> Option<dash_sdk::dpp::key_wallet::bip32::ExtendedPubKey> {
+    use dash_sdk::dpp::key_wallet::account::{AccountType, StandardAccountType};
+    accounts
+        .into_iter()
+        .find(|a| {
+            matches!(
+                a.account_type,
+                AccountType::Standard {
+                    index: 0,
+                    standard_account_type: StandardAccountType::BIP44Account,
+                }
+            )
+        })
+        .map(|a| a.account_xpub)
 }
 
 /// Map a [`PlatformWalletError`] from any shielded operation to the correct
@@ -3077,7 +3053,6 @@ mod tests {
     /// [`WalletBackend::load_from_persistor_seedless`] gate relies on.
     #[test]
     fn bridge_account_xpub_matches_upstream_for_same_seed() {
-        use dash_sdk::dpp::key_wallet::account::{AccountType, StandardAccountType};
         use dash_sdk::dpp::key_wallet::wallet::Wallet as UpstreamWallet;
         use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOptions;
 
@@ -3094,20 +3069,8 @@ mod tests {
         let up =
             UpstreamWallet::from_seed_bytes(seed, network, WalletAccountCreationOptions::Default)
                 .expect("upstream wallet");
-        let up_xpub = up
-            .accounts
-            .all_accounts()
-            .into_iter()
-            .find(|a| {
-                matches!(
-                    a.account_type,
-                    AccountType::Standard {
-                        index: 0,
-                        standard_account_type: StandardAccountType::BIP44Account,
-                    }
-                )
-            })
-            .map(|a| a.account_xpub.encode().to_vec())
+        let up_xpub = bip44_account0_xpub(up.accounts.all_accounts())
+            .map(|x| x.encode().to_vec())
             .expect("upstream BIP44 account");
 
         assert_eq!(
@@ -3183,19 +3146,7 @@ mod tests {
         let network = Network::Testnet;
 
         let find_bip44_0 = |w: &UpstreamWallet| {
-            w.accounts
-                .all_accounts()
-                .into_iter()
-                .find(|a| {
-                    matches!(
-                        a.account_type,
-                        AccountType::Standard {
-                            index: 0,
-                            standard_account_type: StandardAccountType::BIP44Account,
-                        }
-                    )
-                })
-                .map(|a| a.account_xpub)
+            bip44_account0_xpub(w.accounts.all_accounts())
                 .expect("a fresh Default wallet must contain a BIP44 account-0")
         };
 

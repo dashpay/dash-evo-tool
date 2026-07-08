@@ -407,6 +407,20 @@ pub enum TaskError {
         source: Box<crate::wallet_backend::KvAdapterError>,
     },
 
+    /// The DET contact-profile cache (a contact's display name, DPNS username,
+    /// avatar URL, and bio, kept for offline viewing) could not be read or
+    /// written. Lives in the same cross-network `det-app.sqlite` k/v file as
+    /// [`Self::AvatarCacheStorage`]; a failure here only costs the offline
+    /// contact card (the profile re-fetches from the network), so the user hint
+    /// is the same calm disk-space prompt.
+    #[error(
+        "Could not save the contact details for offline use. Check available disk space and try again."
+    )]
+    ContactProfileCacheStorage {
+        #[source]
+        source: Box<crate::wallet_backend::KvAdapterError>,
+    },
+
     /// A WIF-encoded private key supplied by the user could not be parsed.
     /// Wrapped distinctly from [`Self::SecretStore`] so the user sees an
     /// input-shape hint rather than a storage diagnostic.

@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::context::migration_status::{MigrationState, MigrationStep};
-use crate::wallet_backend::{DetScope, KvAdapterError};
+use crate::wallet_backend::{DetScope, KvAdapterError, network_prefix};
 
 /// Sentinel key format string. The migration body filters every
 /// legacy table by `WHERE network = ?1`, so the sentinel must mirror
@@ -34,20 +34,8 @@ const SENTINEL_KEY_VERSION: &str = "v1";
 pub fn sentinel_key_for(network: Network) -> String {
     format!(
         "{SENTINEL_KEY_PREFIX}:{}:{SENTINEL_KEY_VERSION}",
-        network_token(network)
+        network_prefix(network)
     )
-}
-
-/// Stable, lowercase ASCII network token used in sentinel keys. Kept
-/// distinct from `Network::to_string()` so a future upstream change to
-/// the `Display` impl cannot invalidate existing sentinels.
-fn network_token(network: Network) -> &'static str {
-    match network {
-        Network::Mainnet => "mainnet",
-        Network::Testnet => "testnet",
-        Network::Devnet => "devnet",
-        Network::Regtest => "regtest",
-    }
 }
 
 // TODO: App settings, top-up history, and scheduled DPNS votes all reset/empty on

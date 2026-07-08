@@ -7,7 +7,9 @@ use crate::model::wallet::meta::WalletMeta;
 use crate::model::wallet::seed_envelope::StoredSeedEnvelope;
 use crate::model::wallet::single_key::SingleKeyWallet;
 use crate::model::wallet::{Wallet, WalletSeedHash};
-use crate::wallet_backend::{DetScope, WalletBackend, WalletMetaView, WalletSeedView};
+use crate::wallet_backend::{
+    DetScope, WalletBackend, WalletMetaView, WalletSeedView, network_prefix,
+};
 use dash_sdk::dpp::dashcore::Network;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
@@ -42,13 +44,7 @@ const SPV_CHAIN_STORAGE_ENTRIES: [&str; 7] = [
 /// `WalletBackend::resolve_spv_storage_dir` so the path resolves identically
 /// whether or not the wallet backend is wired yet.
 fn spv_storage_dir(data_dir: &Path, network: Network) -> PathBuf {
-    let segment = match network {
-        Network::Mainnet => "mainnet",
-        Network::Testnet => "testnet",
-        Network::Devnet => "devnet",
-        Network::Regtest => "regtest",
-    };
-    data_dir.join("spv").join(segment)
+    data_dir.join("spv").join(network_prefix(network))
 }
 
 /// Remove the upstream chain-sync cache files under `spv_dir`, leaving the

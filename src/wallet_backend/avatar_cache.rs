@@ -40,7 +40,7 @@ use dash_sdk::dpp::dashcore::hashes::{Hash, sha256};
 
 use crate::backend_task::error::TaskError;
 use crate::model::dashpay::CachedAvatar;
-use crate::wallet_backend::kv::KvAdapterError;
+use crate::wallet_backend::kv::{KvAdapterError, kv_get_logged, map_kv_storage_error};
 use crate::wallet_backend::{DetKv, DetScope};
 
 /// Key prefix for every cached avatar entry.
@@ -90,17 +90,8 @@ impl<'a> AvatarCacheView<'a> {
     /// than [`AVATAR_TTL_MS`] is invalidated and reported absent.
     fn get_at(&self, url: &str, now_ms: i64) -> Option<CachedAvatar> {
         let key = key_for(url);
-        let cached = match self.kv.get::<CachedAvatar>(DetScope::Global, &key) {
-            Ok(v) => v?,
-            Err(e) => {
-                tracing::warn!(
-                    target = "wallet_backend::avatar_cache",
-                    error = ?e,
-                    "Failed to read cached avatar; treating as absent",
-                );
-                return None;
-            }
-        };
+        let cached =
+            kv_get_logged::<CachedAvatar>(self.kv, DetScope::Global, &key, "avatar_cache")?;
 
         if now_ms.saturating_sub(cached.fetched_at_ms) > AVATAR_TTL_MS {
             // Stale: drop so a changed avatar at the same URL is re-fetched.
@@ -217,9 +208,7 @@ impl<'a> AvatarCacheView<'a> {
 /// Avatar-cache adapter errors funnel into the dedicated
 /// [`TaskError::AvatarCacheStorage`] envelope.
 fn map_kv_error_to_task_error(e: KvAdapterError) -> TaskError {
-    TaskError::AvatarCacheStorage {
-        source: Box::new(e),
-    }
+    map_kv_storage_error(e, |source| TaskError::AvatarCacheStorage { source })
 }
 
 #[cfg(test)]

@@ -58,6 +58,27 @@ impl IdentityType {
             IdentityType::Evonode => Encoding::Hex,
         }
     }
+
+    /// Stable persistence tag, decoupled from the derived `Debug`
+    /// representation. Stored blobs and their filters share this mapping, so a
+    /// variant rename can never silently change a discriminator on disk.
+    pub const fn as_tag(&self) -> &'static str {
+        match self {
+            IdentityType::User => "User",
+            IdentityType::Masternode => "Masternode",
+            IdentityType::Evonode => "Evonode",
+        }
+    }
+
+    /// Inverse of [`IdentityType::as_tag`]. Returns `None` for an unknown tag.
+    pub fn from_tag(tag: &str) -> Option<Self> {
+        match tag {
+            "User" => Some(IdentityType::User),
+            "Masternode" => Some(IdentityType::Masternode),
+            "Evonode" => Some(IdentityType::Evonode),
+            _ => None,
+        }
+    }
 }
 
 impl Display for IdentityType {

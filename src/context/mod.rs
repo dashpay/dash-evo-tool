@@ -448,6 +448,13 @@ impl AppContext {
         Arc::clone(&self.app_kv)
     }
 
+    /// The per-network DET key/value store, or a typed error when the wallet
+    /// backend is not yet initialized. Single accessor shared by every
+    /// `context/*_db.rs` module.
+    pub(crate) fn det_kv(&self) -> Result<DetKv, TaskError> {
+        Ok(self.wallet_backend()?.kv())
+    }
+
     /// Shared encrypted HD-seed vault. Cheap clone — `Arc<SecretStore>` is
     /// `Arc`-backed. The wallet backend reuses this same handle rather than
     /// opening its own, because the file vault takes an exclusive advisory

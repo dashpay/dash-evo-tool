@@ -5,7 +5,7 @@ use crate::model::wallet::WalletSeedHash;
 use crate::ui::tokens::tokens_screen::{
     IdentityTokenBalance, IdentityTokenIdentifier, TokenInfo, TokenInfoWithDataContract,
 };
-use crate::wallet_backend::{DetKv, DetScope, UpstreamTokenBalances};
+use crate::wallet_backend::{DetKv, DetScope, KvAdapterError, UpstreamTokenBalances};
 use bincode::config;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::data_contract::TokenConfiguration;
@@ -82,6 +82,16 @@ struct StoredContract {
     alias: Option<String>,
 }
 
+/// Map a k/v adapter failure to the saved-contract storage error.
+fn contract_err(source: KvAdapterError) -> TaskError {
+    TaskError::ContractStorage { source }
+}
+
+/// Map a k/v adapter failure to the saved-token storage error.
+fn token_err(source: KvAdapterError) -> TaskError {
+    TaskError::TokenStorage { source }
+}
+
 impl AppContext {
     /// Retrieves all user-registered contracts from the per-network k/v
     /// store, prepended with the system contracts (DPNS, token history,
@@ -149,7 +159,7 @@ impl AppContext {
         let kv = backend.kv();
         let keys = kv
             .list(DetScope::Global, Some(CONTRACT_KEY_PREFIX))
-            .map_err(|source| TaskError::ContractStorage { source })?;
+            .map_err(contract_err)?;
         let mut out = Vec::with_capacity(keys.len());
         for key in keys {
             match kv.get::<StoredContract>(DetScope::Global, &key) {
@@ -199,7 +209,7 @@ impl AppContext {
         let stored: Option<StoredContract> = backend
             .kv()
             .get(DetScope::Global, &key)
-            .map_err(|source| TaskError::ContractStorage { source })?;
+            .map_err(contract_err)?;
         match stored {
             Some(stored) => Ok(Some(self.decode_stored_contract(stored)?)),
             None => Ok(None),
@@ -227,9 +237,8 @@ impl AppContext {
         let key = contract_key(&data_contract.id());
 
         // Only write the contract entry if none exists yet (INSERT OR IGNORE).
-        let existing: Option<StoredContract> = kv
-            .get(DetScope::Global, &key)
-            .map_err(|source| TaskError::ContractStorage { source })?;
+        let existing: Option<StoredContract> =
+            kv.get(DetScope::Global, &key).map_err(contract_err)?;
         if existing.is_none() {
             let contract_bytes = data_contract
                 .serialize_to_bytes_with_platform_version(self.platform_version())
@@ -241,7 +250,7 @@ impl AppContext {
                 alias: contract_alias.map(str::to_string),
             };
             kv.put(DetScope::Global, &key, &stored)
-                .map_err(|source| TaskError::ContractStorage { source })?;
+                .map_err(contract_err)?;
         }
 
         // Token metadata now also lives in the per-network k/v store (C7).
@@ -282,7 +291,7 @@ impl AppContext {
         backend
             .kv()
             .delete(DetScope::Global, &contract_key(contract_id))
-            .map_err(|source| TaskError::ContractStorage { source })
+            .map_err(contract_err)
     }
 
     /// Replace a contract entry while preserving the existing alias, if any.
@@ -297,7 +306,7 @@ impl AppContext {
 
         let existing_alias = kv
             .get::<StoredContract>(DetScope::Global, &key)
-            .map_err(|source| TaskError::ContractStorage { source })?
+            .map_err(contract_err)?
             .and_then(|s| s.alias);
 
         let contract_bytes = new_contract
@@ -311,7 +320,7 @@ impl AppContext {
             alias: existing_alias,
         };
         kv.put(DetScope::Global, &key, &stored)
-            .map_err(|source| TaskError::ContractStorage { source })
+            .map_err(contract_err)
     }
 
     /// Update (or clear) the alias of an existing contract entry. Returns
@@ -327,14 +336,14 @@ impl AppContext {
         let key = contract_key(contract_id);
         let Some(mut stored) = kv
             .get::<StoredContract>(DetScope::Global, &key)
-            .map_err(|source| TaskError::ContractStorage { source })?
+            .map_err(contract_err)?
         else {
             // No entry — nothing to rename. UI handles "missing" elsewhere.
             return Ok(());
         };
         stored.alias = new_alias.map(str::to_string);
         kv.put(DetScope::Global, &key, &stored)
-            .map_err(|source| TaskError::ContractStorage { source })
+            .map_err(contract_err)
     }
 
     /// List every synced `(identity, token)` balance pair from upstream,
@@ -345,7 +354,7 @@ impl AppContext {
         &self,
     ) -> std::result::Result<IndexMap<IdentityTokenIdentifier, IdentityTokenBalance>, TaskError>
     {
-        let kv = self.token_kv()?;
+        let kv = self.det_kv()?;
         let balances = self.token_balances_view()?.list();
         // Cache decoded token registry entries so repeated balances under
         // the same token only decode the configuration once.
@@ -362,7 +371,7 @@ impl AppContext {
                     let token_key_s = token_key(&token_id);
                     let Some(stored) = kv
                         .get::<StoredToken>(DetScope::Global, &token_key_s)
-                        .map_err(|source| TaskError::TokenStorage { source })?
+                        .map_err(token_err)?
                     else {
                         tracing::debug!(
                             token = %token_id,
@@ -408,7 +417,7 @@ impl AppContext {
         token_id: Identifier,
         identity_id: Identifier,
     ) -> std::result::Result<(), TaskError> {
-        let kv = self.token_kv()?;
+        let kv = self.det_kv()?;
         prune_token_order(&kv, |(t, i)| !(*t == token_id && *i == identity_id))?;
         Ok(())
     }
@@ -437,9 +446,9 @@ impl AppContext {
             data_contract_id: contract_id.to_buffer(),
             position: token_position,
         };
-        let kv = self.token_kv()?;
+        let kv = self.det_kv()?;
         kv.put(DetScope::Global, &token_key(token_id), &stored)
-            .map_err(|source| TaskError::TokenStorage { source })
+            .map_err(token_err)
     }
 
     /// Reflect a proof-derived post-transaction balance for one
@@ -462,9 +471,9 @@ impl AppContext {
     /// Per-identity balances are owned upstream, so there is nothing local to
     /// cascade-delete.
     pub fn remove_token(&self, token_id: &Identifier) -> std::result::Result<(), TaskError> {
-        let kv = self.token_kv()?;
+        let kv = self.det_kv()?;
         kv.delete(DetScope::Global, &token_key(token_id))
-            .map_err(|source| TaskError::TokenStorage { source })?;
+            .map_err(token_err)?;
         prune_token_order(&kv, |(t, _)| t != token_id)?;
         Ok(())
     }
@@ -475,10 +484,10 @@ impl AppContext {
         &self,
         token_id: &Identifier,
     ) -> std::result::Result<Option<TokenConfiguration>, TaskError> {
-        let kv = self.token_kv()?;
+        let kv = self.det_kv()?;
         let Some(stored) = kv
             .get::<StoredToken>(DetScope::Global, &token_key(token_id))
-            .map_err(|source| TaskError::TokenStorage { source })?
+            .map_err(token_err)?
         else {
             return Ok(None);
         };
@@ -490,10 +499,10 @@ impl AppContext {
         &self,
         token_id: &Identifier,
     ) -> std::result::Result<Option<Identifier>, TaskError> {
-        let kv = self.token_kv()?;
+        let kv = self.det_kv()?;
         let Some(stored) = kv
             .get::<StoredToken>(DetScope::Global, &token_key(token_id))
-            .map_err(|source| TaskError::TokenStorage { source })?
+            .map_err(token_err)?
         else {
             return Ok(None);
         };
@@ -506,15 +515,15 @@ impl AppContext {
     pub fn get_all_known_tokens_with_data_contract(
         &self,
     ) -> std::result::Result<IndexMap<Identifier, TokenInfoWithDataContract>, TaskError> {
-        let kv = self.token_kv()?;
+        let kv = self.det_kv()?;
         let keys = kv
             .list(DetScope::Global, Some(TOKEN_KEY_PREFIX))
-            .map_err(|source| TaskError::TokenStorage { source })?;
+            .map_err(token_err)?;
         let mut sorted: Vec<(Identifier, StoredToken, TokenConfiguration)> = Vec::new();
         for key in keys {
             let Some(stored) = kv
                 .get::<StoredToken>(DetScope::Global, &key)
-                .map_err(|source| TaskError::TokenStorage { source })?
+                .map_err(token_err)?
             else {
                 continue;
             };
@@ -566,15 +575,15 @@ impl AppContext {
     pub fn get_all_known_tokens(
         &self,
     ) -> std::result::Result<IndexMap<Identifier, TokenInfo>, TaskError> {
-        let kv = self.token_kv()?;
+        let kv = self.det_kv()?;
         let keys = kv
             .list(DetScope::Global, Some(TOKEN_KEY_PREFIX))
-            .map_err(|source| TaskError::TokenStorage { source })?;
+            .map_err(token_err)?;
         let mut sorted: Vec<(Identifier, StoredToken, TokenConfiguration)> = Vec::new();
         for key in keys {
             let Some(stored) = kv
                 .get::<StoredToken>(DetScope::Global, &key)
-                .map_err(|source| TaskError::TokenStorage { source })?
+                .map_err(token_err)?
             else {
                 continue;
             };
@@ -614,13 +623,13 @@ impl AppContext {
         &self,
         all_ids: Vec<(Identifier, Identifier)>,
     ) -> std::result::Result<(), TaskError> {
-        let kv = self.token_kv()?;
+        let kv = self.det_kv()?;
         let payload: Vec<([u8; 32], [u8; 32])> = all_ids
             .iter()
             .map(|(t, i)| (t.to_buffer(), i.to_buffer()))
             .collect();
         kv.put(DetScope::Global, TOKEN_ORDER_KEY, &payload)
-            .map_err(|source| TaskError::TokenStorage { source })
+            .map_err(token_err)
     }
 
     /// Load the user-chosen `(token_id, identity_id)` ordering. Returns
@@ -628,10 +637,10 @@ impl AppContext {
     pub fn load_token_order(
         &self,
     ) -> std::result::Result<Vec<(Identifier, Identifier)>, TaskError> {
-        let kv = self.token_kv()?;
+        let kv = self.det_kv()?;
         let Some(payload): Option<Vec<([u8; 32], [u8; 32])>> = kv
             .get(DetScope::Global, TOKEN_ORDER_KEY)
-            .map_err(|source| TaskError::TokenStorage { source })?
+            .map_err(token_err)?
         else {
             return Ok(Vec::new());
         };
@@ -647,22 +656,17 @@ impl AppContext {
         if self.network != Network::Devnet {
             return Ok(());
         }
-        let kv = self.token_kv()?;
+        let kv = self.det_kv()?;
         let registry_keys = kv
             .list(DetScope::Global, Some(TOKEN_KEY_PREFIX))
-            .map_err(|source| TaskError::TokenStorage { source })?;
+            .map_err(token_err)?;
         for key in registry_keys {
-            kv.delete(DetScope::Global, &key)
-                .map_err(|source| TaskError::TokenStorage { source })?;
+            kv.delete(DetScope::Global, &key).map_err(token_err)?;
         }
         // Balances are owned upstream now — nothing local to wipe.
         kv.delete(DetScope::Global, TOKEN_ORDER_KEY)
-            .map_err(|source| TaskError::TokenStorage { source })?;
+            .map_err(token_err)?;
         Ok(())
-    }
-
-    fn token_kv(&self) -> std::result::Result<DetKv, TaskError> {
-        Ok(self.wallet_backend()?.kv())
     }
 
     /// Upstream-fed token-balance view (T6 seam). Reads the lock-free
@@ -740,10 +744,9 @@ impl AppContext {
         let kv = backend.kv();
         let keys = kv
             .list(DetScope::Global, Some(CONTRACT_KEY_PREFIX))
-            .map_err(|source| TaskError::ContractStorage { source })?;
+            .map_err(contract_err)?;
         for key in keys {
-            kv.delete(DetScope::Global, &key)
-                .map_err(|source| TaskError::ContractStorage { source })?;
+            kv.delete(DetScope::Global, &key).map_err(contract_err)?;
         }
         Ok(())
     }
@@ -775,7 +778,7 @@ where
 {
     let Some(payload): Option<Vec<([u8; 32], [u8; 32])>> = kv
         .get(DetScope::Global, TOKEN_ORDER_KEY)
-        .map_err(|source| TaskError::TokenStorage { source })?
+        .map_err(token_err)?
     else {
         return Ok(());
     };
@@ -793,7 +796,7 @@ where
         .map(|(t, i)| (t.to_buffer(), i.to_buffer()))
         .collect();
     kv.put(DetScope::Global, TOKEN_ORDER_KEY, &serialized)
-        .map_err(|source| TaskError::TokenStorage { source })
+        .map_err(token_err)
 }
 
 #[cfg(test)]

@@ -84,6 +84,19 @@ pub enum TaskError {
         source: Box<platform_wallet::error::PlatformWalletError>,
     },
 
+    /// The wallet could not assemble and sign a payment transaction — most
+    /// often because the amount plus the network fee exceeds the spendable
+    /// balance, but also covers coin-selection and signing failures.
+    #[error(
+        "The payment could not be prepared. Check that the amount plus the network fee does not exceed your available balance, then try again."
+    )]
+    WalletPaymentBuildFailed {
+        #[source]
+        source: Box<
+            dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::transaction_builder::BuilderError,
+        >,
+    },
+
     /// The network rejected an identity-registration submission. Covers
     /// upstream SDK rejections (consensus errors, invalid IS-lock, key
     /// conflict, version mismatch, etc.) and asset-lock broadcast rejections

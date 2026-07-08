@@ -248,14 +248,13 @@ impl AppContext {
                 )))
             }
             CoreTask::SendWalletPayment { wallet, request } => {
-                // Upstream `WalletBackend::send_payment` →
-                // `core().send_to_addresses` builds via the upstream
-                // `TransactionBuilder` with an internally-computed fee and a
-                // fixed coin-selection strategy. It exposes only a fee *rate*,
-                // not the absolute `override_fee` DET passes for a min-relay
-                // retry. Rather than silently ignore that option — which would
-                // send at a different fee than requested — reject it with a
-                // typed error.
+                // `WalletBackend::send_payment` builds via the upstream
+                // key-wallet `TransactionBuilder` with an internally-computed fee
+                // and a fixed coin-selection strategy. It exposes only a fee
+                // *rate*, not the absolute `override_fee` DET passes for a
+                // min-relay retry. Rather than silently ignore that option —
+                // which would send at a different fee than requested — reject it
+                // with a typed error.
                 if request.override_fee.is_some() {
                     return Err(TaskError::WalletPaymentOptionUnsupported);
                 }

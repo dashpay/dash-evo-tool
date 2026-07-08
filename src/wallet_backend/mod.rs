@@ -1187,9 +1187,16 @@ impl WalletBackend {
         }
         // `pwm.shutdown()` quiesces the periodic coordinators — draining any
         // in-flight pass and its persister / host-callback fan-out — then drains
-        // the wallet-event adapter task. It is infallible and best-effort: a task
-        // that refuses to join is logged upstream, not surfaced here.
-        self.inner.pwm.shutdown().await;
+        // the wallet-event adapter task. Best-effort: a non-clean report flags a
+        // still-live worker or orphan, which teardown proceeds past regardless —
+        // log it rather than surface it.
+        let report = self.inner.pwm.shutdown().await;
+        if !report.all_clean() {
+            tracing::warn!(
+                ?report,
+                "Wallet manager shutdown did not complete cleanly; continuing teardown"
+            );
+        }
     }
 
     /// Stop chain sync **in place**, keeping this backend (and its
@@ -2274,23 +2281,77 @@ impl WalletBackend {
         recipients: Vec<(dash_sdk::dpp::dashcore::Address, u64)>,
     ) -> Result<dash_sdk::dpp::dashcore::Txid, TaskError> {
         use dash_sdk::dpp::key_wallet::account::account_type::StandardAccountType;
+        use dash_sdk::dpp::key_wallet::managed_account::managed_account_trait::ManagedAccountTrait;
+        use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::coin_selection::SelectionStrategy;
+        use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::transaction_builder::TransactionBuilder;
+        use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
+
         let scope = Self::hd_scope(seed_hash);
         self.inner
             .secret_access
             .with_secret_session(&scope, async |session| {
                 let signer = DetSigner::from_held(session.plaintext(), self.inner.network);
                 let wallet = self.resolve_wallet(seed_hash).await?;
-                let tx = wallet
+                let wallet_id = wallet.wallet_id();
+
+                // Assemble and sign under one uninterrupted hold of the
+                // wallet-manager write lock: `set_funding` reads the funding
+                // account's free UTXOs and `build_signed` reserves the ones it
+                // selects. Holding the lock across both closes the
+                // read-then-reserve window a concurrent build could otherwise use
+                // to double-select the same UTXO. The guard drops at the end of
+                // this block, before the broadcast re-acquires the lock.
+                let tx = {
+                    let mut wm = wallet.wallet_manager().write().await;
+                    let (kw_wallet, info) = wm
+                        .get_wallet_and_info_mut(&wallet_id)
+                        .ok_or(TaskError::WalletStateInconsistent)?;
+
+                    let account = kw_wallet
+                        .get_bip44_account(DEFAULT_BIP44_ACCOUNT)
+                        .ok_or(TaskError::WalletStateInconsistent)?;
+                    let current_height = info.core_wallet.synced_height();
+                    let managed_account = info
+                        .core_wallet
+                        .accounts
+                        .standard_bip44_accounts
+                        .get_mut(&DEFAULT_BIP44_ACCOUNT)
+                        .ok_or(TaskError::WalletStateInconsistent)?;
+
+                    let mut builder = TransactionBuilder::new()
+                        .set_current_height(current_height)
+                        .set_selection_strategy(SelectionStrategy::LargestFirst)
+                        .set_funding(managed_account, account);
+                    for (address, amount) in &recipients {
+                        builder = builder.add_output(address, *amount);
+                    }
+
+                    let (tx, _fee) = builder
+                        .build_signed(&signer, |addr| {
+                            managed_account.address_derivation_path(&addr)
+                        })
+                        .await
+                        .map_err(|source| TaskError::WalletPaymentBuildFailed {
+                            source: Box::new(source),
+                        })?;
+                    tx
+                };
+
+                // Broadcast through the wallet's own `SpvBroadcaster`, releasing
+                // the build's UTXO reservation on a definitive pre-send rejection
+                // so an immediate retry can reselect those inputs. Preserves the
+                // reservation reconciliation the removed `core().send_to_addresses`
+                // performed.
+                wallet
                     .core()
-                    .send_to_addresses(
+                    .broadcast_transaction_releasing_reservation(
                         StandardAccountType::BIP44Account,
                         DEFAULT_BIP44_ACCOUNT,
-                        recipients,
-                        &signer,
+                        &tx,
                     )
                     .await
-                    .map_err(|e| TaskError::WalletBackend {
-                        source: Box::new(e),
+                    .map_err(|source| TaskError::WalletBackend {
+                        source: Box::new(source),
                     })?;
                 Ok(tx.txid())
             })
@@ -3332,7 +3393,9 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
         | P::ShieldedTreeUpdateFailed(_)
         | P::ShieldedStoreError(_)
         | P::ShieldedMerkleWitnessUnavailable(_)
-        | P::ShieldedKeyDerivation(_)) => TaskError::WalletBackend {
+        | P::ShieldedKeyDerivation(_)
+        | P::AddressNonceMismatch { .. }
+        | P::ShieldedShutdownIncomplete { .. }) => TaskError::WalletBackend {
             source: Box::new(other),
         },
     }
@@ -3575,7 +3638,11 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
         // A rehydration structural invariant broke (a discovery probe and its
         // real address pool disagreed on chain order); fail-closed as a
         // precondition, unrelated to identity registration. Bucket as Other.
-        | P::RehydrationPoolTypeMismatch { .. } => IdentityOpErrorKind::Other,
+        | P::RehydrationPoolTypeMismatch { .. }
+        // Address nonce desync and an incomplete shielded-worker shutdown are
+        // both precondition/state faults unrelated to identity registration.
+        | P::AddressNonceMismatch { .. }
+        | P::ShieldedShutdownIncomplete { .. } => IdentityOpErrorKind::Other,
     }
 }
 

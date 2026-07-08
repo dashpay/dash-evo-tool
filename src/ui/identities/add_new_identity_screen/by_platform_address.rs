@@ -202,7 +202,11 @@ impl AddNewIdentityScreen {
         ui.add_space(20.0);
 
         // Extract the step from the RwLock to minimize borrow scope
-        let step = *self.step.read().unwrap();
+        let step = self
+            .step
+            .read()
+            .map(|s| *s)
+            .unwrap_or(WalletFundedScreenStep::ChooseFundingMethod);
 
         // Display estimated fee before action button (reuse already calculated value)
         let dark_mode = ui.style().visuals.dark_mode;

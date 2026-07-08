@@ -14,6 +14,7 @@ use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
+use crate::ui::identities::funding_common::wallet_selection_combo;
 use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::{MessageType, ScreenLike};
 use bip39::rand::{prelude::IteratorRandom, thread_rng};
@@ -539,47 +540,31 @@ impl AddExistingIdentityScreen {
     fn render_wallet_selection(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
             if self.app_context.has_wallet.load(Ordering::Relaxed) {
-                let wallets = &self.app_context.wallets.read().unwrap();
-                let wallet_aliases: Vec<String> = wallets
-                    .values()
-                    .map(|wallet| {
+                let wallets: Vec<_> = self
+                    .app_context
+                    .wallets
+                    .read()
+                    .map(|guard| guard.values().cloned().collect())
+                    .unwrap_or_default();
+
+                let clicked = wallet_selection_combo(
+                    ui,
+                    "select_existing_wallet",
+                    &wallets,
+                    self.selected_wallet.as_ref(),
+                    |wallet| {
                         wallet
                             .read()
-                            .unwrap()
-                            .alias
-                            .clone()
+                            .ok()
+                            .and_then(|w| w.alias.clone())
                             .unwrap_or_else(|| "Unnamed Wallet".to_string())
-                    })
-                    .collect();
-
-                let selected_wallet_alias = self
-                    .selected_wallet
-                    .as_ref()
-                    .and_then(|wallet| wallet.read().ok()?.alias.clone())
-                    .unwrap_or_else(|| "Select".to_string());
-
-                // Display the ComboBox for wallet selection
-                ComboBox::from_label("")
-                    .selected_text(selected_wallet_alias.clone())
-                    .show_ui(ui, |ui| {
-                        for (idx, wallet) in wallets.values().enumerate() {
-                            let wallet_alias = wallet_aliases[idx].clone();
-
-                            let is_selected = self
-                                .selected_wallet
-                                .as_ref()
-                                .is_some_and(|selected| Arc::ptr_eq(selected, wallet));
-
-                            if ui
-                                .selectable_label(is_selected, wallet_alias.clone())
-                                .clicked()
-                            {
-                                // Update the selected wallet
-                                self.selected_wallet = Some(wallet.clone());
-                                self.wallet_open_attempted = false;
-                            }
-                        }
-                    });
+                    },
+                    |_| true,
+                );
+                if let Some(wallet) = clicked {
+                    self.selected_wallet = Some(wallet);
+                    self.wallet_open_attempted = false;
+                }
 
                 ui.add_space(20.0);
             } else {

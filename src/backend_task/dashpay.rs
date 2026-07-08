@@ -300,16 +300,11 @@ impl AppContext {
                     incoming_payments::register_dashpay_addresses_for_identity(self, &identity)
                         .await?;
 
-                Ok(BackendTaskSuccessResult::Message(format!(
-                    "Registered {} DashPay addresses for {} contacts{}",
-                    result.addresses_registered,
-                    result.contacts_processed,
-                    if result.errors.is_empty() {
-                        String::new()
-                    } else {
-                        format!(" ({} errors)", result.errors.len())
-                    }
-                )))
+                Ok(BackendTaskSuccessResult::DashPayAddressesRegistered {
+                    addresses: result.addresses_registered,
+                    contacts: result.contacts_processed,
+                    errors: result.errors.len(),
+                })
             }
             DashPayTask::DetectIncomingContactPayments { outputs } => {
                 let recorded =

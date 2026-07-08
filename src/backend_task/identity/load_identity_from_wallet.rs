@@ -266,9 +266,7 @@ impl AppContext {
                 .insert(identity_index, qualified_identity.identity.clone());
         }
 
-        Ok(BackendTaskSuccessResult::Message(
-            "Successfully loaded identity".to_string(),
-        ))
+        Ok(BackendTaskSuccessResult::IdentitiesLoaded { count: 1 })
     }
 
     pub(super) async fn load_user_identities_up_to_index(
@@ -294,15 +292,8 @@ impl AppContext {
             });
         }
 
-        let message = if summary.found == 1 {
-            "Successfully loaded 1 identity from your wallet.".to_string()
-        } else {
-            format!(
-                "Successfully loaded {count} identities from your wallet.",
-                count = summary.found,
-            )
-        };
-
-        Ok(BackendTaskSuccessResult::Message(message))
+        Ok(BackendTaskSuccessResult::IdentitiesLoaded {
+            count: summary.found,
+        })
     }
 }

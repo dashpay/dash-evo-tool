@@ -1391,6 +1391,42 @@ impl App for AppState {
                             self.visible_screen_mut()
                                 .display_task_result(unboxed_message);
                         }
+                        BackendTaskSuccessResult::AssetLockBroadcast { ref txid } => {
+                            let msg = format!(
+                                "Asset lock transaction broadcast successfully. Transaction ID: {txid}"
+                            );
+                            MessageBanner::set_global(ctx, &msg, MessageType::Success);
+                            self.visible_screen_mut()
+                                .display_task_result(unboxed_message);
+                        }
+                        BackendTaskSuccessResult::DashPayAddressesRegistered {
+                            addresses,
+                            contacts,
+                            errors,
+                        } => {
+                            let msg = if errors == 0 {
+                                format!(
+                                    "Registered {addresses} DashPay addresses for {contacts} contacts."
+                                )
+                            } else {
+                                format!(
+                                    "Registered {addresses} DashPay addresses for {contacts} contacts. {errors} addresses could not be registered."
+                                )
+                            };
+                            MessageBanner::set_global(ctx, &msg, MessageType::Success);
+                            self.visible_screen_mut()
+                                .display_task_result(unboxed_message);
+                        }
+                        BackendTaskSuccessResult::IdentitiesLoaded { count } => {
+                            let msg = if count == 1 {
+                                "Successfully loaded 1 identity from your wallet.".to_string()
+                            } else {
+                                format!("Successfully loaded {count} identities from your wallet.")
+                            };
+                            MessageBanner::set_global(ctx, &msg, MessageType::Success);
+                            self.visible_screen_mut()
+                                .display_task_result(unboxed_message);
+                        }
                         BackendTaskSuccessResult::Progress { .. } => {
                             // Progress updates only go to the screen — no global banner.
                             // The screen updates its existing banner handle in-place.
@@ -1466,7 +1502,8 @@ impl App for AppState {
                         }
                     }
                 }
-                TaskResult::Error(TaskError::MustRetry(msg)) => {
+                TaskResult::Error(err @ TaskError::CoreWalletAutoDetected { .. }) => {
+                    let msg = err.to_string();
                     MessageBanner::set_global(ctx, &msg, MessageType::Success);
                     self.visible_screen_mut()
                         .display_message(&msg, MessageType::Success);

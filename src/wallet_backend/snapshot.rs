@@ -487,6 +487,14 @@ impl SnapshotStore {
                     address_paths: address_paths_from_info(&state.core_wallet),
                 }
             }
+            // Accepted, self-healing edge case: if this is the very first
+            // recompute for the wallet and it loses the try-lock, there is no
+            // prior snapshot, so `snapshot()` returns the all-zero default and
+            // `publish` still marks the wallet as having a snapshot. A wallet
+            // with genuine prior funds (app restart on an existing seed) can
+            // then render as "0 DASH, synced" for a single event cycle instead
+            // of "syncing". The next event wins the lock and publishes the real
+            // balance, correcting it.
             None => carried_forward_state(&self.snapshot(&seed_hash)),
         };
 

@@ -696,23 +696,17 @@ impl ScreenLike for CreateAssetLockScreen {
             WalletFundedScreenStep::FundsReceived => {
                 // Asset lock creation was triggered
                 match &result {
-                    BackendTaskSuccessResult::Message(msg) => {
-                        if msg.contains("Asset lock transaction broadcast successfully") {
-                            // Extract TX ID from message
-                            if let Some(tx_id_start) = msg.find("TX ID: ") {
-                                let tx_id = msg[tx_id_start + 7..].trim().to_string();
-                                self.asset_lock_tx_id = Some(tx_id);
-                            }
+                    BackendTaskSuccessResult::AssetLockBroadcast { txid } => {
+                        self.asset_lock_tx_id = Some(txid.clone());
 
-                            let mut step = self.step.write().unwrap();
-                            *step = WalletFundedScreenStep::Success;
-                            drop(step);
-                            MessageBanner::set_global(
-                                self.app_context.egui_ctx(),
-                                "Asset lock created successfully!",
-                                MessageType::Success,
-                            );
-                        }
+                        let mut step = self.step.write().unwrap();
+                        *step = WalletFundedScreenStep::Success;
+                        drop(step);
+                        MessageBanner::set_global(
+                            self.app_context.egui_ctx(),
+                            "Asset lock created successfully!",
+                            MessageType::Success,
+                        );
                     }
                     BackendTaskSuccessResult::CoreItem(
                         CoreItem::ReceivedAvailableUTXOTransaction(tx, _),
@@ -735,23 +729,17 @@ impl ScreenLike for CreateAssetLockScreen {
             }
             WalletFundedScreenStep::WaitingForAssetLock => {
                 match &result {
-                    BackendTaskSuccessResult::Message(msg) => {
-                        if msg.contains("Asset lock transaction broadcast successfully") {
-                            // Extract TX ID from message
-                            if let Some(tx_id_start) = msg.find("TX ID: ") {
-                                let tx_id = msg[tx_id_start + 7..].trim().to_string();
-                                self.asset_lock_tx_id = Some(tx_id);
-                            }
+                    BackendTaskSuccessResult::AssetLockBroadcast { txid } => {
+                        self.asset_lock_tx_id = Some(txid.clone());
 
-                            let mut step = self.step.write().unwrap();
-                            *step = WalletFundedScreenStep::Success;
-                            drop(step);
-                            MessageBanner::set_global(
-                                self.app_context.egui_ctx(),
-                                "Asset lock created successfully!",
-                                MessageType::Success,
-                            );
-                        }
+                        let mut step = self.step.write().unwrap();
+                        *step = WalletFundedScreenStep::Success;
+                        drop(step);
+                        MessageBanner::set_global(
+                            self.app_context.egui_ctx(),
+                            "Asset lock created successfully!",
+                            MessageType::Success,
+                        );
                     }
                     BackendTaskSuccessResult::CoreItem(
                         CoreItem::ReceivedAvailableUTXOTransaction(tx, _),
@@ -951,27 +939,6 @@ mod tests {
         // Test copy semantics
         let registration_copy = registration;
         assert_eq!(registration, registration_copy);
-    }
-
-    /// Test TX ID extraction from success message
-    #[test]
-    fn test_tx_id_extraction() {
-        let msg = "Asset lock transaction broadcast successfully. TX ID: abc123def456";
-
-        // Extract TX ID from message
-        let tx_id = msg
-            .find("TX ID: ")
-            .map(|tx_id_start| msg[tx_id_start + 7..].trim().to_string());
-
-        assert_eq!(tx_id, Some("abc123def456".to_string()));
-
-        // Test message without TX ID
-        let msg_without_id = "Some other message";
-        let no_tx_id = msg_without_id
-            .find("TX ID: ")
-            .map(|tx_id_start| msg_without_id[tx_id_start + 7..].trim().to_string());
-
-        assert_eq!(no_tx_id, None);
     }
 
     /// Test MAX_IDENTITY_INDEX constant

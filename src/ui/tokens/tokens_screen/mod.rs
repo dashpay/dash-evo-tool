@@ -52,8 +52,9 @@ use enum_iterator::Sequence;
 use image::ImageReader;
 use crate::app::BackendTasksExecutionMode;
 use crate::backend_task::contract::ContractTask;
+use crate::backend_task::error::TaskError;
 use crate::backend_task::tokens::TokenTask;
-use crate::backend_task::{BackendTask, NO_IDENTITIES_FOUND};
+use crate::backend_task::BackendTask;
 
 use crate::app::{AppAction, DesiredAppAction};
 use crate::context::AppContext;
@@ -3075,7 +3076,6 @@ impl ScreenLike for TokensScreen {
                 if msg.contains("Successfully fetched token balances")
                     || msg.contains("Failed to fetch token balances")
                     || msg.contains("Failed to get estimated rewards")
-                    || msg.eq(NO_IDENTITIES_FOUND)
                 {
                     // Clear adding status on any error
                     if msg.contains("Failed") {
@@ -3107,6 +3107,18 @@ impl ScreenLike for TokensScreen {
                 }
             }
         }
+    }
+
+    fn display_task_error(&mut self, error: &TaskError) -> bool {
+        // A token-balance refresh with no local identities is a normal empty
+        // state, not an in-flight operation. Clear the refresh indicator and let
+        // AppState show the informational banner.
+        if matches!(error, TaskError::NoIdentitiesFound)
+            && self.tokens_subscreen == TokensSubscreen::MyTokens
+        {
+            self.refreshing_status = RefreshingStatus::NotRefreshing;
+        }
+        false
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {

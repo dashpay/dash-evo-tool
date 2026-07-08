@@ -1065,6 +1065,15 @@ impl ScreenLike for AddExistingIdentityScreen {
                 self.success_message = Some("Successfully loaded identity.".to_string());
                 self.add_identity_status = AddIdentityStatus::Complete;
             }
+            BackendTaskSuccessResult::IdentitiesLoaded { count } => {
+                self.refresh_banner.take_and_clear();
+                self.success_message = Some(if count == 1 {
+                    "Successfully loaded 1 identity from your wallet.".to_string()
+                } else {
+                    format!("Successfully loaded {count} identities from your wallet.")
+                });
+                self.add_identity_status = AddIdentityStatus::Complete;
+            }
             BackendTaskSuccessResult::Message(msg) => {
                 // Check if this is a final success message or a progress update
                 if msg.starts_with("Successfully loaded") || msg.starts_with("Finished loading") {

@@ -228,9 +228,9 @@ impl AppContext {
                         identity_index,
                     )
                     .await?;
-                Ok(BackendTaskSuccessResult::Message(format!(
-                    "Asset lock transaction broadcast successfully. TX ID: {txid}"
-                )))
+                Ok(BackendTaskSuccessResult::AssetLockBroadcast {
+                    txid: txid.to_string(),
+                })
             }
             CoreTask::CreateTopUpAssetLock(wallet, amount, identity_index, _top_up_index) => {
                 let backend = self.wallet_backend()?;
@@ -244,9 +244,9 @@ impl AppContext {
                         identity_index,
                     )
                     .await?;
-                Ok(BackendTaskSuccessResult::Message(format!(
-                    "Asset lock transaction broadcast successfully. TX ID: {txid}"
-                )))
+                Ok(BackendTaskSuccessResult::AssetLockBroadcast {
+                    txid: txid.to_string(),
+                })
             }
             CoreTask::SendWalletPayment { wallet, request } => {
                 // `WalletBackend::send_payment` builds via the upstream

@@ -59,9 +59,6 @@ pub mod tokens;
 pub mod update_data_contract;
 pub mod wallet;
 
-// TODO: Refactor how we handle errors and messages, and remove it from here
-pub(crate) const NO_IDENTITIES_FOUND: &str = "No identities found";
-
 /// Returns `true` for backend tasks that read or write the
 /// `WalletBackend` (and therefore the upstream `SecretStore` / sidecar
 /// k/v). These tasks must short-circuit with
@@ -486,9 +483,24 @@ pub enum BackendTaskSuccessResult {
         count: usize,
         addresses_csv: String,
     },
-}
 
-impl BackendTaskSuccessResult {}
+    /// An asset-lock funding transaction was broadcast successfully.
+    AssetLockBroadcast {
+        txid: String,
+    },
+
+    /// DashPay contact receiving addresses were registered for an identity.
+    DashPayAddressesRegistered {
+        addresses: usize,
+        contacts: usize,
+        errors: usize,
+    },
+
+    /// Identities were discovered and loaded from a wallet by index search.
+    IdentitiesLoaded {
+        count: u32,
+    },
+}
 
 impl AppContext {
     /// Run backend tasks sequentially
@@ -499,10 +511,7 @@ impl AppContext {
     ) -> Vec<Result<BackendTaskSuccessResult, TaskError>> {
         let mut results = Vec::new();
         for task in tasks {
-            match self.run_backend_task(task, sender.clone()).await {
-                Ok(result) => results.push(Ok(result)),
-                Err(e) => results.push(Err(e)),
-            };
+            results.push(self.run_backend_task(task, sender.clone()).await);
         }
         results
     }

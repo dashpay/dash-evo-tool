@@ -2,6 +2,7 @@ use crate::app::AppAction;
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
+use crate::model::fee_estimation::format_duffs_as_dash;
 use crate::ui::components::MessageBanner;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
@@ -118,11 +119,14 @@ impl AssetLockDetailScreen {
 
                 ui.horizontal(|ui| {
                     ui.label("Amount:");
-                    let dash_amount = lock.amount as f64 * 1e-8;
                     ui.label(
-                        RichText::new(format!("{:.8} DASH ({} duffs)", dash_amount, lock.amount))
-                            .strong()
-                            .color(DashColors::text_primary(dark_mode)),
+                        RichText::new(format!(
+                            "{} ({} duffs)",
+                            format_duffs_as_dash(lock.amount),
+                            lock.amount
+                        ))
+                        .strong()
+                        .color(DashColors::text_primary(dark_mode)),
                     );
                 });
                 ui.add_space(5.0);

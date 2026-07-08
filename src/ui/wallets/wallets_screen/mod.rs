@@ -11,8 +11,8 @@ use crate::backend_task::core::CoreTask;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::context::connection_status::spv_phase_summary;
-use crate::model::amount::Amount;
 use crate::model::feature_gate::FeatureGate;
+use crate::model::fee_estimation::format_duffs_as_dash;
 use crate::model::spv_status::SpvStatus;
 use crate::model::wallet::{TransactionStatus, Wallet, WalletSeedHash, WalletTransaction};
 use crate::ui::components::MessageBanner;
@@ -26,10 +26,10 @@ use crate::ui::components::wallet_unlock_popup::{WalletUnlockPopup, WalletUnlock
 use crate::ui::helpers::clicked_outside_window;
 use crate::ui::helpers::copy_text_to_clipboard;
 use crate::ui::state::TrackedAssetLockCache;
-use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
-use crate::ui::wallets::account_summary::{
+use crate::ui::state::account_summary::{
     AccountCategory, AccountSummary, collect_account_summaries,
 };
+use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::{MessageType, RootScreenType, ScreenLike, ScreenType};
 use chrono::{DateTime, Utc};
 use dash_sdk::dashcore_rpc::dashcore::Address;
@@ -46,7 +46,6 @@ use crate::ui::wallets::shielded_tab::ShieldedTabView;
 use address_table::{SortColumn, SortOrder};
 use dialogs::{
     FundPlatformAddressDialogState, MineDialogState, PrivateKeyDialogState, ReceiveDialogState,
-    SendDialogState,
 };
 
 /// Tab selector for the Accounts & Addresses section.
@@ -197,7 +196,6 @@ pub struct WalletsBalancesScreen {
     remove_wallet_dialog: Option<ConfirmationDialog>,
     pending_wallet_removal: Option<WalletSeedHash>,
     pending_wallet_removal_alias: Option<String>,
-    send_dialog: SendDialogState,
     receive_dialog: ReceiveDialogState,
     fund_platform_dialog: FundPlatformAddressDialogState,
     private_key_dialog: PrivateKeyDialogState,
@@ -328,7 +326,6 @@ impl WalletsBalancesScreen {
             remove_wallet_dialog: None,
             pending_wallet_removal: None,
             pending_wallet_removal_alias: None,
-            send_dialog: SendDialogState::default(),
             receive_dialog: ReceiveDialogState::default(),
             fund_platform_dialog: FundPlatformAddressDialogState::default(),
             private_key_dialog: PrivateKeyDialogState::default(),
@@ -634,7 +631,7 @@ impl WalletsBalancesScreen {
 
                     ui.colored_label(
                         DashColors::text_primary(ui.style().visuals.dark_mode),
-                        format!(" Balance: {}", Self::format_dash(current_balance)),
+                        format!(" Balance: {}", format_duffs_as_dash(current_balance)),
                     );
                 });
 
@@ -970,10 +967,6 @@ impl WalletsBalancesScreen {
             });
     }
 
-    fn format_dash(amount_duffs: u64) -> String {
-        Amount::dash_from_duffs(amount_duffs).to_string()
-    }
-
     /// Format a Unix timestamp (seconds since epoch) as a relative "time ago" string.
     fn format_unix_time_ago(unix_ts: u64) -> String {
         let now = std::time::SystemTime::now()
@@ -1008,7 +1001,7 @@ impl WalletsBalancesScreen {
     }
 
     fn transaction_amount_display(tx: &WalletTransaction, dark_mode: bool) -> (String, Color32) {
-        let amount = Self::format_dash(tx.amount_abs());
+        let amount = format_duffs_as_dash(tx.amount_abs());
         if tx.is_incoming() {
             (format!("+{}", amount), DashColors::SUCCESS)
         } else if tx.is_outgoing() {
@@ -1302,7 +1295,7 @@ impl WalletsBalancesScreen {
         };
         let network = self.app_context.network;
         for (path, info) in &wallet.watched_addresses {
-            let (cat, _) = crate::ui::wallets::account_summary::categorize_account_path(
+            let (cat, _) = crate::ui::state::account_summary::categorize_account_path(
                 path,
                 network,
                 info.path_reference,
@@ -1757,7 +1750,7 @@ impl WalletsBalancesScreen {
                             row.col(|ui| {
                                 let fee_text = tx
                                     .fee
-                                    .map(Self::format_dash)
+                                    .map(format_duffs_as_dash)
                                     .unwrap_or_else(|| "-".to_string());
                                 ui.label(fee_text);
                             });
@@ -1927,7 +1920,7 @@ impl WalletsBalancesScreen {
                     let shielded_text = match shielded_seed_hash {
                         Some(hash) => format!(
                             "Shielded: {}",
-                            Self::format_dash(self.app_context.shielded_balance_duffs(&hash))
+                            format_duffs_as_dash(self.app_context.shielded_balance_duffs(&hash))
                         ),
                         None => "Shielded: unavailable".to_string(),
                     };
@@ -1947,7 +1940,7 @@ impl WalletsBalancesScreen {
         let total = core_balance + platform_balance + shielded_balance;
 
         ui.label(
-            RichText::new(format!("Balance: {}", Self::format_dash(total)))
+            RichText::new(format!("Balance: {}", format_duffs_as_dash(total)))
                 .color(DashColors::text_primary(dark_mode))
                 .size(20.0)
                 .strong(),
@@ -1972,11 +1965,17 @@ impl WalletsBalancesScreen {
 
         header.show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.label(format!("Core: {}", Self::format_dash(core_balance)));
+                ui.label(format!("Core: {}", format_duffs_as_dash(core_balance)));
                 ui.label(" | ");
-                ui.label(format!("Platform: {}", Self::format_dash(platform_balance)));
+                ui.label(format!(
+                    "Platform: {}",
+                    format_duffs_as_dash(platform_balance)
+                ));
                 ui.label(" | ");
-                ui.label(format!("Shielded: {}", Self::format_dash(shielded_balance)));
+                ui.label(format!(
+                    "Shielded: {}",
+                    format_duffs_as_dash(shielded_balance)
+                ));
             });
         });
     }
@@ -2485,7 +2484,6 @@ impl ScreenLike for WalletsBalancesScreen {
             inner_action
         });
 
-        action |= self.render_send_dialog(ctx);
         action |= self.render_receive_dialog(ctx);
         action |= self.render_fund_platform_dialog(ctx);
         action |= self.render_mine_dialog(ctx);
@@ -2930,14 +2928,14 @@ impl ScreenLike for WalletsBalancesScreen {
                     let (address, amount) = &recipients[0];
                     format!(
                         "Sent {} to {}\nTxID: {}",
-                        Self::format_dash(*amount),
+                        format_duffs_as_dash(*amount),
                         address,
                         txid
                     )
                 } else {
                     format!(
                         "Sent {} total to {} recipients\nTxID: {}",
-                        Self::format_dash(total_amount),
+                        format_duffs_as_dash(total_amount),
                         recipients.len(),
                         txid
                     )

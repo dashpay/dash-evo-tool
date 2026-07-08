@@ -3,6 +3,7 @@ use crate::backend_task::shielded::ShieldedTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::amount::Amount;
+use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::wallet::WalletSeedHash;
 use crate::ui::components::ComponentResponse;
 use crate::ui::components::amount_input::AmountInput;
@@ -11,7 +12,6 @@ use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
-use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
 use eframe::egui::{self};
 use egui::{Color32, RichText};
 use std::sync::Arc;
@@ -108,10 +108,9 @@ impl ScreenLike for ShieldedSendScreen {
             ui.label("Transfer credits privately within the shielded pool.");
             ui.add_space(5.0);
 
-            let dash_balance = self.max_balance as f64 / CREDITS_PER_DUFF as f64 / 1e8;
             ui.label(format!(
-                "Available shielded balance: {:.8} DASH",
-                dash_balance
+                "Available shielded balance: {}",
+                format_credits_as_dash(self.max_balance)
             ));
             ui.add_space(15.0);
 
@@ -218,9 +217,10 @@ impl ScreenLike for ShieldedSendScreen {
                     amount,
                 );
                 self.status = Status::Complete;
-                let dash = amount as f64 / CREDITS_PER_DUFF as f64 / 1e8;
-                self.success_message =
-                    Some(format!("Successfully sent {:.8} DASH privately", dash));
+                self.success_message = Some(format!(
+                    "Successfully sent {} privately",
+                    format_credits_as_dash(amount)
+                ));
                 // The push snapshot was refreshed by the backend op; pull it
                 // in so the displayed balance reflects the spend. The upstream
                 // sync loop reconciles further on the next block.

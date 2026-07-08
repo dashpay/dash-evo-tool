@@ -1199,7 +1199,7 @@ mod tests {
     #[test]
     fn header_total_reconciles_with_core_tab_breakdown_through_real_accessors() {
         use crate::model::wallet::DerivationPathReference;
-        use crate::ui::wallets::account_summary::{AccountCategory, collect_account_summaries};
+        use crate::ui::state::account_summary::{AccountCategory, collect_account_summaries};
 
         // account #0: two receive addresses (3.5 DASH); account #1: one (0.5).
         let a0 = addr(20);
@@ -1287,7 +1287,7 @@ mod tests {
     /// fails loudly, flagging that the dedup path is now live.
     #[test]
     fn generated_paths_never_categorize_as_platform_payment_today() {
-        use crate::ui::wallets::account_summary::{AccountCategory, collect_account_summaries};
+        use crate::ui::state::account_summary::{AccountCategory, collect_account_summaries};
         use dash_sdk::dpp::key_wallet::wallet::Wallet as UpstreamWallet;
         use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOptions;
         use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::ManagedWalletInfo;

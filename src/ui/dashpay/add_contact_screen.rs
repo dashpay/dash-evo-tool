@@ -139,9 +139,10 @@ impl AddContactScreen {
             }
 
             // Validate username format if it looks like a username
-            if let Err(input) = crate::model::dpns::validate_dpns_input(&self.username_or_id) {
-                self.status =
-                    ContactRequestStatus::Error(DashPayError::InvalidUsername { username: input });
+            if crate::model::dpns::validate_dpns_input(&self.username_or_id).is_err() {
+                self.status = ContactRequestStatus::Error(DashPayError::InvalidUsername {
+                    username: self.username_or_id.trim().to_string(),
+                });
                 return AppAction::None;
             }
 

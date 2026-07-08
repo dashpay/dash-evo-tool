@@ -190,9 +190,9 @@ pub async fn send_contact_request_with_proof(
     // Step 1: Resolve the recipient identity
     let to_username_or_id = to_username_or_id.trim().to_string();
 
-    if let Err(input) = crate::model::dpns::validate_dpns_input(&to_username_or_id) {
+    if crate::model::dpns::validate_dpns_input(&to_username_or_id).is_err() {
         return Err(TaskError::DashPay(DashPayError::InvalidUsername {
-            username: input,
+            username: to_username_or_id.clone(),
         }));
     }
 

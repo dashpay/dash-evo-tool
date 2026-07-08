@@ -6,6 +6,7 @@ use crate::backend_task::core::{CoreTask, PaymentRecipient, WalletPaymentRequest
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
+use crate::model::fee_estimation::format_duffs_as_dash;
 use crate::model::wallet::single_key::SingleKeyWallet;
 use crate::ui::components::MessageBanner;
 use crate::ui::components::component_trait::Component;
@@ -102,10 +103,6 @@ impl SingleKeyWalletSendScreen {
         if self.recipients.len() > 1 {
             self.recipients.retain(|r| r.id != id);
         }
-    }
-
-    fn format_dash(amount_duffs: u64) -> String {
-        Amount::dash_from_duffs(amount_duffs).to_string()
     }
 
     fn parse_amount_to_duffs(input: &str) -> Result<u64, String> {
@@ -252,8 +249,8 @@ impl SingleKeyWalletSendScreen {
             if total_amount > wallet_guard.total_balance {
                 return Err(format!(
                     "Insufficient balance. Need {} but only have {}",
-                    Self::format_dash(total_amount),
-                    Self::format_dash(wallet_guard.total_balance)
+                    format_duffs_as_dash(total_amount),
+                    format_duffs_as_dash(wallet_guard.total_balance)
                 ));
             }
         }
@@ -691,7 +688,7 @@ impl SingleKeyWalletSendScreen {
                                 .size(14.0),
                         );
                         ui.label(
-                            RichText::new(Self::format_dash(balance))
+                            RichText::new(format_duffs_as_dash(balance))
                                 .color(DashColors::SUCCESS)
                                 .strong()
                                 .size(14.0),
@@ -962,19 +959,19 @@ impl ScreenLike for SingleKeyWalletSendScreen {
                     let (address, amount) = &recipients[0];
                     format!(
                         "Sent {} to {}\nTxID: {}",
-                        Self::format_dash(*amount),
+                        format_duffs_as_dash(*amount),
                         address,
                         txid
                     )
                 } else {
                     let recipient_list: String = recipients
                         .iter()
-                        .map(|(addr, amt)| format!("  {} to {}", Self::format_dash(*amt), addr))
+                        .map(|(addr, amt)| format!("  {} to {}", format_duffs_as_dash(*amt), addr))
                         .collect::<Vec<_>>()
                         .join("\n");
                     format!(
                         "Sent {} total to {} recipients:\n{}\nTxID: {}",
-                        Self::format_dash(total_amount),
+                        format_duffs_as_dash(total_amount),
                         recipients.len(),
                         recipient_list,
                         txid

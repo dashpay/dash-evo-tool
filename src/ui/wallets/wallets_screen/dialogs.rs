@@ -1,15 +1,13 @@
 use crate::app::AppAction;
 use crate::backend_task::BackendTask;
-use crate::backend_task::core::{CoreTask, PaymentRecipient, WalletPaymentRequest};
+use crate::backend_task::core::CoreTask;
 use crate::backend_task::wallet::WalletTask;
 use crate::model::address::{AddressKind, ValidatedAddress};
-use crate::model::amount::Amount;
 use crate::model::secret::Secret;
 use crate::model::wallet::{Wallet, WalletSeedHash};
 use crate::ui::MessageType;
 use crate::ui::components::MessageBanner;
 use crate::ui::components::address_input::AddressInput;
-use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::component_trait::{Component, ComponentResponse};
 use crate::ui::helpers::clicked_outside_window;
 use crate::ui::helpers::copy_text_to_clipboard;
@@ -26,16 +24,6 @@ use egui::{Frame, Margin, RichText, TextureOptions};
 use std::sync::{Arc, RwLock};
 
 use super::WalletsBalancesScreen;
-
-#[derive(Default)]
-pub(super) struct SendDialogState {
-    pub is_open: bool,
-    pub address: String,
-    pub address_error: Option<String>,
-    pub amount: Option<Amount>,
-    pub amount_input: Option<AmountInput>,
-    pub error: Option<String>,
-}
 
 /// Type of address to receive to
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
@@ -152,117 +140,6 @@ impl WalletsBalancesScreen {
             fill: ctx.global_style().visuals.window_fill,
             stroke: egui::Stroke::new(1.0, DashColors::popup_border_glow()),
         }
-    }
-
-    pub(super) fn render_send_dialog(&mut self, ctx: &Context) -> AppAction {
-        if !self.send_dialog.is_open {
-            return AppAction::None;
-        }
-
-        let mut action = AppAction::None;
-        let mut open = self.send_dialog.is_open;
-
-        // Draw dark overlay behind the dialog
-        Self::draw_modal_overlay(ctx, "send_dialog_overlay");
-
-        egui::Window::new("Send Dash")
-            .collapsible(false)
-            .resizable(false)
-            .open(&mut open)
-            .show(ctx, |ui| {
-                ui.label("Recipient Address");
-                let hint = if self.app_context.network == Network::Mainnet {
-                    "Enter Core address (X.../7...)"
-                } else {
-                    "Enter Core address (y.../8...)"
-                };
-                let response = ui
-                    .add(egui::TextEdit::singleline(&mut self.send_dialog.address).hint_text(hint));
-
-                // Validate address when it changes
-                if response.changed() {
-                    if self.send_dialog.address.trim().is_empty() {
-                        self.send_dialog.address_error = None;
-                    } else {
-                        let trimmed = self.send_dialog.address.trim();
-                        if crate::ui::helpers::is_platform_address_string(trimmed) {
-                            self.send_dialog.address_error = Some(
-                                "Platform addresses not supported. Use a Core address.".to_string(),
-                            );
-                        } else {
-                            match trimmed.parse::<Address<NetworkUnchecked>>() {
-                                Ok(_) => {
-                                    self.send_dialog.address_error = None;
-                                }
-                                Err(_) => {
-                                    self.send_dialog.address_error =
-                                        Some("Invalid Core address".to_string());
-                                }
-                            }
-                        }
-                    }
-                }
-
-                if let Some(error) = &self.send_dialog.address_error {
-                    ui.colored_label(egui::Color32::from_rgb(255, 100, 100), error);
-                }
-
-                ui.add_space(8.0);
-
-                // Amount input using AmountInput component
-                let amount_input = self.send_dialog.amount_input.get_or_insert_with(|| {
-                    AmountInput::new(Amount::new_dash(0.0))
-                        .with_label("Amount (DASH):")
-                        .with_hint_text("Enter amount (e.g., 0.01)")
-                        .with_desired_width(150.0)
-                });
-
-                let response = amount_input.show(ui);
-                response.inner.update(&mut self.send_dialog.amount);
-
-                if let Some(error) = self.send_dialog.error.clone() {
-                    let error_color = DashColors::ERROR;
-                    Frame::new()
-                        .fill(error_color.gamma_multiply(0.1))
-                        .inner_margin(Margin::symmetric(10, 8))
-                        .corner_radius(5.0)
-                        .stroke(egui::Stroke::new(1.0, error_color))
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                ui.label(
-                                    RichText::new(format!("Error: {}", error)).color(error_color),
-                                );
-                                ui.add_space(10.0);
-                                if ui.small_button("Dismiss").clicked() {
-                                    self.send_dialog.error = None;
-                                }
-                            });
-                        });
-                }
-
-                ui.add_space(8.0);
-                let dark_mode = ui.style().visuals.dark_mode;
-                ui.horizontal(|ui| {
-                    let has_address_error = self.send_dialog.address_error.is_some();
-                    if ComponentStyles::add_primary_button_enabled(ui, !has_address_error, "Send")
-                        .clicked()
-                    {
-                        match self.prepare_send_action() {
-                            Ok(app_action) => {
-                                action = app_action;
-                                self.send_dialog = SendDialogState::default();
-                            }
-                            Err(err) => self.send_dialog.error = Some(err),
-                        }
-                    }
-                    if ComponentStyles::add_secondary_button(ui, "Cancel", dark_mode).clicked() {
-                        self.send_dialog = SendDialogState::default();
-                    }
-                });
-            });
-
-        self.send_dialog.is_open = open;
-        action
     }
 
     pub(super) fn render_receive_dialog(&mut self, ctx: &Context) -> AppAction {
@@ -1077,50 +954,6 @@ impl WalletsBalancesScreen {
                 outputs,
             },
         ))
-    }
-
-    pub(super) fn prepare_send_action(&mut self) -> Result<AppAction, String> {
-        let wallet = self
-            .selected_wallet
-            .as_ref()
-            .ok_or_else(|| "Select a wallet first".to_string())?;
-
-        let amount_duffs = self
-            .send_dialog
-            .amount
-            .as_ref()
-            .ok_or_else(|| "Enter an amount".to_string())?
-            .dash_to_duffs()?;
-
-        if amount_duffs == 0 {
-            return Err("Amount must be greater than 0".to_string());
-        }
-
-        {
-            let seed_hash = wallet.read().map_err(|e| e.to_string())?.seed_hash();
-            if amount_duffs > self.app_context.snapshot_balance(&seed_hash).spendable() {
-                return Err("Insufficient balance".to_string());
-            }
-        }
-
-        if self.send_dialog.address.trim().is_empty() {
-            return Err("Enter a recipient address".to_string());
-        }
-
-        let request = WalletPaymentRequest {
-            recipients: vec![PaymentRecipient {
-                address: self.send_dialog.address.trim().to_string(),
-                amount_duffs,
-            }],
-            override_fee: None,
-        };
-
-        Ok(AppAction::BackendTask(BackendTask::CoreTask(
-            CoreTask::SendWalletPayment {
-                wallet: wallet.clone(),
-                request,
-            },
-        )))
     }
 
     pub(super) fn open_receive_dialog(&mut self, _ctx: &Context) -> AppAction {

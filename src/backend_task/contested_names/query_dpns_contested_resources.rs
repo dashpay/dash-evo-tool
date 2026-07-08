@@ -52,24 +52,7 @@ impl AppContext {
                 Ok(contested_resources) => contested_resources,
                 Err(e) => {
                     tracing::error!("Error fetching contested resources: {}", e);
-                    if let dash_sdk::Error::Proof(dash_sdk::ProofVerifierError::GroveDBError {
-                        proof_bytes,
-                        height,
-                        time_ms,
-                        error,
-                        ..
-                    }) = &e
-                    {
-                        tracing::error!(
-                            target: "proof_log",
-                            request_type = ?RequestType::GetContestedResources,
-                            height = *height,
-                            time_ms = *time_ms,
-                            proof_bytes_len = proof_bytes.len(),
-                            error = %error,
-                            "drive proof verification failed while querying DPNS contested resources",
-                        );
-                    }
+                    super::log_contested_proof_error(&e, RequestType::GetContestedResources);
                     // TODO: Replace the "contract not found" string match with a
                     // structural SDK variant when one is available.
                     if matches!(e, dash_sdk::Error::StaleNode(_))

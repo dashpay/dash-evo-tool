@@ -979,15 +979,17 @@ impl DocumentActionScreen {
                             })
                         });
 
-                BackendTask::DocumentTask(Box::new(DocumentTask::BroadcastDocument(
-                    doc,
+                BackendTask::DocumentTask(Box::new(DocumentTask::BroadcastDocument {
+                    document: doc,
                     token_payment_info,
                     entropy,
-                    doc_type.clone(),
-                    Arc::new(self.selected_contract.as_ref().unwrap().contract.clone()),
-                    self.selected_identity.as_ref().unwrap().clone(),
-                    self.selected_key.as_ref().unwrap().clone(),
-                )))
+                    document_type: doc_type.clone(),
+                    data_contract: Arc::new(
+                        self.selected_contract.as_ref().unwrap().contract.clone(),
+                    ),
+                    qualified_identity: self.selected_identity.as_ref().unwrap().clone(),
+                    identity_key: self.selected_key.as_ref().unwrap().clone(),
+                }))
             }
             Err(e) => {
                 MessageBanner::set_global(
@@ -1019,14 +1021,14 @@ impl DocumentActionScreen {
                     })
                 });
 
-        BackendTask::DocumentTask(Box::new(DocumentTask::DeleteDocument(
+        BackendTask::DocumentTask(Box::new(DocumentTask::DeleteDocument {
             document_id,
-            doc_type.clone(),
-            Arc::new(self.selected_contract.as_ref().unwrap().contract.clone()),
-            self.selected_identity.as_ref().unwrap().clone(),
-            self.selected_key.as_ref().unwrap().clone(),
+            document_type: doc_type.clone(),
+            data_contract: Arc::new(self.selected_contract.as_ref().unwrap().contract.clone()),
+            qualified_identity: self.selected_identity.as_ref().unwrap().clone(),
+            identity_key: self.selected_key.as_ref().unwrap().clone(),
             token_payment_info,
-        )))
+        }))
     }
 
     fn create_purchase_task(&self) -> BackendTask {
@@ -1048,15 +1050,15 @@ impl DocumentActionScreen {
                     })
                 });
 
-        BackendTask::DocumentTask(Box::new(DocumentTask::PurchaseDocument(
-            self.fetched_price.unwrap_or(0),
+        BackendTask::DocumentTask(Box::new(DocumentTask::PurchaseDocument {
+            price: self.fetched_price.unwrap_or(0),
             document_id,
-            doc_type.clone(),
-            Arc::new(self.selected_contract.as_ref().unwrap().contract.clone()),
-            self.selected_identity.as_ref().unwrap().clone(),
-            self.selected_key.as_ref().unwrap().clone(),
+            document_type: doc_type.clone(),
+            data_contract: Arc::new(self.selected_contract.as_ref().unwrap().contract.clone()),
+            qualified_identity: self.selected_identity.as_ref().unwrap().clone(),
+            identity_key: self.selected_key.as_ref().unwrap().clone(),
             token_payment_info,
-        )))
+        }))
     }
 
     fn create_replace_task(&mut self) -> BackendTask {
@@ -1079,14 +1081,16 @@ impl DocumentActionScreen {
                                 })
                             });
 
-                    BackendTask::DocumentTask(Box::new(DocumentTask::ReplaceDocument(
-                        updated_doc,
-                        doc_type.clone(),
-                        Arc::new(self.selected_contract.as_ref().unwrap().contract.clone()),
-                        self.selected_identity.as_ref().unwrap().clone(),
-                        self.selected_key.as_ref().unwrap().clone(),
+                    BackendTask::DocumentTask(Box::new(DocumentTask::ReplaceDocument {
+                        document: updated_doc,
+                        document_type: doc_type.clone(),
+                        data_contract: Arc::new(
+                            self.selected_contract.as_ref().unwrap().contract.clone(),
+                        ),
+                        qualified_identity: self.selected_identity.as_ref().unwrap().clone(),
+                        identity_key: self.selected_key.as_ref().unwrap().clone(),
                         token_payment_info,
-                    )))
+                    }))
                 }
                 Err(e) => {
                     MessageBanner::set_global(
@@ -1113,14 +1117,14 @@ impl DocumentActionScreen {
                         })
                     });
 
-            BackendTask::DocumentTask(Box::new(DocumentTask::ReplaceDocument(
-                DocumentV0::default().into(),
-                doc_type.clone(),
-                Arc::new(self.selected_contract.as_ref().unwrap().contract.clone()),
-                self.selected_identity.as_ref().unwrap().clone(),
-                self.selected_key.as_ref().unwrap().clone(),
+            BackendTask::DocumentTask(Box::new(DocumentTask::ReplaceDocument {
+                document: DocumentV0::default().into(),
+                document_type: doc_type.clone(),
+                data_contract: Arc::new(self.selected_contract.as_ref().unwrap().contract.clone()),
+                qualified_identity: self.selected_identity.as_ref().unwrap().clone(),
+                identity_key: self.selected_key.as_ref().unwrap().clone(),
                 token_payment_info,
-            )))
+            }))
         }
     }
 
@@ -1144,15 +1148,15 @@ impl DocumentActionScreen {
                     })
                 });
 
-        BackendTask::DocumentTask(Box::new(DocumentTask::SetDocumentPrice(
+        BackendTask::DocumentTask(Box::new(DocumentTask::SetDocumentPrice {
             price,
             document_id,
-            doc_type.clone(),
-            Arc::new(self.selected_contract.as_ref().unwrap().contract.clone()),
-            self.selected_identity.as_ref().unwrap().clone(),
-            self.selected_key.as_ref().unwrap().clone(),
+            document_type: doc_type.clone(),
+            data_contract: Arc::new(self.selected_contract.as_ref().unwrap().contract.clone()),
+            qualified_identity: self.selected_identity.as_ref().unwrap().clone(),
+            identity_key: self.selected_key.as_ref().unwrap().clone(),
             token_payment_info,
-        )))
+        }))
     }
 
     fn create_transfer_task(&self) -> BackendTask {
@@ -1176,15 +1180,15 @@ impl DocumentActionScreen {
                     })
                 });
 
-        BackendTask::DocumentTask(Box::new(DocumentTask::TransferDocument(
+        BackendTask::DocumentTask(Box::new(DocumentTask::TransferDocument {
             document_id,
-            recipient_id,
-            doc_type.clone(),
-            Arc::new(self.selected_contract.as_ref().unwrap().contract.clone()),
-            self.selected_identity.as_ref().unwrap().clone(),
-            self.selected_key.as_ref().unwrap().clone(),
+            new_owner_id: recipient_id,
+            document_type: doc_type.clone(),
+            data_contract: Arc::new(self.selected_contract.as_ref().unwrap().contract.clone()),
+            qualified_identity: self.selected_identity.as_ref().unwrap().clone(),
+            identity_key: self.selected_key.as_ref().unwrap().clone(),
             token_payment_info,
-        )))
+        }))
     }
 
     fn try_build_document(&self) -> Result<(Document, [u8; 32]), String> {

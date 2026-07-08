@@ -618,8 +618,11 @@ impl AppContext {
     }
 
     /// Synchronous read of the latest platform-address sync cursor
-    /// `(last_sync_timestamp, sync_height)` for `seed_hash`, or `None` when no
-    /// coordinator pass has reported a funded address for the wallet yet.
+    /// `(last_sync_timestamp, sync_height)` for `seed_hash`, or `None` until at
+    /// least one platform-address sync pass has completed for the wallet. The
+    /// cursor advances on every successful pass regardless of whether it found
+    /// any funded addresses, so `Some` means "a sync pass has completed," not
+    /// "funds were found."
     ///
     /// Read side of the same coordinator-push snapshot as
     /// [`platform_balance_duffs`](Self::platform_balance_duffs); the write side

@@ -25,8 +25,9 @@
 //! the upstream persister stores them durably. The snapshot store accumulates
 //! these records (the surviving piece of the deleted `reconcile_spv_wallets`
 //! `TransactionRecord` → `WalletTransaction` mapping). Balance and UTXOs, by
-//! contrast, are read straight off the live wallet — they are always current
-//! there.
+//! contrast, are read straight off the live wallet — and always from the *same*
+//! read, so the headline balance and the per-address breakdown a snapshot
+//! publishes are one consistent generation (see [`SnapshotStore::recompute`]).
 
 use std::collections::BTreeMap;
 use std::collections::HashMap;
@@ -281,6 +282,22 @@ fn address_paths_from_info(
     paths
 }
 
+/// Build the carry-forward chain state used when `try_state()` is contended:
+/// the **entire** prior snapshot — balance included — so the published snapshot
+/// stays internally consistent (header total and per-address breakdown from one
+/// generation). Refreshing balance alone here while carrying the breakdown
+/// stale is exactly the split-source divergence [`SnapshotStore::recompute`]
+/// avoids.
+fn carried_forward_state(prior: &WalletSnapshot) -> SnapshotState {
+    SnapshotState {
+        balance: prior.balance,
+        utxos: prior.utxos.clone(),
+        address_balances: prior.address_balances.clone(),
+        monitored_receive_addresses: prior.monitored_receive_addresses.clone(),
+        address_paths: prior.address_paths.clone(),
+    }
+}
+
 /// Shared store of per-wallet display snapshots plus the event-sourced
 /// transaction accumulator. Held by both [`WalletBackend`](super::WalletBackend)
 /// (for the read accessors) and the [`EventBridge`](super::EventBridge) (for
@@ -439,16 +456,30 @@ impl SnapshotStore {
     }
 
     /// Recompute and atomically publish the snapshot for one wallet, off the
-    /// lock-free upstream balance + non-blocking UTXO state plus the
-    /// event-sourced tx log. Called by the `EventBridge` after it has
-    /// accumulated the event's records.
+    /// non-blocking UTXO state plus the event-sourced tx log. Called by the
+    /// `EventBridge` after it has accumulated the event's records.
     ///
-    /// Never blocks and never awaits: `balance()` is lock-free atomics,
-    /// `try_state()` is a non-blocking try-lock that yields `None` under
-    /// contention (in which case the UTXO list and UTXO-derived per-address
-    /// balances from the previously published snapshot are carried forward —
-    /// a subsequent event recomputes them once the lock is free). Balance and
-    /// transactions are always refreshed.
+    /// Never blocks and never awaits: `try_state()` is a non-blocking try-lock
+    /// that yields `None` under contention, in which case the *entire* prior
+    /// snapshot is carried forward and a subsequent event recomputes once the
+    /// lock is free.
+    ///
+    /// # Balance / breakdown consistency
+    ///
+    /// The headline balance and the UTXO-derived per-address breakdown are read
+    /// from the **same** `try_state()` guard — `state.balance()` (the stored
+    /// [`WalletCoreBalance`], refreshed alongside every UTXO mutation under the
+    /// wallet-manager write lock) and `state.utxos()` reflect one and the same
+    /// generation of wallet state. So the wallet-header total
+    /// ([`WalletSnapshot::balance`]`.total`) and the per-account tab breakdown
+    /// (summed from [`WalletSnapshot::address_balances`]) are always computed
+    /// from the same underlying data — a fresh balance is never spliced onto a
+    /// stale breakdown. This deliberately does *not* read the lock-free
+    /// `wallet.balance()` atomics: those are maintained by a separate event
+    /// handler that can lag the state under its own map contention, which is
+    /// exactly the split-source divergence this method avoids. On contention we
+    /// carry the whole prior (already-consistent) snapshot forward rather than
+    /// refreshing balance alone.
     pub(super) fn recompute(&self, wallet_id: &WalletId) {
         let (seed_hash, wallet) = {
             let Ok(map) = self.registered.lock() else {
@@ -463,19 +494,18 @@ impl SnapshotStore {
             }
         };
 
-        // Lock-free balance read (atomics).
-        let bal = wallet.balance();
-        let balance = DetWalletBalance {
-            confirmed: bal.confirmed(),
-            unconfirmed: bal.unconfirmed(),
-            total: bal.total(),
-        };
-
-        // Non-blocking UTXO read. On contention, carry the prior snapshot's
-        // UTXO view forward rather than blocking the event callback.
-        let prior = self.snapshot(&seed_hash);
+        // Non-blocking read. Balance and UTXO breakdown come from the same
+        // guard (see the consistency note above). On contention, carry the
+        // entire prior snapshot forward — balance included — so every field of
+        // the published snapshot reflects one consistency point.
         let state = match wallet.try_state() {
             Some(state) => {
+                let core_balance = state.balance();
+                let balance = DetWalletBalance {
+                    confirmed: core_balance.confirmed(),
+                    unconfirmed: core_balance.unconfirmed(),
+                    total: core_balance.total(),
+                };
                 let mut utxos = Vec::new();
                 let mut address_balances: BTreeMap<Address, u64> = BTreeMap::new();
                 for u in state.utxos() {
@@ -495,13 +525,15 @@ impl SnapshotStore {
                     address_paths: address_paths_from_info(&state.core_wallet),
                 }
             }
-            None => SnapshotState {
-                balance,
-                utxos: prior.utxos.clone(),
-                address_balances: prior.address_balances.clone(),
-                monitored_receive_addresses: prior.monitored_receive_addresses.clone(),
-                address_paths: prior.address_paths.clone(),
-            },
+            // Accepted, self-healing edge case: if this is the very first
+            // recompute for the wallet and it loses the try-lock, there is no
+            // prior snapshot, so `snapshot()` returns the all-zero default and
+            // `publish` still marks the wallet as having a snapshot. A wallet
+            // with genuine prior funds (app restart on an existing seed) can
+            // then render as "0 DASH, synced" for a single event cycle instead
+            // of "syncing". The next event wins the lock and publishes the real
+            // balance, correcting it.
+            None => carried_forward_state(&self.snapshot(&seed_hash)),
         };
 
         self.publish(&seed_hash, wallet_id, state);
@@ -866,6 +898,105 @@ mod tests {
         assert!(store.snapshot(&seed(9)).transactions.is_empty());
     }
 
+    /// A published snapshot whose header total equals the sum of its
+    /// per-address breakdown — the consistency invariant the wallets screen
+    /// relies on (`core_balance_duffs` reads `.balance.total`; the Core tab sums
+    /// `.address_balances`).
+    fn consistent_snapshot() -> WalletSnapshot {
+        let a = addr(11);
+        let b = addr(12);
+        let mut address_balances = BTreeMap::new();
+        address_balances.insert(a.clone(), 1_000u64);
+        address_balances.insert(b.clone(), 5_000u64);
+        let mut address_paths = BTreeMap::new();
+        address_paths.insert(a.clone(), DerivationPath::from(Vec::new()));
+        address_paths.insert(b.clone(), DerivationPath::from(Vec::new()));
+        WalletSnapshot {
+            balance: DetWalletBalance {
+                confirmed: 6_000,
+                unconfirmed: 0,
+                total: 6_000,
+            },
+            transactions: Vec::new(),
+            utxos: vec![DetUtxo {
+                outpoint: OutPoint::null(),
+                value: 1_000,
+                script_pubkey: a.script_pubkey(),
+                address: a,
+            }],
+            address_balances,
+            monitored_receive_addresses: vec!["yWatched".to_string()],
+            address_paths,
+        }
+    }
+
+    /// QA-001: on `try_state()` contention the recompute carries the **entire**
+    /// prior snapshot forward — balance included — so the header total and the
+    /// per-address breakdown never split across generations. Refreshing balance
+    /// alone here (the old behavior) spliced a fresh total onto a stale
+    /// breakdown; this pins the whole-snapshot carry so that regression cannot
+    /// return. (The live lock race itself is only reachable through the
+    /// network-backed backend-e2e harness; this exercises the exact state the
+    /// contention branch publishes.)
+    #[test]
+    fn contention_carries_whole_prior_snapshot_keeping_total_and_breakdown_consistent() {
+        let prior = consistent_snapshot();
+        let breakdown_sum: u64 = prior.address_balances.values().sum();
+        assert_eq!(
+            prior.balance.total, breakdown_sum,
+            "precondition: the prior snapshot is itself consistent"
+        );
+
+        let carried = carried_forward_state(&prior);
+
+        // Balance is carried, never freshly re-read: it still matches the
+        // breakdown it was published with.
+        assert_eq!(
+            carried.balance, prior.balance,
+            "the header total is carried from the prior generation, not refreshed alone"
+        );
+        let carried_sum: u64 = carried.address_balances.values().sum();
+        assert_eq!(
+            carried.balance.total, carried_sum,
+            "header total and per-address breakdown stay from one generation under contention"
+        );
+
+        // Every other field is carried verbatim too.
+        assert_eq!(carried.address_balances, prior.address_balances);
+        assert_eq!(carried.utxos, prior.utxos);
+        assert_eq!(
+            carried.monitored_receive_addresses,
+            prior.monitored_receive_addresses
+        );
+        assert_eq!(carried.address_paths, prior.address_paths);
+    }
+
+    /// The same invariant proven through the store's publish/read round-trip:
+    /// publishing the contention carry-forward of a consistent snapshot leaves
+    /// the readable snapshot consistent (total == breakdown sum) and unchanged.
+    #[test]
+    fn published_contention_carry_forward_stays_consistent() {
+        let store = SnapshotStore::new();
+        store.publish(
+            &seed(11),
+            &wid(11),
+            carried_forward_state(&consistent_snapshot()),
+        );
+
+        // A contention recompute republishes the carry-forward of what's stored.
+        let prior = store.snapshot(&seed(11));
+        store.publish(&seed(11), &wid(11), carried_forward_state(&prior));
+
+        let snap = store.snapshot(&seed(11));
+        let breakdown_sum: u64 = snap.address_balances.values().sum();
+        assert_eq!(
+            snap.balance.total, breakdown_sum,
+            "header total still equals the per-address breakdown after carry-forward"
+        );
+        assert_eq!(snap.balance, prior.balance);
+        assert_eq!(snap.address_balances, prior.address_balances);
+    }
+
     /// A distinct testnet p2pkh address keyed off `n` (derived from a valid
     /// secret key so the pubkey is a real curve point).
     fn addr(n: u8) -> Address {
@@ -1036,6 +1167,152 @@ mod tests {
         assert_eq!(
             status_from_context(&TransactionContext::InChainLockedBlock(bi)),
             TransactionStatus::ChainLocked
+        );
+    }
+
+    /// A BIP-44 external path `m/44'/1'/acct'/0/0` on testnet.
+    fn bip44_account_path(acct: u32) -> DerivationPath {
+        use dash_sdk::dpp::key_wallet::bip32::ChildNumber;
+        DerivationPath::from(vec![
+            ChildNumber::Hardened { index: 44 },
+            ChildNumber::Hardened { index: 1 },
+            ChildNumber::Hardened { index: acct },
+            ChildNumber::Normal { index: 0 },
+            ChildNumber::Normal { index: 0 },
+        ])
+    }
+
+    /// QA-003: the wallets-screen header total and the Core-tab breakdown must
+    /// reconcile through the **real** read accessors — not hand-fed literals
+    /// compared to themselves.
+    ///
+    /// Publishes a realistic snapshot through the same `publish` seam
+    /// `recompute` uses. Its `balance.total` is the exact field
+    /// `WalletBackend::wallet_balance().total` returns and the header renders;
+    /// its `address_balances` / `address_paths` are the exact accessors the Core
+    /// tabs feed to `collect_account_summaries`. Crucially the snapshot includes
+    /// a funded address the generated-path set has NOT indexed, and `total`
+    /// counts it — so the assertion "Σ per-account summaries == header total"
+    /// only holds if `collect_account_summaries` surfaces that stray balance
+    /// (pass 2) rather than dropping it. That is the header-vs-tab agreement the
+    /// original tautological test claimed but never checked.
+    #[test]
+    fn header_total_reconciles_with_core_tab_breakdown_through_real_accessors() {
+        use crate::model::wallet::DerivationPathReference;
+        use crate::ui::wallets::account_summary::{AccountCategory, collect_account_summaries};
+
+        // account #0: two receive addresses (3.5 DASH); account #1: one (0.5).
+        let a0 = addr(20);
+        let a0b = addr(21);
+        let a1 = addr(22);
+        // A funded address outside the generated-path window (0.07 DASH).
+        let stray = addr(23);
+
+        let mut address_balances = BTreeMap::new();
+        address_balances.insert(a0.clone(), 250_000_000u64);
+        address_balances.insert(a0b.clone(), 100_000_000u64);
+        address_balances.insert(a1.clone(), 50_000_000u64);
+        address_balances.insert(stray, 7_000_000u64);
+        // `address_balances` is summed from `state.utxos()` (all UTXOs), so this
+        // total mirrors what `state.balance().total()` reports at the same
+        // generation — the QA-001 consistency the header relies on.
+        let total: u64 = address_balances.values().sum();
+
+        // Only the generated addresses carry paths (the stray one does not).
+        let mut address_paths = BTreeMap::new();
+        address_paths.insert(a0, bip44_account_path(0));
+        address_paths.insert(a0b, bip44_account_path(0));
+        address_paths.insert(a1, bip44_account_path(1));
+
+        let store = SnapshotStore::new();
+        store.publish(
+            &seed(20),
+            &wid(20),
+            SnapshotState {
+                balance: DetWalletBalance {
+                    confirmed: total,
+                    unconfirmed: 0,
+                    total,
+                },
+                utxos: Vec::new(),
+                address_balances: address_balances.clone(),
+                monitored_receive_addresses: Vec::new(),
+                address_paths: address_paths.clone(),
+            },
+        );
+
+        let snap = store.snapshot(&seed(20));
+        // The exact value `WalletBackend::wallet_balance().total` returns.
+        let header_total = snap.balance.total;
+        assert_eq!(header_total, 407_000_000);
+
+        // The exact accessors the Core tabs read.
+        let summaries = collect_account_summaries(
+            Network::Testnet,
+            &snap.address_balances,
+            &snap.address_paths,
+        );
+        let core_tab_sum: u64 = summaries.iter().map(|s| s.confirmed_balance).sum();
+        assert_eq!(
+            core_tab_sum, header_total,
+            "every funded address is reconciled into the header total — none dropped"
+        );
+
+        // Per-account distinctness (the original test's intent, now proven
+        // against the real header total rather than a hand-fed literal).
+        let acct0 = summaries
+            .iter()
+            .find(|s| s.category == AccountCategory::Bip44 && s.index == Some(0))
+            .expect("account #0 summary");
+        assert_eq!(acct0.confirmed_balance, 350_000_000);
+        let acct1 = summaries
+            .iter()
+            .find(|s| s.category == AccountCategory::Bip44 && s.index == Some(1))
+            .expect("account #1 summary");
+        assert_eq!(acct1.confirmed_balance, 50_000_000);
+        // The stray funded address is surfaced (pass 2), never dropped.
+        let other = summaries
+            .iter()
+            .find(|s| s.category == AccountCategory::Other(DerivationPathReference::Unknown))
+            .expect("stray funded address surfaced as Other");
+        assert_eq!(other.confirmed_balance, 7_000_000);
+    }
+
+    /// QA-006 pin: a real upstream wallet's generated addresses must never
+    /// categorize as `PlatformPayment` today — upstream `all_accounts()`
+    /// (the sole source for `address_paths_from_info`) excludes the
+    /// platform-payment pool. `build_account_tabs`'s dedup guard is dormant only
+    /// while this holds; if a future dependency bump folds that pool into
+    /// `all_accounts()`, a `PlatformPayment` summary appears here and this test
+    /// fails loudly, flagging that the dedup path is now live.
+    #[test]
+    fn generated_paths_never_categorize_as_platform_payment_today() {
+        use crate::ui::wallets::account_summary::{AccountCategory, collect_account_summaries};
+        use dash_sdk::dpp::key_wallet::wallet::Wallet as UpstreamWallet;
+        use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOptions;
+        use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::ManagedWalletInfo;
+
+        let seed = [0x42u8; 64];
+        let network = Network::Testnet;
+        let wallet =
+            UpstreamWallet::from_seed_bytes(seed, network, WalletAccountCreationOptions::Default)
+                .expect("upstream wallet");
+        let info = ManagedWalletInfo::from_wallet(&wallet, 1);
+
+        let address_paths = address_paths_from_info(&info);
+        assert!(
+            !address_paths.is_empty(),
+            "the wallet must have generated addresses to make this assertion meaningful"
+        );
+
+        let summaries = collect_account_summaries(network, &BTreeMap::new(), &address_paths);
+        assert!(
+            !summaries
+                .iter()
+                .any(|s| s.category == AccountCategory::PlatformPayment),
+            "platform-payment addresses must not reach the generated-path set today; \
+             if this fails, upstream all_accounts() now includes them and build_account_tabs \
+             must rely on its dedup guard"
         );
     }
 }

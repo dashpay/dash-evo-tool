@@ -3,11 +3,11 @@ use crate::backend_task::BackendTask;
 use crate::backend_task::migration::MigrationTask;
 use crate::context::AppContext;
 use crate::context::migration_status::{MigrationState, MigrationStep};
+use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::wallet::WalletSeedHash;
 use crate::ui::ScreenType;
 use crate::ui::components::wallet_unlock_popup::wallet_needs_unlock;
 use crate::ui::theme::DashColors;
-use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
 use eframe::egui::{self, Ui};
 use egui::{Color32, Frame, Margin, RichText};
 use std::sync::Arc;
@@ -211,21 +211,26 @@ impl ShieldedTabView {
             BackendTaskSuccessResult::ShieldedCreditsShielded { seed_hash, amount }
                 if *seed_hash == self.seed_hash =>
             {
-                self.success_message =
-                    Some(format!("Shielded {} successfully", format_credits(*amount)));
+                self.success_message = Some(format!(
+                    "Shielded {} successfully",
+                    format_credits_as_dash(*amount)
+                ));
                 true
             }
             BackendTaskSuccessResult::ShieldedTransferComplete { seed_hash, amount }
                 if *seed_hash == self.seed_hash =>
             {
-                self.success_message =
-                    Some(format!("Transferred {} privately", format_credits(*amount)));
+                self.success_message = Some(format!(
+                    "Transferred {} privately",
+                    format_credits_as_dash(*amount)
+                ));
                 true
             }
             BackendTaskSuccessResult::ShieldedCreditsUnshielded { seed_hash, amount }
                 if *seed_hash == self.seed_hash =>
             {
-                self.success_message = Some(format!("Unshielded {}", format_credits(*amount)));
+                self.success_message =
+                    Some(format!("Unshielded {}", format_credits_as_dash(*amount)));
                 true
             }
             BackendTaskSuccessResult::ShieldedFromAssetLock { seed_hash, amount }
@@ -233,7 +238,7 @@ impl ShieldedTabView {
             {
                 self.success_message = Some(format!(
                     "Shielded {} from core wallet",
-                    format_credits(*amount)
+                    format_credits_as_dash(*amount)
                 ));
                 true
             }
@@ -242,7 +247,7 @@ impl ShieldedTabView {
             {
                 self.success_message = Some(format!(
                     "Withdrew {} to core address",
-                    format_credits(*amount)
+                    format_credits_as_dash(*amount)
                 ));
                 true
             }
@@ -466,7 +471,7 @@ impl ShieldedTabView {
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     ui.label(
-                        RichText::new(format_credits(self.shielded_balance))
+                        RichText::new(format_credits_as_dash(self.shielded_balance))
                             .size(28.0)
                             .strong()
                             .color(DashColors::text_primary(dark_mode)),
@@ -624,15 +629,6 @@ impl ShieldedTabView {
         });
 
         action
-    }
-}
-
-fn format_credits(credits: u64) -> String {
-    let dash = credits as f64 / CREDITS_PER_DUFF as f64 / 1e8;
-    if dash >= 0.01 {
-        format!("{:.4} DASH", dash)
-    } else {
-        format!("{} credits", credits)
     }
 }
 

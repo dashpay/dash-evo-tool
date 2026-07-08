@@ -657,9 +657,10 @@ fn load_display_name_opt(
 /// [`crate::model::fee_estimation::format_credits_as_dash`], which returns a
 /// trimmed amount with the unit already appended.
 fn format_credits_short(credits: u64) -> String {
-    // 1 DASH = 10^11 credits (DASH_DECIMAL_PLACES). See `model/amount.rs`.
-    let dash = credits as f64 * 1e-11;
-    format!("{dash:.4}")
+    format!(
+        "{:.4}",
+        crate::model::amount::Amount::dash_from_credits(credits).to_f64()
+    )
 }
 
 /// Render the empty-state placeholder shown when no loaded identity can be

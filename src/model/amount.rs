@@ -31,8 +31,16 @@ pub struct Amount {
 }
 
 impl PartialOrd for Amount {
+    /// Orders two amounts by their underlying value, but only when they refer to
+    /// the same token (matching unit name and decimal places). Amounts of
+    /// different tokens are not comparable and yield `None`, keeping ordering
+    /// consistent with equality and preventing meaningless cross-token compares.
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.value.cmp(&other.value))
+        if self.is_same_token(other) {
+            Some(self.value.cmp(&other.value))
+        } else {
+            None
+        }
     }
 }
 
@@ -657,6 +665,27 @@ mod tests {
         assert_eq!(multi_word_unit.value(), 10000);
         assert_eq!(multi_word_unit.unit_name(), Some("US Dollar"));
         assert_eq!(format!("{}", multi_word_unit), "100 US Dollar");
+    }
+
+    #[test]
+    fn test_partial_cmp_same_token_orders_by_value() {
+        let a = Amount::new(100, 8).with_unit_name("BTC");
+        let b = Amount::new(200, 8).with_unit_name("BTC");
+        assert!(a < b);
+        assert!(b > a);
+        assert_eq!(a.partial_cmp(&a), Some(std::cmp::Ordering::Equal));
+    }
+
+    #[test]
+    fn test_partial_cmp_different_token_is_incomparable() {
+        let btc = Amount::new(100, 8).with_unit_name("BTC");
+        let usd = Amount::new(100, 8).with_unit_name("USD");
+        let btc_other_decimals = Amount::new(100, 2).with_unit_name("BTC");
+
+        // Different unit name or decimal places => not comparable, so every
+        // ordering query yields `None` and std's comparison operators are false.
+        assert_eq!(btc.partial_cmp(&usd), None);
+        assert_eq!(btc.partial_cmp(&btc_other_decimals), None);
     }
 
     #[test]

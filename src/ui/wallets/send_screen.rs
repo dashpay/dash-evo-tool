@@ -7,7 +7,10 @@ use crate::context::AppContext;
 use crate::model::address::{AddressKind, ValidatedAddress};
 use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
 use crate::model::fee_estimation::{
-    core_max_send_amount_duffs, core_max_send_reserve_duffs, format_credits_as_dash,
+    MAX_PLATFORM_INPUTS, PlatformFeeEstimator, allocate_platform_addresses,
+    allocate_platform_addresses_with_fee, core_max_send_amount_duffs, core_max_send_reserve_duffs,
+    estimate_address_funding_fee_from_transition, estimate_platform_fee,
+    estimate_withdrawal_fee_from_transition, format_credits_as_dash, format_duffs_as_dash,
 };
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::{Wallet, WalletSeedHash};
@@ -25,249 +28,14 @@ use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dashcore_rpc::dashcore::address::NetworkUnchecked;
-use dash_sdk::dpp::address_funds::AddressFundsFeeStrategyStep;
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::balances::credits::{CREDITS_PER_DUFF, Credits};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::core_script::CoreScript;
-use dash_sdk::dpp::prelude::AddressNonce;
-use dash_sdk::dpp::prelude::AssetLockProof;
-use dash_sdk::dpp::state_transition::StateTransitionEstimatedFeeValidation;
-use dash_sdk::dpp::state_transition::address_credit_withdrawal_transition::AddressCreditWithdrawalTransition;
-use dash_sdk::dpp::state_transition::address_credit_withdrawal_transition::v0::AddressCreditWithdrawalTransitionV0;
-use dash_sdk::dpp::state_transition::address_funding_from_asset_lock_transition::AddressFundingFromAssetLockTransition;
-use dash_sdk::dpp::state_transition::address_funding_from_asset_lock_transition::v0::AddressFundingFromAssetLockTransitionV0;
-use dash_sdk::dpp::withdrawal::Pooling;
 use eframe::egui::{self, Context, RichText, Ui};
 use egui::{Color32, Frame, Margin};
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
-
-/// Maximum number of platform address inputs allowed per state transition
-const MAX_PLATFORM_INPUTS: usize = 16;
-
-use crate::model::fee_estimation::PlatformFeeEstimator;
-
-/// Estimated serialized bytes per input (address + signature/witness data)
-const ESTIMATED_BYTES_PER_INPUT: usize = 225;
-
-/// Calculate the estimated fee for a platform address funds transfer.
-///
-/// Uses PlatformFeeEstimator for base costs (input/output fees) plus storage fees.
-fn estimate_platform_fee(estimator: &PlatformFeeEstimator, input_count: usize) -> u64 {
-    let inputs = input_count.max(1);
-
-    // Base fee from Platform's min fee structure
-    // - 500,000 credits per input (address_funds_transfer_input_cost)
-    // - 6,000,000 credits per output (address_funds_transfer_output_cost)
-    let base_fee = estimator.estimate_address_funds_transfer(inputs, 1);
-
-    // Add storage fees for serialized input bytes only
-    // (outputs don't add significant serialization overhead)
-    let estimated_bytes = inputs * ESTIMATED_BYTES_PER_INPUT;
-    let storage_fee = estimator.estimate_storage_based_fee(estimated_bytes, inputs);
-
-    // Total with 20% safety buffer
-    let total = base_fee.saturating_add(storage_fee);
-    total.saturating_add(total / 5)
-}
-
-/// Calculate the estimated fee for a Platform address withdrawal using a constructed state transition.
-fn estimate_withdrawal_fee_from_transition(
-    platform_version: &dash_sdk::dpp::version::PlatformVersion,
-    inputs: &BTreeMap<PlatformAddress, u64>,
-    output_script: &CoreScript,
-) -> u64 {
-    let inputs_with_nonce: BTreeMap<PlatformAddress, (AddressNonce, Credits)> = inputs
-        .iter()
-        .map(|(addr, amount)| (*addr, (0, *amount)))
-        .collect();
-
-    let transition = AddressCreditWithdrawalTransition::V0(AddressCreditWithdrawalTransitionV0 {
-        inputs: inputs_with_nonce,
-        output: None,
-        fee_strategy: vec![AddressFundsFeeStrategyStep::DeductFromInput(0)],
-        core_fee_per_byte: 1,
-        pooling: Pooling::Never,
-        output_script: output_script.clone(),
-        user_fee_increase: 0,
-        input_witnesses: Vec::new(),
-    });
-
-    transition
-        .calculate_min_required_fee(platform_version)
-        .unwrap_or(0)
-}
-
-/// Calculate the estimated fee for funding a Platform address from an asset lock.
-fn estimate_address_funding_fee_from_transition(
-    platform_version: &dash_sdk::dpp::version::PlatformVersion,
-    destination: &PlatformAddress,
-) -> u64 {
-    let mut outputs = BTreeMap::new();
-    outputs.insert(*destination, None);
-
-    let transition =
-        AddressFundingFromAssetLockTransition::V0(AddressFundingFromAssetLockTransitionV0 {
-            asset_lock_proof: AssetLockProof::default(),
-            inputs: BTreeMap::new(),
-            outputs,
-            fee_strategy: vec![AddressFundsFeeStrategyStep::ReduceOutput(0)],
-            user_fee_increase: 0,
-            ..Default::default()
-        });
-
-    transition
-        .calculate_min_required_fee(platform_version)
-        .unwrap_or(0)
-}
-
-/// Result of allocating platform addresses for a transfer.
-#[derive(Debug, Clone)]
-struct AddressAllocationResult {
-    /// Map of platform address to amount to transfer from each
-    inputs: BTreeMap<PlatformAddress, u64>,
-    /// Index of the fee payer in BTreeMap iteration order
-    fee_payer_index: u16,
-    /// Estimated fee for this transaction
-    estimated_fee: u64,
-    /// Amount that couldn't be covered (0 if fully covered)
-    shortfall: u64,
-    /// Addresses sorted by balance descending (for UI display)
-    sorted_addresses: Vec<(PlatformAddress, Address, u64)>,
-}
-
-/// Allocates platform addresses for a transfer, using a custom fee calculator.
-fn allocate_platform_addresses_with_fee<F>(
-    addresses: &[(PlatformAddress, Address, u64)],
-    amount_credits: u64,
-    destination: Option<&PlatformAddress>,
-    fee_for_inputs: F,
-) -> AddressAllocationResult
-where
-    F: Fn(&BTreeMap<PlatformAddress, u64>) -> u64,
-{
-    // Filter out the destination address if provided (protocol doesn't allow same address as input and output)
-    let filtered: Vec<_> = addresses
-        .iter()
-        .filter(|(platform_addr, _, _)| destination != Some(platform_addr))
-        .cloned()
-        .collect();
-
-    // Sort addresses by balance descending so the largest balance is used first
-    let mut sorted_addresses = filtered;
-    sorted_addresses.sort_by(|a, b| b.2.cmp(&a.2));
-
-    // Early return if no addresses available after filtering
-    if sorted_addresses.is_empty() {
-        return AddressAllocationResult {
-            inputs: BTreeMap::new(),
-            fee_payer_index: 0,
-            estimated_fee: fee_for_inputs(&BTreeMap::new()),
-            shortfall: amount_credits,
-            sorted_addresses: vec![],
-        };
-    }
-
-    // The highest-balance address (first in sorted order) will pay the fee
-    let fee_payer_addr = sorted_addresses.first().map(|(addr, _, _)| *addr);
-
-    let mut estimated_fee = fee_for_inputs(&BTreeMap::new());
-    let mut inputs: BTreeMap<PlatformAddress, u64> = BTreeMap::new();
-
-    // Iterate until fee estimate stabilizes (input count affects fee)
-    for _ in 0..=MAX_PLATFORM_INPUTS {
-        inputs.clear();
-        let mut remaining = amount_credits;
-
-        for (idx, (platform_addr, _, balance)) in sorted_addresses.iter().enumerate() {
-            if remaining == 0 || inputs.len() >= MAX_PLATFORM_INPUTS {
-                break;
-            }
-            let is_fee_payer = idx == 0;
-            let available = if is_fee_payer {
-                balance.saturating_sub(estimated_fee)
-            } else {
-                *balance
-            };
-            let use_amount = remaining.min(available);
-            if use_amount > 0 || is_fee_payer {
-                inputs.insert(*platform_addr, use_amount);
-                remaining = remaining.saturating_sub(use_amount);
-            }
-        }
-
-        let new_fee = fee_for_inputs(&inputs);
-        if new_fee == estimated_fee {
-            break;
-        }
-        estimated_fee = new_fee;
-    }
-
-    // Calculate shortfall (amount we couldn't allocate)
-    let total_allocated: u64 = inputs.values().sum();
-    let allocation_shortfall = amount_credits.saturating_sub(total_allocated);
-
-    // Check if fee payer can actually afford the fee from their remaining balance.
-    let fee_deficit = if let Some(fee_payer) = fee_payer_addr {
-        let fee_payer_balance = sorted_addresses.first().map(|(_, _, b)| *b).unwrap_or(0);
-        let fee_payer_contribution = inputs.get(&fee_payer).copied().unwrap_or(0);
-        let fee_payer_remaining = fee_payer_balance.saturating_sub(fee_payer_contribution);
-        estimated_fee.saturating_sub(fee_payer_remaining)
-    } else {
-        estimated_fee
-    };
-
-    let shortfall = allocation_shortfall.saturating_add(fee_deficit);
-
-    // Find the index of the fee payer in BTreeMap order (required by backend)
-    let fee_payer_index = fee_payer_addr
-        .and_then(|payer| {
-            inputs
-                .keys()
-                .enumerate()
-                .find(|(_, addr)| **addr == payer)
-                .map(|(idx, _)| idx as u16)
-        })
-        .unwrap_or(0);
-
-    AddressAllocationResult {
-        inputs,
-        fee_payer_index,
-        estimated_fee,
-        shortfall,
-        sorted_addresses,
-    }
-}
-
-/// Allocates platform addresses for a transfer, selecting which addresses to use
-/// and how much from each.
-///
-/// Algorithm:
-/// 1. Filters out the destination address (can't be both input and output)
-/// 2. Sorts addresses by balance descending (largest first)
-/// 3. The highest-balance address pays the fee
-/// 4. Iteratively allocates until fee estimate converges
-/// 5. Fee payer is always included in inputs (even with 0 contribution) so fee can be deducted
-///
-/// Returns the allocation result with inputs, fee payer index, and any shortfall.
-fn allocate_platform_addresses(
-    estimator: &PlatformFeeEstimator,
-    addresses: &[(PlatformAddress, Address, u64)],
-    amount_credits: u64,
-    destination: Option<&PlatformAddress>,
-) -> AddressAllocationResult {
-    let max_inputs = addresses
-        .iter()
-        .filter(|(platform_addr, _, _)| destination != Some(platform_addr))
-        .count()
-        .min(MAX_PLATFORM_INPUTS);
-
-    allocate_platform_addresses_with_fee(addresses, amount_credits, destination, |_| {
-        // Keep the legacy behavior: use a worst-case fee based on max possible inputs.
-        estimate_platform_fee(estimator, max_inputs.max(1))
-    })
-}
 
 /// Source selection for sending
 #[derive(Debug, Clone, PartialEq)]
@@ -497,15 +265,6 @@ impl WalletSendScreen {
 
     fn mark_sending(&mut self) {
         self.send_status = SendStatus::WaitingForResult;
-    }
-
-    fn format_dash(amount_duffs: u64) -> String {
-        Amount::dash_from_duffs(amount_duffs).to_string()
-    }
-
-    fn format_credits(credits: Credits) -> String {
-        let dash = credits as f64 / 1000.0 / 100_000_000.0;
-        format!("{:.8} DASH", dash)
     }
 
     fn parse_amount_to_duffs(input: &str) -> Result<u64, String> {
@@ -871,8 +630,8 @@ impl WalletSendScreen {
         if amount_duffs > balance {
             return Err(format!(
                 "Insufficient balance. Need {} but have {}",
-                Self::format_dash(amount_duffs),
-                Self::format_dash(balance)
+                format_duffs_as_dash(amount_duffs),
+                format_duffs_as_dash(balance)
             ));
         }
 
@@ -923,8 +682,8 @@ impl WalletSendScreen {
         if required > balance {
             return Err(format!(
                 "Insufficient balance. Need {} (including fee) but have {}",
-                Self::format_dash(required),
-                Self::format_dash(balance)
+                format_duffs_as_dash(required),
+                format_duffs_as_dash(balance)
             ));
         }
 
@@ -964,16 +723,16 @@ impl WalletSendScreen {
 
         tracing::debug!(
             "Platform transfer: {} requested, {} total balance across {} addresses",
-            Self::format_credits(amount_credits),
-            Self::format_credits(total_balance),
+            format_credits_as_dash(amount_credits),
+            format_credits_as_dash(total_balance),
             addresses.len()
         );
 
         if amount_credits > total_balance {
             return Err(format!(
                 "Insufficient balance. Need {} but have {}",
-                Self::format_credits(amount_credits),
-                Self::format_credits(total_balance)
+                format_credits_as_dash(amount_credits),
+                format_credits_as_dash(total_balance)
             ));
         }
 
@@ -1004,8 +763,8 @@ impl WalletSendScreen {
         if amount_credits > available_balance {
             return Err(format!(
                 "Insufficient balance from other addresses. Need {} but have {} (excluding destination address)",
-                Self::format_credits(amount_credits),
-                Self::format_credits(available_balance)
+                format_credits_as_dash(amount_credits),
+                format_credits_as_dash(available_balance)
             ));
         }
 
@@ -1033,14 +792,14 @@ impl WalletSendScreen {
                  • Estimated fee: {} (for {} inputs)\n\
                  • Shortfall: {}\n\n\
                  Try reducing the amount slightly to account for fees.",
-                Self::format_credits(amount_credits),
-                Self::format_credits(max_sendable),
+                format_credits_as_dash(amount_credits),
+                format_credits_as_dash(max_sendable),
                 addresses_available,
-                Self::format_credits(max_balance),
+                format_credits_as_dash(max_balance),
                 MAX_PLATFORM_INPUTS,
-                Self::format_credits(allocation.estimated_fee),
+                format_credits_as_dash(allocation.estimated_fee),
                 allocation.inputs.len(),
-                Self::format_credits(allocation.shortfall)
+                format_credits_as_dash(allocation.shortfall)
             ));
         }
 
@@ -1052,9 +811,9 @@ impl WalletSendScreen {
         tracing::debug!(
             "Platform transfer: {} inputs totaling {}, output {}, fee {} (payer idx {})",
             allocation.inputs.len(),
-            Self::format_credits(total_input),
-            Self::format_credits(amount_credits),
-            Self::format_credits(allocation.estimated_fee),
+            format_credits_as_dash(total_input),
+            format_credits_as_dash(amount_credits),
+            format_credits_as_dash(allocation.estimated_fee),
             allocation.fee_payer_index
         );
 
@@ -1090,16 +849,16 @@ impl WalletSendScreen {
 
         tracing::debug!(
             "Platform withdrawal: {} requested, {} total balance across {} addresses",
-            Self::format_credits(amount_credits),
-            Self::format_credits(total_balance),
+            format_credits_as_dash(amount_credits),
+            format_credits_as_dash(total_balance),
             addresses.len()
         );
 
         if amount_credits > total_balance {
             return Err(format!(
                 "Insufficient balance. Need {} but have {}",
-                Self::format_credits(amount_credits),
-                Self::format_credits(total_balance)
+                format_credits_as_dash(amount_credits),
+                format_credits_as_dash(total_balance)
             ));
         }
 
@@ -1150,14 +909,14 @@ impl WalletSendScreen {
                  • Estimated fee: {} (for {} inputs)\n\
                  • Shortfall: {}\n\n\
                  Try reducing the amount slightly to account for fees.",
-                Self::format_credits(amount_credits),
-                Self::format_credits(max_sendable),
+                format_credits_as_dash(amount_credits),
+                format_credits_as_dash(max_sendable),
                 addresses_available,
-                Self::format_credits(max_balance),
+                format_credits_as_dash(max_balance),
                 MAX_PLATFORM_INPUTS,
-                Self::format_credits(allocation.estimated_fee),
+                format_credits_as_dash(allocation.estimated_fee),
                 allocation.inputs.len(),
-                Self::format_credits(allocation.shortfall)
+                format_credits_as_dash(allocation.shortfall)
             ));
         }
 
@@ -1166,9 +925,9 @@ impl WalletSendScreen {
         tracing::debug!(
             "Platform withdrawal: {} inputs totaling {}, withdraw {}, fee {} (payer idx {})",
             allocation.inputs.len(),
-            Self::format_credits(total_input),
-            Self::format_credits(amount_credits),
-            Self::format_credits(allocation.estimated_fee),
+            format_credits_as_dash(total_input),
+            format_credits_as_dash(amount_credits),
+            format_credits_as_dash(allocation.estimated_fee),
             allocation.fee_payer_index
         );
 
@@ -1431,8 +1190,8 @@ impl WalletSendScreen {
         if amount_duffs > balance {
             return Err(format!(
                 "Insufficient balance. Need {} but have {}",
-                Self::format_dash(amount_duffs),
-                Self::format_dash(balance)
+                format_duffs_as_dash(amount_duffs),
+                format_duffs_as_dash(balance)
             ));
         }
 
@@ -1460,8 +1219,8 @@ impl WalletSendScreen {
         if amount_duffs > balance {
             return Err(format!(
                 "Insufficient balance. Need {} but have {}",
-                Self::format_dash(amount_duffs),
-                Self::format_dash(balance)
+                format_duffs_as_dash(amount_duffs),
+                format_duffs_as_dash(balance)
             ));
         }
 
@@ -1797,7 +1556,7 @@ impl WalletSendScreen {
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.label(
-                            RichText::new(Self::format_dash(core_balance))
+                            RichText::new(format_duffs_as_dash(core_balance))
                                 .color(DashColors::success_color(dark_mode))
                                 .strong(),
                         );
@@ -1855,7 +1614,7 @@ impl WalletSendScreen {
                         );
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             ui.label(
-                                RichText::new(Self::format_credits(total_platform_balance))
+                                RichText::new(format_credits_as_dash(total_platform_balance))
                                     .color(DashColors::success_color(dark_mode))
                                     .strong(),
                             );
@@ -1925,7 +1684,7 @@ impl WalletSendScreen {
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
                                     ui.label(
-                                        RichText::new(Self::format_credits(
+                                        RichText::new(format_credits_as_dash(
                                             qi.identity.balance(),
                                         ))
                                         .color(DashColors::success_color(dark_mode))
@@ -1938,7 +1697,7 @@ impl WalletSendScreen {
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
                                     ui.label(
-                                        RichText::new(Self::format_credits(
+                                        RichText::new(format_credits_as_dash(
                                             first.identity.balance(),
                                         ))
                                         .color(DashColors::success_color(dark_mode))
@@ -1970,7 +1729,7 @@ impl WalletSendScreen {
                                 format!(
                                     "{} ({})",
                                     name,
-                                    Self::format_credits(qi.identity.balance())
+                                    format_credits_as_dash(qi.identity.balance())
                                 )
                             })
                             .unwrap_or_else(|| "Select identity".to_string());
@@ -1998,7 +1757,7 @@ impl WalletSendScreen {
                                         format!(
                                             "{} ({})",
                                             name,
-                                            Self::format_credits(identity.identity.balance())
+                                            format_credits_as_dash(identity.identity.balance())
                                         )
                                     };
                                     let is_selected = self
@@ -2060,7 +1819,7 @@ impl WalletSendScreen {
                         );
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             ui.label(
-                                RichText::new(Self::format_credits(balance))
+                                RichText::new(format_credits_as_dash(balance))
                                     .color(DashColors::success_color(dark_mode))
                                     .strong(),
                             );
@@ -2207,7 +1966,7 @@ impl WalletSendScreen {
                             max = max.map(|amount| amount.saturating_sub(estimated_fee));
                             Some(format!(
                                 "Estimated platform fee ~{} (deducted from amount)",
-                                Self::format_credits(estimated_fee)
+                                format_credits_as_dash(estimated_fee)
                             ))
                         } else {
                             None
@@ -2221,7 +1980,7 @@ impl WalletSendScreen {
                         max = max.map(|amount| amount.saturating_sub(total_fee_credits));
                         Some(format!(
                             "~{} reserved for shield fees",
-                            Self::format_credits(total_fee_credits)
+                            format_credits_as_dash(total_fee_credits)
                         ))
                     }
                     Some(AddressKind::Core) => {
@@ -2249,7 +2008,7 @@ impl WalletSendScreen {
                                     .unwrap_or(0);
                                     Some(format!(
                                         "~{} reserved for the network fee",
-                                        Self::format_credits(fee_duffs * CREDITS_PER_DUFF)
+                                        format_credits_as_dash(fee_duffs * CREDITS_PER_DUFF)
                                     ))
                                 }
                                 None => {
@@ -2303,10 +2062,10 @@ impl WalletSendScreen {
                     format!(
                         "Limited to {} input addresses per transaction, ~{} reserved for fees",
                         MAX_PLATFORM_INPUTS,
-                        Self::format_credits(max_fee)
+                        format_credits_as_dash(max_fee)
                     )
                 } else {
-                    format!("~{} reserved for fees", Self::format_credits(max_fee))
+                    format!("~{} reserved for fees", format_credits_as_dash(max_fee))
                 };
                 (Some(total.saturating_sub(max_fee)), Some(hint))
             }
@@ -2321,7 +2080,7 @@ impl WalletSendScreen {
                     Some(available),
                     Some(format!(
                         "~{} reserved for fees",
-                        Self::format_credits(estimated_fee)
+                        format_credits_as_dash(estimated_fee)
                     )),
                 )
             }
@@ -2439,7 +2198,7 @@ impl WalletSendScreen {
                         );
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             ui.label(
-                                RichText::new(Self::format_credits(*use_amount))
+                                RichText::new(format_credits_as_dash(*use_amount))
                                     .color(DashColors::success_color(dark_mode))
                                     .size(11.0),
                             );
@@ -2756,7 +2515,7 @@ impl WalletSendScreen {
                                     .monospace(),
                             );
                             ui.label(
-                                RichText::new(format!("({})", Self::format_dash(balance)))
+                                RichText::new(format!("({})", format_duffs_as_dash(balance)))
                                     .color(DashColors::success_color(dark_mode))
                                     .size(12.0),
                             );
@@ -2810,7 +2569,7 @@ impl WalletSendScreen {
                         let display = format!(
                             "{}... ({})",
                             &addr_str[..12.min(addr_str.len())],
-                            Self::format_dash(*balance)
+                            format_duffs_as_dash(*balance)
                         );
                         if ui.selectable_label(false, display).clicked() {
                             self.core_inputs.push(CoreAddressInput {
@@ -2884,7 +2643,7 @@ impl WalletSendScreen {
                                     .monospace(),
                             );
                             ui.label(
-                                RichText::new(format!("({})", Self::format_credits(balance)))
+                                RichText::new(format!("({})", format_credits_as_dash(balance)))
                                     .color(DashColors::success_color(dark_mode))
                                     .size(12.0),
                             );
@@ -2938,7 +2697,7 @@ impl WalletSendScreen {
                         let display = format!(
                             "{}... ({})",
                             &addr_str[..20.min(addr_str.len())],
-                            Self::format_credits(*balance)
+                            format_credits_as_dash(*balance)
                         );
                         if ui.selectable_label(false, display).clicked() {
                             self.platform_inputs.push(PlatformAddressInput {
@@ -3228,8 +2987,8 @@ impl WalletSendScreen {
         if total_output > total_input {
             return Err(format!(
                 "Insufficient input amount. Outputs total {} but inputs only {}",
-                Self::format_dash(total_output),
-                Self::format_dash(total_input)
+                format_duffs_as_dash(total_output),
+                format_duffs_as_dash(total_input)
             ));
         }
 
@@ -3275,8 +3034,8 @@ impl WalletSendScreen {
         if amount_duffs > total_input {
             return Err(format!(
                 "Insufficient input amount. Output is {} but inputs only {}",
-                Self::format_dash(amount_duffs),
-                Self::format_dash(total_input)
+                format_duffs_as_dash(amount_duffs),
+                format_duffs_as_dash(total_input)
             ));
         }
 
@@ -3519,11 +3278,11 @@ impl ScreenLike for WalletSendScreen {
             } => {
                 let msg = if recipients.len() == 1 {
                     let (address, amount) = &recipients[0];
-                    format!("Sent {} to {}", Self::format_dash(*amount), address,)
+                    format!("Sent {} to {}", format_duffs_as_dash(*amount), address,)
                 } else {
                     format!(
                         "Sent {} to {} recipients",
-                        Self::format_dash(total_amount),
+                        format_duffs_as_dash(total_amount),
                         recipients.len(),
                     )
                 };

@@ -1,6 +1,6 @@
 use crate::app::AppAction;
 use crate::model::wallet::{DerivationPathHelpers, DerivationPathReference};
-use crate::ui::wallets::account_summary::{AccountCategory, categorize_account_path};
+use crate::ui::state::account_summary::{AccountCategory, categorize_account_path};
 use dash_sdk::dashcore_rpc::dashcore::{Address, Network};
 use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
 use dash_sdk::dpp::key_wallet::bip32::{ChildNumber, DerivationPath};

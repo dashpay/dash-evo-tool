@@ -41,6 +41,8 @@ pub mod identity_meta;
 pub(crate) mod identity_meta;
 mod kv;
 #[cfg(test)]
+pub(crate) mod kv_test_support;
+#[cfg(test)]
 pub(crate) mod leak_test_support;
 mod loader;
 pub mod secret_access;

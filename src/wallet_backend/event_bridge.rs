@@ -32,6 +32,11 @@ use crate::model::wallet::{PlatformAddressEntry, PlatformAddressUpdates, WalletS
 use crate::utils::egui_mpsc::SenderAsync;
 use dash_sdk::dpp::key_wallet::managed_account::transaction_record::TransactionRecord;
 
+/// Maximum number of bytes of an upstream SPV error message kept for the UI
+/// tooltip. The full message is logged; the stored snippet is truncated on a
+/// char boundary so it never splits a multibyte sequence.
+const SPV_ERROR_SNIPPET_MAX: usize = 200;
+
 /// DET-authored handler registered with `PlatformWalletManager` at
 /// construction. Holds only cheap shared handles so it stays `Send + Sync`
 /// and clone-free on the event hot path.
@@ -200,7 +205,7 @@ impl EventHandler for EventBridge {
                 // upstream message is stored verbatim (truncated) and shown only
                 // as a tooltip behind a fixed user-facing label.
                 tracing::error!(%manager, error, "SPV manager error");
-                let limit = error.floor_char_boundary(100);
+                let limit = error.floor_char_boundary(SPV_ERROR_SNIPPET_MAX);
                 self.connection_status
                     .set_spv_last_error(Some(error[..limit].to_string()));
                 self.apply_status(SpvStatus::Error);
@@ -293,7 +298,7 @@ impl EventHandler for EventBridge {
     }
 
     fn on_error(&self, error: &str) {
-        let limit = error.floor_char_boundary(200);
+        let limit = error.floor_char_boundary(SPV_ERROR_SNIPPET_MAX);
         self.connection_status
             .set_spv_last_error(Some(error[..limit].to_string()));
         self.apply_status(SpvStatus::Error);
@@ -316,8 +321,6 @@ impl PlatformEventHandler for EventBridge {
         // Only OWNED addresses appear in the coordinator result (the provider
         // tracks exactly the wallets registered with the manager), so no orphan
         // inflation is possible. Errored wallets leave both snapshots untouched.
-        use crate::app::TaskResult;
-        use crate::backend_task::BackendTaskSuccessResult;
         use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
 
         // Single pass: resolve `WalletId → WalletSeedHash` once per wallet, drop

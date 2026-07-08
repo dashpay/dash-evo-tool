@@ -96,7 +96,7 @@ pub use single_key::SingleKeyView;
 use snapshot::SnapshotStore;
 pub use snapshot::{DetUtxo, DetWalletBalance, WalletSnapshot};
 use token_balance::TokenBalanceStore;
-pub use token_balance::{TokenBalanceSnapshot, UpstreamTokenBalances};
+pub use token_balance::UpstreamTokenBalances;
 pub use wallet_meta::WalletMetaView;
 pub use wallet_seed_store::WalletSeedView;
 
@@ -1256,6 +1256,7 @@ impl WalletBackend {
     }
 
     /// Number of wallets currently registered with the backend.
+    #[cfg(test)]
     pub async fn wallet_count(&self) -> usize {
         self.inner.pwm.wallet_ids().await.len()
     }
@@ -1969,10 +1970,9 @@ impl WalletBackend {
         Ok(())
     }
 
-    /// Re-run the seedless watch-only load pass (idempotent). Exposed for
-    /// the one-time migration engine and the reload-survival tests; the
-    /// upstream `load_from_persistor` rebuilds each wallet watch-only and
-    /// re-provisions identity funding accounts per loaded wallet.
+    /// Re-run the seedless watch-only load pass (idempotent): the upstream
+    /// `load_from_persistor` rebuilds each wallet watch-only and re-provisions
+    /// identity funding accounts per loaded wallet.
     pub async fn ensure_wallets_registered(&self, ctx: &Arc<AppContext>) -> Result<(), TaskError> {
         self.register_persisted_wallets(ctx).await
     }
@@ -2219,17 +2219,18 @@ impl WalletBackend {
         network: Network,
     ) -> Option<std::net::SocketAddr> {
         use std::net::ToSocketAddrs;
-        if !matches!(network, Network::Devnet | Network::Regtest) {
-            return None;
-        }
+        /// Default Core P2P port on Devnet.
+        const DEVNET_P2P_PORT: u16 = 20001;
+        /// Default Core P2P port on Regtest.
+        const REGTEST_P2P_PORT: u16 = 19899;
+
+        let port = match network {
+            Network::Devnet => DEVNET_P2P_PORT,
+            Network::Regtest => REGTEST_P2P_PORT,
+            _ => return None,
+        };
         let cfg = ctx.config.read().ok()?;
         let host = cfg.core_host.as_deref()?;
-        let port = match network {
-            Network::Mainnet => 9999,
-            Network::Testnet => 19999,
-            Network::Devnet => 20001,
-            Network::Regtest => 19899,
-        };
         format!("{host}:{port}").to_socket_addrs().ok()?.next()
     }
 

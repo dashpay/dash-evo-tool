@@ -315,58 +315,6 @@ impl WalletBackend {
         Ok(wallet.shielded_default_address(account).await)
     }
 
-    /// A page of shielded activity for `account` on `seed_hash`'s wallet,
-    /// sorted for display (pending first, then descending block height).
-    ///
-    /// `offset` / `limit` mirror the coordinator store's pagination contract.
-    #[allow(dead_code)]
-    pub(crate) async fn shielded_activity(
-        &self,
-        seed_hash: &WalletSeedHash,
-        account: u32,
-        offset: usize,
-        limit: usize,
-    ) -> Result<Vec<platform_wallet::wallet::shielded::ShieldedActivityEntry>, TaskError> {
-        use platform_wallet::wallet::shielded::{ShieldedStore, SubwalletId};
-
-        let coordinator = self.shielded_coordinator_arc().await?;
-        let wallet = self.resolve_wallet(seed_hash).await?;
-        let wallet_id = wallet.wallet_id();
-        let subwallet = SubwalletId::new(wallet_id, account);
-
-        coordinator
-            .store()
-            .read()
-            .await
-            .get_activity(subwallet, offset, limit)
-            .map_err(|source| TaskError::ShieldedStoreReadFailed { source })
-    }
-
-    /// Unspent shielded notes for `account` on `seed_hash`'s wallet.
-    ///
-    /// Note: for spendability checks, prefer `shielded_balances`; this method
-    /// exposes the raw note list for diagnostic and display purposes.
-    #[allow(dead_code)]
-    pub(crate) async fn shielded_notes(
-        &self,
-        seed_hash: &WalletSeedHash,
-        account: u32,
-    ) -> Result<Vec<platform_wallet::wallet::shielded::ShieldedNote>, TaskError> {
-        use platform_wallet::wallet::shielded::{ShieldedStore, SubwalletId};
-
-        let coordinator = self.shielded_coordinator_arc().await?;
-        let wallet = self.resolve_wallet(seed_hash).await?;
-        let wallet_id = wallet.wallet_id();
-        let subwallet = SubwalletId::new(wallet_id, account);
-
-        coordinator
-            .store()
-            .read()
-            .await
-            .get_unspent_notes(subwallet)
-            .map_err(|source| TaskError::ShieldedStoreReadFailed { source })
-    }
-
     /// Force an immediate shielded sync pass (network-wide across every bound
     /// wallet on the coordinator).
     ///

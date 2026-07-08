@@ -110,7 +110,9 @@ impl<'a> AuthPubkeyCacheView<'a> {
     }
 
     /// Delete the cache for one wallet. Idempotent — a missing key
-    /// returns `Ok(())`.
+    /// returns `Ok(())`. The wallet-scope cascade is the real deletion
+    /// mechanism in production; this direct delete exists for tests.
+    #[cfg(test)]
     pub fn delete(&self, network: Network, seed_hash: &WalletSeedHash) -> Result<(), TaskError> {
         let key = key_for(network, seed_hash);
         self.kv

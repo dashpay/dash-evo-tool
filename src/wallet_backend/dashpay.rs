@@ -255,7 +255,7 @@ const KV_PREFIX_ADDR_MAP: &str = "det:dashpay:addr_map:";
 /// than this is surfaced as `"expired"` rather than `"pending"`. DET
 /// has no protocol-level expiry — this is purely a UX gate so the
 /// outbox doesn't accumulate stale requests forever.
-pub const DASHPAY_REQUEST_EXPIRY_DAYS: i64 = 7;
+const DASHPAY_REQUEST_EXPIRY_DAYS: i64 = 7;
 
 // ---------------------------------------------------------------------------
 // Public view

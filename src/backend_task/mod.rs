@@ -283,12 +283,6 @@ pub enum BackendTaskSuccessResult {
         /// See [`PlatformAddressUpdates`] for the entry layout.
         updates: PlatformAddressUpdates,
     },
-    /// Emitted by the `EventBridge` once per SPV sync completion (edge-triggered,
-    /// not per frame). `AppState` runs the wallet balance health check on the
-    /// main thread — where it has `AppContext` + `egui::Context` — comparing each
-    /// loaded wallet's authoritative totals against its per-category totals and
-    /// surfacing a warning banner on a mismatch.
-    WalletBalanceHealthCheckRequested,
     /// Platform credits transferred between addresses
     PlatformCreditsTransferred {
         seed_hash: WalletSeedHash,

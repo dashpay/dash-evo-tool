@@ -16,10 +16,6 @@ use crate::database::Database;
 #[cfg(not(feature = "testing"))]
 use crate::logging::initialize_logger;
 use crate::model::settings::AppSettings;
-use crate::model::wallet::WalletSeedHash;
-use crate::model::wallet::balance_consistency::{
-    BALANCE_MISMATCH_TOLERANCE_DUFFS, BalanceAsset, BalanceMismatch, detect_mismatch,
-};
 use crate::ui::components::secret_prompt_host::{ActivePrompt, EguiSecretPromptHost, QueuedPrompt};
 use crate::ui::components::{
     BannerHandle, MessageBanner, OptionBannerExt, OptionOverlayExt, OverlayConfig, OverlayHandle,
@@ -41,21 +37,18 @@ use crate::ui::tools::grovestark_screen::GroveSTARKScreen;
 use crate::ui::tools::platform_info_screen::PlatformInfoScreen;
 use crate::ui::tools::proof_visualizer_screen::ProofVisualizerScreen;
 use crate::ui::tools::transition_visualizer_screen::TransitionVisualizerScreen;
-use crate::ui::wallets::account_summary::{AccountCategory, collect_account_summaries};
 use crate::ui::wallets::wallets_screen::WalletsBalancesScreen;
 use crate::ui::welcome_screen::WelcomeScreen;
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike, ScreenType};
 use crate::utils::egui_mpsc::{self, EguiMpscAsync};
 use crate::utils::tasks::TaskManager;
 use crate::wallet_backend::DetScope;
-use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use derive_more::From;
 use eframe::{App, egui};
 use platform_wallet_storage::secrets::SecretStore;
 use std::collections::{BTreeMap, BTreeSet};
-use std::hash::{Hash, Hasher};
 use std::ops::BitOrAssign;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -359,13 +352,6 @@ pub struct AppState {
     /// The passphrase prompt currently shown, if any. Exactly one is active at
     /// a time; further requests wait in `secret_prompt_receiver` (FIFO).
     active_secret_prompt: Option<ActivePrompt>,
-    /// Handle to the wallet-balance health-check warning banner, if shown. Kept
-    /// so it can be cleared when the mismatch resolves and so it is not stacked.
-    balance_health_banner: Option<BannerHandle>,
-    /// Signature of the mismatch set last surfaced by the end-of-sync health
-    /// check. The check runs once per SPV sync completion; this dedupes so an
-    /// unchanged mismatch is not re-logged or re-shown on every sync cycle.
-    balance_health_signature: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -885,8 +871,6 @@ impl AppState {
             secret_prompt_host,
             secret_prompt_receiver,
             active_secret_prompt: None,
-            balance_health_banner: None,
-            balance_health_signature: None,
         };
 
         // Initialize welcome screen if needed (uses whichever context is active)
@@ -1715,137 +1699,6 @@ impl AppState {
             });
         }
     }
-
-    /// Run the wallet balance health check once, after an SPV sync completes.
-    ///
-    /// Compares every loaded wallet's authoritative Core/Platform totals against
-    /// its per-category account totals and, on a mismatch beyond the rounding
-    /// tolerance, surfaces one calm warning banner for the general audience.
-    /// Deduped by mismatch signature so an unchanged result is neither re-logged
-    /// nor re-shown on each sync cycle, and the banner is cleared when the
-    /// mismatch resolves. Shielded is not covered — no second computed total
-    /// exists yet (pending the Phase-F coordinator per-note read path).
-    fn run_wallet_balance_health_check(
-        &mut self,
-        ctx: &egui::Context,
-        app_context: &Arc<AppContext>,
-    ) {
-        let mismatches = collect_wallet_balance_mismatches(app_context);
-        let signature = balance_health_signature(&mismatches);
-        if signature == self.balance_health_signature {
-            // Unchanged since the last completed sync (including still-clean) —
-            // do not re-log or re-show.
-            return;
-        }
-        self.balance_health_signature = signature;
-
-        // Clear any prior banner first so a changed mismatch set never stacks.
-        self.balance_health_banner.take_and_clear();
-        if mismatches.is_empty() {
-            return;
-        }
-        for (seed_hash, asset, mismatch) in &mismatches {
-            tracing::warn!(
-                asset = asset.label(),
-                backend_total = mismatch.backend_total,
-                categorized_total = mismatch.categorized_total,
-                diff = mismatch.diff(),
-                wallet = %hex::encode(seed_hash),
-                "Wallet balance health check found a mismatch after SPV sync completed"
-            );
-        }
-        self.balance_health_banner = Some(MessageBanner::set_global(
-            ctx,
-            BALANCE_HEALTH_WARNING,
-            MessageType::Warning,
-        ));
-    }
-}
-
-/// General-audience text for the end-of-sync balance health-check warning.
-/// Calm and factual: states what happened, reassures funds are safe, and gives
-/// a concrete self-service action. No jargon, no dynamic values (so it dedupes
-/// cleanly and is a single i18n translation unit).
-///
-/// Deliberately does NOT call this a "known issue" — the categorization bug
-/// this check was built to catch is already fixed. If this check ever fires
-/// in practice, it means something nobody currently knows about (a fresh
-/// regression, or an unmapped edge case), so the copy must not pre-emptively
-/// reassure the user it's already being handled.
-const BALANCE_HEALTH_WARNING: &str = "Some wallet balances didn't fully add up after the last sync. \
-Your funds are safe. \
-Refreshing the wallet, or reopening the app, usually resolves it.";
-
-/// Gather Core and Platform balance mismatches across every loaded HD wallet.
-///
-/// Core: the backend's authoritative total vs the sum of confirmed balances
-/// across all account categories. Platform: the coordinator-push total vs the
-/// Platform-payment credits, converted to duffs exactly as the Platform tab
-/// does. Both comparisons reuse the shared [`detect_mismatch`] tolerance.
-fn collect_wallet_balance_mismatches(
-    app_context: &AppContext,
-) -> Vec<(WalletSeedHash, BalanceAsset, BalanceMismatch)> {
-    let mut mismatches = Vec::new();
-    let Ok(backend) = app_context.wallet_backend() else {
-        return mismatches;
-    };
-    let Ok(wallets) = app_context.wallets.read() else {
-        return mismatches;
-    };
-    let network = app_context.network;
-    for (seed_hash, wallet_arc) in wallets.iter() {
-        let Ok(wallet) = wallet_arc.read() else {
-            continue;
-        };
-        let address_balances = backend.address_balances(seed_hash);
-        let address_paths = backend.address_paths(seed_hash);
-        let summaries =
-            collect_account_summaries(&wallet, network, &address_balances, &address_paths);
-
-        let core_backend = backend.wallet_balance(seed_hash).total;
-        let core_categorized: u64 = summaries.iter().map(|s| s.confirmed_balance).sum();
-        if let Some(m) = detect_mismatch(
-            core_backend,
-            core_categorized,
-            BALANCE_MISMATCH_TOLERANCE_DUFFS,
-        ) {
-            mismatches.push((*seed_hash, BalanceAsset::Core, m));
-        }
-
-        let platform_backend = app_context.platform_balance_duffs(seed_hash);
-        let platform_categorized: u64 = summaries
-            .iter()
-            .filter(|s| s.category == AccountCategory::PlatformPayment)
-            .map(|s| s.platform_credits / CREDITS_PER_DUFF)
-            .sum();
-        if let Some(m) = detect_mismatch(
-            platform_backend,
-            platform_categorized,
-            BALANCE_MISMATCH_TOLERANCE_DUFFS,
-        ) {
-            mismatches.push((*seed_hash, BalanceAsset::Platform, m));
-        }
-    }
-    mismatches
-}
-
-/// A stable hash of the mismatch set, or `None` when there is no mismatch.
-/// Drives the health-check dedupe: equal signatures across sync completions
-/// mean nothing changed, so the banner/log are neither re-shown nor repeated.
-fn balance_health_signature(
-    mismatches: &[(WalletSeedHash, BalanceAsset, BalanceMismatch)],
-) -> Option<u64> {
-    if mismatches.is_empty() {
-        return None;
-    }
-    let mut keyed: Vec<(WalletSeedHash, BalanceAsset, u64, u64)> = mismatches
-        .iter()
-        .map(|(seed, asset, m)| (*seed, *asset, m.backend_total, m.categorized_total))
-        .collect();
-    keyed.sort_unstable();
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    keyed.hash(&mut hasher);
-    Some(hasher.finish())
 }
 
 impl App for AppState {
@@ -2047,9 +1900,6 @@ impl App for AppState {
                             // for all loaded wallets so the per-address tab stays current
                             // without a manual Refresh. No banner — this fires every 15 s.
                             active_context.apply_platform_address_push(updates);
-                        }
-                        BackendTaskSuccessResult::WalletBalanceHealthCheckRequested => {
-                            self.run_wallet_balance_health_check(ctx, &active_context);
                         }
                         _ => {
                             // For all other success results, let the screen decide how to display
@@ -2576,79 +2426,6 @@ mod spv_overlay_tests {
                     "`{desc}` leaks blockchain jargon `{jargon}` to the Everyday User"
                 );
             }
-        }
-    }
-}
-
-#[cfg(test)]
-mod balance_health_tests {
-    use super::*;
-
-    fn entry(
-        seed: u8,
-        asset: BalanceAsset,
-        backend: u64,
-        categorized: u64,
-    ) -> (WalletSeedHash, BalanceAsset, BalanceMismatch) {
-        (
-            [seed; 32],
-            asset,
-            BalanceMismatch {
-                backend_total: backend,
-                categorized_total: categorized,
-            },
-        )
-    }
-
-    #[test]
-    fn signature_is_none_when_there_is_no_mismatch() {
-        assert_eq!(balance_health_signature(&[]), None);
-    }
-
-    #[test]
-    fn signature_is_some_when_a_mismatch_exists() {
-        let mismatches = vec![entry(1, BalanceAsset::Core, 100, 0)];
-        assert!(balance_health_signature(&mismatches).is_some());
-    }
-
-    #[test]
-    fn signature_is_order_independent() {
-        let a = entry(1, BalanceAsset::Core, 100, 0);
-        let b = entry(2, BalanceAsset::Platform, 50, 10);
-        let forward = balance_health_signature(&[a, b]);
-        let reversed = balance_health_signature(&[b, a]);
-        assert_eq!(
-            forward, reversed,
-            "the same mismatch set must dedupe regardless of iteration order"
-        );
-    }
-
-    #[test]
-    fn signature_changes_when_the_mismatch_set_changes() {
-        let base = balance_health_signature(&[entry(1, BalanceAsset::Core, 100, 0)]);
-        let different_amount = balance_health_signature(&[entry(1, BalanceAsset::Core, 200, 0)]);
-        let added = balance_health_signature(&[
-            entry(1, BalanceAsset::Core, 100, 0),
-            entry(2, BalanceAsset::Platform, 50, 10),
-        ]);
-        assert_ne!(base, different_amount, "a changed total must re-surface");
-        assert_ne!(base, added, "a newly affected wallet must re-surface");
-    }
-
-    #[test]
-    fn warning_is_a_calm_jargon_free_actionable_sentence() {
-        let text = BALANCE_HEALTH_WARNING;
-        assert!(text.ends_with('.'), "must be a complete sentence");
-        let lower = text.to_lowercase();
-        assert!(lower.contains("safe"), "must reassure that funds are safe");
-        // Offers a concrete self-service action; never redirects to support.
-        assert!(
-            lower.contains("refresh") || lower.contains("reopen"),
-            "must offer a concrete action the user can take"
-        );
-        assert!(!lower.contains("support"), "must be self-resolvable");
-        for jargon in ["duff", "utxo", "rpc", "spv", "watched_addresses", "dip-17"] {
-            assert!(!lower.contains(jargon), "leaks jargon `{jargon}`");
         }
     }
 }

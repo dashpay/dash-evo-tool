@@ -3217,8 +3217,11 @@ mod tests {
         let seed_hash: WalletSeedHash =
             crate::model::wallet::ClosedKeyItem::compute_seed_hash(&seed);
         let epk = legacy_master_epk_bytes(&seed);
-        let (encrypted_seed, salt, nonce) =
-            encrypt_message(&seed, passphrase).expect("encrypt legacy seed");
+        let crate::model::wallet::encryption::EncryptedEnvelope {
+            ciphertext: encrypted_seed,
+            salt,
+            nonce,
+        } = encrypt_message(&seed, passphrase).expect("encrypt legacy seed");
         seed_legacy_protected_hd_wallet_row(
             &ctx.db,
             &seed_hash,
@@ -3335,8 +3338,11 @@ mod tests {
         let seed_hash: WalletSeedHash =
             crate::model::wallet::ClosedKeyItem::compute_seed_hash(&seed);
         let epk = legacy_master_epk_bytes(&seed);
-        let (encrypted_seed, salt, nonce) =
-            encrypt_message(&seed, passphrase).expect("encrypt legacy seed");
+        let crate::model::wallet::encryption::EncryptedEnvelope {
+            ciphertext: encrypted_seed,
+            salt,
+            nonce,
+        } = encrypt_message(&seed, passphrase).expect("encrypt legacy seed");
         seed_legacy_protected_hd_wallet_row(
             &ctx.db,
             &seed_hash,
@@ -3568,8 +3574,11 @@ mod tests {
         let path = ctx.db.db_file_path().expect("data.db path");
         let conn = rusqlite::Connection::open(&path).expect("open data.db");
 
-        let (ciphertext, salt, nonce) =
-            ClosedSingleKey::encrypt_private_key(raw_key, password).expect("encrypt");
+        let crate::model::wallet::encryption::EncryptedEnvelope {
+            ciphertext,
+            salt,
+            nonce,
+        } = ClosedSingleKey::encrypt_private_key(raw_key, password).expect("encrypt");
         let priv_key = PrivateKey::from_byte_array(raw_key, Network::Testnet).expect("priv");
         let secp = Secp256k1::new();
         let pub_key = PublicKey {
@@ -3964,8 +3973,11 @@ mod tests {
         let locked_hash: WalletSeedHash =
             crate::model::wallet::ClosedKeyItem::compute_seed_hash(&locked_seed);
         let epk = legacy_master_epk_bytes(&locked_seed);
-        let (encrypted_seed, salt, nonce) =
-            encrypt_message(&locked_seed, "a-passphrase-never-fed-back").expect("encrypt seed");
+        let crate::model::wallet::encryption::EncryptedEnvelope {
+            ciphertext: encrypted_seed,
+            salt,
+            nonce,
+        } = encrypt_message(&locked_seed, "a-passphrase-never-fed-back").expect("encrypt seed");
         seed_legacy_protected_hd_wallet_row(
             &ctx.db,
             &locked_hash,

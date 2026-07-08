@@ -30,7 +30,6 @@ impl AppContext {
         };
 
         let network = self.network;
-        let ctx = Arc::clone(self);
         let backend = self.wallet_backend()?;
         let address = backend
             .secret_access()
@@ -40,7 +39,7 @@ impl AppContext {
                     let seed = plaintext.expose_hd_seed().ok_or(TaskError::WalletLocked)?;
                     let mut guard = wallet_arc.write()?;
                     let address = guard
-                        .generate_platform_receive_address_with_seed(seed, network, Some(&ctx))
+                        .generate_platform_receive_address_with_seed(seed, network)
                         .map_err(|detail| {
                             tracing::warn!(error = %detail, "Platform receive-address derivation failed");
                             TaskError::WalletPlatformReceiveAddressFailed

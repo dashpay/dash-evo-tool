@@ -50,9 +50,9 @@ impl AppContext {
                         .write()?
                         .ensure_platform_payment_account_xpub(seed, network);
                     let wallet = wallet_arc.read()?;
-                    WalletAddressProvider::new(&wallet, network, seed).map_err(|detail| {
+                    WalletAddressProvider::new(&wallet, network, seed).map_err(|source| {
                         crate::backend_task::error::TaskError::WalletAddressProviderSetupFailed {
-                            detail,
+                            source,
                         }
                     })
                 },

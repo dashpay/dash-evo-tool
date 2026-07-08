@@ -1,7 +1,12 @@
-//! Single Key Wallet - A wallet backed by a single private key (not HD derived)
+//! LEGACY — Single-key wallet runtime backed by a single private key (not HD
+//! derived).
 //!
-//! This module provides support for importing and using individual private keys
-//! as wallets, similar to the functionality in platform-tui.
+//! Part of the Decision-#7 single-key carve-out: the `SingleKeyWallet` runtime
+//! type is retained (spending is gated) until single-key moves onto the
+//! upstream wallet runtime. Its on-disk persistence lives in
+//! [`crate::database::single_key_wallet`] (which reads UTXOs via
+//! [`crate::database::utxo`]). Not to be confused with the LIVE imported-key
+//! metadata sidecar in [`crate::model::single_key`], which is current code.
 
 use aes_gcm::aead::Aead;
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
@@ -169,14 +174,13 @@ impl ClosedSingleKey {
         key_hash
     }
 
-    /// Encrypt a private key with a password
-    #[allow(clippy::type_complexity)]
-    pub fn encrypt_private_key(
+    /// Encrypt a private key with a password, returning the
+    /// [`EncryptedEnvelope`](super::encryption::EncryptedEnvelope).
+    pub(crate) fn encrypt_private_key(
         private_key: &[u8; 32],
         password: &str,
-    ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>), String> {
-        use super::encryption::encrypt_message;
-        encrypt_message(private_key, password)
+    ) -> Result<super::encryption::EncryptedEnvelope, String> {
+        super::encryption::encrypt_message(private_key, password)
     }
 
     /// Decrypt the private key using a password
@@ -230,13 +234,12 @@ impl SingleKeyWallet {
         let key_hash = ClosedSingleKey::compute_key_hash(&private_key_bytes);
 
         let (private_key_data, uses_password) = if let Some(pwd) = password {
-            let (encrypted, salt, nonce) =
-                ClosedSingleKey::encrypt_private_key(&private_key_bytes, pwd)?;
+            let envelope = ClosedSingleKey::encrypt_private_key(&private_key_bytes, pwd)?;
             let closed = ClosedSingleKey {
                 key_hash,
-                encrypted_private_key: encrypted,
-                salt,
-                nonce,
+                encrypted_private_key: envelope.ciphertext,
+                salt: envelope.salt,
+                nonce: envelope.nonce,
             };
             // Keep it open after creation
             (

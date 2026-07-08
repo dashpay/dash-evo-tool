@@ -7,10 +7,20 @@ use zeroize::Zeroizing;
 const SALT_SIZE: usize = 16; // 128-bit salt
 const NONCE_SIZE: usize = 12; // 96-bit nonce for AES-GCM
 
-pub const DASH_SECRET_MESSAGE: &[u8; 19] = b"dash_secret_message";
-
 use crate::model::wallet::ClosedKeyItem;
 use sha2::{Digest, Sha256};
+
+/// An AES-256-GCM envelope: ciphertext plus the random salt and nonce needed
+/// to reproduce the key and decrypt it. Produced by [`encrypt_message`] and
+/// consumed by [`decrypt_message`].
+pub(crate) struct EncryptedEnvelope {
+    /// The AES-256-GCM ciphertext (authentication tag included).
+    pub ciphertext: Vec<u8>,
+    /// The random 128-bit salt fed to Argon2 for key derivation.
+    pub salt: Vec<u8>,
+    /// The random 96-bit AES-GCM nonce.
+    pub nonce: Vec<u8>,
+}
 
 /// Derive a key from the password and salt using Argon2.
 pub fn derive_password_key(password: &str, salt: &[u8]) -> Result<Vec<u8>, String> {
@@ -29,13 +39,10 @@ pub fn derive_password_key(password: &str, salt: &[u8]) -> Result<Vec<u8>, Strin
     Ok(key)
 }
 
-/// Encrypt the seed using AES-256-GCM.
-#[allow(clippy::type_complexity)]
+/// Encrypt `message` under `password` with AES-256-GCM, returning the
+/// [`EncryptedEnvelope`] (ciphertext, salt, nonce).
 #[allow(deprecated)]
-pub fn encrypt_message(
-    message: &[u8],
-    password: &str,
-) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>), String> {
+pub(crate) fn encrypt_message(message: &[u8], password: &str) -> Result<EncryptedEnvelope, String> {
     // Generate a random salt
     let mut salt = vec![0u8; SALT_SIZE];
     OsRng.fill_bytes(&mut salt);
@@ -52,11 +59,15 @@ pub fn encrypt_message(
 
     // Encrypt the seed
     let nonce_arr = Nonce::from_slice(&nonce);
-    let encrypted_seed = cipher
+    let ciphertext = cipher
         .encrypt(nonce_arr, message)
         .map_err(|e| e.to_string())?;
 
-    Ok((encrypted_seed, salt, nonce))
+    Ok(EncryptedEnvelope {
+        ciphertext,
+        salt,
+        nonce,
+    })
 }
 
 /// Failure decrypting an AES-256-GCM envelope produced by [`encrypt_message`].
@@ -139,11 +150,7 @@ impl ClosedKeyItem {
     }
 
     /// Encrypt the seed using AES-256-GCM.
-    #[allow(clippy::type_complexity)]
-    pub(crate) fn encrypt_seed(
-        seed: &[u8],
-        password: &str,
-    ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>), String> {
+    pub(crate) fn encrypt_seed(seed: &[u8], password: &str) -> Result<EncryptedEnvelope, String> {
         encrypt_message(seed, password)
     }
 
@@ -180,8 +187,7 @@ mod tests {
         let password = "securepassword";
 
         // Encrypt the seed using the encrypt_seed method
-        let (encrypted_seed, salt, nonce) =
-            ClosedKeyItem::encrypt_seed(&seed, password).expect("Encryption failed");
+        let envelope = ClosedKeyItem::encrypt_seed(&seed, password).expect("Encryption failed");
 
         // Compute the seed hash
         let seed_hash = ClosedKeyItem::compute_seed_hash(&seed);
@@ -189,9 +195,9 @@ mod tests {
         // Create a ClosedWalletSeed instance with the encrypted data
         let closed_wallet_seed = ClosedKeyItem {
             seed_hash,
-            encrypted_seed,
-            salt,
-            nonce,
+            encrypted_seed: envelope.ciphertext,
+            salt: envelope.salt,
+            nonce: envelope.nonce,
             password_hint: None, // Set password hint if needed
         };
 
@@ -211,8 +217,7 @@ mod tests {
         let wrong_password = "wrongpassword";
 
         // Encrypt the seed using the encrypt_seed method
-        let (encrypted_seed, salt, nonce) =
-            ClosedKeyItem::encrypt_seed(&seed, password).expect("Encryption failed");
+        let envelope = ClosedKeyItem::encrypt_seed(&seed, password).expect("Encryption failed");
 
         // Compute the seed hash
         let seed_hash = ClosedKeyItem::compute_seed_hash(&seed);
@@ -220,9 +225,9 @@ mod tests {
         // Create a ClosedWalletSeed instance with the encrypted data
         let closed_wallet_seed = ClosedKeyItem {
             seed_hash,
-            encrypted_seed,
-            salt,
-            nonce,
+            encrypted_seed: envelope.ciphertext,
+            salt: envelope.salt,
+            nonce: envelope.nonce,
             password_hint: None,
         };
 

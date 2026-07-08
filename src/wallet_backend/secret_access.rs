@@ -1133,8 +1133,11 @@ mod tests {
         seed: &[u8; 64],
         passphrase: &str,
     ) {
-        let (encrypted_seed, salt, nonce) =
-            encrypt_message(seed, passphrase).expect("encrypt seed");
+        let crate::model::wallet::encryption::EncryptedEnvelope {
+            ciphertext: encrypted_seed,
+            salt,
+            nonce,
+        } = encrypt_message(seed, passphrase).expect("encrypt seed");
         let envelope = StoredSeedEnvelope {
             encrypted_seed,
             salt,

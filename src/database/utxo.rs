@@ -40,41 +40,37 @@ impl Database {
         &self,
         address: &str,
         network: &str,
-    ) -> Result<Vec<(OutPoint, TxOut)>, String> {
-        let conn = self.conn.lock().map_err(|e| e.to_string())?;
+    ) -> rusqlite::Result<Vec<(OutPoint, TxOut)>> {
+        let conn = self.conn.lock().unwrap();
 
-        let mut stmt = conn
-            .prepare(
-                "SELECT txid, vout, value, script_pubkey FROM utxos
+        let mut stmt = conn.prepare(
+            "SELECT txid, vout, value, script_pubkey FROM utxos
          WHERE address = ? AND network = ?",
-            )
-            .map_err(|e| e.to_string())?;
+        )?;
 
-        let tx_out_iter = stmt
-            .query_map(params![address, network], |row| {
-                let txid_bytes: Vec<u8> = row.get(0)?;
-                let vout: u32 = row.get(1)?;
-                let value: u64 = row.get(2)?;
-                let script_pubkey_bytes: Vec<u8> = row.get(3)?;
+        let tx_out_iter = stmt.query_map(params![address, network], |row| {
+            let txid_bytes: Vec<u8> = row.get(0)?;
+            let vout: u32 = row.get(1)?;
+            let value: u64 = row.get(2)?;
+            let script_pubkey_bytes: Vec<u8> = row.get(3)?;
 
-                let txid = Txid::from_slice(&txid_bytes)
-                    .map_err(|e| rusqlite::Error::UserFunctionError(Box::new(e)))?;
-                let outpoint = OutPoint { txid, vout };
+            let txid = Txid::from_slice(&txid_bytes)
+                .map_err(|e| rusqlite::Error::UserFunctionError(Box::new(e)))?;
+            let outpoint = OutPoint { txid, vout };
 
-                let script_pubkey = ScriptBuf::from_bytes(script_pubkey_bytes);
+            let script_pubkey = ScriptBuf::from_bytes(script_pubkey_bytes);
 
-                let tx_out = TxOut {
-                    value,
-                    script_pubkey,
-                };
+            let tx_out = TxOut {
+                value,
+                script_pubkey,
+            };
 
-                Ok((outpoint, tx_out))
-            })
-            .map_err(|e| e.to_string())?;
+            Ok((outpoint, tx_out))
+        })?;
 
         let mut utxos = Vec::new();
         for utxo in tx_out_iter {
-            utxos.push(utxo.map_err(|e| e.to_string())?);
+            utxos.push(utxo?);
         }
 
         Ok(utxos)

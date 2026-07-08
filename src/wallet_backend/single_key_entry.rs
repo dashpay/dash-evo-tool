@@ -101,22 +101,20 @@ impl SingleKeyEntry {
         hint: Option<String>,
         public_key_bytes: Vec<u8>,
     ) -> Result<Self, TaskError> {
-        let (ciphertext, salt, nonce) = crate::model::wallet::encryption::encrypt_message(
-            raw_key, passphrase,
-        )
-        .map_err(|detail| {
-            tracing::warn!(
-                target = "wallet_backend::single_key_entry",
-                ?detail,
-                "Failed to encrypt single-key entry with user passphrase",
-            );
-            TaskError::SingleKeyCryptoFailure
-        })?;
+        let envelope = crate::model::wallet::encryption::encrypt_message(raw_key, passphrase)
+            .map_err(|detail| {
+                tracing::warn!(
+                    target = "wallet_backend::single_key_entry",
+                    ?detail,
+                    "Failed to encrypt single-key entry with user passphrase",
+                );
+                TaskError::SingleKeyCryptoFailure
+            })?;
         Ok(Self {
             has_passphrase: true,
-            salt,
-            nonce,
-            ciphertext,
+            salt: envelope.salt,
+            nonce: envelope.nonce,
+            ciphertext: envelope.ciphertext,
             passphrase_hint: hint,
             public_key_bytes,
         })

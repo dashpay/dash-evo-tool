@@ -337,17 +337,6 @@ impl Signer<IdentityPublicKey> for QualifiedIdentity {
             "Attempting to sign with key"
         );
 
-        // Log available keys
-        for ((t, id), (pub_key, _)) in self.private_keys.private_keys.iter() {
-            tracing::debug!(
-                target = ?t,
-                key_id = id,
-                purpose = ?pub_key.identity_public_key.purpose(),
-                key_type = ?pub_key.identity_public_key.key_type(),
-                "Available key in identity"
-            );
-        }
-
         // Resolve the signing key without ever reading a wallet's parked seed
         // (see [`Self::resolve_private_key_bytes`]).
         let resolved = self
@@ -362,6 +351,17 @@ impl Signer<IdentityPublicKey> for QualifiedIdentity {
                 target = ?target,
                 "Key not found in identity"
             );
+            // Only dump the identity's available keys when resolution failed —
+            // this is the diagnostic that actually matters, off the hot path.
+            for ((t, id), (pub_key, _)) in self.private_keys.private_keys.iter() {
+                tracing::debug!(
+                    target = ?t,
+                    key_id = id,
+                    purpose = ?pub_key.identity_public_key.purpose(),
+                    key_type = ?pub_key.identity_public_key.key_type(),
+                    "Available key in identity"
+                );
+            }
             ProtocolError::Generic(format!(
                 "Key {} ({}) not found in identity {:?}",
                 identity_public_key.id(),

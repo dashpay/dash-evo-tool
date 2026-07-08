@@ -94,6 +94,15 @@ impl AddressKind {
             return Some(AddressKind::Shielded);
         }
 
+        // 1b. Shielded raw hex form (network-agnostic): 43 bytes = 86 hex chars.
+        // Unambiguous — far too long for a Base58 Core address or Identity ID,
+        // and it cannot start with the `dash1`/`tdash1` Platform HRP.
+        if trimmed.len() == SHIELDED_ADDRESS_RAW_LEN * 2
+            && trimmed.bytes().all(|b| b.is_ascii_hexdigit())
+        {
+            return Some(AddressKind::Shielded);
+        }
+
         // 2. Platform (Bech32m per DIP-18, but NOT shielded — already excluded above)
         if is_platform_address_string(trimmed) {
             return Some(AddressKind::Platform);
@@ -239,6 +248,31 @@ impl std::fmt::Display for ValidatedAddress {
     }
 }
 
+/// Raw byte length of an Orchard shielded address (recipient payload).
+pub const SHIELDED_ADDRESS_RAW_LEN: usize = 43;
+
+/// Parse a shielded (Orchard) recipient into its raw 43-byte form.
+///
+/// Accepts either the canonical Bech32m encoding (`dash1z…` mainnet,
+/// `tdash1z…` testnet) or a raw hex string of exactly
+/// [`SHIELDED_ADDRESS_RAW_LEN`] bytes. Returns `None` for any input that is
+/// neither. This is the single source of truth for turning a shielded
+/// recipient string into the bytes a `ShieldedTransfer` task needs, shared by
+/// the send screen's dispatch and any validation path so the two cannot
+/// diverge.
+pub fn parse_shielded_recipient(input: &str) -> Option<Vec<u8>> {
+    use dash_sdk::dpp::address_funds::OrchardAddress;
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Ok(addr) = OrchardAddress::from_bech32m_string(trimmed) {
+        return Some(addr.to_raw_bytes().to_vec());
+    }
+    let bytes = hex::decode(trimmed).ok()?;
+    (bytes.len() == SHIELDED_ADDRESS_RAW_LEN).then_some(bytes)
+}
+
 /// Truncate an address string for display, showing a prefix and suffix
 /// separated by an ellipsis.
 ///
@@ -260,6 +294,49 @@ pub fn truncate_address(addr: &str, prefix_len: usize, suffix_len: usize) -> Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_shielded_recipient_accepts_exact_length_hex() {
+        let raw = vec![0xABu8; SHIELDED_ADDRESS_RAW_LEN];
+        let hex_str = hex::encode(&raw);
+        assert_eq!(parse_shielded_recipient(&hex_str), Some(raw.clone()));
+        // Surrounding whitespace is tolerated.
+        assert_eq!(
+            parse_shielded_recipient(&format!("  {hex_str}  ")),
+            Some(raw)
+        );
+    }
+
+    #[test]
+    fn parse_shielded_recipient_rejects_wrong_length_hex() {
+        // One byte short and one byte long — both invalid.
+        assert_eq!(
+            parse_shielded_recipient(&hex::encode(vec![0u8; SHIELDED_ADDRESS_RAW_LEN - 1])),
+            None
+        );
+        assert_eq!(
+            parse_shielded_recipient(&hex::encode(vec![0u8; SHIELDED_ADDRESS_RAW_LEN + 1])),
+            None
+        );
+    }
+
+    #[test]
+    fn detect_classifies_43_byte_hex_as_shielded() {
+        let hex_str = hex::encode(vec![0x11u8; SHIELDED_ADDRESS_RAW_LEN]);
+        assert_eq!(AddressKind::detect(&hex_str), Some(AddressKind::Shielded));
+        // Wrong length is not a shielded address.
+        let short = hex::encode(vec![0x11u8; SHIELDED_ADDRESS_RAW_LEN - 1]);
+        assert_ne!(AddressKind::detect(&short), Some(AddressKind::Shielded));
+    }
+
+    #[test]
+    fn parse_shielded_recipient_rejects_empty_and_garbage() {
+        assert_eq!(parse_shielded_recipient(""), None);
+        assert_eq!(parse_shielded_recipient("   "), None);
+        assert_eq!(parse_shielded_recipient("not-an-address"), None);
+        // Bech32m for a different address family is not a shielded recipient.
+        assert_eq!(parse_shielded_recipient("dash1qexampleplatform"), None);
+    }
 
     #[test]
     fn address_kind_display_names() {

@@ -759,6 +759,24 @@ impl AddressInput {
     }
 
     fn validate_shielded(&self, trimmed: &str) -> (Option<String>, Option<ValidatedAddress>) {
+        // Raw hex form (43 bytes = 86 hex chars) is network-agnostic — accept it
+        // directly via the shared parser. This preserves the "…or hex" recipient
+        // entry the standalone private-send screen advertised.
+        if trimmed.len() == crate::model::address::SHIELDED_ADDRESS_RAW_LEN * 2
+            && trimmed.bytes().all(|b| b.is_ascii_hexdigit())
+        {
+            return match crate::model::address::parse_shielded_recipient(trimmed) {
+                Some(_) => (None, Some(ValidatedAddress::Shielded(trimmed.to_string()))),
+                None => (
+                    Some(
+                        "This private address is not valid. Please check it and try again."
+                            .to_string(),
+                    ),
+                    None,
+                ),
+            };
+        }
+
         let expected_prefix = match self.network {
             Network::Mainnet => "dash1z",
             _ => "tdash1z",
@@ -1502,6 +1520,17 @@ mod tests {
     fn detect_shielded_testnet() {
         let result = detect_address_type("tdash1z_some_shielded_addr", true);
         assert_eq!(result, DetectedType::Shielded);
+    }
+
+    #[test]
+    fn detect_shielded_raw_hex() {
+        // 43-byte raw hex form (network-agnostic) routes to shielded validation
+        // so the "…or hex" recipient entry keeps working.
+        let hex_str = hex::encode(vec![
+            0xABu8;
+            crate::model::address::SHIELDED_ADDRESS_RAW_LEN
+        ]);
+        assert_eq!(detect_address_type(&hex_str, true), DetectedType::Shielded);
     }
 
     #[test]

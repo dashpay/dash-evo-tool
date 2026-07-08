@@ -8,6 +8,7 @@ use crate::model::wallet::WalletSeedHash;
 use crate::ui::ScreenType;
 use crate::ui::components::wallet_unlock_popup::wallet_needs_unlock;
 use crate::ui::theme::DashColors;
+use crate::ui::wallets::send_screen::SendFlow;
 use eframe::egui::{self, Ui};
 use egui::{Color32, Frame, Margin, RichText};
 use std::sync::Arc;
@@ -105,6 +106,25 @@ impl ShieldedTabView {
             address_count: 1,
             sidecar_skipped: false,
         }
+    }
+
+    /// Open the unified send screen pre-configured for `flow`, resolving the
+    /// wallet handle for this tab's seed hash. The three shielded flows (Shield,
+    /// Send Private, Unshield) are routes into the one canonical send screen —
+    /// there are no bespoke shielded send screens.
+    fn open_send_flow(&self, flow: SendFlow) -> AppAction {
+        let Some(wallet) = self
+            .app_context
+            .wallets
+            .read()
+            .ok()
+            .and_then(|wallets| wallets.get(&self.seed_hash).cloned())
+        else {
+            return AppAction::None;
+        };
+        AppAction::AddScreen(
+            ScreenType::WalletSendScreen(wallet, flow).create_screen(&self.app_context),
+        )
     }
 
     /// Compute the J-3 indicator for the current frame. Reads the
@@ -542,9 +562,7 @@ impl ShieldedTabView {
                 })
                 .clicked()
             {
-                action |= AppAction::AddScreen(
-                    ScreenType::ShieldScreen(self.seed_hash).create_screen(&self.app_context),
-                );
+                action |= self.open_send_flow(SendFlow::Shield);
             }
 
             let can_spend =
@@ -567,9 +585,7 @@ impl ShieldedTabView {
                 })
                 .clicked()
             {
-                action |= AppAction::AddScreen(
-                    ScreenType::ShieldedSendScreen(self.seed_hash).create_screen(&self.app_context),
-                );
+                action |= self.open_send_flow(SendFlow::ShieldedSend);
             }
 
             let unshield_btn =
@@ -586,10 +602,7 @@ impl ShieldedTabView {
                 })
                 .clicked()
             {
-                action |= AppAction::AddScreen(
-                    ScreenType::UnshieldCreditsScreen(self.seed_hash)
-                        .create_screen(&self.app_context),
-                );
+                action |= self.open_send_flow(SendFlow::Unshield);
             }
         });
 

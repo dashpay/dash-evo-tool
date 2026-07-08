@@ -7,7 +7,6 @@ use crate::model::qualified_identity::encrypted_key_storage::{
     PrivateKeyData, WalletDerivationPath,
 };
 use crate::model::wallet::Wallet;
-use crate::model::wallet::WalletSeedHash;
 use crate::model::wallet::single_key::SingleKeyWallet;
 use crate::ui::contracts_documents::contracts_documents_screen::DocumentQueryScreen;
 use crate::ui::contracts_documents::document_action_screen::{
@@ -41,7 +40,7 @@ use crate::ui::tools::proof_visualizer_screen::ProofVisualizerScreen;
 use crate::ui::wallets::asset_lock_detail_screen::AssetLockDetailScreen;
 use crate::ui::wallets::create_asset_lock_screen::CreateAssetLockScreen;
 use crate::ui::wallets::import_mnemonic_screen::ImportMnemonicScreen;
-use crate::ui::wallets::send_screen::WalletSendScreen;
+use crate::ui::wallets::send_screen::{SendFlow, WalletSendScreen};
 use crate::ui::wallets::single_key_send_screen::SingleKeyWalletSendScreen;
 use crate::ui::wallets::wallets_screen::WalletsBalancesScreen;
 use contracts_documents::add_contracts_screen::AddContractsScreen;
@@ -74,9 +73,6 @@ use tokens::unfreeze_tokens_screen::UnfreezeTokensScreen;
 use tokens::update_token_config::UpdateTokenConfigScreen;
 use tools::transition_visualizer_screen::TransitionVisualizerScreen;
 use wallets::add_new_wallet_screen::AddNewWalletScreen;
-use wallets::shield_screen::ShieldScreen;
-use wallets::shielded_send_screen::ShieldedSendScreen;
-use wallets::unshield_credits_screen::UnshieldCreditsScreen;
 
 pub mod components;
 pub mod contracts_documents;
@@ -143,7 +139,7 @@ pub enum ScreenType {
     WalletsBalances,
     ImportMnemonic,
     AddNewWallet,
-    WalletSendScreen(Arc<RwLock<Wallet>>),
+    WalletSendScreen(Arc<RwLock<Wallet>>, SendFlow),
     SingleKeyWalletSendScreen(Arc<RwLock<SingleKeyWallet>>),
     AddExistingIdentity,
     TransitionVisualizer,
@@ -204,11 +200,6 @@ pub enum ScreenType {
     AssetLockDetail([u8; 32], dash_sdk::dpp::dashcore::OutPoint),
     CreateAssetLock(Arc<RwLock<Wallet>>),
 
-    // Shielded screens
-    ShieldScreen(WalletSeedHash),
-    ShieldedSendScreen(WalletSeedHash),
-    UnshieldCreditsScreen(WalletSeedHash),
-
     // DashPay Screens
     DashPayContacts,
     DashPayProfile,
@@ -254,13 +245,13 @@ impl PartialEq for ScreenType {
                 a1 == b1 && a2 == b2
             }
             (DashPaySendPayment(a1, a2), DashPaySendPayment(b1, b2)) => a1 == b1 && a2 == b2,
-            (ShieldScreen(a), ShieldScreen(b)) => a == b,
-            (ShieldedSendScreen(a), ShieldedSendScreen(b)) => a == b,
-            (UnshieldCreditsScreen(a), UnshieldCreditsScreen(b)) => a == b,
+            // The send screen's wallet payload is intentionally ignored, but the
+            // flow preset distinguishes Shield / Send-Private / Unshield routes
+            // so pushing one does not dedup against another.
+            (WalletSendScreen(_, fa), WalletSendScreen(_, fb)) => fa == fb,
             // All other variants are equal iff they share a discriminant. This covers the
-            // fieldless variants and the wallet screens (WalletSendScreen /
-            // SingleKeyWalletSendScreen / CreateAssetLock), whose Arc<RwLock<…>> payload is
-            // intentionally ignored.
+            // fieldless variants and the wallet screens (SingleKeyWalletSendScreen /
+            // CreateAssetLock), whose Arc<RwLock<…>> payload is intentionally ignored.
             _ => std::mem::discriminant(self) == std::mem::discriminant(other),
         }
     }
@@ -335,9 +326,9 @@ impl ScreenType {
             ScreenType::ImportMnemonic => {
                 Screen::ImportMnemonicScreen(ImportMnemonicScreen::new(app_context))
             }
-            ScreenType::WalletSendScreen(wallet) => {
-                Screen::WalletSendScreen(WalletSendScreen::new(app_context, wallet.clone()))
-            }
+            ScreenType::WalletSendScreen(wallet, flow) => Screen::WalletSendScreen(
+                WalletSendScreen::new(app_context, wallet.clone()).with_flow(*flow),
+            ),
             ScreenType::SingleKeyWalletSendScreen(wallet) => Screen::SingleKeyWalletSendScreen(
                 SingleKeyWalletSendScreen::new(app_context, wallet.clone()),
             ),
@@ -512,16 +503,6 @@ impl ScreenType {
             ScreenType::DashPayProfileSearch => {
                 Screen::DashPayProfileSearchScreen(ProfileSearchScreen::new(app_context.clone()))
             }
-            // Shielded screens
-            ScreenType::ShieldScreen(seed_hash) => {
-                Screen::ShieldScreen(ShieldScreen::new(*seed_hash, app_context))
-            }
-            ScreenType::ShieldedSendScreen(seed_hash) => {
-                Screen::ShieldedSendScreen(ShieldedSendScreen::new(*seed_hash, app_context))
-            }
-            ScreenType::UnshieldCreditsScreen(seed_hash) => {
-                Screen::UnshieldCreditsScreen(UnshieldCreditsScreen::new(*seed_hash, app_context))
-            }
         }
     }
 }
@@ -577,11 +558,6 @@ pub enum Screen {
     SetTokenPriceScreen(SetTokenPriceScreen),
     AssetLockDetailScreen(AssetLockDetailScreen),
     CreateAssetLockScreen(CreateAssetLockScreen),
-
-    // Shielded Screens
-    ShieldScreen(ShieldScreen),
-    ShieldedSendScreen(ShieldedSendScreen),
-    UnshieldCreditsScreen(UnshieldCreditsScreen),
 
     // DashPay Screens
     DashPayScreen(DashPayScreen),
@@ -647,9 +623,10 @@ impl Screen {
             }
             Screen::WalletSendScreen(screen) => {
                 screen.app_context = app_context;
-                screen.invalidate_address_input();
-                // Clear wallet reference — it belongs to the old network
-                screen.selected_wallet = None;
+                // Drop all state bound to the old network's wallet (wallet, seed
+                // hash, source/destination/amount) so a preset flow cannot show a
+                // stale cross-network balance.
+                screen.reset_for_network_switch();
                 return;
             }
             Screen::SingleKeyWalletSendScreen(screen) => {
@@ -675,21 +652,6 @@ impl Screen {
                 screen.contacts_list.contact_requests.app_context = app_context.clone();
                 screen.profile_screen.app_context = app_context.clone();
                 screen.payment_history.app_context = app_context;
-                return;
-            }
-            Screen::ShieldScreen(screen) => {
-                screen.app_context = app_context;
-                screen.invalidate_address_input();
-                return;
-            }
-            Screen::ShieldedSendScreen(screen) => {
-                screen.app_context = app_context;
-                screen.invalidate_address_input();
-                return;
-            }
-            Screen::UnshieldCreditsScreen(screen) => {
-                screen.app_context = app_context;
-                screen.invalidate_address_input();
                 return;
             }
             Screen::IdentityHubScreen(screen) => {
@@ -764,9 +726,6 @@ impl Screen {
             CreateAssetLockScreen,
             AddressBalanceScreen,
             DashPayScreen,
-            ShieldScreen,
-            ShieldedSendScreen,
-            UnshieldCreditsScreen,
             IdentityHubScreen,
         );
     }
@@ -882,7 +841,7 @@ impl Screen {
             Screen::WalletsBalancesScreen(_) => ScreenType::WalletsBalances,
             Screen::ImportMnemonicScreen(_) => ScreenType::ImportMnemonic,
             Screen::WalletSendScreen(screen) => {
-                ScreenType::WalletSendScreen(screen.selected_wallet.clone().unwrap())
+                ScreenType::WalletSendScreen(screen.selected_wallet.clone().unwrap(), screen.flow())
             }
             Screen::SingleKeyWalletSendScreen(screen) => {
                 ScreenType::SingleKeyWalletSendScreen(screen.selected_wallet.clone().unwrap())
@@ -981,10 +940,6 @@ impl Screen {
             }
             Screen::DashPayQRGeneratorScreen(_) => ScreenType::DashPayQRGenerator,
             Screen::DashPayProfileSearchScreen(_) => ScreenType::DashPayProfileSearch,
-            // Shielded screens
-            Screen::ShieldScreen(s) => ScreenType::ShieldScreen(s.seed_hash),
-            Screen::ShieldedSendScreen(s) => ScreenType::ShieldedSendScreen(s.seed_hash),
-            Screen::UnshieldCreditsScreen(s) => ScreenType::UnshieldCreditsScreen(s.seed_hash),
             Screen::IdentityHubScreen(_) => ScreenType::IdentityHub,
         }
     }
@@ -1044,9 +999,6 @@ macro_rules! delegate_to_screen {
             Screen::SetTokenPriceScreen($screen) => $call,
             Screen::AssetLockDetailScreen($screen) => $call,
             Screen::CreateAssetLockScreen($screen) => $call,
-            Screen::ShieldScreen($screen) => $call,
-            Screen::ShieldedSendScreen($screen) => $call,
-            Screen::UnshieldCreditsScreen($screen) => $call,
             Screen::DashPayScreen($screen) => $call,
             Screen::DashPayAddContactScreen($screen) => $call,
             Screen::DashPayContactDetailsScreen($screen) => $call,

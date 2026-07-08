@@ -32,10 +32,10 @@ Contracts, Tools, Settings, etc.).
 
 Identity Hub-specific widgets (`IdentityHubTabBar`, `IdentityHeroCard`,
 `OnboardingChecklist`, `IdentityPickerCard`, `IdentityPickerAddCard`,
-`SocialProfileGateCard`, `RequestCard`, `ContactRow`, `ActivityRow`,
-`IdentityPill`) live in `src/ui/identity/` alongside the tab modules that
-consume them. If one of those widgets gains a second consumer outside the
-hub, promote it into this directory.
+`SocialProfileGateCard`, `RequestCard`, `IdentityPill`) live in
+`src/ui/identity/` alongside the tab modules that consume them. If one of
+those widgets gains a second consumer outside the hub, promote it into this
+directory.
 
 ## Dialog Components
 

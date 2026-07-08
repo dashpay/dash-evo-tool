@@ -9,12 +9,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 
 - **Wallet balance breakdown is single-sourced**: the per-account tabs and the
-  wallet header now derive every balance from one place — the Core per-account
-  breakdown comes from the synced wallet data, and the Platform tab shows the
-  exact same Platform total as the header. This removes an earlier internal
-  cross-check (and its occasional "balances didn't fully add up" warning), which
-  is no longer needed now that the figures come from a single source and cannot
-  disagree.
+  wallet header now derive every balance from one place. The Core header total
+  and the Core per-account breakdown are read from the same generation of synced
+  wallet data — even while the wallet is busy syncing, the header and the tabs
+  are never spliced from different moments — and the Platform tab shows the exact
+  same Platform total as the header. Any funds held on addresses outside your
+  main and Platform accounts now always appear in a visible tab, so the tabs
+  always add up to the header total. This removes an earlier internal cross-check
+  (and its occasional "balances didn't fully add up" warning), no longer needed
+  now that the figures come from one consistent source.
+
+- **Platform tab shows immediately**: a newly created or imported wallet now
+  shows its Platform tab (empty until funded) as soon as it loads, instead of
+  waiting for the first Platform-address sync to complete. Your Platform receive
+  address is reachable right away, even before or without a network sync.
 
 - **Sign-time wallet unlock**: the passphrase is now requested just-in-time, the
   moment an operation actually needs your secret (sending funds, registering an

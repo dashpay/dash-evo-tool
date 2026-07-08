@@ -521,8 +521,12 @@ mod tests {
             "0.5 DASH in account #1"
         );
 
-        // The per-account Core totals sum to the wallet's Core total (4.0 DASH),
-        // the figure the wallet header derives from the same snapshot balance.
+        // The per-account Core totals sum to 4.0 DASH. This pins the
+        // per-account *arithmetic* of `collect_account_summaries` only — that it
+        // splits funds by account and drops nothing. Agreement with the real
+        // wallet-header total (`WalletBackend::wallet_balance().total`) is proven
+        // separately, against the real accessor, in
+        // `snapshot::tests::header_total_reconciles_with_core_tab_breakdown_through_real_accessors`.
         let core_total: u64 = summaries.iter().map(|s| s.confirmed_balance).sum();
         assert_eq!(core_total, 400_000_000);
     }

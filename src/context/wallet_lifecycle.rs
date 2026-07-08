@@ -1,3 +1,10 @@
+//! Wallet lifecycle orchestration: the thin [`AppContext`] delegation layer.
+//!
+//! Each method here coordinates DET-side state (`wallets`, databases, subtasks,
+//! connection status) around the wallet seam. Pure upstream-crate orchestration
+//! lives in [`wallet_backend`](crate::wallet_backend) — the size here is
+//! coordination surface, not an unaddressed god-file.
+
 use super::AppContext;
 use crate::backend_task::error::TaskError;
 use crate::model::dashpay::ContactStatus;
@@ -268,25 +275,6 @@ impl AppContext {
         Ok(())
     }
 
-    /// Start chain sync against an already-wired wallet backend.
-    ///
-    /// Delegates to [`WalletBackend::start`], which spawns the upstream
-    /// `SpvRuntime` run loop and the platform-address / identity sync
-    /// coordinators. The backend's `start` is idempotent, so calling this more
-    /// than once (Connect clicked twice, eager-init plus a manual click) is
-    /// safe.
-    ///
-    /// Fails fast with [`TaskError::WalletBackendNotYetWired`] when the wallet
-    /// seam has not been built yet. Most callers should reach for
-    /// [`Self::ensure_wallet_backend_and_start_spv`] instead, which wires the
-    /// backend first and so cannot hit that race; this entry point exists for
-    /// the post-wiring paths that already hold a wired backend.
-    pub fn start_spv(self: &Arc<Self>) -> Result<(), TaskError> {
-        let backend = self.wallet_backend()?;
-        self.spawn_backend_start(backend);
-        Ok(())
-    }
-
     /// Wire the wallet backend (idempotent) and then start chain sync.
     ///
     /// This is the single chokepoint for "start SPV" across every entry path:
@@ -317,7 +305,13 @@ impl AppContext {
             return Err(e);
         }
         let backend = self.wallet_backend()?;
-        self.run_backend_start(backend).await;
+        // Forward-compat: `start()`'s signature is fallible though the current
+        // impl is infallible. The reachable start-time failure today is the
+        // wiring step above, surfaced via `mark_spv_error`; this branch keeps
+        // the start step covered should `start()` begin to fail.
+        if let Err(e) = backend.start().await {
+            self.mark_spv_error(&e);
+        }
         Ok(())
     }
 
@@ -330,29 +324,6 @@ impl AppContext {
             .set_spv_last_error(Some(format!("{error}")));
         self.connection_status.set_spv_status(SpvStatus::Error);
         self.connection_status.refresh_state();
-    }
-
-    /// Spawn [`WalletBackend::start`] on the subtask runtime, surfacing a
-    /// start failure on the SPV connection indicator. Shared by the
-    /// synchronous [`Self::start_spv`] entry point.
-    fn spawn_backend_start(self: &Arc<Self>, backend: Arc<WalletBackend>) {
-        let ctx = Arc::clone(self);
-        self.subtasks.spawn_sync("spv_start", async move {
-            ctx.run_backend_start(backend).await;
-        });
-    }
-
-    /// Drive [`WalletBackend::start`] to completion, flipping the SPV indicator
-    /// to `Error` if the start fails. Awaited directly by the async chokepoint
-    /// and indirectly (via a subtask) by the synchronous one.
-    async fn run_backend_start(&self, backend: Arc<WalletBackend>) {
-        // Forward-compat: `start()`'s signature is fallible though the current
-        // impl is infallible. The reachable start-time failure today is the
-        // wiring step, which the chokepoint surfaces via `mark_spv_error`; this
-        // branch keeps the start step covered should `start()` begin to fail.
-        if let Err(e) = backend.start().await {
-            self.mark_spv_error(&e);
-        }
     }
 
     /// Stop chain sync IN PLACE, keeping the wired wallet backend so the next
@@ -1057,25 +1028,21 @@ impl AppContext {
         }
     }
 
-    /// React to a wallet becoming unlocked in the UI.
+    /// Honor the "keep unlocked" gesture for a password-protected wallet.
     ///
     /// Since the JIT migration this is **not** a seed-distribution point —
     /// signing pulls the seed just-in-time from the encrypted vault through
     /// the [`SecretAccess`](crate::wallet_backend::SecretAccess) chokepoint.
-    /// Its only job now is to honor the unlock gesture's "keep unlocked"
-    /// intent for **password-protected** wallets: re-decrypt the just-verified
-    /// seed through the chokepoint with the passphrase the user just entered,
-    /// and promote it into the session cache (`UntilAppClose`) so the rest of
-    /// the session's operations on this wallet do not re-prompt.
+    /// Its only job is to promote the just-verified seed into the session cache
+    /// (`UntilAppClose`) so the rest of the session's operations on this wallet
+    /// do not re-prompt, then re-drive the JIT bootstrap so the wallet is
+    /// upstream-registered this session.
     ///
     /// `passphrase` is the secret the UI just validated via
-    /// [`WalletSeed::open`](crate::model::wallet::WalletSeed::open). It is
-    /// `None` for the cold-boot bridge ([`Self::bootstrap_loaded_wallets`]) and
-    /// for no-password wallets: in both cases there is nothing to promote here
-    /// (a password wallet with no passphrase in hand is left for its unlock
-    /// gesture, so this never forces a startup prompt), and a no-password
-    /// wallet resolves prompt-free through the chokepoint's unprotected
-    /// fast-path regardless.
+    /// [`WalletSeed::open`](crate::model::wallet::WalletSeed::open). Callers
+    /// invoke this only when the user opted to keep a password wallet unlocked;
+    /// a non-remember unlock simply does not call here, and a no-password wallet
+    /// resolves prompt-free through the chokepoint's unprotected fast-path.
     ///
     /// The seed is obtained ONLY by decrypting the stored envelope through the
     /// chokepoint — no parked seed is read, because an open `Wallet` parks none
@@ -1084,30 +1051,18 @@ impl AppContext {
     pub fn handle_wallet_unlocked(
         self: &Arc<Self>,
         wallet: &Arc<RwLock<Wallet>>,
-        passphrase: Option<&str>,
+        passphrase: &str,
     ) {
         let (seed_hash, uses_password) = match wallet.read() {
             Ok(guard) => (guard.seed_hash(), guard.uses_password),
             Err(_) => return,
         };
 
-        // No-password wallets resolve prompt-free through the chokepoint's
-        // unprotected fast-path; promoting them is unnecessary. A password
-        // wallet with no passphrase in hand (cold boot) is left for its unlock
-        // gesture so we never force a startup prompt.
+        // No-password wallets need no promotion — they resolve prompt-free
+        // through the chokepoint's unprotected fast-path.
         if !uses_password {
             return;
         }
-        // TODO(det): a non-remember unlock (no passphrase handed to this call)
-        // skips drive_unlock_registration below, so the wallet is not
-        // re-registered with the upstream SPV backend until the next launch.
-        // Deferred 2026-07-08 pending a decision on whether this path should
-        // re-drive registration using the passphrase already verified by the
-        // unlock gesture itself (see the recorded wallet-unlock-registration
-        // gap in project memory).
-        let Some(passphrase) = passphrase else {
-            return;
-        };
 
         let Ok(backend) = self.wallet_backend() else {
             return;
@@ -1414,13 +1369,6 @@ impl AppContext {
         };
 
         for wallet in wallets.iter() {
-            // Cold boot has no passphrase in hand, so this is a no-op for
-            // password wallets (they wait for their unlock gesture) and is
-            // unnecessary for no-password wallets (the chokepoint's unprotected
-            // fast-path covers them). Kept for the promote-before-bootstrap
-            // ordering invariant: a seed already in the session cache resolves
-            // the JIT bootstrap below without a prompt.
-            self.handle_wallet_unlocked(wallet, None);
             self.bootstrap_wallet_addresses_jit(wallet).await;
         }
     }
@@ -1564,6 +1512,23 @@ mod tests {
         (ctx, sender)
     }
 
+    /// Recursively copy a directory tree. Cold-boot tests reopen wallet state
+    /// over a fresh path (identical on-disk bytes) to sidestep the persister's
+    /// single-open advisory lock a lingering subtask may still hold.
+    fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) {
+        std::fs::create_dir_all(dst).expect("mkdir dst");
+        for entry in std::fs::read_dir(src).expect("read_dir") {
+            let entry = entry.expect("dir entry");
+            let from = entry.path();
+            let to = dst.join(entry.file_name());
+            if from.is_dir() {
+                copy_dir_recursive(&from, &to);
+            } else {
+                std::fs::copy(&from, &to).expect("copy file");
+            }
+        }
+    }
+
     /// Process-global serialization lock for tests that tear a wallet backend
     /// down and immediately rebuild it over the *same* on-disk path. The
     /// upstream persister enforces a single open per `platform-wallet.sqlite`
@@ -1581,33 +1546,28 @@ mod tests {
             .await
     }
 
-    /// Before the wallet seam is wired, `start_spv()` must fail fast with the
-    /// typed `WalletBackendNotYetWired` rather than silently swallowing the
-    /// request. This is the gate the speculative pre-wire callers were tripping.
+    /// Before the wallet seam is wired, the `wallet_backend()` gate must fail
+    /// fast with the typed `WalletBackendNotYetWired` rather than handing back a
+    /// half-built backend. This is the gate the speculative pre-wire callers
+    /// were tripping.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn start_spv_errors_when_backend_not_wired() {
+    async fn wallet_backend_gate_errors_when_not_wired() {
         let (ctx, _sender, _tmp) = offline_testnet_context();
 
-        assert!(
-            ctx.wallet_backend().is_err(),
-            "precondition: backend must be unwired before ensure_wallet_backend"
-        );
         let err = ctx
-            .start_spv()
-            .expect_err("start_spv must fail before the backend is wired");
+            .wallet_backend()
+            .expect_err("wallet_backend() must fail before the backend is wired");
         assert!(
             matches!(err, TaskError::WalletBackendNotYetWired),
             "expected WalletBackendNotYetWired, got: {err:?}"
         );
     }
 
-    /// After wiring the backend, the synchronous gate is gone: `start_spv()`
-    /// returns `Ok` and the backend's start latch flips to started once the
-    /// spawned start runs. Mirrors the production "start on wiring completion"
-    /// path without faking a sync loop — the upstream run loop is shut down
-    /// immediately afterwards so the test leaves no detached network task.
+    /// Wiring the backend must not start chain sync: `ensure_wallet_backend`
+    /// builds the seam but leaves the upstream run loop unstarted, so the start
+    /// latch stays low until the chokepoint (or a manual Connect) starts it.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn start_spv_starts_after_backend_wired() {
+    async fn wiring_does_not_start_chain_sync() {
         let (ctx, sender, _tmp) = offline_testnet_context();
 
         ctx.ensure_wallet_backend(sender)
@@ -1620,19 +1580,6 @@ mod tests {
             !backend.is_started(),
             "wiring alone must not start chain sync"
         );
-
-        ctx.start_spv()
-            .expect("start_spv must not error synchronously once the backend is wired");
-
-        // The spawned start flips the latch synchronously at its head; poll
-        // with a bounded timeout so the test never hangs if the runtime is busy.
-        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
-        while !backend.is_started() {
-            if tokio::time::Instant::now() >= deadline {
-                panic!("backend.start() did not run within the timeout");
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
 
         backend.shutdown().await;
     }
@@ -2141,13 +2088,8 @@ mod tests {
                 .register_wallet_from_seed(&seed_hash, &seed, Some(0))
                 .await
                 .expect("W1 upstream registration must succeed on first boot");
-            let registered_first_boot = backend.is_wallet_registered(&seed_hash);
-            eprintln!(
-                "ISSUE7 first-boot: registered={} (fresh in-memory create through the gate)",
-                registered_first_boot
-            );
             assert!(
-                registered_first_boot,
+                backend.is_wallet_registered(&seed_hash),
                 "precondition: a fresh in-memory create must resolve through the gate"
             );
             let meta_xpub = det_master_bip44.encode().to_vec();
@@ -2162,32 +2104,11 @@ mod tests {
             (seed_hash, meta_xpub)
         };
 
-        // ---- COLD BOOT: real load_from_persistor_seedless over a COPY of the
-        // on-disk state. This is the decisive cycle: a CURRENT-binary-written
-        // wallet, reloaded through the actual upstream seedless path, run through
-        // the SAME fund-routing gate. Does it survive create -> persist ->
-        // load_from_persistor_seedless -> gate?
-        //
-        // The first context's app_kv/persistor advisory locks can linger
-        // in-process (a lingering upstream subtask holds an `Arc<WalletBackend>`),
-        // so instead of reopening the SAME dir we COPY the whole data dir to a
-        // fresh path and cold-boot over the copy — fresh file handles, no lock
-        // conflict, identical on-disk bytes (persistor + sidecar + vault). This
-        // drives the genuine `load_from_persistor_seedless` (run inside
-        // `WalletBackend::new`), not just the blob-decode equivalent.
-        fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) {
-            std::fs::create_dir_all(dst).expect("mkdir dst");
-            for entry in std::fs::read_dir(src).expect("read_dir") {
-                let entry = entry.expect("dir entry");
-                let from = entry.path();
-                let to = dst.join(entry.file_name());
-                if from.is_dir() {
-                    copy_dir_recursive(&from, &to);
-                } else {
-                    std::fs::copy(&from, &to).expect("copy file");
-                }
-            }
-        }
+        // Cold boot over a COPY of the on-disk state: the first context's
+        // app_kv/persistor advisory locks can linger in-process, so cold-booting
+        // over an identical-bytes copy drives the genuine
+        // `load_from_persistor_seedless` inside `WalletBackend::new` without a
+        // lock conflict.
         let cold_dir = tempfile::tempdir().expect("cold tempdir");
         copy_dir_recursive(temp_dir.path(), cold_dir.path());
 
@@ -2220,10 +2141,6 @@ mod tests {
                 .expect("ensure_wallet_backend (cold boot)");
             let backend2 = ctx2.wallet_backend().expect("backend wired (cold boot)");
             let registered = backend2.is_wallet_registered(&seed_hash);
-            let watched = backend2.wallet_count().await;
-            eprintln!(
-                "ISSUE7 COLD-BOOT (real load_from_persistor_seedless): registered={registered} watched_count={watched}"
-            );
             backend2.shutdown().await;
             let _ = ctx2.subtasks.shutdown_async().await;
             registered
@@ -2240,7 +2157,6 @@ mod tests {
             .join("spv")
             .join("testnet")
             .join("platform-wallet.sqlite");
-        eprintln!("ISSUE7 persistor exists={}", persistor_path.exists());
         let conn = rusqlite::Connection::open_with_flags(
             &persistor_path,
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
@@ -2255,14 +2171,6 @@ mod tests {
             .expect("query")
             .map(|r| r.expect("row"))
             .collect();
-        eprintln!("ISSUE7 account_registrations rows={}", rows.len());
-        for (at, idx, blob) in &rows {
-            eprintln!(
-                "ISSUE7   row account_type={at:?} index={idx} blob_len={}",
-                blob.len()
-            );
-        }
-        eprintln!("ISSUE7 bridge meta_xpub_len={}", meta_xpub.len());
 
         // The seedless reload needs a BIP44 account-0 ("standard_bip44", 0) row
         // to rebuild the watch-only account the gate reads. If it's absent or
@@ -2277,7 +2185,7 @@ mod tests {
             .map(|(_, _, blob)| blob.clone());
         assert!(
             bip44_0_blob.is_some(),
-            "ISSUE7: persistor has no BIP44 account-0 (standard_bip44,0) row after W1. rows={rows:?}"
+            "persistor has no BIP44 account-0 (standard_bip44,0) row after W1. rows={rows:?}"
         );
 
         // Coexistence guarantee (the heart of the fix): the BIP32 account-0 row
@@ -2288,71 +2196,35 @@ mod tests {
             .any(|(at, idx, _)| at == "standard_bip32" && *idx == 0);
         assert!(
             bip32_0_present,
-            "ISSUE7: persistor lost the BIP32 account-0 (standard_bip32,0) row — the collision fix must keep BOTH standard accounts. rows={rows:?}"
+            "persistor lost the BIP32 account-0 (standard_bip32,0) row — the collision fix must keep BOTH standard accounts. rows={rows:?}"
         );
 
-        // THE GATE CHECK: decode the stored BIP44 account-0 row exactly as the
-        // seedless reload does and compare its account_xpub.encode() to the
-        // bridge's meta xpub. If these differ, the fund-routing gate rejects the
-        // wallet on a fresh cold boot — the systematic WalletNotLoaded.
+        // The gate invariant: the persisted BIP44 account-0 xpub, decoded exactly
+        // as the seedless reload does, must equal DET's sidecar bridge xpub —
+        // that equality is what the fund-routing gate checks on a cold boot.
+        // Before the fix the stored row was the depth-1 BIP32 xpub, which
+        // differed and rejected every wallet.
         {
             use platform_wallet::changeset::AccountRegistrationEntry;
             let blob = bip44_0_blob.unwrap();
             let cfg = bincode::config::standard();
             let (entry, _): (AccountRegistrationEntry, usize) =
                 bincode::serde::decode_from_slice(&blob, cfg).expect("decode stored entry");
-            let stored = entry.account_xpub;
-            let stored_xpub_encoded = stored.encode().to_vec();
-            eprintln!(
-                "ISSUE7 GATE: stored_xpub_len={} bridge_xpub_len={} EQ={}",
-                stored_xpub_encoded.len(),
-                meta_xpub.len(),
-                stored_xpub_encoded == meta_xpub
-            );
-            // FIELD-LEVEL DIFF (the task's exact ask): decode the bridge xpub
-            // too and compare every BIP32 field, to localize the divergence.
-            let bridge = dash_sdk::dpp::key_wallet::bip32::ExtendedPubKey::decode(&meta_xpub)
-                .expect("decode bridge xpub");
-            eprintln!(
-                "ISSUE7 FIELDS stored: net={:?} depth={} parent_fp={:?} child={:?}",
-                stored.network, stored.depth, stored.parent_fingerprint, stored.child_number
-            );
-            eprintln!(
-                "ISSUE7 FIELDS bridge: net={:?} depth={} parent_fp={:?} child={:?}",
-                bridge.network, bridge.depth, bridge.parent_fingerprint, bridge.child_number
-            );
-            eprintln!(
-                "ISSUE7 FIELDS pubkey_eq={} chaincode_eq={} depth_eq={} parentfp_eq={} child_eq={} net_eq={}",
-                stored.public_key == bridge.public_key,
-                stored.chain_code == bridge.chain_code,
-                stored.depth == bridge.depth,
-                stored.parent_fingerprint == bridge.parent_fingerprint,
-                stored.child_number == bridge.child_number,
-                stored.network == bridge.network,
-            );
-            eprintln!(
-                "ISSUE7 blob-decode: stored==bridge={} (true confirms the fix)",
-                stored_xpub_encoded == meta_xpub
-            );
-
-            // THE GATE INVARIANT, as a hard assertion: the persisted BIP44
-            // account-0 xpub must equal DET's sidecar bridge xpub. Equality is
-            // exactly what the fund-routing gate checks on a seedless cold boot;
-            // before the fix the stored row was the depth-1 BIP32 xpub and this
-            // differed, rejecting every wallet.
+            let stored_xpub_encoded = entry.account_xpub.encode().to_vec();
             assert_eq!(
                 stored_xpub_encoded, meta_xpub,
-                "ISSUE7: stored BIP44 account-0 xpub must match the DET bridge xpub — the fund-routing gate rejects the wallet otherwise"
+                "stored BIP44 account-0 xpub must match the DET bridge xpub — the fund-routing gate rejects the wallet otherwise"
             );
         }
 
-        // DECISIVE PRIMARY ASSERTION: a CURRENT-binary-written wallet must
-        // survive create -> persist -> real load_from_persistor_seedless -> gate.
-        // It does not (the persistor stored the depth-1 BIP32 row), so this
-        // reproduces the user's systematic WalletNotLoaded on a fresh DB.
+        // Primary invariant: a current-binary wallet must survive
+        // create -> persist -> real load_from_persistor_seedless -> gate. A
+        // failure here means the persistor regressed to storing the depth-1
+        // BIP32 row, which would resurrect the systematic WalletNotLoaded.
         assert!(
             cold_boot_registered,
-            "ISSUE7 REPRODUCED (real load_from_persistor_seedless): a current-binary wallet is NOT resolved after cold-boot seedless reload — systematic WalletNotLoaded"
+            "a current-binary wallet must resolve after cold-boot seedless reload; \
+             a failure here resurrects the systematic WalletNotLoaded on a fresh DB"
         );
     }
 
@@ -3074,29 +2946,20 @@ mod tests {
 
         // Seed a legacy `wallet` row with a valid xpub so the migration's
         // seed + meta passes produce a hydratable wallet.
+        use crate::database::test_helpers::seed_legacy_unprotected_hd_wallet_row;
         let seed = [0xE5u8; 64];
         let seed_hash: WalletSeedHash =
             crate::model::wallet::ClosedKeyItem::compute_seed_hash(&seed);
         let epk = legacy_master_epk_bytes(&seed);
-        ctx.db
-            .execute(
-                "INSERT INTO wallet (
-                    seed_hash, encrypted_seed, salt, nonce,
-                    master_ecdsa_bip44_account_0_epk, alias, is_main,
-                    uses_password, password_hint, network, core_wallet_name
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, 0, NULL, 'testnet', NULL)",
-                rusqlite::params![
-                    seed_hash.as_slice(),
-                    // Unprotected wallet: salt/nonce must be empty,
-                    // the encrypted_seed slot carries the verbatim 64-byte seed.
-                    seed.to_vec(),
-                    Vec::<u8>::new(),
-                    Vec::<u8>::new(),
-                    epk,
-                    "migrated-wallet",
-                ],
-            )
-            .expect("insert legacy wallet row");
+        seed_legacy_unprotected_hd_wallet_row(
+            &ctx.db,
+            &seed_hash,
+            &seed,
+            &epk,
+            "migrated-wallet",
+            Network::Testnet,
+        )
+        .expect("insert legacy wallet row");
 
         // Wire the backend: hydration runs now, against the EMPTY sidecars
         // (migration has not run yet), so ctx.wallets is empty.
@@ -3149,29 +3012,20 @@ mod tests {
         // Seed a legacy unprotected `wallet` row whose verbatim seed and
         // published xpub agree, so the migration's seed + meta passes produce a
         // wallet the W2 fund-routing gate will accept.
+        use crate::database::test_helpers::seed_legacy_unprotected_hd_wallet_row;
         let seed = [0xD7u8; 64];
         let seed_hash: WalletSeedHash =
             crate::model::wallet::ClosedKeyItem::compute_seed_hash(&seed);
         let epk = legacy_master_epk_bytes(&seed);
-        ctx.db
-            .execute(
-                "INSERT INTO wallet (
-                    seed_hash, encrypted_seed, salt, nonce,
-                    master_ecdsa_bip44_account_0_epk, alias, is_main,
-                    uses_password, password_hint, network, core_wallet_name
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, 0, NULL, 'testnet', NULL)",
-                rusqlite::params![
-                    seed_hash.as_slice(),
-                    // Unprotected wallet: salt/nonce must be empty, the
-                    // encrypted_seed slot carries the verbatim 64-byte seed.
-                    seed.to_vec(),
-                    Vec::<u8>::new(),
-                    Vec::<u8>::new(),
-                    epk,
-                    "migrated-wallet",
-                ],
-            )
-            .expect("insert legacy wallet row");
+        seed_legacy_unprotected_hd_wallet_row(
+            &ctx.db,
+            &seed_hash,
+            &seed,
+            &epk,
+            "migrated-wallet",
+            Network::Testnet,
+        )
+        .expect("insert legacy wallet row");
 
         // Wire the backend: hydration + the cold-boot bootstrap run NOW, against
         // the EMPTY sidecars (the migration has not run yet), so the upstream
@@ -3447,7 +3301,7 @@ mod tests {
             .wallet_seed
             .open(passphrase)
             .expect("correct passphrase opens the wallet");
-        ctx.handle_wallet_unlocked(&wallet_arc, Some(passphrase));
+        ctx.handle_wallet_unlocked(&wallet_arc, passphrase);
 
         // `handle_wallet_unlocked` spawns the registration on a tracked subtask,
         // so poll the `id_map` (what `resolve_wallet` consults) with a bounded
@@ -4246,19 +4100,7 @@ mod tests {
         // not collide with the old one.  Identical on-disk bytes — the fund-
         // routing gate and the persisted manifest are preserved.
         let cold_dir = tempfile::tempdir().expect("cold tempdir");
-        fn copy_dir_rec(src: &std::path::Path, dst: &std::path::Path) {
-            std::fs::create_dir_all(dst).expect("mkdir");
-            for entry in std::fs::read_dir(src).expect("read_dir") {
-                let entry = entry.expect("entry");
-                let to = dst.join(entry.file_name());
-                if entry.path().is_dir() {
-                    copy_dir_rec(&entry.path(), &to);
-                } else {
-                    std::fs::copy(entry.path(), to).expect("copy file");
-                }
-            }
-        }
-        copy_dir_rec(temp_dir.path(), cold_dir.path());
+        copy_dir_recursive(temp_dir.path(), cold_dir.path());
 
         // ── Boot 2 (cold): load from persister → watch-only upstream wallet ──
 

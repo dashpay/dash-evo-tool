@@ -59,6 +59,7 @@ pub(crate) mod single_key;
 pub mod single_key_entry;
 mod snapshot;
 mod token_balance;
+mod versioned_bincode;
 #[cfg(any(test, feature = "bench"))]
 pub mod wallet_meta;
 #[cfg(not(any(test, feature = "bench")))]
@@ -76,8 +77,7 @@ pub(crate) use det_signer::{DetSigner, DetSignerError};
 pub use identity_key_store::IdentityKeyView;
 pub use identity_meta::IdentityMetaView;
 pub use secret_access::{
-    IdentityPromptMeta, SecretAccess, SecretPlaintext, SecretSession, VerifiedIdentityPassword,
-    WalletPromptMeta,
+    PromptMeta, SecretAccess, SecretPlaintext, SecretSession, VerifiedIdentityPassword,
 };
 pub use secret_prompt::{
     NullSecretPrompt, RememberPolicy, SecretPrompt, SecretPromptCancelled, SecretPromptReply,
@@ -1372,19 +1372,18 @@ impl WalletBackend {
         &self,
         reconstructed: &[(WalletSeedHash, crate::model::wallet::Wallet)],
     ) {
-        let wallet_meta: std::collections::BTreeMap<WalletSeedHash, WalletPromptMeta> =
-            reconstructed
-                .iter()
-                .map(|(seed_hash, wallet)| {
-                    (
-                        *seed_hash,
-                        WalletPromptMeta {
-                            alias: wallet.alias.clone(),
-                            password_hint: wallet.password_hint().clone(),
-                        },
-                    )
-                })
-                .collect();
+        let wallet_meta: std::collections::BTreeMap<WalletSeedHash, PromptMeta> = reconstructed
+            .iter()
+            .map(|(seed_hash, wallet)| {
+                (
+                    *seed_hash,
+                    PromptMeta {
+                        alias: wallet.alias.clone(),
+                        password_hint: wallet.password_hint().clone(),
+                    },
+                )
+            })
+            .collect();
         self.inner.secret_access.set_wallet_meta(wallet_meta);
 
         if let Ok(index) = self.inner.single_key_index.read() {
@@ -1467,21 +1466,20 @@ impl WalletBackend {
         use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
         let network = self.inner.network;
         let meta_view = self.identity_meta();
-        let index: std::collections::BTreeMap<[u8; 32], secret_access::IdentityPromptMeta> =
-            identities
-                .iter()
-                .map(|qi| {
-                    let id = qi.identity.id().to_buffer();
-                    let password_hint = meta_view.get(network, &id).and_then(|m| m.password_hint);
-                    (
-                        id,
-                        secret_access::IdentityPromptMeta {
-                            alias: Some(qi.to_string()),
-                            password_hint,
-                        },
-                    )
-                })
-                .collect();
+        let index: std::collections::BTreeMap<[u8; 32], secret_access::PromptMeta> = identities
+            .iter()
+            .map(|qi| {
+                let id = qi.identity.id().to_buffer();
+                let password_hint = meta_view.get(network, &id).and_then(|m| m.password_hint);
+                (
+                    id,
+                    secret_access::PromptMeta {
+                        alias: Some(qi.to_string()),
+                        password_hint,
+                    },
+                )
+            })
+            .collect();
         self.inner.secret_access.set_identity_prompt_index(index);
     }
 

@@ -100,6 +100,13 @@ mod tests {
         assert_eq!(IdentityHubTab::default(), IdentityHubTab::Home);
     }
 
+    /// Pins the exact tab-bar label sequence consumed by `IdentityHubTabBar`.
+    #[test]
+    fn labels_in_display_order() {
+        let labels: Vec<&str> = IdentityHubTab::ALL.iter().map(|t| t.label()).collect();
+        assert_eq!(labels, ["Home", "Contacts", "Activity", "Settings"]);
+    }
+
     #[test]
     fn display_matches_label() {
         for tab in IdentityHubTab::ALL {

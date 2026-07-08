@@ -532,7 +532,7 @@ impl KeyStorage {
 
     /// Mark `key` as a vault placeholder ([`PrivateKeyData::InVault`]), wiping
     /// any resident plaintext bytes. Used after a freshly-added key has been
-    /// sealed into the secret vault (SEC-001) so the at-rest encode path stores
+    /// sealed into the secret vault so the at-rest encode path stores
     /// no plaintext for it. Returns `true` if the key was present.
     pub fn mark_in_vault(&mut self, key: &(PrivateKeyTarget, KeyID)) -> bool {
         use zeroize::Zeroize;
@@ -590,7 +590,7 @@ impl KeyStorage {
     /// untouched. The protect-identity guard calls this to fail-closed: an
     /// `Encrypted` key has vault scheme `Absent` and would be silently skipped
     /// by the seal step, causing a false-protected report.
-    // TODO(SEC-001): when a migration path for Encrypted keys is available,
+    // TODO: when a migration path for Encrypted keys is available,
     // replace this with a proper re-seal that moves them into the new password
     // envelope instead of blocking the protect operation.
     pub fn has_encrypted_legacy_keys(&self) -> bool {

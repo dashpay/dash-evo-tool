@@ -164,8 +164,8 @@ struct OverlayState {
     watchdog_logged: bool,
     /// Set once focus has been placed on the first button (focus trap).
     focus_requested: bool,
-    /// Opt-in action id designated as the single keyboard-reachable escape (QA-002
-    /// refinement). When set, `claim_input` activates it at frame start: a press of
+    /// Opt-in action id designated as the single keyboard-reachable escape.
+    /// When set, `claim_input` activates it at frame start: a press of
     /// Enter/Space enqueues this action directly (the same queue a click feeds) and
     /// is stripped like every other key, so the escape needs no focus and the key
     /// never reaches a widget beneath. `None` by default — a block is fully
@@ -207,7 +207,7 @@ pub struct OverlayConfig {
     ///
     /// [`with_progress_token`]: Self::with_progress_token
     progress_token: Option<u64>,
-    /// Opt-in keyboard escape (QA-002 refinement); see [`with_keyboard_escape`].
+    /// Opt-in keyboard escape; see [`with_keyboard_escape`].
     ///
     /// [`with_keyboard_escape`]: Self::with_keyboard_escape
     keyboard_escape_action: Option<String>,
@@ -255,7 +255,7 @@ impl OverlayConfig {
     /// id and decides what to do.
     ///
     /// Buttons render right-to-left in the order added: primaries hug the right
-    /// edge, secondaries sit to their left. SEC-006: `label` and `action_id` are
+    /// edge, secondaries sit to their left. `label` and `action_id` are
     /// user-visible and logged — never pass secrets or PII.
     pub fn with_action(mut self, label: impl fmt::Display, action_id: impl fmt::Display) -> Self {
         self.buttons
@@ -265,7 +265,7 @@ impl OverlayConfig {
 
     /// Add a **secondary** action button (muted fill, sits left of the primary).
     /// Same generic semantics as [`with_action`](Self::with_action) — only the
-    /// styling and placement differ; there is no built-in Cancel. SEC-006: `label`
+    /// styling and placement differ; there is no built-in Cancel. `label`
     /// and `action_id` are user-visible and logged — never pass secrets or PII.
     pub fn with_secondary_action(
         mut self,
@@ -278,7 +278,7 @@ impl OverlayConfig {
     }
 
     /// Designate one already-added action as the single **keyboard-reachable
-    /// escape** (QA-002 refinement). Pass the same opaque `action_id` you gave to
+    /// escape**. Pass the same opaque `action_id` you gave to
     /// [`with_action`](Self::with_action) / [`with_secondary_action`](Self::with_secondary_action).
     ///
     /// A hard block is otherwise never keyboard-activatable: `claim_input` strips
@@ -302,7 +302,7 @@ impl OverlayConfig {
 /// content can be updated without losing the reference. Methods are no-ops
 /// returning `None` once the entry is gone.
 ///
-/// INTENTIONAL(SEC-005): `OverlayHandle` is `Send + Sync` only because it holds
+/// `OverlayHandle` is deliberately `Send + Sync` only because it holds
 /// an `egui::Context` (itself `Send + Sync` via internal locking). That does NOT
 /// make handle operations thread-safe to interleave: every method reads-modifies-
 /// writes the global `ctx.data` overlay slot non-atomically, so the real
@@ -353,7 +353,7 @@ impl OverlayHandle {
     /// Attach a **primary** action button (accent fill, right edge). Mirrors
     /// [`MessageBanner::with_action`](super::message_banner::MessageBanner::with_action):
     /// `label` shown verbatim first, opaque `action_id` enqueued on click second.
-    /// Buttons render right-to-left in the order added. SEC-006: `label`/`action_id`
+    /// Buttons render right-to-left in the order added. `label`/`action_id`
     /// are user-visible and logged — never pass secrets or PII. Returns `None` if
     /// the entry is gone.
     pub fn with_action(
@@ -366,7 +366,7 @@ impl OverlayHandle {
     }
 
     /// Attach a **secondary** action button (muted fill, left of the primary).
-    /// Same generic semantics as [`with_action`](Self::with_action). SEC-006:
+    /// Same generic semantics as [`with_action`](Self::with_action).
     /// `label`/`action_id` are user-visible and logged. Returns `None` if the entry
     /// is gone.
     pub fn with_secondary_action(
@@ -589,8 +589,8 @@ impl ProgressOverlay {
     }
 
     /// Clear this instance so [`Component::show`] renders nothing and returns the
-    /// empty response (QA-007: makes the `state == None` path reachable via the
-    /// public API). Idempotent.
+    /// empty response — makes the `state == None` path reachable via the
+    /// public API. Idempotent.
     pub fn clear(&mut self) {
         self.state = None;
     }
@@ -601,14 +601,15 @@ impl ProgressOverlay {
     /// `ctx.data`. The `description` argument is used unless `config` already
     /// carries one.
     ///
-    /// **Lifecycle (SEC-001):** a button-less app-level block has no automatic
-    /// teardown — the no-progress watchdog only *logs*, it never lowers the block.
-    /// A button-less block MUST therefore either be driven by a frame-driven
-    /// reconcile owner that lowers it when the work ends (the reference pattern is
-    /// the SPV adopter, `AppState::update_spv_overlay`), or carry an escape
-    /// button; a leaked or forgotten handle strands the UI with no way out.
+    /// **Button-less lifecycle rule:** a button-less app-level block has no
+    /// automatic teardown — the no-progress watchdog only *logs*, it never
+    /// lowers the block. A button-less block MUST therefore either be driven by
+    /// a frame-driven reconcile owner that lowers it when the work ends (the
+    /// reference pattern is the SPV adopter, `AppState::update_spv_overlay`), or
+    /// carry an escape button; a leaked or forgotten handle strands the UI with
+    /// no way out.
     ///
-    /// SEC-006: the `description` (and any button `label`/`id`) is user-visible
+    /// The `description` (and any button `label`/`id`) is user-visible
     /// and written to logs on show — never pass secrets, passphrases, or PII.
     pub fn set_global(
         ctx: &egui::Context,
@@ -640,7 +641,7 @@ impl ProgressOverlay {
 
     /// Convenience: a spinner-only block with no text, counter, or buttons.
     ///
-    /// As a button-less block it has no escape, so the SEC-001 lifecycle rule from
+    /// As a button-less block it has no escape, so the button-less lifecycle rule from
     /// [`set_global`](Self::set_global) applies in full: drive it from a
     /// frame-driven reconcile owner (e.g. `AppState::update_spv_overlay`) that
     /// lowers it when the work ends — a leaked handle has no automatic teardown.
@@ -680,7 +681,7 @@ impl ProgressOverlay {
 
     /// Clear every entry — used on network switch alongside the banner reset.
     ///
-    /// SEC-007: also clears the pending action queue, so a click queued just
+    /// Also clears the pending action queue, so a click queued just
     /// before a network switch cannot survive into the new context and be
     /// mis-dispatched there.
     pub fn clear_all_global(ctx: &egui::Context) {
@@ -698,7 +699,7 @@ impl ProgressOverlay {
     /// Why a separate frame-start pass: `render_global`'s own key filter runs at
     /// the *end* of the frame, one frame too late for a button-less block raised
     /// over an already-focused field — the field beneath has already consumed the
-    /// keystroke. `claim_input` closes that leak (QA-001) by, while a block is up:
+    /// keystroke. `claim_input` closes that leak by, while a block is up:
     /// - releasing text-edit focus from any field beneath (so it stops drawing a
     ///   caret and consuming text — affects only text widgets, never an overlay
     ///   button), and
@@ -713,7 +714,7 @@ impl ProgressOverlay {
     /// of **Enter or Space** enqueues the designated action directly — the same queue
     /// a click feeds — and the key is then stripped along with every other one. The
     /// activation happens here, before the beneath `ui()` runs, so it needs no focus
-    /// (SEC-001) and the key never survives to a widget beneath (SEC-002). Every
+    /// and the key never survives to a widget beneath. Every
     /// other key, and every non-opted block, stays fully blocked.
     pub fn claim_input(ctx: &egui::Context) {
         let stack = get_overlay_state(ctx);
@@ -732,8 +733,8 @@ impl ProgressOverlay {
         // A designated keyboard escape is activated HERE, at frame start: a press of
         // Enter/Space enqueues its action directly (the same queue a click feeds) and
         // is then stripped like every other key. Doing it before the beneath `ui()`
-        // runs means the activation needs no focus (SEC-001) and the key never
-        // survives to a focus-independent handler beneath (SEC-002). A non-opted block
+        // runs means the activation needs no focus and the key never
+        // survives to a focus-independent handler beneath. A non-opted block
         // enqueues nothing and strips Enter/Space exactly the same.
         let escape_action = top.keyboard_escape_action.clone();
         let key = top.key;
@@ -788,8 +789,8 @@ impl ProgressOverlay {
         if activate_escape && let Some(action_id) = escape_action {
             push_overlay_action(ctx, key, &action_id);
         }
-        // TODO(SEC-002-pointer): claim pointer press/click/drag at frame start
-        // (analogue of the keyboard QA-001 frame-start claim) to close the
+        // TODO: claim pointer press/click/drag at frame start
+        // (analogue of the keyboard frame-start claim above) to close the
         // one-frame click-through on the raising frame.
     }
 
@@ -799,7 +800,7 @@ impl ProgressOverlay {
     ///
     /// `secret_prompt_active` mirrors the [`claim_input`](Self::claim_input)
     /// secret-prompt gate: when `true` the block suppresses its own focus management
-    /// so the passphrase modal rendered above it keeps the keyboard (SEC-001).
+    /// so the passphrase modal rendered above it keeps the keyboard.
     ///
     /// Unlike [`MessageBanner`](super::message_banner::MessageBanner), whose global
     /// path pairs `set_global` with [`show_global`](super::message_banner::MessageBanner::show_global)
@@ -815,7 +816,7 @@ impl ProgressOverlay {
 
         // NB: render_global does NO keyboard stripping. All key/text claiming
         // happens in `claim_input` at frame start, which the app loop gates on no
-        // active secret prompt (SEC-004/F-1) — a passphrase modal rendered above
+        // active secret prompt — a passphrase modal rendered above
         // the overlay must keep Enter/Esc/Tab. Stripping here would be both too
         // late (end-of-frame) and ungated (would re-break the prompt). The buttoned
         // case additionally relies on the focus-lock filter set in `render_buttons`.
@@ -840,7 +841,7 @@ impl ProgressOverlay {
                 "Blocking overlay has shown no progress for over 2 minutes — \
                  likely a leaked handle or an un-bounded operation"
             );
-            // TODO(SEC-001): make the no-progress watchdog actionable (auto-attach
+            // TODO: make the no-progress watchdog actionable (auto-attach
             // an escape or enforce a frame-driven reconcile owner for button-less
             // blocks) — pending product decision; conflicts with the no-built-in-
             // cancel directive.
@@ -849,7 +850,7 @@ impl ProgressOverlay {
         let dark_mode = ctx.global_style().visuals.dark_mode;
         let rect = ctx.content_rect();
 
-        // SEC-002: the dim + pointer sink + card render on Order::Foreground so
+        // The dim + pointer sink + card render on Order::Foreground so
         // they sit above Foreground popups (egui ComboBox, address autocomplete,
         // SelectionDialog) that would otherwise float over a Middle-order block and
         // stay clickable. The secret prompt is raised to match and rendered later
@@ -924,7 +925,7 @@ impl Component for ProgressOverlay {
         let show_elapsed = state.show_elapsed || stuck;
         let watchdog = watchdog_tripped(state.last_progress_at);
 
-        // QA-003: the instance path renders the card WITHOUT seizing global focus
+        // The instance path renders the card WITHOUT seizing global focus
         // or installing the focus-lock filter (`trap_focus = false`). That trap
         // belongs to the full-window global block; an inline, non-blocking widget
         // must leave the host screen's Tab/arrow/Esc navigation intact.
@@ -1146,12 +1147,12 @@ fn render_card(
 /// `trap_focus` is `true` only for the global full-window block: a button is
 /// focused on raise and a focus-lock filter traps Tab/arrows/Esc on it so keyboard
 /// navigation cannot escape to a widget beneath the block. The focused button is the
-/// **designated keyboard escape** when the block opts into one (QA-002 refinement),
+/// **designated keyboard escape** when the block opts into one,
 /// otherwise the first button — but the focus is purely visual: keyboard activation
 /// of the escape happens at frame start in [`ProgressOverlay::claim_input`], not via
 /// this focused button. `secret_prompt_active` suppresses all focus management so a
-/// passphrase modal rendered above the block keeps the keyboard (SEC-001). The
-/// instance [`Component`] path passes `false` for both (QA-003) so an inline,
+/// passphrase modal rendered above the block keeps the keyboard. The
+/// instance [`Component`] path passes `false` for both so an inline,
 /// non-blocking widget never seizes the host screen's focus.
 fn render_buttons(
     ui: &mut egui::Ui,
@@ -1201,7 +1202,7 @@ fn render_buttons(
 
     // Pin focus to the designated escape if present, else the first button — but
     // never while a secret prompt is up: the prompt is rendered above the overlay and
-    // owns the keyboard (SEC-001), and keyboard activation of the escape no longer
+    // owns the keyboard, and keyboard activation of the escape no longer
     // needs focus (it fires at frame start in `claim_input`).
     let focus_target = escape_id.or(first_id);
     if trap_focus
@@ -1497,7 +1498,7 @@ mod tests {
         assert!(ProgressOverlay::sweep_orphan_actions(&ctx).is_empty());
     }
 
-    /// SEC-007 — `clear_all_global` (network switch) drains the action queue too,
+    /// `clear_all_global` (network switch) drains the action queue too,
     /// so a click queued just before the switch cannot survive into the new
     /// context and be mis-dispatched.
     #[test]
@@ -1511,7 +1512,7 @@ mod tests {
         assert!(!ProgressOverlay::has_global(&ctx), "state stack is cleared");
         assert!(
             ProgressOverlay::sweep_orphan_actions(&ctx).is_empty(),
-            "SEC-007: the action queue must be cleared on a network switch"
+            "the action queue must be cleared on a network switch"
         );
     }
 
@@ -1526,7 +1527,7 @@ mod tests {
         }
     }
 
-    /// QA-001 — while a block is up, `claim_input` strips typed text and the
+    /// While a block is up, `claim_input` strips typed text and the
     /// navigation/confirm keys (Tab/Enter/Escape/Space/arrows) so nothing beneath
     /// the block observes them.
     #[test]
@@ -1573,7 +1574,7 @@ mod tests {
         );
     }
 
-    /// QA-002 refinement — `with_keyboard_escape` records the designated escape
+    /// `with_keyboard_escape` records the designated escape
     /// action id on both the config (via `set_global`) and a live handle.
     #[test]
     fn with_keyboard_escape_records_action_via_config_and_handle() {
@@ -1604,7 +1605,7 @@ mod tests {
         assert_eq!(read(plain.key).as_deref(), Some("later"));
     }
 
-    /// SEC-001/SEC-002 — a designated keyboard escape is activated at FRAME START:
+    /// A designated keyboard escape is activated at FRAME START:
     /// `claim_input` enqueues its action (focus-independent — no render has run, so
     /// no button is focused) and STRIPS Enter/Space so the key can never reach the
     /// focused button or a focus-independent handler beneath. The activation does not
@@ -1890,7 +1891,7 @@ mod tests {
         assert!(logged(&ctx), "and stays set across frames");
     }
 
-    /// QA-007 — the instance `clear()` makes the empty-response path reachable via
+    /// The instance `clear()` makes the empty-response path reachable via
     /// the public API: after clear, `show()` renders nothing and reports no value.
     #[test]
     fn instance_clear_reaches_empty_response() {

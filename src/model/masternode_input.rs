@@ -273,7 +273,7 @@ mod tests {
 
     #[test]
     fn identity_id_error_states_what_to_do() {
-        // M-01 — the error must carry a concrete self-resolution action: the two
+        // The error must carry a concrete self-resolution action: the two
         // accepted formats and the tool that produces the canonical Base58 form.
         let err = decode_identity_id("not-a-hash").unwrap_err();
         let msg = err.to_string();

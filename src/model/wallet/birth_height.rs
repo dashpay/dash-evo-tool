@@ -3,7 +3,7 @@
 //! When DET registers a wallet with the upstream SPV backend, the persisted
 //! `birth_height` decides which compact-filter range the wallet's addresses
 //! are matched against. Get it wrong and pre-existing deposits stay invisible
-//! at 100% sync (the funds-visibility trap behind PROJ-010).
+//! at 100% sync (a known funds-visibility trap).
 //!
 //! The decision is a pure function of how the wallet entered DET, so it lives
 //! here as a single source of truth shared by the create/import write path and

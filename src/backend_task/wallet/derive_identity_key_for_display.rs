@@ -8,7 +8,6 @@ use crate::context::AppContext;
 use crate::model::qualified_identity::PrivateKeyTarget;
 use crate::model::secret::Secret;
 use dash_sdk::dpp::dashcore::PrivateKey;
-use dash_sdk::dpp::dashcore::secp256k1::SecretKey;
 use dash_sdk::dpp::identity::KeyID;
 use dash_sdk::platform::Identifier;
 use std::sync::Arc;
@@ -27,26 +26,8 @@ impl AppContext {
         key_id: KeyID,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         let network = self.network;
-        let scope = crate::wallet_backend::SecretScope::IdentityKey {
-            identity_id: identity_id.to_buffer(),
-            target: target.clone(),
-            key_id,
-        };
-        let backend = self.wallet_backend()?;
-        let wif = backend
-            .secret_access()
-            .with_secret(&scope, |plaintext| {
-                let key = plaintext
-                    .expose_identity_key()
-                    .ok_or(TaskError::IdentityKeyMissing)?;
-                // The key bytes WERE found in the vault — they are merely not a
-                // usable signing key. Report present-but-malformed, distinct from
-                // genuinely-absent IdentityKeyMissing, and keep this consistent
-                // with the sign-message sibling.
-                let secret_key = SecretKey::from_byte_array(key).map_err(|detail| {
-                    tracing::warn!(error = %detail, "Identity-key display secret construction failed");
-                    TaskError::IdentityKeyMalformed
-                })?;
+        let wif = self
+            .with_identity_secret_key(identity_id, target.clone(), key_id, |secret_key| {
                 let private_key = PrivateKey::new(secret_key, network);
                 Ok(Secret::new(private_key.to_wif()))
             })

@@ -194,7 +194,7 @@ impl AppContext {
                         Ok(_) => None,
                         Err(e) => {
                             tracing::warn!("Failed to fetch Platform address balances: {}", e);
-                            Some(format!("Platform sync failed: {e}"))
+                            Some(Arc::new(e))
                         }
                     }
                 } else {
@@ -203,13 +203,14 @@ impl AppContext {
                 Ok(BackendTaskSuccessResult::RefreshedWallet { warning })
             }
             // Single-key send/refresh unsupported this release — by design (single-key-mock.md, Decision #7).
-            // TODO(PROJ-007 T3 refresh — PARKED on upstream): implementing balance/UTXO
-            //   refresh for a bare imported P2PKH key needs UTXO discovery, which has no
-            //   DET-local path. Per the F1 spike it requires (a) a key-wallet single-address
-            //   pool/account helper (e.g. `AddressPool::with_single_address`) and (b) a public
-            //   platform-wallet constructor `PlatformWalletManager::register_watch_only_wallet`
-            //   that runs the existing private `register_wallet` body. Once those land, register
-            //   the key as a degenerate watch-only wallet keyed by
+            // TODO: implementing balance/UTXO refresh for a bare imported P2PKH key
+            //   needs UTXO discovery, which has no DET-local path. Per the F1 spike it
+            //   requires (a) a key-wallet single-address pool/account helper (e.g.
+            //   `AddressPool::with_single_address`) and (b) a public platform-wallet
+            //   constructor `PlatformWalletManager::register_watch_only_wallet` that
+            //   runs the existing private `register_wallet` body — both parked on
+            //   an upstream platform-wallet change. Once those land, register the key
+            //   as a degenerate watch-only wallet keyed by
             //   `seed_hash = SHA-256(SINGLE_KEY_NAMESPACE_BYTES ‖ addr)` and project
             //   `wallet_balance`/`utxos` into the `SingleKeyWallet` display fields.
             CoreTask::RefreshSingleKeyWalletInfo(_wallet) => {
@@ -248,14 +249,13 @@ impl AppContext {
                 )))
             }
             CoreTask::SendWalletPayment { wallet, request } => {
-                // Upstream `WalletBackend::send_payment` →
-                // `core().send_to_addresses` builds via the upstream
-                // `TransactionBuilder` with an internally-computed fee and a
-                // fixed coin-selection strategy. It exposes only a fee *rate*,
-                // not the absolute `override_fee` DET passes for a min-relay
-                // retry. Rather than silently ignore that option — which would
-                // send at a different fee than requested — reject it with a
-                // typed error.
+                // `WalletBackend::send_payment` builds via the upstream
+                // key-wallet `TransactionBuilder` with an internally-computed fee
+                // and a fixed coin-selection strategy. It exposes only a fee
+                // *rate*, not the absolute `override_fee` DET passes for a
+                // min-relay retry. Rather than silently ignore that option —
+                // which would send at a different fee than requested — reject it
+                // with a typed error.
                 if request.override_fee.is_some() {
                     return Err(TaskError::WalletPaymentOptionUnsupported);
                 }
@@ -296,17 +296,18 @@ impl AppContext {
                 })
             }
             // Single-key send/refresh unsupported this release — by design (single-key-mock.md, Decision #7).
-            // TODO(PROJ-007 T4/T5 send — PARKED on upstream): broadcast itself is already wired
-            //   and F1-independent (`WalletBackend::broadcast_transaction` →
-            //   `SpvBroadcaster`). What is missing is coin selection over the imported key's
-            //   UTXOs, which depends on the same UTXO-discovery upstream change as T3 (the
-            //   key-wallet single-address pool helper + the platform-wallet
-            //   `register_watch_only_wallet` constructor). Once UTXOs are discoverable, build a
-            //   P2PKH tx from `utxos(seed_hash)`, sign via `DetSigner::SingleKey`, and broadcast.
-            //   The T5 UI re-point (drop the dead `is_rpc_mode` gating in
-            //   `single_key_send_screen.rs`, route fee math through `model/fee_estimation.rs`,
-            //   and replace the string-parsed min-relay error with a typed `TaskError` variant)
-            //   lands with this. Do NOT touch the parked `single_key_send_screen.rs` fee math.
+            // TODO: broadcast itself is already wired and F1-independent
+            //   (`WalletBackend::broadcast_transaction` → `SpvBroadcaster`). What is
+            //   missing is coin selection over the imported key's UTXOs, which depends
+            //   on the same UTXO-discovery upstream change as the refresh path above
+            //   (the key-wallet single-address pool helper + the platform-wallet
+            //   `register_watch_only_wallet` constructor). Once UTXOs are discoverable,
+            //   build a P2PKH tx from `utxos(seed_hash)`, sign via `DetSigner::SingleKey`,
+            //   and broadcast. The related UI re-point (drop the dead `is_rpc_mode` gating
+            //   in `single_key_send_screen.rs`, route fee math through
+            //   `model/fee_estimation.rs`, and replace the string-parsed min-relay error
+            //   with a typed `TaskError` variant) lands with this. Do NOT touch the parked
+            //   `single_key_send_screen.rs` fee math.
             CoreTask::SendSingleKeyWalletPayment {
                 wallet: _,
                 request: _,

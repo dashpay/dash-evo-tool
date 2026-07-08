@@ -733,7 +733,7 @@ async fn tc_031_incremental_address_discovery() {
 // Without the loader-side re-provision, a top-up succeeds on first run but
 // fails after every relaunch (`AssetLockTransaction("Identity top-up
 // account for index N not found")`). `ensure_wallets_registered()` is the
-// exact reload chokepoint (re-runs the `UpstreamFromPersisted` load path),
+// exact reload chokepoint (re-runs the `load_from_persistor_seedless` load path),
 // so calling it again faithfully simulates an app restart.
 #[ignore]
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
@@ -783,7 +783,7 @@ async fn tc_021_identity_funding_account_survives_reload() {
 
 // --- TC-022: top-up succeeds after a reload via the op-seam guard ---
 //
-// Identity G-3: DET persists identities only in its own sidecar, never into the
+// DET persists identities only in its own sidecar, never into the
 // upstream `IdentityManager`, so after a reload the manager holds nothing and a
 // top-up — the one op that looks the identity up there — raised
 // `IdentityNotFound` ~22 ms in, pre-network. This test simulates the reload with

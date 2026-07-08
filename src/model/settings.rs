@@ -177,12 +177,10 @@ impl From<AppSettingsWire> for AppSettings {
         Self {
             network,
             root_screen_type,
-            // `None` means "autodetect" (see `dash_qt_path` field docs), so a
-            // stored-but-empty path re-runs detection rather than staying unset.
-            dash_qt_path: w
-                .dash_qt_path
-                .map(PathBuf::from)
-                .or_else(detect_dash_qt_path),
+            // Verbatim: `None` means "autodetect", but decoding must stay pure
+            // (no filesystem IO). The autodetect fallback runs once at the
+            // settings-load call site (`AppContext::get_app_settings`).
+            dash_qt_path: w.dash_qt_path.map(PathBuf::from),
             overwrite_dash_conf: w.overwrite_dash_conf,
             disable_zmq: w.disable_zmq,
             theme_mode,
@@ -224,7 +222,11 @@ fn theme_mode_from_str(s: &str) -> ThemeMode {
 }
 
 /// Detects the path to the Dash-Qt binary on the system.
-fn detect_dash_qt_path() -> Option<PathBuf> {
+///
+/// Filesystem IO — never call from a `Deserialize` path. Callers that need an
+/// autodetect fallback for a decoded blob run this once at the settings-load
+/// call site (`AppContext::get_app_settings`).
+pub(crate) fn detect_dash_qt_path() -> Option<PathBuf> {
     let path = which::which("dash-qt")
         .map(|path| path.to_string_lossy().to_string())
         .inspect_err(|e| tracing::warn!("failed to find dash-qt: {}", e))
@@ -433,11 +435,12 @@ mod tests {
         assert_eq!(s.dash_qt_path, Some(PathBuf::from(stored)));
     }
 
-    /// S5: an unset (`None`) Dash-Qt path re-runs autodetect on deserialize, so
-    /// installing Dash-Qt after first launch is picked up without a manual edit.
+    /// S5: an unset (`None`) Dash-Qt path decodes to `None` verbatim — decoding
+    /// stays pure (no filesystem IO). The autodetect fallback runs at the
+    /// settings-load call site (`AppContext::get_app_settings`), not here.
     #[test]
-    fn unset_dash_qt_path_reruns_autodetect() {
+    fn unset_dash_qt_path_decodes_to_none() {
         let s: AppSettings = wire_with_dash_qt_path(None).into();
-        assert_eq!(s.dash_qt_path, detect_dash_qt_path());
+        assert_eq!(s.dash_qt_path, None);
     }
 }

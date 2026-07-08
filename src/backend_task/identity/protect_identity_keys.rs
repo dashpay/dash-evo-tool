@@ -1,4 +1,4 @@
-//! SEC-001 opt-in / opt-out migrations: seal an identity's keys under one
+//! Identity key password protection opt-in / opt-out migrations: seal an identity's keys under one
 //! per-identity password (Tier-2) or revert them to keyless (Tier-1).
 //!
 //! Both operate over the identity's existing per-key vault labels, in place
@@ -32,7 +32,7 @@ use crate::wallet_backend::secret_seam::SecretScheme;
 type IdentityKeySet = BTreeSet<(PrivateKeyTarget, KeyID)>;
 
 impl AppContext {
-    /// SEC-001 opt-in: seal this identity's keyless vault keys Tier-2 under one
+    /// Opt-in: seal this identity's keyless vault keys Tier-2 under one
     /// per-identity `password`, then record `hint` for the prompt copy.
     pub(super) fn protect_identity_keys(
         &self,
@@ -40,7 +40,7 @@ impl AppContext {
         password: Secret,
         hint: Option<String>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
-        // Backend = authoritative validation (SEC-002): re-enforce the password
+        // Backend = authoritative validation: re-enforce the password
         // policy here, not only in the UI, so a future MCP/CLI caller cannot
         // seal under a too-short password.
         validate_protection_password(&password)?;
@@ -65,7 +65,7 @@ impl AppContext {
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         let identity_id = qi.identity.id();
 
-        // SEC-001 fail-closed: any resident plaintext key left by an incomplete
+        // Fail-closed: any resident plaintext key left by an incomplete
         // get-path migration has an `Absent` label `seal_identity_keys` would
         // skip, so refuse here rather than emit a false-protected result.
         reject_resident_identity_plaintext(&qi.private_keys)?;
@@ -107,7 +107,7 @@ impl AppContext {
         Ok(BackendTaskSuccessResult::IdentityKeysProtected { identity_id, count })
     }
 
-    /// SEC-001 opt-out: revert this identity's password-protected vault keys to
+    /// Opt-out: revert this identity's password-protected vault keys to
     /// keyless (Tier-1) after verifying `password`, then drop the hint sidecar.
     pub(super) fn unprotect_identity_keys(
         &self,
@@ -148,7 +148,7 @@ impl AppContext {
     }
 }
 
-/// Backend-authoritative password policy for identity-key protection (SEC-002).
+/// Backend-authoritative password policy for identity-key protection.
 /// Re-uses the single-key passphrase validator (the same minimum length the UI
 /// shows) so the rule lives in one place and a non-UI caller cannot bypass it.
 /// The confirmation match is a UI concern, so the password is passed as its own
@@ -158,7 +158,7 @@ fn validate_protection_password(password: &Secret) -> Result<(), TaskError> {
     validate_single_key_passphrase(pw, pw)
 }
 
-/// SEC-001 fail-closed guard for the protect boundary: reject an identity that
+/// Fail-closed guard for the protect boundary: reject an identity that
 /// still carries resident plaintext (`Clear`/`AlwaysClear`) keys on disk. Such a
 /// key means the eager load-path vault migration did not complete — its vault
 /// write failed, or it was skipped on an already-protected identity — so the key
@@ -196,7 +196,7 @@ fn reject_resident_identity_plaintext(private_keys: &KeyStorage) -> Result<(), T
 /// skipped. Crash-safe: the same-label upsert never loses a key, so a re-run
 /// finishes a partial migration.
 ///
-/// At-rest residual (SEC-004, known): the in-place upsert replaces the value at
+/// At-rest residual (known): the in-place upsert replaces the value at
 /// the label, but the PRE-opt-in keyless plaintext may persist in freed
 /// filesystem blocks (atomic-rename/copy-on-write residue, filesystem-owned)
 /// until those blocks are reused. This is a strict improvement over the keyless
@@ -207,7 +207,7 @@ fn seal_identity_keys(
     keys: &IdentityKeySet,
     password: &SecretString,
 ) -> Result<usize, TaskError> {
-    // SEC-001 one-password invariant: a Mixed-state "Finish protecting" re-run
+    // One-password invariant: a Mixed-state "Finish protecting" re-run
     // (some keys already Tier-2 from a prior partial opt-in, some still keyless)
     // must not seal the remaining keys under a DIFFERENT password than the
     // existing ones. Verify the supplied password opens every already-`Protected`
@@ -232,7 +232,7 @@ fn seal_identity_keys(
 }
 
 /// Verify `password` opens EVERY already-`Protected` key in `keys`, before any
-/// vault mutation. Both SEC-001 migrations call this up front so they are atomic
+/// vault mutation. Both migrations call this up front so they are atomic
 /// by construction: if `password` fails to open any protected key, the mismatch
 /// surfaces from `get_protected` as [`TaskError::IdentityKeyPassphraseIncorrect`]
 /// (no oracle) with zero state changes — opt-in can't seal the rest under a
@@ -261,7 +261,7 @@ fn unseal_identity_keys(
     keys: &IdentityKeySet,
     password: &SecretString,
 ) -> Result<usize, TaskError> {
-    // SEC-001 atomic opt-out: prove `password` opens EVERY `Protected` key
+    // Atomic opt-out: prove `password` opens EVERY `Protected` key
     // BEFORE downgrading any label (mirrors the opt-in preflight), so a password
     // that opens only a prefix can't leave that prefix stripped. Mismatch → no-op.
     verify_existing_protection_password(view, keys, password)?;
@@ -384,7 +384,7 @@ mod tests {
         assert_eq!(view.scheme(&M, 1).unwrap(), SecretScheme::Protected);
     }
 
-    /// SEC-001 atomic opt-out (CWE-460): on a Mixed-password identity — key 0
+    /// Atomic opt-out (CWE-460): on a Mixed-password identity — key 0
     /// sealed under password A, key 1 under password B — an opt-out with
     /// password A must NOT downgrade the key it CAN open before aborting on the
     /// one it cannot. The one-password invariant forbids this state, but a
@@ -455,7 +455,7 @@ mod tests {
         );
     }
 
-    /// SEC-001 one-password invariant: a Mixed-state "Finish protecting" re-run
+    /// One-password invariant: a Mixed-state "Finish protecting" re-run
     /// supplied with a DIFFERENT password than the already-sealed key is
     /// rejected up front with `IdentityKeyPassphraseIncorrect`, leaving every
     /// key untouched — the identity can never be split across two passwords.
@@ -513,7 +513,7 @@ mod tests {
         assert_eq!(unseal_identity_keys(&view, &keys, &pw).unwrap(), 0);
     }
 
-    /// SEC-002: the backend enforces the password policy — a too-short password
+    /// The backend enforces the password policy — a too-short password
     /// is rejected with the typed error before any sealing, regardless of the UI.
     #[test]
     fn weak_password_is_rejected_by_backend_policy() {
@@ -659,7 +659,7 @@ mod tests {
         }
     }
 
-    /// SEC-001 fail-closed: an identity still carrying a resident-plaintext key
+    /// Fail-closed: an identity still carrying a resident-plaintext key
     /// (the load-path vault migration did not move it, so its vault label is
     /// `Absent`) is rejected at the protect boundary rather than reported as
     /// protected — the false-`IdentityKeysProtected{count:0}` regression.
@@ -674,7 +674,7 @@ mod tests {
         );
     }
 
-    /// SEC-001 fail-closed: an identity carrying a legacy `Encrypted` key (no
+    /// Fail-closed: an identity carrying a legacy `Encrypted` key (no
     /// migration path) is rejected with the dedicated
     /// [`TaskError::IdentityKeyProtectionLegacyFormat`] — NOT the resident-
     /// plaintext `IdentityKeyProtectionIncomplete` — so the user is told to load
@@ -766,7 +766,7 @@ mod tests {
         }
     }
 
-    /// QA-001 wiring guard: the fail-closed check must be PLUGGED INTO the
+    /// Wiring guard: the fail-closed check must be PLUGGED INTO the
     /// protect path, not merely callable in isolation. Drive the real post-load
     /// protect logic (`protect_loaded_identity_keys`, which `protect_identity_keys`
     /// runs after `get_identity_by_id`) on a `qi` carrying resident plaintext and

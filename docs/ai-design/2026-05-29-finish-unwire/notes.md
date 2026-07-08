@@ -142,7 +142,9 @@ multi-account UTXO; OS-keychain SecretStore; encrypted-at-rest sidecar.
 
 ## 5. Test Coverage Reference
 
-Full specification: `/tmp/marvin-finish-unwire-test-spec.md` (64 test cases).
+The full 64-case specification was drafted as a scratch file and was never committed; the
+table below is the retained summary. TC-DEV-001/002/003's normative text is inlined in
+`tests/legacy_table_surface.rs`, the only ID range still enforced by a committed test.
 
 | Domain | TC IDs | Count |
 |--------|--------|-------|

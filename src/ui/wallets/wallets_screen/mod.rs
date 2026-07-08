@@ -33,7 +33,6 @@ use crate::ui::wallets::account_summary::{
 use crate::ui::{MessageType, RootScreenType, ScreenLike, ScreenType};
 use chrono::{DateTime, Utc};
 use dash_sdk::dashcore_rpc::dashcore::Address;
-use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
 use eframe::egui::{self, ComboBox, Context, Ui};
 use egui::{Color32, Frame, Margin, RichText};
 use egui_extras::{Column, TableBuilder};
@@ -71,6 +70,84 @@ impl Default for AccountTab {
     fn default() -> Self {
         AccountTab::Category(AccountCategory::Bip44, Some(0))
     }
+}
+
+/// Pure tab-visibility planner. Given the per-account summaries and display
+/// context, decide which account tabs to show. Extracted from
+/// [`WalletScreen::build_account_tabs`] so the visibility rules are unit-testable
+/// without a live screen:
+///
+/// - **Platform is shown immediately** on wallet load (`show_platform_tab`),
+///   empty until sync populates it — every HD wallet unconditionally bootstraps
+///   a platform-payment receive address, so gating the tab on a completed sync
+///   would hide the user's only in-app way to find that receive address until
+///   the network responds.
+/// - **The header total is always reconciled by a visible tab.** In developer
+///   mode the System tab always shows the full breakdown; in default mode a
+///   consolidated tab appears whenever a non-visible category actually holds
+///   funds (`hidden_balance > 0`), so the visible tabs' balances always sum to
+///   the wallet header total instead of silently dropping funds the user cannot
+///   see.
+/// - **No duplicate Platform tab.** Today upstream's `all_accounts()` excludes
+///   the platform-payment pool, so the primary loop never emits a Platform tab
+///   and the dedicated push is the sole source. The de-dup guard keeps that true
+///   if a future upstream bump ever folds that pool into `all_accounts()`.
+fn plan_account_tabs(
+    summaries: &[AccountSummary],
+    developer_mode: bool,
+    shielded_available: bool,
+    show_platform_tab: bool,
+) -> Vec<AccountTab> {
+    let mut tabs: Vec<AccountTab> = Vec::new();
+
+    // Default-visible primary tabs: BIP-44 accounts (the per-category Core
+    // breakdown). Platform is normally added by the dedicated block below.
+    for summary in summaries {
+        if !summary.category.is_visible_in_default_mode() {
+            continue;
+        }
+        tabs.push(AccountTab::Category(
+            summary.category.clone(),
+            summary.index,
+        ));
+    }
+
+    // Ensure the Dash Core tab exists even without summaries.
+    if !tabs
+        .iter()
+        .any(|t| matches!(t, AccountTab::Category(AccountCategory::Bip44, Some(0))))
+    {
+        tabs.insert(0, AccountTab::Category(AccountCategory::Bip44, Some(0)));
+    }
+
+    // Platform tab, right after the BIP-44 accounts. De-dup-guarded against a
+    // Platform tab the primary loop may already have pushed.
+    if show_platform_tab
+        && !tabs
+            .iter()
+            .any(|t| matches!(t, AccountTab::Category(AccountCategory::PlatformPayment, _)))
+    {
+        tabs.push(AccountTab::Category(AccountCategory::PlatformPayment, None));
+    }
+
+    // Shielded tab only when the connected network supports it.
+    if shielded_available {
+        tabs.push(AccountTab::Shielded);
+    }
+
+    // Consolidated System/Other tab: always in developer mode; in default mode
+    // only when a non-visible category actually holds funds, so the visible tabs
+    // always reconcile the wallet header total.
+    let hidden_balance: u64 = summaries
+        .iter()
+        .filter(|s| s.category.is_system_category())
+        .map(|s| s.confirmed_balance)
+        .sum();
+    if developer_mode || hidden_balance > 0 {
+        tabs.push(AccountTab::System);
+    }
+
+    tabs
 }
 
 /// Refresh mode for dev mode dropdown - controls what gets refreshed.
@@ -992,6 +1069,13 @@ impl WalletsBalancesScreen {
             .unwrap_or(0)
     }
 
+    /// Seed hash of the currently selected wallet, if any. Frame-safe read.
+    fn selected_wallet_seed_hash(&self) -> Option<WalletSeedHash> {
+        self.selected_wallet
+            .as_ref()
+            .and_then(|w| w.read().ok().map(|g| g.seed_hash()))
+    }
+
     /// UTXO-derived per-address balances from the snapshot (P4a). Replaces
     /// the dropped `Wallet.address_balances`.
     fn snapshot_address_balances(
@@ -1130,39 +1214,27 @@ impl WalletsBalancesScreen {
 
     /// Build the list of visible account tabs based on current summaries and dev mode.
     fn build_account_tabs(&self, summaries: &[AccountSummary]) -> Vec<AccountTab> {
-        let developer_mode = self.app_context.is_developer_mode();
-        let mut tabs: Vec<AccountTab> = Vec::new();
+        plan_account_tabs(
+            summaries,
+            self.app_context.is_developer_mode(),
+            FeatureGate::Shielded.is_available(&self.app_context),
+            // Every HD wallet unconditionally bootstraps a platform-payment
+            // receive address at load (`Wallet::bootstrap_known_addresses`), so
+            // an HD wallet always gets a Platform tab. `render_account_tabs`
+            // only runs for the selected HD wallet, so a seed hash is present.
+            self.selected_wallet_seed_hash().is_some(),
+        )
+    }
 
-        // Always-visible primary tabs: all BIP44 accounts and Platform
-        for summary in summaries {
-            if !summary.category.is_visible_in_default_mode() {
-                continue;
-            }
-            tabs.push(AccountTab::Category(
-                summary.category.clone(),
-                summary.index,
-            ));
-        }
-
-        // Ensure Dash Core tab exists even without summaries
-        if !tabs
+    /// Sum of the per-account balances that are hidden from the default-mode
+    /// primary tabs (everything not BIP-44 or Platform). Drives the
+    /// header-reconciling System/Other tab and its balance label.
+    fn hidden_category_balance(summaries: &[AccountSummary]) -> u64 {
+        summaries
             .iter()
-            .any(|t| matches!(t, AccountTab::Category(AccountCategory::Bip44, Some(0))))
-        {
-            tabs.insert(0, AccountTab::Category(AccountCategory::Bip44, Some(0)));
-        }
-
-        // Add the Shielded tab only when the connected network supports it.
-        if FeatureGate::Shielded.is_available(&self.app_context) {
-            tabs.push(AccountTab::Shielded);
-        }
-
-        // In developer mode, add the consolidated System tab last
-        if developer_mode {
-            tabs.push(AccountTab::System);
-        }
-
-        tabs
+            .filter(|s| s.category.is_system_category())
+            .map(|s| s.confirmed_balance)
+            .sum()
     }
 
     /// Collect the system account categories to display inside the System tab.
@@ -1271,11 +1343,12 @@ impl WalletsBalancesScreen {
                 let (base_label, balance_duffs) = match tab {
                     AccountTab::Category(cat, idx) => {
                         let balance = if matches!(cat, AccountCategory::PlatformPayment) {
-                            summaries
-                                .iter()
-                                .filter(|s| s.category == *cat && s.index == *idx)
-                                .map(|s| s.platform_credits / CREDITS_PER_DUFF)
-                                .sum::<u64>()
+                            // Single authoritative Platform total — the same
+                            // figure the wallet header shows, so the two cannot
+                            // diverge.
+                            self.selected_wallet_seed_hash()
+                                .map(|seed_hash| self.platform_balance_duffs(&seed_hash))
+                                .unwrap_or(0)
                         } else {
                             summaries
                                 .iter()
@@ -1295,12 +1368,17 @@ impl WalletsBalancesScreen {
                         ("Shielded".to_string(), balance)
                     }
                     AccountTab::System => {
-                        let balance: u64 = summaries
-                            .iter()
-                            .filter(|s| s.category.is_system_category())
-                            .map(|s| s.confirmed_balance)
-                            .sum();
-                        ("System".to_string(), balance)
+                        let balance = Self::hidden_category_balance(summaries);
+                        // "System" in developer mode (full breakdown); "Other"
+                        // in default mode, where the tab only appears to
+                        // reconcile funds outside the primary Core/Platform
+                        // tabs.
+                        let label = if self.app_context.is_developer_mode() {
+                            "System"
+                        } else {
+                            "Other"
+                        };
+                        (label.to_string(), balance)
                     }
                 };
                 let label = if balance_duffs == 0 {
@@ -1357,11 +1435,16 @@ impl WalletsBalancesScreen {
                 action |= self.render_system_tab_content(ui, summaries);
             }
             (AccountTab::Category(..), Some((cat, idx))) => {
-                // Show empty state if no summaries match this category
+                // Show empty state if no summaries match this category. Dash
+                // Core and Platform always render their address tables — Platform
+                // is driven by the coordinator snapshot, not the Core summaries.
                 if !summaries
                     .iter()
                     .any(|s| s.category == cat && s.index == idx)
-                    && !matches!(cat, AccountCategory::Bip44)
+                    && !matches!(
+                        cat,
+                        AccountCategory::Bip44 | AccountCategory::PlatformPayment
+                    )
                 {
                     ui.label(
                         RichText::new("No account activity yet.")
@@ -1443,6 +1526,11 @@ impl WalletsBalancesScreen {
 
     /// Render the System tab content: each system account category as a
     /// collapsible section, collapsed by default.
+    ///
+    /// In developer mode every system category is listed (diagnostic view). In
+    /// default mode this tab only appears to reconcile funds held outside the
+    /// primary Core/Platform tabs, so it shows a short explanation and lists
+    /// only the categories that actually hold a balance.
     fn render_system_tab_content(
         &mut self,
         ui: &mut Ui,
@@ -1450,7 +1538,21 @@ impl WalletsBalancesScreen {
     ) -> AppAction {
         let mut action = AppAction::None;
         let dark_mode = ui.style().visuals.dark_mode;
+        let developer_mode = self.app_context.is_developer_mode();
         let sections = self.system_tab_sections(summaries);
+
+        if !developer_mode {
+            ui.label(
+                RichText::new(
+                    "These funds are held on addresses outside your main and Platform accounts. \
+                     They are included in your total balance.",
+                )
+                .color(DashColors::text_secondary(dark_mode))
+                .italics()
+                .size(12.0),
+            );
+            ui.add_space(6.0);
+        }
 
         ui.horizontal(|ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -1463,6 +1565,11 @@ impl WalletsBalancesScreen {
         ui.add_space(4.0);
 
         for (cat, idx, addr_count, balance) in &sections {
+            // Default mode only reconciles funded categories — empty system
+            // sections are diagnostic noise for a non-developer user.
+            if !developer_mode && *balance == 0 {
+                continue;
+            }
             let balance_text = if *balance == 0 {
                 "empty".to_string()
             } else {
@@ -1958,12 +2065,10 @@ impl WalletsBalancesScreen {
                         ui.separator();
 
                         let summaries = {
-                            let wallet = wallet_arc.read().unwrap();
-                            let seed_hash = wallet.seed_hash();
+                            let seed_hash = wallet_arc.read().unwrap().seed_hash();
                             let address_balances = self.snapshot_address_balances(&seed_hash);
                             let address_paths = self.snapshot_address_paths(&seed_hash);
                             collect_account_summaries(
-                                &wallet,
                                 self.app_context.network,
                                 &address_balances,
                                 &address_paths,
@@ -2801,12 +2906,13 @@ impl ScreenLike for WalletsBalancesScreen {
                 self.refreshing = false;
                 self.cached_tx_indices = None;
                 self.cached_tx_source_len = None;
-                if let Some(warn_msg) = warning {
+                if let Some(err) = warning {
                     MessageBanner::set_global(
                         self.app_context.egui_ctx(),
-                        format!("Wallet refreshed with warning: {}", warn_msg),
+                        "Wallet refreshed, but platform balances could not be updated. Retry in a moment.",
                         MessageType::Info,
-                    );
+                    )
+                    .with_details(err.as_ref());
                 } else {
                     MessageBanner::set_global(
                         self.app_context.egui_ctx(),
@@ -3044,6 +3150,7 @@ impl ScreenLike for WalletsBalancesScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::wallet::DerivationPathReference;
 
     /// A tx with no block yet (mempool or InstantSend-locked-but-
     /// unconfirmed) carries `timestamp == 0`. Must render a "still pending"
@@ -3061,5 +3168,115 @@ mod tests {
             WalletsBalancesScreen::format_transaction_timestamp(1_700_000_000),
             "2023-11-14 22:13:20"
         );
+    }
+
+    fn summary(
+        category: AccountCategory,
+        index: Option<u32>,
+        confirmed_balance: u64,
+    ) -> AccountSummary {
+        AccountSummary {
+            category,
+            index,
+            confirmed_balance,
+        }
+    }
+
+    fn platform_tab_count(tabs: &[AccountTab]) -> usize {
+        tabs.iter()
+            .filter(|t| matches!(t, AccountTab::Category(AccountCategory::PlatformPayment, _)))
+            .count()
+    }
+
+    /// QA-004: an HD wallet shows the Platform tab immediately on load — before
+    /// any platform-address sync completes — so the user's only in-app route to
+    /// their Platform receive address is never hidden waiting on the network.
+    /// The tab is present even with empty summaries and no platform balance.
+    #[test]
+    fn platform_tab_present_immediately_pre_sync() {
+        let tabs = plan_account_tabs(&[], false, false, true);
+        assert_eq!(
+            platform_tab_count(&tabs),
+            1,
+            "Platform tab must appear on wallet load, before first sync"
+        );
+        // The Dash Core tab is always present too.
+        assert!(
+            tabs.iter()
+                .any(|t| matches!(t, AccountTab::Category(AccountCategory::Bip44, Some(0)))),
+            "Dash Core tab is always present"
+        );
+    }
+
+    /// A wallet with no platform-payment bootstrap (e.g. single-key) gets no
+    /// Platform tab.
+    #[test]
+    fn no_platform_tab_when_not_applicable() {
+        let tabs = plan_account_tabs(&[], false, false, false);
+        assert_eq!(platform_tab_count(&tabs), 0);
+    }
+
+    /// QA-006: if a future upstream bump ever makes the primary loop emit a
+    /// `PlatformPayment` tab, the dedicated push must not add a second one.
+    #[test]
+    fn platform_tab_is_never_duplicated() {
+        let summaries = vec![summary(AccountCategory::PlatformPayment, None, 1_000)];
+        let tabs = plan_account_tabs(&summaries, false, false, true);
+        assert_eq!(
+            platform_tab_count(&tabs),
+            1,
+            "exactly one Platform tab, never a duplicate"
+        );
+    }
+
+    /// QA-002: in default mode, funds parked in a non-visible category surface a
+    /// consolidated tab so the visible tabs reconcile the header total. With no
+    /// such funds, no extra tab appears.
+    #[test]
+    fn default_mode_surfaces_other_tab_only_when_hidden_funds_exist() {
+        // No hidden funds → no System/Other tab in default mode.
+        let visible_only = vec![summary(AccountCategory::Bip44, Some(0), 500)];
+        let tabs = plan_account_tabs(&visible_only, false, false, true);
+        assert!(
+            !tabs.contains(&AccountTab::System),
+            "no Other tab without hidden funds"
+        );
+
+        // Funded CoinJoin (a hidden/system category) → the reconciling tab
+        // appears so visible tabs still sum to the header total.
+        let with_hidden = vec![
+            summary(AccountCategory::Bip44, Some(0), 500),
+            summary(AccountCategory::CoinJoin, None, 700),
+        ];
+        let tabs = plan_account_tabs(&with_hidden, false, false, true);
+        assert!(
+            tabs.contains(&AccountTab::System),
+            "hidden funds must surface a reconciling tab in default mode"
+        );
+    }
+
+    /// QA-002 companion: a funded `Other(Unknown)` address — the exact drift
+    /// class the deleted health check used to warn about — surfaces the
+    /// reconciling tab in default mode.
+    #[test]
+    fn default_mode_surfaces_other_tab_for_unknown_funded_address() {
+        let summaries = vec![
+            summary(AccountCategory::Bip44, Some(0), 500),
+            summary(
+                AccountCategory::Other(DerivationPathReference::Unknown),
+                None,
+                9,
+            ),
+        ];
+        let tabs = plan_account_tabs(&summaries, false, false, true);
+        assert!(tabs.contains(&AccountTab::System));
+    }
+
+    /// Developer mode always shows the System tab, even with no hidden funds —
+    /// it is the full diagnostic breakdown there.
+    #[test]
+    fn developer_mode_always_shows_system_tab() {
+        let tabs = plan_account_tabs(&[], true, false, true);
+        assert!(tabs.contains(&AccountTab::System));
     }
 }

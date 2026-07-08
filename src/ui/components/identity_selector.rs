@@ -457,7 +457,7 @@ mod tests {
     /// Calls `sync_to_global()` directly (private access inside this module).
     /// This tests the *mechanism* in isolation; the *rendering gate*
     /// (`combo_changed || text_response.changed()` at line 321) is covered by
-    /// the kittest at `tests/kittest/identity_selector.rs` (QA-001).
+    /// the kittest at `tests/kittest/identity_selector.rs`.
     #[test]
     fn syncing_global_writes_selection_to_app_context() {
         with_isolated_dir(|| {
@@ -487,7 +487,7 @@ mod tests {
         });
     }
 
-    /// QA-003 — `with_app_default` inert guard: when the global selection names
+    /// `with_app_default` inert guard: when the global selection names
     /// an identity that is NOT in the selector's candidate list, `app_default_seed`
     /// must return `None` — the selector must not seed from a foreign identity.
     ///

@@ -41,9 +41,6 @@ pub enum FeatureGate {
     DashPay,
     /// Expert/developer mode — unlocks advanced UI elements
     DeveloperMode,
-    /// SPV backend — always active. Chain sync is SPV-only, owned by upstream
-    /// `platform-wallet`.
-    SpvBackend,
 }
 
 impl FeatureGate {
@@ -70,8 +67,6 @@ impl FeatureGate {
             }
             FeatureGate::DashPay => true, // Always for now; future: network/version gate
             FeatureGate::DeveloperMode => ctx.is_developer_mode(),
-            // Chain sync is SPV-only (owned by upstream platform-wallet).
-            FeatureGate::SpvBackend => true,
         }
     }
 }

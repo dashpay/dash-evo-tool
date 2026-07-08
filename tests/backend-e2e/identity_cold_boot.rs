@@ -3,7 +3,7 @@
 //! **Background**: Scenarios C and D cover the watch-only upstream-wallet
 //! identity-provisioning bug fixed in commit `98bc4913`.
 //!
-//! When a wallet is loaded on cold-boot via `UpstreamFromPersisted` it starts
+//! When a wallet is loaded on cold-boot via `load_from_persistor_seedless` it starts
 //! life as a watch-only upstream wallet (no root private key). Identity
 //! registration and top-up both call
 //! `WalletBackend::ensure_identity_funding_accounts`, which in turn calls
@@ -35,7 +35,7 @@
 //! ## How it exercises the watch-only fix
 //!
 //! In the shared e2e harness the framework wallet is loaded watch-only by
-//! `UpstreamFromPersisted` at backend-build time; `bootstrap_wallet_addresses_jit`
+//! `load_from_persistor_seedless` at backend-build time; `bootstrap_wallet_addresses_jit`
 //! later upgrades it to full via `ensure_upstream_registered` / `register_wallet_from_seed`.
 //! For a freshly created test wallet the gap between cold-watch-only load and
 //! the JIT upgrade creates a window where the fix is active.  Regardless,
@@ -80,7 +80,7 @@ async fn cd_cold_boot_identity_register_and_topup() {
     // ── Create a funded test wallet ─────────────────────────────────────────
     // 35 M duffs: scenario C asset-lock (5 M) + registration fees, then
     // scenario D top-up (5 M) + its fees. 30 M left scenario C with 4,999,703
-    // duffs — 297 short of the 5 M top-up minimum (QA-016) — so the extra 5 M is
+    // duffs — 297 short of the 5 M top-up minimum — so the extra 5 M is
     // headroom for both transactions' network fees.
     let (seed_hash, wallet_arc) = ctx.create_funded_test_wallet(35_000_000).await;
 

@@ -22,34 +22,12 @@ impl AppContext {
         seed_hash: WalletSeedHash,
         derivation_path: DerivationPath,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
-        let wallet = {
-            let wallet_arc = {
-                let wallets = self.wallets.read()?;
-                wallets
-                    .get(&seed_hash)
-                    .cloned()
-                    .ok_or(TaskError::WalletNotFound)?
-            };
-            wallet_arc.read()?.clone()
-        };
-
-        let network = self.network;
-        let path_for_derive = derivation_path.clone();
-        let backend = self.wallet_backend()?;
-        let wif = backend
-            .secret_access()
-            .with_secret(
-                &crate::wallet_backend::SecretScope::HdSeed { seed_hash },
-                |plaintext| {
-                    let seed = plaintext.expose_hd_seed().ok_or(TaskError::WalletLocked)?;
-                    let private_key = wallet
-                        .private_key_at_derivation_path_with_seed(seed, &path_for_derive, network)
-                        .map_err(|detail| {
-                            tracing::warn!(error = %detail, "Key-for-display derivation failed");
-                            TaskError::WalletKeyLookupFailed
-                        })?;
-                    Ok(Secret::new(private_key.to_wif()))
-                },
+        let wif = self
+            .with_wallet_derived_key(
+                seed_hash,
+                &derivation_path,
+                TaskError::WalletKeyLookupFailed,
+                |private_key| Ok(Secret::new(private_key.to_wif())),
             )
             .await?;
 

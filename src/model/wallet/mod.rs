@@ -1,5 +1,4 @@
 pub mod auth_pubkey_cache;
-pub mod balance_consistency;
 pub mod birth_height;
 pub mod encryption;
 pub mod meta;
@@ -989,33 +988,13 @@ impl Wallet {
             .transpose()
     }
 
-    /// Look up one identity-authentication ECDSA public key from the
-    /// memoised [`AuthPubkeyCache`], without touching the seed.
-    ///
-    /// Returns `None` on a cache miss; the caller resolves the seed
-    /// just-in-time via the [`SecretAccess`](crate::wallet_backend::SecretAccess)
-    /// chokepoint, derives with
-    /// [`Self::identity_authentication_ecdsa_public_key_from_seed`], and
-    /// repopulates the cache. The hardened leaf makes seed-free *first*
-    /// derivation impossible, so the cache is the only seed-free read.
-    pub fn identity_authentication_ecdsa_public_key_cached(
-        &self,
-        cache: &AuthPubkeyCache,
-        network: Network,
-        identity_index: u32,
-        key_index: u32,
-    ) -> Option<PublicKey> {
-        cache.get(network, identity_index, key_index)
-    }
-
     /// Derive one identity-authentication ECDSA public key from a
     /// borrowed HD seed.
     ///
     /// The seed is supplied by the async caller holding a `with_secret`
     /// scope; it is never read from `self`. The result is byte-identical
-    /// to the cached value [`Self::identity_authentication_ecdsa_public_key_cached`]
-    /// serves once the cache is warm — the caller writes it back on a
-    /// cold miss.
+    /// to the value the [`AuthPubkeyCache`] serves once the cache is warm —
+    /// the caller writes it back on a cold miss.
     pub fn identity_authentication_ecdsa_public_key_from_seed(
         &self,
         seed: &[u8; 64],
@@ -1034,18 +1013,37 @@ impl Wallet {
             .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())?;
         Ok(extended_public_key.to_pub())
     }
+}
 
+/// Identity-auth public-key lookup maps built from cache hits, plus the
+/// key indices that missed and must be cold-filled from the seed.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct AuthKeyMaps {
+    pub by_serialized: BTreeMap<Vec<u8>, u32>,
+    pub by_hash160: BTreeMap<[u8; 20], u32>,
+    pub misses: Vec<u32>,
+}
+
+/// Identity-auth public-key lookup maps built from cold seed derivation,
+/// plus the derived `(key_index, PublicKey)` pairs for cache write-back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DerivedAuthKeyMaps {
+    pub by_serialized: BTreeMap<Vec<u8>, u32>,
+    pub by_hash160: BTreeMap<[u8; 20], u32>,
+    pub derived: Vec<(u32, PublicKey)>,
+}
+
+impl Wallet {
     /// Build the two identity-auth public-key lookup maps for `range`
     /// from the cache alone, returning the key indices that missed.
     ///
     /// Seed-free: every map entry is reconstructed from a cached
     /// `PublicKey`, and address registration (when requested) uses that
-    /// same reconstructed key. The returned `Vec<u32>` lists the indices
-    /// the caller must cold-fill — see
+    /// same reconstructed key. `misses` lists the indices the caller must
+    /// cold-fill — see
     /// [`Self::identity_authentication_ecdsa_public_keys_data_map_from_seed`].
     /// Partitioning misses here lets the caller open a *single*
     /// `with_secret` scope for the whole request.
-    #[allow(clippy::type_complexity)]
     pub fn identity_authentication_ecdsa_public_keys_data_map_cached(
         &mut self,
         app_context: &AppContext,
@@ -1054,9 +1052,9 @@ impl Wallet {
         network: Network,
         identity_index: u32,
         key_index_range: Range<u32>,
-    ) -> Result<(BTreeMap<Vec<u8>, u32>, BTreeMap<[u8; 20], u32>, Vec<u32>), String> {
-        let mut public_key_result_map = BTreeMap::new();
-        let mut public_key_hash_result_map = BTreeMap::new();
+    ) -> Result<AuthKeyMaps, String> {
+        let mut by_serialized = BTreeMap::new();
+        let mut by_hash160 = BTreeMap::new();
         let mut misses = Vec::new();
         for key_index in key_index_range {
             let Some(public_key) = cache.get(network, identity_index, key_index) else {
@@ -1064,8 +1062,8 @@ impl Wallet {
                 continue;
             };
             self.record_identity_auth_public_key(
-                &mut public_key_result_map,
-                &mut public_key_hash_result_map,
+                &mut by_serialized,
+                &mut by_hash160,
                 app_context,
                 register_addresses,
                 network,
@@ -1074,7 +1072,11 @@ impl Wallet {
                 &public_key,
             )?;
         }
-        Ok((public_key_result_map, public_key_hash_result_map, misses))
+        Ok(AuthKeyMaps {
+            by_serialized,
+            by_hash160,
+            misses,
+        })
     }
 
     /// Cold-fill the cache-miss key indices from a borrowed HD seed.
@@ -1085,7 +1087,6 @@ impl Wallet {
     /// supplied by the async caller's single `with_secret` scope and never
     /// read from `self`. Address registration mirrors the cached path so
     /// behaviour is identical regardless of cache warmth.
-    #[allow(clippy::type_complexity)]
     pub fn identity_authentication_ecdsa_public_keys_data_map_from_seed(
         &mut self,
         app_context: &AppContext,
@@ -1094,16 +1095,9 @@ impl Wallet {
         network: Network,
         identity_index: u32,
         missing_key_indices: &[u32],
-    ) -> Result<
-        (
-            BTreeMap<Vec<u8>, u32>,
-            BTreeMap<[u8; 20], u32>,
-            Vec<(u32, PublicKey)>,
-        ),
-        String,
-    > {
-        let mut public_key_result_map = BTreeMap::new();
-        let mut public_key_hash_result_map = BTreeMap::new();
+    ) -> Result<DerivedAuthKeyMaps, String> {
+        let mut by_serialized = BTreeMap::new();
+        let mut by_hash160 = BTreeMap::new();
         let mut derived = Vec::with_capacity(missing_key_indices.len());
         for &key_index in missing_key_indices {
             let public_key = self.identity_authentication_ecdsa_public_key_from_seed(
@@ -1113,8 +1107,8 @@ impl Wallet {
                 key_index,
             )?;
             self.record_identity_auth_public_key(
-                &mut public_key_result_map,
-                &mut public_key_hash_result_map,
+                &mut by_serialized,
+                &mut by_hash160,
                 app_context,
                 register_addresses,
                 network,
@@ -1124,7 +1118,11 @@ impl Wallet {
             )?;
             derived.push((key_index, public_key));
         }
-        Ok((public_key_result_map, public_key_hash_result_map, derived))
+        Ok(DerivedAuthKeyMaps {
+            by_serialized,
+            by_hash160,
+            derived,
+        })
     }
 
     /// Fold one identity-auth public key into the serialized-key and
@@ -2096,7 +2094,7 @@ impl WalletAddressProvider {
         // platform-payment index DET has already handed out. The generator
         // derives `max(registered)+1` unbounded, so a registered index can
         // exceed the gap window; syncing only the window would leave such an
-        // address unsynced and its credits invisible (SEC-001). The provider is
+        // address unsynced and its credits invisible. The provider is
         // the sync window's single source of truth, so it follows derivation.
         let highest_registered = wallet.highest_platform_payment_index(network);
         let max_index = highest_registered
@@ -2801,13 +2799,8 @@ mod tests {
                 let mut cache = AuthPubkeyCache::default();
                 cache.insert(network, identity_index, key_index, &from_seed);
 
-                let from_cache = wallet
-                    .identity_authentication_ecdsa_public_key_cached(
-                        &cache,
-                        network,
-                        identity_index,
-                        key_index,
-                    )
+                let from_cache = cache
+                    .get(network, identity_index, key_index)
                     .expect("cache hit");
 
                 assert_eq!(from_cache, from_seed);
@@ -2830,16 +2823,7 @@ mod tests {
 
         let mut cache = AuthPubkeyCache::default();
         // Cold: the cache misses entirely.
-        assert!(
-            wallet
-                .identity_authentication_ecdsa_public_key_cached(
-                    &cache,
-                    network,
-                    identity_index,
-                    key_index,
-                )
-                .is_none()
-        );
+        assert!(cache.get(network, identity_index, key_index).is_none());
 
         // JIT cold-fill from the seed, then populate the cache.
         let derived = wallet
@@ -2853,25 +2837,15 @@ mod tests {
         assert!(cache.insert(network, identity_index, key_index, &derived));
 
         // Warm: the same read now serves from cache, byte-identical.
-        let warmed = wallet
-            .identity_authentication_ecdsa_public_key_cached(
-                &cache,
-                network,
-                identity_index,
-                key_index,
-            )
+        let warmed = cache
+            .get(network, identity_index, key_index)
             .expect("cache hit after fill");
         assert_eq!(warmed, derived);
 
         // A different network coordinate stays cold (network-keyed).
         assert!(
-            wallet
-                .identity_authentication_ecdsa_public_key_cached(
-                    &cache,
-                    Network::Mainnet,
-                    identity_index,
-                    key_index,
-                )
+            cache
+                .get(Network::Mainnet, identity_index, key_index)
                 .is_none()
         );
     }
@@ -3598,7 +3572,7 @@ mod tests {
         );
     }
 
-    /// FUNDS-SAFETY (SEC-001): every platform-payment address DET hands out or
+    /// FUNDS-SAFETY: every platform-payment address DET hands out or
     /// funds must be inside the provider's synced window. The generator derives
     /// `max(registered)+1` unbounded, but the provider only bootstraps
     /// `0..=gap_limit-1` and extends past *funded* indices. So a handed-out

@@ -570,6 +570,17 @@ impl DashColors {
     }
 }
 
+/// User-facing network label, stable across all screens.
+pub fn network_label(network: dash_sdk::dashcore_rpc::dashcore::Network) -> &'static str {
+    use dash_sdk::dashcore_rpc::dashcore::Network;
+    match network {
+        Network::Mainnet => "Mainnet",
+        Network::Testnet => "Testnet",
+        Network::Devnet => "Devnet",
+        Network::Regtest => "Regtest",
+    }
+}
+
 /// Typography scale and font configuration
 pub struct Typography;
 

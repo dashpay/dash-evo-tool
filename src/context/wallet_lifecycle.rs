@@ -1,5 +1,6 @@
 use super::AppContext;
 use crate::backend_task::error::TaskError;
+use crate::model::dashpay::ContactStatus;
 use crate::model::spv_status::SpvStatus;
 use crate::model::wallet::birth_height::{WalletOrigin, registration_birth_height};
 use crate::model::wallet::meta::WalletMeta;
@@ -462,7 +463,7 @@ impl AppContext {
     /// ([`WalletOrigin::Fresh`]) or pre-existing ([`WalletOrigin::Imported`]).
     /// It sets the upstream SPV scan-window floor: a fresh wallet scans from
     /// the current tip, an imported one from genesis so deposits made before
-    /// registration are still found (PROJ-010).
+    /// registration are still found.
     pub fn register_wallet(
         self: &Arc<Self>,
         wallet: Wallet,
@@ -524,7 +525,7 @@ impl AppContext {
         }
 
         // 5. Register the wallet with the upstream SPV backend so its addresses
-        // are watched and received funds become visible (W1; PROJ-010). The
+        // are watched and received funds become visible (W1). The
         // upstream `create_wallet_from_seed_bytes` is the only writer to the
         // persistor, so without this the wallet is never watched. Done on a
         // tracked subtask because registration is async and this entry point is
@@ -580,7 +581,7 @@ impl AppContext {
     /// the wallet is not kept.
     ///
     /// Writes through the shared `secret_store` vault that `AppContext` opens at
-    /// boot, so it succeeds even before the wallet backend is wired (PROJ-010):
+    /// boot, so it succeeds even before the wallet backend is wired:
     /// the backend, once built, reuses the very same vault handle.
     fn write_seed_envelope(&self, wallet: &Wallet) -> Result<(), TaskError> {
         let seed_hash = wallet.seed_hash();
@@ -715,7 +716,7 @@ impl AppContext {
     /// unlock gesture to bootstrap, exactly as before; this method never forces
     /// a passphrase prompt at startup.
     ///
-    /// This is also the W2 cold-boot reconciliation point (PROJ-010): inside
+    /// This is also the W2 cold-boot reconciliation point: inside
     /// the same prompt-free seed scope it registers any wallet present in DET
     /// sidecars but absent from the upstream SPV persistor (migrated installs,
     /// wallets created before the fix, post-reset), so received funds become
@@ -768,8 +769,8 @@ impl AppContext {
                     // W2 cold-boot reconciliation: register with the upstream
                     // SPV backend if this wallet is not yet known to it, using
                     // the seed already open in this scope. Idempotent and
-                    // genesis-floored so pre-existing deposits are found
-                    // (PROJ-010). Best-effort — a failure is retried on the
+                    // genesis-floored so pre-existing deposits are found.
+                    // Best-effort — a failure is retried on the
                     // next boot.
                     if let Err(error) = backend.ensure_upstream_registered(&seed_hash, seed).await {
                         tracing::warn!(
@@ -778,7 +779,7 @@ impl AppContext {
                             "W2 upstream registration failed; will retry at next cold boot"
                         );
                     }
-                    // Identity G-3 reconcile: register every DET-known wallet-owned
+                    // Identity reconcile: register every DET-known wallet-owned
                     // identity into the upstream manager so identity ops (top-up)
                     // can find them. Seed-free, idempotent; runs after the wallet
                     // is upstream-registered. Best-effort — retried next boot/unlock.
@@ -934,7 +935,7 @@ impl AppContext {
             }
             let owner = identity.identity.id();
             for contact in view.contacts(&owner).await {
-                if contact.contact_status != "accepted" {
+                if contact.contact_status != ContactStatus::Accepted {
                     continue;
                 }
                 if let Ok(contact_id) = Identifier::from_bytes(&contact.contact_identity_id) {
@@ -1071,7 +1072,7 @@ impl AppContext {
             ),
         }
 
-        // W2 reconciliation on the unlock gesture (PROJ-010). A
+        // W2 reconciliation on the unlock gesture. A
         // password-protected wallet hydrates `Closed` at cold boot, so
         // `bootstrap_wallet_addresses_jit` skips it (no surprise startup prompt)
         // and it is never upstream-registered until the seed becomes available.
@@ -1958,7 +1959,7 @@ mod tests {
         backend.shutdown().await;
     }
 
-    /// PROJ-010 (W1 idempotency): registering the same wallet twice with the
+    /// W1 idempotency: registering the same wallet twice with the
     /// upstream backend is a no-op the second time — the wallet is watched once,
     /// never double-watched. The pre-fix bug was the *opposite* (a never-watched
     /// wallet); this pins that the new writer is also safe to call repeatedly,
@@ -2350,7 +2351,7 @@ mod tests {
             .await;
     }
 
-    /// PROJ-010 W2 reconciliation (idempotency across the two writers): once a
+    /// W2 reconciliation (idempotency across the two writers): once a
     /// wallet is registered, the W2 `ensure_upstream_registered` path is a
     /// no-op — it never re-registers or double-watches. This is the cold-boot
     /// bridge's safety property: an already-watched wallet is left untouched
@@ -2398,7 +2399,7 @@ mod tests {
         backend.shutdown().await;
     }
 
-    /// PROJ-010 (root-cause regression): `register_wallet` persists the
+    /// Root-cause regression: `register_wallet` persists the
     /// seed-envelope sidecar **before** the wallet backend is wired.
     ///
     /// This is the exact ordering the backend-e2e harness uses — register the
@@ -2466,7 +2467,7 @@ mod tests {
         );
     }
 
-    /// PROJ-010 (end-to-end on the harness ordering): a wallet registered
+    /// End-to-end on the harness ordering: a wallet registered
     /// **before** the backend is wired is registered with the upstream SPV
     /// manager once the backend comes up — the W2 cold-boot bridge fires from
     /// the seed envelope persisted at register time.
@@ -2514,9 +2515,9 @@ mod tests {
         backend.shutdown().await;
     }
 
-    /// QA-005 — `unregistered_open_wallet_count` must count a wallet whose
+    /// `unregistered_open_wallet_count` must count a wallet whose
     /// `RwLock` is poisoned, so a prior panic can never let a premature
-    /// "completed" sentinel through. The pre-QA-005 implementation counted over
+    /// "completed" sentinel through. The previous implementation counted over
     /// the `open_wallets()` snapshot, which drops a poisoned-lock wallet
     /// (`read().ok()...unwrap_or(false)`) before the fail-safe could see it —
     /// that version returns 0 here and fails this test.
@@ -2554,7 +2555,7 @@ mod tests {
         );
     }
 
-    /// PROJ-010 (fresh-install regression): on a truly-fresh install the real
+    /// Fresh-install regression: on a truly-fresh install the real
     /// `Database::initialize` path gates the legacy `wallet`/`wallet_addresses`
     /// tables OUT, so `register_wallet` must not depend on them. The pre-fix
     /// `store_wallet_with_addresses` ran an unguarded `INSERT INTO wallet` that
@@ -3293,7 +3294,7 @@ mod tests {
         backend.shutdown().await;
     }
 
-    /// PROJ-010 (protected-unlock reconciliation — the delete-DB + re-import
+    /// Protected-unlock reconciliation (the delete-DB + re-import
     /// acceptance flow): a password-protected wallet that hydrates LOCKED at cold
     /// boot, and is therefore deferred by the W2 bridge (proven by
     /// [`migrated_protected_wallet_registration_is_deferred_until_unlock`]), MUST

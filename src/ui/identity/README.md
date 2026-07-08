@@ -29,8 +29,6 @@ Promote to `src/ui/components/` only if a second, non-hub consumer appears.
 | `identity_picker_add_card.rs` | `picker` | Trailing "Add a new identity" CTA in the picker grid |
 | `social_profile_gate_card.rs` | `contacts` | Gate shown when the active identity has no DashPay profile |
 | `request_card.rs` | `contacts` (future) | Received / sent contact-request row |
-| `contact_row.rs` | `contacts` (future) | Active-contact list row |
-| `activity_row.rs` | `activity` (future) | Unified activity-feed row with retry affordance |
 
 ## Button dispatcher pattern
 

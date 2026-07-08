@@ -15,12 +15,7 @@ use crate::context::migration_status::{MigrationState, MigrationStep};
 use crate::database::Database;
 #[cfg(not(feature = "testing"))]
 use crate::logging::initialize_logger;
-use crate::model::feature_gate::FeatureGate;
 use crate::model::settings::AppSettings;
-use crate::model::wallet::WalletSeedHash;
-use crate::model::wallet::balance_consistency::{
-    BALANCE_MISMATCH_TOLERANCE_DUFFS, BalanceAsset, BalanceMismatch, detect_mismatch,
-};
 use crate::ui::components::secret_prompt_host::{ActivePrompt, EguiSecretPromptHost, QueuedPrompt};
 use crate::ui::components::{
     BannerHandle, MessageBanner, OptionBannerExt, OptionOverlayExt, OverlayConfig, OverlayHandle,
@@ -42,21 +37,18 @@ use crate::ui::tools::grovestark_screen::GroveSTARKScreen;
 use crate::ui::tools::platform_info_screen::PlatformInfoScreen;
 use crate::ui::tools::proof_visualizer_screen::ProofVisualizerScreen;
 use crate::ui::tools::transition_visualizer_screen::TransitionVisualizerScreen;
-use crate::ui::wallets::account_summary::{AccountCategory, collect_account_summaries};
 use crate::ui::wallets::wallets_screen::WalletsBalancesScreen;
 use crate::ui::welcome_screen::WelcomeScreen;
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike, ScreenType};
 use crate::utils::egui_mpsc::{self, EguiMpscAsync};
 use crate::utils::tasks::TaskManager;
 use crate::wallet_backend::DetScope;
-use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use derive_more::From;
 use eframe::{App, egui};
 use platform_wallet_storage::secrets::SecretStore;
 use std::collections::{BTreeMap, BTreeSet};
-use std::hash::{Hash, Hasher};
 use std::ops::BitOrAssign;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -78,7 +70,7 @@ pub const MIGRATION_RETRY_ACTION_ID: &str = "migration:retry:finish_unwire";
 /// sync continues safely in the background — a read-only operation that strands
 /// nothing if backgrounded. It is also designated the block's single
 /// keyboard-reachable escape (`with_keyboard_escape`), so a keyboard-only /
-/// assistive-tech user can activate it with Enter or Space (QA-002 refinement).
+/// assistive-tech user can activate it with Enter or Space.
 /// Colon-namespaced per the overlay action-id convention. Exposed for kittest
 /// coverage.
 pub const SPV_CONTINUE_BACKGROUND_ACTION: &str = "spv:sync:continue_background";
@@ -317,8 +309,8 @@ pub struct AppState {
     last_migration_state: Option<MigrationState>,
     /// Networks for which the cold-start `MigrationTask::FinishUnwire`
     /// has already been dispatched this process. The migration sentinel
-    /// (and every legacy table filter) is per-network — see SEC-001 in
-    /// the FinishUnwire orchestrator — so the dispatch guard must
+    /// (and every legacy table filter) is per-network — see the scoping note
+    /// in the FinishUnwire orchestrator — so the dispatch guard must
     /// follow the same scope, otherwise switching to an unseen network
     /// would skip its drain. Idempotent: each network is dispatched
     /// at most once per process; the orchestrator itself short-circuits
@@ -360,13 +352,6 @@ pub struct AppState {
     /// The passphrase prompt currently shown, if any. Exactly one is active at
     /// a time; further requests wait in `secret_prompt_receiver` (FIFO).
     active_secret_prompt: Option<ActivePrompt>,
-    /// Handle to the wallet-balance health-check warning banner, if shown. Kept
-    /// so it can be cleared when the mismatch resolves and so it is not stacked.
-    balance_health_banner: Option<BannerHandle>,
-    /// Signature of the mismatch set last surfaced by the end-of-sync health
-    /// check. The check runs once per SPV sync completion; this dedupes so an
-    /// unchanged mismatch is not re-logged or re-shown on every sync cycle.
-    balance_health_signature: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -669,7 +654,7 @@ impl AppState {
         // wallet is unlocked. Without this, the SDK retry loop tight-loops
         // at 10ms on `WalletBackendNotYetWired`. `PlatformWalletManager` is
         // wallet-independent at construction (Case B); persisted wallets
-        // load watch-only via `UpstreamFromPersisted`, no unlock required
+        // load watch-only via `load_from_persistor_seedless`, no unlock required
         // to display funds — the seed enters memory only on unlock.
         //
         // Auto-start of chain sync rides on wiring completion: for the active
@@ -683,7 +668,7 @@ impl AppState {
             let sender = task_result_sender.clone();
             let auto_start = boot_auto_start_spv && net == chosen_network;
             subtasks.spawn_sync("wallet-backend-eager-init", async move {
-                if auto_start && FeatureGate::SpvBackend.is_available(&app_ctx) {
+                if auto_start {
                     if let Err(e) = app_ctx.ensure_wallet_backend_and_start_spv(sender).await {
                         tracing::warn!(error = %e, "eager wallet-backend init + SPV auto-start failed; SDK proof verification will retry once the lazy backend-task fallback fires");
                     } else {
@@ -886,8 +871,6 @@ impl AppState {
             secret_prompt_host,
             secret_prompt_receiver,
             active_secret_prompt: None,
-            balance_health_banner: None,
-            balance_health_signature: None,
         };
 
         // Initialize welcome screen if needed (uses whichever context is active)
@@ -1058,12 +1041,11 @@ impl AppState {
         // the auto-start must live here to cover both. All steps are idempotent:
         // re-wiring is a no-op and the backend's start latch prevents a second
         // run loop. When the cached context's SPV is already running we log it
-        // at info rather than silently no-op (QA-005 latch-wedge visibility).
+        // at info rather than silently no-op (latch-wedge visibility).
         {
             let app_ctx = app_context.clone();
             let sender = self.task_result_sender.clone();
-            let auto_start = app_context.get_app_settings().auto_start_spv
-                && FeatureGate::SpvBackend.is_available(&app_context);
+            let auto_start = app_context.get_app_settings().auto_start_spv;
             self.subtasks
                 .spawn_sync("wallet-backend-eager-init", async move {
                     if auto_start {
@@ -1091,7 +1073,7 @@ impl AppState {
             tracing::debug!("MCP context switched to {:?}", network);
         }
 
-        // INTENTIONAL(SEC-004): Clear stale banners from the previous network context.
+        // Deliberately clear stale banners from the previous network context.
         // A backend task completing after the switch could set a new banner in the new
         // network context — accepted risk for a local desktop app (cosmetic only).
         MessageBanner::clear_all_global(app_context.egui_ctx());
@@ -1242,7 +1224,7 @@ impl AppState {
     /// itself is per-network: every legacy `SELECT` filters by
     /// `WHERE network = ?1` and the sentinel mirrors that scope. A
     /// global guard would let a network switch to an unseen network
-    /// skip the drain — see SEC-001 in
+    /// skip the drain — see the scoping note in
     /// `backend_task::migration::finish_unwire`.
     fn dispatch_cold_start_migration(&mut self) {
         let network = self.chosen_network;
@@ -1345,7 +1327,7 @@ impl AppState {
     /// would trap the user. The block therefore carries a "Continue in the
     /// background" escape ([`SPV_CONTINUE_BACKGROUND_ACTION`]); clicking it — or
     /// activating it by keyboard, as it is the block's designated
-    /// `with_keyboard_escape` (QA-002 refinement) — lowers the block while sync
+    /// `with_keyboard_escape` — lowers the block while sync
     /// proceeds safely in the background (read-only — nothing is stranded).
     ///
     /// Raises the overlay at most once per episode (then updates content in place
@@ -1364,7 +1346,7 @@ impl AppState {
                 // constant for minutes) never trips the no-progress watchdog. It is
                 // never rendered — no height/number leaks into the shown copy.
                 //
-                // TODO(SEC-003-constant-height): the narrow residual is a phase that
+                // TODO: the narrow residual is a phase that
                 // stays Syncing at a CONSTANT height for >120s (e.g. a single large
                 // masternode-list diff, step 2) — its height never moves, so the
                 // token never advances and the generic 120s watchdog still trips its
@@ -1381,8 +1363,8 @@ impl AppState {
                     SPV_CONNECTING_DESCRIPTION
                 };
                 if self.spv_overlay.is_none() {
-                    // The escape is the single keyboard-reachable exit (QA-002
-                    // refinement): the overlay focus-pins this button and lets
+                    // The escape is the single keyboard-reachable exit: the
+                    // overlay focus-pins this button and lets
                     // Enter/Space activate it, so a keyboard-only / assistive-tech
                     // user is never stranded behind the UNBOUNDED SPV block while
                     // every other hard block stays fully keyboard-blocked.
@@ -1580,9 +1562,9 @@ impl AppState {
     }
 
     /// Claim all keyboard + text input for an active blocking overlay at frame
-    /// start (QA-001) — UNLESS a secret prompt is active above it. The prompt
+    /// start — UNLESS a secret prompt is active above it. The prompt
     /// renders above the overlay and needs the keyboard (Enter to submit, Esc to
-    /// cancel, Tab to navigate; SEC-004/F-1), so the overlay must yield to it.
+    /// cancel, Tab to navigate), so the overlay must yield to it.
     /// Extracted from `update` so the gate is exercised by a kittest (RQ-1):
     /// removing the `active_secret_prompt.is_none()` guard must fail that test.
     fn claim_overlay_input(&self, ctx: &egui::Context) {
@@ -1706,7 +1688,7 @@ impl AppState {
     fn try_auto_start_spv(&mut self) {
         let ctx = self.current_app_context().clone();
         let auto_start = ctx.get_app_settings().auto_start_spv;
-        if auto_start && FeatureGate::SpvBackend.is_available(&ctx) {
+        if auto_start {
             // Fresh user-initiated episode: arm the block and re-arm the escape,
             // mirroring AppAction::StartSpv.
             self.spv_block_armed = true;
@@ -1721,137 +1703,6 @@ impl AppState {
             });
         }
     }
-
-    /// Run the wallet balance health check once, after an SPV sync completes.
-    ///
-    /// Compares every loaded wallet's authoritative Core/Platform totals against
-    /// its per-category account totals and, on a mismatch beyond the rounding
-    /// tolerance, surfaces one calm warning banner for the general audience.
-    /// Deduped by mismatch signature so an unchanged result is neither re-logged
-    /// nor re-shown on each sync cycle, and the banner is cleared when the
-    /// mismatch resolves. Shielded is not covered — no second computed total
-    /// exists yet (pending the Phase-F coordinator per-note read path).
-    fn run_wallet_balance_health_check(
-        &mut self,
-        ctx: &egui::Context,
-        app_context: &Arc<AppContext>,
-    ) {
-        let mismatches = collect_wallet_balance_mismatches(app_context);
-        let signature = balance_health_signature(&mismatches);
-        if signature == self.balance_health_signature {
-            // Unchanged since the last completed sync (including still-clean) —
-            // do not re-log or re-show.
-            return;
-        }
-        self.balance_health_signature = signature;
-
-        // Clear any prior banner first so a changed mismatch set never stacks.
-        self.balance_health_banner.take_and_clear();
-        if mismatches.is_empty() {
-            return;
-        }
-        for (seed_hash, asset, mismatch) in &mismatches {
-            tracing::warn!(
-                asset = asset.label(),
-                backend_total = mismatch.backend_total,
-                categorized_total = mismatch.categorized_total,
-                diff = mismatch.diff(),
-                wallet = %hex::encode(seed_hash),
-                "Wallet balance health check found a mismatch after SPV sync completed"
-            );
-        }
-        self.balance_health_banner = Some(MessageBanner::set_global(
-            ctx,
-            BALANCE_HEALTH_WARNING,
-            MessageType::Warning,
-        ));
-    }
-}
-
-/// General-audience text for the end-of-sync balance health-check warning.
-/// Calm and factual: states what happened, reassures funds are safe, and gives
-/// a concrete self-service action. No jargon, no dynamic values (so it dedupes
-/// cleanly and is a single i18n translation unit).
-///
-/// Deliberately does NOT call this a "known issue" — the categorization bug
-/// this check was built to catch is already fixed. If this check ever fires
-/// in practice, it means something nobody currently knows about (a fresh
-/// regression, or an unmapped edge case), so the copy must not pre-emptively
-/// reassure the user it's already being handled (QA-101).
-const BALANCE_HEALTH_WARNING: &str = "Some wallet balances didn't fully add up after the last sync. \
-Your funds are safe. \
-Refreshing the wallet, or reopening the app, usually resolves it.";
-
-/// Gather Core and Platform balance mismatches across every loaded HD wallet.
-///
-/// Core: the backend's authoritative total vs the sum of confirmed balances
-/// across all account categories. Platform: the coordinator-push total vs the
-/// Platform-payment credits, converted to duffs exactly as the Platform tab
-/// does. Both comparisons reuse the shared [`detect_mismatch`] tolerance.
-fn collect_wallet_balance_mismatches(
-    app_context: &AppContext,
-) -> Vec<(WalletSeedHash, BalanceAsset, BalanceMismatch)> {
-    let mut mismatches = Vec::new();
-    let Ok(backend) = app_context.wallet_backend() else {
-        return mismatches;
-    };
-    let Ok(wallets) = app_context.wallets.read() else {
-        return mismatches;
-    };
-    let network = app_context.network;
-    for (seed_hash, wallet_arc) in wallets.iter() {
-        let Ok(wallet) = wallet_arc.read() else {
-            continue;
-        };
-        let address_balances = backend.address_balances(seed_hash);
-        let address_paths = backend.address_paths(seed_hash);
-        let summaries =
-            collect_account_summaries(&wallet, network, &address_balances, &address_paths);
-
-        let core_backend = backend.wallet_balance(seed_hash).total;
-        let core_categorized: u64 = summaries.iter().map(|s| s.confirmed_balance).sum();
-        if let Some(m) = detect_mismatch(
-            core_backend,
-            core_categorized,
-            BALANCE_MISMATCH_TOLERANCE_DUFFS,
-        ) {
-            mismatches.push((*seed_hash, BalanceAsset::Core, m));
-        }
-
-        let platform_backend = app_context.platform_balance_duffs(seed_hash);
-        let platform_categorized: u64 = summaries
-            .iter()
-            .filter(|s| s.category == AccountCategory::PlatformPayment)
-            .map(|s| s.platform_credits / CREDITS_PER_DUFF)
-            .sum();
-        if let Some(m) = detect_mismatch(
-            platform_backend,
-            platform_categorized,
-            BALANCE_MISMATCH_TOLERANCE_DUFFS,
-        ) {
-            mismatches.push((*seed_hash, BalanceAsset::Platform, m));
-        }
-    }
-    mismatches
-}
-
-/// A stable hash of the mismatch set, or `None` when there is no mismatch.
-/// Drives the health-check dedupe: equal signatures across sync completions
-/// mean nothing changed, so the banner/log are neither re-shown nor repeated.
-fn balance_health_signature(
-    mismatches: &[(WalletSeedHash, BalanceAsset, BalanceMismatch)],
-) -> Option<u64> {
-    if mismatches.is_empty() {
-        return None;
-    }
-    let mut keyed: Vec<(WalletSeedHash, BalanceAsset, u64, u64)> = mismatches
-        .iter()
-        .map(|(seed, asset, m)| (*seed, *asset, m.backend_total, m.categorized_total))
-        .collect();
-    keyed.sort_unstable();
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    keyed.hash(&mut hasher);
-    Some(hasher.finish())
 }
 
 impl App for AppState {
@@ -2054,9 +1905,6 @@ impl App for AppState {
                             // without a manual Refresh. No banner — this fires every 15 s.
                             active_context.apply_platform_address_push(updates);
                         }
-                        BackendTaskSuccessResult::WalletBalanceHealthCheckRequested => {
-                            self.run_wallet_balance_health_check(ctx, &active_context);
-                        }
                         _ => {
                             // For all other success results, let the screen decide how to display
                             // the outcome without showing a generic global success banner.
@@ -2092,7 +1940,7 @@ impl App for AppState {
                         let msg = err.to_string();
                         let handle = MessageBanner::set_global(ctx, &msg, MessageType::Error);
                         handle.disable_auto_dismiss();
-                        // INTENTIONAL(SEC-003): TaskError Debug output is shown to users.
+                        // TaskError Debug output is shown to users, deliberately.
                         // Ensure inner error types don't expose secrets.
                         handle.with_details(&err);
                         self.visible_screen_mut()
@@ -2194,7 +2042,7 @@ impl App for AppState {
         self.update_spv_overlay(ctx, &active_context);
 
         // Total input block at frame start: while a blocking overlay is up, claim
-        // all keyboard + text input BEFORE the panels run (QA-001) — unless a
+        // all keyboard + text input BEFORE the panels run — unless a
         // secret prompt is active above the overlay (it needs the keyboard).
         self.claim_overlay_input(ctx);
 
@@ -2585,79 +2433,6 @@ mod spv_overlay_tests {
                     "`{desc}` leaks blockchain jargon `{jargon}` to the Everyday User"
                 );
             }
-        }
-    }
-}
-
-#[cfg(test)]
-mod balance_health_tests {
-    use super::*;
-
-    fn entry(
-        seed: u8,
-        asset: BalanceAsset,
-        backend: u64,
-        categorized: u64,
-    ) -> (WalletSeedHash, BalanceAsset, BalanceMismatch) {
-        (
-            [seed; 32],
-            asset,
-            BalanceMismatch {
-                backend_total: backend,
-                categorized_total: categorized,
-            },
-        )
-    }
-
-    #[test]
-    fn signature_is_none_when_there_is_no_mismatch() {
-        assert_eq!(balance_health_signature(&[]), None);
-    }
-
-    #[test]
-    fn signature_is_some_when_a_mismatch_exists() {
-        let mismatches = vec![entry(1, BalanceAsset::Core, 100, 0)];
-        assert!(balance_health_signature(&mismatches).is_some());
-    }
-
-    #[test]
-    fn signature_is_order_independent() {
-        let a = entry(1, BalanceAsset::Core, 100, 0);
-        let b = entry(2, BalanceAsset::Platform, 50, 10);
-        let forward = balance_health_signature(&[a, b]);
-        let reversed = balance_health_signature(&[b, a]);
-        assert_eq!(
-            forward, reversed,
-            "the same mismatch set must dedupe regardless of iteration order"
-        );
-    }
-
-    #[test]
-    fn signature_changes_when_the_mismatch_set_changes() {
-        let base = balance_health_signature(&[entry(1, BalanceAsset::Core, 100, 0)]);
-        let different_amount = balance_health_signature(&[entry(1, BalanceAsset::Core, 200, 0)]);
-        let added = balance_health_signature(&[
-            entry(1, BalanceAsset::Core, 100, 0),
-            entry(2, BalanceAsset::Platform, 50, 10),
-        ]);
-        assert_ne!(base, different_amount, "a changed total must re-surface");
-        assert_ne!(base, added, "a newly affected wallet must re-surface");
-    }
-
-    #[test]
-    fn warning_is_a_calm_jargon_free_actionable_sentence() {
-        let text = BALANCE_HEALTH_WARNING;
-        assert!(text.ends_with('.'), "must be a complete sentence");
-        let lower = text.to_lowercase();
-        assert!(lower.contains("safe"), "must reassure that funds are safe");
-        // Offers a concrete self-service action; never redirects to support.
-        assert!(
-            lower.contains("refresh") || lower.contains("reopen"),
-            "must offer a concrete action the user can take"
-        );
-        assert!(!lower.contains("support"), "must be self-resolvable");
-        for jargon in ["duff", "utxo", "rpc", "spv", "watched_addresses", "dip-17"] {
-            assert!(!lower.contains(jargon), "leaks jargon `{jargon}`");
         }
     }
 }

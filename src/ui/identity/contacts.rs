@@ -713,7 +713,7 @@ mod tests {
     }
 
     // ---------------------------------------------------------------
-    // T29 / QA-002: ContactsState cache wiring
+    // ContactsState cache wiring
     // ---------------------------------------------------------------
 
     /// T28 regression guard (extended): reset() must clear the load guard AND
@@ -749,7 +749,7 @@ mod tests {
         );
     }
 
-    /// QA-002 / T29: abbreviate_id() trims long Base58 IDs to 8 chars + "…".
+    /// abbreviate_id() trims long Base58 IDs to 8 chars + "…".
     #[test]
     fn abbreviate_id_shortens_long_ids() {
         let long = "AbCdEfGhIjKlMnOpQrStUv";
@@ -760,7 +760,7 @@ mod tests {
         assert_eq!(abbreviate_id(empty), "");
     }
 
-    /// QA-002 / T29: received and sent section headings count the entries.
+    /// Received and sent section headings count the entries.
     #[test]
     fn section_headings_include_count_when_populated() {
         let mut state = ContactsState::default();

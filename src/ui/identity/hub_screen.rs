@@ -4,7 +4,7 @@
 //! recomputes the landing from the active-network identity count and dispatches
 //! rendering to the appropriate submodule.
 //!
-//! See `docs/ai-design/2026-04-23-identity-hub-impl/04-dev-plan.md` Task T3.
+//! See `docs/ai-design/2026-04-23-identity-hub-impl/04-dev-plan.md`.
 
 use super::breadcrumb_switcher::{self, BreadcrumbEffect};
 use super::identity_hub_tab_bar::IdentityHubTabBar;
@@ -30,9 +30,8 @@ use super::tabs::IdentityHubTab;
 
 /// Top-level screen for the new unified Identities hub.
 ///
-/// The struct is deliberately small at this stage (Task T3 scaffold). Subsequent
-/// implementation tasks (T5 onboarding, T7 picker, T8–T11 tabs) attach state and
-/// rendering into the existing submodules.
+/// Owns the selected tab, per-tab state, and the cached landing state; tab
+/// submodules render into this via the shared `AppContext`.
 pub struct IdentityHubScreen {
     pub app_context: Arc<AppContext>,
     /// The currently selected tab. Persisted only in memory for now — start tab
@@ -318,9 +317,8 @@ impl ScreenLike for IdentityHubScreen {
     }
 
     fn display_message(&mut self, _message: &str, _message_type: MessageType) {
-        // AppState sets the global banner centrally — we only need side-effects
-        // here. The scaffold has none yet (no in-flight task banners owned by
-        // the hub itself). Sub-tab content will override their own lifecycle.
+        // AppState sets the global banner centrally; the hub itself owns no
+        // in-flight task banners. Sub-tab content overrides its own lifecycle.
     }
 
     fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
@@ -330,7 +328,7 @@ impl ScreenLike for IdentityHubScreen {
         match &result {
             // A confirmed profile-save success: commit the edit baseline on the
             // Settings tab so the Save button re-enables only after the next
-            // edit (T21). Guard by identity ID to reject stale results.
+            // edit. Guard by identity ID to reject stale results.
             BackendTaskSuccessResult::DashPayProfileUpdated(saved_id) => {
                 let matches = self
                     .settings_tab
@@ -341,8 +339,8 @@ impl ScreenLike for IdentityHubScreen {
                 }
             }
             // Populate the Received/Sent request caches so the Contacts tab
-            // can render real RequestCard rows instead of hardcoded empties
-            // (T29 / QA-002). The result arrives from LoadContactRequests,
+            // can render real RequestCard rows instead of hardcoded empties.
+            // The result arrives from LoadContactRequests,
             // dispatched alongside LoadContacts in contacts::render_populated.
             BackendTaskSuccessResult::DashPayContactRequests { incoming, outgoing } => {
                 self.contacts_state

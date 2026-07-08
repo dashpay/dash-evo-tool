@@ -128,7 +128,7 @@ fn is_transient_registration_error(error: &TaskError) -> bool {
         TaskError::WalletBackend { .. }
             | TaskError::WalletBackendNotYetWired
             | TaskError::WalletSeedStorage { .. }
-            | TaskError::WalletMetaStorage { .. }
+            | TaskError::KvSidecarStorage { .. }
     )
 }
 
@@ -136,7 +136,7 @@ fn is_transient_registration_error(error: &TaskError) -> bool {
 /// backoff (~30s total).
 ///
 /// Under the shared-runtime backend-e2e harness, the fail-closed sidecar writes
-/// (`WalletSeedStorage` / `WalletMetaStorage`) can briefly lose a SQLite race,
+/// (`WalletSeedStorage` / `KvSidecarStorage`) can briefly lose a SQLite race,
 /// and upstream registration can surface the typed transient `WalletBackend`
 /// ("retry in a moment") signal. A single attempt then panics and masks the test
 /// under exercise (e.g. identity_create / identity_cold_boot). Retry those
@@ -330,8 +330,8 @@ impl BackendTestContext {
 
         // Register the framework wallet BEFORE the backend is built so its
         // sidecars (wallet-meta xpub + encrypted-seed envelope) are
-        // persisted. `UpstreamFromPersisted` then loads it watch-only from
-        // the persister at `WalletBackend::new` time and the upstream
+        // persisted. `load_from_persistor_seedless` then loads it watch-only
+        // from the persister at `WalletBackend::new` time and the upstream
         // manager monitors its addresses from the first sync.
         tracing::info!("Restoring framework wallet from E2E_WALLET_MNEMONIC");
         let wallet = dash_evo_tool::model::wallet::Wallet::new_from_seed(
@@ -368,7 +368,7 @@ impl BackendTestContext {
 
         // Construct + start the real wallet backend exactly as production
         // does: `ensure_wallet_backend` builds `WalletBackend` (which loads
-        // the framework wallet watch-only via `UpstreamFromPersisted`), then
+        // the framework wallet watch-only via `load_from_persistor_seedless`), then
         // `WalletBackend::start()` starts the upstream `SpvRuntime` sync.
         app_context
             .ensure_wallet_backend(task_result_sender)

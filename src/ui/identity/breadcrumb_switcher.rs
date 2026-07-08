@@ -141,7 +141,7 @@ pub fn render(
     let wallet_count = wallets.len();
 
     // One per-frame identity load; derive the active identity and the no-wallet
-    // group from it instead of re-querying (QA-005). The wallet-scoped list
+    // group from it instead of re-querying. The wallet-scoped list
     // still needs its own DB query (the owning `wallet_hash` is not exposed on
     // `QualifiedIdentity`, only stored — R1).
     let all_identities = app_context
@@ -162,7 +162,7 @@ pub fn render(
 
     // The wallet segment is DERIVED from the active identity (identity-primary).
     // A wallet-less active identity → no active wallet → empty wallet segment,
-    // so the pill never shows a wallet belonging to a different identity (QA-001).
+    // so the pill never shows a wallet belonging to a different identity.
     let active_wallet = if active_is_wallet_less {
         None
     } else {
@@ -204,7 +204,7 @@ pub fn render(
 
         // --- Segment 2: wallet pill -------------------------------------
         // A wallet-less active identity has no wallet → empty segment, regardless
-        // of how many HD wallets exist (QA-001).
+        // of how many HD wallets exist.
         let wallet_mode = if active_is_wallet_less {
             BreadcrumbPillMode::Placeholder
         } else {

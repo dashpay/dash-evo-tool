@@ -34,33 +34,12 @@ impl AppContext {
             return Err(TaskError::WalletMessageSignUnsupportedKeyType);
         }
 
-        let wallet = {
-            let wallet_arc = {
-                let wallets = self.wallets.read()?;
-                wallets
-                    .get(&seed_hash)
-                    .cloned()
-                    .ok_or(TaskError::WalletNotFound)?
-            };
-            wallet_arc.read()?.clone()
-        };
-
-        let network = self.network;
-        let path_for_derive = derivation_path.clone();
-        let backend = self.wallet_backend()?;
-        let signature = backend
-            .secret_access()
-            .with_secret(
-                &crate::wallet_backend::SecretScope::HdSeed { seed_hash },
-                |plaintext| {
-                    let seed = plaintext.expose_hd_seed().ok_or(TaskError::WalletLocked)?;
-                    let private_key = wallet
-                        .private_key_at_derivation_path_with_seed(seed, &path_for_derive, network)
-                        .map_err(|detail| {
-                            tracing::warn!(error = %detail, "Sign-message key derivation failed");
-                            TaskError::WalletMessageSigningFailed
-                        })?;
-
+        let signature = self
+            .with_wallet_derived_key(
+                seed_hash,
+                &derivation_path,
+                TaskError::WalletMessageSigningFailed,
+                |private_key| {
                     let secret_key = SecretKey::from_byte_array(&private_key.inner.secret_bytes())
                         .map_err(|detail| {
                             tracing::warn!(error = %detail, "Sign-message secret key construction failed");

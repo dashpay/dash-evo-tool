@@ -52,8 +52,9 @@ use platform_wallet::{PlatformWallet, calculate_account_reference, derive_contac
 
 use crate::backend_task::error::TaskError;
 use crate::model::dashpay::{
-    ContactAddressIndex, ContactPrivateInfo, StoredContact, StoredContactRequest, StoredPayment,
-    StoredProfile,
+    ContactAddressIndex, ContactPrivateInfo, ContactRequestDirection, ContactRequestStatus,
+    ContactStatus, PaymentDirection as DetPaymentDirection, PaymentStatus as DetPaymentStatus,
+    StoredContact, StoredContactRequest, StoredPayment, StoredProfile,
 };
 use crate::wallet_backend::kv::DetKv;
 use crate::wallet_backend::{DetScope, WalletBackend};
@@ -297,7 +298,11 @@ impl<'a> DashpayView<'a> {
         for contact in dashpay.established_contacts().values() {
             let contact_id = &contact.contact_identity_id;
             let blocked = kv_contains(&kv, owner, KV_PREFIX_BLOCKED, contact_id);
-            let status = if blocked { "blocked" } else { "accepted" };
+            let status = if blocked {
+                ContactStatus::Blocked
+            } else {
+                ContactStatus::Accepted
+            };
             let (created_at, updated_at) = kv_timestamps(&kv, contact_id);
             out.push(established_to_det(
                 owner, contact, status, created_at, updated_at,
@@ -311,7 +316,11 @@ impl<'a> DashpayView<'a> {
                 continue;
             }
             let blocked = kv_contains(&kv, owner, KV_PREFIX_BLOCKED, recipient_id);
-            let status = if blocked { "blocked" } else { "pending" };
+            let status = if blocked {
+                ContactStatus::Blocked
+            } else {
+                ContactStatus::Pending
+            };
             let (created_at, updated_at) = kv_timestamps(&kv, recipient_id);
             out.push(request_to_det_contact(
                 owner,
@@ -362,8 +371,8 @@ impl<'a> DashpayView<'a> {
                 owner,
                 recipient_id,
                 request,
-                "sent",
-                &status,
+                ContactRequestDirection::Sent,
+                status,
             ));
         }
 
@@ -378,7 +387,11 @@ impl<'a> DashpayView<'a> {
                 &kv,
             );
             out.push(request_to_det_request(
-                owner, sender_id, request, "received", &status,
+                owner,
+                sender_id,
+                request,
+                ContactRequestDirection::Received,
+                status,
             ));
         }
 
@@ -435,7 +448,7 @@ impl<'a> DashpayView<'a> {
 fn established_to_det(
     owner: &Identifier,
     contact: &EstablishedContact,
-    status: &str,
+    status: ContactStatus,
     created_at: i64,
     updated_at: i64,
 ) -> StoredContact {
@@ -450,7 +463,7 @@ fn established_to_det(
         display_name: contact.alias.clone(),
         avatar_url: None,
         public_message: contact.note.clone(),
-        contact_status: status.to_string(),
+        contact_status: status,
         created_at,
         updated_at,
         last_seen: None,
@@ -461,7 +474,7 @@ fn request_to_det_contact(
     owner: &Identifier,
     counterparty: &Identifier,
     _request: &ContactRequest,
-    status: &str,
+    status: ContactStatus,
     created_at: i64,
     updated_at: i64,
 ) -> StoredContact {
@@ -472,7 +485,7 @@ fn request_to_det_contact(
         display_name: None,
         avatar_url: None,
         public_message: None,
-        contact_status: status.to_string(),
+        contact_status: status,
         created_at,
         updated_at,
         last_seen: None,
@@ -483,10 +496,10 @@ fn request_to_det_request(
     owner: &Identifier,
     counterparty: &Identifier,
     request: &ContactRequest,
-    request_type: &str,
-    status: &str,
+    request_type: ContactRequestDirection,
+    status: ContactRequestStatus,
 ) -> StoredContactRequest {
-    let (from_id, to_id) = if request_type == "sent" {
+    let (from_id, to_id) = if request_type == ContactRequestDirection::Sent {
         (owner, counterparty)
     } else {
         (counterparty, owner)
@@ -504,8 +517,8 @@ fn request_to_det_request(
         // is encrypted (`encrypted_account_label: Option<Vec<u8>>`) and
         // surfacing it would leak ciphertext into a UX-facing string.
         account_label: None,
-        request_type: request_type.to_string(),
-        status: status.to_string(),
+        request_type,
+        status,
         // Upstream provides `created_at` directly — no sidecar read needed.
         created_at: request.created_at as i64,
         responded_at: None,
@@ -525,13 +538,15 @@ fn payment_to_det(
     use crate::model::dashpay::payment_txid_from_storage_key;
 
     let (from_id, to_id, payment_type) = match entry.direction {
-        PaymentDirection::Sent => (owner, &entry.counterparty_id, "sent"),
-        PaymentDirection::Received => (&entry.counterparty_id, owner, "received"),
+        PaymentDirection::Sent => (owner, &entry.counterparty_id, DetPaymentDirection::Sent),
+        PaymentDirection::Received => {
+            (&entry.counterparty_id, owner, DetPaymentDirection::Received)
+        }
     };
     let status = match entry.status {
-        PaymentStatus::Pending => "pending",
-        PaymentStatus::Confirmed => "confirmed",
-        PaymentStatus::Failed => "failed",
+        PaymentStatus::Pending => DetPaymentStatus::Pending,
+        PaymentStatus::Confirmed => DetPaymentStatus::Confirmed,
+        PaymentStatus::Failed => DetPaymentStatus::Failed,
     };
     // The upstream map key is `(txid, vout)` for incoming payments (a single
     // tx can pay two contact outputs). Timestamps are keyed by the same
@@ -545,8 +560,8 @@ fn payment_to_det(
         to_identity_id: to_id.to_buffer().to_vec(),
         amount: entry.amount_duffs as i64,
         memo: entry.memo.clone(),
-        payment_type: payment_type.to_string(),
-        status: status.to_string(),
+        payment_type,
+        status,
         created_at,
         confirmed_at,
     }
@@ -589,18 +604,18 @@ fn derive_request_status(
     created_at_ms: u64,
     now_ms: u64,
     kv: &DetKv,
-) -> String {
+) -> ContactRequestStatus {
     if has_matching_established {
-        return "accepted".to_string();
+        return ContactRequestStatus::Accepted;
     }
     if kv_contains(kv, owner, KV_PREFIX_REJECTED, counterparty) {
-        return "rejected".to_string();
+        return ContactRequestStatus::Rejected;
     }
     let age_ms = now_ms.saturating_sub(created_at_ms);
     if age_ms > request_expiry_threshold_ms() {
-        return "expired".to_string();
+        return ContactRequestStatus::Expired;
     }
-    "pending".to_string()
+    ContactRequestStatus::Pending
 }
 
 /// The [`DASHPAY_REQUEST_EXPIRY_DAYS`] window expressed in milliseconds, the
@@ -1150,12 +1165,12 @@ mod tests {
         contact.set_alias("Buddy".to_string());
         contact.set_note("Met at conf".to_string());
 
-        let det = established_to_det(&owner, &contact, "accepted", 1_000, 2_000);
+        let det = established_to_det(&owner, &contact, ContactStatus::Accepted, 1_000, 2_000);
         assert_eq!(det.owner_identity_id, owner.to_buffer().to_vec());
         assert_eq!(det.contact_identity_id, contact_id.to_buffer().to_vec());
         assert_eq!(det.display_name.as_deref(), Some("Buddy"));
         assert_eq!(det.public_message.as_deref(), Some("Met at conf"));
-        assert_eq!(det.contact_status, "accepted");
+        assert_eq!(det.contact_status, ContactStatus::Accepted);
         assert_eq!(det.created_at, 1_000);
         assert_eq!(det.updated_at, 2_000);
         // Fields requiring DPNS / profile cross-read stay None in D1.
@@ -1170,8 +1185,9 @@ mod tests {
         let recipient = id_from_byte(2);
         let request = mk_request(1, 2, 123);
 
-        let det = request_to_det_contact(&owner, &recipient, &request, "pending", 0, 0);
-        assert_eq!(det.contact_status, "pending");
+        let det =
+            request_to_det_contact(&owner, &recipient, &request, ContactStatus::Pending, 0, 0);
+        assert_eq!(det.contact_status, ContactStatus::Pending);
         assert_eq!(det.owner_identity_id, owner.to_buffer().to_vec());
         assert_eq!(det.contact_identity_id, recipient.to_buffer().to_vec());
     }
@@ -1182,11 +1198,17 @@ mod tests {
         let recipient = id_from_byte(2);
         let request = mk_request(1, 2, 123);
 
-        let det = request_to_det_request(&owner, &recipient, &request, "sent", "pending");
+        let det = request_to_det_request(
+            &owner,
+            &recipient,
+            &request,
+            ContactRequestDirection::Sent,
+            ContactRequestStatus::Pending,
+        );
         assert_eq!(det.from_identity_id, owner.to_buffer().to_vec());
         assert_eq!(det.to_identity_id, recipient.to_buffer().to_vec());
-        assert_eq!(det.request_type, "sent");
-        assert_eq!(det.status, "pending");
+        assert_eq!(det.request_type, ContactRequestDirection::Sent);
+        assert_eq!(det.status, ContactRequestStatus::Pending);
         assert_eq!(det.created_at, 123);
         // Encrypted label is never surfaced as a plaintext `account_label`.
         assert!(det.account_label.is_none());
@@ -1198,10 +1220,16 @@ mod tests {
         let sender = id_from_byte(2);
         let request = mk_request(2, 1, 456);
 
-        let det = request_to_det_request(&owner, &sender, &request, "received", "pending");
+        let det = request_to_det_request(
+            &owner,
+            &sender,
+            &request,
+            ContactRequestDirection::Received,
+            ContactRequestStatus::Pending,
+        );
         assert_eq!(det.from_identity_id, sender.to_buffer().to_vec());
         assert_eq!(det.to_identity_id, owner.to_buffer().to_vec());
-        assert_eq!(det.request_type, "received");
+        assert_eq!(det.request_type, ContactRequestDirection::Received);
     }
 
     #[test]
@@ -1214,8 +1242,8 @@ mod tests {
         assert_eq!(det.tx_id, "tx-abc");
         assert_eq!(det.from_identity_id, owner.to_buffer().to_vec());
         assert_eq!(det.to_identity_id, counterparty.to_buffer().to_vec());
-        assert_eq!(det.payment_type, "sent");
-        assert_eq!(det.status, "pending");
+        assert_eq!(det.payment_type, DetPaymentDirection::Sent);
+        assert_eq!(det.status, DetPaymentStatus::Pending);
         assert_eq!(det.amount, 12_345);
         assert_eq!(det.memo.as_deref(), Some("lunch"));
         assert_eq!(det.created_at, 0);
@@ -1231,8 +1259,8 @@ mod tests {
         let det = payment_to_det(&owner, "tx-def", &entry, &empty_kv());
         assert_eq!(det.from_identity_id, counterparty.to_buffer().to_vec());
         assert_eq!(det.to_identity_id, owner.to_buffer().to_vec());
-        assert_eq!(det.payment_type, "received");
-        assert_eq!(det.status, "confirmed");
+        assert_eq!(det.payment_type, DetPaymentDirection::Received);
+        assert_eq!(det.status, DetPaymentStatus::Confirmed);
     }
 
     #[test]
@@ -1292,12 +1320,12 @@ mod tests {
         let created_at_ms: u64 = now_ms - 60_000;
         assert_eq!(
             derive_request_status(&owner, &counterparty, true, created_at_ms, now_ms, &kv),
-            "accepted",
+            ContactRequestStatus::Accepted,
             "matching established contact wins"
         );
         assert_eq!(
             derive_request_status(&owner, &counterparty, false, created_at_ms, now_ms, &kv),
-            "pending",
+            ContactRequestStatus::Pending,
             "no established + no rejection sidecar + fresh = pending"
         );
     }
@@ -1318,7 +1346,7 @@ mod tests {
         let created_at_ms: u64 = now_ms - 60_000;
         assert_eq!(
             derive_request_status(&owner, &counterparty, false, created_at_ms, now_ms, &kv),
-            "rejected"
+            ContactRequestStatus::Rejected
         );
     }
 
@@ -1333,7 +1361,7 @@ mod tests {
         let created_at_ms: u64 = now_ms - threshold_ms - 60_000;
         assert_eq!(
             derive_request_status(&owner, &counterparty, false, created_at_ms, now_ms, &kv),
-            "expired",
+            ContactRequestStatus::Expired,
             "older-than-threshold pending request reports as expired"
         );
     }
@@ -1349,7 +1377,7 @@ mod tests {
         let created_at_ms: u64 = now_ms - threshold_ms + 60_000;
         assert_eq!(
             derive_request_status(&owner, &counterparty, false, created_at_ms, now_ms, &kv),
-            "pending"
+            ContactRequestStatus::Pending
         );
     }
 
@@ -1391,12 +1419,12 @@ mod tests {
         contact.set_alias("Friend".into());
 
         let status = if kv_contains(&kv, &owner, KV_PREFIX_BLOCKED, &contact_id) {
-            "blocked"
+            ContactStatus::Blocked
         } else {
-            "accepted"
+            ContactStatus::Accepted
         };
         let det = established_to_det(&owner, &contact, status, 0, 0);
-        assert_eq!(det.contact_status, "blocked");
+        assert_eq!(det.contact_status, ContactStatus::Blocked);
         assert_eq!(det.display_name.as_deref(), Some("Friend"));
     }
 
@@ -1481,7 +1509,7 @@ mod tests {
         let created_at_ms: u64 = now_ms - 60_000;
         assert_eq!(
             derive_request_status(&owner, &counterparty, false, created_at_ms, now_ms, &kv),
-            "rejected"
+            ContactRequestStatus::Rejected
         );
     }
 
@@ -1543,12 +1571,12 @@ mod tests {
         // What the view derivation produces — same precedence as
         // `DashpayView::contacts`: blocked wins over accepted.
         let status = if kv_contains(&kv, &owner, KV_PREFIX_BLOCKED, &contact_id) {
-            "blocked"
+            ContactStatus::Blocked
         } else {
-            "accepted"
+            ContactStatus::Accepted
         };
         let det = established_to_det(&owner, &contact, status, 0, 0);
-        assert_eq!(det.contact_status, "blocked");
+        assert_eq!(det.contact_status, ContactStatus::Blocked);
         assert_eq!(det.display_name.as_deref(), Some("Pal"));
     }
 
@@ -1573,7 +1601,7 @@ mod tests {
         let created_at_ms: u64 = now_ms - 1_000;
         let derived =
             derive_request_status(&owner, &counterparty, false, created_at_ms, now_ms, &kv);
-        assert_eq!(derived, "rejected");
+        assert_eq!(derived, ContactRequestStatus::Rejected);
 
         // And the threshold-expiry override does not fire for rejected
         // requests — `rejected` precedence is higher than `expired`.
@@ -1581,7 +1609,7 @@ mod tests {
         let old_created = now_ms - threshold_ms - 60_000;
         let derived_old =
             derive_request_status(&owner, &counterparty, false, old_created, now_ms, &kv);
-        assert_eq!(derived_old, "rejected");
+        assert_eq!(derived_old, ContactRequestStatus::Rejected);
     }
 
     #[test]
@@ -1598,7 +1626,7 @@ mod tests {
         let created_at_ms: u64 = now_ms - threshold_ms - 86_400_000;
         assert_eq!(
             derive_request_status(&owner, &counterparty, false, created_at_ms, now_ms, &kv),
-            "expired"
+            ContactRequestStatus::Expired
         );
     }
 
@@ -1650,12 +1678,12 @@ mod tests {
         let created_at_ms: u64 = now_ms - 60_000;
         assert_eq!(
             derive_request_status(&owner_a, &counterparty, false, created_at_ms, now_ms, &kv),
-            "rejected",
+            ContactRequestStatus::Rejected,
             "A's own rejection colours A's view"
         );
         assert_eq!(
             derive_request_status(&owner_b, &counterparty, false, created_at_ms, now_ms, &kv),
-            "pending",
+            ContactRequestStatus::Pending,
             "B's view of the same counterparty is unaffected"
         );
     }
@@ -2079,61 +2107,7 @@ mod tests {
     // -------------------------------------------------------------------
 
     fn empty_kv() -> DetKv {
-        use platform_wallet_storage::{KvError, KvStore, ObjectId};
-        use std::sync::Mutex;
-
-        /// FK-free in-memory store modelling every `ObjectId` scope via a
-        /// flat `Vec` (upstream `ObjectId` is not `Ord`, so it cannot key
-        /// a map).
-        #[derive(Default)]
-        struct InMemoryKv {
-            slots: Mutex<Vec<(ObjectId, String, Vec<u8>)>>,
-        }
-
-        impl KvStore for InMemoryKv {
-            fn get(&self, scope: &ObjectId, key: &str) -> Result<Option<Vec<u8>>, KvError> {
-                Ok(self
-                    .slots
-                    .lock()
-                    .unwrap()
-                    .iter()
-                    .find(|(s, k, _)| s == scope && k == key)
-                    .map(|(_, _, v)| v.clone()))
-            }
-            fn put(&self, scope: &ObjectId, key: &str, value: &[u8]) -> Result<(), KvError> {
-                let mut slots = self.slots.lock().unwrap();
-                if let Some(slot) = slots.iter_mut().find(|(s, k, _)| s == scope && k == key) {
-                    slot.2 = value.to_vec();
-                } else {
-                    slots.push((scope.clone(), key.to_string(), value.to_vec()));
-                }
-                Ok(())
-            }
-            fn delete(&self, scope: &ObjectId, key: &str) -> Result<(), KvError> {
-                self.slots
-                    .lock()
-                    .unwrap()
-                    .retain(|(s, k, _)| !(s == scope && k == key));
-                Ok(())
-            }
-            fn list_keys(
-                &self,
-                scope: &ObjectId,
-                prefix: Option<&str>,
-            ) -> Result<Vec<String>, KvError> {
-                let pred = |k: &str| -> bool { prefix.is_none_or(|p| k.starts_with(p)) };
-                let mut keys: Vec<String> = self
-                    .slots
-                    .lock()
-                    .unwrap()
-                    .iter()
-                    .filter(|(s, k, _)| s == scope && pred(k))
-                    .map(|(_, k, _)| k.clone())
-                    .collect();
-                keys.sort();
-                Ok(keys)
-            }
-        }
+        use crate::wallet_backend::kv_test_support::InMemoryKv;
 
         DetKv::from_store(Arc::new(InMemoryKv::default()))
     }
@@ -2323,7 +2297,7 @@ mod tests {
         );
     }
 
-    /// Correctness substrate for PROJ-004: on **mainnet**, the xpub the seam
+    /// Correctness substrate: on **mainnet**, the xpub the seam
     /// publishes in the contact request equals the xpub DET's receive-side
     /// derivation (`derive_dashpay_incoming_xpub`) produces from the same seed
     /// and path. This pins the upstream `derive_contact_xpub` output against
@@ -2364,7 +2338,7 @@ mod tests {
         );
     }
 
-    /// Fund-routing invariant for SEC-001 on **testnet**: the xpub the seam
+    /// Fund-routing invariant on **testnet**: the xpub the seam
     /// publishes in the contact request equals the xpub DET's receive-side
     /// derivation (`derive_dashpay_incoming_xpub`) produces from the same seed
     /// and path. Both now select coin-type `1'` on testnet, so the contact
@@ -2405,7 +2379,7 @@ mod tests {
         );
     }
 
-    /// SEC-001 fund-routing invariant, both networks, all published fields.
+    /// Fund-routing invariant, both networks, all published fields.
     /// The send-side seam (`derive_contact_xpub_material`) and the receive-side
     /// scanning derivation (`derive_dashpay_incoming_xpub`) must agree on the
     /// full triple (public_key, chain_code, parent_fingerprint) for the same

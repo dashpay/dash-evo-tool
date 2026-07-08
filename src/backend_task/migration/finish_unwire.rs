@@ -4,10 +4,7 @@
 //! upstream `platform-wallet-storage` k/v store and `SecretStore`.
 //! Idempotent: a per-network completion sentinel under
 //! [`sentinel_key_for`] in `det-app.sqlite` short-circuits subsequent
-//! launches **on the same network**. Per-domain row-copy bodies are
-//! filled in by T-SK-02 (single-key wallets) and T-SH-02 (shielded
-//! rows); this scaffold wires the orchestration, status reporting,
-//! and sentinel I/O.
+//! launches **on the same network**.
 
 use std::sync::Arc;
 
@@ -53,7 +50,7 @@ fn network_token(network: Network) -> &'static str {
     }
 }
 
-// TODO(PROJ-034): App settings, top-up history, and scheduled DPNS votes all reset/empty on
+// TODO: App settings, top-up history, and scheduled DPNS votes all reset/empty on
 //   upgrade — confirmed real data loss per v0.9.3 cross-check; follow-up priority:
 //   scheduled votes (vote-window deadline risk) > app settings (UX friction) > top-up
 //   history (audit trail). Migration to be handled in a separate PR.
@@ -84,9 +81,7 @@ pub struct MigrationCompletion {
 /// Domain error envelope for the migration orchestrator.
 ///
 /// Variants wrap upstream error types via `#[source]`; the
-/// user-facing message lives on [`TaskError::MigrationFailed`]. Adding
-/// a row-copy body (T-SK-02 / T-SH-02) typically extends this enum
-/// with a per-domain variant that wraps the relevant adapter error.
+/// user-facing message lives on [`TaskError::MigrationFailed`].
 #[derive(Debug, thiserror::Error)]
 pub enum MigrationError {
     /// Could not open the legacy `data.db` SQLite file to sniff for
@@ -118,15 +113,9 @@ pub enum MigrationError {
         source: KvAdapterError,
     },
 
-    /// At least one legacy `single_key_wallet` row could not be migrated
-    /// in this run. Captures the imported / skipped / errored counts so
-    /// the orchestrator can decide whether to write the sentinel —
-    /// password-protected rows count as `skipped_password_protected`
-    /// (T-SK-03 will surface a UX prompt to resolve them) while
-    /// genuinely unreadable rows count as `failed`. Fatal only when
-    /// `failed > 0`; pure password-protected runs leave the sentinel
-    /// in place so the next launch picks them up after the user has
-    /// supplied the password.
+    /// At least one legacy `single_key_wallet` row failed to migrate.
+    /// Fatal only when `failed > 0`; password-protected rows count as
+    /// `skipped_password_protected`, not as failures.
     #[error("could not finish single-key migration: {failed} row(s) failed")]
     SingleKeyPartialFailure {
         /// Number of rows successfully imported (or already present
@@ -180,15 +169,9 @@ pub enum MigrationError {
     #[error("wallet backend not available during migration")]
     WalletBackendUnavailable,
 
-    /// A caller asked to drop the legacy `single_key_wallet` table while
-    /// at least one password-protected (`uses_password=1`) row had not
-    /// yet been restored into the modern vault. Dropping the table now
-    /// would permanently destroy keys that are still encrypted under the
-    /// user's OLD legacy password and have no copy anywhere else.
-    /// [`guard_single_key_table_droppable`] returns this so cleanup is
-    /// structurally blocked until every protected row is restored
-    /// (T-SK-03) or explicitly discarded by the user. `remaining` is the
-    /// count of un-restored protected rows for diagnostics.
+    /// Returned by [`guard_single_key_table_droppable`] when dropping the
+    /// legacy single-key table would destroy a password-protected key that
+    /// has no copy anywhere else. `remaining` is the un-restored row count.
     #[error(
         "could not drop legacy single-key table: {remaining} protected key(s) not yet restored"
     )]
@@ -243,11 +226,9 @@ impl MigrationError {
 /// the flag to decide whether to surface a "storage update complete"
 /// banner — a no-op launch must not show one.
 ///
-/// This is the orchestration skeleton. T-SK-02 plugs in the
-/// single-key row-copy step; T-SH-02 plugs in the shielded mirror
-/// step. Both hook in by adding their bodies to the `SingleKey` /
-/// `Shielded` branches below and (if needed) extending
-/// [`MigrationError`].
+/// Drains single-key wallet rows, HD wallet seeds, and wallet metadata
+/// into the upstream store, registers the migrated wallets, then writes
+/// the completion sentinel.
 pub async fn run(app_context: &Arc<AppContext>) -> Result<bool, TaskError> {
     let status = app_context.migration_status();
     let app_kv = app_context.app_kv();
@@ -298,18 +279,12 @@ pub async fn run(app_context: &Arc<AppContext>) -> Result<bool, TaskError> {
         "Legacy data.db rows detected — beginning migration",
     );
 
-    // T-SK-02 fills in the SecretStore row copy here.
     status.set_state(MigrationState::Running {
         step: MigrationStep::SingleKey,
     });
     migrate_single_key_rows(app_context).await?;
 
-    // Shielded migration removed (Phase D): DET's home-grown shielded
-    // subsystem was retired and the upstream coordinator resyncs Orchard state
-    // from chain, so there is nothing to mirror. The `MigrationStep::Shielded`
-    // state is no longer entered.
-
-    // T-W-00.5-v2 — copy every legacy HD wallet seed envelope into
+    // Copy every legacy HD wallet seed envelope into
     // the upstream encrypted vault. The envelope bytes travel verbatim
     // (no decryption); password-protected and unprotected rows take
     // the same path so the per-wallet password UX stays intact.
@@ -350,32 +325,12 @@ pub async fn run(app_context: &Arc<AppContext>) -> Result<bool, TaskError> {
     Ok(true)
 }
 
-/// Re-hydrate the just-migrated wallets into `ctx.wallets` and register the
-/// resolvable (open / unprotected) ones with the upstream wallet backend, then
-/// verify every such wallet actually landed upstream.
-///
-/// [`run`] calls this immediately before [`write_sentinel`], so the completion
-/// sentinel is recorded only after this returns `Ok(())`. A "completed" marker
-/// can therefore never be written while a *migratable* unprotected wallet is
-/// still missing from `spv/<net>/platform-wallet.sqlite`.
-///
-/// Two classes are intentionally excluded from the gate so they cannot wedge
-/// the sentinel forever — and both are genuinely safe to exclude:
-/// - **Locked password-protected wallets** hydrate `Closed`; they register on
-///   their unlock gesture (the W2 bridge). Their seed envelope was already
-///   copied to the vault before this step.
-/// - **Genuinely-unusable rows** (empty/undecodable master xpub, or an
-///   unprotected seed whose length is not 64) are rejected and surfaced by the
-///   copy step ([`hd_seed_row_is_hydratable`]), so they never reach the vault
-///   or `ctx.wallets`. Because the copy step now rejects exactly what hydration
-///   would drop, every wallet that DID land in the vault hydrates and is seen
-///   here — closing the QA-001 copy-vs-hydration asymmetry. The skipped seed
-///   stays in legacy `data.db` (never deleted), so this is exclusion, not loss.
-///
-/// Idempotent: re-hydration only gap-fills `ctx.wallets` (a wallet created
-/// earlier this session is never clobbered) and registration skips wallets
-/// already known upstream, so a re-run after a partial registration retries
-/// only the wallets still missing.
+/// Re-hydrates just-migrated wallets into `ctx.wallets` and registers the
+/// resolvable (open/unprotected) ones upstream. [`run`] calls this
+/// immediately before [`write_sentinel`], so completion can never be
+/// recorded while a migratable unprotected wallet is still unregistered.
+/// Locked protected wallets and genuinely-unusable rows are excluded —
+/// both register or land safely elsewhere. Idempotent.
 async fn register_migrated_wallets(app_context: &Arc<AppContext>) -> Result<(), MigrationError> {
     let backend = app_context
         .wallet_backend()
@@ -480,16 +435,10 @@ struct SingleKeyMigrationOutcome {
     failed: u32,
 }
 
-/// Single-key row migration. Walks the legacy `single_key_wallet`
-/// table for `network` and imports every `uses_password=0` row into
-/// the upstream secret store under the canonical
-/// `single_key_priv.<addr>` label. Idempotent: a re-run that sees the
-/// same address as an existing secret-store entry is a no-op success
-/// (covers TC-SK-002 — repeated launches must not duplicate).
-///
-/// Password-protected rows are deferred to T-SK-03's UX prompt —
-/// they cannot be resolved without the user's password and so are
-/// reported separately from genuine failures.
+/// Walks the legacy `single_key_wallet` table for `network` and imports
+/// every `uses_password=0` row into the secret store under the canonical
+/// `single_key_priv.<addr>` label. Idempotent. Password-protected rows
+/// are skipped and reported separately, not as failures.
 async fn migrate_single_key_rows(app_context: &Arc<AppContext>) -> Result<(), TaskError> {
     let backend = app_context
         .wallet_backend()
@@ -534,16 +483,10 @@ async fn migrate_single_key_rows(app_context: &Arc<AppContext>) -> Result<(), Ta
     Ok(())
 }
 
-/// Pure migration body — readable without an `AppContext`. Walks the
-/// `single_key_wallet` table at `conn`, decodes every row whose
-/// `uses_password=0` blob is a 32-byte raw key, and imports the
-/// derived WIF through `import` (kept as a closure so the test path
-/// can drive a bare `SingleKeyView` without building a full
-/// `WalletBackend`). Returns counters; never errors on partial
-/// readability so the caller can decide the policy.
-///
-/// **Missing table is not an error** — a freshly-installed `data.db`
-/// (no legacy rows at all) returns the zero outcome.
+/// Pure migration body (testable without an `AppContext`). Decodes every
+/// `uses_password=0` row at `conn` into a WIF and imports it via `import`.
+/// Returns counters rather than erroring on partial readability. A
+/// missing table is not an error — a fresh install has none.
 fn migrate_single_key_rows_from_conn<F>(
     conn: &Connection,
     mut import: F,
@@ -828,22 +771,12 @@ fn crypto_field_lengths_ok(salt: &[u8], nonce: &[u8], uses_password: bool) -> bo
 /// hydration, so the copy step rejects it too — see [`hd_seed_row_is_hydratable`].
 const HYDRATABLE_SEED_LEN: usize = 64;
 
-/// Whether a legacy `wallet` row will survive cold-boot hydration, mirroring
-/// the accept/reject rules in `wallet_backend::hydration`:
-///
-/// - the master xpub (`master_ecdsa_bip44_account_0_epk`) must be present AND
-///   decode as an `ExtendedPubKey` — every row (`reconstruct_from_envelope`);
-/// - an UNPROTECTED row's `encrypted_seed` must be exactly 64 bytes
-///   (`wallet_from_envelope`; a protected row hydrates closed from its public
-///   xpub and is never seed-length-checked).
-///
-/// Copy-time validation MUST mirror this so copy-acceptance ⊆
-/// hydration-acceptance: a row the copy step writes is then guaranteed to
-/// hydrate into `ctx.wallets` and be seen by the registration gate. A row that
-/// fails here is genuinely unusable in DET regardless (no derivable xpub or a
-/// corrupt seed) and is explicitly skipped + surfaced rather than silently
-/// copied as if migrated — otherwise it would be invisible to the gate and let
-/// the sentinel falsely read "done".
+/// Whether a legacy `wallet` row will survive cold-boot hydration (mirrors
+/// `wallet_backend::hydration`: master xpub must decode, and an unprotected
+/// row's seed must be exactly 64 bytes). Copy-acceptance must be a subset
+/// of hydration-acceptance, or an unusable row could pass the copy step yet
+/// stay invisible to the registration gate, letting the sentinel falsely
+/// read "done".
 fn hd_seed_row_is_hydratable(
     uses_password: bool,
     encrypted_seed: &[u8],
@@ -893,15 +826,10 @@ struct WalletMetaMigrationOutcome {
     failed: u32,
 }
 
-/// T-W-00 wallet-meta migration. Copies legacy `wallet` rows (alias /
-/// `is_main` / `core_wallet_name`) into the DET wallet-metadata sidecar
-/// for `app_context.network`. Idempotent (per-row `set` upserts).
-///
-/// `core_wallet_name` is treated as optional at the schema level — a
-/// recent legacy schema migration drops the column from the `wallet`
-/// table, so older installs may still have it while freshly-migrated
-/// ones will not. The probe at row-read time keeps the migrator
-/// compatible with both shapes.
+/// Copies legacy `wallet` rows (alias / `is_main` / `core_wallet_name`)
+/// into the DET wallet-metadata sidecar. Idempotent. `core_wallet_name`
+/// is optional — a recent legacy schema drop means older installs may
+/// still have it, so the reader probes for it at row-read time.
 fn migrate_wallet_meta_rows(app_context: &Arc<AppContext>) -> Result<(), TaskError> {
     let backend = app_context
         .wallet_backend()
@@ -943,15 +871,9 @@ fn migrate_wallet_meta_rows(app_context: &Arc<AppContext>) -> Result<(), TaskErr
     Ok(())
 }
 
-/// Pure wallet-meta migration body — readable without an `AppContext`.
-/// Walks the `wallet` table at `conn` filtered to `network` and forwards
-/// each `(seed_hash, meta)` pair to `set`. Returns counters; never
-/// errors on partial readability so the caller can decide the policy.
-///
-/// **Missing table is not an error** — a freshly-installed `data.db`
-/// (no legacy rows at all) returns the zero outcome.
-/// **Missing `core_wallet_name` column is not an error** — the
-/// recent legacy schema migration drops it; we fall back to `None`.
+/// Pure migration body (testable without an `AppContext`). Forwards each
+/// `(seed_hash, meta)` row at `conn` to `set`; returns counters. A missing
+/// table or missing `core_wallet_name` column is not an error.
 fn migrate_wallet_meta_rows_from_conn<F>(
     conn: &Connection,
     mut set: F,
@@ -966,14 +888,10 @@ where
     if !legacy_table_exists_named(conn, "wallet")? {
         return Ok(WalletMetaMigrationOutcome::default());
     }
-    // `core_wallet_name` is the ONLY optional `wallet` column (a recent legacy
-    // migration drops it), so it is probed and NULL-substituted. `uses_password`
-    // and `password_hint` are a hard invariant of the legacy `wallet` table: the
-    // wallet-seed migration (`migrate_wallet_seeds_rows_from_conn`) selects both
-    // unconditionally and runs FIRST over the same table at the same cold-start,
-    // so a schema lacking them fails there before this pass — reading them
-    // unprobed here is exactly as robust as the shipped seed migration. (The flip
-    // carries them into `WalletMeta` so the persisted password flag is accurate.)
+    // `core_wallet_name` is the only optional column, so it is probed and
+    // NULL-substituted. `uses_password`/`password_hint` are read unprobed —
+    // the seed migration selects them unconditionally and runs first over
+    // the same table, so a schema lacking them already fails there.
     let core_wallet_name_present = wallet_table_has_core_wallet_name(conn)?;
     let sql = if core_wallet_name_present {
         "SELECT seed_hash, alias, is_main, core_wallet_name, master_ecdsa_bip44_account_0_epk, \
@@ -1108,32 +1026,22 @@ fn wallet_table_has_core_wallet_name(conn: &Connection) -> Result<bool, Migratio
 struct WalletSeedsMigrationOutcome {
     /// Rows whose full envelope was written to the upstream vault.
     imported: u32,
-    /// Rows skipped because they would not survive cold-boot hydration —
-    /// an empty/undecodable master xpub, or an unprotected seed whose length
-    /// is not 64 (see [`hd_seed_row_is_hydratable`]). Non-fatal and surfaced
-    /// (logged + counted): the wallet is genuinely unusable in DET regardless,
-    /// so it is deliberately excluded — like a locked protected wallet —
-    /// instead of silently copied as if migrated. Excluding it keeps
-    /// copy-acceptance ⊆ hydration-acceptance, so the registration gate over
-    /// the hydrated set stays sound. The seed is retained in legacy `data.db`
-    /// (never deleted), so this is exclusion, not loss.
+    /// Rows that would not survive cold-boot hydration (see
+    /// [`hd_seed_row_is_hydratable`]); non-fatal, logged and counted rather
+    /// than silently copied. The seed stays in legacy `data.db` — this is
+    /// exclusion, not data loss.
     skipped_malformed: u32,
     /// Rows that could not be decoded (seed_hash wrong size, blob
     /// length wrong, etc.). Triggers the error path.
     failed: u32,
 }
 
-/// T-W-00.5-v2 wallet-seed migration. Copies each legacy `wallet`
-/// row's full encrypted envelope (ciphertext + salt + nonce + flags +
-/// xpub) into the upstream encrypted vault via
-/// [`WalletSeedView`](crate::wallet_backend::WalletSeedView).
-/// Password-protected and unprotected rows take the same path — the
-/// migrator never decrypts the envelope, so per-wallet password UX
-/// stays identical.
-///
-/// Idempotent — re-running the migrator overwrites the same envelope
-/// bytes under the same `WalletId` scope, matching the upstream `set`
-/// upsert contract.
+/// Copies each legacy `wallet` row's full encrypted envelope (ciphertext +
+/// salt + nonce + flags + xpub) into the upstream vault via
+/// [`WalletSeedView`](crate::wallet_backend::WalletSeedView) without
+/// decrypting it, so protected and unprotected rows take the same path.
+/// Idempotent: re-running overwrites the same envelope under the same
+/// `WalletId`.
 fn migrate_wallet_seeds_rows(app_context: &Arc<AppContext>) -> Result<(), TaskError> {
     let backend = app_context
         .wallet_backend()
@@ -1281,7 +1189,7 @@ where
             continue;
         }
 
-        // Hydration symmetry (QA-001). The copy step must not accept a row that
+        // Hydration symmetry. The copy step must not accept a row that
         // cold-boot hydration would silently drop, or the migrated wallet would
         // be in neither the registered nor the gate-counted set and the sentinel
         // would falsely read "done". A row that fails the shared hydratability
@@ -1461,60 +1369,7 @@ impl From<MigrationError> for TaskError {
 mod tests {
     use super::*;
     use crate::wallet_backend::DetKv;
-    use platform_wallet_storage::{KvError, KvStore, ObjectId};
-    use std::sync::Mutex;
-
-    /// Minimal in-memory `KvStore` that mirrors the shape used by the
-    /// real `SqlitePersister` for adapter tests. Models every `ObjectId`
-    /// scope FK-free via a flat `Vec` (upstream `ObjectId` is not `Ord`,
-    /// so it cannot key a map).
-    #[derive(Default)]
-    struct InMemoryKv {
-        slots: Mutex<Vec<(ObjectId, String, Vec<u8>)>>,
-    }
-
-    impl KvStore for InMemoryKv {
-        fn get(&self, scope: &ObjectId, key: &str) -> Result<Option<Vec<u8>>, KvError> {
-            Ok(self
-                .slots
-                .lock()
-                .unwrap()
-                .iter()
-                .find(|(s, k, _)| s == scope && k == key)
-                .map(|(_, _, v)| v.clone()))
-        }
-        fn put(&self, scope: &ObjectId, key: &str, value: &[u8]) -> Result<(), KvError> {
-            let mut slots = self.slots.lock().unwrap();
-            if let Some(slot) = slots.iter_mut().find(|(s, k, _)| s == scope && k == key) {
-                slot.2 = value.to_vec();
-            } else {
-                slots.push((scope.clone(), key.to_string(), value.to_vec()));
-            }
-            Ok(())
-        }
-        fn delete(&self, scope: &ObjectId, key: &str) -> Result<(), KvError> {
-            self.slots
-                .lock()
-                .unwrap()
-                .retain(|(s, k, _)| !(s == scope && k == key));
-            Ok(())
-        }
-        fn list_keys(
-            &self,
-            scope: &ObjectId,
-            prefix: Option<&str>,
-        ) -> Result<Vec<String>, KvError> {
-            let pred = |k: &str| -> bool { prefix.is_none_or(|p| k.starts_with(p)) };
-            Ok(self
-                .slots
-                .lock()
-                .unwrap()
-                .iter()
-                .filter(|(s, k, _)| s == scope && pred(k))
-                .map(|(_, k, _)| k.clone())
-                .collect())
-        }
-    }
+    use crate::wallet_backend::kv_test_support::InMemoryKv;
 
     fn kv() -> DetKv {
         DetKv::from_store(Arc::new(InMemoryKv::default()))
@@ -1565,23 +1420,10 @@ mod tests {
         assert_eq!(completion.sha, env!("CARGO_PKG_VERSION"));
     }
 
-    /// Per-network sentinel regression — the sentinel is scoped per network. Writing
-    /// the mainnet sentinel must not satisfy a subsequent testnet read,
-    /// so a network switch correctly re-triggers the migration on the
-    /// previously-unseen network.
-    ///
-    /// **Bug this guards against:** the previous global sentinel key
-    /// (`det:migration:finish_unwire:v1`) let the following sequence
-    /// hide every testnet wallet for the lifetime of the install —
-    ///   1. user upgrades on mainnet → migration runs → sentinel set
-    ///   2. user switches to testnet → orchestrator sees the sentinel
-    ///      and short-circuits → testnet `wallet` / `single_key_wallet`
-    ///      rows never drain into the upstream vault → wallet picker
-    ///      shows nothing on testnet.
-    ///
-    /// Only recoverable by digging into `data.db` by hand. The
-    /// per-network sentinel preserves the short-circuit's idempotency
-    /// while keeping each network's migration independent.
+    /// The sentinel is scoped per network — writing the mainnet sentinel
+    /// must not satisfy a subsequent testnet read, or a network switch
+    /// would leave testnet wallets permanently unmigrated behind a
+    /// stale-looking global sentinel.
     #[test]
     fn sentinel_is_per_network_mainnet_then_testnet() {
         use dash_sdk::dpp::dashcore::Network;
@@ -2182,16 +2024,9 @@ mod tests {
         }
     }
 
-    // ─────────────────────────────────────────────────────────────────
-    // T-W-00 wallet-meta migration fixtures + tests.
-    //
-    // Mirrors the legacy `wallet` schema from
-    // `src/database/initialization.rs` for the columns the migrator
-    // reads: `seed_hash`, `alias`, `is_main`, `network`,
-    // `core_wallet_name`. The migrator drives the schema variant via
-    // `wallet_table_has_core_wallet_name` so both the pre-drop and
-    // post-drop shapes are covered.
-    // ─────────────────────────────────────────────────────────────────
+    // Wallet-meta migration fixtures + tests. Mirrors the legacy `wallet`
+    // schema columns the migrator reads; both pre-drop and post-drop
+    // shapes (with/without `core_wallet_name`) are covered.
 
     /// Legacy `wallet` schema including `core_wallet_name` (pre-drop).
     /// Matches the columns DET writes in `database/wallet.rs`'s
@@ -2905,14 +2740,10 @@ mod tests {
             .to_vec()
     }
 
-    /// QA-001 regression — the copy step must REJECT exactly the rows that
-    /// cold-boot hydration would silently drop, closing the copy-vs-hydration
-    /// asymmetry that caused the false-complete. An unprotected row with an
-    /// empty/undecodable master xpub, or a non-64-byte seed, must be counted as
-    /// `skipped_malformed` (NOT imported) so it never reaches the vault — where
-    /// it would be invisible to the registration gate yet let the sentinel read
-    /// "done". A well-formed sibling row must still import, proving the skip is
-    /// surgical and non-fatal (no wedge).
+    /// Regression: the copy step must reject exactly what cold-boot
+    /// hydration would drop (empty/undecodable xpub, non-64-byte seed) —
+    /// counted as `skipped_malformed`, never imported — while a well-formed
+    /// sibling row still imports.
     #[test]
     fn qa_001_unhydratable_unprotected_rows_are_skipped_not_copied() {
         use dash_sdk::dpp::dashcore::Network;

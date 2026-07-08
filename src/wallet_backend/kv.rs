@@ -16,8 +16,6 @@
 //! settings and per-wallet data respectively. [`DetScope::Identity`] is
 //! active: identities, top-up history, scheduled votes, and the DashPay
 //! `private` / `address_index` overlays are all identity-scoped.
-//! [`DetScope::Token`] is defined and mapped but currently unused — the
-//! token-balance cache was removed; balances are read live from upstream.
 //!
 //! All keys carried by this adapter follow a colon-separated namespace
 //! convention, with a mandatory `<network>:` prefix for global slots so
@@ -65,9 +63,7 @@ pub const SCHEMA_VERSION: u8 = 1;
 /// a [`WalletSeedHash`] (transparently the same `[u8; 32]` the upstream
 /// store uses as its `WalletId`). `Identity` is active — identities,
 /// top-up history, scheduled votes, and the DashPay `private` /
-/// `address_index` overlays are all identity-scoped. `Token` is defined
-/// and mapped but currently unused (token balances are read live from
-/// upstream, not cached in DET).
+/// `address_index` overlays are all identity-scoped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DetScope<'a> {
     /// Global app metadata; no parent, survives wallet deletion.
@@ -78,12 +74,6 @@ pub enum DetScope<'a> {
     /// identities, top-up history, scheduled votes, and the DashPay
     /// `private` / `address_index` overlays are all identity-scoped.
     Identity(&'a [u8; 32]),
-    /// Per-token-balance metadata. Defined and mapped but currently unused —
-    /// token balances are read live from upstream rather than cached in DET.
-    Token {
-        identity_id: &'a [u8; 32],
-        token_id: &'a [u8; 32],
-    },
 }
 
 /// Map a DET-side [`DetScope`] onto the upstream [`ObjectId`]. The single
@@ -94,13 +84,6 @@ fn to_object_id(scope: DetScope<'_>) -> ObjectId {
         DetScope::Global => ObjectId::Global,
         DetScope::Wallet(seed_hash) => ObjectId::Wallet(*seed_hash),
         DetScope::Identity(identity_id) => ObjectId::Identity(*identity_id),
-        DetScope::Token {
-            identity_id,
-            token_id,
-        } => ObjectId::Token {
-            identity_id: *identity_id,
-            token_id: *token_id,
-        },
     }
 }
 
@@ -231,73 +214,7 @@ impl std::fmt::Debug for DetKv {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    /// In-memory KvStore implementation for the adapter tests.
-    ///
-    /// Models every [`ObjectId`] scope FK-free (no parent-existence
-    /// checks) so the adapter can be exercised without a real
-    /// `SqlitePersister`:
-    /// - each scope is an independent slot;
-    /// - `put` is upsert;
-    /// - `delete` is idempotent;
-    /// - `list_keys` supports an optional prefix and returns sorted keys.
-    ///
-    /// Upstream `ObjectId` is not `Ord`, so the backing store is a flat
-    /// `Vec` scanned by `PartialEq` rather than a map. LIKE-pattern
-    /// escaping is irrelevant for the adapter — colon separators are not
-    /// pattern metacharacters — so prefix matching here is plain
-    /// `str::starts_with`.
-    #[derive(Default)]
-    struct InMemoryKv {
-        slots: Mutex<Vec<(ObjectId, String, Vec<u8>)>>,
-    }
-
-    impl KvStore for InMemoryKv {
-        fn get(&self, scope: &ObjectId, key: &str) -> Result<Option<Vec<u8>>, KvError> {
-            Ok(self
-                .slots
-                .lock()
-                .unwrap()
-                .iter()
-                .find(|(s, k, _)| s == scope && k == key)
-                .map(|(_, _, v)| v.clone()))
-        }
-
-        fn put(&self, scope: &ObjectId, key: &str, value: &[u8]) -> Result<(), KvError> {
-            let mut slots = self.slots.lock().unwrap();
-            if let Some(slot) = slots.iter_mut().find(|(s, k, _)| s == scope && k == key) {
-                slot.2 = value.to_vec();
-            } else {
-                slots.push((scope.clone(), key.to_string(), value.to_vec()));
-            }
-            Ok(())
-        }
-
-        fn delete(&self, scope: &ObjectId, key: &str) -> Result<(), KvError> {
-            self.slots
-                .lock()
-                .unwrap()
-                .retain(|(s, k, _)| !(s == scope && k == key));
-            Ok(())
-        }
-
-        fn list_keys(
-            &self,
-            scope: &ObjectId,
-            prefix: Option<&str>,
-        ) -> Result<Vec<String>, KvError> {
-            let pred = |k: &str| -> bool { prefix.is_none_or(|p| k.starts_with(p)) };
-            Ok(self
-                .slots
-                .lock()
-                .unwrap()
-                .iter()
-                .filter(|(s, k, _)| s == scope && pred(k))
-                .map(|(_, k, _)| k.clone())
-                .collect())
-        }
-    }
+    use crate::wallet_backend::kv_test_support::InMemoryKv;
 
     fn fixture() -> DetKv {
         DetKv::from_store(Arc::new(InMemoryKv::default()))

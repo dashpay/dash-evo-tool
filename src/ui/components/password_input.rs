@@ -10,7 +10,6 @@ const PASSWORD_INPUT_REVEAL_ICON_WIDTH: f32 = 28.0;
 ///
 /// Intentionally does NOT implement `ComponentResponse` — exposing the `Secret`
 /// through a generic trait would undermine the security model.
-// INTENTIONAL(PROJ-001): Custom response type instead of ComponentResponse.
 pub struct PasswordInputResponse {
     /// The underlying `TextEdit` response.
     pub response: Response,
@@ -144,7 +143,7 @@ impl PasswordInput {
         let dark_mode = ui.style().visuals.dark_mode;
 
         // -- TextEdit --------------------------------------------------------
-        // INTENTIONAL(SEC-005): Egui TextEdit may cache plaintext in layout galleys and
+        // Egui TextEdit may cache plaintext in layout galleys and
         // accessibility state. Accepted as inherent framework limitation for desktop GUI threat model.
         let mut text_edit = egui::TextEdit::singleline(&mut self.secret)
             .password(!self.revealing)
@@ -184,7 +183,7 @@ impl PasswordInput {
 
         let text_response = ui.add(text_edit);
 
-        // SEC-001: Disable egui's Undoer to prevent plaintext undo history.
+        // Disable egui's Undoer to prevent plaintext undo history.
         if let Some(mut state) =
             egui::widgets::text_edit::TextEditState::load(ui.ctx(), text_response.id)
         {

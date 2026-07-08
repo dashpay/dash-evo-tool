@@ -460,7 +460,7 @@ pub async fn load_contacts(
     }
 
     // Mirror the freshly-fetched contact profiles into the DET-side cache so
-    // the next view can paint names and avatars offline (PROJ-040). Best-
+    // the next view can paint names and avatars offline. Best-
     // effort: a cache write miss only costs the offline optimisation.
     cache_contact_profiles(app_context, &contact_list);
 

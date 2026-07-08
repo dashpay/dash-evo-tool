@@ -14,21 +14,6 @@ In the per-domain tables below, a `Scope` of `None` denotes `DetScope::Global`.
 
 ---
 
-## DEV: on-disk schema break on this branch — reset local wallet DBs
-
-On the active development branch the upstream `platform-wallet-storage` pin moved to a layout that changed the on-disk schema (the old `kv_store` table was replaced by the `meta_*` tables) with a **divergent `V001` migration**. A `platform-wallet.sqlite` written by an earlier pin will not open: refinery aborts on the divergent checksum, the open surfaces `WalletStorageError::Migration`, and DET maps it to the `WalletDataIncompatible` error (banner: *"Your wallet data is not compatible with this version of the app and cannot be opened. Remove the local wallet data so the app can create it fresh, then restart."*).
-
-This is expected during development. To continue, **delete both local DET wallet databases** and let the app recreate them:
-
-- `<data_dir>/spv/<net>/platform-wallet.sqlite` (per-network persister)
-- `<data_dir>/det-app.sqlite` (cross-network settings / sidecars / migration sentinel)
-
-`<data_dir>` is the per-OS app directory (Linux `~/.config/dash-evo-tool/`, macOS `~/Library/Application Support/Dash-Evo-Tool/`, Windows `%APPDATA%\Dash-Evo-Tool\config\`). Wallet seeds are recoverable from your recovery phrase; on-chain state re-syncs.
-
-Cross-links: [migration data model](ai-design/2026-05-18-platform-wallet-migration/data-model-and-migration.md), platform todos `f5897abd` (per-token balance reader) and the `08b0ed9` storage-schema bump.
-
----
-
 ## Settings
 
 | Key | Scope | Store | Value type | Fields |

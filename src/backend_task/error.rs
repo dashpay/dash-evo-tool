@@ -84,6 +84,26 @@ pub enum TaskError {
         source: Box<platform_wallet::error::PlatformWalletError>,
     },
 
+    /// The wallet could not assemble and sign a payment transaction, for a
+    /// reason other than insufficient balance or too many inputs (those get
+    /// their own variants below — [`Self::InsufficientFunds`] and
+    /// [`Self::WalletPaymentTooManyInputs`] — so this message never has to
+    /// give balance advice for a non-balance failure).
+    #[error("The payment could not be prepared. Please review the amount and recipient, then try again.")]
+    WalletPaymentBuildFailed {
+        #[source]
+        source: Box<
+            dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::transaction_builder::BuilderError,
+        >,
+    },
+
+    /// The payment would need more individual unspent outputs than fit in a
+    /// single standard transaction.
+    #[error(
+        "This payment needs to combine {count} small amounts from your wallet into one transaction, which is more than the {max} the network allows at once. Try sending a smaller amount, or consolidate your funds first by sending part of your balance to yourself."
+    )]
+    WalletPaymentTooManyInputs { count: usize, max: usize },
+
     /// The network rejected an identity-registration submission. Covers
     /// upstream SDK rejections (consensus errors, invalid IS-lock, key
     /// conflict, version mismatch, etc.) and asset-lock broadcast rejections

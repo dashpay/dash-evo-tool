@@ -239,6 +239,31 @@ impl std::fmt::Display for ValidatedAddress {
     }
 }
 
+/// Raw byte length of an Orchard shielded address (recipient payload).
+pub const SHIELDED_ADDRESS_RAW_LEN: usize = 43;
+
+/// Parse a shielded (Orchard) recipient into its raw 43-byte form.
+///
+/// Accepts either the canonical Bech32m encoding (`dash1z…` mainnet,
+/// `tdash1z…` testnet) or a raw hex string of exactly
+/// [`SHIELDED_ADDRESS_RAW_LEN`] bytes. Returns `None` for any input that is
+/// neither. This is the single source of truth for turning a shielded
+/// recipient string into the bytes a `ShieldedTransfer` task needs, shared by
+/// the send screen's dispatch and any validation path so the two cannot
+/// diverge.
+pub fn parse_shielded_recipient(input: &str) -> Option<Vec<u8>> {
+    use dash_sdk::dpp::address_funds::OrchardAddress;
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Ok(addr) = OrchardAddress::from_bech32m_string(trimmed) {
+        return Some(addr.to_raw_bytes().to_vec());
+    }
+    let bytes = hex::decode(trimmed).ok()?;
+    (bytes.len() == SHIELDED_ADDRESS_RAW_LEN).then_some(bytes)
+}
+
 /// Truncate an address string for display, showing a prefix and suffix
 /// separated by an ellipsis.
 ///
@@ -260,6 +285,40 @@ pub fn truncate_address(addr: &str, prefix_len: usize, suffix_len: usize) -> Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_shielded_recipient_accepts_exact_length_hex() {
+        let raw = vec![0xABu8; SHIELDED_ADDRESS_RAW_LEN];
+        let hex_str = hex::encode(&raw);
+        assert_eq!(parse_shielded_recipient(&hex_str), Some(raw.clone()));
+        // Surrounding whitespace is tolerated.
+        assert_eq!(
+            parse_shielded_recipient(&format!("  {hex_str}  ")),
+            Some(raw)
+        );
+    }
+
+    #[test]
+    fn parse_shielded_recipient_rejects_wrong_length_hex() {
+        // One byte short and one byte long — both invalid.
+        assert_eq!(
+            parse_shielded_recipient(&hex::encode(vec![0u8; SHIELDED_ADDRESS_RAW_LEN - 1])),
+            None
+        );
+        assert_eq!(
+            parse_shielded_recipient(&hex::encode(vec![0u8; SHIELDED_ADDRESS_RAW_LEN + 1])),
+            None
+        );
+    }
+
+    #[test]
+    fn parse_shielded_recipient_rejects_empty_and_garbage() {
+        assert_eq!(parse_shielded_recipient(""), None);
+        assert_eq!(parse_shielded_recipient("   "), None);
+        assert_eq!(parse_shielded_recipient("not-an-address"), None);
+        // Bech32m for a different address family is not a shielded recipient.
+        assert_eq!(parse_shielded_recipient("dash1qexampleplatform"), None);
+    }
 
     #[test]
     fn address_kind_display_names() {

@@ -1118,8 +1118,11 @@ impl WalletsBalancesScreen {
             {
                 if let Some(wallet) = &self.selected_wallet {
                     action = AppAction::AddScreen(
-                        crate::ui::ScreenType::WalletSendScreen(wallet.clone())
-                            .create_screen(&self.app_context),
+                        crate::ui::ScreenType::WalletSendScreen(
+                            wallet.clone(),
+                            crate::ui::wallets::send_screen::SendFlow::General,
+                        )
+                        .create_screen(&self.app_context),
                     );
                 } else if let Some(sk_wallet) = &self.selected_single_key_wallet {
                     action = AppAction::AddScreen(

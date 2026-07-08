@@ -372,9 +372,7 @@ pub fn add_top_panel(
 
 /// Render the top panel with a custom left/breadcrumb region — the Identities
 /// hub switcher injects its three-segment breadcrumb here. Same island, accent,
-/// connection indicator, and right column as [`add_top_panel`]. The hub screen
-/// is compiled unconditionally (the `Screen` enum stays exhaustive), so this is
-/// not feature-gated; `identity-hub` gates only nav visibility + registration.
+/// connection indicator, and right column as [`add_top_panel`].
 pub fn add_top_panel_with_breadcrumb(
     ui: &mut Ui,
     app_context: &Arc<AppContext>,

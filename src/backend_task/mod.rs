@@ -189,6 +189,9 @@ pub enum BackendTaskSuccessResult {
     SuccessfulVotes(Vec<Vote>),
     DPNSVoteResults(Vec<(String, ResourceVoteChoice, Result<(), String>)>),
     CastScheduledVote(ScheduledDPNSVote),
+    /// The scheduled votes that the `CastDueScheduledVotes` sweep is about to
+    /// cast this cycle, so the Scheduled Votes screen can mark them in progress.
+    ScheduledVotesInProgress(Vec<ScheduledDPNSVote>),
     FetchedContract(DataContract),
     FetchedContractWithTokenPosition(
         DataContract,

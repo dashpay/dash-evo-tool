@@ -1,31 +1,26 @@
+mod reconcilers;
+use reconcilers::{
+    AccessibilityActivator, ConnectionBanner, MigrationReconciler, SpvBlockReconciler,
+};
+
 #[cfg(not(feature = "testing"))]
 use crate::app_dir::data_file_path;
+#[cfg(feature = "testing")]
 use crate::app_dir::{app_user_data_dir_path, ensure_data_dir_exists, ensure_env_file};
 use crate::backend_task::contested_names::ContestedResourceTask;
 use crate::backend_task::dashpay::DashPayTask;
 use crate::backend_task::error::TaskError;
-use crate::backend_task::migration::MigrationTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
-use crate::context::connection_status::{
-    ConnectionStatus, OverallConnectionState, SPV_SYNC_PHASE_COUNT, spv_phase_step,
-    spv_progress_token,
-};
-use crate::context::migration_status::{MigrationState, MigrationStep};
+use crate::context::connection_status::{ConnectionStatus, OverallConnectionState};
+use crate::context::migration_status::MigrationStep;
 use crate::database::Database;
-#[cfg(not(feature = "testing"))]
-use crate::logging::initialize_logger;
 use crate::model::settings::AppSettings;
 use crate::ui::components::secret_prompt_host::{ActivePrompt, EguiSecretPromptHost, QueuedPrompt};
-use crate::ui::components::{
-    BannerHandle, MessageBanner, OptionBannerExt, OptionOverlayExt, OverlayConfig, OverlayHandle,
-    ProgressOverlay,
-};
+use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt, ProgressOverlay};
 use crate::ui::contracts_documents::contracts_documents_screen::DocumentQueryScreen;
 use crate::ui::dashpay::{DashPayScreen, DashPaySubscreen, ProfileSearchScreen};
-use crate::ui::dpns::dpns_contested_names_screen::{
-    DPNSScreen, DPNSSubscreen, ScheduledVoteCastingStatus,
-};
+use crate::ui::dpns::dpns_contested_names_screen::{DPNSScreen, DPNSSubscreen};
 use crate::ui::identities::identities_screen::IdentitiesScreen;
 use crate::ui::network_chooser_screen::NetworkChooserScreen;
 use crate::ui::theme::ThemeMode;
@@ -44,15 +39,14 @@ use crate::utils::egui_mpsc::{self, EguiMpscAsync};
 use crate::utils::tasks::TaskManager;
 use crate::wallet_backend::DetScope;
 use dash_sdk::dpp::dashcore::Network;
-use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use derive_more::From;
 use eframe::{App, egui};
 use platform_wallet_storage::secrets::SecretStore;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::ops::BitOrAssign;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 use std::vec;
 use tokio::sync::mpsc as tokiompsc;
 
@@ -278,67 +272,24 @@ pub struct AppState {
     pub show_welcome_screen: bool,
     /// The welcome screen instance (only created if needed)
     pub welcome_screen: Option<WelcomeScreen>,
-    /// Previous connection state, used to detect transitions and update banners.
-    /// `None` on startup / after network switch to force the first evaluation.
-    previous_connection_state: Option<OverallConnectionState>,
-    /// Handle to the current connection status banner, if one is displayed
-    connection_banner_handle: Option<BannerHandle>,
-    /// The blocking progress overlay raised while a **user-initiated** SPV sync
-    /// (startup auto-start / Connect) is getting connected, hard-blocking the UI
-    /// until the chain becomes usable (Synced) or fails (Error), or the user
-    /// dismisses it. The overlay's first real adopter (PR #863 wiring). See
-    /// [`Self::update_spv_overlay`].
-    spv_overlay: Option<OverlayHandle>,
-    /// Whether a startup/Connect sync episode is **armed** for blocking (F-SPV-A
-    /// scope gate). Armed on boot auto-start and on the Connect button; disarmed
-    /// when the episode reaches a terminal state. Ambient reconnects / per-block
-    /// catch-up are not armed, so they never hard-block a working user.
-    spv_block_armed: bool,
-    /// Set when the user clicks the overlay's "Continue in the background" escape
-    /// (C1/C2 — SPV sync is unbounded, so the block must never trap the user). The
-    /// block stays down for the rest of *this* armed episode; sync continues in
-    /// the background. Reset when the episode disarms (Synced/Error).
-    spv_overlay_dismissed: bool,
-    /// Handle to the current data-migration banner, if one is displayed.
-    /// Kept so per-frame reconciliation can update text in place
-    /// (Detecting → SingleKey → Shielded → WalletSeeds → WalletMeta → Finalize → Success/Failed)
-    /// without stacking banners.
-    migration_banner_handle: Option<BannerHandle>,
-    /// Last-seen migration state so per-frame reconciliation only fires
-    /// when the state actually changes.
-    last_migration_state: Option<MigrationState>,
-    /// Networks for which the cold-start `MigrationTask::FinishUnwire`
-    /// has already been dispatched this process. The migration sentinel
-    /// (and every legacy table filter) is per-network — see the scoping note
-    /// in the FinishUnwire orchestrator — so the dispatch guard must
-    /// follow the same scope, otherwise switching to an unseen network
-    /// would skip its drain. Idempotent: each network is dispatched
-    /// at most once per process; the orchestrator itself short-circuits
-    /// when its own sentinel is present.
-    cold_start_migration_dispatched: BTreeSet<Network>,
-    /// Per network, the instant the readiness gate first observed
-    /// "not yet dispatched AND wallet backend not wired". Drives the
-    /// [`COLD_START_BACKEND_READY_TIMEOUT`] watchdog so a backend that never
-    /// wires surfaces a banner instead of retrying silently forever. Cleared
-    /// for a network once its backend wires and the migration dispatches.
-    cold_start_backend_wait_since: BTreeMap<Network, Instant>,
-    /// Networks whose stuck-preparation timeout has already been logged, so the
-    /// warning fires once per network (not every frame) while the gate stays
-    /// wedged. The banner itself is re-asserted every frame (idempotent by text)
-    /// so it survives a network switch; only the log is deduped here.
-    cold_start_timeout_signaled: BTreeSet<Network>,
+    /// Connection-status banner reconciler (state-transition driven).
+    connection_banner: ConnectionBanner,
+    /// Blocking SPV-sync overlay reconciler. Hard-blocks the UI while a
+    /// **user-initiated** sync (startup auto-start / Connect) connects, until
+    /// the chain becomes usable (Synced) or fails (Error), or the user chooses
+    /// to continue in the background. Ambient reconnects are never armed, so
+    /// they never hard-block a working user (F-SPV-A).
+    spv_block: SpvBlockReconciler,
+    /// Data-migration banner + cold-start `FinishUnwire` dispatch reconciler.
+    migration: MigrationReconciler,
     /// Async shutdown receiver. `Some` while a graceful shutdown is in progress;
     /// the viewport is closed once the receiver resolves.
     shutdown_receiver: Option<tokio::sync::oneshot::Receiver<()>>,
     /// Timestamp when the async shutdown was initiated, used as a hard deadline
     /// to force-close the viewport if the shutdown task stalls.
     shutdown_started: Option<std::time::Instant>,
-    /// Whether accessibility is force-enabled (DASH_EVO_TOOL_ACCESSIBILITY=1). When unset, accessibility still works normally via VoiceOver or other assistive technology — this flag forces it on unconditionally.
-    accessibility_enforced: bool,
-    /// Whether we have already triggered platform-level accessibility activation.
-    accessibility_activated: bool,
-    /// How many frames we have attempted accessibility activation.
-    accessibility_retries: u32,
+    /// Platform-level accessibility (AccessKit) activation reconciler.
+    accessibility: AccessibilityActivator,
     /// Shared MCP context -- follows network switches via `ArcSwap`.
     #[cfg(feature = "mcp")]
     pub mcp_app_context: Option<Arc<arc_swap::ArcSwap<AppContext>>>,
@@ -427,7 +378,6 @@ pub enum AppAction {
     /// by in-hub deep links (e.g. the Home tab's "See all activity" link, the
     /// Contacts gate's "Add a display name" CTA). Handled by `AppState::update`
     /// which looks up the visible `IdentityHubScreen` and calls `select_tab`.
-    #[cfg(feature = "identity-hub")]
     SwitchIdentityHubTab(crate::ui::identity::IdentityHubTab),
 }
 
@@ -442,6 +392,104 @@ impl BitOrAssign for AppAction {
         *self = rhs;
     }
 }
+
+/// Why the wallet backend is being wired, selecting the spawned task's label
+/// and its log/banner wording. The single shape behind boot, network switch,
+/// post-onboarding auto-start, and the manual Connect button (see
+/// [`AppState::spawn_backend_init`]).
+#[derive(Debug, Clone, Copy)]
+enum BackendInitReason {
+    /// Eager per-network wiring at process start.
+    Boot,
+    /// Eager wiring after a network switch.
+    NetworkSwitch,
+    /// Post-onboarding chain-sync opt-in.
+    OnboardingAutoStart,
+    /// The manual Connect button.
+    ManualConnect,
+}
+
+impl BackendInitReason {
+    /// Label for the spawned subtask.
+    fn task_name(self) -> &'static str {
+        match self {
+            BackendInitReason::Boot | BackendInitReason::NetworkSwitch => {
+                "wallet-backend-eager-init"
+            }
+            BackendInitReason::OnboardingAutoStart => "spv_auto_start",
+            BackendInitReason::ManualConnect => "spv_manual_start",
+        }
+    }
+
+    /// Log a successful chain-sync start.
+    fn log_spv_started(self, app_ctx: &AppContext, already_running: bool) {
+        let network = app_ctx.network;
+        match self {
+            BackendInitReason::Boot => {
+                tracing::info!(?network, "SPV sync started automatically at boot");
+            }
+            BackendInitReason::NetworkSwitch if already_running => {
+                tracing::info!(
+                    ?network,
+                    "Chain sync already running on the switched-to context"
+                );
+            }
+            BackendInitReason::NetworkSwitch => {
+                tracing::info!(?network, "Chain sync started after network switch");
+            }
+            BackendInitReason::OnboardingAutoStart => {
+                tracing::info!(?network, "SPV sync started automatically after onboarding");
+            }
+            // The manual Connect button is silent on success — the SPV-sync
+            // block conveys progress and the indicator flips to connected.
+            BackendInitReason::ManualConnect => {}
+        }
+    }
+
+    /// Handle a failed wire+start. Every path except `ManualConnect` warns and
+    /// relies on the lazy backend-task fallback to retry; the manual Connect
+    /// surfaces an actionable error banner because the user is waiting.
+    fn on_spv_start_error(self, egui_ctx: &egui::Context, error: &TaskError) {
+        match self {
+            BackendInitReason::Boot => {
+                tracing::warn!(error = %error, "eager wallet-backend init + SPV auto-start failed; SDK proof verification will retry once the lazy backend-task fallback fires");
+            }
+            BackendInitReason::NetworkSwitch => {
+                tracing::warn!(error = %error, "eager wallet-backend init + SPV auto-start after network switch failed; lazy fallback will retry");
+            }
+            BackendInitReason::OnboardingAutoStart => {
+                tracing::warn!(error = %error, "Failed to auto-start SPV sync after onboarding");
+            }
+            BackendInitReason::ManualConnect => {
+                // The chokepoint already flipped the SPV indicator to Error;
+                // the user pressed Connect and is waiting, so also surface an
+                // actionable error banner here.
+                let handle = MessageBanner::set_global(
+                    egui_ctx,
+                    "Could not start network sync. Check your connection and try again.",
+                    MessageType::Error,
+                );
+                handle.disable_auto_dismiss();
+                handle.with_details(error);
+            }
+        }
+    }
+
+    /// Handle a failed wire-only init (no chain-sync start requested).
+    fn on_wire_error(self, error: &TaskError) {
+        match self {
+            BackendInitReason::Boot => {
+                tracing::warn!(error = %error, "eager wallet-backend init failed; SDK proof verification will retry once the lazy backend-task fallback fires");
+            }
+            // Only Boot / NetworkSwitch ever wire without starting SPV; the
+            // opt-in paths always start.
+            _ => {
+                tracing::warn!(error = %error, "eager wallet-backend init after network switch failed; lazy fallback will retry");
+            }
+        }
+    }
+}
+
 impl AppState {
     /// Creates a new `AppState`, opening the seed vault keyless.
     ///
@@ -465,11 +513,7 @@ impl AppState {
     #[cfg(not(feature = "testing"))]
     pub(crate) fn boot_inputs()
     -> Result<(PathBuf, Arc<Database>), Box<dyn std::error::Error + Send + Sync>> {
-        let data_dir = app_user_data_dir_path()?;
-        ensure_data_dir_exists(&data_dir)?;
-        ensure_env_file(&data_dir);
-
-        initialize_logger();
+        let data_dir = crate::boot::prepare_environment()?;
         let db_file_path = data_file_path(&data_dir, "data.db")?;
         let db = Arc::new(Database::new(&db_file_path)?);
         db.initialize(&db_file_path)?;
@@ -627,8 +671,7 @@ impl AppState {
         // Persisted setting; the effective `selected_main_screen` is computed
         // after the screen map is built (below) so we can fall back to a
         // known-registered screen if the persisted value is no longer
-        // available (e.g. `identity-hub` feature toggled off after a session
-        // selected the hub).
+        // registered.
         let persisted_main_screen = settings.root_screen_type;
 
         // // Create a channel with a buffer size of 32 (adjust as needed)
@@ -664,20 +707,14 @@ impl AppState {
         // `start_spv()` fired before the fire-and-forget wiring could finish.
         let boot_auto_start_spv = onboarding_completed && settings.auto_start_spv;
         for (&net, app_ctx) in network_contexts.iter() {
-            let app_ctx = app_ctx.clone();
-            let sender = task_result_sender.clone();
             let auto_start = boot_auto_start_spv && net == chosen_network;
-            subtasks.spawn_sync("wallet-backend-eager-init", async move {
-                if auto_start {
-                    if let Err(e) = app_ctx.ensure_wallet_backend_and_start_spv(sender).await {
-                        tracing::warn!(error = %e, "eager wallet-backend init + SPV auto-start failed; SDK proof verification will retry once the lazy backend-task fallback fires");
-                    } else {
-                        tracing::info!(network = ?net, "SPV sync started automatically at boot");
-                    }
-                } else if let Err(e) = app_ctx.ensure_wallet_backend(sender).await {
-                    tracing::warn!(error = %e, "eager wallet-backend init failed; SDK proof verification will retry once the lazy backend-task fallback fires");
-                }
-            });
+            Self::spawn_backend_init(
+                &subtasks,
+                task_result_sender.clone(),
+                app_ctx.clone(),
+                BackendInitReason::Boot,
+                auto_start,
+            );
         }
 
         // MCP server (feature-gated, opt-in via MCP_API_KEY env var)
@@ -803,29 +840,18 @@ impl AppState {
         ]
         .into_iter()
         .chain({
-            // Register the new unified Identities hub screen. Feature-gated:
-            // when `identity-hub` is disabled, nothing is inserted and the
-            // nav entry is absent, so the hub screen is never reachable.
-            #[cfg(feature = "identity-hub")]
-            {
-                let hub = crate::ui::identity::IdentityHubScreen::new(&active_context);
-                vec![(
-                    RootScreenType::RootScreenIdentityHub,
-                    Screen::IdentityHubScreen(hub),
-                )]
-            }
-            #[cfg(not(feature = "identity-hub"))]
-            {
-                Vec::<(RootScreenType, Screen)>::new()
-            }
+            // Register the unified Identities hub screen.
+            let hub = crate::ui::identity::IdentityHubScreen::new(&active_context);
+            [(
+                RootScreenType::RootScreenIdentityHub,
+                Screen::IdentityHubScreen(hub),
+            )]
         })
         .collect();
 
         // Resolve the effective selected root screen. If the persisted value
-        // is no longer registered (e.g. the user selected the Identities hub
-        // in an earlier session and the `identity-hub` Cargo feature has
-        // since been disabled), fall back to the legacy `Identities` screen
-        // so `active_root_screen_mut()` does not panic on first frame.
+        // is no longer registered, fall back to the `Identities` screen so
+        // `active_root_screen_mut()` does not panic on first frame.
         let selected_main_screen = if main_screens.contains_key(&persisted_main_screen) {
             persisted_main_screen
         } else {
@@ -849,23 +875,14 @@ impl AppState {
             subtasks,
             show_welcome_screen: !onboarding_completed,
             welcome_screen: None,
-            previous_connection_state: None,
-            connection_banner_handle: None,
-            spv_overlay: None,
+            connection_banner: ConnectionBanner::new(),
             // Arm the block for the boot SPV sync when it auto-starts (F-SPV-A:
             // scoped to user-initiated sync, not ambient reconnect).
-            spv_block_armed: boot_auto_start_spv,
-            spv_overlay_dismissed: false,
-            migration_banner_handle: None,
-            last_migration_state: None,
-            cold_start_migration_dispatched: BTreeSet::new(),
-            cold_start_backend_wait_since: BTreeMap::new(),
-            cold_start_timeout_signaled: BTreeSet::new(),
+            spv_block: SpvBlockReconciler::new(boot_auto_start_spv),
+            migration: MigrationReconciler::new(),
             shutdown_receiver: None,
             shutdown_started: None,
-            accessibility_enforced,
-            accessibility_activated: false,
-            accessibility_retries: 0,
+            accessibility: AccessibilityActivator::new(accessibility_enforced),
             #[cfg(feature = "mcp")]
             mcp_app_context,
             secret_prompt_host,
@@ -930,6 +947,39 @@ impl AppState {
             "BUG: selected network {:?} has no AppContext. Refusing to auto-switch networks.",
             self.chosen_network
         );
+    }
+
+    /// Spawn wallet-backend wiring for `app_ctx` and, when `start_spv`, chain
+    /// sync — the single shape behind every eager-init site (boot, network
+    /// switch, post-onboarding auto-start, manual Connect). Folding the start
+    /// into the same spawned task closes the boot race where a synchronous
+    /// `start_spv()` could fire before the fire-and-forget wiring finished.
+    /// `reason` selects the task label and the log/banner wording.
+    ///
+    /// Associated (not `&mut self`) so the constructor's per-network loop can
+    /// call it before `AppState` exists; the block-arming that user-initiated
+    /// starts need stays at those callsites.
+    fn spawn_backend_init(
+        subtasks: &Arc<TaskManager>,
+        sender: egui_mpsc::SenderAsync<TaskResult>,
+        app_ctx: Arc<AppContext>,
+        reason: BackendInitReason,
+        start_spv: bool,
+    ) {
+        subtasks.spawn_sync(reason.task_name(), async move {
+            if start_spv {
+                let already_running = app_ctx
+                    .wallet_backend()
+                    .map(|b| b.is_started())
+                    .unwrap_or(false);
+                match app_ctx.ensure_wallet_backend_and_start_spv(sender).await {
+                    Ok(()) => reason.log_spv_started(&app_ctx, already_running),
+                    Err(e) => reason.on_spv_start_error(app_ctx.egui_ctx(), &e),
+                }
+            } else if let Err(e) = app_ctx.ensure_wallet_backend(sender).await {
+                reason.on_wire_error(&e);
+            }
+        });
     }
 
     // Handle the backend task and send the result through the channel.
@@ -1040,31 +1090,14 @@ impl AppState {
         // path (cached context) reaches here without ever having started it — so
         // the auto-start must live here to cover both. All steps are idempotent:
         // re-wiring is a no-op and the backend's start latch prevents a second
-        // run loop. When the cached context's SPV is already running we log it
-        // at info rather than silently no-op (latch-wedge visibility).
-        {
-            let app_ctx = app_context.clone();
-            let sender = self.task_result_sender.clone();
-            let auto_start = app_context.get_app_settings().auto_start_spv;
-            self.subtasks
-                .spawn_sync("wallet-backend-eager-init", async move {
-                    if auto_start {
-                        let already_running = app_ctx
-                            .wallet_backend()
-                            .map(|b| b.is_started())
-                            .unwrap_or(false);
-                        if let Err(e) = app_ctx.ensure_wallet_backend_and_start_spv(sender).await {
-                            tracing::warn!(error = %e, "eager wallet-backend init + SPV auto-start after network switch failed; lazy fallback will retry");
-                        } else if already_running {
-                            tracing::info!(?network, "Chain sync already running on the switched-to context");
-                        } else {
-                            tracing::info!(?network, "Chain sync started after network switch");
-                        }
-                    } else if let Err(e) = app_ctx.ensure_wallet_backend(sender).await {
-                        tracing::warn!(error = %e, "eager wallet-backend init after network switch failed; lazy fallback will retry");
-                    }
-                });
-        }
+        // run loop.
+        Self::spawn_backend_init(
+            &self.subtasks,
+            self.task_result_sender.clone(),
+            app_context.clone(),
+            BackendInitReason::NetworkSwitch,
+            app_context.get_app_settings().auto_start_spv,
+        );
 
         // Update MCP server's context to follow network switch
         #[cfg(feature = "mcp")]
@@ -1081,9 +1114,7 @@ impl AppState {
         // is never left behind a stale block. Also drop the SPV-sync overlay
         // bookkeeping so its handle never goes stale against the cleared `ctx.data`.
         ProgressOverlay::clear_all_global(app_context.egui_ctx());
-        self.spv_overlay = None;
-        self.spv_block_armed = false;
-        self.spv_overlay_dismissed = false;
+        self.spv_block.reset();
 
         for screen in self.main_screens.values_mut() {
             screen.change_context(app_context.clone())
@@ -1093,472 +1124,18 @@ impl AppState {
 
         // Reset connection banner tracking so the next frame re-evaluates
         // the new network's state (even if it matches the old state).
-        if let Some(handle) = self.connection_banner_handle.take() {
-            handle.clear();
-        }
-        self.previous_connection_state = None;
+        self.connection_banner.reset();
 
         // Reset the migration banner reconciler too: the new network's
-        // `MigrationStatus` lives on the new `AppContext`, so the
-        // per-frame `update_migration_banner` must re-evaluate from
-        // scratch (otherwise a stale `Success` from the previous
-        // network would suppress the new network's `Running` banner).
-        if let Some(handle) = self.migration_banner_handle.take() {
-            handle.clear();
-        }
-        self.last_migration_state = None;
+        // `MigrationStatus` lives on the new `AppContext`, so the reconciler
+        // must re-evaluate from scratch (otherwise a stale `Success` from the
+        // previous network would suppress the new network's `Running` banner).
+        self.migration.reset_for_switch();
 
         // Persist the network choice.
         app_context
             .update_settings(RootScreenType::RootScreenNetworkChooser)
             .ok();
-    }
-
-    /// Update the connection status banner when the overall connection state
-    /// transitions between Disconnected, Connecting, Syncing, and Synced.
-    ///
-    /// Also re-evaluates the banner text while in `Connecting` state each frame
-    /// because the degraded-peer timeout can fire without a state transition.
-    fn update_connection_banner(&mut self, ctx: &egui::Context, app_context: &Arc<AppContext>) {
-        let connection_status = app_context.connection_status();
-        let current_state = connection_status.overall_state();
-        let state_changed = self.previous_connection_state != Some(current_state);
-
-        // In Connecting state the banner text can change (normal → degraded)
-        // without a state transition, so we must re-evaluate every frame.
-        // For all other states, skip if nothing changed.
-        if !state_changed && current_state != OverallConnectionState::Connecting {
-            return;
-        }
-
-        // While the SPV-sync block (`update_spv_overlay`) is up it already conveys
-        // the Connecting/Syncing state with live phase progress, so suppress the
-        // redundant connection-banner text — don't double-shout. The Error /
-        // Disconnected banners still show, since the overlay has lowered by then.
-        if self.spv_overlay.is_some()
-            && matches!(
-                current_state,
-                OverallConnectionState::Connecting | OverallConnectionState::Syncing
-            )
-        {
-            if let Some(handle) = self.connection_banner_handle.take() {
-                handle.clear();
-            }
-            self.previous_connection_state = Some(current_state);
-            return;
-        }
-
-        // Clear old banner on state transitions
-        if state_changed && let Some(handle) = self.connection_banner_handle.take() {
-            handle.clear();
-        }
-
-        // Display new banner based on current state
-        match current_state {
-            OverallConnectionState::Disconnected => {
-                let msg = "Disconnected — check your internet connection";
-                let handle = MessageBanner::set_global(ctx, msg, MessageType::Error);
-                handle.disable_auto_dismiss();
-                self.connection_banner_handle = Some(handle);
-            }
-            OverallConnectionState::Connecting => {
-                // SPV active but no peers connected yet. The degraded flag
-                // flips after 30 s — `set_global` is idempotent for same text,
-                // so calling it every frame while Connecting is cheap.
-                let msg = if connection_status.spv_peer_degraded() {
-                    "Having trouble finding peers. Check your connection."
-                } else {
-                    "Looking for peers…"
-                };
-                // Replace the banner when the text changes (normal → degraded).
-                if let Some(handle) = &self.connection_banner_handle {
-                    handle.set_message(msg);
-                } else {
-                    self.connection_banner_handle =
-                        Some(MessageBanner::set_global(ctx, msg, MessageType::Warning));
-                }
-            }
-            OverallConnectionState::Syncing => {
-                let msg = "SPV sync in progress…";
-                self.connection_banner_handle =
-                    Some(MessageBanner::set_global(ctx, msg, MessageType::Warning));
-            }
-            OverallConnectionState::Error => {
-                let handle = MessageBanner::set_global(
-                    ctx,
-                    "SPV sync failed. Go to Settings for connection details.",
-                    MessageType::Error,
-                );
-                handle.disable_auto_dismiss();
-                if let Some(detail) = connection_status.spv_last_error() {
-                    handle.with_details(detail);
-                }
-                self.connection_banner_handle = Some(handle);
-            }
-            OverallConnectionState::Synced => {
-                // No banner needed for fully synced state.
-                // Fetch epoch info on first sync to populate protocol version
-                // and fee multiplier — needed for feature gating (e.g., shielded
-                // tab requires protocol version >= 12).
-                if state_changed {
-                    let task = BackendTask::PlatformInfo(
-                        crate::backend_task::platform_info::PlatformInfoTaskRequestType::CurrentEpochInfo,
-                    );
-                    self.handle_backend_task(task);
-                }
-            }
-        }
-        self.previous_connection_state = Some(current_state);
-    }
-
-    /// Dispatch the cold-start data-migration task once per
-    /// **network**. The orchestrator
-    /// ([`crate::backend_task::migration::finish_unwire`]) is
-    /// idempotent — if the per-network sentinel already exists it
-    /// returns `Success` without touching the legacy file. Calling it
-    /// unconditionally on first frame for each network keeps the
-    /// cold-start hook simple and avoids a separate "detect legacy"
-    /// probe on the UI thread.
-    ///
-    /// The dispatch guard is per-network because the migration body
-    /// itself is per-network: every legacy `SELECT` filters by
-    /// `WHERE network = ?1` and the sentinel mirrors that scope. A
-    /// global guard would let a network switch to an unseen network
-    /// skip the drain — see the scoping note in
-    /// `backend_task::migration::finish_unwire`.
-    fn dispatch_cold_start_migration(&mut self) {
-        let network = self.chosen_network;
-        let already_dispatched = self.cold_start_migration_dispatched.contains(&network);
-        // Readiness gate: on a network SWITCH the switched-to network's wallet
-        // backend wires asynchronously a few frames after the switch, so
-        // dispatching before it is ready aborts the migration's first step with
-        // a transient `WalletBackendUnavailable` AND burns the per-network
-        // guard, stranding that network's wallets behind a manual "Retry now".
-        // We instead poll readiness each frame (a cheap, non-blocking ArcSwap
-        // load) and only dispatch — and only then burn the guard — once the
-        // backend is wired. `current_app_context()` and `handle_backend_task`
-        // both key off `chosen_network`, so the readiness observed here is what
-        // the spawned task will see.
-        let backend_ready = self.current_app_context().wallet_backend().is_ok();
-        if should_dispatch_cold_start(already_dispatched, backend_ready) {
-            // Backend wired: retire any stuck-preparation watchdog for this
-            // network (clears the timer + banner if the backend recovered after
-            // being wedged) before burning the guard and dispatching.
-            self.clear_cold_start_backend_wait(network);
-            self.cold_start_migration_dispatched.insert(network);
-            tracing::info!(
-                target = "migration::cold_start",
-                network = ?network,
-                "Dispatching FinishUnwire migration at cold start",
-            );
-            self.handle_backend_task(BackendTask::MigrationTask(MigrationTask::FinishUnwire));
-            return;
-        }
-
-        // Already dispatched — nothing to wait on or surface.
-        if already_dispatched {
-            return;
-        }
-
-        // Not dispatched because the wallet backend has not wired yet. Record
-        // when the wait began and, once it exceeds the readiness timeout, surface
-        // a visible, actionable banner instead of polling silently forever — the
-        // gate previously had no timeout and no user-visible signal, so a backend
-        // that never wired left the wallet invisible with zero feedback. Recovery
-        // is still automatic: if the backend wires later, the dispatch branch
-        // above clears the banner and proceeds.
-        let now = Instant::now();
-        let waited = now.duration_since(
-            *self
-                .cold_start_backend_wait_since
-                .entry(network)
-                .or_insert(now),
-        );
-        if cold_start_backend_wait_timed_out(Some(waited), COLD_START_BACKEND_READY_TIMEOUT) {
-            let app_context = self.current_app_context().clone();
-            let handle = MessageBanner::set_global(
-                app_context.egui_ctx(),
-                COLD_START_STUCK_MESSAGE,
-                MessageType::Error,
-            );
-            handle.disable_auto_dismiss();
-            // Log + attach the last wiring error once per network; the banner is
-            // re-asserted every frame (idempotent) so it survives a switch, but
-            // the diagnostic warning must not repeat.
-            if self.cold_start_timeout_signaled.insert(network) {
-                if let Some(detail) = app_context.connection_status().spv_last_error() {
-                    handle.with_details(detail);
-                }
-                tracing::warn!(
-                    target = "migration::cold_start",
-                    network = ?network,
-                    waited_secs = waited.as_secs(),
-                    "Wallet backend did not finish wiring within the readiness timeout; showing the wallet-preparation banner. Restart the app if this persists.",
-                );
-            }
-        }
-    }
-
-    /// Retire the stuck-preparation watchdog for `network`: drop the wait timer
-    /// and, if the timeout banner was raised, remove it. Called once the
-    /// network's backend wires so the banner never lingers beside the migration's
-    /// own progress banner.
-    fn clear_cold_start_backend_wait(&mut self, network: Network) {
-        self.cold_start_backend_wait_since.remove(&network);
-        if self.cold_start_timeout_signaled.remove(&network) {
-            let ctx = self.current_app_context().egui_ctx().clone();
-            MessageBanner::clear_global_message(&ctx, COLD_START_STUCK_MESSAGE);
-        }
-    }
-
-    /// Drive the blocking SPV-sync overlay each frame (Task 9 — the overlay's
-    /// first real adopter, PR #863 wiring). Hard-block the UI while an **armed**
-    /// (user-initiated: startup auto-start / Connect) sync is getting connected,
-    /// showing a plain please-wait sentence and a jargon-free "Step N of 5"
-    /// counter, and lower + DISARM it when the chain becomes usable (Synced) or
-    /// fails (Error).
-    ///
-    /// F-SPV-A: the block is scoped to user-initiated sync, so an ambient
-    /// reconnect or the SPV engine flipping Synced→Syncing on each new block never
-    /// hard-blocks a working user — once disarmed it stays disarmed.
-    ///
-    /// C2 contract: SPV sync is **unbounded** — with no peers it stays
-    /// Connecting/Syncing forever with no terminal signal — so a button-less block
-    /// would trap the user. The block therefore carries a "Continue in the
-    /// background" escape ([`SPV_CONTINUE_BACKGROUND_ACTION`]); clicking it — or
-    /// activating it by keyboard, as it is the block's designated
-    /// `with_keyboard_escape` — lowers the block while sync
-    /// proceeds safely in the background (read-only — nothing is stranded).
-    ///
-    /// Raises the overlay at most once per episode (then updates content in place
-    /// via the handle), so it never `set_global`s every frame.
-    fn update_spv_overlay(&mut self, ctx: &egui::Context, app_context: &Arc<AppContext>) {
-        let cs = app_context.connection_status();
-        let state = cs.overall_state();
-        match spv_block_step(self.spv_block_armed, self.spv_overlay_dismissed, state) {
-            SpvBlockStep::Block => {
-                // F-SPV-B: plain, jargon-free copy — the determinate granularity is
-                // the "Step N of 5" counter, NOT raw phase names / heights / %.
-                let progress = cs.spv_sync_progress();
-                let step = progress.as_ref().and_then(spv_phase_step);
-                // A-1 (Item B): the hidden liveness token tracks the advancing
-                // height so a slow-but-advancing phase (whose "Step N of 5" stays
-                // constant for minutes) never trips the no-progress watchdog. It is
-                // never rendered — no height/number leaks into the shown copy.
-                //
-                // TODO: the narrow residual is a phase that
-                // stays Syncing at a CONSTANT height for >120s (e.g. a single large
-                // masternode-list diff, step 2) — its height never moves, so the
-                // token never advances and the generic 120s watchdog still trips its
-                // one-shot dev-error + "much longer than expected" copy. It does NOT
-                // abort (SPV is known-unbounded and carries the keyboard escape), and
-                // the copy is accurate, so this is a benign false alarm. A clean fix
-                // needs a coarser SDK liveness signal (bytes/diffs processed) folded
-                // into the token without breaking its documented monotonicity; the
-                // SDK does not expose one today. Tracked as a follow-up.
-                let token = progress.as_ref().and_then(spv_progress_token);
-                let description = if step.is_some() {
-                    SPV_SYNCING_DESCRIPTION
-                } else {
-                    SPV_CONNECTING_DESCRIPTION
-                };
-                if self.spv_overlay.is_none() {
-                    // The escape is the single keyboard-reachable exit: the
-                    // overlay focus-pins this button and lets
-                    // Enter/Space activate it, so a keyboard-only / assistive-tech
-                    // user is never stranded behind the UNBOUNDED SPV block while
-                    // every other hard block stays fully keyboard-blocked.
-                    let mut config = OverlayConfig::new()
-                        .with_description(description)
-                        .with_secondary_action(
-                            "Continue in the background",
-                            SPV_CONTINUE_BACKGROUND_ACTION,
-                        )
-                        .with_keyboard_escape(SPV_CONTINUE_BACKGROUND_ACTION);
-                    if let Some(n) = step {
-                        config = config.with_step(n, SPV_SYNC_PHASE_COUNT);
-                    }
-                    if let Some(t) = token {
-                        config = config.with_progress_token(t);
-                    }
-                    self.spv_overlay.raise(ctx, "", config);
-                } else if let Some(handle) = &self.spv_overlay {
-                    handle.set_description(description);
-                    match step {
-                        Some(n) => {
-                            handle.set_step(n, SPV_SYNC_PHASE_COUNT);
-                        }
-                        None => {
-                            handle.clear_step();
-                        }
-                    }
-                    if let Some(t) = token {
-                        handle.set_progress_token(t);
-                    }
-                }
-            }
-            SpvBlockStep::Disarm => {
-                // Armed episode ended (Synced/Error): lower and disarm so ambient
-                // Connecting/Syncing never re-blocks (F-SPV-A). Re-arm the escape
-                // for the next user-initiated sync.
-                self.spv_overlay.take_and_clear();
-                self.spv_block_armed = false;
-                self.spv_overlay_dismissed = false;
-            }
-            SpvBlockStep::Stand => {
-                // User chose to continue in the background: stay lowered, but keep
-                // the episode armed + dismissed so we don't re-raise within it (C2).
-                self.spv_overlay.take_and_clear();
-            }
-            SpvBlockStep::Idle => {
-                // Not armed (ambient sync, or already disarmed): never block.
-                self.spv_overlay.take_and_clear();
-            }
-        }
-
-        // Drain this overlay's own clicks: the "Continue in the background" escape
-        // lowers the block for the rest of this episode (sync keeps running).
-        let actions = self
-            .spv_overlay
-            .as_ref()
-            .map(|handle| handle.take_actions())
-            .unwrap_or_default();
-        if actions
-            .iter()
-            .any(|id| id == SPV_CONTINUE_BACKGROUND_ACTION)
-        {
-            self.spv_overlay_dismissed = true;
-            self.spv_overlay.take_and_clear();
-        }
-    }
-
-    /// Update the migration banner to reflect the current
-    /// [`MigrationState`]. Each step / outcome surfaces a single
-    /// i18n-ready sentence per Diziet §2.2 D-1. On `Failed`, the
-    /// banner gets a "Retry now" action button that re-dispatches the
-    /// migration via the action queue (see
-    /// [`MessageBanner::take_action`]).
-    fn update_migration_banner(&mut self, ctx: &egui::Context, app_context: &Arc<AppContext>) {
-        let state = (*app_context.migration_status().state()).clone();
-        if self.last_migration_state.as_ref() == Some(&state) {
-            return;
-        }
-        self.last_migration_state = Some(state.clone());
-
-        // Clear the previous banner — text changes between steps must
-        // not stack.
-        if let Some(handle) = self.migration_banner_handle.take() {
-            handle.clear();
-        }
-
-        match state {
-            MigrationState::Idle => {
-                // Nothing to surface — the orchestrator has not started
-                // yet (typical on the first few frames before cold-start
-                // dispatch resolves).
-            }
-            MigrationState::Running { step } => {
-                let text = migration_running_text(step);
-                let handle = MessageBanner::set_global(ctx, text, MessageType::Info);
-                handle.with_elapsed();
-                self.migration_banner_handle = Some(handle);
-            }
-            MigrationState::Success => {
-                let handle = MessageBanner::set_global(
-                    ctx,
-                    "Storage update complete — your wallet is ready.",
-                    MessageType::Success,
-                );
-                self.migration_banner_handle = Some(handle);
-            }
-            MigrationState::Failed { error } => {
-                if error.is_backend_not_ready() {
-                    // Transient: the wallet backend had not finished wiring when
-                    // this run fired. Drop the per-network dispatch guard so the
-                    // frame loop re-dispatches once `wallet_backend()` is ready,
-                    // and reset to Idle so no failure banner flashes — the retry
-                    // is automatic and needs no user action. (With the readiness
-                    // gate this is a rare residual race; keeping the un-burn here
-                    // makes recovery self-healing if it ever fires.)
-                    self.cold_start_migration_dispatched
-                        .remove(&app_context.network);
-                    app_context
-                        .migration_status()
-                        .set_state(MigrationState::Idle);
-                    self.last_migration_state = Some(MigrationState::Idle);
-                    return;
-                }
-                let handle = MessageBanner::set_global(
-                    ctx,
-                    "Storage update could not complete. Your data is safe.",
-                    MessageType::Error,
-                );
-                handle.disable_auto_dismiss();
-                // `with_details` accepts anything `Debug`; the
-                // collapsed details panel + log line both get the full
-                // typed `MigrationError` chain rather than a lossy
-                // `to_string()` of it.
-                handle.with_details(error.as_ref());
-                handle.with_action("Retry now", MIGRATION_RETRY_ACTION_ID);
-                self.migration_banner_handle = Some(handle);
-            }
-        }
-    }
-
-    /// Dismiss the migration banner (if any) on Escape. Per Diziet
-    /// §2.3 a11y the banner must be dismissible via Esc — falls back
-    /// to no-op when the banner has already been closed by the user
-    /// clicking the ✕ icon, when the migration is still running (we
-    /// keep the banner sticky to avoid losing progress), or when
-    /// nothing is shown.
-    fn handle_banner_esc(&mut self, ctx: &egui::Context) {
-        let esc_pressed = ctx.input(|i| i.key_pressed(egui::Key::Escape));
-        if !esc_pressed {
-            return;
-        }
-        // Keep a `Running` banner on screen — dismissing it would
-        // hide ongoing progress with no visual confirmation.
-        let is_running = matches!(
-            self.last_migration_state.as_ref(),
-            Some(MigrationState::Running { .. })
-        );
-        if is_running {
-            return;
-        }
-        if let Some(handle) = self.migration_banner_handle.take() {
-            handle.clear();
-        }
-    }
-
-    /// Drain pending banner-action clicks (Diziet §2.3 a11y "Retry
-    /// reachable in ≤2 Tab stops"). Currently the only registered
-    /// action is `MIGRATION_RETRY_ACTION_ID`, which re-dispatches the
-    /// FinishUnwire migration after resetting the cold-start guard.
-    fn drain_banner_actions(&mut self, ctx: &egui::Context) {
-        while let Some(action_id) = MessageBanner::take_action(ctx) {
-            if action_id == MIGRATION_RETRY_ACTION_ID {
-                let network = self.chosen_network;
-                tracing::info!(
-                    target = "migration::cold_start",
-                    network = ?network,
-                    "User clicked migration Retry — re-dispatching FinishUnwire",
-                );
-                // Reset the per-frame reconciler so the new run's
-                // Running banner overwrites the stale Failed one,
-                // and drop the per-network dispatch guard so a future
-                // `dispatch_cold_start_migration()` for the same
-                // network would also re-fire.
-                self.last_migration_state = None;
-                self.cold_start_migration_dispatched.remove(&network);
-                self.handle_backend_task(BackendTask::MigrationTask(MigrationTask::FinishUnwire));
-            } else {
-                tracing::warn!(
-                    target = "ui::banner",
-                    action_id = %action_id,
-                    "Unknown banner action id — dropping",
-                );
-            }
-        }
     }
 
     /// Claim all keyboard + text input for an active blocking overlay at frame
@@ -1587,18 +1164,17 @@ impl AppState {
     /// as the boot auto-start and the Connect button do.
     #[cfg(feature = "testing")]
     pub fn test_arm_spv_block(&mut self) {
-        self.spv_block_armed = true;
-        self.spv_overlay_dismissed = false;
+        self.spv_block.arm();
     }
 
-    /// Test seam (Task 9): run the REAL `update_spv_overlay` driver once against
-    /// the active context's (forced) connection state, in isolation from the
+    /// Test seam (Task 9): run the REAL SPV-sync block driver once against the
+    /// active context's (forced) connection state, in isolation from the
     /// throttled frame loop. Lets a kittest assert that an armed episode blocks,
     /// disarms on a terminal state, and that ambient (un-armed) sync never blocks.
     #[cfg(feature = "testing")]
     pub fn test_drive_spv_overlay(&mut self, ctx: &egui::Context) {
         let app_context = self.current_app_context().clone();
-        self.update_spv_overlay(ctx, &app_context);
+        self.spv_block.update(ctx, &app_context);
     }
 
     /// Test seam (F-SPV-A): run the REAL post-onboarding auto-start path
@@ -1612,13 +1188,13 @@ impl AppState {
     /// Test seam (F-SPV-A): observe the SPV-sync block's armed flag.
     #[cfg(feature = "testing")]
     pub fn test_spv_block_armed(&self) -> bool {
-        self.spv_block_armed
+        self.spv_block.armed()
     }
 
     /// Sweep orphaned overlay action ids whose owning overlay is gone. Screens own
     /// dispatch and cancellation today — they drain their own clicks via
-    /// [`OverlayHandle::take_actions`]; this loop only reclaims orphans so they
-    /// cannot accumulate in `ctx.data`.
+    /// [`OverlayHandle::take_actions`](crate::ui::components::OverlayHandle::take_actions);
+    /// this loop only reclaims orphans so they cannot accumulate in `ctx.data`.
     //
     // TODO(T7): the BackendTask system has no cooperative cancellation, so an
     // overlay button can only stop waiting, never abort a running operation. When
@@ -1686,21 +1262,17 @@ impl AppState {
     /// a user-initiated sync just like the Connect button, so the blocking
     /// overlay must cover it. Boot auto-start arms via the constructor instead.
     fn try_auto_start_spv(&mut self) {
-        let ctx = self.current_app_context().clone();
-        let auto_start = ctx.get_app_settings().auto_start_spv;
-        if auto_start {
+        if self.current_app_context().get_app_settings().auto_start_spv {
             // Fresh user-initiated episode: arm the block and re-arm the escape,
             // mirroring AppAction::StartSpv.
-            self.spv_block_armed = true;
-            self.spv_overlay_dismissed = false;
-            let sender = self.task_result_sender.clone();
-            self.subtasks.spawn_sync("spv_auto_start", async move {
-                if let Err(e) = ctx.ensure_wallet_backend_and_start_spv(sender).await {
-                    tracing::warn!("Failed to auto-start SPV sync: {e}");
-                } else {
-                    tracing::info!("SPV sync started automatically for {:?}", ctx.network);
-                }
-            });
+            self.spv_block.arm();
+            Self::spawn_backend_init(
+                &self.subtasks,
+                self.task_result_sender.clone(),
+                self.current_app_context().clone(),
+                BackendInitReason::OnboardingAutoStart,
+                true,
+            );
         }
     }
 }
@@ -1769,28 +1341,9 @@ impl App for AppState {
             return;
         }
 
-        // On the first frame, trigger platform-level accessibility activation
+        // On the first frames, trigger platform-level accessibility activation
         // so tools like Peekaboo can see the AccessKit tree without VoiceOver.
-        // Retries up to 60 frames, then gives up to avoid indefinite repaints.
-        const MAX_ACCESSIBILITY_RETRIES: u32 = 60;
-        if self.accessibility_enforced
-            && !self.accessibility_activated
-            && self.accessibility_retries < MAX_ACCESSIBILITY_RETRIES
-        {
-            self.accessibility_retries += 1;
-            self.accessibility_activated = crate::platform::force_accessibility_activation();
-            if !self.accessibility_activated {
-                if self.accessibility_retries >= MAX_ACCESSIBILITY_RETRIES {
-                    tracing::warn!(
-                        "Accessibility activation failed after {} frames, giving up",
-                        MAX_ACCESSIBILITY_RETRIES
-                    );
-                } else {
-                    // Ensure we get another frame to retry, even if egui would otherwise go idle.
-                    ctx.request_repaint();
-                }
-            }
-        }
+        self.accessibility.update(ctx);
 
         self.theme.poll_and_apply(ctx);
 
@@ -1927,7 +1480,7 @@ impl App for AppState {
                 }
                 TaskResult::Error(TaskError::MigrationFailed { .. }) => {
                     // The migration task already published `MigrationState::Failed`,
-                    // which `update_migration_banner` surfaces with the typed
+                    // which the migration reconciler surfaces with the typed
                     // details and a "Retry now" action. Suppress the generic
                     // error banner here so the user sees one banner, not two.
                 }
@@ -1961,75 +1514,18 @@ impl App for AppState {
             self.last_repaint_request = Instant::now();
         }
 
-        // Check if there are scheduled masternode votes to cast and if so, cast them
+        // Periodically cast any scheduled masternode votes that have come due.
+        // The poll itself — the DB query, local-identity load, and per-vote
+        // casting — runs off the UI thread in the `CastDueScheduledVotes`
+        // backend task; this tick only dispatches it. The DPNS Scheduled Votes
+        // screen learns which votes are in progress / cast via
+        // `display_task_result`, so a slow or failing query never stalls a frame.
         let now = Instant::now();
         if now.duration_since(self.last_scheduled_vote_check) > Duration::from_secs(60) {
             self.last_scheduled_vote_check = now;
-            let app_context = self.current_app_context();
-
-            // Query the database
-            let db_votes = match app_context.get_scheduled_votes() {
-                Ok(votes) => votes,
-                Err(e) => {
-                    tracing::error!("Error querying scheduled votes: {}", e);
-                    return;
-                }
-            };
-
-            // Filter due votes
-            let current_time = SystemTime::now()
-                .duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap()
-                .as_millis() as u64;
-            let due_votes: Vec<_> = db_votes
-                .into_iter()
-                .filter(|v| {
-                    v.unix_timestamp <= current_time
-                        && !v.executed_successfully
-                        && (v.unix_timestamp + 120000 >= current_time) // Don't cast votes more than 2 minutes behind current time
-                })
-                .collect();
-
-            // For each due vote, construct a BackendTask and handle it
-            if !due_votes.is_empty() {
-                let local_identities = match app_context.load_local_voting_identities() {
-                    Ok(identities) => identities,
-                    Err(e) => {
-                        tracing::error!("Error querying local voting identities: {}", e);
-                        return;
-                    }
-                };
-
-                for vote in due_votes {
-                    if let Some(voter) = local_identities
-                        .iter()
-                        .find(|i| i.identity.id() == vote.voter_id)
-                    {
-                        let dpns_screen = self
-                            .main_screens
-                            .get_mut(&RootScreenType::RootScreenDPNSScheduledVotes)
-                            .unwrap();
-                        if let Screen::DPNSScreen(screen) = dpns_screen {
-                            screen.scheduled_vote_cast_in_progress = true;
-                            if let Some((_, s)) = screen
-                                .scheduled_votes
-                                .lock()
-                                .unwrap()
-                                .iter_mut()
-                                .find(|(v, _)| v == &vote)
-                            {
-                                *s = ScheduledVoteCastingStatus::InProgress;
-                            }
-                        }
-                        let task = BackendTask::ContestedResourceTask(
-                            ContestedResourceTask::CastScheduledVote(vote, Box::new(voter.clone())),
-                        );
-                        self.handle_backend_task(task);
-                    } else {
-                        tracing::warn!("Voter not found for scheduled vote: {:?}", vote);
-                    }
-                }
-            }
+            self.handle_backend_task(BackendTask::ContestedResourceTask(
+                ContestedResourceTask::CastDueScheduledVotes,
+            ));
         }
 
         // Drive the SPV-sync block BEFORE claiming input and running the screen, so
@@ -2039,7 +1535,7 @@ impl App for AppState {
         // takes effect a frame later — the one-frame interactive gap. The connection
         // banner still reads the block state afterwards (it suppresses its redundant
         // Connecting/Syncing copy while the block is up).
-        self.update_spv_overlay(ctx, &active_context);
+        self.spv_block.update(ctx, &active_context);
 
         // Total input block at frame start: while a blocking overlay is up, claim
         // all keyboard + text input BEFORE the panels run — unless a
@@ -2059,9 +1555,9 @@ impl App for AppState {
         // Blocking progress overlay: above banners, below the secret prompt.
         // It consumes Esc/Tab/Enter while active, so it must render before the
         // secret prompt (which is focus-raised and stays interactive above it)
-        // and before `handle_banner_esc` so the overlay wins Esc. The
-        // secret-prompt flag (mirroring the `claim_overlay_input` gate) tells the
-        // block to suppress its focus management so the prompt keeps the keyboard.
+        // and before the migration banner's Esc handling so the overlay wins Esc.
+        // The secret-prompt flag (mirroring the `claim_overlay_input` gate) tells
+        // the block to suppress its focus management so the prompt keeps the keyboard.
         ProgressOverlay::render_global(ctx, self.active_secret_prompt.is_some());
 
         // Render any just-in-time passphrase prompt on top of the screen.
@@ -2078,11 +1574,21 @@ impl App for AppState {
         // input claim + screen, to close the one-frame interactive gap. It still
         // runs before the connection banner, which suppresses its redundant
         // Connecting/Syncing text while the overlay is up.
-        self.update_connection_banner(ctx, &active_context);
-        self.dispatch_cold_start_migration();
-        self.update_migration_banner(ctx, &active_context);
-        self.handle_banner_esc(ctx);
-        self.drain_banner_actions(ctx);
+        let spv_overlaying = self.spv_block.is_overlaying();
+        if let Some(task) = self
+            .connection_banner
+            .update(ctx, &active_context, spv_overlaying)
+        {
+            self.handle_backend_task(task);
+        }
+        if let Some(task) = self.migration.dispatch_cold_start(&active_context) {
+            self.handle_backend_task(task);
+        }
+        self.migration.update_banner(ctx, &active_context);
+        self.migration.handle_esc(ctx);
+        if let Some(task) = self.migration.drain_actions(ctx, self.chosen_network) {
+            self.handle_backend_task(task);
+        }
         self.drain_overlay_actions(ctx);
 
         for action in actions {
@@ -2141,25 +1647,14 @@ impl App for AppState {
                     // "connecting" state, so no separate Info banner is set here
                     // (F-SPV-E: a dropped Info-banner handle could not be cleared
                     // by the overlay's banner suppression).
-                    self.spv_block_armed = true;
-                    self.spv_overlay_dismissed = false;
-                    let app_ctx = self.current_app_context().clone();
-                    let sender = self.task_result_sender.clone();
-                    let egui_ctx = ctx.clone();
-                    self.subtasks.spawn_sync("spv_manual_start", async move {
-                        // The chokepoint already flips the SPV indicator to Error on
-                        // failure; the user pressed Connect and is waiting, so also
-                        // surface an actionable error banner here.
-                        if let Err(e) = app_ctx.ensure_wallet_backend_and_start_spv(sender).await {
-                            let handle = MessageBanner::set_global(
-                                &egui_ctx,
-                                "Could not start network sync. Check your connection and try again.",
-                                MessageType::Error,
-                            );
-                            handle.disable_auto_dismiss();
-                            handle.with_details(&e);
-                        }
-                    });
+                    self.spv_block.arm();
+                    Self::spawn_backend_init(
+                        &self.subtasks,
+                        self.task_result_sender.clone(),
+                        self.current_app_context().clone(),
+                        BackendInitReason::ManualConnect,
+                        true,
+                    );
                 }
                 AppAction::StopSpv => {
                     let app_ctx = self.current_app_context().clone();
@@ -2188,7 +1683,6 @@ impl App for AppState {
                     }
                     self.try_auto_start_spv();
                 }
-                #[cfg(feature = "identity-hub")]
                 AppAction::SwitchIdentityHubTab(tab) => {
                     // Resolve the visible screen. In-hub deep links are only
                     // meaningful when the user is actually on the hub, so we
@@ -2410,8 +1904,8 @@ mod spv_overlay_tests {
         }
     }
 
-    /// The escape action id is stable — production raises it and
-    /// `update_spv_overlay` matches on it; a typo would drop the click.
+    /// The escape action id is stable — production raises it and the SPV-sync
+    /// block reconciler matches on it; a typo would drop the click.
     #[test]
     fn continue_background_action_id_is_stable() {
         assert_eq!(

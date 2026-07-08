@@ -296,8 +296,8 @@ impl AppContext {
                 })
             }
             // Single-key send/refresh unsupported this release — by design (single-key-mock.md, Decision #7).
-            // TODO: broadcast itself is already wired and F1-independent
-            //   (`WalletBackend::broadcast_transaction` → `SpvBroadcaster`). What is
+            // TODO: raw-tx broadcast is available upstream (`SpvBroadcaster`) and
+            //   F1-independent. What is
             //   missing is coin selection over the imported key's UTXOs, which depends
             //   on the same UTXO-discovery upstream change as the refresh path above
             //   (the key-wallet single-address pool helper + the platform-wallet

@@ -783,7 +783,7 @@ async fn tc_021_identity_funding_account_survives_reload() {
 
 // --- TC-022: top-up succeeds after a reload via the op-seam guard ---
 //
-// Identity G-3: DET persists identities only in its own sidecar, never into the
+// DET persists identities only in its own sidecar, never into the
 // upstream `IdentityManager`, so after a reload the manager holds nothing and a
 // top-up — the one op that looks the identity up there — raised
 // `IdentityNotFound` ~22 ms in, pre-network. This test simulates the reload with

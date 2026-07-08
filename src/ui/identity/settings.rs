@@ -307,7 +307,7 @@ impl SettingsTab {
                 // Capture the exact values being submitted. `on_profile_saved()`
                 // commits THIS snapshot as the new baseline — not whatever is in
                 // the edit fields at the time the success arrives, which may have
-                // changed while the round-trip was in-flight (QA-001 / T21).
+                // changed while the round-trip was in-flight.
                 self.pending_save = Some((
                     self.edit_display_name.clone(),
                     self.edit_bio.clone(),

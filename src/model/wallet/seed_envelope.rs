@@ -21,7 +21,7 @@
 //! decoded, to migrate not-yet-migrated wallets on first unlock, and the path
 //! shrinks as wallets re-wrap to Tier-2.
 //!
-//! SEC-005 / RUSTSEC-2025-0141: bincode 1.x is flagged unmaintained
+//! RUSTSEC-2025-0141: bincode 1.x is flagged unmaintained
 //! (informational, not an exploitable CVE). This envelope encodes/decodes with
 //! bincode **2.x** (`bincode::serde` + `config::standard`); `bincode 1.3.3` in
 //! `Cargo.lock` is only a transitive dependency. Exposure is minimal regardless —

@@ -53,7 +53,7 @@ fn network_token(network: Network) -> &'static str {
     }
 }
 
-// TODO(PROJ-034): App settings, top-up history, and scheduled DPNS votes all reset/empty on
+// TODO: App settings, top-up history, and scheduled DPNS votes all reset/empty on
 //   upgrade — confirmed real data loss per v0.9.3 cross-check; follow-up priority:
 //   scheduled votes (vote-window deadline risk) > app settings (UX friction) > top-up
 //   history (audit trail). Migration to be handled in a separate PR.
@@ -369,7 +369,7 @@ pub async fn run(app_context: &Arc<AppContext>) -> Result<bool, TaskError> {
 ///   copy step ([`hd_seed_row_is_hydratable`]), so they never reach the vault
 ///   or `ctx.wallets`. Because the copy step now rejects exactly what hydration
 ///   would drop, every wallet that DID land in the vault hydrates and is seen
-///   here — closing the QA-001 copy-vs-hydration asymmetry. The skipped seed
+///   here — closing the copy-vs-hydration asymmetry. The skipped seed
 ///   stays in legacy `data.db` (never deleted), so this is exclusion, not loss.
 ///
 /// Idempotent: re-hydration only gap-fills `ctx.wallets` (a wallet created
@@ -1281,7 +1281,7 @@ where
             continue;
         }
 
-        // Hydration symmetry (QA-001). The copy step must not accept a row that
+        // Hydration symmetry. The copy step must not accept a row that
         // cold-boot hydration would silently drop, or the migrated wallet would
         // be in neither the registered nor the gate-counted set and the sentinel
         // would falsely read "done". A row that fails the shared hydratability
@@ -2905,7 +2905,7 @@ mod tests {
             .to_vec()
     }
 
-    /// QA-001 regression — the copy step must REJECT exactly the rows that
+    /// Regression: the copy step must REJECT exactly the rows that
     /// cold-boot hydration would silently drop, closing the copy-vs-hydration
     /// asymmetry that caused the false-complete. An unprotected row with an
     /// empty/undecodable master xpub, or a non-64-byte seed, must be counted as

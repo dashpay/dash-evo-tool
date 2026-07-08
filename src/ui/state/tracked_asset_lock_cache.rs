@@ -232,7 +232,7 @@ mod tests {
         );
     }
 
-    /// QA-001: a failed fetch must not strand the screen on an infinite spinner.
+    /// A failed fetch must not strand the screen on an infinite spinner.
     /// From `Loading`, `mark_loading_failed` moves to `Failed`; the wallet then
     /// reports failed (not loading) and does NOT re-dispatch — so the screen can
     /// render a retryable "couldn't load" state instead of a stuck spinner.

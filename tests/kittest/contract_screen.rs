@@ -8,7 +8,7 @@
 //!
 //! Write-back (b): `syncing_global` component-level write-back is verified by
 //! `identity_selector::tests::syncing_global_writes_selection_to_app_context`
-//! (QA-001) — fixture-free unit test that calls `sync_to_global()` directly.
+//! — fixture-free unit test that calls `sync_to_global()` directly.
 //! Screen-level click-through (ComboBox click → AppContext update) requires a
 //! private-key fixture so the selector renders (the screens gate on
 //! `has_suitable_keys`).

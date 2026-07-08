@@ -1,4 +1,4 @@
-//! DET-side identity-metadata view (SEC-001).
+//! DET-side identity-metadata view.
 //!
 //! [`IdentityMetaView`] is the only doorway DET code uses to read or write
 //! [`IdentityMeta`] (the password hint shown next to the sign-time prompt) for

@@ -78,7 +78,7 @@ pub const MIGRATION_RETRY_ACTION_ID: &str = "migration:retry:finish_unwire";
 /// sync continues safely in the background — a read-only operation that strands
 /// nothing if backgrounded. It is also designated the block's single
 /// keyboard-reachable escape (`with_keyboard_escape`), so a keyboard-only /
-/// assistive-tech user can activate it with Enter or Space (QA-002 refinement).
+/// assistive-tech user can activate it with Enter or Space.
 /// Colon-namespaced per the overlay action-id convention. Exposed for kittest
 /// coverage.
 pub const SPV_CONTINUE_BACKGROUND_ACTION: &str = "spv:sync:continue_background";
@@ -317,8 +317,8 @@ pub struct AppState {
     last_migration_state: Option<MigrationState>,
     /// Networks for which the cold-start `MigrationTask::FinishUnwire`
     /// has already been dispatched this process. The migration sentinel
-    /// (and every legacy table filter) is per-network — see SEC-001 in
-    /// the FinishUnwire orchestrator — so the dispatch guard must
+    /// (and every legacy table filter) is per-network — see the scoping note
+    /// in the FinishUnwire orchestrator — so the dispatch guard must
     /// follow the same scope, otherwise switching to an unseen network
     /// would skip its drain. Idempotent: each network is dispatched
     /// at most once per process; the orchestrator itself short-circuits
@@ -1058,7 +1058,7 @@ impl AppState {
         // the auto-start must live here to cover both. All steps are idempotent:
         // re-wiring is a no-op and the backend's start latch prevents a second
         // run loop. When the cached context's SPV is already running we log it
-        // at info rather than silently no-op (QA-005 latch-wedge visibility).
+        // at info rather than silently no-op (latch-wedge visibility).
         {
             let app_ctx = app_context.clone();
             let sender = self.task_result_sender.clone();
@@ -1091,7 +1091,7 @@ impl AppState {
             tracing::debug!("MCP context switched to {:?}", network);
         }
 
-        // INTENTIONAL(SEC-004): Clear stale banners from the previous network context.
+        // Deliberately clear stale banners from the previous network context.
         // A backend task completing after the switch could set a new banner in the new
         // network context — accepted risk for a local desktop app (cosmetic only).
         MessageBanner::clear_all_global(app_context.egui_ctx());
@@ -1240,7 +1240,7 @@ impl AppState {
     /// itself is per-network: every legacy `SELECT` filters by
     /// `WHERE network = ?1` and the sentinel mirrors that scope. A
     /// global guard would let a network switch to an unseen network
-    /// skip the drain — see SEC-001 in
+    /// skip the drain — see the scoping note in
     /// `backend_task::migration::finish_unwire`.
     fn dispatch_cold_start_migration(&mut self) {
         let network = self.chosen_network;
@@ -1342,7 +1342,7 @@ impl AppState {
     /// would trap the user. The block therefore carries a "Continue in the
     /// background" escape ([`SPV_CONTINUE_BACKGROUND_ACTION`]); clicking it — or
     /// activating it by keyboard, as it is the block's designated
-    /// `with_keyboard_escape` (QA-002 refinement) — lowers the block while sync
+    /// `with_keyboard_escape` — lowers the block while sync
     /// proceeds safely in the background (read-only — nothing is stranded).
     ///
     /// Raises the overlay at most once per episode (then updates content in place
@@ -1361,7 +1361,7 @@ impl AppState {
                 // constant for minutes) never trips the no-progress watchdog. It is
                 // never rendered — no height/number leaks into the shown copy.
                 //
-                // TODO(SEC-003-constant-height): the narrow residual is a phase that
+                // TODO: the narrow residual is a phase that
                 // stays Syncing at a CONSTANT height for >120s (e.g. a single large
                 // masternode-list diff, step 2) — its height never moves, so the
                 // token never advances and the generic 120s watchdog still trips its
@@ -1378,8 +1378,8 @@ impl AppState {
                     SPV_CONNECTING_DESCRIPTION
                 };
                 if self.spv_overlay.is_none() {
-                    // The escape is the single keyboard-reachable exit (QA-002
-                    // refinement): the overlay focus-pins this button and lets
+                    // The escape is the single keyboard-reachable exit: the
+                    // overlay focus-pins this button and lets
                     // Enter/Space activate it, so a keyboard-only / assistive-tech
                     // user is never stranded behind the UNBOUNDED SPV block while
                     // every other hard block stays fully keyboard-blocked.
@@ -1576,9 +1576,9 @@ impl AppState {
     }
 
     /// Claim all keyboard + text input for an active blocking overlay at frame
-    /// start (QA-001) — UNLESS a secret prompt is active above it. The prompt
+    /// start — UNLESS a secret prompt is active above it. The prompt
     /// renders above the overlay and needs the keyboard (Enter to submit, Esc to
-    /// cancel, Tab to navigate; SEC-004/F-1), so the overlay must yield to it.
+    /// cancel, Tab to navigate), so the overlay must yield to it.
     /// Extracted from `update` so the gate is exercised by a kittest (RQ-1):
     /// removing the `active_secret_prompt.is_none()` guard must fail that test.
     fn claim_overlay_input(&self, ctx: &egui::Context) {
@@ -1773,7 +1773,7 @@ impl AppState {
 /// this check was built to catch is already fixed. If this check ever fires
 /// in practice, it means something nobody currently knows about (a fresh
 /// regression, or an unmapped edge case), so the copy must not pre-emptively
-/// reassure the user it's already being handled (QA-101).
+/// reassure the user it's already being handled.
 const BALANCE_HEALTH_WARNING: &str = "Some wallet balances didn't fully add up after the last sync. \
 Your funds are safe. \
 Refreshing the wallet, or reopening the app, usually resolves it.";
@@ -2086,7 +2086,7 @@ impl App for AppState {
                     if !handled {
                         let msg = err.to_string();
                         let handle = MessageBanner::set_global(ctx, &msg, MessageType::Error);
-                        // INTENTIONAL(SEC-003): TaskError Debug output is shown to users.
+                        // TaskError Debug output is shown to users, deliberately.
                         // Ensure inner error types don't expose secrets.
                         handle.with_details(&err);
                         self.visible_screen_mut()
@@ -2188,7 +2188,7 @@ impl App for AppState {
         self.update_spv_overlay(ctx, &active_context);
 
         // Total input block at frame start: while a blocking overlay is up, claim
-        // all keyboard + text input BEFORE the panels run (QA-001) — unless a
+        // all keyboard + text input BEFORE the panels run — unless a
         // secret prompt is active above the overlay (it needs the keyboard).
         self.claim_overlay_input(ctx);
 

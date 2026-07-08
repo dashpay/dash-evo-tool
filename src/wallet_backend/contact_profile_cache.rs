@@ -1,4 +1,4 @@
-//! DET-side contact-profile cache (PROJ-040).
+//! DET-side contact-profile cache.
 //!
 //! Upstream rehydrates a *local* identity's own DashPay profile into its
 //! `ManagedIdentity`, but a *contact's* profile (display name, avatar URL,

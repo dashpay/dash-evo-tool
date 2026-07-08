@@ -99,7 +99,7 @@ impl ContactRow {
     /// `contact_id` in the response is populated only when a click is detected
     /// (body, Send, or overflow), matching the `ComponentResponse::changed_value`
     /// contract that `changed_value()` is `Some` only when `has_changed()` is
-    /// true (QA-004 / T08).
+    /// true.
     pub fn show(&self, ui: &mut Ui) -> ContactRowResponse {
         let dark_mode = ui.ctx().global_style().visuals.dark_mode;
         let mut response = ContactRowResponse::default(); // contact_id stays None until a click
@@ -143,7 +143,7 @@ impl ContactRow {
                 if body_response.response.clicked() {
                     response.clicked = true;
                     // Echo the id only on actual click — ComponentResponse
-                    // contract: changed_value() Some iff has_changed() (QA-004).
+                    // contract: changed_value() Some iff has_changed().
                     response.contact_id = Some(self.contact_id.clone());
                 }
 
@@ -221,8 +221,8 @@ mod tests {
     fn ut_contact_row_01_click_carries_contact_id() {
         let row = ContactRow::new("id-abc", "Alex Kim", "alex.dash");
         // Simulate what `show()` does on a positive click: echo the id
-        // only when the click is detected (QA-004 — id must NOT be set on
-        // every frame).
+        // only when the click is detected — id must NOT be set on
+        // every frame.
         let response = ContactRowResponse {
             clicked: true,
             contact_id: Some(row.contact_id.clone()),
@@ -241,7 +241,7 @@ mod tests {
     }
 
     /// UT-CONTACT-ROW-04 — ComponentResponse contract: changed_value() must
-    /// be None when has_changed() is false (QA-004 / T08).
+    /// be None when has_changed() is false.
     #[test]
     fn ut_contact_row_04_no_click_means_no_contact_id() {
         // The default response (no click) must have contact_id = None.

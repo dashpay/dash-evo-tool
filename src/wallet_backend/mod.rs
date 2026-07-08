@@ -312,7 +312,7 @@ impl WalletBackend {
         // backend holds an exclusive advisory lock for the handle's lifetime,
         // so opening a second handle here would fail with `AlreadyLocked` — and
         // `register_wallet` must be able to write seed-envelope sidecars through
-        // the same handle before the backend is wired (PROJ-010).
+        // the same handle before the backend is wired.
         let secret_store = ctx.secret_store();
 
         let snapshots = Arc::new(SnapshotStore::new());
@@ -675,7 +675,7 @@ impl WalletBackend {
         Ok((wallet.wallet_id, account_xpub))
     }
 
-    // TODO(PROJ-015): TC-012 receive-address reuse (QA-005). Two consecutive
+    // TODO: receive-address reuse (tracked by TC-012). Two consecutive
     //   `next_receive_address()` calls return the SAME address: upstream
     //   `next_unused` returns the lowest UNUSED receive address until it is
     //   actually used on-chain — funds-safe BIP-44 keypool behavior, but not the
@@ -695,7 +695,7 @@ impl WalletBackend {
     //   PENDING; tc_012b's gap-window funds-safety assertion stays active.
     /// Register a wallet with the upstream SPV backend from its seed, so the
     /// upstream persistor is populated and the wallet's addresses are watched
-    /// (W1 — create/import write path; PROJ-010 regression fix).
+    /// (W1 — create/import write path; regression fix).
     ///
     /// The upstream `create_wallet_from_seed_bytes` is the only writer to the
     /// `platform-wallet.sqlite` persistor; the seedless cold-boot loader only
@@ -785,7 +785,7 @@ impl WalletBackend {
     }
 
     /// Cold-boot / first-unlock reconciliation: register a wallet present in
-    /// DET sidecars but absent from the upstream persistor (W2; PROJ-010).
+    /// DET sidecars but absent from the upstream persistor (W2).
     ///
     /// Migrated installs, wallets created before this fix, and post-reset
     /// states land with an empty upstream persistor, so the seedless cold-boot
@@ -928,7 +928,7 @@ impl WalletBackend {
         // Plaintext Orchard state (notes + nullifier cursor) now lives in the
         // upstream coordinator store; `remove_upstream_wallet` detaches it.
 
-        // DET-side avatar cache (PROJ-040). Avatars live in the cross-network
+        // DET-side avatar cache. Avatars live in the cross-network
         // Global scope keyed by URL, not partitioned per wallet, so a forgotten
         // wallet's contact avatars would otherwise survive deletion forever.
         // It is a rebuild-on-view cache, so clearing the whole thing on any
@@ -1437,7 +1437,7 @@ impl WalletBackend {
     }
 
     /// View over the DET-owned identity-metadata sidecar (the password hint for
-    /// an identity whose keys are password-protected, SEC-001). Backed by the
+    /// an identity whose keys are password-protected). Backed by the
     /// same cross-network app-level k/v store as [`Self::wallet_meta`]; see
     /// [`IdentityMetaView`] for the key schema. Display-only — it never gates
     /// whether a sign-time prompt fires (the vault scheme does).
@@ -1486,7 +1486,7 @@ impl WalletBackend {
         AuthPubkeyCacheView::new(&self.inner.app_kv)
     }
 
-    /// View over the DET-owned avatar image cache (PROJ-040). Backed by the
+    /// View over the DET-owned avatar image cache. Backed by the
     /// same cross-network app-level k/v store as [`Self::wallet_meta`], keyed
     /// by avatar URL under [`DetScope::Global`]. Upstream persists only the
     /// avatar hash and fingerprint, never the bytes, so this is the only place
@@ -1495,7 +1495,7 @@ impl WalletBackend {
         AvatarCacheView::new(&self.inner.app_kv)
     }
 
-    /// View over the DET-owned contact-profile cache (PROJ-040). A contact's
+    /// View over the DET-owned contact-profile cache. A contact's
     /// profile belongs to an out-of-wallet identity and is never rehydrated
     /// upstream, so this cache is the only offline source of a contact's
     /// display name, avatar URL, bio, and DPNS username between network reads.
@@ -1960,7 +1960,7 @@ impl WalletBackend {
     /// strictly-last legacy-table DROP so the new persister is durable
     /// before any legacy data is destroyed.
     //
-    // TODO(PROJ-007 T7): remove the legacy `single_key_wallet` table ONLY
+    // TODO: remove the legacy `single_key_wallet` table ONLY
     // via
     // `crate::backend_task::migration::finish_unwire::drop_legacy_single_key_table_when_safe`,
     // which runs the data-loss gate internally and aborts on error. A

@@ -574,7 +574,7 @@ mod tests {
         assert!(snap.monitored_receive_addresses.is_empty());
     }
 
-    /// QA-003 (FUNDS-SAFETY, display list): the Receive list is sourced from the
+    /// FUNDS-SAFETY (display list): the Receive list is sourced from the
     /// snapshot's `monitored_receive_addresses` — the SPV-watched set published
     /// off the event-bridge recompute. Publishing a watched set makes it the
     /// only set the read accessor returns, so the rendered list ⊆ watched set by
@@ -610,7 +610,7 @@ mod tests {
         }
     }
 
-    /// QA-301: the `external_addresses_from_info` filter — the real seam the
+    /// The `external_addresses_from_info` filter — the real seam the
     /// recompute uses — extracts exactly the standard BIP-44 account's external
     /// (receive) pool. Exercised against a real upstream `ManagedWalletInfo`, not
     /// a hand-injected vec: this is what publishes the watched receive set the

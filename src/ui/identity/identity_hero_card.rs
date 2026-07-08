@@ -180,7 +180,7 @@ pub struct IdentityHeroCard {
     /// `true` when `avatar_bytes` decoded successfully (checked eagerly in
     /// `with_avatar_bytes`). `false` on decode failure so that
     /// `avatar_uses_initials_fallback()` stays honest even without a render
-    /// pass (QA-003 / T09).
+    /// pass.
     avatar_decode_ok: bool,
 }
 
@@ -250,7 +250,7 @@ impl IdentityHeroCard {
     /// Attach raw avatar bytes (PNG / JPEG). When present and decodable, they
     /// override the initials fallback. An eager decode check is performed here
     /// so `avatar_uses_initials_fallback()` stays accurate even before the
-    /// first `show()` call (QA-003 / T09). The bytes are stored for the actual
+    /// first `show()` call. The bytes are stored for the actual
     /// GPU-upload decode in `try_paint_avatar_image`.
     pub fn with_avatar_bytes(mut self, bytes: Vec<u8>) -> Self {
         if bytes.is_empty() {
@@ -277,7 +277,7 @@ impl IdentityHeroCard {
     /// True when the hero will use the initials fallback instead of an image
     /// (only meaningful in the social-profile-set variant). Returns `true`
     /// when no avatar bytes were supplied OR when the bytes failed to decode
-    /// (QA-003 / T09: stays honest even without a render pass).
+    /// (stays honest even without a render pass).
     pub fn avatar_uses_initials_fallback(&self) -> bool {
         self.has_social_profile() && (self.avatar_bytes.is_none() || !self.avatar_decode_ok)
     }
@@ -467,7 +467,7 @@ impl IdentityHeroCard {
     /// hash of the bytes, so the `image::load_from_memory` decode only runs
     /// once per unique avatar regardless of how many frames the hero renders.
     ///
-    /// # Resource note (QA-007)
+    /// # Resource note
     /// Textures accumulate in the egui temp store for the session's lifetime
     /// (one GPU allocation per distinct avatar viewed). Bounded by the number
     /// of distinct avatars seen in a session — acceptable for the typical 1-5
@@ -724,7 +724,7 @@ mod tests {
         assert_eq!(resp.changed_value(), &Some(HeroAction::PickUsernameClicked));
     }
 
-    // ─── T09 / QA-003 avatar readiness tests ──────────────────────────────
+    // ─── Avatar readiness tests ──────────────────────────────
 
     /// UT-HERO-03 — avatar decode success: with_avatar_bytes() accepts valid
     /// PNG bytes and avatar_uses_initials_fallback() returns false.
@@ -759,7 +759,7 @@ mod tests {
 
     /// UT-HERO-04 — avatar decode failure: with_avatar_bytes() rejects
     /// undecodable bytes and avatar_uses_initials_fallback() returns true even
-    /// before any show() call (QA-003 / T09 readiness flag).
+    /// before any show() call (readiness flag).
     #[test]
     fn avatar_corrupt_bytes_keep_initials_fallback_honest() {
         let garbage: Vec<u8> = vec![0xDE, 0xAD, 0xBE, 0xEF, 0xFF, 0x00];
@@ -772,7 +772,7 @@ mod tests {
         );
         assert!(
             hero.avatar_uses_initials_fallback(),
-            "corrupt bytes must fall back to initials — QA-003: readiness flag stays honest"
+            "corrupt bytes must fall back to initials — readiness flag stays honest"
         );
         assert!(
             !hero.avatar_decode_ok,

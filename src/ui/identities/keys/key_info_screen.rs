@@ -78,32 +78,32 @@ pub struct KeyInfoScreen {
     /// A queued "sign message" request for a vault-backed identity key. Drained
     /// into `WalletTask::SignMessageWithIdentityKey`.
     pending_identity_sign: bool,
-    /// SEC-001 Key Protection: cached at-rest protection status of this
-    /// identity's vault keys. `None` until first probed; invalidated after a
-    /// migration so the status line re-reads the vault.
+    /// Identity key password protection: cached at-rest protection status of
+    /// this identity's vault keys. `None` until first probed; invalidated
+    /// after a migration so the status line re-reads the vault.
     protection_status: Option<IdentityProtectionStatus>,
-    /// SEC-001: which step of the opt-in / opt-out flow is active.
+    /// Which step of the opt-in / opt-out flow is active.
     protection_stage: ProtectionStage,
-    /// SEC-001: the danger confirmation dialog gating the active flow.
+    /// The danger confirmation dialog gating the active flow.
     protection_confirm: Option<ConfirmationDialog>,
-    /// SEC-001: opt-in password entry (new password + confirmation + hint).
+    /// Opt-in password entry (new password + confirmation + hint).
     protection_new_password: PasswordInput,
     protection_confirm_password: PasswordInput,
     protection_hint: String,
-    /// SEC-001: opt-out password entry (verify the current password).
+    /// Opt-out password entry (verify the current password).
     protection_verify_password: PasswordInput,
-    /// SEC-001: inline validation error for the protection password form.
+    /// Inline validation error for the protection password form.
     protection_form_error: Option<String>,
-    /// SEC-001: true while a Protect/Unprotect task is in flight (disables the
+    /// True while a Protect/Unprotect task is in flight (disables the
     /// action button so the same migration is not dispatched twice).
     protection_in_flight: bool,
-    /// SEC-001: a queued opt-in dispatch (password + hint), drained in `ui()`.
+    /// A queued opt-in dispatch (password + hint), drained in `ui()`.
     pending_protect: Option<(Secret, Option<String>)>,
-    /// SEC-001: a queued opt-out dispatch (current password), drained in `ui()`.
+    /// A queued opt-out dispatch (current password), drained in `ui()`.
     pending_unprotect: Option<Secret>,
 }
 
-/// At-rest protection posture of an identity's vault-stored keys (SEC-001).
+/// At-rest protection posture of an identity's vault-stored keys.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum IdentityProtectionStatus {
     /// No keys live in the identity vault (e.g. only wallet-derived keys); the
@@ -695,7 +695,7 @@ impl ScreenLike for KeyInfoScreen {
             ));
         }
 
-        // SEC-001: drain a queued identity-key protection opt-in / opt-out.
+        // Drain a queued identity-key protection opt-in / opt-out.
         if let Some((password, hint)) = self.pending_protect.take() {
             MessageBanner::set_global(
                 ctx,
@@ -1040,7 +1040,7 @@ impl KeyInfoScreen {
         }
     }
 
-    // --- SEC-001 Key Protection (per-identity at-rest key encryption) --------
+    // --- Identity key password protection (per-identity at-rest key encryption) ---
 
     /// At-rest protection posture of this identity's vault keys, by probing the
     /// vault scheme of each key. Cheap (a handful of local vault reads). Cached

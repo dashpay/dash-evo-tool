@@ -237,7 +237,7 @@ enum KeystoreMigration {
     VaultWriteFailed,
     /// `n` keys moved to the vault and `qi` rewritten to `InVault` placeholders.
     Migrated(usize),
-    /// The identity is password-protected (SEC-001), so a resident plaintext key
+    /// The identity is password-protected, so a resident plaintext key
     /// was NOT migrated to a keyless vault entry. `qi` keeps its resident key (it
     /// still signs this session) and nothing is persisted; the add-key path seals
     /// new keys Tier-2 explicitly.
@@ -246,8 +246,8 @@ enum KeystoreMigration {
 
 /// Find an existing password-protected (Tier-2) key of this identity, as a
 /// [`SecretScope`](crate::wallet_backend::secret_prompt::SecretScope) suitable
-/// for verifying the identity's password when sealing a newly-added key
-/// (SEC-001). `None` when the identity has no protected key — i.e. the identity
+/// for verifying the identity's password when sealing a newly-added key.
+/// `None` when the identity has no protected key — i.e. the identity
 /// is keyless and the default path applies.
 fn find_protected_identity_key_scope(
     secret_store: &Arc<platform_wallet_storage::secrets::SecretStore>,
@@ -296,7 +296,7 @@ fn migrate_keystore_to_vault(
     if !qi.private_keys.has_plaintext_for_vault() {
         return KeystoreMigration::Nothing;
     }
-    // SEC-001 fail-closed: never migrate a protected identity's resident
+    // Fail-closed: never migrate a protected identity's resident
     // plaintext to a KEYLESS vault entry — that would silently strip protection
     // off a new key. Leave it resident (it still signs this session) and persist
     // nothing; the add-key path seals new keys Tier-2 under the identity password.
@@ -325,7 +325,7 @@ fn migrate_keystore_to_vault(
     // The migrated plaintext now lives only in the vault; drop the `taken` copy
     // (it zeroizes on drop) so its key bytes do not linger across the DB write.
     drop(taken);
-    // SEC-002: the vault write succeeded — the rollback clone is no longer
+    // The vault write succeeded — the rollback clone is no longer
     // needed. Zeroize its plaintext bytes (Clear/AlwaysClear) before it drops
     // so no identity private key lingers in freed heap.
     let _ = before.take_plaintext_for_vault();
@@ -370,7 +370,7 @@ fn encode_identity_blob_vault_first(
     if !qi.private_keys.has_plaintext_for_vault() {
         return Ok(qi.to_bytes());
     }
-    // SEC-001 fail-closed: a password-protected identity must NEVER acquire a
+    // Fail-closed: a password-protected identity must NEVER acquire a
     // keyless key. If any existing key is Tier-2, refuse to move new plaintext
     // into the vault keyless — the add-key path seals the new key Tier-2 under
     // the identity's password and marks it `InVault` first, so a correctly-sealed
@@ -765,8 +765,8 @@ impl AppContext {
         qi.top_ups = BTreeMap::new();
         // Mirror the bulk-load (`load_identities_filtered`) vault migration on
         // this single-get path too: a legacy blob with resident `Clear` /
-        // `AlwaysClear` keys is migrated to the vault on read, so the SEC-001
-        // backend tasks (`protect_identity_keys` / `unprotect_identity_keys`)
+        // `AlwaysClear` keys is migrated to the vault on read, so the identity
+        // key password protection backend tasks (`protect_identity_keys` / `unprotect_identity_keys`)
         // and every other single-get consumer see vault-backed schemes rather
         // than re-persisting resident plaintext. Crash-safe (vault-first) and
         // idempotent; a protected identity's resident plaintext is left in place
@@ -778,7 +778,7 @@ impl AppContext {
 
     /// The [`SecretScope`](crate::wallet_backend::secret_prompt::SecretScope) of
     /// an existing password-protected key of `qi`, used to verify the identity's
-    /// password when sealing a newly-added key (SEC-001), or `None` when the
+    /// password when sealing a newly-added key, or `None` when the
     /// identity is not password-protected (the default keyless add applies).
     pub(crate) fn protected_identity_verify_scope(
         &self,
@@ -1769,7 +1769,7 @@ mod tests {
         );
     }
 
-    /// SEC-001 finding-3 regression: the single-get `get_identity_by_id` path
+    /// Regression: the single-get `get_identity_by_id` path
     /// must run the SAME vault migration the bulk `load_identities_filtered`
     /// path runs, so a legacy blob with resident `Clear`/`AlwaysClear` keys is
     /// migrated to the vault on read instead of returning (and re-persisting)
@@ -1884,7 +1884,7 @@ mod tests {
         }
     }
 
-    /// SEC-001 MUST-FIX helper: a QI with one `InVault` key (key_id 1, sealed
+    /// Helper: a QI with one `InVault` key (key_id 1, sealed
     /// Tier-2 in the vault by the caller) and one freshly-added `Clear` key
     /// (key_id 2) — i.e. a new key added to a password-protected identity.
     fn qi_invault_plus_new_clear() -> (QualifiedIdentity, dash_sdk::dpp::identity::KeyID) {
@@ -1928,7 +1928,7 @@ mod tests {
         (qi, added_id)
     }
 
-    /// SEC-001 MUST-FIX: the at-rest encode path REFUSES to write a new keyless
+    /// The at-rest encode path REFUSES to write a new keyless
     /// key onto a password-protected identity (the silent-plaintext leak Smythe
     /// found). The encode fails closed and the new key lands NOWHERE — not
     /// keyless, not Tier-2.
@@ -1967,7 +1967,7 @@ mod tests {
         );
     }
 
-    /// SEC-001: the load-path migration likewise skips a protected identity's
+    /// The load-path migration likewise skips a protected identity's
     /// resident plaintext rather than writing it keyless — fail closed, persist
     /// nothing, leave it resident for the session.
     #[test]

@@ -1,6 +1,6 @@
 //! Kittest coverage for `IdentitySelector` — the app-scoped write-back keystone.
 //!
-//! **QA-001 (MEDIUM)**: The critical write-back path — a genuine ComboBox picker
+//! The critical write-back path — a genuine ComboBox picker
 //! change must call `AppContext::set_selected_identity`, keeping "who am I signing
 //! as" in sync across the breadcrumb and all 12 SYNC screens. This is a
 //! component-level lock: testing `IdentitySelector` directly proves the shared
@@ -75,7 +75,7 @@ fn make_qi(byte: u8, alias: &str) -> QualifiedIdentity {
     }
 }
 
-/// QA-001 — keystone write-back lock for the app-scoped identity migration.
+/// Keystone write-back lock for the app-scoped identity migration.
 ///
 /// A genuine ComboBox picker change on an `IdentitySelector` configured with
 /// `.syncing_global(ctx)` must propagate to `ctx.selected_identity_id()`.

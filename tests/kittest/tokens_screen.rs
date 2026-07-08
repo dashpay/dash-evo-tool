@@ -11,8 +11,7 @@
 //! NOT accidentally apply syncing_global to the N/A sites when rendering.
 //!
 //! Write-back: `syncing_global` component-level write-back is verified by
-//! `identity_selector::tests::syncing_global_writes_selection_to_app_context`
-//! (QA-001).
+//! `identity_selector::tests::syncing_global_writes_selection_to_app_context`.
 //!
 //! # TODO(WalletFixture / private-key fixture)
 //! Add screen-level write-back assertions (ComboBox click → `resolve_selected_identity()`

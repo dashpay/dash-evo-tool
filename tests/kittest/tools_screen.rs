@@ -18,7 +18,7 @@
 //! `CreateAssetLockScreen` uses `IdentitySelector::with_app_default()`, whose
 //! membership guard is covered by unit tests in
 //! `src/ui/components/identity_selector.rs` — specifically
-//! `with_app_default_inert_when_global_id_not_in_candidate_list` (QA-003).
+//! `with_app_default_inert_when_global_id_not_in_candidate_list`.
 //! No additional kittest is added here to avoid duplicating component-level coverage.
 //!
 //! # Note — `send_screen` (READ-only R1)

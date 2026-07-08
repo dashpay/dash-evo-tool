@@ -1,4 +1,4 @@
-//! Persisted-wallet load seam (G2 / PROJ-010).
+//! Persisted-wallet load seam (G2).
 //!
 //! `PersistedWalletLoader` decouples the *strategy* for bringing
 //! persisted wallets back at startup from `WalletBackend`. The shipping
@@ -18,7 +18,7 @@
 //! `WalletBackend::ensure_upstream_registered` (W2, cold-boot
 //! reconciliation). If those have never run for a wallet (fresh install,
 //! post-reset, migrated/sidecar-only), the persistor is empty for it and
-//! this loader brings back nothing — exactly the PROJ-010 funds-invisible
+//! this loader brings back nothing — exactly the funds-invisible
 //! state the W1/W2 writers exist to prevent.
 //!
 //! The trait stays object-safe (`Arc<dyn PersistedWalletLoader>`) and

@@ -214,7 +214,7 @@ impl TextBuffer for Secret {
     }
 
     fn take(&mut self) -> String {
-        // INTENTIONAL(SEC-003): Returns unprotected String — required by egui TextBuffer trait.
+        // Deliberately returns an unprotected String — required by egui TextBuffer trait.
         // The undoer is disabled in PasswordInput, limiting the call paths. Accepted as
         // inherent limitation of the egui framework for the desktop GUI threat model.
         let copy = self.inner.to_string();

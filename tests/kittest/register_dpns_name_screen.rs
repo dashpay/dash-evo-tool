@@ -4,7 +4,7 @@
 //! Proves the canonical contract the remaining transaction screens will copy:
 //! dispatching the registration raises the global blocking overlay, and every
 //! terminal result — success (`display_task_result`) or error
-//! (`display_message`) — tears it down (the SEC-001 no-hard-lock guarantee).
+//! (`display_message`) — tears it down (the no-hard-lock guarantee).
 //!
 //! The screen needs an `Arc<AppContext>`, so each test borrows one from a
 //! throwaway `AppState` built in an isolated data dir. The overlay raise/teardown
@@ -144,7 +144,7 @@ fn dpns_registration_defaults_to_app_scoped_identity() {
     });
 }
 
-/// An error message tears the overlay down (error terminal path) — SEC-001: a
+/// An error message tears the overlay down (error terminal path):
 /// failed registration can never leave the window hard-locked.
 #[test]
 fn dpns_error_message_clears_overlay() {

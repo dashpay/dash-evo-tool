@@ -231,7 +231,7 @@ pub struct WalletPromptMeta {
 }
 
 /// Minimal prompt-copy metadata for an identity whose keys may be
-/// password-protected (SEC-001). Seeded from the loaded `QualifiedIdentity`
+/// password-protected. Seeded from the loaded `QualifiedIdentity`
 /// alias and the DET-side `IdentityMetaView` hint at hydration so the
 /// sign-time prompt shows the right identity label and hint.
 ///
@@ -247,7 +247,7 @@ pub struct IdentityPromptMeta {
 }
 
 /// An identity object password VERIFIED against an existing protected key of
-/// the identity (SEC-001). Produced by
+/// the identity. Produced by
 /// [`SecretAccess::verify_identity_object_password`] and consumed by
 /// [`SecretAccess::seal_new_identity_key_with_password`], so the add-key flow
 /// can enforce the protected-identity precondition BEFORE the irreversible
@@ -486,7 +486,7 @@ impl SecretAccess {
     }
 
     /// Seal a NEW identity key Tier-2 under the identity's EXISTING object
-    /// password (SEC-001). A protected identity must never acquire a keyless
+    /// password. A protected identity must never acquire a keyless
     /// key, so when a key is added to such an identity it is sealed here rather
     /// than written raw.
     ///
@@ -502,7 +502,7 @@ impl SecretAccess {
     /// [`Self::verify_identity_object_password`] BEFORE its on-chain broadcast
     /// and [`Self::seal_new_identity_key_with_password`] AFTER, so a headless or
     /// wrong-password attempt fails closed before any state transition is sent
-    /// (SEC-001 O-2) — the same single prompt, split across the broadcast.
+    /// (O-2) — the same single prompt, split across the broadcast.
     pub async fn seal_new_identity_key(
         &self,
         identity_id: [u8; 32],
@@ -562,7 +562,7 @@ impl SecretAccess {
     }
 
     /// Seal a NEW identity key Tier-2 under an ALREADY-VERIFIED identity object
-    /// password (SEC-001) — the back half of [`Self::seal_new_identity_key`].
+    /// password — the back half of [`Self::seal_new_identity_key`].
     /// No prompt and no re-verify: `password` came from a successful
     /// [`Self::verify_identity_object_password`], so this only writes the sealed
     /// key. The add-key flow calls this AFTER its on-chain broadcast, having
@@ -2001,7 +2001,7 @@ mod tests {
             .expect("seal identity key tier-2");
     }
 
-    /// SEC-001 opt-in seal: a Tier-2 identity key reports `Protected`
+    /// Opt-in seal: a Tier-2 identity key reports `Protected`
     /// (scheme-as-flag), a password-free read fails, the chokepoint prompts
     /// exactly once, decrypts the exact 32 bytes, and `can_resolve_without_prompt`
     /// is false (the background sweep skips a locked protected identity).
@@ -2244,7 +2244,7 @@ mod tests {
         assert_eq!(req.hint.as_deref(), Some("the usual"), "prompt shows hint");
     }
 
-    /// SEC-001 MUST-FIX: a NEW key added to a protected identity is sealed
+    /// A NEW key added to a protected identity is sealed
     /// Tier-2 under the identity's verified password — never written keyless.
     /// After the seal the new key reports `Protected`, a password-free read
     /// fails, and it unseals to the exact bytes under the same password.
@@ -2406,7 +2406,7 @@ mod tests {
         );
     }
 
-    /// SEC-001 O-2: the add-key flow verifies the password UP FRONT
+    /// O-2: the add-key flow verifies the password UP FRONT
     /// ([`SecretAccess::verify_identity_object_password`]) and seals AFTER its
     /// broadcast ([`SecretAccess::seal_new_identity_key_with_password`]). The
     /// split prompts EXACTLY ONCE total and seals the new key Tier-2 — the same
@@ -2473,7 +2473,7 @@ mod tests {
         assert_eq!(unsealed.expose_secret(), &new_key[..]);
     }
 
-    /// SEC-001 O-2 fail-closed: headless verification of a protected identity's
+    /// O-2 fail-closed: headless verification of a protected identity's
     /// password yields `SecretPromptUnavailable` and writes NOTHING. Because the
     /// add-key flow runs this BEFORE its broadcast, a headless add never reaches
     /// the on-chain state transition — no on-chain/local divergence.

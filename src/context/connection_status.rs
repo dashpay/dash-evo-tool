@@ -566,7 +566,7 @@ impl ConnectionStatus {
                         devnet_chainlock,
                         local_chainlock,
                     );
-                    // INTENTIONAL(SEC-005): RPC error strings shown as-is in network
+                    // Deliberately: RPC error strings shown as-is in network
                     // status tooltip. Acceptable for desktop app — helps debugging.
                     self.set_rpc_last_error(rpc_error.clone());
                     self.refresh_state();
@@ -966,7 +966,7 @@ mod tests {
         assert!(!status.spv_peer_degraded());
     }
 
-    /// QA-006: an SPV `Error` must surface as the `Error` overall state even
+    /// An SPV `Error` must surface as the `Error` overall state even
     /// when DAPI is unavailable. The DAPI gate previously short-circuited to
     /// `Disconnected` first, masking a failed chain-sync start.
     #[test]

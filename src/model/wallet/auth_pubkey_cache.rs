@@ -191,8 +191,8 @@ mod tests {
     }
 
     /// AUTH-CACHE-003 — coordinates are network-keyed: the same indices
-    /// on a different network do not alias (SEC-001 class — cross-network
-    /// key reuse — is structurally excluded).
+    /// on a different network do not alias (cross-network
+    /// key reuse is structurally excluded).
     #[test]
     fn coordinates_are_network_keyed() {
         let mut cache = AuthPubkeyCache::default();

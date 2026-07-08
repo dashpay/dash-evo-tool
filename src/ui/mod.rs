@@ -605,9 +605,11 @@ impl Screen {
         /// Every `Screen` variant must appear in exactly one of the two lists
         /// (`set` or `skip`) so the compiler catches new additions.
         macro_rules! set_ctx {
-            (set: $($variant:ident),+ $(,)?; skip: $($skip:ident),* $(,)?) => {
+            (set: $($variant:ident),+ $(,)?; common_set: $($cvariant:ident),* $(,)?; skip: $($skip:ident),* $(,)?) => {
                 match self {
                     $(Screen::$variant(screen) => screen.app_context = app_context,)+
+                    // Token action screens keep their context under `.common`.
+                    $(Screen::$cvariant(screen) => screen.set_app_context(app_context),)*
                     // Handled by the explicit match above (side-effects + return).
                     $(Screen::$skip(_) => {},)*
                 }
@@ -730,13 +732,6 @@ impl Screen {
             GroveSTARKScreen,
             TokensScreen,
             TransferTokensScreen,
-            MintTokensScreen,
-            BurnTokensScreen,
-            DestroyFrozenFundsScreen,
-            FreezeTokensScreen,
-            UnfreezeTokensScreen,
-            PauseTokensScreen,
-            ResumeTokensScreen,
             ClaimTokensScreen,
             ViewTokenClaimsScreen,
             UpdateTokenConfigScreen,
@@ -750,6 +745,14 @@ impl Screen {
             DashPaySendPaymentScreen,
             DashPayQRGeneratorScreen,
             DashPayProfileSearchScreen;
+            common_set:
+            MintTokensScreen,
+            BurnTokensScreen,
+            DestroyFrozenFundsScreen,
+            FreezeTokensScreen,
+            UnfreezeTokensScreen,
+            PauseTokensScreen,
+            ResumeTokensScreen;
             skip:
             NetworkChooserScreen,
             AddNewWalletScreen,
@@ -912,25 +915,25 @@ impl Screen {
                 ScreenType::TransferTokensScreen(screen.identity_token_balance.clone())
             }
             Screen::MintTokensScreen(screen) => {
-                ScreenType::MintTokensScreen(screen.identity_token_info.clone())
+                ScreenType::MintTokensScreen(screen.common.identity_token_info.clone())
             }
             Screen::BurnTokensScreen(screen) => {
-                ScreenType::BurnTokensScreen(screen.identity_token_info.clone())
+                ScreenType::BurnTokensScreen(screen.common.identity_token_info.clone())
             }
             Screen::DestroyFrozenFundsScreen(screen) => {
-                ScreenType::DestroyFrozenFundsScreen(screen.identity_token_info.clone())
+                ScreenType::DestroyFrozenFundsScreen(screen.common.identity_token_info.clone())
             }
             Screen::FreezeTokensScreen(screen) => {
-                ScreenType::FreezeTokensScreen(screen.identity_token_info.clone())
+                ScreenType::FreezeTokensScreen(screen.common.identity_token_info.clone())
             }
             Screen::UnfreezeTokensScreen(screen) => {
-                ScreenType::UnfreezeTokensScreen(screen.identity_token_info.clone())
+                ScreenType::UnfreezeTokensScreen(screen.common.identity_token_info.clone())
             }
             Screen::PauseTokensScreen(screen) => {
-                ScreenType::PauseTokensScreen(screen.identity_token_info.clone())
+                ScreenType::PauseTokensScreen(screen.common.identity_token_info.clone())
             }
             Screen::ResumeTokensScreen(screen) => {
-                ScreenType::ResumeTokensScreen(screen.identity_token_info.clone())
+                ScreenType::ResumeTokensScreen(screen.common.identity_token_info.clone())
             }
             Screen::ClaimTokensScreen(screen) => {
                 ScreenType::ClaimTokensScreen(screen.identity_token_basic_info.clone())

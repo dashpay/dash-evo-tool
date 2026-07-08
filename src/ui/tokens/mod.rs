@@ -8,6 +8,7 @@ pub mod mint_tokens_screen;
 pub mod pause_tokens_screen;
 pub mod resume_tokens_screen;
 pub mod set_token_price_screen;
+pub mod token_action_screen;
 pub mod tokens_screen;
 pub mod transfer_tokens_screen;
 pub mod unfreeze_tokens_screen;

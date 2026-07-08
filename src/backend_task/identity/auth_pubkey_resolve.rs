@@ -21,7 +21,7 @@ use dash_sdk::dpp::dashcore::PublicKey;
 
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
-use crate::model::wallet::Wallet;
+use crate::model::wallet::{AuthKeyMaps, DerivedAuthKeyMaps, Wallet};
 use crate::wallet_backend::SecretScope;
 
 /// The two identity-auth lookup maps a data-map resolution returns:
@@ -54,15 +54,7 @@ impl AppContext {
         let backend = self.wallet_backend()?;
         let cache = backend.auth_pubkey_cache().get(network, &seed_hash);
 
-        if let Some(public_key) = wallet
-            .read()?
-            .identity_authentication_ecdsa_public_key_cached(
-                &cache,
-                network,
-                identity_index,
-                key_index,
-            )
-        {
+        if let Some(public_key) = cache.get(network, identity_index, key_index) {
             return Ok(public_key);
         }
 
@@ -133,7 +125,11 @@ impl AppContext {
         let backend = self.wallet_backend()?;
         let cache = backend.auth_pubkey_cache().get(network, &seed_hash);
 
-        let (mut public_key_map, mut public_key_hash_map, misses) = {
+        let AuthKeyMaps {
+            by_serialized: mut public_key_map,
+            by_hash160: mut public_key_hash_map,
+            misses,
+        } = {
             let mut guard = wallet.write()?;
             guard
                 .identity_authentication_ecdsa_public_keys_data_map_cached(
@@ -169,7 +165,11 @@ impl AppContext {
                 let seed = plaintext
                     .expose_hd_seed()
                     .ok_or(TaskError::ContactWalletSeedUnavailable)?;
-                let (miss_key_map, miss_hash_map, derived) = {
+                let DerivedAuthKeyMaps {
+                    by_serialized: miss_key_map,
+                    by_hash160: miss_hash_map,
+                    derived,
+                } = {
                     let mut guard = wallet.write()?;
                     guard
                         .identity_authentication_ecdsa_public_keys_data_map_from_seed(

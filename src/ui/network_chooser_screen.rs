@@ -4,7 +4,7 @@ use crate::backend_task::system_task::SystemTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::config::Config;
 use crate::context::AppContext;
-use crate::context::connection_status::{ConnectionStatus, OverallConnectionState};
+use crate::context::connection_status::OverallConnectionState;
 use crate::model::spv_status::{SpvStatus, SpvStatusSnapshot};
 use crate::model::wallet::DerivationPathHelpers;
 use crate::ui::components::MessageBanner;
@@ -276,7 +276,7 @@ impl NetworkChooserScreen {
             let ctx = self.current_app_context().clone();
             let status = ctx.connection_status();
             let spv_status = status.spv_status();
-            let spv_connected = ConnectionStatus::spv_connected(spv_status);
+            let spv_connected = spv_status.is_active();
             let spv_error_detail = status.spv_last_error();
             // Chain sync is owned by upstream platform-wallet; the EventBridge
             // pushes live status + per-phase progress into ConnectionStatus.

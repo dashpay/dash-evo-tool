@@ -4,7 +4,7 @@ use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::core::CoreItem;
 use crate::model::spv_status::{SpvStatus, SpvStatusSnapshot};
 use dash_sdk::dash_spv::sync::{ProgressPercentage, SyncProgress as SpvSyncProgress, SyncState};
-use dash_sdk::dpp::dashcore::{ChainLock, Network};
+use dash_sdk::dpp::dashcore::Network;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, Ordering};
 use std::time::{Duration, Instant};
@@ -49,7 +49,6 @@ impl From<u8> for OverallConnectionState {
 /// Supports Dash Core and SPV.
 #[derive(Debug)]
 pub struct ConnectionStatus {
-    rpc_online: AtomicBool,
     spv_status: AtomicU8,
     /// Event-driven mirror of `spv_status` for async waiters. Every transition
     /// funnelled through [`Self::set_spv_status`] is broadcast here.
@@ -86,7 +85,6 @@ pub struct ConnectionStatus {
     /// Latest committed-to-tree progress for an in-flight shielded sync pass,
     /// pushed by `on_shielded_tree_progress`. `None` between passes.
     shielded_tree_progress: Mutex<Option<ShieldedTreeProgress>>,
-    rpc_last_error: Mutex<Option<String>>,
     last_update: Mutex<Instant>,
     spv_connected_peers: AtomicU16,
     /// When SPV first entered an active state (`Starting`/`Syncing`) with zero
@@ -124,7 +122,6 @@ impl ConnectionStatus {
     pub fn new() -> Self {
         let (spv_status_tx, _) = watch::channel(SpvStatus::Idle);
         Self {
-            rpc_online: AtomicBool::new(false),
             spv_status: AtomicU8::new(SpvStatus::Idle as u8),
             spv_status_tx,
             overall_state: AtomicU8::new(OverallConnectionState::Disconnected as u8),
@@ -133,7 +130,6 @@ impl ConnectionStatus {
             spv_sync_progress: Mutex::new(None),
             shielded_sync_progress: Mutex::new(None),
             shielded_tree_progress: Mutex::new(None),
-            rpc_last_error: Mutex::new(None),
             last_update: Mutex::new(Instant::now()),
             spv_connected_peers: AtomicU16::new(0),
             spv_no_peers_since: Mutex::new(None),
@@ -145,7 +141,6 @@ impl ConnectionStatus {
     /// Reset all connection state. Called when switching the active network
     /// so the status reflects the new network from a clean slate.
     pub fn reset(&self) {
-        self.rpc_online.store(false, Ordering::Relaxed);
         self.spv_status
             .store(SpvStatus::Idle as u8, Ordering::Relaxed);
         // Keep the watch coherent: any waiter sleeping across a network switch
@@ -183,37 +178,9 @@ impl ConnectionStatus {
             .shielded_tree_progress
             .lock()
             .unwrap_or_else(|e| e.into_inner()) = None;
-        if let Ok(mut err) = self.rpc_last_error.lock() {
-            *err = None;
-        }
         // Set last_update to epoch so the next trigger_refresh fires immediately
         *self.last_update.lock().unwrap_or_else(|e| e.into_inner()) =
             Instant::now() - REFRESH_CONNECTED;
-    }
-
-    pub fn rpc_online(&self) -> bool {
-        self.rpc_online.load(Ordering::Relaxed)
-    }
-
-    pub fn set_rpc_online(&self, online: bool) {
-        self.rpc_online.store(online, Ordering::Relaxed);
-        if online {
-            self.set_rpc_last_error(None);
-        }
-    }
-
-    /// Set the last RPC error message (from chain lock polling).
-    pub fn set_rpc_last_error(&self, error: Option<String>) {
-        let mut err = self
-            .rpc_last_error
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        *err = error;
-    }
-
-    /// Get the last RPC error message, if any.
-    pub fn rpc_last_error(&self) -> Option<String> {
-        self.rpc_last_error.lock().ok().and_then(|g| g.clone())
     }
 
     pub fn spv_status(&self) -> SpvStatus {
@@ -395,12 +362,6 @@ impl ConnectionStatus {
         self.spv_connected_peers.load(Ordering::Relaxed)
     }
 
-    /// Reset the throttle timer so the next `trigger_refresh()` fires immediately.
-    pub fn reset_timer(&self) {
-        *self.last_update.lock().unwrap_or_else(|e| e.into_inner()) =
-            Instant::now() - REFRESH_CONNECTED;
-    }
-
     pub fn dapi_total_endpoints(&self) -> u16 {
         self.dapi_total_endpoints.load(Ordering::Relaxed)
     }
@@ -441,10 +402,6 @@ impl ConnectionStatus {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .is_some_and(|since| since.elapsed() >= SPV_PEER_DEGRADED_TIMEOUT)
-    }
-
-    pub fn spv_connected(status: SpvStatus) -> bool {
-        status.is_active()
     }
 
     pub fn overall_state(&self) -> OverallConnectionState {
@@ -529,54 +486,14 @@ impl ConnectionStatus {
         format!("{header}\n{spv_label}{degraded_warning}\n{dapi_status}")
     }
 
-    pub fn update_from_chainlocks(
-        &self,
-        network: Network,
-        mainnet_chainlock: &Option<ChainLock>,
-        testnet_chainlock: &Option<ChainLock>,
-        devnet_chainlock: &Option<ChainLock>,
-        local_chainlock: &Option<ChainLock>,
-    ) {
-        let online = match network {
-            Network::Mainnet => mainnet_chainlock.is_some(),
-            Network::Testnet => testnet_chainlock.is_some(),
-            Network::Devnet => devnet_chainlock.is_some(),
-            Network::Regtest => local_chainlock.is_some(),
-        };
-        self.set_rpc_online(online);
-    }
-
     /// Updates internal connection state from a task result.
     pub fn handle_task_result(&self, task_result: &TaskResult, active_network: Network) {
-        if let TaskResult::Success(message) = task_result {
-            match message.as_ref() {
-                BackendTaskSuccessResult::CoreItem(CoreItem::ChainLocks(
-                    mainnet_chainlock,
-                    testnet_chainlock,
-                    devnet_chainlock,
-                    local_chainlock,
-                    rpc_error,
-                )) => {
-                    self.update_from_chainlocks(
-                        active_network,
-                        mainnet_chainlock,
-                        testnet_chainlock,
-                        devnet_chainlock,
-                        local_chainlock,
-                    );
-                    // Deliberately: RPC error strings shown as-is in network
-                    // status tooltip. Acceptable for desktop app — helps debugging.
-                    self.set_rpc_last_error(rpc_error.clone());
-                    self.refresh_state();
-                }
-                BackendTaskSuccessResult::CoreItem(CoreItem::ChainLock(_, network)) => {
-                    if *network == active_network {
-                        self.set_rpc_online(true);
-                        self.refresh_state();
-                    }
-                }
-                _ => {}
-            }
+        if let TaskResult::Success(message) = task_result
+            && let BackendTaskSuccessResult::CoreItem(CoreItem::ChainLock(_, network)) =
+                message.as_ref()
+            && *network == active_network
+        {
+            self.refresh_state();
         }
     }
 

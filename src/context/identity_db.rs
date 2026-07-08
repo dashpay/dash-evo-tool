@@ -982,7 +982,7 @@ impl AppContext {
     /// clear paths can find them.
     pub fn insert_scheduled_votes(
         &self,
-        scheduled_votes: &Vec<ScheduledDPNSVote>,
+        scheduled_votes: &[ScheduledDPNSVote],
     ) -> std::result::Result<(), TaskError> {
         let kv = self.det_kv()?;
         for vote in scheduled_votes {
@@ -1058,11 +1058,10 @@ impl AppContext {
     }
 
     /// Drop a single scheduled vote keyed by `(voter_id, contested_name)`.
-    #[allow(clippy::ptr_arg)]
     pub fn delete_scheduled_vote(
         &self,
         identity_id: &[u8],
-        contested_name: &String,
+        contested_name: &str,
     ) -> std::result::Result<(), TaskError> {
         let voter = voter_buffer(identity_id)?;
         let kv = self.det_kv()?;

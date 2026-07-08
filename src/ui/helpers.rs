@@ -674,7 +674,7 @@ pub fn add_contract_doc_type_chooser_with_filtering(
     selected_contract: &mut Option<QualifiedContract>,
     selected_doc_type: &mut Option<DocumentType>,
 ) {
-    let contracts = app_context.get_contracts(None, None).unwrap_or_default();
+    let contracts = app_context.get_contracts().unwrap_or_default();
     let search_term_lowercase = search_term.to_lowercase();
     let filtered = contracts.iter().filter(|qc| {
         contract_display_label(qc)

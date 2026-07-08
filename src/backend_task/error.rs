@@ -566,6 +566,13 @@ pub enum TaskError {
         source: bincode::error::DecodeError,
     },
 
+    /// A token configuration could not be serialized for local storage.
+    #[error("Could not save token data. Check available disk space and try again.")]
+    TokenConfigSerialization {
+        #[source]
+        source: bincode::error::EncodeError,
+    },
+
     /// A per-wallet platform-address-info or sync-cursor entry could not be
     /// read or written in the per-wallet k/v store.
     #[error(

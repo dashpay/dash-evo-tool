@@ -98,7 +98,7 @@ impl GroupActionsScreen {
                 vec![]
             });
 
-        let contracts_with_group_actions = app_context.get_contracts(None, None).unwrap_or_default().into_iter().filter_map(|qualified_contract| {
+        let contracts_with_group_actions = app_context.get_contracts().unwrap_or_default().into_iter().filter_map(|qualified_contract| {
             let tokens = qualified_contract.contract.tokens().clone().into_iter().filter_map(|(pos, token_config)| {
                 let change_control_rules = token_config.all_change_control_rules().into_iter().filter_map(|(name, change_control_rules)| {
                     match change_control_rules.authorized_to_make_change_action_takers() {

@@ -500,7 +500,7 @@ impl ConnectionStatus {
     }
 
     /// Build the tooltip string for the connection indicator.
-    pub fn tooltip_text(&self, _app_context: &crate::context::AppContext) -> String {
+    pub fn tooltip_text(&self) -> String {
         let spv_status = self.spv_status();
         let overall = self.overall_state();
         let dapi_status = format!("DAPI: {}", self.dapi_status_label());

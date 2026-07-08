@@ -89,7 +89,7 @@ impl UpdateDataContractScreen {
 
         let excluded_aliases = ["dpns", "keyword_search", "token_history", "withdrawals"];
         let known_contracts = app_context
-            .get_contracts(None, None)
+            .get_contracts()
             .expect("Failed to load contracts")
             .into_iter()
             .filter(|c| match &c.alias {

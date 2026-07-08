@@ -310,7 +310,7 @@ impl<'a> DashpayView<'a> {
 
             // 2. Sent-but-not-yet-reciprocated outgoing requests → `pending` contacts.
             //    Skip recipients we already have an established row for above.
-            for (recipient_id, request) in dashpay.sent_contact_requests().iter() {
+            for recipient_id in dashpay.sent_contact_requests().keys() {
                 if dashpay.established_contacts().contains_key(recipient_id) {
                     continue;
                 }
@@ -324,7 +324,6 @@ impl<'a> DashpayView<'a> {
                 out.push(request_to_det_contact(
                     owner,
                     recipient_id,
-                    request,
                     status,
                     created_at,
                     updated_at,
@@ -462,7 +461,6 @@ fn established_to_det(
 fn request_to_det_contact(
     owner: &Identifier,
     counterparty: &Identifier,
-    _request: &ContactRequest,
     status: ContactStatus,
     created_at: i64,
     updated_at: i64,
@@ -1142,10 +1140,8 @@ mod tests {
     fn request_translates_into_pending_contact() {
         let owner = id_from_byte(1);
         let recipient = id_from_byte(2);
-        let request = mk_request(1, 2, 123);
 
-        let det =
-            request_to_det_contact(&owner, &recipient, &request, ContactStatus::Pending, 0, 0);
+        let det = request_to_det_contact(&owner, &recipient, ContactStatus::Pending, 0, 0);
         assert_eq!(det.contact_status, ContactStatus::Pending);
         assert_eq!(det.owner_identity_id, owner.to_buffer().to_vec());
         assert_eq!(det.contact_identity_id, recipient.to_buffer().to_vec());

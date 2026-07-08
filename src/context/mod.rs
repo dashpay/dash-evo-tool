@@ -268,50 +268,19 @@ impl AppContext {
         };
         let platform_version = sdk.version();
 
-        let dpns_contract =
-            match load_system_data_contract(SystemDataContract::DPNS, platform_version) {
-                Ok(c) => c,
-                Err(e) => {
-                    tracing::error!(?network, "Failed to load DPNS contract: {e}");
-                    return None;
-                }
-            };
+        let load_contract = |contract: SystemDataContract, label: &str| {
+            load_system_data_contract(contract, platform_version)
+                .inspect_err(|e| tracing::error!(?network, "Failed to load {label} contract: {e}"))
+                .ok()
+        };
 
-        let withdrawal_contract =
-            match load_system_data_contract(SystemDataContract::Withdrawals, platform_version) {
-                Ok(c) => c,
-                Err(e) => {
-                    tracing::error!(?network, "Failed to load Withdrawals contract: {e}");
-                    return None;
-                }
-            };
-
+        let dpns_contract = load_contract(SystemDataContract::DPNS, "DPNS")?;
+        let withdrawal_contract = load_contract(SystemDataContract::Withdrawals, "Withdrawals")?;
         let token_history_contract =
-            match load_system_data_contract(SystemDataContract::TokenHistory, platform_version) {
-                Ok(c) => c,
-                Err(e) => {
-                    tracing::error!(?network, "Failed to load TokenHistory contract: {e}");
-                    return None;
-                }
-            };
-
+            load_contract(SystemDataContract::TokenHistory, "TokenHistory")?;
         let keyword_search_contract =
-            match load_system_data_contract(SystemDataContract::KeywordSearch, platform_version) {
-                Ok(c) => c,
-                Err(e) => {
-                    tracing::error!(?network, "Failed to load KeywordSearch contract: {e}");
-                    return None;
-                }
-            };
-
-        let dashpay_contract =
-            match load_system_data_contract(SystemDataContract::Dashpay, platform_version) {
-                Ok(c) => c,
-                Err(e) => {
-                    tracing::error!(?network, "Failed to load Dashpay contract: {e}");
-                    return None;
-                }
-            };
+            load_contract(SystemDataContract::KeywordSearch, "KeywordSearch")?;
+        let dashpay_contract = load_contract(SystemDataContract::Dashpay, "Dashpay")?;
 
         let addr = format!(
             "http://{}:{}",

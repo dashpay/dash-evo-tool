@@ -161,7 +161,7 @@ pub fn add_contract_chooser_panel(
     let mut action = AppAction::None;
 
     // Retrieve the list of known contracts
-    let contracts = app_context.get_contracts(None, None).unwrap_or_else(|e| {
+    let contracts = app_context.get_contracts().unwrap_or_else(|e| {
         error!("Error fetching contracts: {}", e);
         vec![]
     });

@@ -7,6 +7,14 @@
 **Input:** `01-requirements-ux.md` (Requirements + UX Spec by Diziet)
 **Style reference:** `tests/kittest/message_banner.rs`
 
+> TODO: this design-doc set (4 files, ~2,651 lines) plus the ~1,922-line
+> kittest module is disproportionate to the shipped widget's actual footprint
+> — `src/ui/components/progress_overlay.rs` (1,909 lines) has exactly two
+> production call sites. Collapse the doc set to `01-requirements-ux.md` as
+> the requirement record plus a trimmed TC table here (id/behavior/assertion
+> seam only, no restated rationale); drop or clearly mark as
+> review-checklist-only any unexecutable "design-review-only" test cases.
+
 ---
 
 ## 1. Overview

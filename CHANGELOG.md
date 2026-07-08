@@ -59,6 +59,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   separate "fund directly from a specific transaction output" path was removed so
   there is a single, double-spend-safe funding flow.
 
+- **DashPay profile no longer requires a display name**: you can save your profile
+  with the display name left blank; only the length limits on name, bio, and
+  avatar URL are still enforced.
+
+- **Shield, Send Privately, and Unshield are now one screen**: each of these
+  actions opens the same Send screen, already set up for what you clicked, instead
+  of a separate dedicated screen per action. The steps and options are unchanged,
+  including pasting a raw shielded address in hex form — there are just fewer
+  screens to navigate between.
+
 ### Known Limitations
 
 - **Single-key wallets — send and balance refresh not available**: importing a
@@ -148,3 +158,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   stay on screen until you dismiss them yourself. Routine notices (a
   successful action, a validation hint, an in-progress status) still clear
   automatically as before.
+- Choosing a funding method on the identity registration or top-up screen and
+  then switching wallets no longer silently discards your choice and reverts
+  to the default funding method.
+- The top-up screen's automatic wallet selection no longer pre-selects a
+  wallet whose spendable balance is too small or currently locked to actually
+  cover the top-up, which would then be immediately rejected.
+- The "My Tokens" tab no longer gets stuck on a loading spinner when you have
+  no identities yet; it now shows the expected empty state.
+- Two settings changes made in quick succession could occasionally cause one
+  of them to be silently lost. Saving settings is now a single atomic step,
+  so no change is dropped.

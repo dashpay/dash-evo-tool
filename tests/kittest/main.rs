@@ -1,3 +1,4 @@
+mod address_input;
 mod confirmation_dialog;
 mod contract_screen;
 mod create_asset_lock_screen;

@@ -1048,7 +1048,8 @@ impl ScreenLike for UpdateTokenConfigScreen {
                 if let Some(wallet) = &self.selected_wallet {
                     if !self.wallet_open_attempted {
                         if let Err(e) = try_open_wallet_no_password(&self.app_context, wallet) {
-                            MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                            MessageBanner::set_global(ui.ctx(), &e, MessageType::Error)
+                                .disable_auto_dismiss();
                         }
                         self.wallet_open_attempted = true;
                     }

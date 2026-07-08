@@ -6,9 +6,13 @@
 use crate::app::AppAction;
 use crate::context::AppContext;
 use crate::ui::ScreenType;
+use crate::ui::identity::avatar::paint_abstract_avatar;
 use crate::ui::theme::{DashColors, ResponseExt};
 use eframe::egui::{Align, Layout, RichText, Ui};
 use std::sync::Arc;
+
+/// Footprint (glow + glyph) of the abstract avatar shown above the heading.
+const AVATAR_DIAMETER: f32 = 140.0;
 
 /// Render the onboarding empty state inside a pre-configured central panel.
 ///
@@ -28,6 +32,8 @@ pub fn render(ui: &mut Ui, app_context: &Arc<AppContext>) -> AppAction {
         ui.set_max_width(640.0);
 
         ui.with_layout(Layout::top_down(Align::Center), |ui| {
+            paint_abstract_avatar(ui, AVATAR_DIAMETER);
+            ui.add_space(16.0);
             ui.label(
                 RichText::new("Welcome to Identities.")
                     .size(28.0)
@@ -60,8 +66,8 @@ pub fn render(ui: &mut Ui, app_context: &Arc<AppContext>) -> AppAction {
             .fill(DashColors::DASH_BLUE)
             .min_size(egui::vec2(280.0, 40.0));
             let primary_response = ui.add(primary).clickable_tooltip(
-                "Start the short setup: pick a username, fund the identity from your wallet, \
-                 and confirm.",
+                "Start the short setup: fund the identity from your wallet, add an optional \
+                 nickname, and confirm.",
             );
             if primary_response.clicked() {
                 action =

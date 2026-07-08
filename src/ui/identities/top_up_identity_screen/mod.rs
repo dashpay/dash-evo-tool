@@ -23,8 +23,8 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
-use crate::ui::identities::add_new_identity_screen::FundingMethod;
-use crate::ui::identities::funding_common::WalletFundedScreenStep;
+use crate::ui::identities::add_new_identity_screen::{FundingMethod, default_funding_state};
+use crate::ui::identities::funding_common::{WalletFundedScreenStep, max_amount_after_fee_reserve};
 use crate::ui::state::TrackedAssetLockCache;
 use crate::ui::{MessageType, ScreenLike};
 use dash_sdk::dashcore_rpc::dashcore::Address;
@@ -156,27 +156,50 @@ impl TopUpIdentityScreen {
                 true
             } else if let Some(wallet) = wallets.values().next() {
                 if self.wallet.is_none() {
-                    // Cache current funding method to avoid holding the lock across updates
-                    let funding_method = *self.funding_method.read().unwrap();
+                    // §B.9 / QA-006: the very first time a wallet resolves with
+                    // nothing chosen yet, apply the same pre-selection the
+                    // create-identity wizard uses (`default_funding_state`) —
+                    // recommend `UseWalletBalance` only when this wallet
+                    // actually has funds to offer it with.
+                    let funding_method_snapshot = self.funding_method.read().ok().map(|m| *m);
+                    if funding_method_snapshot == Some(FundingMethod::NoSelection) {
+                        let wallet_has_balance = {
+                            let wallet_read = wallet.read().unwrap();
+                            self.app_context
+                                .snapshot_has_balance(&wallet_read.seed_hash())
+                        };
+                        let (recommended, _) = default_funding_state(wallet_has_balance);
+                        *self.funding_method.write().unwrap() = recommended;
+                    }
 
-                    // Check if the wallet has the required resources
-                    let has_required_resources = {
-                        let wallet_read = wallet.read().unwrap();
-                        match funding_method {
-                            FundingMethod::UseWalletBalance => self
-                                .app_context
-                                .snapshot_has_balance(&wallet_read.seed_hash()),
-                            FundingMethod::UseUnusedAssetLock => {
-                                self.asset_lock_cache.has_unused(&wallet_read.seed_hash())
+                    // Re-read to pick up the recommendation just written above.
+                    // Skip the rest of this block if the earlier read already
+                    // failed — RwLock poisoning is sticky, so this read would
+                    // fail the same way and panicking here would defeat the
+                    // graceful degradation above.
+                    let funding_method = funding_method_snapshot
+                        .and_then(|_| self.funding_method.read().ok().map(|m| *m));
+
+                    if let Some(funding_method) = funding_method {
+                        // Check if the wallet has the required resources
+                        let has_required_resources = {
+                            let wallet_read = wallet.read().unwrap();
+                            match funding_method {
+                                FundingMethod::UseWalletBalance => self
+                                    .app_context
+                                    .snapshot_has_balance(&wallet_read.seed_hash()),
+                                FundingMethod::UseUnusedAssetLock => {
+                                    self.asset_lock_cache.has_unused(&wallet_read.seed_hash())
+                                }
+                                _ => true,
                             }
-                            _ => true,
-                        }
-                    };
+                        };
 
-                    if has_required_resources {
-                        // Automatically select the only available wallet from app_context
-                        selected_wallet_update = Some(wallet.clone());
-                        step_update_method = Some(funding_method);
+                        if has_required_resources {
+                            // Automatically select the only available wallet from app_context
+                            selected_wallet_update = Some(wallet.clone());
+                            step_update_method = Some(funding_method);
+                        }
                     }
                 }
                 false
@@ -253,13 +276,13 @@ impl TopUpIdentityScreen {
         };
 
         ComboBox::from_id_salt("funding_method")
-            .selected_text(format!("{}", *funding_method))
+            .selected_text(funding_method.top_up_label())
             .height(200.0)
             .show_ui(ui, |ui| {
                 ui.selectable_value(
                     &mut *funding_method,
                     FundingMethod::NoSelection,
-                    "Please select funding method",
+                    FundingMethod::NoSelection.top_up_label(),
                 );
 
                 ui.add_enabled_ui(has_any_unused_asset_lock, |ui| {
@@ -267,7 +290,7 @@ impl TopUpIdentityScreen {
                         .selectable_value(
                             &mut *funding_method,
                             FundingMethod::UseUnusedAssetLock,
-                            "Unused Asset Locks",
+                            FundingMethod::UseUnusedAssetLock.top_up_label(),
                         )
                         .changed()
                     {
@@ -281,7 +304,7 @@ impl TopUpIdentityScreen {
                         .selectable_value(
                             &mut *funding_method,
                             FundingMethod::UseWalletBalance,
-                            "Wallet Balance",
+                            FundingMethod::UseWalletBalance.top_up_label(),
                         )
                         .changed()
                     {
@@ -295,7 +318,7 @@ impl TopUpIdentityScreen {
                         .selectable_value(
                             &mut *funding_method,
                             FundingMethod::UsePlatformAddress,
-                            "Platform Address",
+                            FundingMethod::UsePlatformAddress.top_up_label(),
                         )
                         .changed()
                     {
@@ -385,18 +408,20 @@ impl TopUpIdentityScreen {
         // Only apply max amount restriction when using wallet balance.
         let (max_amount, show_max_button, fee_hint) =
             if funding_method == FundingMethod::UseWalletBalance {
-                let max_amount_duffs = self
+                let max_spendable_duffs = self
                     .wallet
                     .as_ref()
                     .and_then(|w| w.read().ok())
-                    .map(|w| self.app_context.snapshot_balance(&w.seed_hash()).total)
+                    .map(|w| {
+                        self.app_context
+                            .snapshot_balance(&w.seed_hash())
+                            .spendable()
+                    })
                     .unwrap_or(0);
-                // Convert Duffs to Credits (1 Duff = 1000 Credits)
-                let total_credits = max_amount_duffs * 1000;
-                // Reserve estimated fees so "Max" doesn't exceed spendable amount
                 let fee_estimator = self.app_context.fee_estimator();
                 let estimated_fee = fee_estimator.estimate_identity_topup();
-                let max_with_fee_reserved = total_credits.saturating_sub(estimated_fee);
+                let max_with_fee_reserved =
+                    max_amount_after_fee_reserve(max_spendable_duffs, estimated_fee);
                 (
                     Some(max_with_fee_reserved),
                     true,
@@ -627,7 +652,8 @@ impl ScreenLike for TopUpIdentityScreen {
                     if let Some(wallet) = &self.wallet {
                         if !self.wallet_open_attempted {
                             if let Err(e) = try_open_wallet_no_password(&self.app_context, wallet) {
-                                MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                                MessageBanner::set_global(ui.ctx(), &e, MessageType::Error)
+                                    .disable_auto_dismiss();
                             }
                             self.wallet_open_attempted = true;
                         }

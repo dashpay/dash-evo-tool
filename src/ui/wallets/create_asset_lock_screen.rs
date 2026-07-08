@@ -311,7 +311,8 @@ impl ScreenLike for CreateAssetLockScreen {
                                         ui.ctx(),
                                         &e,
                                         MessageType::Error,
-                                    );
+                                    )
+                                    .disable_auto_dismiss();
                                 }
                             } else if !self.wallet_unlock_popup.is_open() {
                                 self.wallet_unlock_popup.open();

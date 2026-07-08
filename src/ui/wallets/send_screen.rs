@@ -1201,7 +1201,7 @@ impl WalletSendScreen {
 
         if !self.wallet_open_attempted {
             if let Err(e) = try_open_wallet_no_password(&self.app_context, wallet) {
-                MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                MessageBanner::set_global(ui.ctx(), &e, MessageType::Error).disable_auto_dismiss();
             }
             self.wallet_open_attempted = true;
         }
@@ -2135,7 +2135,6 @@ impl WalletSendScreen {
 
                 let mut builder = AddressInput::new(self.app_context.network)
                     .with_label("Send to")
-                    .with_hint_text("Enter address (X.../y.../dash1.../tdash1...)")
                     .with_address_kinds(&allowed_kinds)
                     .with_exclude_change(true);
 

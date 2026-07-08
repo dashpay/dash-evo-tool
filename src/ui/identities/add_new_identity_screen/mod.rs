@@ -13,6 +13,7 @@ use crate::backend_task::identity::{
 use crate::backend_task::wallet::WalletTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
+use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::secret::Secret;
 use crate::model::wallet::Wallet;
 use crate::ui::components::MessageBanner;
@@ -23,7 +24,9 @@ use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
-use crate::ui::identities::funding_common::WalletFundedScreenStep;
+use crate::ui::identities::funding_common::{
+    WalletFundedScreenStep, max_amount_after_fee_reserve, spendable_covers_minimum,
+};
 use crate::ui::state::TrackedAssetLockCache;
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, ScreenLike};
@@ -60,15 +63,67 @@ pub enum FundingMethod {
 }
 
 impl fmt::Display for FundingMethod {
+    /// Alex-facing labels per design-spec §B.9. `UseUnusedAssetLock` deliberately
+    /// avoids "asset lock" jargon — it reads as recovering an interrupted setup.
+    /// Create-Identity context only; Top-Up uses [`FundingMethod::top_up_label`].
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let output = match self {
-            FundingMethod::NoSelection => "Select funding method",
-            FundingMethod::UseWalletBalance => "Wallet Balance",
-            FundingMethod::UseUnusedAssetLock => "Unused Asset Lock (recommended)",
-            FundingMethod::UsePlatformAddress => "Platform Address",
+            FundingMethod::NoSelection => "Select how to fund",
+            FundingMethod::UseWalletBalance => "From your wallet (recommended)",
+            FundingMethod::UseUnusedAssetLock => "Recover an unfinished funding",
+            FundingMethod::UsePlatformAddress => "Use a Platform address",
         };
         write!(f, "{}", output)
     }
+}
+
+impl FundingMethod {
+    /// Top-Up-context label. Shares [`Display`]'s wording except for
+    /// `UseUnusedAssetLock`: an existing identity being topped up was never
+    /// mid-setup, so "recover an unfinished funding" doesn't fit — it just
+    /// reuses an existing funding transaction.
+    pub(crate) fn top_up_label(&self) -> &'static str {
+        match self {
+            FundingMethod::NoSelection => "Select how to fund",
+            FundingMethod::UseWalletBalance => "From your wallet (recommended)",
+            FundingMethod::UseUnusedAssetLock => "Use an existing funding transaction",
+            FundingMethod::UsePlatformAddress => "Use a Platform address",
+        }
+    }
+}
+
+/// The funding-method chooser's starting state for a wallet that either does
+/// or doesn't have spendable balance (§B.9: pre-select `UseWalletBalance`
+/// only when it is actually available; otherwise start unselected rather
+/// than land on a method the ComboBox itself wouldn't offer). Shared by
+/// `AddNewIdentityScreen` and `TopUpIdentityScreen`, which both render this
+/// same chooser. A pure function so the decision is testable without
+/// constructing a real wallet/balance snapshot.
+pub(crate) fn default_funding_state(
+    wallet_has_balance: bool,
+) -> (FundingMethod, WalletFundedScreenStep) {
+    if wallet_has_balance {
+        (
+            FundingMethod::UseWalletBalance,
+            WalletFundedScreenStep::ReadyToCreate,
+        )
+    } else {
+        (
+            FundingMethod::NoSelection,
+            WalletFundedScreenStep::ChooseFundingMethod,
+        )
+    }
+}
+
+/// Compose a wallet-picker entry as `alias — spendable-balance in DASH`.
+///
+/// The balance shown is always the wallet's **spendable** amount (never the
+/// total): only spendable funds can pay for identity creation, so surfacing
+/// the total here would invite the very insufficient-funds surprise this
+/// label exists to prevent. A pure function so the wording is testable
+/// without constructing a real wallet/balance snapshot.
+fn format_wallet_picker_label(alias: &str, spendable_duffs: u64) -> String {
+    format!("{alias} — {}", Amount::dash_from_duffs(spendable_duffs))
 }
 
 pub struct AddNewIdentityScreen {
@@ -157,13 +212,40 @@ impl AddNewIdentityScreen {
             }
         }
 
+        // §B.9: `UseWalletBalance` is the recommended, pre-selected primary
+        // path — but only when the wallet can actually afford the
+        // identity-creation fee, using the same sufficiency check as the
+        // "not enough Dash" banner in `by_using_unused_balance.rs`. A dust
+        // balance (positive but below the fee) must not pre-select a path
+        // the banner immediately blocks on the very next render.
+        //
+        // TODO(bilby): this is computed once here and never recomputed —
+        // `update_wallet` and the wallet-switch handler in
+        // `render_wallet_selection` don't touch `funding_method`/`step`
+        // after a wallet switch, so switching from a funded wallet to an
+        // underfunded one keeps the stale pre-selection. Recomputing safely
+        // requires tracking "user manually chose a method" so a switch never
+        // clobbers an explicit choice; deferred pending UX confirmation on
+        // that behavior rather than guessing it here.
+        let wallet_can_afford_creation = selected_wallet.as_ref().is_some_and(|wallet| {
+            let seed_hash = wallet.read().unwrap().seed_hash();
+            let spendable_duffs = app_context.snapshot_balance(&seed_hash).spendable();
+            let key_count = default_identity_key_specs(app_context.dashpay_contract.id()).len() + 1;
+            let minimum_credits = app_context
+                .fee_estimator()
+                .estimate_identity_create(key_count);
+            spendable_covers_minimum(spendable_duffs, minimum_credits)
+        });
+        let (default_funding_method, default_step) =
+            default_funding_state(wallet_can_afford_creation);
+
         let mut created = Self {
             identity_id_number: 0, // updated later
-            step: Arc::new(RwLock::new(WalletFundedScreenStep::ChooseFundingMethod)),
+            step: Arc::new(RwLock::new(default_step)),
             funding_asset_lock: None,
             selected_wallet: None, // updated later
             funding_address: None,
-            funding_method: Arc::new(RwLock::new(FundingMethod::NoSelection)),
+            funding_method: Arc::new(RwLock::new(default_funding_method)),
             funding_amount: None,
             funding_amount_input: None,
             alias_input: String::new(),
@@ -359,16 +441,38 @@ impl AddNewIdentityScreen {
         }
     }
 
+    /// Build the wallet-picker label (`alias — spendable balance`) for one
+    /// wallet, reading its spendable balance from the display snapshot.
+    ///
+    /// Poison-tolerant: if the wallet lock is poisoned, falls back to a plain
+    /// "Unnamed Wallet" label rather than panicking. Takes `&AppContext`
+    /// (not `&self`) so the ComboBox closure can call it via a field-level
+    /// borrow, leaving the closure's other `self` field writes undisturbed.
+    fn wallet_picker_label(app_context: &AppContext, wallet: &Arc<RwLock<Wallet>>) -> String {
+        let Some((seed_hash, alias)) = wallet.read().ok().map(|w| {
+            let alias = w
+                .alias
+                .clone()
+                .unwrap_or_else(|| "Unnamed Wallet".to_string());
+            (w.seed_hash(), alias)
+        }) else {
+            return "Unnamed Wallet".to_string();
+        };
+        let spendable_duffs = app_context.snapshot_balance(&seed_hash).spendable();
+        format_wallet_picker_label(&alias, spendable_duffs)
+    }
+
     fn render_wallet_selection(&mut self, ui: &mut Ui) -> bool {
         let mut selected_wallet = None;
         let rendered = if self.app_context.has_wallet.load(Ordering::Relaxed) {
             let wallets = &self.app_context.wallets.read().unwrap();
             if wallets.len() > 1 {
-                // Retrieve the alias of the currently selected wallet, if any
-                let selected_wallet_alias = self
+                // Label the currently selected wallet with its spendable
+                // balance, if a wallet is selected.
+                let selected_wallet_label = self
                     .selected_wallet
                     .as_ref()
-                    .and_then(|wallet| wallet.read().ok()?.alias.clone())
+                    .map(|wallet| Self::wallet_picker_label(&self.app_context, wallet))
                     .unwrap_or_else(|| "Select".to_string());
 
                 ui.heading(
@@ -377,21 +481,19 @@ impl AddNewIdentityScreen {
 
                 // Display the ComboBox for wallet selection
                 ComboBox::from_id_salt("select_wallet")
-                    .selected_text(selected_wallet_alias)
+                    .selected_text(selected_wallet_label)
                     .show_ui(ui, |ui| {
                         for wallet in wallets.values() {
-                            let wallet_alias = wallet
-                                .read()
-                                .ok()
-                                .and_then(|w| w.alias.clone())
-                                .unwrap_or_else(|| "Unnamed Wallet".to_string());
+                            // Show each wallet's spendable balance next to its
+                            // alias so funding sufficiency is visible up front.
+                            let wallet_label = Self::wallet_picker_label(&self.app_context, wallet);
 
                             let is_selected = self
                                 .selected_wallet
                                 .as_ref()
                                 .is_some_and(|selected| Arc::ptr_eq(selected, wallet));
 
-                            if ui.selectable_label(is_selected, wallet_alias).clicked() {
+                            if ui.selectable_label(is_selected, wallet_label).clicked() {
                                 // Update the selected wallet
                                 selected_wallet = Some(wallet.clone());
                                 // Reset the funding address
@@ -431,6 +533,9 @@ impl AddNewIdentityScreen {
     /// and identity index.
     ///
     /// This function is called whenever a wallet was changed in the UI or unlocked
+    ///
+    /// TODO(bilby): does not recompute the funding-method pre-selection for
+    /// the new wallet (see the matching TODO in `new_with_wallet`).
     fn update_wallet(&mut self, wallet: Arc<RwLock<Wallet>>) {
         let is_open = wallet.read().expect("wallet lock poisoned").is_open();
 
@@ -480,7 +585,7 @@ impl AddNewIdentityScreen {
                     .selectable_value(
                         &mut *funding_method,
                         FundingMethod::NoSelection,
-                        "Please select funding method",
+                        format!("{}", FundingMethod::NoSelection),
                     )
                     .changed()
                 {
@@ -507,7 +612,7 @@ impl AddNewIdentityScreen {
                         .selectable_value(
                             &mut *funding_method,
                             FundingMethod::UseUnusedAssetLock,
-                            "Unused Evo Funding Locks (recommended)",
+                            format!("{}", FundingMethod::UseUnusedAssetLock),
                         )
                         .changed()
                 {
@@ -522,7 +627,7 @@ impl AddNewIdentityScreen {
                         .selectable_value(
                             &mut *funding_method,
                             FundingMethod::UseWalletBalance,
-                            "Wallet Balance",
+                            format!("{}", FundingMethod::UseWalletBalance),
                         )
                         .changed()
                 {
@@ -544,7 +649,7 @@ impl AddNewIdentityScreen {
                         .selectable_value(
                             &mut *funding_method,
                             FundingMethod::UsePlatformAddress,
-                            "Platform Address",
+                            format!("{}", FundingMethod::UsePlatformAddress),
                         )
                         .changed()
                 {
@@ -992,18 +1097,40 @@ impl AddNewIdentityScreen {
     fn render_funding_amount_input(&mut self, ui: &mut egui::Ui) {
         let funding_method = *self.funding_method.read().unwrap();
 
-        // Calculate max amount if using wallet balance
-        let max_amount_credits = if funding_method == FundingMethod::UseWalletBalance {
-            self.selected_wallet.as_ref().map(|wallet| {
-                let wallet = wallet.read().unwrap();
-                // Convert duffs to credits (1 duff = 1000 credits)
-                self.app_context.snapshot_balance(&wallet.seed_hash()).total * 1000
-            })
-        } else {
-            None
-        };
-
-        let show_max_button = funding_method == FundingMethod::UseWalletBalance;
+        // Only apply the max-amount restriction when using wallet balance;
+        // reserve the estimated identity-creation fee out of the spendable
+        // balance so "Max" never offers more than the coin selector can
+        // actually use, mirroring the Top-Up wizard's equivalent input.
+        let (max_amount_credits, show_max_button, fee_hint) =
+            if funding_method == FundingMethod::UseWalletBalance {
+                let spendable_duffs = self
+                    .selected_wallet
+                    .as_ref()
+                    .and_then(|wallet| wallet.read().ok())
+                    .map(|wallet| {
+                        self.app_context
+                            .snapshot_balance(&wallet.seed_hash())
+                            .spendable()
+                    })
+                    .unwrap_or(0);
+                let key_count = self.identity_keys.others.len() + 1; // +1 for master key
+                let estimated_fee = self
+                    .app_context
+                    .fee_estimator()
+                    .estimate_identity_create(key_count);
+                let max_with_fee_reserved =
+                    max_amount_after_fee_reserve(spendable_duffs, estimated_fee);
+                (
+                    Some(max_with_fee_reserved),
+                    true,
+                    Some(format!(
+                        "~{} reserved for fees",
+                        format_credits_as_dash(estimated_fee)
+                    )),
+                )
+            } else {
+                (None, false, None)
+            };
 
         let amount_input = self.funding_amount_input.get_or_insert_with(|| {
             AmountInput::new(Amount::new_dash(0.0))
@@ -1016,10 +1143,56 @@ impl AddNewIdentityScreen {
         // Update max amount and max button visibility dynamically
         amount_input
             .set_max_amount(max_amount_credits)
-            .set_show_max_button(show_max_button);
+            .set_show_max_button(show_max_button)
+            .set_max_exceeded_hint(fee_hint);
 
         let response = amount_input.show(ui);
         response.inner.update(&mut self.funding_amount);
+
+        ui.add_space(10.0);
+    }
+
+    /// The optional local-alias step (design-spec §B.10: fund-first).
+    ///
+    /// Rendered by each funding-method branch just before its Create/Register
+    /// button, once the amount or lock for that method is chosen. This is a
+    /// Dash Evo Tool alias stored locally, not a DPNS username.
+    fn render_alias_input(&mut self, ui: &mut egui::Ui, step_number: u32) {
+        ui.add_space(10.0);
+        ui.separator();
+        ui.add_space(10.0);
+
+        ui.horizontal(|ui| {
+            ui.heading(format!("{step_number}. Set a local alias (optional)."));
+            crate::ui::helpers::info_icon_button(
+                ui,
+                "This is a local alias stored only in Dash Evo Tool to help you identify this identity.\n\n\
+                This is NOT a DPNS username. DPNS names are registered on-chain after creating the identity.\n\n\
+                You can change this alias anytime from the identity details screen.",
+            );
+        });
+
+        ui.add_space(8.0);
+
+        ui.horizontal(|ui| {
+            ui.label("Alias:");
+            let dark_mode = ui.style().visuals.dark_mode;
+            ui.add(
+                egui::TextEdit::singleline(&mut self.alias_input)
+                    .hint_text(
+                        egui::RichText::new("e.g., My Main Identity")
+                            .color(DashColors::text_secondary(dark_mode)),
+                    )
+                    .desired_width(250.0),
+            );
+        });
+
+        let dark_mode = ui.style().visuals.dark_mode;
+        ui.label(
+            egui::RichText::new("Note: This is a Dash Evo Tool alias, not a DPNS username.")
+                .small()
+                .color(DashColors::text_secondary(dark_mode)),
+        );
 
         ui.add_space(10.0);
     }
@@ -1220,6 +1393,17 @@ impl ScreenLike for AddNewIdentityScreen {
                 }
 
                 if self.selected_wallet.is_none() {
+                    ui.add_space(10.0);
+                    ui.colored_label(
+                        DashColors::WARNING,
+                        "You need a wallet before you can create an identity.",
+                    );
+                    ui.add_space(8.0);
+                    if ui.button("Set up a wallet").clicked() {
+                        inner_action |= AppAction::SetMainScreenThenGoToMainScreen(
+                            crate::ui::RootScreenType::RootScreenWalletsBalances,
+                        );
+                    }
                     return;
                 };
 
@@ -1229,7 +1413,8 @@ impl ScreenLike for AddNewIdentityScreen {
                 // Try to open wallet without password if it doesn't use one
                 if !self.wallet_open_attempted {
                     if let Err(e) = try_open_wallet_no_password(&self.app_context, wallet) {
-                        MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                        MessageBanner::set_global(ui.ctx(), &e, MessageType::Error)
+                            .disable_auto_dismiss();
                     }
                     self.wallet_open_attempted = true;
                 }
@@ -1319,41 +1504,10 @@ impl ScreenLike for AddNewIdentityScreen {
                 ui.separator();
                 ui.add_space(10.0);
 
-                // Local alias input section
-                ui.horizontal(|ui| {
-                    ui.heading(format!("{}. Set a local alias (optional).", step_number));
-                    crate::ui::helpers::info_icon_button(
-                        ui,
-                        "This is a local alias stored only in Dash Evo Tool to help you identify this identity.\n\n\
-                        This is NOT a DPNS username. DPNS names are registered on-chain after creating the identity.\n\n\
-                        You can change this alias anytime from the identity details screen.",
-                    );
-                });
-                step_number += 1;
-
-                ui.add_space(8.0);
-
-                ui.horizontal(|ui| {
-                    ui.label("Alias:");
-                    let dark_mode = ui.style().visuals.dark_mode;
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.alias_input)
-                            .hint_text(egui::RichText::new("e.g., My Main Identity").color(DashColors::text_secondary(dark_mode)))
-                            .desired_width(250.0),
-                    );
-                });
-
-                let dark_mode = ui.style().visuals.dark_mode;
-                ui.label(
-                    egui::RichText::new("Note: This is a Dash Evo Tool nickname, not a DPNS username.")
-                        .small()
-                        .color(DashColors::text_secondary(dark_mode)),
-                );
-
-                ui.add_space(10.0);
-                ui.separator();
-                ui.add_space(10.0);
-
+                // Fund-first (design-spec §B.10): the funding method chooser is the
+                // first everyday-facing step. The local alias (optional) moves to a
+                // later step, rendered just before the Create button for whichever
+                // funding method is chosen (see `render_alias_input`).
                 ui.heading(
                     format!("{}. Choose your funding method.", step_number).as_str()
                 );
@@ -1465,5 +1619,118 @@ impl ScreenLike for AddNewIdentityScreen {
         }
 
         action
+    }
+}
+
+#[cfg(test)]
+mod funding_method_tests {
+    use super::{
+        FundingMethod, WalletFundedScreenStep, default_funding_state, format_wallet_picker_label,
+    };
+
+    /// The picker label pairs the wallet alias with its spendable balance,
+    /// rendered in DASH, so the user can compare wallets before choosing one.
+    /// 0.5 DASH == 50_000_000 duffs.
+    #[test]
+    fn wallet_picker_label_shows_spendable_balance_in_dash() {
+        assert_eq!(
+            format_wallet_picker_label("Main", 50_000_000),
+            "Main — 0.5 DASH"
+        );
+    }
+
+    /// A zero-balance wallet still renders a well-formed label rather than an
+    /// empty or unit-less string.
+    #[test]
+    fn wallet_picker_label_renders_zero_balance() {
+        assert_eq!(format_wallet_picker_label("Empty", 0), "Empty — 0 DASH");
+    }
+
+    /// Structural guard: the label keeps the alias, an em-dash separator, and
+    /// the DASH unit — the shape UI code and any future i18n extraction rely on.
+    #[test]
+    fn wallet_picker_label_keeps_alias_separator_and_unit() {
+        let label = format_wallet_picker_label("Savings", 12_345_678);
+        assert!(label.starts_with("Savings"), "keeps the alias: {label}");
+        assert!(label.contains(" — "), "uses an em-dash separator: {label}");
+        assert!(label.ends_with(" DASH"), "shows the DASH unit: {label}");
+    }
+
+    /// QA-001: a wallet with spendable balance defaults to the recommended
+    /// path, pre-selected and ready to go.
+    #[test]
+    fn default_funding_state_prefers_wallet_balance_when_available() {
+        assert_eq!(
+            default_funding_state(true),
+            (
+                FundingMethod::UseWalletBalance,
+                WalletFundedScreenStep::ReadyToCreate
+            )
+        );
+    }
+
+    /// QA-001: a wallet with nothing to fund from must not default to a
+    /// method the ComboBox itself wouldn't offer — that was the fresh-wallet
+    /// dead end. It starts unselected instead.
+    #[test]
+    fn default_funding_state_falls_back_to_no_selection_without_balance() {
+        assert_eq!(
+            default_funding_state(false),
+            (
+                FundingMethod::NoSelection,
+                WalletFundedScreenStep::ChooseFundingMethod
+            )
+        );
+    }
+
+    /// Exhaustive over the enum so a new variant forces a copy decision here
+    /// instead of silently falling back to a Debug render in the UI.
+    #[test]
+    fn display_is_jargon_free_for_every_variant() {
+        for method in [
+            FundingMethod::NoSelection,
+            FundingMethod::UseUnusedAssetLock,
+            FundingMethod::UseWalletBalance,
+            FundingMethod::UsePlatformAddress,
+        ] {
+            let label = format!("{method}");
+            let debug = format!("{method:?}");
+            assert_ne!(label, debug, "label must not be the Debug repr");
+            assert!(
+                !label.contains("Asset Lock") && !label.contains("asset lock"),
+                "label must not leak asset-lock jargon: {label}"
+            );
+        }
+    }
+
+    #[test]
+    fn use_wallet_balance_is_the_recommended_primary_path() {
+        assert_eq!(
+            format!("{}", FundingMethod::UseWalletBalance),
+            "From your wallet (recommended)"
+        );
+    }
+
+    /// Top-Up's asset-lock label must not describe "recovering" a funding
+    /// setup — an identity being topped up already exists and was never
+    /// mid-creation. Every other variant keeps `Display`'s wording.
+    #[test]
+    fn top_up_label_differs_only_for_asset_lock() {
+        assert_eq!(
+            FundingMethod::UseUnusedAssetLock.top_up_label(),
+            "Use an existing funding transaction"
+        );
+        assert_ne!(
+            FundingMethod::UseUnusedAssetLock.top_up_label(),
+            format!("{}", FundingMethod::UseUnusedAssetLock)
+        );
+
+        for method in [
+            FundingMethod::NoSelection,
+            FundingMethod::UseWalletBalance,
+            FundingMethod::UsePlatformAddress,
+        ] {
+            assert_eq!(method.top_up_label(), format!("{method}"));
+        }
     }
 }

@@ -6,8 +6,8 @@ use crate::ui::identities::add_new_identity_screen::{
     AddNewIdentityScreen, FundingMethod, WalletFundedScreenStep,
 };
 use crate::ui::identities::funding_common::{asset_lock_address, asset_lock_status_label};
-use crate::ui::theme::DashColors;
-use egui::{RichText, Ui};
+use crate::ui::theme::{ComponentStyles, DashColors};
+use egui::{Color32, RichText, Ui};
 use platform_wallet::wallet::asset_lock::tracked::{AssetLockStatus, TrackedAssetLock};
 
 impl AddNewIdentityScreen {
@@ -26,7 +26,7 @@ impl AddNewIdentityScreen {
         };
 
         if self.asset_lock_cache.is_failed(&seed_hash) {
-            ui.label("Couldn't load asset locks.");
+            ui.label("Couldn't load your unfinished funding.");
             if ui.button("Retry").clicked() {
                 self.asset_lock_cache.invalidate_one(&seed_hash);
             }
@@ -34,7 +34,7 @@ impl AddNewIdentityScreen {
         }
 
         let Some(all_tracked) = self.asset_lock_cache.get(&seed_hash) else {
-            ui.label("Loading asset locks…");
+            ui.label("Loading your unfinished funding…");
             return;
         };
 
@@ -48,11 +48,11 @@ impl AddNewIdentityScreen {
             .collect();
 
         if tracked.is_empty() {
-            ui.label("No unused asset locks available.");
+            ui.label("No unfinished funding was found.");
             return;
         }
 
-        ui.heading("Select an unused asset lock:");
+        ui.heading("Select the unfinished funding to use:");
         ui.add_space(8.0);
 
         egui::ScrollArea::vertical()
@@ -64,11 +64,13 @@ impl AddNewIdentityScreen {
                     ui.group(|ui| {
                         ui.vertical(|ui| {
                             if is_selected {
-                                ui.colored_label(DashColors::SUCCESS, "Selected asset lock");
+                                ui.colored_label(DashColors::SUCCESS, "Selected");
                             }
 
-                            ui.label(format!("TxID: {}", lock.out_point.txid));
-                            ui.label(format!("Vout: {}", lock.out_point.vout));
+                            if self.show_advanced_options {
+                                ui.label(format!("TxID: {}", lock.out_point.txid));
+                                ui.label(format!("Vout: {}", lock.out_point.vout));
+                            }
                             if let Some(address) =
                                 asset_lock_address(lock, self.app_context.network)
                             {
@@ -91,7 +93,7 @@ impl AddNewIdentityScreen {
                             } else if ui.button("Select").clicked() {
                                 MessageBanner::set_global(
                                     ui.ctx(),
-                                    "Asset lock proof is not yet available. Wait for the transaction to chain-lock and try again.",
+                                    "This funding isn't ready to use yet. Wait for it to be confirmed on the Dash network, then try again.",
                                     MessageType::Warning,
                                 );
                             }
@@ -111,11 +113,7 @@ impl AddNewIdentityScreen {
         let step = *self.step.read().unwrap();
 
         ui.heading(
-            format!(
-                "{}. Choose the unused asset lock that you would like to use.",
-                step_number
-            )
-            .as_str(),
+            format!("{step_number}. Choose the unfinished funding you'd like to use.").as_str(),
         );
         ui.add_space(10.0);
         self.render_choose_funding_asset_lock(ui);
@@ -146,7 +144,18 @@ impl AddNewIdentityScreen {
             });
         ui.add_space(10.0);
 
-        if ui.button("Create Identity").clicked() {
+        self.render_alias_input(ui, step_number + 1);
+
+        let can_create = self.funding_asset_lock.is_some();
+        let button = egui::Button::new(RichText::new("Create Identity").color(Color32::WHITE))
+            .fill(if can_create {
+                DashColors::DASH_BLUE
+            } else {
+                ComponentStyles::button_disabled_fill(dark_mode)
+            })
+            .frame(true)
+            .corner_radius(3.0);
+        if ui.add_enabled(can_create, button).clicked() {
             action |= self.register_identity_clicked(FundingMethod::UseUnusedAssetLock);
         }
 

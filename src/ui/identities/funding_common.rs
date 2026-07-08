@@ -1,11 +1,30 @@
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dashcore_rpc::dashcore::Network;
 use dash_sdk::dashcore_rpc::dashcore::transaction::special_transaction::TransactionPayload;
+use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
 use eframe::epaint::{Color32, ColorImage};
 use egui::Vec2;
 use image::Luma;
 use platform_wallet::wallet::asset_lock::tracked::{AssetLockStatus, TrackedAssetLock};
 use qrcode::QrCode;
+
+/// Whether a wallet holding `spendable_duffs` can cover `minimum_credits` of
+/// platform fees. Shared by the Create-Identity and Top-Up wallet-balance
+/// funding gates so the duffs -> credits conversion has one source of truth.
+pub fn spendable_covers_minimum(spendable_duffs: u64, minimum_credits: u64) -> bool {
+    spendable_duffs.saturating_mul(CREDITS_PER_DUFF) >= minimum_credits
+}
+
+/// The largest amount, in credits, a "Max" button can safely offer from a
+/// wallet holding `spendable_duffs`, after reserving `fee_credits` for the
+/// platform fee. Built on `spendable_duffs` (not the wallet's `total`, which
+/// also counts immature/locked funds coin selection cannot touch) so the
+/// offered amount never exceeds what the wallet can actually send.
+pub fn max_amount_after_fee_reserve(spendable_duffs: u64, fee_credits: u64) -> u64 {
+    spendable_duffs
+        .saturating_mul(CREDITS_PER_DUFF)
+        .saturating_sub(fee_credits)
+}
 
 #[derive(Debug, Eq, PartialEq, Ord, PartialOrd, Copy, Clone)]
 pub enum WalletFundedScreenStep {
@@ -99,5 +118,53 @@ mod tests {
                 "label must not leak enum jargon: {label}"
             );
         }
+    }
+
+    #[test]
+    fn exact_balance_covers_minimum() {
+        let minimum_credits = 10 * CREDITS_PER_DUFF;
+        assert!(spendable_covers_minimum(10, minimum_credits));
+    }
+
+    #[test]
+    fn one_credit_short_of_minimum_is_insufficient() {
+        let minimum_credits = 10 * CREDITS_PER_DUFF + 1;
+        assert!(!spendable_covers_minimum(10, minimum_credits));
+    }
+
+    #[test]
+    fn one_credit_above_minimum_is_sufficient() {
+        let minimum_credits = 10 * CREDITS_PER_DUFF - 1;
+        assert!(spendable_covers_minimum(10, minimum_credits));
+    }
+
+    #[test]
+    fn zero_spendable_never_covers_a_positive_minimum() {
+        assert!(!spendable_covers_minimum(0, 1));
+    }
+
+    #[test]
+    fn conversion_does_not_overflow_on_extreme_values() {
+        assert!(spendable_covers_minimum(u64::MAX, u64::MAX));
+    }
+
+    #[test]
+    fn max_amount_reserves_fee_from_spendable_duffs() {
+        let spendable_duffs = 10;
+        let fee_credits = 500;
+        assert_eq!(
+            max_amount_after_fee_reserve(spendable_duffs, fee_credits),
+            spendable_duffs * CREDITS_PER_DUFF - fee_credits
+        );
+    }
+
+    #[test]
+    fn max_amount_saturates_to_zero_when_fee_exceeds_spendable() {
+        assert_eq!(max_amount_after_fee_reserve(1, u64::MAX), 0);
+    }
+
+    #[test]
+    fn max_amount_does_not_overflow_on_extreme_values() {
+        assert_eq!(max_amount_after_fee_reserve(u64::MAX, 0), u64::MAX);
     }
 }

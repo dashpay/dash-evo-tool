@@ -1157,8 +1157,9 @@ impl AppState {
         match current_state {
             OverallConnectionState::Disconnected => {
                 let msg = "Disconnected — check your internet connection";
-                self.connection_banner_handle =
-                    Some(MessageBanner::set_global(ctx, msg, MessageType::Error));
+                let handle = MessageBanner::set_global(ctx, msg, MessageType::Error);
+                handle.disable_auto_dismiss();
+                self.connection_banner_handle = Some(handle);
             }
             OverallConnectionState::Connecting => {
                 // SPV active but no peers connected yet. The degraded flag
@@ -1188,6 +1189,7 @@ impl AppState {
                     "SPV sync failed. Go to Settings for connection details.",
                     MessageType::Error,
                 );
+                handle.disable_auto_dismiss();
                 if let Some(detail) = connection_status.spv_last_error() {
                     handle.with_details(detail);
                 }
@@ -1279,6 +1281,7 @@ impl AppState {
                 COLD_START_STUCK_MESSAGE,
                 MessageType::Error,
             );
+            handle.disable_auto_dismiss();
             // Log + attach the last wiring error once per network; the banner is
             // re-asserted every frame (idempotent) so it survives a switch, but
             // the diagnostic warning must not repeat.
@@ -1490,6 +1493,7 @@ impl AppState {
                     "Storage update could not complete. Your data is safe.",
                     MessageType::Error,
                 );
+                handle.disable_auto_dismiss();
                 // `with_details` accepts anything `Debug`; the
                 // collapsed details panel + log line both get the full
                 // typed `MigrationError` chain rather than a lossy
@@ -1918,7 +1922,8 @@ impl App for AppState {
                 TaskResult::Error(err @ TaskError::NetworkContextCreationFailed { .. }) => {
                     self.network_switch_pending = None;
                     self.network_switch_banner.take_and_clear();
-                    MessageBanner::set_global(ctx, err.to_string(), MessageType::Error);
+                    MessageBanner::set_global(ctx, err.to_string(), MessageType::Error)
+                        .disable_auto_dismiss();
                 }
                 TaskResult::Error(TaskError::MigrationFailed { .. }) => {
                     // The migration task already published `MigrationState::Failed`,
@@ -1934,6 +1939,7 @@ impl App for AppState {
                     if !handled {
                         let msg = err.to_string();
                         let handle = MessageBanner::set_global(ctx, &msg, MessageType::Error);
+                        handle.disable_auto_dismiss();
                         // TaskError Debug output is shown to users, deliberately.
                         // Ensure inner error types don't expose secrets.
                         handle.with_details(&err);
@@ -2145,12 +2151,13 @@ impl App for AppState {
                         // failure; the user pressed Connect and is waiting, so also
                         // surface an actionable error banner here.
                         if let Err(e) = app_ctx.ensure_wallet_backend_and_start_spv(sender).await {
-                            MessageBanner::set_global(
+                            let handle = MessageBanner::set_global(
                                 &egui_ctx,
                                 "Could not start network sync. Check your connection and try again.",
                                 MessageType::Error,
-                            )
-                            .with_details(&e);
+                            );
+                            handle.disable_auto_dismiss();
+                            handle.with_details(&e);
                         }
                     });
                 }

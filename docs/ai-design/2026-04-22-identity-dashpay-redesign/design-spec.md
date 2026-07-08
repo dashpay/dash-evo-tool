@@ -183,7 +183,8 @@ stacked vertically. Muted footer band in Developer Mode.
 
 **Validation / failure banners**:
 - Insufficient wallet balance: `Your wallet does not have enough Dash to create an identity
-  yet. Add at least {amount} to continue.` [Go to Receive]
+  yet. Add at least {amount} to continue.` [Go to Wallets] (this app has no separate top-level
+  Receive screen, so the link goes to Wallets, where the user's receiving address lives)
 - No wallet: `You need a wallet before you can create an identity.` [Set up a wallet]
 
 ### B.2 Identity Home (Frame 3)

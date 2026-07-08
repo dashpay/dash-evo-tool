@@ -5,6 +5,7 @@
 //! hero today, this paints an initials monogram or a type-glyph fallback.
 
 use super::identity_hero_card::HeroIdentityKind;
+use crate::ui::theme::DashColors;
 use eframe::egui::{Align2, Color32, FontFamily, FontId, Response, Sense, Stroke, Ui, vec2};
 
 /// Paint a circular identity avatar of `diameter` px at the next layout slot.
@@ -53,4 +54,84 @@ pub fn paint_identity_monogram(
         }
     }
     resp
+}
+
+/// Relative radius (fraction of the glow's max radius) and straight alpha
+/// (0-255) for each concentric disc, outermost first. Layering discs from
+/// largest to smallest approximates a soft radial gradient, since egui has
+/// no native radial-gradient fill (same technique as the hero card's
+/// diagonal gradient band, adapted from strips to circles).
+const GLOW_RINGS: [(f32, u8); 4] = [(1.00, 14), (0.75, 14), (0.50, 16), (0.28, 20)];
+
+/// Paint an abstract avatar silhouette on a soft Dash-blue radial glow.
+///
+/// Used for empty/onboarding states before any identity exists (design-spec
+/// §B.1) — there is no identity yet to derive a monogram or type glyph from,
+/// so this always renders the generic person silhouette
+/// ([`HeroIdentityKind::User`]'s glyph) rather than taking a `kind` parameter.
+/// `diameter` is the overall footprint (glow + glyph). Returns the allocated
+/// `Response` (hover-only).
+pub fn paint_abstract_avatar(ui: &mut Ui, diameter: f32) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(vec2(diameter, diameter), Sense::hover());
+    let painter = ui.painter();
+    let center = rect.center();
+    let max_radius = diameter * 0.5;
+
+    for (radius_frac, alpha) in GLOW_RINGS {
+        let color = Color32::from_rgba_unmultiplied(
+            DashColors::DASH_BLUE.r(),
+            DashColors::DASH_BLUE.g(),
+            DashColors::DASH_BLUE.b(),
+            alpha,
+        );
+        painter.circle_filled(center, max_radius * radius_frac, color);
+    }
+
+    let glyph_font = FontId::new(diameter * 0.4, FontFamily::Proportional);
+    painter.text(
+        center,
+        Align2::CENTER_CENTER,
+        HeroIdentityKind::User.type_glyph(),
+        glyph_font,
+        DashColors::DASH_BLUE,
+    );
+
+    resp
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use egui_kittest::Harness;
+
+    /// The glow's allocated rect must be a `diameter` x `diameter` square so
+    /// callers can lay it out predictably above the onboarding heading.
+    #[test]
+    fn paint_abstract_avatar_allocates_square_of_requested_diameter() {
+        let mut harness = Harness::builder()
+            .with_size(vec2(200.0, 200.0))
+            .build_ui(|ui| {
+                let response = paint_abstract_avatar(ui, 140.0);
+                assert_eq!(response.rect.width(), 140.0);
+                assert_eq!(response.rect.height(), 140.0);
+            });
+        harness.run();
+    }
+
+    /// Renders in both dark and light visuals without panicking — the glow
+    /// color is brand-invariant (`DashColors::DASH_BLUE`), so there is no
+    /// mode-specific branch to exercise beyond "it paints".
+    #[test]
+    fn paint_abstract_avatar_renders_in_both_modes() {
+        for dark_mode in [false, true] {
+            let mut harness =
+                Harness::builder()
+                    .with_size(vec2(200.0, 200.0))
+                    .build_ui(move |ui| {
+                        ui.style_mut().visuals.dark_mode = dark_mode;
+                        paint_abstract_avatar(ui, 140.0);
+                    });
+            harness.run();
+        }
+    }
 }

@@ -103,7 +103,7 @@ impl AddNewIdentityScreen {
             })
             .unwrap_or_else(|| "Select a Platform address".to_string());
 
-        ComboBox::from_label("Platform Address")
+        ComboBox::from_label("Platform address")
             .selected_text(selected_addr_display)
             .show_ui(ui, |ui| {
                 for (bech32_addr_str, platform_addr, balance) in &platform_addresses {
@@ -231,6 +231,8 @@ impl AddNewIdentityScreen {
                 });
             });
         ui.add_space(10.0);
+
+        self.render_alias_input(ui, step_number + 1);
 
         // Create Identity button
         let can_create = self.selected_platform_address_for_funding.is_some()

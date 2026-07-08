@@ -281,6 +281,21 @@ impl BannerHandle {
         Some(self)
     }
 
+    /// Disable auto-dismiss for this banner so it stays visible until
+    /// manually dismissed or cleared. Intended for messages that genuinely
+    /// affect the user (data loss, a major feature not working) — these
+    /// must not vanish on a timer before the user has a chance to read
+    /// them. Mirrors [`MessageBanner::disable_auto_dismiss`] for the
+    /// per-instance API.
+    /// Returns `None` if the banner no longer exists.
+    pub fn disable_auto_dismiss(&self) -> Option<&Self> {
+        let mut banners = get_banners(&self.ctx);
+        let b = banners.iter_mut().find(|b| b.key == self.key)?;
+        b.auto_dismiss_after = None;
+        set_banners(&self.ctx, banners);
+        Some(self)
+    }
+
     /// Remove this banner immediately.
     pub fn clear(self) {
         let mut banners = get_banners(&self.ctx);
@@ -944,6 +959,16 @@ pub trait OptionBannerExt {
         msg: impl fmt::Display,
         msg_type: MessageType,
     );
+
+    /// Like [`raise`](OptionBannerExt::raise), but disables auto-dismiss so the banner
+    /// stays until manually dismissed. Use for messages that genuinely affect the user
+    /// (data loss, a major feature not working) — these must not disappear on a timer.
+    fn raise_persistent(
+        &mut self,
+        ctx: &egui::Context,
+        msg: impl fmt::Display,
+        msg_type: MessageType,
+    );
 }
 
 impl OptionBannerExt for Option<BannerHandle> {
@@ -971,6 +996,18 @@ impl OptionBannerExt for Option<BannerHandle> {
         self.take_and_clear();
         let handle = MessageBanner::set_global(ctx, msg.to_string(), msg_type);
         handle.with_elapsed();
+        *self = Some(handle);
+    }
+
+    fn raise_persistent(
+        &mut self,
+        ctx: &egui::Context,
+        msg: impl fmt::Display,
+        msg_type: MessageType,
+    ) {
+        self.take_and_clear();
+        let handle = MessageBanner::set_global(ctx, msg.to_string(), msg_type);
+        handle.disable_auto_dismiss();
         *self = Some(handle);
     }
 }

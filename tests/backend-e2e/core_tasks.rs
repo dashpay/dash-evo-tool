@@ -1,4 +1,4 @@
-//! Backend E2E tests for CoreTask variants (TC-001 to TC-011).
+//! Backend E2E tests for CoreTask variants (TC-001 to TC-012).
 
 use crate::framework::fixtures;
 use crate::framework::harness::ctx;
@@ -7,6 +7,7 @@ use dash_evo_tool::backend_task::core::{CoreTask, PaymentRecipient, WalletPaymen
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
 use dash_evo_tool::model::wallet::single_key::SingleKeyWallet;
 use std::sync::{Arc, RwLock};
+use std::time::Duration;
 
 // TC-001: RefreshWalletInfo — Core only
 #[ignore]
@@ -365,4 +366,78 @@ async fn test_tc011_send_wallet_payment_invalid_address() {
 
     let err = result.unwrap_err();
     tracing::info!("TC-011: got expected error variant: {:?}", err);
+}
+
+// TC-012: CreateRegistrationAssetLock — freshly-registered wallet, added
+// *after* SPV is already connected and synced, as opposed to TC-004's
+// framework wallet (registered before the SPV client's first sync pass —
+// see `BackendTestContext::init` in `framework/harness.rs`). Isolates
+// whether a wallet's coin-selection can pick an incorrectly-spendable UTXO
+// regardless of when it was registered, or whether that is specific to
+// wallets present from the client's initial (potentially long-lived,
+// history-accumulating) sync. See
+// docs/ai-design/2026-07-07-asset-lock-finality-retest/retest-findings.md
+// for the investigation this isolates.
+#[ignore]
+#[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
+async fn test_tc012_create_registration_asset_lock_late_added_wallet() {
+    let ctx = ctx().await;
+    let app_context = &ctx.app_context;
+
+    // A brand-new wallet has no chain history predating its own funding
+    // transaction below — there is no window in which a real spend of one
+    // of its outputs could have happened without this test observing it.
+    let (seed_hash, wallet_arc) = ctx.create_funded_test_wallet(2_000_000).await;
+
+    // `create_funded_test_wallet` only waits for `DetWalletBalance::spendable()`
+    // (confirmed + unconfirmed — a UI-display heuristic, see
+    // `wallet_backend/snapshot.rs`'s FUND-SAFETY MANDATE doc comment). The
+    // real asset-lock coin-selector requires strictly confirmed or IS-locked
+    // funds, so a plain unconfirmed mempool deposit satisfies `spendable()`
+    // immediately while still yielding "No UTXOs available for selection" in
+    // the asset-lock builder — a harness/product balance-classification
+    // mismatch, not the question this test isolates. Wait for `.confirmed`
+    // specifically (IS-lock or block confirmation) before attempting the
+    // asset lock, so a genuine coin-selection defect isn't confounded with
+    // this test-harness timing gap. Budgeted for a full Dash block (~2.5min
+    // average) since InstantSend lock arrival isn't guaranteed within any
+    // fixed window in practice — observed anywhere from a few seconds to a
+    // 180s window with zero IS-lock activity at all during this
+    // investigation.
+    let confirm_deadline = std::time::Instant::now() + Duration::from_secs(420);
+    loop {
+        let confirmed = app_context.snapshot_balance(&seed_hash).confirmed;
+        if confirmed >= 2_000_000 {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < confirm_deadline,
+            "TC-012: funding tx for the late-added wallet did not reach confirmed \
+             status (IS-lock or block) within 420s — confirmed={confirmed}, target=2_000_000"
+        );
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+
+    // Use identity index 98 to avoid collision with TC-004 (index 99) and
+    // the shared fixtures (index 0). Credits match TC-004 (100_000_000
+    // credits == 100_000 duffs) for a direct comparison.
+    let task = BackendTask::CoreTask(CoreTask::CreateRegistrationAssetLock(
+        wallet_arc.clone(),
+        100_000_000,
+        98,
+    ));
+
+    let result = run_task(app_context, task)
+        .await
+        .expect("CreateRegistrationAssetLock should succeed for a freshly-added, funded wallet");
+
+    match result {
+        BackendTaskSuccessResult::Message(msg) => {
+            tracing::info!("TC-012: asset lock broadcast message: {}", msg);
+        }
+        other => panic!(
+            "TC-012: expected Message from CreateRegistrationAssetLock, got: {:?}",
+            other
+        ),
+    }
 }

@@ -95,7 +95,8 @@ impl TransferScreen {
         );
         let selected_wallet =
             get_selected_wallet(&identity, None, selected_key).unwrap_or_else(|e| {
-                MessageBanner::set_global(app_context.egui_ctx(), &e, MessageType::Error);
+                MessageBanner::set_global(app_context.egui_ctx(), &e, MessageType::Error)
+                    .disable_auto_dismiss();
                 None
             });
         Self {
@@ -563,7 +564,8 @@ impl ScreenLike for TransferScreen {
                     self.app_context.egui_ctx(),
                     format!("Failed to load local identities: {e}"),
                     MessageType::Error,
-                );
+                )
+                .disable_auto_dismiss();
                 vec![]
             });
         if let Some(refreshed) = identities
@@ -653,7 +655,8 @@ impl ScreenLike for TransferScreen {
                 {
                     if !self.wallet_open_attempted {
                         if let Err(e) = try_open_wallet_no_password(&self.app_context, wallet) {
-                            MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                            MessageBanner::set_global(ui.ctx(), &e, MessageType::Error)
+                                .disable_auto_dismiss();
                         }
                         self.wallet_open_attempted = true;
                     }

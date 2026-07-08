@@ -269,8 +269,18 @@ impl EventHandler for EventBridge {
                 self.emit_incoming_payment_candidates(inserted.iter());
                 *wallet_id
             }
-            WalletEvent::TransactionInstantLocked { wallet_id, .. }
-            | WalletEvent::SyncHeightAdvanced { wallet_id, .. } => *wallet_id,
+            WalletEvent::TransactionInstantLocked {
+                wallet_id, txid, ..
+            } => {
+                // Upstream tracked this off-chain tx as `TransactionDetected`
+                // first; this event supersedes that mempool status without
+                // re-sending the record — upgrade the accumulated entry in
+                // place so the tx-history status doesn't stay "Pending"
+                // forever while the balance has already moved.
+                self.snapshots.mark_instant_locked(wallet_id, *txid);
+                *wallet_id
+            }
+            WalletEvent::SyncHeightAdvanced { wallet_id, .. } => *wallet_id,
             WalletEvent::ChainLockProcessed { wallet_id, .. } => {
                 // Upstream chain-lock notification: no transaction deltas to
                 // accumulate, but balances may shift from unconfirmed to
@@ -936,6 +946,43 @@ mod tests {
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].address, funding.to_string());
         assert_eq!(candidates[0].amount_duffs, 77_000);
+    }
+
+    /// `TransactionInstantLocked` carries only a `txid`, no
+    /// `TransactionRecord`. It must still upgrade the already tracked
+    /// mempool record's status, not leave the tx-history row "Pending"
+    /// forever after the balance has already moved to Confirmed.
+    #[test]
+    fn transaction_instant_locked_upgrades_pending_record_and_nudges() {
+        use dash_sdk::dpp::dashcore::InstantLock;
+
+        let (bridge, _cs, mut rx) = make_bridge();
+        let funding = funding_address();
+        let record = received_record(&funding, 100_000);
+        let txid = record.txid;
+        let wallet_id = [9u8; 32];
+
+        bridge.on_wallet_event(&transaction_detected(record));
+        assert_eq!(
+            bridge.snapshots.transaction_status(&wallet_id, &txid),
+            Some(crate::model::wallet::TransactionStatus::Unconfirmed),
+            "the first-seen record starts Unconfirmed"
+        );
+
+        bridge.on_wallet_event(&WalletEvent::TransactionInstantLocked {
+            wallet_id,
+            txid,
+            instant_lock: InstantLock::default(),
+            balance: WalletCoreBalance::default(),
+            account_balances: BTreeMap::new(),
+        });
+
+        assert_eq!(
+            bridge.snapshots.transaction_status(&wallet_id, &txid),
+            Some(crate::model::wallet::TransactionStatus::InstantSendLocked),
+            "the InstantLock event must upgrade the accumulated record's status"
+        );
+        assert!(drained_refresh(&mut rx));
     }
 
     #[test]

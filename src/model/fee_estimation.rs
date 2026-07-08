@@ -1071,6 +1071,22 @@ pub fn shielded_fee_for_actions(
     compute_minimum_shielded_fee(num_actions, platform_version).map_err(Box::new)
 }
 
+/// Fee headroom (credits) to reserve from the platform balance when shielding
+/// from it, so a "Max" amount still leaves enough to pay the shield's platform
+/// fee. `ShieldFromBalance` needs the shield fee on top of the shielded amount
+/// out of the same balance, so this must reserve the two-action shielded fee
+/// (scaled by the network multiplier) — not the far smaller plain
+/// platform-transfer estimate. Falls back to `0` if the active protocol version
+/// has no shielded-fee formula (the backend re-validates before dispatch).
+pub fn shield_from_balance_fee_headroom(
+    platform_version: &PlatformVersion,
+    fee_multiplier_permille: u64,
+) -> u64 {
+    let base_fee = shielded_fee_for_actions(2, platform_version).unwrap_or(0);
+    let multiplier = fee_multiplier_permille.max(1000);
+    base_fee.saturating_mul(multiplier) / 1000
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1355,6 +1371,36 @@ mod tests {
         assert_eq!(core_max_send_reserve_duffs(fee, 1, 1), None);
         assert_eq!(core_max_send_reserve_duffs(0, 1, 1), None);
         assert_eq!(core_max_send_reserve_duffs(fee + 1, 1, 1), Some(fee));
+    }
+
+    #[test]
+    fn shield_from_balance_headroom_reserves_shielded_fee_not_transfer_fee() {
+        let platform_version = PlatformVersion::latest();
+        let base_fee = shielded_fee_for_actions(2, platform_version).expect("known version");
+
+        // At the minimum (1000‰) multiplier the headroom equals the base fee.
+        let headroom = shield_from_balance_fee_headroom(platform_version, 1000);
+        assert_eq!(headroom, base_fee);
+
+        // It must reserve the full shielded fee (>50M), an order of magnitude
+        // above the plain platform-transfer estimate — under-reserving here is
+        // what got a Max shield-from-platform rejected upstream.
+        assert!(
+            headroom > 50_000_000,
+            "shield-from-balance headroom must reserve the shielded fee: {headroom}"
+        );
+        assert!(headroom > PlatformFeeEstimator::new().estimate_credit_transfer());
+
+        // Headroom scales with the multiplier and a sub-1000 multiplier is
+        // clamped up to 1000 so we never under-reserve.
+        assert_eq!(
+            shield_from_balance_fee_headroom(platform_version, 500),
+            base_fee
+        );
+        assert_eq!(
+            shield_from_balance_fee_headroom(platform_version, 2000),
+            base_fee.saturating_mul(2000) / 1000
+        );
     }
 
     #[test]

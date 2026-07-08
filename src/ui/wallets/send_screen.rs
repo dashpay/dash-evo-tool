@@ -11,6 +11,7 @@ use crate::model::fee_estimation::{
     allocate_platform_addresses_with_fee, core_max_send_amount_duffs, core_max_send_reserve_duffs,
     estimate_address_funding_fee_from_transition, estimate_platform_fee,
     estimate_withdrawal_fee_from_transition, format_credits_as_dash, format_duffs_as_dash,
+    shield_from_balance_fee_headroom,
 };
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::{Wallet, WalletSeedHash};
@@ -331,6 +332,23 @@ impl WalletSendScreen {
     pub(crate) fn invalidate_address_input(&mut self) {
         self.address_input = None;
         self.validated_destination = None;
+    }
+
+    /// Reset all wallet-bound state on a network switch. The old wallet, its
+    /// seed hash, and any source/destination/amount selection belong to the
+    /// previous network — leaving the seed hash behind would let a preset flow
+    /// resurrect a stale source and show the previous network's balance. Source
+    /// resets to the Core-wallet default so the free-form screen behaves as it
+    /// does on first open; a preset re-derives its source once a wallet for the
+    /// new network is selected.
+    pub(crate) fn reset_for_network_switch(&mut self) {
+        self.selected_wallet = None;
+        self.selected_wallet_seed_hash = None;
+        self.selected_source = Some(SourceSelection::CoreWallet);
+        self.selected_identity = None;
+        self.amount = None;
+        self.amount_input = None;
+        self.invalidate_address_input();
     }
 
     fn reset_form(&mut self) {
@@ -2284,6 +2302,26 @@ impl WalletSendScreen {
                     _ => None,
                 };
                 (max, hint)
+            }
+            Some(SourceSelection::PlatformAddresses(addresses))
+                if self.destination_kind() == Some(AddressKind::Shielded) =>
+            {
+                // Shield-from-Platform: the coordinator selects the inputs and
+                // the shield fee is paid from the same balance as the amount, so
+                // reserve the two-action shielded-fee headroom (far larger than
+                // the plain platform-transfer estimate) against the full balance.
+                let total: u64 = addresses.iter().map(|(_, _, balance)| *balance).sum();
+                let headroom = shield_from_balance_fee_headroom(
+                    self.app_context.platform_version(),
+                    self.app_context.fee_multiplier_permille(),
+                );
+                (
+                    Some(total.saturating_sub(headroom)),
+                    Some(format!(
+                        "~{} reserved for the shield fee",
+                        format_credits_as_dash(headroom)
+                    )),
+                )
             }
             Some(SourceSelection::PlatformAddresses(addresses)) => {
                 // Extract destination to exclude it from max calculation (can't send to yourself)

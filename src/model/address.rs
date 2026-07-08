@@ -94,6 +94,15 @@ impl AddressKind {
             return Some(AddressKind::Shielded);
         }
 
+        // 1b. Shielded raw hex form (network-agnostic): 43 bytes = 86 hex chars.
+        // Unambiguous — far too long for a Base58 Core address or Identity ID,
+        // and it cannot start with the `dash1`/`tdash1` Platform HRP.
+        if trimmed.len() == SHIELDED_ADDRESS_RAW_LEN * 2
+            && trimmed.bytes().all(|b| b.is_ascii_hexdigit())
+        {
+            return Some(AddressKind::Shielded);
+        }
+
         // 2. Platform (Bech32m per DIP-18, but NOT shielded — already excluded above)
         if is_platform_address_string(trimmed) {
             return Some(AddressKind::Platform);
@@ -309,6 +318,15 @@ mod tests {
             parse_shielded_recipient(&hex::encode(vec![0u8; SHIELDED_ADDRESS_RAW_LEN + 1])),
             None
         );
+    }
+
+    #[test]
+    fn detect_classifies_43_byte_hex_as_shielded() {
+        let hex_str = hex::encode(vec![0x11u8; SHIELDED_ADDRESS_RAW_LEN]);
+        assert_eq!(AddressKind::detect(&hex_str), Some(AddressKind::Shielded));
+        // Wrong length is not a shielded address.
+        let short = hex::encode(vec![0x11u8; SHIELDED_ADDRESS_RAW_LEN - 1]);
+        assert_ne!(AddressKind::detect(&short), Some(AddressKind::Shielded));
     }
 
     #[test]

@@ -621,9 +621,10 @@ impl Screen {
             }
             Screen::WalletSendScreen(screen) => {
                 screen.app_context = app_context;
-                screen.invalidate_address_input();
-                // Clear wallet reference — it belongs to the old network
-                screen.selected_wallet = None;
+                // Drop all state bound to the old network's wallet (wallet, seed
+                // hash, source/destination/amount) so a preset flow cannot show a
+                // stale cross-network balance.
+                screen.reset_for_network_switch();
                 return;
             }
             Screen::SingleKeyWalletSendScreen(screen) => {

@@ -120,9 +120,10 @@ impl<'a> AuthPubkeyCacheView<'a> {
 }
 
 /// Auth-pubkey-cache adapter errors funnel into the dedicated
-/// [`TaskError::AuthPubkeyCacheStorage`] envelope.
+/// [`TaskError::KvSidecarStorage`] envelope.
 fn map_kv_error_to_task_error(e: KvAdapterError) -> TaskError {
-    TaskError::AuthPubkeyCacheStorage {
+    TaskError::KvSidecarStorage {
+        sidecar: "auth_pubkey_cache",
         source: Box::new(e),
     }
 }

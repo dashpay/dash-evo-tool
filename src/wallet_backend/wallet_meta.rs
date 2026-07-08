@@ -202,11 +202,12 @@ impl<'a> WalletMetaView<'a> {
 }
 
 /// Wallet-meta adapter errors all funnel into the dedicated
-/// [`TaskError::WalletMetaStorage`] envelope so the banner copy
+/// [`TaskError::KvSidecarStorage`] envelope so the banner copy
 /// matches the surface ("wallet details") rather than the more
 /// generic upstream wallet-storage one.
 fn map_kv_error_to_task_error(e: KvAdapterError) -> TaskError {
-    TaskError::WalletMetaStorage {
+    TaskError::KvSidecarStorage {
+        sidecar: "wallet_meta",
         source: Box::new(e),
     }
 }

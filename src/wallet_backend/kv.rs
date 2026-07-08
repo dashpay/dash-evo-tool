@@ -214,73 +214,7 @@ impl std::fmt::Debug for DetKv {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
-
-    /// In-memory KvStore implementation for the adapter tests.
-    ///
-    /// Models every [`ObjectId`] scope FK-free (no parent-existence
-    /// checks) so the adapter can be exercised without a real
-    /// `SqlitePersister`:
-    /// - each scope is an independent slot;
-    /// - `put` is upsert;
-    /// - `delete` is idempotent;
-    /// - `list_keys` supports an optional prefix and returns sorted keys.
-    ///
-    /// Upstream `ObjectId` is not `Ord`, so the backing store is a flat
-    /// `Vec` scanned by `PartialEq` rather than a map. LIKE-pattern
-    /// escaping is irrelevant for the adapter — colon separators are not
-    /// pattern metacharacters — so prefix matching here is plain
-    /// `str::starts_with`.
-    #[derive(Default)]
-    struct InMemoryKv {
-        slots: Mutex<Vec<(ObjectId, String, Vec<u8>)>>,
-    }
-
-    impl KvStore for InMemoryKv {
-        fn get(&self, scope: &ObjectId, key: &str) -> Result<Option<Vec<u8>>, KvError> {
-            Ok(self
-                .slots
-                .lock()
-                .unwrap()
-                .iter()
-                .find(|(s, k, _)| s == scope && k == key)
-                .map(|(_, _, v)| v.clone()))
-        }
-
-        fn put(&self, scope: &ObjectId, key: &str, value: &[u8]) -> Result<(), KvError> {
-            let mut slots = self.slots.lock().unwrap();
-            if let Some(slot) = slots.iter_mut().find(|(s, k, _)| s == scope && k == key) {
-                slot.2 = value.to_vec();
-            } else {
-                slots.push((scope.clone(), key.to_string(), value.to_vec()));
-            }
-            Ok(())
-        }
-
-        fn delete(&self, scope: &ObjectId, key: &str) -> Result<(), KvError> {
-            self.slots
-                .lock()
-                .unwrap()
-                .retain(|(s, k, _)| !(s == scope && k == key));
-            Ok(())
-        }
-
-        fn list_keys(
-            &self,
-            scope: &ObjectId,
-            prefix: Option<&str>,
-        ) -> Result<Vec<String>, KvError> {
-            let pred = |k: &str| -> bool { prefix.is_none_or(|p| k.starts_with(p)) };
-            Ok(self
-                .slots
-                .lock()
-                .unwrap()
-                .iter()
-                .filter(|(s, k, _)| s == scope && pred(k))
-                .map(|(_, k, _)| k.clone())
-                .collect())
-        }
-    }
+    use crate::wallet_backend::kv_test_support::InMemoryKv;
 
     fn fixture() -> DetKv {
         DetKv::from_store(Arc::new(InMemoryKv::default()))

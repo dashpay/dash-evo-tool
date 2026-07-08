@@ -223,62 +223,8 @@ fn parse_seed_hash(key: &str, prefix: &str) -> Option<WalletSeedHash> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
 
-    use platform_wallet_storage::{KvError, KvStore, ObjectId};
-
-    /// Minimal in-memory `KvStore` — mirrors `kv.rs`'s test fixture so
-    /// the view tests can exercise list/get/set/delete without touching
-    /// the file system or building a `WalletBackend`. Models every
-    /// `ObjectId` scope FK-free via a flat `Vec` (upstream `ObjectId` is
-    /// not `Ord`, so it cannot key a map).
-    #[derive(Default)]
-    struct InMemoryKv {
-        slots: Mutex<Vec<(ObjectId, String, Vec<u8>)>>,
-    }
-
-    impl KvStore for InMemoryKv {
-        fn get(&self, scope: &ObjectId, key: &str) -> Result<Option<Vec<u8>>, KvError> {
-            Ok(self
-                .slots
-                .lock()
-                .unwrap()
-                .iter()
-                .find(|(s, k, _)| s == scope && k == key)
-                .map(|(_, _, v)| v.clone()))
-        }
-        fn put(&self, scope: &ObjectId, key: &str, value: &[u8]) -> Result<(), KvError> {
-            let mut slots = self.slots.lock().unwrap();
-            if let Some(slot) = slots.iter_mut().find(|(s, k, _)| s == scope && k == key) {
-                slot.2 = value.to_vec();
-            } else {
-                slots.push((scope.clone(), key.to_string(), value.to_vec()));
-            }
-            Ok(())
-        }
-        fn delete(&self, scope: &ObjectId, key: &str) -> Result<(), KvError> {
-            self.slots
-                .lock()
-                .unwrap()
-                .retain(|(s, k, _)| !(s == scope && k == key));
-            Ok(())
-        }
-        fn list_keys(
-            &self,
-            scope: &ObjectId,
-            prefix: Option<&str>,
-        ) -> Result<Vec<String>, KvError> {
-            let pred = |k: &str| -> bool { prefix.is_none_or(|p| k.starts_with(p)) };
-            Ok(self
-                .slots
-                .lock()
-                .unwrap()
-                .iter()
-                .filter(|(s, k, _)| s == scope && pred(k))
-                .map(|(_, k, _)| k.clone())
-                .collect())
-        }
-    }
+    use crate::wallet_backend::kv_test_support::InMemoryKv;
 
     fn kv() -> Arc<DetKv> {
         Arc::new(DetKv::from_store(Arc::new(InMemoryKv::default())))

@@ -13,8 +13,11 @@
 
 use std::sync::Arc;
 
+#[cfg(test)]
+use dash_sdk::dpp::dashcore::secp256k1::Message;
+use dash_sdk::dpp::dashcore::secp256k1::Secp256k1;
+#[cfg(test)]
 use dash_sdk::dpp::dashcore::secp256k1::ecdsa::Signature;
-use dash_sdk::dpp::dashcore::secp256k1::{Message, Secp256k1};
 use dash_sdk::dpp::dashcore::{Address, Network, PrivateKey, PublicKey};
 use platform_wallet_storage::secrets::{
     SecretBytes, SecretStore, SecretStoreError, SecretString, WalletId as SecretWalletId,
@@ -304,57 +307,6 @@ impl<'a> SingleKeyView<'a> {
             })?;
         }
         Ok(())
-    }
-
-    /// Returns `true` when the imported key at `address` was stored
-    /// with a per-key passphrase. The UI uses this to decide whether to
-    /// prompt before signing.
-    pub fn has_passphrase(&self, address: &str) -> bool {
-        self.index
-            .read()
-            .map(|idx| idx.get(address).is_some_and(|k| k.has_passphrase))
-            .unwrap_or(false)
-    }
-
-    /// Read the raw private-key bytes for an **unprotected** imported key.
-    ///
-    /// Passphrase-protected keys are not unlocked here — they are obtained
-    /// through the JIT chokepoint
-    /// ([`SecretAccess::with_secret`](crate::wallet_backend::SecretAccess::with_secret)
-    /// with a [`SecretScope::SingleKey`](crate::wallet_backend::SecretScope)),
-    /// which prompts for the passphrase and decrypts just-in-time. A direct
-    /// call here for a protected key returns
-    /// [`TaskError::SingleKeyPassphraseRequired`] so non-interactive callers
-    /// get a typed signal rather than a silent failure.
-    fn raw_key_bytes(&self, address: &str) -> Result<Zeroizing<[u8; 32]>, TaskError> {
-        let label = label_for_address(address);
-        // A Tier-2-sealed key cannot be read without the passphrase — surface the
-        // typed "passphrase required" signal (the chokepoint is the unlock path),
-        // mirroring the legacy protected `SingleKeyEntry` case below.
-        if matches!(
-            SecretSeam::new(self.secret_store).scheme(&single_key_namespace_id(), &label)?,
-            SecretScheme::Protected
-        ) {
-            return Err(TaskError::SingleKeyPassphraseRequired {
-                addr: address.to_string(),
-            });
-        }
-        let payload = self
-            .secret_store
-            .get(&single_key_namespace_id(), &label)
-            .map_err(|source| TaskError::SecretStore {
-                source: Box::new(source),
-            })?
-            .ok_or(TaskError::ImportedKeyNotFound)?;
-        let entry = SingleKeyEntry::decode(payload.expose_secret())?;
-        if entry.has_passphrase {
-            return Err(TaskError::SingleKeyPassphraseRequired {
-                addr: address.to_string(),
-            });
-        }
-        // `decrypt` returns the key wrapped in `Zeroizing`, so it wipes on
-        // drop instead of lingering on the stack after the sign.
-        entry.decrypt(None)
     }
 
     /// Confirm that `passphrase` unlocks the protected imported key at
@@ -793,19 +745,6 @@ impl<'a> SingleKeyView<'a> {
             core_wallet_name: None,
         })
     }
-
-    /// Sign a 32-byte message hash with the **unprotected** imported key
-    /// registered at `address`. Pure ECDSA on secp256k1; no BIP-32
-    /// derivation is touched (TC-SK-008).
-    ///
-    /// Passphrase-protected keys must be signed through the JIT chokepoint
-    /// ([`WalletBackend::sign_single_key`](super::WalletBackend::sign_single_key)),
-    /// which prompts and decrypts just-in-time; a direct call here for a
-    /// protected key returns [`TaskError::SingleKeyPassphraseRequired`].
-    pub fn sign_with(&self, address: &str, msg: &[u8; 32]) -> Result<Signature, TaskError> {
-        let bytes = self.raw_key_bytes(address)?;
-        sign_message_with_raw_key(&bytes, msg)
-    }
 }
 
 /// Parse the stored address (network-checked) and the compressed public key
@@ -885,20 +824,6 @@ fn locked_key_handle(domain: &[u8], material: &[u8]) -> [u8; 32] {
     h
 }
 
-/// Sign a 32-byte digest with raw secp256k1 private-key bytes. Shared by the
-/// unprotected [`SingleKeyView::sign_with`] path and the JIT chokepoint path
-/// ([`WalletBackend::sign_single_key`](super::WalletBackend::sign_single_key)),
-/// which decrypts the key just-in-time and hands the borrowed bytes here.
-pub(crate) fn sign_message_with_raw_key(
-    bytes: &[u8; 32],
-    msg: &[u8; 32],
-) -> Result<Signature, TaskError> {
-    let sk = dash_sdk::dpp::dashcore::secp256k1::SecretKey::from_byte_array(bytes)
-        .map_err(|_| TaskError::ImportedKeyNotFound)?;
-    let message = Message::from_digest(*msg);
-    Ok(Secp256k1::new().sign_ecdsa(&message, &sk))
-}
-
 /// Open or create the file-backed secret store at `path`. The parent
 /// directory is created if missing; on Unix the vault file inherits its
 /// initial mode from upstream's writer (the encrypted-file backend
@@ -967,6 +892,72 @@ fn prepare_vault_dir(path: &std::path::Path) -> Result<(), SecretStoreError> {
         }
     }
     Ok(())
+}
+
+/// Test-only signing helpers. Production single-key signing goes through the
+/// JIT chokepoint ([`WalletBackend::sign_single_key`](super::WalletBackend::sign_single_key)),
+/// which resolves the plaintext via [`SecretAccess`](crate::wallet_backend::SecretAccess)
+/// and signs through [`DetSigner`](crate::wallet_backend::det_signer); these
+/// direct-from-view paths exist only to exercise the unprotected key lookup in
+/// unit tests.
+#[cfg(test)]
+impl<'a> SingleKeyView<'a> {
+    /// Read the raw private-key bytes for an **unprotected** imported key.
+    ///
+    /// A protected key (Tier-2-sealed or a legacy passphrase-protected
+    /// `SingleKeyEntry`) is never unlocked here — the direct call returns
+    /// [`TaskError::SingleKeyPassphraseRequired`], mirroring the production
+    /// chokepoint's typed signal.
+    fn raw_key_bytes(&self, address: &str) -> Result<Zeroizing<[u8; 32]>, TaskError> {
+        let label = label_for_address(address);
+        // A Tier-2-sealed key cannot be read without the passphrase — surface the
+        // typed "passphrase required" signal (the chokepoint is the unlock path),
+        // mirroring the legacy protected `SingleKeyEntry` case below.
+        if matches!(
+            SecretSeam::new(self.secret_store).scheme(&single_key_namespace_id(), &label)?,
+            SecretScheme::Protected
+        ) {
+            return Err(TaskError::SingleKeyPassphraseRequired {
+                addr: address.to_string(),
+            });
+        }
+        let payload = self
+            .secret_store
+            .get(&single_key_namespace_id(), &label)
+            .map_err(|source| TaskError::SecretStore {
+                source: Box::new(source),
+            })?
+            .ok_or(TaskError::ImportedKeyNotFound)?;
+        let entry = SingleKeyEntry::decode(payload.expose_secret())?;
+        if entry.has_passphrase {
+            return Err(TaskError::SingleKeyPassphraseRequired {
+                addr: address.to_string(),
+            });
+        }
+        // `decrypt` returns the key wrapped in `Zeroizing`, so it wipes on
+        // drop instead of lingering on the stack after the sign.
+        entry.decrypt(None)
+    }
+
+    /// Sign a 32-byte message hash with the **unprotected** imported key
+    /// registered at `address`. Pure ECDSA on secp256k1; no BIP-32
+    /// derivation is touched (TC-SK-008). A protected key returns
+    /// [`TaskError::SingleKeyPassphraseRequired`].
+    fn sign_with(&self, address: &str, msg: &[u8; 32]) -> Result<Signature, TaskError> {
+        let bytes = self.raw_key_bytes(address)?;
+        sign_message_with_raw_key(&bytes, msg)
+    }
+}
+
+/// Sign a 32-byte digest with raw secp256k1 private-key bytes. Test-only —
+/// the production JIT path signs inline through
+/// [`DetSigner`](crate::wallet_backend::det_signer::DetSigner).
+#[cfg(test)]
+fn sign_message_with_raw_key(bytes: &[u8; 32], msg: &[u8; 32]) -> Result<Signature, TaskError> {
+    let sk = dash_sdk::dpp::dashcore::secp256k1::SecretKey::from_byte_array(bytes)
+        .map_err(|_| TaskError::ImportedKeyNotFound)?;
+    let message = Message::from_digest(*msg);
+    Ok(Secp256k1::new().sign_ecdsa(&message, &sk))
 }
 
 #[cfg(test)]

@@ -86,7 +86,7 @@ pub use avatar_cache::AvatarCacheView;
 pub use contact_profile_cache::{CachedContactProfile, ContactProfileCacheView};
 pub use event_bridge::EventBridge;
 pub use kv::{DetKv, DetScope, KvAdapterError, SCHEMA_VERSION as KV_SCHEMA_VERSION};
-pub use loader::{LoadedWallets, PersistedLoadSkip, PersistedWalletLoader, UpstreamFromPersisted};
+pub use loader::{LoadedWallets, PersistedLoadSkip};
 pub use single_key::SingleKeyView;
 use snapshot::SnapshotStore;
 pub use snapshot::{DetUtxo, DetWalletBalance, WalletSnapshot};
@@ -190,7 +190,6 @@ struct Inner {
     /// typed key/value adapter ([`DetKv`]) can read/write app data
     /// alongside wallet state without opening a second connection.
     persister: Arc<DetPersister>,
-    loader: Arc<dyn PersistedWalletLoader>,
     /// Display-only snapshot store (balance/tx/utxo), pushed by the
     /// `EventBridge`. See [`snapshot`]. DISPLAY-ONLY — never feeds coin
     /// selection (A04 fund-safety gate).
@@ -284,9 +283,9 @@ impl std::fmt::Debug for WalletBackend {
 impl WalletBackend {
     /// Construct the backend: open the upstream SQLite persister, build the
     /// `PlatformWalletManager` with the DET `EventBridge`, then register every
-    /// wallet the loader yields (per registration, upstream
-    /// `create_wallet_from_seed_bytes` also rehydrates persisted
-    /// identity/address state — see g2-mock-boundary.md §G2.1 and the
+    /// persisted wallet via [`Self::load_from_persistor_seedless`] (per
+    /// registration, upstream `create_wallet_from_seed_bytes` also rehydrates
+    /// persisted identity/address state — see g2-mock-boundary.md §G2.1 and the
     /// upstream-reality note in the P2 recommendation).
     ///
     /// Does NOT start chain sync — call [`Self::start`] after construction.
@@ -295,7 +294,6 @@ impl WalletBackend {
         sdk: Arc<Sdk>,
         connection_status: Arc<ConnectionStatus>,
         task_result_sender: SenderAsync<TaskResult>,
-        loader: Arc<dyn PersistedWalletLoader>,
         prompt: Arc<dyn SecretPrompt>,
     ) -> Result<Self, TaskError> {
         let network = ctx.network;
@@ -365,7 +363,6 @@ impl WalletBackend {
             inner: Arc::new(Inner {
                 pwm,
                 persister,
-                loader,
                 snapshots,
                 token_balances: Arc::new(TokenBalanceStore::new()),
                 id_map: std::sync::RwLock::new(std::collections::BTreeMap::new()),
@@ -453,13 +450,12 @@ impl WalletBackend {
         Ok(())
     }
 
-    /// Run the configured loader to bring back persisted wallets watch-only.
+    /// Run the seedless load to bring back persisted wallets watch-only.
     /// Identity-funding re-provision is deferred to the asset-lock chokepoint
     /// (which obtains the seed just-in-time), so this pass loads, logs, and
     /// raises a warning banner for any skipped wallet.
     async fn register_persisted_wallets(&self, ctx: &Arc<AppContext>) -> Result<(), TaskError> {
-        let loader = Arc::clone(&self.inner.loader);
-        let outcome = loader.load(self, ctx).await?;
+        let outcome = self.load_from_persistor_seedless(ctx).await?;
         tracing::info!(
             loaded = outcome.loaded.len(),
             skipped = outcome.skipped.len(),

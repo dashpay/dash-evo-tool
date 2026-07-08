@@ -20,7 +20,7 @@ use crate::model::wallet::{PlatformAddressUpdates, Wallet, WalletSeedHash};
 use crate::sdk_wrapper::initialize_sdk;
 use crate::utils::tasks::TaskManager;
 use crate::wallet_backend::{
-    DetKv, DetWalletBalance, NullSecretPrompt, SecretPrompt, UpstreamFromPersisted, WalletBackend,
+    DetKv, DetWalletBalance, NullSecretPrompt, SecretPrompt, WalletBackend,
 };
 use arc_swap::{ArcSwap, ArcSwapOption};
 use connection_status::ConnectionStatus;
@@ -966,13 +966,11 @@ impl AppContext {
             return Ok(());
         }
         let sdk = std::sync::Arc::new(self.sdk.load().as_ref().clone());
-        let loader = Arc::new(UpstreamFromPersisted::new());
         let backend = WalletBackend::new(
             self,
             sdk,
             Arc::clone(&self.connection_status),
             task_result_sender,
-            loader,
             self.secret_prompt(),
         )
         .await?;

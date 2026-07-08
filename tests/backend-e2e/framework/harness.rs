@@ -330,8 +330,8 @@ impl BackendTestContext {
 
         // Register the framework wallet BEFORE the backend is built so its
         // sidecars (wallet-meta xpub + encrypted-seed envelope) are
-        // persisted. `UpstreamFromPersisted` then loads it watch-only from
-        // the persister at `WalletBackend::new` time and the upstream
+        // persisted. `load_from_persistor_seedless` then loads it watch-only
+        // from the persister at `WalletBackend::new` time and the upstream
         // manager monitors its addresses from the first sync.
         tracing::info!("Restoring framework wallet from E2E_WALLET_MNEMONIC");
         let wallet = dash_evo_tool::model::wallet::Wallet::new_from_seed(
@@ -368,7 +368,7 @@ impl BackendTestContext {
 
         // Construct + start the real wallet backend exactly as production
         // does: `ensure_wallet_backend` builds `WalletBackend` (which loads
-        // the framework wallet watch-only via `UpstreamFromPersisted`), then
+        // the framework wallet watch-only via `load_from_persistor_seedless`), then
         // `WalletBackend::start()` starts the upstream `SpvRuntime` sync.
         app_context
             .ensure_wallet_backend(task_result_sender)

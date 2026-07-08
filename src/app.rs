@@ -668,7 +668,7 @@ impl AppState {
         // wallet is unlocked. Without this, the SDK retry loop tight-loops
         // at 10ms on `WalletBackendNotYetWired`. `PlatformWalletManager` is
         // wallet-independent at construction (Case B); persisted wallets
-        // load watch-only via `UpstreamFromPersisted`, no unlock required
+        // load watch-only via `load_from_persistor_seedless`, no unlock required
         // to display funds — the seed enters memory only on unlock.
         //
         // Auto-start of chain sync rides on wiring completion: for the active

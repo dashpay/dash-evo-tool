@@ -610,7 +610,7 @@ pub enum TaskError {
 
     /// GroveSTARK prover errors.
     #[error("Could not verify platform data. Please retry.")]
-    GroveStark(#[from] crate::model::grovestark_prover::GroveSTARKError),
+    GroveStark(#[from] crate::backend_task::grovestark::GroveSTARKError),
 
     /// Wallet errors.
     #[error(transparent)]
@@ -2139,6 +2139,38 @@ impl<T> From<std::sync::PoisonError<T>> for TaskError {
     fn from(_: std::sync::PoisonError<T>) -> Self {
         TaskError::LockPoisoned {
             resource: std::any::type_name::<T>(),
+        }
+    }
+}
+
+impl From<crate::model::wallet::passphrase::PassphraseError> for TaskError {
+    fn from(e: crate::model::wallet::passphrase::PassphraseError) -> Self {
+        use crate::model::wallet::passphrase::PassphraseError;
+        match e {
+            PassphraseError::TooShort { min } => TaskError::SingleKeyPassphraseTooShort { min },
+            PassphraseError::Mismatch => TaskError::SingleKeyPassphraseMismatch,
+        }
+    }
+}
+
+impl From<crate::model::wallet::PaymentValidationError> for TaskError {
+    fn from(e: crate::model::wallet::PaymentValidationError) -> Self {
+        use crate::model::wallet::PaymentValidationError;
+        match e {
+            PaymentValidationError::NoRecipients => TaskError::PaymentNoRecipients,
+            PaymentValidationError::ZeroAmount => TaskError::PaymentZeroAmount,
+        }
+    }
+}
+
+impl From<crate::model::wallet::WalletCreationError> for TaskError {
+    fn from(e: crate::model::wallet::WalletCreationError) -> Self {
+        use crate::model::wallet::WalletCreationError;
+        match e {
+            WalletCreationError::Encryption { detail } => TaskError::EncryptionError { detail },
+            WalletCreationError::KeyDerivation { source } => {
+                TaskError::WalletKeyDerivationFailed { source }
+            }
         }
     }
 }

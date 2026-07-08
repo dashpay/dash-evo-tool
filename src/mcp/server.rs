@@ -1,6 +1,7 @@
 //! MCP service definition — DashMcpService struct, context providers, and ServerHandler impl.
 
 use crate::context::AppContext;
+use crate::mcp::error::McpToolError;
 use crate::mcp::tools;
 use rmcp::handler::server::tool::{ToolCallContext, ToolRouter};
 use rmcp::model::*;
@@ -97,11 +98,13 @@ impl DashMcpService {
         }
     }
 
-    /// Get the current AppContext.
+    /// Get the current AppContext, returning a tool-native [`McpToolError`].
     ///
     /// In HTTP mode, loads from the shared ArcSwap (always initialized).
-    /// In stdio/CLI mode, initializes on first call, then loads.
-    pub(crate) async fn ctx(&self) -> Result<Arc<AppContext>, McpError> {
+    /// In stdio/CLI mode, initializes on first call, then loads. Tool invokers
+    /// call this so the error propagates with `?` and is converted to the wire
+    /// error once at the router boundary — no lossy `McpError` → string round-trip.
+    pub(crate) async fn tool_ctx(&self) -> Result<Arc<AppContext>, McpToolError> {
         #[cfg(feature = "cli")]
         if self.ctx.needs_lazy_init() {
             let ctx_holder = self.ctx.clone();
@@ -109,16 +112,18 @@ impl DashMcpService {
                 .get_or_try_init(|| async {
                     let app_context = init_app_context().await.map_err(|e| {
                         tracing::error!("MCP context initialization failed: {e}");
-                        McpError::internal_error("Failed to initialize application context", None)
+                        McpToolError::Internal(
+                            "Failed to initialize application context".to_owned(),
+                        )
                     })?;
                     ctx_holder.store(app_context);
-                    Ok::<(), McpError>(())
+                    Ok::<(), McpToolError>(())
                 })
                 .await?;
         }
         self.ctx
             .load()
-            .ok_or_else(|| McpError::internal_error("AppContext not initialized", None))
+            .ok_or_else(|| McpToolError::Internal("AppContext not initialized".to_owned()))
     }
 
     /// Replace the active context. Used by `network_switch` to point the

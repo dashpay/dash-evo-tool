@@ -126,10 +126,7 @@ impl AsyncTool<DashMcpService> for QueryWithdrawals {
         service: &DashMcpService,
         params: QueryWithdrawalsParams,
     ) -> Result<QueryWithdrawalsOutput, McpToolError> {
-        let ctx = service
-            .ctx()
-            .await
-            .map_err(|e| McpToolError::Internal(e.to_string()))?;
+        let ctx = service.tool_ctx().await?;
         resolve::verify_network(&ctx, params.network.as_deref())?;
 
         let completed = match params.status.as_str() {

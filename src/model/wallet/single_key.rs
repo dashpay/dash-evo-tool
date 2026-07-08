@@ -136,16 +136,6 @@ impl SingleKeyData {
         }
     }
 
-    /// Closes the key by securely erasing the decrypted data
-    #[allow(dead_code)]
-    pub fn close(&mut self) {
-        if let SingleKeyData::Open(open_key) = self {
-            let key_info = open_key.key_info.clone();
-            open_key.private_key.zeroize();
-            *self = SingleKeyData::Closed(key_info);
-        }
-    }
-
     /// Returns true if the key is open (decrypted)
     pub fn is_open(&self) -> bool {
         matches!(self, SingleKeyData::Open(_))

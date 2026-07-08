@@ -72,12 +72,9 @@ impl AsyncTool<DashMcpService> for ShieldedShieldFromCore {
         service: &DashMcpService,
         param: ShieldFromCoreParams,
     ) -> Result<ShieldFromCoreOutput, McpToolError> {
-        let ctx = service
-            .ctx()
-            .await
-            .map_err(|e| McpToolError::Internal(e.to_string()))?;
+        let ctx = service.tool_ctx().await?;
         resolve::require_network(&ctx, Some(&param.network))?;
-        resolve::validate_amount(param.amount_duffs)?;
+        resolve::validate_positive_amount(param.amount_duffs, "duffs")?;
 
         let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
         resolve::ensure_spv_synced(&ctx).await?;
@@ -161,12 +158,9 @@ impl AsyncTool<DashMcpService> for ShieldedShieldFromPlatform {
         service: &DashMcpService,
         param: ShieldFromPlatformParams,
     ) -> Result<ShieldFromPlatformOutput, McpToolError> {
-        let ctx = service
-            .ctx()
-            .await
-            .map_err(|e| McpToolError::Internal(e.to_string()))?;
+        let ctx = service.tool_ctx().await?;
         resolve::require_network(&ctx, Some(&param.network))?;
-        resolve::validate_credits(param.amount_credits)?;
+        resolve::validate_positive_amount(param.amount_credits, "credits")?;
 
         // INTENTIONAL: no SPV sync needed — this tool only dispatches Platform state transitions,
         // not Core UTXO spends
@@ -272,12 +266,9 @@ impl AsyncTool<DashMcpService> for ShieldedTransferTool {
         service: &DashMcpService,
         param: ShieldedTransferParams,
     ) -> Result<ShieldedTransferOutput, McpToolError> {
-        let ctx = service
-            .ctx()
-            .await
-            .map_err(|e| McpToolError::Internal(e.to_string()))?;
+        let ctx = service.tool_ctx().await?;
         resolve::require_network(&ctx, Some(&param.network))?;
-        resolve::validate_credits(param.amount_credits)?;
+        resolve::validate_positive_amount(param.amount_credits, "credits")?;
         // INTENTIONAL: no SPV sync needed — this tool only dispatches Platform state transitions,
         // not Core UTXO spends
         let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
@@ -370,12 +361,9 @@ impl AsyncTool<DashMcpService> for ShieldedUnshield {
         service: &DashMcpService,
         param: ShieldedUnshieldParams,
     ) -> Result<ShieldedUnshieldOutput, McpToolError> {
-        let ctx = service
-            .ctx()
-            .await
-            .map_err(|e| McpToolError::Internal(e.to_string()))?;
+        let ctx = service.tool_ctx().await?;
         resolve::require_network(&ctx, Some(&param.network))?;
-        resolve::validate_credits(param.amount_credits)?;
+        resolve::validate_positive_amount(param.amount_credits, "credits")?;
         // INTENTIONAL: no SPV sync needed — this tool only dispatches Platform state transitions,
         // not Core UTXO spends
         let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
@@ -469,12 +457,9 @@ impl AsyncTool<DashMcpService> for ShieldedWithdrawTool {
         service: &DashMcpService,
         param: ShieldedWithdrawParams,
     ) -> Result<ShieldedWithdrawOutput, McpToolError> {
-        let ctx = service
-            .ctx()
-            .await
-            .map_err(|e| McpToolError::Internal(e.to_string()))?;
+        let ctx = service.tool_ctx().await?;
         resolve::require_network(&ctx, Some(&param.network))?;
-        resolve::validate_credits(param.amount_credits)?;
+        resolve::validate_positive_amount(param.amount_credits, "credits")?;
         resolve::validate_address(&param.to_address)?;
         // INTENTIONAL: no SPV sync needed — this tool dispatches a Platform state transition
         // (withdrawal is queued on Platform and settles after confirmation)
@@ -566,10 +551,7 @@ impl AsyncTool<DashMcpService> for ShieldedInit {
         service: &DashMcpService,
         param: WalletIdParams,
     ) -> Result<ShieldedInitOutput, McpToolError> {
-        let ctx = service
-            .ctx()
-            .await
-            .map_err(|e| McpToolError::Internal(e.to_string()))?;
+        let ctx = service.tool_ctx().await?;
         resolve::verify_network(&ctx, param.network.as_deref())?;
         let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
 
@@ -643,10 +625,7 @@ impl AsyncTool<DashMcpService> for ShieldedSync {
         service: &DashMcpService,
         param: WalletIdParams,
     ) -> Result<ShieldedSyncOutput, McpToolError> {
-        let ctx = service
-            .ctx()
-            .await
-            .map_err(|e| McpToolError::Internal(e.to_string()))?;
+        let ctx = service.tool_ctx().await?;
         resolve::verify_network(&ctx, param.network.as_deref())?;
         let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
 
@@ -705,10 +684,7 @@ impl AsyncTool<DashMcpService> for ShieldedBalanceGet {
         service: &DashMcpService,
         param: WalletIdParams,
     ) -> Result<ShieldedBalanceGetOutput, McpToolError> {
-        let ctx = service
-            .ctx()
-            .await
-            .map_err(|e| McpToolError::Internal(e.to_string()))?;
+        let ctx = service.tool_ctx().await?;
         resolve::verify_network(&ctx, param.network.as_deref())?;
         let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
 
@@ -762,10 +738,7 @@ impl AsyncTool<DashMcpService> for ShieldedAddressGet {
         service: &DashMcpService,
         param: WalletIdParams,
     ) -> Result<ShieldedAddressGetOutput, McpToolError> {
-        let ctx = service
-            .ctx()
-            .await
-            .map_err(|e| McpToolError::Internal(e.to_string()))?;
+        let ctx = service.tool_ctx().await?;
         resolve::verify_network(&ctx, param.network.as_deref())?;
         let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
 

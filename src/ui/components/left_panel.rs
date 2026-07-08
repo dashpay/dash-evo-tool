@@ -1,6 +1,6 @@
 use crate::app::AppAction;
 use crate::context::AppContext;
-use crate::model::feature_gate::FeatureGate;
+use crate::context::feature_gate::FeatureGate;
 use crate::ui::RootScreenType;
 use crate::ui::components::styled::GradientButton;
 use crate::ui::theme::{DashColors, ResponseExt, Shadow, Shape, Spacing};

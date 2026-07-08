@@ -14,7 +14,7 @@ use crate::model::qualified_contract::InsertTokensToo::AllTokensShouldBeAdded;
 use crate::{
     app::TaskResult,
     context::AppContext,
-    model::{proof_log_item::RequestType, qualified_identity::QualifiedIdentity},
+    model::{qualified_identity::QualifiedIdentity, request_type::RequestType},
 };
 
 impl AppContext {

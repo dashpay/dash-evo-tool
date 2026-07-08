@@ -3,7 +3,7 @@ use crate::{
     app::TaskResult,
     backend_task::error::TaskError,
     context::AppContext,
-    model::{proof_log_item::RequestType, qualified_identity::QualifiedIdentity},
+    model::{qualified_identity::QualifiedIdentity, request_type::RequestType},
 };
 use dash_sdk::{
     Error, Sdk,

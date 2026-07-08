@@ -6,7 +6,6 @@ pub mod passphrase;
 pub mod seed_envelope;
 pub mod single_key;
 
-use crate::backend_task::error::TaskError;
 use crate::database::WalletError;
 use crate::model::secret::Secret;
 use crate::model::wallet::auth_pubkey_cache::AuthPubkeyCache;
@@ -28,6 +27,38 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Debug;
 use std::ops::Range;
 use std::sync::{Arc, RwLock};
+use thiserror::Error;
+
+/// Why a set of payment recipients was rejected.
+///
+/// Model-local so this pure validator carries no dependency on the
+/// backend-task layer; `TaskError` provides a `From` conversion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum PaymentValidationError {
+    /// The payment named no recipients.
+    #[error("Add at least one recipient before sending a payment.")]
+    NoRecipients,
+    /// A recipient was given a zero amount.
+    #[error("Enter an amount greater than zero for every recipient, then try again.")]
+    ZeroAmount,
+}
+
+/// Why constructing a wallet from a seed failed.
+///
+/// Model-local so [`Wallet::new_from_seed`] carries no dependency on the
+/// backend-task layer; `TaskError` provides a `From` conversion.
+#[derive(Debug, Error)]
+pub enum WalletCreationError {
+    /// Encrypting the seed with the supplied password failed.
+    #[error("Could not process encrypted data. Please check your keys and try again.")]
+    Encryption { detail: String },
+    /// Deriving the master or account keys failed.
+    #[error("Could not create the wallet. Key derivation failed — please try again.")]
+    KeyDerivation {
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
+}
 
 // BIP44 derivation path constants for Dash HD wallets.
 // Mainnet: m/44'/5'/0'   Testnet/Devnet/Regtest: m/44'/1'/0'
@@ -66,14 +97,14 @@ pub const fn coin_type_for_network(network: Network) -> u32 {
 ///
 /// # Errors
 ///
-/// - [`TaskError::PaymentNoRecipients`] when `amounts_duffs` is empty.
-/// - [`TaskError::PaymentZeroAmount`] when any amount is `0`.
-pub fn validate_payment_recipients(amounts_duffs: &[u64]) -> Result<(), TaskError> {
+/// - [`PaymentValidationError::NoRecipients`] when `amounts_duffs` is empty.
+/// - [`PaymentValidationError::ZeroAmount`] when any amount is `0`.
+pub fn validate_payment_recipients(amounts_duffs: &[u64]) -> Result<(), PaymentValidationError> {
     if amounts_duffs.is_empty() {
-        return Err(TaskError::PaymentNoRecipients);
+        return Err(PaymentValidationError::NoRecipients);
     }
     if amounts_duffs.contains(&0) {
-        return Err(TaskError::PaymentZeroAmount);
+        return Err(PaymentValidationError::ZeroAmount);
     }
     Ok(())
 }
@@ -408,12 +439,12 @@ impl Wallet {
         network: Network,
         alias: Option<String>,
         password: Option<&Secret>,
-    ) -> Result<Self, TaskError> {
+    ) -> Result<Self, WalletCreationError> {
         // Encrypt seed or store plaintext
         let (encrypted_seed, salt, nonce, uses_password) = match password {
             Some(pw) if !pw.is_empty() => {
                 let (enc, s, n) = ClosedKeyItem::encrypt_seed(&seed, pw.expose_secret())
-                    .map_err(|e| TaskError::EncryptionError { detail: e })?;
+                    .map_err(|e| WalletCreationError::Encryption { detail: e })?;
                 (enc, s, n, true)
             }
             _ => (seed.to_vec(), vec![], vec![], false),
@@ -423,14 +454,14 @@ impl Wallet {
 
         // Derive master BIP44 extended public key
         let master_priv = ExtendedPrivKey::new_master(network, &seed).map_err(|e| {
-            TaskError::WalletKeyDerivationFailed {
+            WalletCreationError::KeyDerivation {
                 source: Box::new(e),
             }
         })?;
         let bip44_path = Self::bip44_account0_path(network);
         let secp = Secp256k1::new();
         let account_priv = master_priv.derive_priv(&secp, &bip44_path).map_err(|e| {
-            TaskError::WalletKeyDerivationFailed {
+            WalletCreationError::KeyDerivation {
                 source: Box::new(e),
             }
         })?;
@@ -447,14 +478,14 @@ impl Wallet {
             PLATFORM_PAYMENT_KEY_CLASS,
         )
         .map(Some)
-        .map_err(|e| TaskError::WalletKeyDerivationFailed {
+        .map_err(|e| WalletCreationError::KeyDerivation {
             source: Box::new(e),
         })?;
 
         // Derive the first receive address (m/44'/coin'/0'/0/0)
         let (known_addresses, watched_addresses) =
             Self::derive_first_address(&master_bip44_ecdsa_extended_public_key, network, &secp)
-                .map_err(|e| TaskError::WalletKeyDerivationFailed { source: e.into() })?;
+                .map_err(|e| WalletCreationError::KeyDerivation { source: e.into() })?;
 
         Ok(Wallet {
             wallet_seed: WalletSeed::Open(OpenWalletSeed {
@@ -783,9 +814,7 @@ impl WalletSeed {
     }
 
     /// Transition the wallet back to the locked (`Closed`) state.
-    // Allow dead_code: This method provides explicit wallet closure functionality,
-    // useful for security-conscious applications requiring manual wallet management
-    #[allow(dead_code)]
+    /// Drop the decrypted seed, transitioning the wallet to its closed state.
     pub fn close(&mut self) {
         match self {
             WalletSeed::Open(open_seed) => {
@@ -897,9 +926,7 @@ impl Wallet {
         }
     }
 
-    // Allow dead_code: This utility method finds wallets by seed hash in collections,
-    // useful for wallet lookup operations and multi-wallet management
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn find_in_arc_rw_lock_slice(
         slice: &[Arc<RwLock<Wallet>>],
         wallet_seed_hash: WalletSeedHash,
@@ -3428,7 +3455,7 @@ mod tests {
     fn validate_payment_recipients_rejects_empty_list() {
         assert!(matches!(
             validate_payment_recipients(&[]),
-            Err(TaskError::PaymentNoRecipients)
+            Err(PaymentValidationError::NoRecipients)
         ));
     }
 
@@ -3436,12 +3463,12 @@ mod tests {
     fn validate_payment_recipients_rejects_zero_amount() {
         assert!(matches!(
             validate_payment_recipients(&[0]),
-            Err(TaskError::PaymentZeroAmount)
+            Err(PaymentValidationError::ZeroAmount)
         ));
         // A zero anywhere in the list is rejected, not just the first slot.
         assert!(matches!(
             validate_payment_recipients(&[100_000, 0, 50_000]),
-            Err(TaskError::PaymentZeroAmount)
+            Err(PaymentValidationError::ZeroAmount)
         ));
     }
 
@@ -3450,7 +3477,7 @@ mod tests {
         // An empty list reports the no-recipients error, never the zero error.
         assert!(matches!(
             validate_payment_recipients(&[]),
-            Err(TaskError::PaymentNoRecipients)
+            Err(PaymentValidationError::NoRecipients)
         ));
     }
 

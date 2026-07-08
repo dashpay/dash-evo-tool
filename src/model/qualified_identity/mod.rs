@@ -2,6 +2,10 @@ pub mod encrypted_key_storage;
 pub mod identity_meta;
 pub mod qualified_identity_public_key;
 
+// TODO(det): this upward edge is fixed by the `SecretAccess::with_secret`
+// contract, whose closures must return `Result<_, TaskError>`. Removing it
+// requires making that secret-seam chokepoint generic over the closure error
+// type — a wallet_backend change out of scope here.
 use crate::backend_task::error::TaskError;
 use crate::model::qualified_identity::encrypted_key_storage::{KeyStorage, ResolvedPrivateKey};
 use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
@@ -28,7 +32,6 @@ use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::state_transition::errors::InvalidIdentityPublicKeyTypeError;
 use dash_sdk::dpp::{ProtocolError, bls_signatures, ed25519_dalek};
 use dash_sdk::platform::IdentityPublicKey;
-use egui::Color32;
 use std::collections::{BTreeMap, HashSet};
 use std::fmt::{Display, Formatter};
 use std::sync::{Arc, RwLock};
@@ -42,15 +45,6 @@ pub enum IdentityType {
 }
 
 impl IdentityType {
-    #[allow(dead_code)] // May be used for voting calculations
-    pub fn vote_strength(&self) -> u64 {
-        match self {
-            IdentityType::User => 1,
-            IdentityType::Masternode => 1,
-            IdentityType::Evonode => 4,
-        }
-    }
-
     pub fn default_encoding(&self) -> Encoding {
         match self {
             IdentityType::User => Encoding::Base58,
@@ -142,18 +136,6 @@ impl Display for IdentityStatus {
             IdentityStatus::FailedCreation => write!(f, "Creation Failed"),
         }
     }
-}
-
-impl From<IdentityStatus> for Color32 {
-    fn from(value: IdentityStatus) -> Self {
-        match value {
-            IdentityStatus::Active => Color32::from_rgb(0, 128, 0), // Green
-            IdentityStatus::Unknown => Color32::from_rgb(128, 128, 128), // Gray
-            IdentityStatus::PendingCreation => Color32::from_rgb(255, 165, 0), // Orange
-            IdentityStatus::NotFound => Color32::from_rgb(255, 0, 0), // Red
-            IdentityStatus::FailedCreation => Color32::from_rgb(255, 0, 0), // Red
-        }
-    } //
 }
 
 impl IdentityStatus {
@@ -709,14 +691,6 @@ impl QualifiedIdentity {
             .unwrap_or(self.identity.id().to_string(Encoding::Base58))
     }
 
-    #[allow(dead_code)] // May be used for compact UI displays
-    pub fn display_short_string(&self) -> String {
-        self.alias.clone().unwrap_or_else(|| {
-            let id_str = self.identity.id().to_string(Encoding::Base58);
-            id_str.chars().take(5).collect()
-        })
-    }
-
     pub fn masternode_payout_address(&self, network: Network) -> Option<Address> {
         self.identity
             .get_first_public_key_matching(
@@ -812,86 +786,34 @@ impl QualifiedIdentity {
         keys
     }
 
-    pub fn available_authentication_keys_non_master(&self) -> Vec<&QualifiedIdentityPublicKey> {
-        let mut keys = vec![];
-
-        // Check the main identity's public keys
-        for (_, public_key) in self.private_keys.identity_public_keys() {
-            if public_key.identity_public_key.purpose() == Purpose::AUTHENTICATION
-                && public_key.identity_public_key.security_level() != SecurityLevel::MASTER
-            {
-                keys.push(public_key);
-            }
-        }
-
-        keys
+    /// Authentication-purpose keys whose security level satisfies `predicate`.
+    fn authentication_keys_matching(
+        &self,
+        predicate: impl Fn(SecurityLevel) -> bool,
+    ) -> Vec<&QualifiedIdentityPublicKey> {
+        self.private_keys
+            .identity_public_keys()
+            .into_iter()
+            .map(|(_, public_key)| public_key)
+            .filter(|public_key| {
+                public_key.identity_public_key.purpose() == Purpose::AUTHENTICATION
+                    && predicate(public_key.identity_public_key.security_level())
+            })
+            .collect()
     }
 
-    #[allow(dead_code)] // May be used for high-security operations
-    pub fn available_authentication_keys_with_high_security_level(
-        &self,
-    ) -> Vec<&QualifiedIdentityPublicKey> {
-        let mut keys = vec![];
-
-        // Check the main identity's public keys
-        for (_, public_key) in self.private_keys.identity_public_keys() {
-            if public_key.identity_public_key.purpose() == Purpose::AUTHENTICATION
-                && public_key.identity_public_key.security_level() == SecurityLevel::HIGH
-            {
-                keys.push(public_key);
-            }
-        }
-
-        keys
+    pub fn available_authentication_keys_non_master(&self) -> Vec<&QualifiedIdentityPublicKey> {
+        self.authentication_keys_matching(|level| level != SecurityLevel::MASTER)
     }
 
     pub fn available_authentication_keys_with_critical_security_level(
         &self,
     ) -> Vec<&QualifiedIdentityPublicKey> {
-        let mut keys = vec![];
-
-        // Check the main identity's public keys
-        for (_, public_key) in self.private_keys.identity_public_keys() {
-            if public_key.identity_public_key.purpose() == Purpose::AUTHENTICATION
-                && public_key.identity_public_key.security_level() == SecurityLevel::CRITICAL
-            {
-                keys.push(public_key);
-            }
-        }
-
-        keys
-    }
-
-    #[allow(dead_code)]
-    pub fn available_authentication_keys_with_critical_or_high_security_level(
-        &self,
-    ) -> Vec<&QualifiedIdentityPublicKey> {
-        let mut keys = vec![];
-
-        // Check the main identity's public keys
-        for (_, public_key) in self.private_keys.identity_public_keys() {
-            if public_key.identity_public_key.purpose() == Purpose::AUTHENTICATION
-                && (public_key.identity_public_key.security_level() == SecurityLevel::CRITICAL
-                    || public_key.identity_public_key.security_level() == SecurityLevel::HIGH)
-            {
-                keys.push(public_key);
-            }
-        }
-
-        keys
+        self.authentication_keys_matching(|level| level == SecurityLevel::CRITICAL)
     }
 
     pub fn available_authentication_keys(&self) -> Vec<&QualifiedIdentityPublicKey> {
-        let mut keys = vec![];
-
-        // Check the main identity's public keys
-        for (_, public_key) in self.private_keys.identity_public_keys() {
-            if public_key.identity_public_key.purpose() == Purpose::AUTHENTICATION {
-                keys.push(public_key);
-            }
-        }
-
-        keys
+        self.authentication_keys_matching(|_| true)
     }
 
     /// Returns the wallet info for the first public key that is in a wallet.

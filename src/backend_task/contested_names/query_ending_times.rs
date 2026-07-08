@@ -1,6 +1,6 @@
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
-use crate::model::proof_log_item::RequestType;
+use crate::model::request_type::RequestType;
 use chrono::{DateTime, Duration, Utc};
 use dash_sdk::dpp::voting::vote_polls::VotePoll;
 use dash_sdk::dpp::voting::vote_polls::contested_document_resource_vote_poll::ContestedDocumentResourceVotePoll;

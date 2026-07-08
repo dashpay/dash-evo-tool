@@ -1045,6 +1045,13 @@ impl AppContext {
         if !uses_password {
             return;
         }
+        // TODO(det): a non-remember unlock (no passphrase handed to this call)
+        // skips drive_unlock_registration below, so the wallet is not
+        // re-registered with the upstream SPV backend until the next launch.
+        // Deferred 2026-07-08 pending a decision on whether this path should
+        // re-drive registration using the passphrase already verified by the
+        // unlock gesture itself (see the recorded wallet-unlock-registration
+        // gap in project memory).
         let Some(passphrase) = passphrase else {
             return;
         };

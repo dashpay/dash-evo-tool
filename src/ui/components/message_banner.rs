@@ -149,7 +149,7 @@ impl BannerState {
 /// The handle is `'static` and safe to store. Methods that modify the banner
 /// (`set_message`, `with_auto_dismiss`) take `&self` so the handle can be reused.
 ///
-/// INTENTIONAL(SEC-004): BannerHandle is Send+Sync because egui::Context is
+/// BannerHandle is deliberately Send+Sync because egui::Context is
 /// Send+Sync with internal locking. This is acceptable for a single-threaded
 /// UI app; egui's own thread-safety guarantees apply.
 #[derive(Clone)]
@@ -867,7 +867,7 @@ pub trait ResultBannerExt<T, E> {
     /// If `Err`, displays a global error banner with the error's `Display` text.
     /// Returns `self` unchanged — this is a side-effect-only method.
     ///
-    /// INTENTIONAL(SEC-007): Raw `Display` text is shown directly. Callers must
+    /// Deliberately shows raw `Display` text directly. Callers must
     /// ensure error types have user-friendly Display implementations.
     fn or_show_error(self, ctx: &egui::Context) -> Self;
 }

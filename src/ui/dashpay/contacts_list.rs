@@ -113,7 +113,7 @@ impl ContactsList {
 
     /// Auto-fetch on view: reads contacts from offline rehydrated state plus
     /// the DET contact-profile cache, so the list paints without a network
-    /// round-trip (PROJ-040). An explicit refresh uses
+    /// round-trip. An explicit refresh uses
     /// [`Self::trigger_refresh_contacts`] to re-fetch from the network.
     pub fn trigger_fetch_contacts(&mut self) -> AppAction {
         // Only fetch if we have a selected identity

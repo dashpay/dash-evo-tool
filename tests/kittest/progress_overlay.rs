@@ -17,7 +17,7 @@
 //! - TC-OVL-031 (render seam): `ProgressOverlay::render_global` is called from
 //!   `AppState::update` after panels, not inside `island_central_panel`.
 //! - TC-OVL-032 (z-order above banners): the overlay paints on `Order::Foreground`
-//!   (SEC-002, above Foreground popups); banners paint on `Order::Background`
+//!   (above Foreground popups); banners paint on `Order::Background`
 //!   inside the central panel.
 //! - TC-OVL-040 / TC-OVL-045 (log-once): covered by the inline unit tests in
 //!   `src/ui/components/progress_overlay.rs` (`render_logs_once_then_marks_logged`);
@@ -263,7 +263,7 @@ fn tc_ovl_013a_elapsed_off_by_default() {
 
 /// TC-OVL-013 (Part B) — when enabled the elapsed readout shows and counts up.
 /// Uses the deterministic clock seam (`backdate`) instead of a wall-clock sleep,
-/// mirroring `tc_ovl_047b_threshold_reveals_via_clock_seam`. QA-008: assert the
+/// mirroring `tc_ovl_047b_threshold_reveals_via_clock_seam`. Assert the
 /// readout advanced to a concrete 2s, not merely past 0s.
 #[cfg(feature = "testing")]
 #[test]
@@ -386,7 +386,7 @@ fn tc_ovl_021_long_description_within_bounds() {
         rect.min.x >= -1.0 && rect.max.x <= 301.0,
         "description stays within the window horizontally: {rect:?}"
     );
-    // QA-008: also bound it vertically inside the 400px-tall window.
+    // Also bound it vertically inside the 400px-tall window.
     assert!(
         rect.min.y >= -1.0 && rect.max.y <= 401.0,
         "description stays within the window vertically: {rect:?}"
@@ -768,7 +768,7 @@ fn tc_ovl_043_esc_swallowed_without_button() {
     assert!(handle.take_actions().is_empty());
 }
 
-/// TC-OVL-044 — neither Enter nor Space activates a focused button (QA-002): a
+/// TC-OVL-044 — neither Enter nor Space activates a focused button: a
 /// hard block is never keyboard-activatable.
 #[test]
 fn tc_ovl_044_enter_and_space_do_not_activate_button() {
@@ -793,7 +793,7 @@ fn tc_ovl_044_enter_and_space_do_not_activate_button() {
 }
 
 /// TC-OVL-051 — a block that opts into a keyboard escape via `with_keyboard_escape`
-/// (QA-002 refinement) CAN be activated with **Enter**: the focus-pinned escape
+/// CAN be activated with **Enter**: the focus-pinned escape
 /// button fires and enqueues its action — the keyboard exit the unbounded SPV
 /// block relies on. The general rule (TC-OVL-044) is unchanged for non-opted blocks.
 #[test]
@@ -932,7 +932,7 @@ fn tc_ovl_053_designated_escape_is_focus_pinned() {
     );
 }
 
-/// SEC-002 — a focus-INDEPENDENT global key handler beneath an escape block (the
+/// A focus-INDEPENDENT global key handler beneath an escape block (the
 /// pattern in `info_popup` / `selection_dialog` / `address_input`, which call
 /// `i.key_pressed(Enter)` with no focus guard) NEVER observes the Enter: `claim_input`
 /// strips it at frame start, before the beneath `ui()` runs, and routes it to the
@@ -1240,7 +1240,7 @@ fn tc_ovl_050_component_instance_show_reports_click() {
 // field that already holds focus (the J-2 broadcast / J-4 migration case) and
 // asserts AC-8.2: typed input must not reach the field beneath.
 //
-// QA-001 (HIGH), RESOLVED: `ProgressOverlay::claim_input`, called at frame start
+// `ProgressOverlay::claim_input`, called at frame start
 // (before the panels) while a block is up, releases beneath text focus and
 // strips `Event::Text` + nav/confirm keys — so a button-less block no longer
 // leaks typed input into a focused field beneath. This harness mirrors the app
@@ -1285,7 +1285,7 @@ fn qa_buttonless_overlay_blocks_typing_into_focused_field_beneath() {
     );
 }
 
-// SEC-002 (additive hardening): `claim_input` also strips edit keys
+// Additive hardening: `claim_input` also strips edit keys
 // (Backspace/Delete/Home/End/PageUp/PageDown) and clipboard events
 // (Copy/Cut/Paste) at frame start, so a focused field beneath a block is neither
 // edited nor pasted into. This locks the new classes via event survival (fails
@@ -1371,7 +1371,7 @@ fn qa_buttonless_overlay_strips_edit_and_clipboard_events() {
 
 // ── Cross-finding reconciliations (lead brief) ──────────────────────────────
 
-/// Reconciliation #1 (SEC-004 / Diziet F-1) — while a secret prompt is active the
+/// Reconciliation #1 — while a secret prompt is active the
 /// app gates `claim_input` OFF, so only `render_global` runs over the overlay. It
 /// must NOT strip keyboard events, or it would eat the prompt's Enter/Esc/Tab.
 /// (TC-OVL-048 separately proves the prompt renders interactively above the
@@ -1418,11 +1418,11 @@ fn reconciliation_render_global_keeps_keyboard_for_prompt() {
     assert!(
         saw_keys.get(),
         "render_global must not swallow Enter/Esc/Tab while an overlay is up — a \
-         secret prompt above it needs them (SEC-004/F-1)"
+         secret prompt above it needs them"
     );
 }
 
-/// Reconciliation #3 (QA-003) — the instance `Component::show` must NOT seize the
+/// Reconciliation #3 — the instance `Component::show` must NOT seize the
 /// host screen's focus or install the global focus-lock. A host text field stays
 /// focused after the inline overlay renders, proving the trap is global-only.
 #[test]
@@ -1454,7 +1454,7 @@ fn reconciliation_instance_show_leaves_host_focus_navigable() {
         harness
             .get_by_role(egui::accesskit::Role::TextInput)
             .is_focused(),
-        "the instance overlay must leave the host screen's focus alone (QA-003)"
+        "the instance overlay must leave the host screen's focus alone"
     );
 }
 
@@ -1463,7 +1463,7 @@ fn reconciliation_instance_show_leaves_host_focus_navigable() {
 /// RQ-1 (security) — drives the REAL `AppState::update` loop: a passphrase prompt
 /// active above a button-less blocking overlay stays focusable AND typeable,
 /// because `AppState::claim_overlay_input` suppresses the overlay's frame-start
-/// `claim_input` while a secret prompt is active (SEC-004/F-1). Deleting that gate
+/// `claim_input` while a secret prompt is active. Deleting that gate
 /// makes `claim_input` (button-less → `stop_text_input`) steal the prompt's focus
 /// and strip its keystrokes — which BOTH assertions below detect.
 #[cfg(feature = "testing")]
@@ -1518,7 +1518,7 @@ fn rq1_appstate_secret_prompt_gate_keeps_prompt_typeable_over_overlay() {
     });
 }
 
-/// SEC-001 (security) — drives the REAL `AppState::update` loop with BOTH a passphrase
+/// Drives the REAL `AppState::update` loop with BOTH a passphrase
 /// prompt active AND a `with_keyboard_escape` block beneath it (the SPV-sync pattern).
 /// The escape must NOT steal focus from the prompt: the prompt stays focused across
 /// several frames, a typed passphrase + Enter SUBMITS (closing the prompt), and the
@@ -1589,7 +1589,7 @@ fn sec001_keyboard_escape_block_does_not_steal_focus_from_secret_prompt() {
         // ...and the escape action was NEVER enqueued — Enter went to the passphrase.
         assert!(
             handle.take_actions().is_empty(),
-            "SEC-001: Enter must submit the passphrase, never activate a focus-stolen escape"
+            "Enter must submit the passphrase, never activate a focus-stolen escape"
         );
     });
 }
@@ -1764,7 +1764,7 @@ fn fspv_a_onboarding_auto_start_arms_spv_block() {
     });
 }
 
-/// Task 9 / QA-002 refinement — the REAL SPV block's "Continue in the background"
+/// Task 9 — the REAL SPV block's "Continue in the background"
 /// escape is keyboard-activatable: pressing **Enter** while it holds focus enqueues
 /// its action, which the driver drains to lower the block. Guards the app.rs wiring
 /// (`with_keyboard_escape(SPV_CONTINUE_BACKGROUND_ACTION)`) so a keyboard-only /

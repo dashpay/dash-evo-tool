@@ -340,8 +340,8 @@ impl ScreenLike for IdentityHubScreen {
                 }
             }
             // Populate the Received/Sent request caches so the Contacts tab
-            // can render real RequestCard rows instead of hardcoded empties
-            // (T29 / QA-002). The result arrives from LoadContactRequests,
+            // can render real RequestCard rows instead of hardcoded empties.
+            // The result arrives from LoadContactRequests,
             // dispatched alongside LoadContacts in contacts::render_populated.
             BackendTaskSuccessResult::DashPayContactRequests { incoming, outgoing } => {
                 self.contacts_state

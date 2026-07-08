@@ -2096,7 +2096,7 @@ impl WalletAddressProvider {
         // platform-payment index DET has already handed out. The generator
         // derives `max(registered)+1` unbounded, so a registered index can
         // exceed the gap window; syncing only the window would leave such an
-        // address unsynced and its credits invisible (SEC-001). The provider is
+        // address unsynced and its credits invisible. The provider is
         // the sync window's single source of truth, so it follows derivation.
         let highest_registered = wallet.highest_platform_payment_index(network);
         let max_index = highest_registered
@@ -3598,7 +3598,7 @@ mod tests {
         );
     }
 
-    /// FUNDS-SAFETY (SEC-001): every platform-payment address DET hands out or
+    /// FUNDS-SAFETY: every platform-payment address DET hands out or
     /// funds must be inside the provider's synced window. The generator derives
     /// `max(registered)+1` unbounded, but the provider only bootstraps
     /// `0..=gap_limit-1` and extends past *funded* indices. So a handed-out

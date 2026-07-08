@@ -217,7 +217,7 @@ fn it_switch_stale_selection_falls_back_to_picker() {
     });
 }
 
-/// QA-001 — selecting a wallet-less (imported-by-id) identity clears the derived
+/// Selecting a wallet-less (imported-by-id) identity clears the derived
 /// wallet pointer, so the breadcrumb wallet segment and the active identity
 /// agree. Pre-fix, `set_selected_identity` left `selected_wallet_hash` stale
 /// (the owner derivation returns `None` for a wallet-less identity) and the
@@ -275,7 +275,7 @@ fn qa_001_wallet_less_selection_clears_derived_wallet() {
     });
 }
 
-/// QA-002 (replaces a sham tautology test) — the no-wallet group is identified
+/// Replaces a sham tautology test — the no-wallet group is identified
 /// by `wallet_index.is_none()` on real loaded identities: a seeded wallet-less
 /// identity appears in that filtered group (the exact predicate the breadcrumb
 /// dropdown's "Identities without a wallet on this device" section uses).

@@ -309,7 +309,7 @@ pub fn render(
     // floor) the hero is already compact — no extra space is added before this
     // card, and the standard Spacing::MD below separates both from the actions.
     //
-    // V2/V3 conflict (QA-006): The onboarding checklist already contains a
+    // V2/V3 conflict: the onboarding checklist already contains a
     // "Set a display name" step that routes to Settings — the same action as
     // this card. When the checklist is visible (not dismissed), suppress this
     // card so the user sees exactly one prompt for the action.

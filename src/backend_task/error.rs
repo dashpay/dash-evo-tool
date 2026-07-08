@@ -306,7 +306,7 @@ pub enum TaskError {
     /// device. The on-chain broadcast and the local persist cannot be atomic, so
     /// this is the unavoidable post-broadcast gap — surfaced as a loud, typed,
     /// actionable error rather than a silent loss. It never falls back to a
-    /// keyless write (the SEC-001 protected invariant holds). The upstream seal
+    /// keyless write (the protected invariant holds). The upstream seal
     /// failure is preserved through `#[source]` for logs and the details panel.
     #[error(
         "The new key was added to your identity on the network, but it could not be saved on this device. Your identity and its existing keys are safe. Check available disk space, then try adding a key again."
@@ -316,7 +316,7 @@ pub enum TaskError {
         source: Box<TaskError>,
     },
 
-    /// SEC-001 fail-closed guard at the opt-in protect boundary: the task found
+    /// Fail-closed guard at the opt-in protect boundary: the task found
     /// keys still resident as plaintext on disk after the eager load-path vault
     /// migration, so the identity cannot be reported as fully protected. The
     /// migration only leaves resident plaintext when its vault write failed or
@@ -331,7 +331,7 @@ pub enum TaskError {
     )]
     IdentityKeyProtectionIncomplete,
 
-    /// SEC-001 fail-closed guard at the opt-in protect boundary: the identity
+    /// Fail-closed guard at the opt-in protect boundary: the identity
     /// still carries one or more keys saved in the legacy on-disk format this
     /// version can neither read nor migrate into the protected store. Unlike
     /// resident plaintext — which the load-path migration finishes on the next
@@ -389,7 +389,7 @@ pub enum TaskError {
         source: Box<crate::wallet_backend::KvAdapterError>,
     },
 
-    /// The DET avatar image cache (PROJ-040) could not be read or written.
+    /// The DET avatar image cache could not be read or written.
     /// Lives in the same cross-network `det-app.sqlite` k/v file as
     /// [`Self::WalletMetaStorage`]; a failure here only costs the offline
     /// avatar cache (the image re-fetches from the network), so the user hint
@@ -4051,7 +4051,7 @@ mod tests {
             .expect_err("divergent checksum must abort")
     }
 
-    /// QA-001 — a divergent migration history (database written under an
+    /// A divergent migration history (database written under an
     /// incompatible storage layout) maps to the dedicated
     /// `WalletDataIncompatible` variant. Its `Display` tells the user to
     /// remove the local wallet data, NOT the misleading "free disk space" copy.

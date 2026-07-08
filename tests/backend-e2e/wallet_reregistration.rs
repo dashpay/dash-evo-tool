@@ -1,4 +1,4 @@
-//! PROJ-010 regression: wallets must re-register with the upstream SPV
+//! Regression: wallets must re-register with the upstream SPV
 //! backend so received funds are visible.
 //!
 //! Background: commit `e6c6c017` replaced the seed-based re-registration
@@ -47,7 +47,7 @@ async fn funded_wallet_balance_is_visible_after_registration() {
         "the funded wallet must be registered with the upstream SPV backend"
     );
 
-    // The balance must become visible — the core PROJ-010 assertion. The
+    // The balance must become visible — the core regression assertion. The
     // deposit is below the SPV tip by the time it is matched, so this only
     // passes when the wallet's addresses are actually watched.
     let balance = wait::wait_for_balance(
@@ -57,7 +57,7 @@ async fn funded_wallet_balance_is_visible_after_registration() {
         Duration::from_secs(120),
     )
     .await
-    .expect("received funds must be visible once the wallet is registered (PROJ-010)");
+    .expect("received funds must be visible once the wallet is registered");
 
     assert!(
         balance >= amount_duffs,
@@ -242,7 +242,7 @@ async fn cold_process_boot_from_migrated_state_registers_and_shows_balance() {
     );
 
     // Start chain sync and confirm the historical balance becomes visible — the
-    // end-to-end PROJ-010 assertion on a genuinely cold-booted, migrated wallet.
+    // end-to-end regression assertion on a genuinely cold-booted, migrated wallet.
     backend.start().await.expect("start cold-boot chain sync");
     wait::wait_for_spv_peers(&app_context, Duration::from_secs(60))
         .await

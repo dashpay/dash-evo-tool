@@ -1,4 +1,4 @@
-//! DET-side avatar image cache (PROJ-040).
+//! DET-side avatar image cache.
 //!
 //! Avatars are binary images referenced by a profile's `avatarUrl`. Upstream
 //! `platform-wallet` persists only the avatar hash and perceptual fingerprint

@@ -28,7 +28,7 @@ impl AppContext {
         mut public_key_to_add: QualifiedIdentityPublicKey,
         private_key: [u8; 32],
     ) -> Result<BackendTaskSuccessResult, TaskError> {
-        // SEC-001 O-2: enforce the protected-identity precondition BEFORE any
+        // O-2: enforce the protected-identity precondition BEFORE any
         // on-chain side effect. If this identity is password-protected, prompt
         // for and VERIFY its object password up front; a headless host or a
         // wrong password fails closed here, so the AddKeys state transition
@@ -136,7 +136,7 @@ impl AppContext {
 
         let fee_result = FeeResult::new(estimated_fee, actual_fee);
 
-        // SEC-001: a password-protected identity must never acquire a keyless
+        // A password-protected identity must never acquire a keyless
         // key. The object password was already verified up front (before the
         // broadcast above), so here we just seal the newly-added key Tier-2
         // under that SAME password and mark it `InVault` BEFORE saving, so the
@@ -186,7 +186,7 @@ impl AppContext {
     }
 }
 
-/// SEC-001 O-2 add-key precondition (no SDK, no network): when the target
+/// O-2 add-key precondition (no SDK, no network): when the target
 /// identity is password-protected, prompt for and VERIFY its object password
 /// before the caller performs any irreversible on-chain action. `verify_scope`
 /// is [`AppContext::protected_identity_verify_scope`]'s result — `Some(existing
@@ -221,7 +221,7 @@ async fn verify_protected_identity_precondition(
 /// undone — surface a loud, actionable error (the key is on the network; retry
 /// after freeing disk space) that preserves the upstream seal failure in its
 /// `#[source]` chain, rather than a silent loss or a misleading storage message.
-/// Never falls back to a keyless write (the SEC-001 protected invariant holds).
+/// Never falls back to a keyless write (the protected invariant holds).
 fn key_added_but_not_saved(source: TaskError) -> TaskError {
     TaskError::IdentityKeyAddedButNotSaved {
         source: Box::new(source),

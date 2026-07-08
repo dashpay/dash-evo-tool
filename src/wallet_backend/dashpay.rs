@@ -2323,7 +2323,7 @@ mod tests {
         );
     }
 
-    /// Correctness substrate for PROJ-004: on **mainnet**, the xpub the seam
+    /// Correctness substrate: on **mainnet**, the xpub the seam
     /// publishes in the contact request equals the xpub DET's receive-side
     /// derivation (`derive_dashpay_incoming_xpub`) produces from the same seed
     /// and path. This pins the upstream `derive_contact_xpub` output against
@@ -2364,7 +2364,7 @@ mod tests {
         );
     }
 
-    /// Fund-routing invariant for SEC-001 on **testnet**: the xpub the seam
+    /// Fund-routing invariant on **testnet**: the xpub the seam
     /// publishes in the contact request equals the xpub DET's receive-side
     /// derivation (`derive_dashpay_incoming_xpub`) produces from the same seed
     /// and path. Both now select coin-type `1'` on testnet, so the contact
@@ -2405,7 +2405,7 @@ mod tests {
         );
     }
 
-    /// SEC-001 fund-routing invariant, both networks, all published fields.
+    /// Fund-routing invariant, both networks, all published fields.
     /// The send-side seam (`derive_contact_xpub_material`) and the receive-side
     /// scanning derivation (`derive_dashpay_incoming_xpub`) must agree on the
     /// full triple (public_key, chain_code, parent_fingerprint) for the same

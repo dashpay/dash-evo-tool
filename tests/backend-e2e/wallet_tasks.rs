@@ -13,7 +13,7 @@ use std::time::Duration;
 // ─── TC-012 ───────────────────────────────────────────────────────────────────
 
 /// TC-012: GenerateReceiveAddress — basic derivation. The "uniqueness across
-/// consecutive calls" check is PENDING (QA-005 / rust-dashcore#818); see the
+/// consecutive calls" check is PENDING (rust-dashcore#818); see the
 /// note at the second-call assertion.
 #[tokio_shared_rt::test(shared, flavor = "multi_thread", worker_threads = 12)]
 #[ignore]
@@ -56,13 +56,13 @@ async fn tc_012_generate_receive_address() {
         other => panic!("TC-012: expected GeneratedReceiveAddress, got: {:?}", other),
     };
 
-    // PENDING (QA-005): two consecutive calls returning DISTINCT addresses is
+    // PENDING: two consecutive calls returning DISTINCT addresses is
     // not achievable today. Upstream `next_receive_address_for_account` →
     // `next_unused` returns the lowest UNUSED address until it is used on-chain
     // (funds-safe BIP-44 keypool behavior), so back-to-back calls return the
     // same address. The fresh-each-call UX needs the reserve-on-hand-out API
     // tracked in dashpay/rust-dashcore#818 to propagate through platform into
-    // DET — see the PROJ-015 TODO in `src/wallet_backend/mod.rs`.
+    // DET — see the TODO in `src/wallet_backend/mod.rs`.
     // Forcing distinctness DET-side now would re-introduce the gap-window
     // funds-loss bug that tc_012b guards.
     let first_char2 = address2.chars().next().unwrap_or_default();
@@ -74,7 +74,7 @@ async fn tc_012_generate_receive_address() {
 
     if address1 == address2 {
         tracing::info!(
-            "TC-012: receive address did not advance (known gap QA-005 / rust-dashcore#818); \
+            "TC-012: receive address did not advance (known gap, rust-dashcore#818); \
              addr={address1}"
         );
     } else {

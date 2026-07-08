@@ -118,7 +118,7 @@ fn build_ctx() -> (
 /// Write-back (picker change → `resolve_selected_identity()` moves) is covered
 /// at the component level by
 /// `identity_selector::tests::syncing_global_writes_selection_to_app_context`
-/// (QA-001), which tests `sync_to_global()` directly without a screen harness.
+/// which tests `sync_to_global()` directly without a screen harness.
 #[test]
 fn contacts_list_defaults_to_app_scoped_identity() {
     with_isolated_data_dir(|| {

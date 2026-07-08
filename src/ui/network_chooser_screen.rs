@@ -1206,6 +1206,36 @@ impl NetworkChooserScreen {
         }
     }
 
+    /// Fraction in [0,1] of the download window from `stage_start` (default `current`) to `target`.
+    ///
+    /// Windowing makes checkpoint-resumed syncs start near 0% instead of jumping ahead. Pass
+    /// `Some(0)` for a plain `current / target` ratio.
+    fn window_fraction(stage_start: Option<u32>, current: u32, target: u32) -> f32 {
+        if target == 0 {
+            return 0.0;
+        }
+        let start = stage_start.unwrap_or(current).min(target);
+        let span = target.saturating_sub(start);
+        if span == 0 {
+            return if current >= target { 1.0 } else { 0.0 };
+        }
+        (current.saturating_sub(start) as f32 / span as f32).clamp(0.0, 1.0)
+    }
+
+    /// Progress in [0,1] for a sync stage, from its state and windowed height range.
+    fn stage_progress(
+        state: SyncState,
+        stage_start: Option<u32>,
+        current: u32,
+        target: u32,
+    ) -> f32 {
+        match state {
+            SyncState::Syncing => Self::window_fraction(stage_start, current, target),
+            SyncState::Synced => 1.0,
+            SyncState::WaitingForConnections | SyncState::WaitForEvents | SyncState::Error => 0.0,
+        }
+    }
+
     fn calculate_headers_progress(&self, snapshot: &SpvStatusSnapshot) -> f32 {
         let Some(progress) = &snapshot.sync_progress else {
             return 0.0;
@@ -1213,33 +1243,12 @@ impl NetworkChooserScreen {
         let Ok(headers) = progress.headers() else {
             return 0.0;
         };
-        match headers.state() {
-            SyncState::Syncing => {
-                let target = headers.target_height();
-                if target == 0 {
-                    return 0.0;
-                }
-                // Use download window to show progress relative to remaining work,
-                // so checkpoint-resumed syncs start near 0% rather than jumping ahead.
-                let start = self
-                    .headers_stage_start
-                    .unwrap_or(headers.current_height())
-                    .min(target);
-                let span = target.saturating_sub(start);
-                if span == 0 {
-                    if headers.current_height() >= target {
-                        1.0
-                    } else {
-                        0.0
-                    }
-                } else {
-                    let done = headers.current_height().saturating_sub(start);
-                    (done as f32 / span as f32).clamp(0.0, 1.0)
-                }
-            }
-            SyncState::Synced => 1.0,
-            SyncState::WaitingForConnections | SyncState::WaitForEvents | SyncState::Error => 0.0,
-        }
+        Self::stage_progress(
+            headers.state(),
+            self.headers_stage_start,
+            headers.current_height(),
+            headers.target_height(),
+        )
     }
 
     fn calculate_filter_headers_progress(&self, snapshot: &SpvStatusSnapshot) -> f32 {
@@ -1249,31 +1258,12 @@ impl NetworkChooserScreen {
         let Ok(fh) = progress.filter_headers() else {
             return 0.0;
         };
-        match fh.state() {
-            SyncState::Syncing => {
-                let target = fh.target_height();
-                if target == 0 {
-                    return 0.0;
-                }
-                let start = self
-                    .filter_headers_stage_start
-                    .unwrap_or(fh.current_height())
-                    .min(target);
-                let span = target.saturating_sub(start);
-                if span == 0 {
-                    if fh.current_height() >= target {
-                        1.0
-                    } else {
-                        0.0
-                    }
-                } else {
-                    let done = fh.current_height().saturating_sub(start);
-                    (done as f32 / span as f32).clamp(0.0, 1.0)
-                }
-            }
-            SyncState::Synced => 1.0,
-            SyncState::WaitingForConnections | SyncState::WaitForEvents | SyncState::Error => 0.0,
-        }
+        Self::stage_progress(
+            fh.state(),
+            self.filter_headers_stage_start,
+            fh.current_height(),
+            fh.target_height(),
+        )
     }
 
     fn calculate_filters_progress(&self, snapshot: &SpvStatusSnapshot) -> f32 {
@@ -1283,34 +1273,12 @@ impl NetworkChooserScreen {
         let Ok(filters) = progress.filters() else {
             return 0.0;
         };
-        match filters.state() {
-            SyncState::Syncing => {
-                let target = filters.target_height();
-                if target == 0 {
-                    return 0.0;
-                }
-                // Use windowed progress so checkpoint-resumed syncs start near 0%.
-                // current_height is the storage tip (not downloaded() which is a
-                // session-level count).
-                let start = self
-                    .filters_stage_start
-                    .unwrap_or(filters.current_height())
-                    .min(target);
-                let span = target.saturating_sub(start);
-                if span == 0 {
-                    if filters.current_height() >= target {
-                        1.0
-                    } else {
-                        0.0
-                    }
-                } else {
-                    let done = filters.current_height().saturating_sub(start);
-                    (done as f32 / span as f32).clamp(0.0, 1.0)
-                }
-            }
-            SyncState::Synced => 1.0,
-            SyncState::WaitingForConnections | SyncState::WaitForEvents | SyncState::Error => 0.0,
-        }
+        Self::stage_progress(
+            filters.state(),
+            self.filters_stage_start,
+            filters.current_height(),
+            filters.target_height(),
+        )
     }
 
     fn calculate_validating_headers_progress(&self, snapshot: &SpvStatusSnapshot) -> f32 {
@@ -1323,17 +1291,8 @@ impl NetworkChooserScreen {
         let Ok(mn) = progress.masternodes() else {
             return 0.0;
         };
-        match mn.state() {
-            SyncState::Syncing => {
-                let target = mn.target_height();
-                if target == 0 {
-                    return 0.0;
-                }
-                (mn.current_height() as f32 / target as f32).clamp(0.0, 1.0)
-            }
-            SyncState::Synced => 1.0,
-            SyncState::WaitingForConnections | SyncState::WaitForEvents | SyncState::Error => 0.0,
-        }
+        // Masternode sync reports a plain current/target ratio, not a resume window.
+        Self::stage_progress(mn.state(), Some(0), mn.current_height(), mn.target_height())
     }
 
     fn calculate_blocks_progress(&self, snapshot: &SpvStatusSnapshot) -> f32 {
@@ -1349,22 +1308,13 @@ impl NetworkChooserScreen {
         if blocks.state() == SyncState::Synced {
             return 1.0;
         }
-        // Use last_processed height relative to the tracked target height.
-        // Don't branch on SyncState — blocks can transiently leave Syncing
-        // (e.g. WaitForEvents between batches) while still making progress.
-        let target = self.blocks_target_height;
-        if target == 0 {
-            return 0.0;
-        }
-        let current = blocks.last_processed();
-        let start = self.blocks_stage_start.unwrap_or(current).min(target);
-        let span = target.saturating_sub(start);
-        if span == 0 {
-            if current >= target { 1.0 } else { 0.0 }
-        } else {
-            let done = current.saturating_sub(start);
-            (done as f32 / span as f32).clamp(0.0, 1.0)
-        }
+        // Track last_processed against blocks_target_height regardless of state: blocks can
+        // transiently leave Syncing (e.g. WaitForEvents between batches) while still progressing.
+        Self::window_fraction(
+            self.blocks_stage_start,
+            blocks.last_processed(),
+            self.blocks_target_height,
+        )
     }
 
     fn any_rpc_backend(&self) -> bool {

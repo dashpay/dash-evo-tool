@@ -1,7 +1,10 @@
 use crate::ui::components::component_trait::{Component, ComponentResponse};
+use crate::ui::components::modal_chrome::{ModalChromeConfig, modal_chrome};
 use crate::ui::helpers::clicked_outside_window;
 use crate::ui::theme::{ComponentStyles, DashColors};
 use egui::{InnerResponse, Ui, WidgetText};
+
+pub use crate::ui::components::modal_chrome::NOTHING;
 
 /// Response from showing a confirmation dialog
 #[derive(Debug, Clone, PartialEq)]
@@ -12,7 +15,6 @@ pub enum ConfirmationStatus {
     Canceled,
 }
 
-pub const NOTHING: Option<&str> = None;
 /// Response struct for the ConfirmationDialog component following the Component trait pattern
 #[derive(Debug, Clone)]
 pub struct ConfirmationDialogComponentResponse {
@@ -55,7 +57,6 @@ impl ComponentResponse for ConfirmationDialogComponentResponse {
 pub struct ConfirmationDialog {
     title: WidgetText,
     message: WidgetText,
-    status: Option<ConfirmationStatus>,
     confirm_text: Option<WidgetText>,
     cancel_text: Option<WidgetText>,
     danger_mode: bool,
@@ -102,7 +103,6 @@ impl ConfirmationDialog {
             cancel_text: Some("Cancel".into()),
             danger_mode: false,
             is_open: true,
-            status: None, // No action taken yet
         }
     }
 
@@ -134,47 +134,25 @@ impl ConfirmationDialog {
 impl ConfirmationDialog {
     /// Show the dialog and return the user's response
     fn show_dialog(&mut self, ui: &mut Ui) -> InnerResponse<Option<ConfirmationStatus>> {
-        let mut is_open = self.is_open;
-
-        if !is_open {
+        if !self.is_open {
             return InnerResponse::new(
                 None, // no change
                 ui.allocate_response(egui::Vec2::ZERO, egui::Sense::hover()),
             );
         }
 
-        // Draw dark overlay behind the dialog for better visibility
-        let screen_rect = ui.ctx().content_rect();
-        let painter = ui.ctx().layer_painter(egui::LayerId::new(
-            egui::Order::Background,
-            egui::Id::new("confirmation_dialog_overlay"),
-        ));
-        painter.rect_filled(
-            screen_rect,
-            0.0,
-            DashColors::modal_overlay(), // Semi-transparent black overlay
-        );
-
         let mut final_response = None;
-        let window_response = egui::Window::new(self.title.clone())
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-            .open(&mut is_open)
-            .frame(egui::Frame {
-                inner_margin: egui::Margin::same(16),
-                outer_margin: egui::Margin::same(0),
-                corner_radius: egui::CornerRadius::same(8),
-                shadow: egui::epaint::Shadow {
-                    offset: [0, 8],
-                    blur: 16,
-                    spread: 0,
-                    color: DashColors::popup_shadow(),
-                },
-                fill: ui.style().visuals.window_fill,
-                stroke: egui::Stroke::new(1.0, DashColors::popup_border_glow()),
-            })
-            .show(ui.ctx(), |ui| {
+        let chrome = modal_chrome(
+            ui.ctx(),
+            ModalChromeConfig {
+                title: self.title.clone(),
+                overlay_id: egui::Id::new("confirmation_dialog_overlay"),
+                overlay_order: egui::Order::Background,
+                window_order: egui::Order::Middle,
+                resizable: false,
+                inner_margin: 16,
+            },
+            |ui| {
                 // Set minimum width for the dialog
                 ui.set_min_width(300.0);
 
@@ -221,10 +199,11 @@ impl ConfirmationDialog {
                         }
                     });
                 });
-            });
+            },
+        );
 
         // Handle window being closed via X button - treat as cancel
-        if !is_open && final_response.is_none() {
+        if chrome.closed_via_x && final_response.is_none() {
             final_response = Some(ConfirmationStatus::Canceled);
         }
 
@@ -245,23 +224,19 @@ impl ConfirmationDialog {
         }
 
         // Handle click outside window - close for non-danger dialogs
-        if let Some(ref wr) = window_response
+        if let Some(ref wr) = chrome.window_response
             && final_response.is_none()
             && !self.danger_mode
-            && clicked_outside_window(ui.ctx(), wr.response.rect)
+            && clicked_outside_window(ui.ctx(), wr.rect)
         {
             final_response = Some(ConfirmationStatus::Canceled);
         }
 
-        // Update the dialog's state
-        self.is_open = is_open;
-        // if user actually did something, update the status
-        if final_response.is_some() {
-            self.status = final_response.clone();
-        }
+        // The dialog only closes itself via the X button; button clicks leave it to the caller.
+        self.is_open = !chrome.closed_via_x;
 
-        if let Some(window_response) = window_response {
-            InnerResponse::new(final_response, window_response.response)
+        if let Some(window_response) = chrome.window_response {
+            InnerResponse::new(final_response, window_response)
         } else {
             InnerResponse::new(
                 final_response,

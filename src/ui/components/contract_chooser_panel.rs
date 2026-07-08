@@ -20,10 +20,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::error;
 
+#[derive(Default)]
 pub struct ContractChooserState {
-    pub right_click_contract_id: Option<String>,
-    pub show_context_menu: bool,
-    pub context_menu_position: egui::Pos2,
     pub expanded_contracts: std::collections::HashSet<String>,
     pub expanded_sections: std::collections::HashMap<String, std::collections::HashSet<String>>,
     pub expanded_doc_types: std::collections::HashMap<String, std::collections::HashSet<String>>,
@@ -31,39 +29,37 @@ pub struct ContractChooserState {
     pub expanded_tokens: std::collections::HashMap<String, std::collections::HashSet<String>>,
 }
 
-impl Default for ContractChooserState {
-    fn default() -> Self {
-        Self {
-            right_click_contract_id: None,
-            show_context_menu: false,
-            context_menu_position: egui::Pos2::ZERO,
-            expanded_contracts: std::collections::HashSet::new(),
-            expanded_sections: std::collections::HashMap::new(),
-            expanded_doc_types: std::collections::HashMap::new(),
-            expanded_indexes: std::collections::HashMap::new(),
-            expanded_tokens: std::collections::HashMap::new(),
-        }
-    }
-}
-
-// Helper function to render a custom collapsing header with +/- button
+/// Renders a custom collapsing header with a +/- toggle and a label.
+///
+/// The `InnerResponse::inner` reports whether the toggle or label was clicked; the
+/// `InnerResponse::response` covers the whole row and can carry a `context_menu`.
 fn render_collapsing_header(
     ui: &mut egui::Ui,
     text: impl Into<String>,
     is_expanded: bool,
     is_selected: bool,
     indent_level: usize,
-) -> bool {
+) -> egui::InnerResponse<bool> {
     let text = text.into();
     let dark_mode = ui.style().visuals.dark_mode;
     let indent = indent_level as f32 * 16.0;
 
-    let mut clicked = false;
+    // Font size shrinks with nesting depth: contract > section > doc type > sub-item.
+    let font_size = match indent_level {
+        0 => 16.0,
+        1 => 14.0,
+        2 => 13.0,
+        _ => 12.0,
+    };
+    let label_color = if is_selected {
+        DashColors::DASH_BLUE
+    } else {
+        DashColors::text_primary(dark_mode)
+    };
 
     ui.horizontal(|ui| {
         ui.add_space(indent);
 
-        // +/- button
         let button_text = if is_expanded { "−" } else { "+" };
         let button_response = ui.add(
             egui::Button::new(
@@ -75,72 +71,14 @@ fn render_collapsing_header(
             .stroke(egui::Stroke::NONE),
         );
 
-        if button_response.clicked() {
-            clicked = true;
-        }
-
-        // Label - make contract names (level 0) larger
-        let label_text = if indent_level == 0 {
-            // Contract names - make them the largest with heading font
-            if is_selected {
-                RichText::new(text)
-                    .size(16.0)
-                    .heading()
-                    .color(DashColors::DASH_BLUE)
-            } else {
-                RichText::new(text)
-                    .size(16.0)
-                    .heading()
-                    .color(DashColors::text_primary(dark_mode))
-            }
-        } else if indent_level == 1 {
-            // Section headers (Document Types, Tokens, Contract JSON) - medium size
-            if is_selected {
-                RichText::new(text)
-                    .size(14.0)
-                    .heading()
-                    .color(DashColors::DASH_BLUE)
-            } else {
-                RichText::new(text)
-                    .size(14.0)
-                    .heading()
-                    .color(DashColors::text_primary(dark_mode))
-            }
-        } else if indent_level == 2 {
-            // Document type names - smaller
-            if is_selected {
-                RichText::new(text)
-                    .size(13.0)
-                    .heading()
-                    .color(DashColors::DASH_BLUE)
-            } else {
-                RichText::new(text)
-                    .size(13.0)
-                    .heading()
-                    .color(DashColors::text_primary(dark_mode))
-            }
-        } else {
-            // Indexes and other sub-items - smallest
-            if is_selected {
-                RichText::new(text)
-                    .size(12.0)
-                    .heading()
-                    .color(DashColors::DASH_BLUE)
-            } else {
-                RichText::new(text)
-                    .size(12.0)
-                    .heading()
-                    .color(DashColors::text_primary(dark_mode))
-            }
-        };
-
+        let label_text = RichText::new(text)
+            .size(font_size)
+            .heading()
+            .color(label_color);
         let label_response = ui.add(egui::Label::new(label_text).sense(egui::Sense::click()));
-        if label_response.clicked() {
-            clicked = true;
-        }
-    });
 
-    clicked
+        button_response.clicked() || label_response.clicked()
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -237,13 +175,39 @@ pub fn add_contract_chooser_panel(
                                 let is_expanded = chooser_state.expanded_contracts.contains(&contract_id);
 
                                 // Render the custom collapsing header for the contract
-                                if render_collapsing_header(ui, &display_name, is_expanded, is_selected_contract, 0) {
+                                let header = render_collapsing_header(ui, &display_name, is_expanded, is_selected_contract, 0);
+                                if header.inner {
                                     if is_expanded {
                                         chooser_state.expanded_contracts.remove(&contract_id);
                                     } else {
                                         chooser_state.expanded_contracts.insert(contract_id.clone());
                                     }
                                 }
+
+                                header.response.context_menu(|ui| {
+                                    ui.set_min_width(150.0);
+                                    if ui.button("Copy (Hex)").clicked() {
+                                        if let Ok(bytes) = contract
+                                            .contract
+                                            .serialize_to_bytes_with_platform_version(
+                                                app_context.platform_version(),
+                                            )
+                                        {
+                                            ui.ctx().copy_text(hex::encode(&bytes));
+                                        }
+                                        ui.close();
+                                    }
+                                    if ui.button("Copy (JSON)").clicked() {
+                                        if let Ok(json_value) =
+                                            contract.contract.to_json(app_context.platform_version())
+                                            && let Ok(json_string) =
+                                                serde_json::to_string_pretty(&json_value)
+                                        {
+                                            ui.ctx().copy_text(json_string);
+                                        }
+                                        ui.close();
+                                    }
+                                });
 
                                 // Show contract content if expanded
                                 if is_expanded {
@@ -260,7 +224,7 @@ pub fn add_contract_chooser_panel(
                                                     .map(|s| s.contains(&doc_types_key))
                                                     .unwrap_or(false);
 
-                                                if render_collapsing_header(ui, "Document Types", doc_types_expanded, false, 1) {
+                                                if render_collapsing_header(ui, "Document Types", doc_types_expanded, false, 1).inner {
                                                     let sections = chooser_state.expanded_sections
                                                         .entry(contract_id.clone())
                                                         .or_default();
@@ -282,7 +246,7 @@ pub fn add_contract_chooser_panel(
                                                             .map(|s| s.contains(&doc_type_key))
                                                             .unwrap_or(false);
 
-                                                        if render_collapsing_header(ui, doc_name, doc_expanded, is_selected_doc_type, 2) {
+                                                        if render_collapsing_header(ui, doc_name, doc_expanded, is_selected_doc_type, 2).inner {
                                                             let doc_types = chooser_state.expanded_doc_types
                                                                 .entry(contract_id.clone())
                                                                 .or_default();
@@ -335,7 +299,7 @@ pub fn add_contract_chooser_panel(
                                                                             .unwrap_or(false);
 
                                                                         let index_label = format!("Index: {}", index_name);
-                                                                        if render_collapsing_header(ui, &index_label, index_expanded, is_selected_index, 3) {
+                                                                        if render_collapsing_header(ui, &index_label, index_expanded, is_selected_index, 3).inner {
                                                                             let indexes = chooser_state.expanded_indexes
                                                                                 .entry(contract_id.clone())
                                                                                 .or_default();
@@ -408,7 +372,7 @@ pub fn add_contract_chooser_panel(
                                                     .map(|s| s.contains(&tokens_key))
                                                     .unwrap_or(false);
 
-                                                if render_collapsing_header(ui, "Tokens", tokens_expanded, false, 1) {
+                                                if render_collapsing_header(ui, "Tokens", tokens_expanded, false, 1).inner {
                                                     let sections = chooser_state.expanded_sections
                                                         .entry(contract_id.clone())
                                                         .or_default();
@@ -428,7 +392,7 @@ pub fn add_contract_chooser_panel(
                                                                 .map(|s| s.contains(&token_key))
                                                                 .unwrap_or(false);
 
-                                                            if render_collapsing_header(ui, token_name.to_string(), token_expanded, false, 2) {
+                                                            if render_collapsing_header(ui, token_name.to_string(), token_expanded, false, 2).inner {
                                                                 let tokens = chooser_state.expanded_tokens
                                                                     .entry(contract_id.clone())
                                                                     .or_default();
@@ -470,7 +434,7 @@ pub fn add_contract_chooser_panel(
                                                 .map(|s| s.contains(&json_key))
                                                 .unwrap_or(false);
 
-                                            if render_collapsing_header(ui, "Contract JSON", json_expanded, false, 1) {
+                                            if render_collapsing_header(ui, "Contract JSON", json_expanded, false, 1).inner {
                                                 let sections = chooser_state.expanded_sections
                                                     .entry(contract_id.clone())
                                                     .or_default();
@@ -512,9 +476,6 @@ pub fn add_contract_chooser_panel(
                                             }
                                         });
 
-                                        // Check for right-click on the contract header
-                                        // TODO: Add right-click support to custom header if needed
-
                                         // Right‐aligned Remove button
                                         ui.horizontal(|ui| {
                                             ui.add_space(8.0);
@@ -542,68 +503,6 @@ pub fn add_contract_chooser_panel(
                     });
                 }); // Close the island frame
         });
-
-    // Show context menu if right-clicked
-    if chooser_state.show_context_menu
-        && let Some(ref contract_id_str) = chooser_state.right_click_contract_id
-    {
-        // Find the contract that was right-clicked
-        let contract_opt = contracts
-            .iter()
-            .find(|c| c.contract.id().to_string(Encoding::Base58) == *contract_id_str);
-
-        if let Some(contract) = contract_opt {
-            egui::Window::new("Contract Menu")
-                .id(egui::Id::new("contract_context_menu"))
-                .title_bar(false)
-                .resizable(false)
-                .collapsible(false)
-                .fixed_pos(chooser_state.context_menu_position)
-                .show(ctx, |ui| {
-                    ui.set_min_width(150.0);
-
-                    // Copy Hex option
-                    if ui.button("Copy (Hex)").clicked() {
-                        // Serialize contract to bytes
-                        if let Ok(bytes) =
-                            contract.contract.serialize_to_bytes_with_platform_version(
-                                app_context.platform_version(),
-                            )
-                        {
-                            let hex_string = hex::encode(&bytes);
-                            ui.ctx().copy_text(hex_string);
-                        }
-                        chooser_state.show_context_menu = false;
-                    }
-
-                    // Copy JSON option
-                    if ui.button("Copy (JSON)").clicked() {
-                        // Convert contract to JSON
-                        if let Ok(json_value) =
-                            contract.contract.to_json(app_context.platform_version())
-                            && let Ok(json_string) = serde_json::to_string_pretty(&json_value)
-                        {
-                            ui.ctx().copy_text(json_string);
-                        }
-                        chooser_state.show_context_menu = false;
-                    }
-                });
-
-            // Close menu if clicked elsewhere
-            if ctx.input(|i| i.pointer.any_click()) {
-                // Check if click was outside the menu
-                let menu_rect = egui::Rect::from_min_size(
-                    chooser_state.context_menu_position,
-                    egui::vec2(150.0, 70.0), // Approximate size
-                );
-                if let Some(pointer_pos) = ctx.pointer_interact_pos()
-                    && !menu_rect.contains(pointer_pos)
-                {
-                    chooser_state.show_context_menu = false;
-                }
-            }
-        }
-    }
 
     action
 }

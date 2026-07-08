@@ -1,104 +1,43 @@
+use crate::app::AppAction;
 use crate::context::AppContext;
 use crate::ui::RootScreenType;
-use crate::ui::theme::{DashColors, Shadow, Shape, Spacing, Typography};
+use crate::ui::components::subscreen_chooser_panel::{
+    SubscreenNavItem, add_subscreen_chooser_panel,
+};
 use crate::ui::tokens::tokens_screen::TokensSubscreen;
-use crate::{app::AppAction, ui};
-use egui::{Frame, Margin, Panel, RichText, Ui};
+use egui::Ui;
 
 pub fn add_tokens_subscreen_chooser_panel(ui: &mut Ui, app_context: &AppContext) -> AppAction {
-    let ctx = ui.ctx().clone();
-    let ctx = &ctx;
-    let mut action = AppAction::None;
-
-    let subscreens = vec![
-        TokensSubscreen::MyTokens,
-        TokensSubscreen::SearchTokens,
-        TokensSubscreen::TokenCreator,
-    ];
-
-    let active_screen = match app_context.get_app_settings().root_screen_type {
-        ui::RootScreenType::RootScreenMyTokenBalances => TokensSubscreen::MyTokens,
-        ui::RootScreenType::RootScreenTokenSearch => TokensSubscreen::SearchTokens,
-        ui::RootScreenType::RootScreenTokenCreator => TokensSubscreen::TokenCreator,
+    let active = match app_context.get_app_settings().root_screen_type {
+        RootScreenType::RootScreenMyTokenBalances => TokensSubscreen::MyTokens,
+        RootScreenType::RootScreenTokenSearch => TokensSubscreen::SearchTokens,
+        RootScreenType::RootScreenTokenCreator => TokensSubscreen::TokenCreator,
         _ => TokensSubscreen::MyTokens,
     };
 
-    let dark_mode = ctx.global_style().visuals.dark_mode;
-
-    Panel::left("tokens_subscreen_chooser_panel")
-        .resizable(false)
-        .default_size(270.0)
-        .frame(
-            Frame::new()
-                .fill(DashColors::background(dark_mode))
-                .inner_margin(Margin::symmetric(10, 10)),
+    let items = [
+        (
+            TokensSubscreen::MyTokens,
+            RootScreenType::RootScreenMyTokenBalances,
+        ),
+        (
+            TokensSubscreen::SearchTokens,
+            RootScreenType::RootScreenTokenSearch,
+        ),
+        (
+            TokensSubscreen::TokenCreator,
+            RootScreenType::RootScreenTokenCreator,
+        ),
+    ]
+    .into_iter()
+    .map(|(subscreen, target)| {
+        SubscreenNavItem::new(
+            subscreen.display_name(),
+            subscreen == active,
+            AppAction::SetMainScreenThenGoToMainScreen(target),
         )
-        .show(ui, |ui| {
-            let available_height = ui.available_height();
-            Frame::new()
-                .fill(DashColors::surface(dark_mode))
-                .stroke(egui::Stroke::new(1.0, DashColors::border_light(dark_mode)))
-                .inner_margin(Margin::same(Spacing::XL as i8))
-                .corner_radius(egui::CornerRadius::same(Shape::RADIUS_LG))
-                .shadow(Shadow::elevated())
-                .show(ui, |ui| {
-                    ui.set_min_height(available_height - 2.0 - (Spacing::XL * 2.0));
-                    // Display subscreen names
-                    ui.vertical(|ui| {
-                        ui.add_space(Spacing::SM);
+    })
+    .collect();
 
-                        for subscreen in subscreens {
-                            let is_active = active_screen == subscreen;
-
-                            let button = if is_active {
-                                egui::Button::new(
-                                    RichText::new(subscreen.display_name())
-                                        .color(DashColors::WHITE)
-                                        .size(Typography::SCALE_SM),
-                                )
-                                .fill(DashColors::DASH_BLUE)
-                                .stroke(egui::Stroke::NONE)
-                                .corner_radius(egui::CornerRadius::same(Shape::RADIUS_MD))
-                                .min_size(egui::Vec2::new(150.0, 28.0))
-                            } else {
-                                egui::Button::new(
-                                    RichText::new(subscreen.display_name())
-                                        .color(DashColors::text_primary(dark_mode))
-                                        .size(Typography::SCALE_SM),
-                                )
-                                .fill(DashColors::glass_white(dark_mode))
-                                .stroke(egui::Stroke::new(1.0, DashColors::border(dark_mode)))
-                                .corner_radius(egui::CornerRadius::same(Shape::RADIUS_MD))
-                                .min_size(egui::Vec2::new(150.0, 28.0))
-                            };
-
-                            // Show the subscreen name as a clickable option
-                            if ui.add(button).clicked() {
-                                // Handle navigation based on which subscreen is selected
-                                match subscreen {
-                                    TokensSubscreen::MyTokens => {
-                                        action = AppAction::SetMainScreenThenGoToMainScreen(
-                                            RootScreenType::RootScreenMyTokenBalances,
-                                        )
-                                    }
-                                    TokensSubscreen::SearchTokens => {
-                                        action = AppAction::SetMainScreenThenGoToMainScreen(
-                                            RootScreenType::RootScreenTokenSearch,
-                                        )
-                                    }
-                                    TokensSubscreen::TokenCreator => {
-                                        action = AppAction::SetMainScreenThenGoToMainScreen(
-                                            RootScreenType::RootScreenTokenCreator,
-                                        )
-                                    }
-                                }
-                            }
-
-                            ui.add_space(Spacing::SM);
-                        }
-                    });
-                });
-        });
-
-    action
+    add_subscreen_chooser_panel(ui, "tokens_subscreen_chooser_panel", false, false, items)
 }

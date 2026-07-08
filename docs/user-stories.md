@@ -1255,5 +1255,5 @@ As Jordan in Developer Mode, I have a single entry point to create many test ide
 
 As any persona, my payments, funding movements, and platform actions all live in one Activity tab with filters, not in separate screens.
 
-- Activity tab shell ships with filter chips and `ActivityRow` component for rendering timeline entries.
+- Activity tab shell ships with filter chips; a reusable row component for rendering timeline entries will be added once the aggregator lands.
 - Full aggregation across DashPay payments, funding, and platform ops depends on a backend aggregator; gated behind the `identity-hub-activity-feed` Cargo feature until implemented.

@@ -12,13 +12,10 @@
 //!   when the feature is on — the aggregator backend is deliberately out of
 //!   scope for T10 (additive-only; no new backend task).
 //!
-//! Retry plumbing for failed rows is wired through the reusable
-//! [`ActivityRow`](crate::ui::identity::activity_row::ActivityRow)
-//! component — the caller decides what a retry means. Because T10 renders no
-//! live rows, there is nothing to retry today; when the aggregator lands it
-//! will feed real rows into the same component and surface
-//! [`ActivityRowAction::Retry`](crate::ui::identity::activity_row::ActivityRowAction::Retry)
-//! through the unified [`AppAction`] channel.
+//! Retry plumbing for failed rows will be wired through a reusable row
+//! component once the aggregator backend exists — the caller will decide
+//! what a retry means. Because T10 renders no live rows, there is nothing to
+//! retry today.
 //!
 //! See `docs/ai-design/2026-04-23-identity-hub-impl/04-dev-plan.md` T10 and
 //! the test specs UT-ACTIVITY-ROW-01 / IT-ACTIVITY-01.

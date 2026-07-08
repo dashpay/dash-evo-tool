@@ -15,7 +15,6 @@ use crate::context::migration_status::{MigrationState, MigrationStep};
 use crate::database::Database;
 #[cfg(not(feature = "testing"))]
 use crate::logging::initialize_logger;
-use crate::model::feature_gate::FeatureGate;
 use crate::model::settings::AppSettings;
 use crate::model::wallet::WalletSeedHash;
 use crate::model::wallet::balance_consistency::{
@@ -683,7 +682,7 @@ impl AppState {
             let sender = task_result_sender.clone();
             let auto_start = boot_auto_start_spv && net == chosen_network;
             subtasks.spawn_sync("wallet-backend-eager-init", async move {
-                if auto_start && FeatureGate::SpvBackend.is_available(&app_ctx) {
+                if auto_start {
                     if let Err(e) = app_ctx.ensure_wallet_backend_and_start_spv(sender).await {
                         tracing::warn!(error = %e, "eager wallet-backend init + SPV auto-start failed; SDK proof verification will retry once the lazy backend-task fallback fires");
                     } else {
@@ -1062,8 +1061,7 @@ impl AppState {
         {
             let app_ctx = app_context.clone();
             let sender = self.task_result_sender.clone();
-            let auto_start = app_context.get_app_settings().auto_start_spv
-                && FeatureGate::SpvBackend.is_available(&app_context);
+            let auto_start = app_context.get_app_settings().auto_start_spv;
             self.subtasks
                 .spawn_sync("wallet-backend-eager-init", async move {
                     if auto_start {
@@ -1702,7 +1700,7 @@ impl AppState {
     fn try_auto_start_spv(&mut self) {
         let ctx = self.current_app_context().clone();
         let auto_start = ctx.get_app_settings().auto_start_spv;
-        if auto_start && FeatureGate::SpvBackend.is_available(&ctx) {
+        if auto_start {
             // Fresh user-initiated episode: arm the block and re-arm the escape,
             // mirroring AppAction::StartSpv.
             self.spv_block_armed = true;

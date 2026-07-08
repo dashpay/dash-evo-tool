@@ -91,7 +91,7 @@ pub use single_key::SingleKeyView;
 use snapshot::SnapshotStore;
 pub use snapshot::{DetUtxo, DetWalletBalance, WalletSnapshot};
 use token_balance::TokenBalanceStore;
-pub use token_balance::{TokenBalanceSnapshot, TokenBalanceView, UpstreamTokenBalances};
+pub use token_balance::{TokenBalanceSnapshot, UpstreamTokenBalances};
 pub use wallet_meta::WalletMetaView;
 pub use wallet_seed_store::WalletSeedView;
 

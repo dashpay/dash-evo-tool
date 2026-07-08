@@ -1,7 +1,7 @@
 //! Per-`(identity, token)` balance view (T6 seam), read live from upstream.
 //!
-//! [`TokenBalanceView`] is the doorway DET code uses to read the raw `u64`
-//! Platform token balance for an `(identity, token)` pair. Upstream's
+//! [`UpstreamTokenBalances`] is the doorway DET code uses to read the raw
+//! `u64` Platform token balance for an `(identity, token)` pair. Upstream's
 //! [`IdentitySyncManager`](platform_wallet::manager::identity_sync::IdentitySyncManager)
 //! owns the authoritative balances; DET no longer keeps a `det:token_balance`
 //! cache of its own.
@@ -29,8 +29,8 @@
 //! publish boundary (rust-best-practices M-DONT-LEAK-TYPES). No upstream
 //! manager type crosses the seam.
 //!
-//! [`get`]: TokenBalanceView::get
-//! [`list`]: TokenBalanceView::list
+//! [`get`]: UpstreamTokenBalances::get
+//! [`list`]: UpstreamTokenBalances::list
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -126,19 +126,9 @@ impl TokenBalanceStore {
     }
 }
 
-/// Read the raw per-`(identity, token)` token balance. Registry decoration
-/// (alias / config / order list) stays with the caller; this view owns only
-/// the balance slot.
-pub trait TokenBalanceView: Send + Sync {
-    /// Balance for one `(identity, token)` pair, or `None` when the identity
-    /// is not yet synced or the token has no synced balance.
-    fn get(&self, identity_id: &Identifier, token_id: &Identifier) -> Option<u64>;
-
-    /// Every `(identity, token, balance)` triple across synced identities.
-    fn list(&self) -> Vec<(Identifier, Identifier, u64)>;
-}
-
-/// ACTIVE impl: reads balances from the lock-free upstream-fed snapshot.
+/// Read the raw per-`(identity, token)` token balance from the lock-free
+/// upstream-fed snapshot. Registry decoration (alias / config / order list)
+/// stays with the caller; this view owns only the balance slot.
 pub struct UpstreamTokenBalances {
     snapshot: Arc<TokenBalanceSnapshot>,
 }
@@ -149,14 +139,15 @@ impl UpstreamTokenBalances {
             snapshot: store.load(),
         }
     }
-}
 
-impl TokenBalanceView for UpstreamTokenBalances {
-    fn get(&self, identity_id: &Identifier, token_id: &Identifier) -> Option<u64> {
+    /// Balance for one `(identity, token)` pair, or `None` when the identity
+    /// is not yet synced or the token has no synced balance.
+    pub fn get(&self, identity_id: &Identifier, token_id: &Identifier) -> Option<u64> {
         self.snapshot.get(identity_id, token_id)
     }
 
-    fn list(&self) -> Vec<(Identifier, Identifier, u64)> {
+    /// Every `(identity, token, balance)` triple across synced identities.
+    pub fn list(&self) -> Vec<(Identifier, Identifier, u64)> {
         self.snapshot.list()
     }
 }

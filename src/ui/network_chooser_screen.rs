@@ -5,7 +5,6 @@ use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::config::Config;
 use crate::context::AppContext;
 use crate::context::connection_status::{ConnectionStatus, OverallConnectionState};
-use crate::model::feature_gate::FeatureGate;
 use crate::model::spv_status::{SpvStatus, SpvStatusSnapshot};
 use crate::model::wallet::DerivationPathHelpers;
 use crate::ui::components::MessageBanner;
@@ -363,8 +362,7 @@ impl NetworkChooserScreen {
                 }
             });
 
-            if FeatureGate::SpvBackend.is_available(self.current_app_context())
-                && let Some(snap) = snapshot.as_ref()
+            if let Some(snap) = snapshot.as_ref()
                 && (snap.status == SpvStatus::Syncing || snap.status == SpvStatus::Starting)
             {
                 ui.add_space(10.0);

@@ -1,5 +1,6 @@
 use super::AppContext;
 use crate::backend_task::error::TaskError;
+use crate::model::dashpay::ContactStatus;
 use crate::model::spv_status::SpvStatus;
 use crate::model::wallet::birth_height::{WalletOrigin, registration_birth_height};
 use crate::model::wallet::meta::WalletMeta;
@@ -934,7 +935,7 @@ impl AppContext {
             }
             let owner = identity.identity.id();
             for contact in view.contacts(&owner).await {
-                if contact.contact_status != "accepted" {
+                if contact.contact_status != ContactStatus::Accepted {
                     continue;
                 }
                 if let Ok(contact_id) = Identifier::from_bytes(&contact.contact_identity_id) {

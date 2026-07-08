@@ -5,7 +5,7 @@ use crate::model::wallet::WalletSeedHash;
 use crate::ui::tokens::tokens_screen::{
     IdentityTokenBalance, IdentityTokenIdentifier, TokenInfo, TokenInfoWithDataContract,
 };
-use crate::wallet_backend::{DetKv, DetScope, TokenBalanceView, UpstreamTokenBalances};
+use crate::wallet_backend::{DetKv, DetScope, UpstreamTokenBalances};
 use bincode::config;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::data_contract::TokenConfiguration;

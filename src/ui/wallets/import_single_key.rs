@@ -20,7 +20,7 @@ use crate::backend_task::error::TaskError;
 use crate::model::single_key::validate_wif;
 use crate::model::wallet::passphrase::validate_single_key_passphrase;
 use crate::ui::components::password_input::PasswordInput;
-use crate::ui::theme::DashColors;
+use crate::ui::theme::{DashColors, network_label};
 
 /// Maximum alias length accepted by the dialog. Matches the legacy
 /// single-key alias limit so list rows stay readable.
@@ -348,15 +348,6 @@ impl ImportSingleKeyDialog {
                 );
             }
         }
-    }
-}
-
-fn network_label(network: Network) -> &'static str {
-    match network {
-        Network::Mainnet => "Mainnet",
-        Network::Testnet => "Testnet",
-        Network::Devnet => "Devnet",
-        Network::Regtest => "Regtest",
     }
 }
 

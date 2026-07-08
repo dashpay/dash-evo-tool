@@ -157,9 +157,6 @@ impl AppContext {
                     tracing::warn!(network = ?self.network, error = %e, "Chain lock query failed on active network");
                     Some(format!("RPC error: {e}"))
                 } else {
-                    // Successful chain lock fetch — clear any lingering RPC error
-                    // so the connection status recovers after a transient outage.
-                    self.connection_status.set_rpc_last_error(None);
                     None
                 };
 

@@ -19,18 +19,6 @@ pub struct AmountInputResponse {
     pub parsed_amount: Option<Amount>,
 }
 
-impl AmountInputResponse {
-    /// Returns whether the input is valid (no error message)
-    pub fn is_valid(&self) -> bool {
-        self.error_message.is_none()
-    }
-
-    /// Returns whether the input has changed
-    pub fn has_changed(&self) -> bool {
-        self.changed
-    }
-}
-
 impl ComponentResponse for AmountInputResponse {
     type DomainType = Amount;
     fn has_changed(&self) -> bool {

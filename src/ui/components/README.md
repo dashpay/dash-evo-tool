@@ -59,14 +59,10 @@ directory.
 
 | Component | Description |
 |-----------|-------------|
-| `StyledButton` | Primary/Secondary/Danger/Ghost variants, Small/Medium/Large |
+| `StyledButton` | Primary button following Dash design guidelines |
 | `StyledCard` | Card with padding and border |
 | `StyledCheckbox` | Themed checkbox |
-| `GradientButton` | Animated gradient with optional glow |
-| `GlassCard` | Glass-morphism card |
-| `HeroSection` | Large gradient header |
-| `AnimatedIcon` | Configurable animated icon |
-| `AnimatedGradientCard` | Card with animated gradient border |
+| `GradientButton` | Animated gradient button |
 
 ## Layout
 
@@ -75,7 +71,7 @@ directory.
 | `island_central_panel()` | `styled.rs` | Responsive central panel, renders global MessageBanners |
 | `add_location_view()` | `top_panel.rs` | Breadcrumb navigation + connection status |
 | `add_left_panel()` | `left_panel.rs` | Main icon navigation sidebar |
-| `add_left_panel()` | `left_wallet_panel.rs` | Wallet/identity sidebar |
+| `load_icon()` / `load_svg_icon()` | `icons.rs` | Load & cache embedded raster/SVG icons from `icons/` |
 | Subscreen panels | `*_subscreen_chooser_panel.rs` | Tab navigation for DPNS, DashPay, Tokens, Tools |
 | `ContractChooserState` | `contract_chooser_panel.rs` | Hierarchical contract tree view |
 

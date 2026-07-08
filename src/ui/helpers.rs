@@ -47,10 +47,6 @@ use egui::{Color32, ComboBox, Response, Ui};
 
 use super::tokens::tokens_screen::IdentityTokenInfo;
 
-/// Layout of labels and buttons in the UI fails to vertically align properly containers that contain buttons and other items (labels, text fields, etc.).
-/// This constant provides a constant padding to be used in such cases to ensure proper alignment.
-pub const BUTTON_ADJUSTMENT_PADDING_TOP: f32 = 15.0;
-
 /// Formats a key label for display in combo boxes and lists.
 /// Returns a string like "Key 0 | AUTHENTICATION | CRITICAL | ECDSA_SECP256K1"
 pub fn format_key_label(key: &IdentityPublicKey) -> String {
@@ -258,42 +254,6 @@ pub fn copy_text_to_clipboard(text: &str) -> Result<(), String> {
     clipboard
         .set_text(text.to_string())
         .map_err(|e| e.to_string())
-}
-
-/// Returns the newly selected key (if changed), otherwise the existing one.
-// Allow dead_code: This function provides UI for key selection within identities,
-// useful for identity-based operations and key management interfaces
-pub fn render_key_selector(
-    ui: &mut Ui,
-    selected_identity: &QualifiedIdentity,
-    selected_key: &Option<IdentityPublicKey>,
-) -> Option<IdentityPublicKey> {
-    let mut new_selected_key = selected_key.clone();
-
-    ui.horizontal(|ui| {
-        ui.label("Key:");
-        ComboBox::from_id_salt("key_selector")
-            .selected_text(
-                selected_key
-                    .as_ref()
-                    .map(|k| format!("Key {} Security {}", k.id(), k.security_level()))
-                    .unwrap_or_else(|| "Choose key…".into()),
-            )
-            .show_ui(ui, |cb| {
-                for key_ref in selected_identity.available_authentication_keys_non_master() {
-                    let key = &key_ref.identity_public_key;
-                    let label = format!("Key {} Security {}", key.id(), key.security_level());
-                    if cb
-                        .selectable_label(Some(key) == selected_key.as_ref(), label)
-                        .clicked()
-                    {
-                        new_selected_key = Some(key.clone());
-                    }
-                }
-            });
-    });
-
-    new_selected_key
 }
 
 /// Transaction types that require specific key filtering
@@ -1112,19 +1072,3 @@ pub fn show_group_token_success_screen_with_fee(
     });
     action
 }
-
-/// Check if a string looks like a Platform Bech32m address.
-///
-/// Delegates to [`is_platform_address_string`] which uses the canonical
-/// HRP constants and case-insensitive comparison.
-pub fn is_platform_address(s: &str) -> bool {
-    is_platform_address_string(s)
-}
-
-/// Human-readable hint for Platform address input fields.
-pub const PLATFORM_ADDRESS_HINT: &str =
-    "Enter a Platform address starting with \"dash1\" or \"tdash1\".";
-
-/// Example Platform address prefixes for error messages.
-pub const PLATFORM_ADDRESS_EXAMPLES: &str =
-    "Valid prefixes are \"dash1\" for mainnet and \"tdash1\" for testnet.";

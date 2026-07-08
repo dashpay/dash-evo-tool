@@ -107,7 +107,10 @@ fn to_object_id(scope: DetScope<'_>) -> ObjectId {
 /// Errors returned by the [`DetKv`] adapter.
 #[derive(Debug, thiserror::Error)]
 pub enum KvAdapterError {
-    /// The underlying key/value store rejected an operation.
+    /// The underlying key/value store rejected an operation. The store accepts
+    /// scoped writes whose parent object does not exist yet (an `AFTER DELETE`
+    /// trigger reaps the metadata if the object is later removed), so there is
+    /// no FK-violation variant to promote — every store error maps here.
     #[error("kv store error")]
     Store(#[source] KvError),
 
@@ -128,14 +131,6 @@ pub enum KvAdapterError {
     /// `bincode` failed to decode a stored value.
     #[error("kv value decode failed")]
     Decode(#[from] bincode::error::DecodeError),
-}
-
-/// Wrap an upstream [`KvError`] as a [`KvAdapterError::Store`]. The store
-/// accepts scoped writes whose parent object does not exist yet (an
-/// `AFTER DELETE` trigger reaps the metadata if the object is later
-/// removed), so there is no FK-violation variant to promote.
-fn map_kv_error(err: KvError) -> KvAdapterError {
-    KvAdapterError::Store(err)
 }
 
 /// Typed key/value adapter. Cheap to clone (`Arc<dyn KvStore>` inside).
@@ -166,7 +161,7 @@ impl DetKv {
         let raw = self
             .store
             .get(&to_object_id(scope), key)
-            .map_err(map_kv_error)?;
+            .map_err(KvAdapterError::Store)?;
         let Some(bytes) = raw else {
             return Ok(None);
         };
@@ -195,7 +190,7 @@ impl DetKv {
         buf.extend_from_slice(&body);
         self.store
             .put(&to_object_id(scope), key, &buf)
-            .map_err(map_kv_error)?;
+            .map_err(KvAdapterError::Store)?;
         Ok(())
     }
 
@@ -203,7 +198,7 @@ impl DetKv {
     pub fn delete(&self, scope: DetScope<'_>, key: &str) -> Result<(), KvAdapterError> {
         self.store
             .delete(&to_object_id(scope), key)
-            .map_err(map_kv_error)?;
+            .map_err(KvAdapterError::Store)?;
         Ok(())
     }
 
@@ -218,7 +213,7 @@ impl DetKv {
     ) -> Result<Vec<String>, KvAdapterError> {
         self.store
             .list_keys(&to_object_id(scope), prefix)
-            .map_err(map_kv_error)
+            .map_err(KvAdapterError::Store)
     }
 }
 

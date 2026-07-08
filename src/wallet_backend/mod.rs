@@ -2283,6 +2283,7 @@ impl WalletBackend {
         use dash_sdk::dpp::key_wallet::account::account_type::StandardAccountType;
         use dash_sdk::dpp::key_wallet::managed_account::managed_account_trait::ManagedAccountTrait;
         use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::coin_selection::SelectionStrategy;
+        use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::transaction_builder::BuilderError;
         use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::transaction_builder::TransactionBuilder;
         use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::wallet_info_interface::WalletInfoInterface;
 
@@ -2331,8 +2332,29 @@ impl WalletBackend {
                             managed_account.address_derivation_path(&addr)
                         })
                         .await
-                        .map_err(|source| TaskError::WalletPaymentBuildFailed {
-                            source: Box::new(source),
+                        .map_err(|source| {
+                            // Give balance-specific and input-count-specific
+                            // advice only for the failures that are actually
+                            // about balance or input count — every other
+                            // `BuilderError` variant falls back to the
+                            // generic `WalletPaymentBuildFailed` message
+                            // rather than misdirecting the user to "check
+                            // your balance" for e.g. a signing failure.
+                            match source {
+                                BuilderError::InsufficientFunds {
+                                    available,
+                                    required,
+                                } => TaskError::InsufficientFunds {
+                                    available,
+                                    required,
+                                },
+                                BuilderError::TooManyInputs { count, max } => {
+                                    TaskError::WalletPaymentTooManyInputs { count, max }
+                                }
+                                other => TaskError::WalletPaymentBuildFailed {
+                                    source: Box::new(other),
+                                },
+                            }
                         })?;
                     tx
                 };

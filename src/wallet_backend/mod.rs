@@ -341,8 +341,8 @@ impl WalletBackend {
             task_result_sender.clone(),
             Arc::clone(&snapshots),
             Arc::clone(&coordinator_gate),
-            // Phase E push writer: the shielded sync-completed callback writes
-            // per-wallet balances into AppContext's frame-safe snapshot.
+            // The shielded sync-completed callback writes per-wallet balances
+            // into AppContext's frame-safe snapshot.
             Arc::clone(&ctx.shielded_balances),
             // Platform-address push writer: the platform address sync-completed callback
             // writes per-wallet owned-only balances into AppContext's frame-safe snapshot.
@@ -357,9 +357,8 @@ impl WalletBackend {
         // Wire the upstream shielded coordinator into the manager.
         //
         // Uses a dedicated SQLite file (`platform-wallet-shielded.sqlite`) owned
-        // entirely by the upstream coordinator — it is the single source of
-        // truth for all Orchard state now that DET's home-grown subsystem was
-        // retired (Phase D). The coordinator starts empty — no wallets are bound
+        // entirely by the upstream coordinator — the single source of truth for
+        // all Orchard state. The coordinator starts empty — no wallets are bound
         // until `ensure_shielded_bound` runs (on wallet unlock). Subsequent
         // calls with the same path are idempotent (upstream no-ops).
         pwm.configure_shielded(spv_storage_dir.join("platform-wallet-shielded.sqlite"))

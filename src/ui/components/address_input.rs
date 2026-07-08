@@ -1202,7 +1202,7 @@ impl AddressInput {
                 self.autocomplete_open = false;
             }
 
-            // Handle autocomplete selection (FIX 7: clear cached_detection)
+            // Handle autocomplete selection (clear cached_detection).
             let selected_this_frame = selected_entry.is_some();
             if let Some(entry) = selected_entry {
                 self.input_text = entry.address_string.clone();
@@ -1240,10 +1240,10 @@ impl AddressInput {
                 }
             }
 
-            // Build response
-            // FIX 1: blur validation produces a result => signal changed
+            // Build response.
+            // Blur validation producing a result signals changed.
             let blur_validated = lost_focus && validated_address.is_some();
-            // FIX 2: use one-frame local flag for autocomplete selection
+            // One-frame local flag for autocomplete selection.
             let changed = text_changed || selected_this_frame || self.changed || blur_validated;
             if self.changed {
                 self.changed = false;
@@ -1902,7 +1902,7 @@ mod tests {
         assert_eq!(va.to_address_string(), "dash1z_test");
     }
 
-    // --- FIX 1: Blur validation propagation ---
+    // --- Blur validation propagation ---
 
     #[test]
     fn blur_triggers_validation_for_valid_core_address() {
@@ -1933,7 +1933,7 @@ mod tests {
         assert_eq!(val.unwrap().kind(), AddressKind::Core);
     }
 
-    // --- FIX 4: Mixed-case bech32m rejection ---
+    // --- Mixed-case bech32m rejection ---
 
     #[test]
     fn platform_mixed_case_rejected() {

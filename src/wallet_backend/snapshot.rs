@@ -92,8 +92,7 @@ pub struct WalletSnapshot {
     pub transactions: Vec<WalletTransaction>,
     pub utxos: Vec<DetUtxo>,
     /// UTXO-derived per-address balances, summed across this wallet's UTXOs.
-    /// Feeds the account-summary view that used to read
-    /// `Wallet.address_balances`.
+    /// Feeds the account-summary view.
     pub address_balances: BTreeMap<Address, u64>,
     /// The BIP-44 external (receive) addresses SPV actually watches, as strings.
     /// The Receive flow renders this set, so it can only ever show, copy, or QR
@@ -649,8 +648,7 @@ mod tests {
     /// off the event-bridge recompute. Publishing a watched set makes it the
     /// only set the read accessor returns, so the rendered list ⊆ watched set by
     /// construction (it shows nothing else). Pins the round-trip the UI relies
-    /// on; before this seam the list read the legacy map and could show unwatched
-    /// indices (30, 31, …) with Copy + QR.
+    /// on: the Receive list can never surface an unwatched index with Copy + QR.
     #[test]
     fn published_monitored_set_is_the_only_receive_list_source() {
         let store = SnapshotStore::new();

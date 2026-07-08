@@ -211,9 +211,9 @@ impl BannerHandle {
     /// (nested causes, variant names) that is more useful in a diagnostic
     /// details pane than the single-line `Display` output.
     ///
-    /// INTENTIONAL(RUST-003): When plain strings are passed, `{:?}` wraps them
-    /// in quotes. This is acceptable since `with_details` is primarily for
-    /// error types, not user-facing text.
+    /// When plain strings are passed, `{:?}` wraps them in quotes. This is
+    /// acceptable since `with_details` is primarily for error types, not
+    /// user-facing text.
     ///
     /// Returns `None` if the banner no longer exists.
     pub fn with_details(&self, details: impl fmt::Debug) -> Option<&Self> {

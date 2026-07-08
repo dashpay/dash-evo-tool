@@ -58,7 +58,7 @@ use dialogs::{
 enum AccountTab {
     /// Regular account category (BIP44, PlatformPayment)
     Category(AccountCategory, Option<u32>),
-    /// Shielded wallet view (replaces the old top-level Shielded tab)
+    /// Shielded wallet view.
     Shielded,
     /// Consolidated system tab (developer mode only) — shows all non-primary
     /// account categories as collapsible sections.
@@ -229,12 +229,11 @@ pub struct WalletsBalancesScreen {
     /// (rather than constructed fresh each frame) so the underlying tracing
     /// log fires once on mode entry instead of every repaint.
     pub(crate) sk_spv_warning_banner: crate::ui::components::MessageBanner,
-    /// J-6 "Import private key (advanced)" modal dialog. Routes single-key
-    /// imports through [`crate::wallet_backend::SingleKeyView::import_wif`]
-    /// instead of the legacy `single_key_wallets` DB path.
+    /// "Import private key (advanced)" modal dialog. Routes single-key imports
+    /// through [`crate::wallet_backend::SingleKeyView::import_wif`].
     import_single_key_dialog: ImportSingleKeyDialog,
-    /// T-SK-03 "Restore a protected imported key" modal dialog. Opened from
-    /// the post-migration restore banner; routes the legacy password through
+    /// "Restore a protected imported key" modal dialog. Opened from the
+    /// post-migration restore banner; routes the password through
     /// [`crate::backend_task::migration::single_key_restore::restore_protected_single_key`].
     restore_single_key_dialog: RestoreSingleKeyDialog,
     /// Protected single-key rows preserved by the migration that still need
@@ -1069,8 +1068,7 @@ impl WalletsBalancesScreen {
             .and_then(|w| w.read().ok().map(|g| g.seed_hash()))
     }
 
-    /// UTXO-derived per-address balances from the snapshot (P4a). Replaces
-    /// the dropped `Wallet.address_balances`.
+    /// UTXO-derived per-address balances from the snapshot.
     fn snapshot_address_balances(
         &self,
         seed_hash: &WalletSeedHash,
@@ -1094,8 +1092,7 @@ impl WalletsBalancesScreen {
             .unwrap_or_default()
     }
 
-    /// Full transaction history from the snapshot (P4a). Replaces the
-    /// dropped `Wallet.transactions`.
+    /// Full transaction history from the snapshot.
     fn snapshot_transactions(&self, seed_hash: &WalletSeedHash) -> Vec<WalletTransaction> {
         self.app_context
             .wallet_backend()
@@ -1620,9 +1617,8 @@ impl WalletsBalancesScreen {
         };
 
         // Transaction history comes from the display-only `WalletBackend`
-        // snapshot (P4a), not the legacy `Wallet.transactions`. Pre-first-sync
-        // there is no snapshot yet → render the "syncing" state rather than a
-        // misleading "no transactions" message.
+        // snapshot. Pre-first-sync there is no snapshot yet → render the
+        // "syncing" state rather than a misleading "no transactions" message.
         let backend_ready = self
             .app_context
             .wallet_backend()
@@ -1911,9 +1907,10 @@ impl WalletsBalancesScreen {
                 });
 
                 // -- Shielded balance --
-                // The upstream coordinator's 60-second sync loop keeps the
-                // push snapshot current; the detailed per-note / nullifier
-                // sync display returns with the Phase-F coordinator read path.
+                // The upstream coordinator's 60-second sync loop keeps the push
+                // snapshot current.
+                // TODO: restore the detailed per-note / nullifier sync display
+                // once the coordinator exposes a read path for it.
                 let shielded_seed_hash = self
                     .selected_wallet
                     .as_ref()
@@ -3256,9 +3253,8 @@ mod tests {
         );
     }
 
-    /// QA-002 companion: a funded `Other(Unknown)` address — the exact drift
-    /// class the deleted health check used to warn about — surfaces the
-    /// reconciling tab in default mode.
+    /// A funded `Other(Unknown)` address surfaces the reconciling tab in
+    /// default mode.
     #[test]
     fn default_mode_surfaces_other_tab_for_unknown_funded_address() {
         let summaries = vec![

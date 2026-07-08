@@ -172,8 +172,8 @@ impl<'a> SecretSeam<'a> {
     /// Idempotent delete of `(scope, label)`. A missing entry is `Ok(())`.
     /// Delete is metadata-free — there is no secret to (de)crypt.
     pub fn delete_secret(&self, scope: &SecretWalletId, label: &str) -> Result<(), TaskError> {
-        // `delete` now returns `Result<bool, _>` (true = existed, false = absent).
-        // DET callers treat delete as idempotent, so we discard the bool.
+        // `delete` returns `Result<bool, _>` (true = existed, false = absent);
+        // DET treats delete as idempotent, so the bool is discarded.
         self.secret_store
             .delete(scope, label)
             .map(|_| ())

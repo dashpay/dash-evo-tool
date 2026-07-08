@@ -18,7 +18,7 @@
 //! The legacy `envelope.v1` row — a bincode-encoded [`StoredSeedEnvelope`]
 //! whose ciphertext was DET's own AES-GCM envelope — is retained DECODE-ONLY as
 //! a migration reader ([`WalletSeedView::get`] /
-//! [`WalletSeedView::legacy_envelope_get`]). Every production write now goes
+//! [`WalletSeedView::legacy_envelope_get`]). Every production write goes
 //! through the raw/`set_protected` seam; a legacy envelope is rewritten to the
 //! raw label on the first load/unlock and then deleted.
 //!

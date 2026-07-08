@@ -924,7 +924,7 @@ impl AddNewIdentityScreen {
         wif_requests: &mut Vec<(u32, DerivationPath)>,
     ) {
         if let Some(wif) = revealed_wifs.get(&key_id) {
-            // INTENTIONAL(CODE-003): WIF displayed as plaintext label — user-initiated key view.
+            // WIF displayed as plaintext label — user-initiated key view.
             // Secret wrapper provides zeroize-on-drop for the Rust-side variable.
             ui.label(wif.expose_secret());
         } else if ui.button("Show WIF").clicked() {

@@ -843,7 +843,7 @@ impl ComponentStyles {
                 .clone()
                 .strong()
                 .color(Self::primary_button_text()),
-            // INTENTIONAL(CMT-010): LayoutJob/Galley variants not used by any callsite
+            // LayoutJob/Galley variants are not used by any callsite.
             other => RichText::new(other.text().to_string())
                 .strong()
                 .color(Self::primary_button_text()),
@@ -865,7 +865,7 @@ impl ComponentStyles {
                 .clone()
                 .strong()
                 .color(Self::secondary_button_text(dark_mode)),
-            // INTENTIONAL(CMT-010): LayoutJob/Galley variants not used by any callsite
+            // LayoutJob/Galley variants are not used by any callsite.
             other => RichText::new(other.text().to_string())
                 .strong()
                 .color(Self::secondary_button_text(dark_mode)),
@@ -887,7 +887,7 @@ impl ComponentStyles {
                 .clone()
                 .strong()
                 .color(Self::danger_button_text()),
-            // INTENTIONAL(CMT-010): LayoutJob/Galley variants not used by any callsite
+            // LayoutJob/Galley variants are not used by any callsite.
             other => RichText::new(other.text().to_string())
                 .strong()
                 .color(Self::danger_button_text()),
@@ -929,7 +929,7 @@ impl ComponentStyles {
                     .clone()
                     .strong()
                     .color(Self::button_disabled_text(dark_mode)),
-                // INTENTIONAL(CMT-010): LayoutJob/Galley variants not used by any callsite
+                // LayoutJob/Galley variants are not used by any callsite.
                 other => RichText::new(other.text().to_string())
                     .strong()
                     .color(Self::button_disabled_text(dark_mode)),
@@ -985,7 +985,7 @@ impl ComponentStyles {
     pub fn toolbar_button(label: impl Into<WidgetText>, fill: egui::Color32) -> Button<'static> {
         let text = match label.into() {
             WidgetText::RichText(rt) => rt.as_ref().clone().color(DashColors::WHITE),
-            // INTENTIONAL(CMT-010): LayoutJob/Galley variants not used by any callsite
+            // LayoutJob/Galley variants are not used by any callsite.
             other => RichText::new(other.text().to_string()).color(DashColors::WHITE),
         };
         Button::new(text)

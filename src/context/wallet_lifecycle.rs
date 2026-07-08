@@ -27,12 +27,6 @@ use std::sync::{Arc, RwLock};
 /// window so the common identity-load path serves entirely from cache.
 const AUTH_PUBKEY_WARM_KEY_COUNT: u32 = 12;
 
-// The interim "protection removed" disclosure notices (HD wallet + imported
-// key) and their shared at-rest detail copy were retired with the Tier-2
-// adoption: lazy migration now RE-WRAPS protected secrets under the same
-// password (it never downgrades them to a password-free at-rest form), so there
-// is nothing to disclose.
-
 /// The upstream `dash-spv` `DiskStorageManager` chain-cache entries under the
 /// per-network SPV directory. Each is a subfolder except `peers.dat`. The
 /// wallet/shielded SQLite sidecars in the same directory are deliberately
@@ -377,17 +371,12 @@ impl AppContext {
         // alive, and re-arms the start latch + coordinator gate so the next
         // same-network Connect restarts on the SAME instance (the reconnect
         // reuses it via `ensure_wallet_backend`'s populated-slot fast path).
-        // Because the persister DB is never closed/reopened, the reconnect
-        // cannot hit `WalletStorageError::AlreadyOpen` — by construction, so no
-        // release barrier is needed. (A network SWITCH is a different path: it
-        // uses a per-network context with a different persister and is
-        // unaffected by this.)
+        // See this method's doc comment for why the reconnect cannot hit
+        // `WalletStorageError::AlreadyOpen`.
         //
         // Restart-in-place runtime safety: all three upstream coordinators clear
-        // their cancel slot under a `background_generation` guard in the pinned
-        // platform rev (`platform_address_sync` gained it in b4506492, matching
-        // `identity_sync`/`shielded_sync`), so a rapid reconnect cannot leak an
-        // uncancellable / duplicate sync loop (Q3).
+        // their cancel slot under a `background_generation` guard, so a rapid
+        // reconnect cannot leak an uncancellable / duplicate sync loop.
         //
         // TODO(dash-spv#824): restart-in-place fully recreates the upstream DashSpvClient
         // in SpvRuntime::run(), opening a reinit window. A block arriving at tip during
@@ -808,7 +797,7 @@ impl AppContext {
                     // can find them. Seed-free, idempotent; runs after the wallet
                     // is upstream-registered. Best-effort — retried next boot/unlock.
                     self.reconcile_managed_identities(&backend, &seed_hash).await;
-                    // Phase C-bind: lazily bind Orchard ZIP-32 keys for this wallet.
+                    // Lazily bind Orchard ZIP-32 keys for this wallet.
                     // Best-effort — a failure only defers the first shielded op prompt.
                     // The upstream ShieldedSyncManager 60s loop picks up any newly
                     // bound wallets automatically; no manual sync trigger needed.
@@ -2534,11 +2523,9 @@ mod tests {
         );
     }
 
-    /// F17/F20 — removing a wallet wipes its secret-bearing state: the
-    /// encrypted seed-envelope vault entry. Before the fix, `remove_wallet`
-    /// only touched SQLite + the in-memory map, leaving the encrypted seed on
-    /// disk. (DET's plaintext shielded sidecar was retired in Phase D; Orchard
-    /// state now lives in the upstream coordinator, detached on removal.)
+    /// Removing a wallet wipes its secret-bearing state: the encrypted
+    /// seed-envelope vault entry. Orchard state lives in the upstream
+    /// coordinator and is detached on removal.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn remove_wallet_wipes_seed_envelope() {
         let (ctx, sender, _tmp) = offline_testnet_context();

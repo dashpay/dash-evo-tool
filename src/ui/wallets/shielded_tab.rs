@@ -171,12 +171,11 @@ impl ShieldedTabView {
     /// Sync local display state from the push balance snapshot and the
     /// upstream coordinator.
     ///
-    /// Phase D: the upstream `platform-wallet` coordinator owns all Orchard
-    /// state (keys, sync progress, note tree). Balance is read from the
-    /// frame-safe push snapshot; `is_initialized` / `tree_synced` are set
-    /// true whenever the wallet backend is wired so spend buttons are
-    /// enabled. Phase E will wire a push notification for fine-grained
-    /// sync progress.
+    /// The upstream `platform-wallet` coordinator owns all Orchard state (keys,
+    /// sync progress, note tree). Balance is read from the frame-safe push
+    /// snapshot; `is_initialized` / `tree_synced` are set true whenever the
+    /// wallet backend is wired so spend buttons are enabled. Fine-grained sync
+    /// progress arrives through the push-based [`ConnectionStatus`].
     fn refresh_from_backend_state(&mut self) {
         // Balance: use the frame-safe push snapshot (no lock in frame loop).
         self.shielded_balance = self.app_context.shielded_balance_credits(&self.seed_hash);
@@ -205,11 +204,11 @@ impl ShieldedTabView {
         .default_open(dev_mode);
 
         header.show(ui, |ui| {
-            // Phase D: shielded addresses are now derived by the upstream
-            // platform-wallet coordinator. The default address is available
-            // via the async WalletBackend::shielded_default_address API;
-            // a synchronous display path will be wired in Phase E via the
-            // push snapshot.
+            // Shielded addresses are derived by the upstream platform-wallet
+            // coordinator; the default address is available via the async
+            // WalletBackend::shielded_default_address API.
+            // TODO: render the default address here once a synchronous read is
+            // exposed through the push snapshot.
             ui.label(
                 RichText::new("Shielded address available after wallet unlock and sync.")
                     .color(DashColors::text_secondary(dark_mode)),
@@ -218,10 +217,7 @@ impl ShieldedTabView {
     }
 
     /// Handle backend task results for shielded operations.
-    ///
-    /// Phase D: variants for the retired DET-owned subsystem
-    /// (`ShieldedInitialized`, `ShieldedNotesSynced`, `ShieldedNullifiersChecked`)
-    /// have been removed. Only fund-moving results remain.
+    /// Fund-moving results only.
     pub fn handle_result(
         &mut self,
         result: &crate::backend_task::BackendTaskSuccessResult,
@@ -289,7 +285,7 @@ impl ShieldedTabView {
     // The redesign should move buttons to the top and use collapsible sections.
 
     /// Render in-flight shielded sync progress, read from the push-based
-    /// [`ConnectionStatus`] (Phase E). Shows the downloaded-notes counter and
+    /// [`ConnectionStatus`]. Shows the downloaded-notes counter and
     /// the committed-to-tree ("checked") progress — a determinate bar when the
     /// on-chain leaf total is known, a spinner otherwise. Renders nothing
     /// between passes (both progress fields `None`).
@@ -532,7 +528,7 @@ impl ShieldedTabView {
 
         ui.add_space(10.0);
 
-        // In-flight shielded sync progress (push-based; Phase E).
+        // In-flight shielded sync progress (push-based).
         self.render_sync_progress(ui, dark_mode);
 
         // Shielded Addresses (collapsible table)
@@ -623,7 +619,7 @@ impl ShieldedTabView {
 
         ui.add_space(15.0);
 
-        // Shielded Notes (Phase D: notes are now owned by the upstream coordinator)
+        // Shielded Notes (owned by the upstream coordinator).
         let notes_header = egui::CollapsingHeader::new(
             RichText::new("Shielded Notes")
                 .size(16.0)

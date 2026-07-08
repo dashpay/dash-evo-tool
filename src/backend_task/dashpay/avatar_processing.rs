@@ -1,8 +1,42 @@
+use crate::context::AppContext;
 use image::{DynamicImage, GenericImageView};
 use sha2::{Digest, Sha256};
+use std::sync::Arc;
 
 /// Maximum allowed size for avatar images (5MB)
 const MAX_IMAGE_SIZE: usize = 5 * 1024 * 1024;
+
+/// Resolve an avatar's image bytes for `url`, serving the DET avatar disk cache
+/// on a hit and fetching + populating it on a miss. The single avatar fetch
+/// path for every DashPay screen (contacts list, profile, contact viewer).
+///
+/// Returns `None` when the URL cannot be fetched or fails validation — the
+/// caller renders the fallback avatar rather than surfacing an error banner, so
+/// one broken avatar URL never disrupts the screen.
+pub async fn fetch_avatar_cached(app_context: &Arc<AppContext>, url: &str) -> Option<Vec<u8>> {
+    // Cache hit: return the stored bytes without a network round-trip.
+    if let Ok(backend) = app_context.wallet_backend()
+        && let Some(cached) = backend.avatar_cache().get(url)
+    {
+        return Some(cached.bytes);
+    }
+
+    // Cache miss: fetch once, then populate the cache for the next view.
+    match fetch_image_bytes(url).await {
+        Ok(bytes) => {
+            if let Ok(backend) = app_context.wallet_backend()
+                && let Err(e) = backend.avatar_cache().put(url, bytes.clone())
+            {
+                tracing::debug!(error = ?e, "Failed to cache avatar; will re-fetch next view");
+            }
+            Some(bytes)
+        }
+        Err(e) => {
+            tracing::warn!("Failed to fetch avatar image {url}: {e}");
+            None
+        }
+    }
+}
 
 /// Calculate SHA-256 hash of image bytes
 pub fn calculate_avatar_hash(image_bytes: &[u8]) -> [u8; 32] {

@@ -15,7 +15,6 @@ use crate::ui::contracts_documents::document_action_screen::{
 };
 use crate::ui::dashpay::add_contact_screen::AddContactScreen;
 use crate::ui::dashpay::contact_details::ContactDetailsScreen;
-use crate::ui::dashpay::contact_info_editor::ContactInfoEditorScreen;
 use crate::ui::dashpay::contact_profile_viewer::ContactProfileViewerScreen;
 use crate::ui::dashpay::profile_search::ProfileSearchScreen;
 use crate::ui::dashpay::qr_code_generator::QRCodeGeneratorScreen;
@@ -343,7 +342,6 @@ pub enum ScreenType {
     DashPayContactDetails(QualifiedIdentity, Identifier),
     DashPayContactProfileViewer(QualifiedIdentity, Identifier),
     DashPaySendPayment(QualifiedIdentity, Identifier),
-    DashPayContactInfoEditor(QualifiedIdentity, Identifier),
     DashPayQRGenerator,
     DashPayProfileSearch,
 }
@@ -442,10 +440,6 @@ impl PartialEq for ScreenType {
             (ScreenType::DashPaySendPayment(a1, a2), ScreenType::DashPaySendPayment(b1, b2)) => {
                 a1 == b1 && a2 == b2
             }
-            (
-                ScreenType::DashPayContactInfoEditor(a1, a2),
-                ScreenType::DashPayContactInfoEditor(b1, b2),
-            ) => a1 == b1 && a2 == b2,
             (ScreenType::DashPayQRGenerator, ScreenType::DashPayQRGenerator) => true,
             (ScreenType::DashPayProfileSearch, ScreenType::DashPayProfileSearch) => true,
             // Shielded screens
@@ -697,13 +691,6 @@ impl ScreenType {
                     *contact_id,
                 ))
             }
-            ScreenType::DashPayContactInfoEditor(identity, contact_id) => {
-                Screen::DashPayContactInfoEditorScreen(ContactInfoEditorScreen::new(
-                    app_context.clone(),
-                    identity.clone(),
-                    *contact_id,
-                ))
-            }
             ScreenType::DashPayQRGenerator => {
                 Screen::DashPayQRGeneratorScreen(QRCodeGeneratorScreen::new(app_context.clone()))
             }
@@ -787,7 +774,6 @@ pub enum Screen {
     DashPayContactDetailsScreen(ContactDetailsScreen),
     DashPayContactProfileViewerScreen(ContactProfileViewerScreen),
     DashPaySendPaymentScreen(SendPaymentScreen),
-    DashPayContactInfoEditorScreen(ContactInfoEditorScreen),
     DashPayQRGeneratorScreen(QRCodeGeneratorScreen),
     DashPayProfileSearchScreen(ProfileSearchScreen),
 
@@ -947,7 +933,6 @@ impl Screen {
             DashPayContactDetailsScreen,
             DashPayContactProfileViewerScreen,
             DashPaySendPaymentScreen,
-            DashPayContactInfoEditorScreen,
             DashPayQRGeneratorScreen,
             DashPayProfileSearchScreen;
             skip:
@@ -1176,9 +1161,6 @@ impl Screen {
             Screen::DashPaySendPaymentScreen(screen) => {
                 ScreenType::DashPaySendPayment(screen.from_identity.clone(), screen.to_contact_id)
             }
-            Screen::DashPayContactInfoEditorScreen(screen) => {
-                ScreenType::DashPayContactInfoEditor(screen.identity.clone(), screen.contact_id)
-            }
             Screen::DashPayQRGeneratorScreen(_) => ScreenType::DashPayQRGenerator,
             Screen::DashPayProfileSearchScreen(_) => ScreenType::DashPayProfileSearch,
             // Shielded screens
@@ -1249,7 +1231,6 @@ impl ScreenLike for Screen {
             Screen::DashPayContactDetailsScreen(screen) => screen.refresh(),
             Screen::DashPayContactProfileViewerScreen(screen) => screen.refresh(),
             Screen::DashPaySendPaymentScreen(screen) => screen.refresh(),
-            Screen::DashPayContactInfoEditorScreen(screen) => screen.refresh(),
             Screen::DashPayQRGeneratorScreen(_) => {}
             Screen::DashPayProfileSearchScreen(screen) => screen.refresh(),
             // Shielded screens
@@ -1318,7 +1299,6 @@ impl ScreenLike for Screen {
             Screen::DashPayContactDetailsScreen(screen) => screen.refresh_on_arrival(),
             Screen::DashPayContactProfileViewerScreen(screen) => screen.refresh_on_arrival(),
             Screen::DashPaySendPaymentScreen(screen) => screen.refresh_on_arrival(),
-            Screen::DashPayContactInfoEditorScreen(screen) => screen.refresh_on_arrival(),
             Screen::DashPayQRGeneratorScreen(_) => {}
             Screen::DashPayProfileSearchScreen(screen) => screen.refresh_on_arrival(),
             // Shielded screens
@@ -1387,7 +1367,6 @@ impl ScreenLike for Screen {
             Screen::DashPayContactDetailsScreen(screen) => screen.ui(ui),
             Screen::DashPayContactProfileViewerScreen(screen) => screen.ui(ui),
             Screen::DashPaySendPaymentScreen(screen) => screen.ui(ui),
-            Screen::DashPayContactInfoEditorScreen(screen) => screen.ui(ui),
             Screen::DashPayQRGeneratorScreen(screen) => screen.ui(ui),
             Screen::DashPayProfileSearchScreen(screen) => screen.ui(ui),
             // Shielded screens
@@ -1480,9 +1459,6 @@ impl ScreenLike for Screen {
                 screen.display_message(message, message_type)
             }
             Screen::DashPaySendPaymentScreen(screen) => {
-                screen.display_message(message, message_type)
-            }
-            Screen::DashPayContactInfoEditorScreen(screen) => {
                 screen.display_message(message, message_type)
             }
             Screen::DashPayQRGeneratorScreen(screen) => {
@@ -1651,9 +1627,6 @@ impl ScreenLike for Screen {
             Screen::DashPaySendPaymentScreen(screen) => {
                 screen.display_task_result(backend_task_success_result)
             }
-            Screen::DashPayContactInfoEditorScreen(screen) => {
-                screen.display_task_result(backend_task_success_result)
-            }
             Screen::DashPayQRGeneratorScreen(screen) => {
                 screen.display_task_result(backend_task_success_result)
             }
@@ -1732,7 +1705,6 @@ impl ScreenLike for Screen {
             Screen::DashPayContactDetailsScreen(screen) => screen.display_task_error(error),
             Screen::DashPayContactProfileViewerScreen(screen) => screen.display_task_error(error),
             Screen::DashPaySendPaymentScreen(screen) => screen.display_task_error(error),
-            Screen::DashPayContactInfoEditorScreen(screen) => screen.display_task_error(error),
             Screen::DashPayQRGeneratorScreen(screen) => screen.display_task_error(error),
             Screen::DashPayProfileSearchScreen(screen) => screen.display_task_error(error),
 
@@ -1802,7 +1774,6 @@ impl ScreenLike for Screen {
             Screen::DashPayContactDetailsScreen(_) => {}
             Screen::DashPayContactProfileViewerScreen(_) => {}
             Screen::DashPaySendPaymentScreen(_) => {}
-            Screen::DashPayContactInfoEditorScreen(_) => {}
             Screen::DashPayQRGeneratorScreen(_) => {}
             Screen::DashPayProfileSearchScreen(_) => {}
             // Shielded screens

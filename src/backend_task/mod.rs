@@ -243,6 +243,13 @@ pub enum BackendTaskSuccessResult {
     DashPayContactAlreadyEstablished(Identifier), // Contact ID that already exists
     DashPayContactInfoUpdated(Identifier), // Contact ID whose info was updated
     DashPayPaymentSent(String, String, u64), // (recipient, address, amount in duffs)
+    /// Result of a [`FetchAvatar`](crate::backend_task::dashpay::DashPayTask::FetchAvatar):
+    /// the validated image bytes for `url`, or `None` when the fetch failed. Routed
+    /// into the screen's avatar fetch cache keyed by `url`.
+    DashPayAvatar {
+        url: String,
+        bytes: Option<Vec<u8>>,
+    },
     /// Received outputs the `EventBridge` saw on a freshly-detected wallet
     /// transaction. The app dispatches `DetectIncomingContactPayments` for
     /// these — the backend resolves each against the per-identity DashPay

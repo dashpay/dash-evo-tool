@@ -202,6 +202,91 @@ pub struct ContactPrivateInfo {
     pub is_hidden: bool,
 }
 
+/// Maximum `displayName` length in Unicode characters (DIP-0015). Empty is legal.
+pub const MAX_DISPLAY_NAME_CHARS: usize = 25;
+/// Maximum `publicMessage` (bio) length in Unicode characters (DIP-0015).
+pub const MAX_BIO_CHARS: usize = 140;
+/// Maximum `avatarUrl` length in Unicode characters (DIP-0015).
+pub const MAX_AVATAR_URL_CHARS: usize = 2048;
+
+/// A single DashPay profile field violation, returned by [`validate_profile_fields`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProfileFieldError {
+    /// Display name exceeds [`MAX_DISPLAY_NAME_CHARS`].
+    DisplayNameTooLong { len: usize, max: usize },
+    /// Bio exceeds [`MAX_BIO_CHARS`].
+    BioTooLong { len: usize, max: usize },
+    /// Avatar URL exceeds [`MAX_AVATAR_URL_CHARS`].
+    AvatarUrlTooLong { len: usize, max: usize },
+    /// Avatar URL is set but does not start with `http://` or `https://`.
+    AvatarUrlInvalidScheme,
+}
+
+impl ProfileFieldError {
+    /// User-facing, i18n-ready message describing the violation.
+    pub fn message(&self) -> String {
+        match self {
+            ProfileFieldError::DisplayNameTooLong { len, max } => {
+                format!("Display name is {len} characters, but the maximum is {max}.")
+            }
+            ProfileFieldError::BioTooLong { len, max } => {
+                format!("Bio is {len} characters, but the maximum is {max}.")
+            }
+            ProfileFieldError::AvatarUrlTooLong { len, max } => {
+                format!("Avatar URL is {len} characters, but the maximum is {max}.")
+            }
+            ProfileFieldError::AvatarUrlInvalidScheme => {
+                "Avatar URL must start with http:// or https://.".to_string()
+            }
+        }
+    }
+}
+
+/// Validate DashPay profile fields per DIP-0015, the single source of truth for
+/// both the profile editors and the backend enforcement layer.
+///
+/// Lengths are measured in Unicode characters (`chars().count()`), matching the
+/// protocol. Every field may be empty — an unset display name, bio, or avatar is
+/// valid. The avatar URL is trimmed before its scheme and length are checked.
+/// Returns every violation found (empty when the input is valid).
+pub fn validate_profile_fields(
+    display_name: &str,
+    bio: &str,
+    avatar_url: &str,
+) -> Vec<ProfileFieldError> {
+    let mut errors = Vec::new();
+
+    let name_len = display_name.chars().count();
+    if name_len > MAX_DISPLAY_NAME_CHARS {
+        errors.push(ProfileFieldError::DisplayNameTooLong {
+            len: name_len,
+            max: MAX_DISPLAY_NAME_CHARS,
+        });
+    }
+
+    let bio_len = bio.chars().count();
+    if bio_len > MAX_BIO_CHARS {
+        errors.push(ProfileFieldError::BioTooLong {
+            len: bio_len,
+            max: MAX_BIO_CHARS,
+        });
+    }
+
+    let url = avatar_url.trim();
+    let url_len = url.chars().count();
+    if url_len > MAX_AVATAR_URL_CHARS {
+        errors.push(ProfileFieldError::AvatarUrlTooLong {
+            len: url_len,
+            max: MAX_AVATAR_URL_CHARS,
+        });
+    }
+    if !url.is_empty() && !url.starts_with("http://") && !url.starts_with("https://") {
+        errors.push(ProfileFieldError::AvatarUrlInvalidScheme);
+    }
+
+    errors
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -233,5 +318,79 @@ mod tests {
         // whole string is the txid (txids themselves never contain a colon).
         assert_eq!(payment_txid_from_storage_key("tx:abc"), "tx:abc");
         assert_eq!(payment_txid_from_storage_key("tx:"), "tx:");
+    }
+
+    #[test]
+    fn valid_profile_fields_report_no_errors() {
+        assert!(
+            validate_profile_fields("Alex", "A short bio.", "https://example.com/a.png").is_empty()
+        );
+    }
+
+    #[test]
+    fn empty_profile_fields_are_legal() {
+        // Every field is optional per DIP-0015 — an empty display name, bio, and
+        // avatar URL together are a valid (blank) profile.
+        assert!(validate_profile_fields("", "", "").is_empty());
+    }
+
+    #[test]
+    fn display_name_over_limit_is_rejected() {
+        let name = "a".repeat(MAX_DISPLAY_NAME_CHARS + 1);
+        let errors = validate_profile_fields(&name, "", "");
+        assert_eq!(
+            errors,
+            vec![ProfileFieldError::DisplayNameTooLong {
+                len: MAX_DISPLAY_NAME_CHARS + 1,
+                max: MAX_DISPLAY_NAME_CHARS,
+            }]
+        );
+    }
+
+    #[test]
+    fn length_is_measured_in_characters_not_bytes() {
+        // 25 multi-byte characters are within the 25-character limit even though
+        // the byte length far exceeds it — the check must use character count.
+        let name: String = "é".repeat(MAX_DISPLAY_NAME_CHARS);
+        assert!(
+            name.len() > MAX_DISPLAY_NAME_CHARS,
+            "precondition: bytes exceed chars"
+        );
+        assert!(validate_profile_fields(&name, "", "").is_empty());
+    }
+
+    #[test]
+    fn bio_over_limit_is_rejected() {
+        let bio = "b".repeat(MAX_BIO_CHARS + 1);
+        assert_eq!(
+            validate_profile_fields("", &bio, ""),
+            vec![ProfileFieldError::BioTooLong {
+                len: MAX_BIO_CHARS + 1,
+                max: MAX_BIO_CHARS,
+            }]
+        );
+    }
+
+    #[test]
+    fn avatar_url_over_limit_is_rejected() {
+        let url = format!("https://example.com/{}", "x".repeat(MAX_AVATAR_URL_CHARS));
+        let errors = validate_profile_fields("", "", &url);
+        assert!(errors.contains(&ProfileFieldError::AvatarUrlTooLong {
+            len: url.chars().count(),
+            max: MAX_AVATAR_URL_CHARS,
+        }));
+    }
+
+    #[test]
+    fn avatar_url_without_http_scheme_is_rejected() {
+        assert_eq!(
+            validate_profile_fields("", "", "ftp://example.com/a.png"),
+            vec![ProfileFieldError::AvatarUrlInvalidScheme]
+        );
+    }
+
+    #[test]
+    fn avatar_url_scheme_check_ignores_surrounding_whitespace() {
+        assert!(validate_profile_fields("", "", "  https://example.com/a.png  ").is_empty());
     }
 }

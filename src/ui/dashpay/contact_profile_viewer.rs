@@ -5,21 +5,21 @@ use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::feature_gate::FeatureGate;
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::ui::components::avatar::Avatar;
 use crate::ui::components::dashpay_subscreen_chooser_panel::add_dashpay_subscreen_chooser_panel;
 use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::dashpay::DashPaySubscreen;
+use crate::ui::dashpay::{DashPaySubscreen, persist_contact_private_info};
+use crate::ui::state::AvatarCache;
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike, ScreenType};
 
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::platform::Identifier;
-use egui::{ColorImage, RichText, ScrollArea, TextureHandle, Ui};
-use std::collections::HashMap;
+use egui::{RichText, ScrollArea, Ui};
 use std::sync::Arc;
-use tracing::error;
 
 const PUBLIC_PROFILE_INFO_TEXT: &str = "About Public Profiles:\n\n\
     This is the contact's public DashPay profile.\n\n\
@@ -75,8 +75,7 @@ pub struct ContactProfileViewerScreen {
     notes: String,
     is_hidden: bool,
     editing_private_info: bool,
-    avatar_textures: HashMap<String, TextureHandle>,
-    avatar_loading: bool,
+    avatar_cache: AvatarCache,
     show_info_popup: Option<(&'static str, &'static str)>,
 }
 
@@ -104,8 +103,7 @@ impl ContactProfileViewerScreen {
             notes,
             is_hidden,
             editing_private_info: false,
-            avatar_textures: HashMap::new(),
-            avatar_loading: false,
+            avatar_cache: AvatarCache::new(),
             show_info_popup: None,
         }
     }
@@ -140,75 +138,17 @@ impl ContactProfileViewerScreen {
     }
 
     fn save_private_info(&mut self) -> Result<(), TaskError> {
-        let owner_id = self.identity.identity.id();
-        // Persist the memo to the per-network k/v sidecar. Upstream owns
-        // the encrypted on-Platform copy; this is the DET-local plaintext
-        // overlay that powers the contact list and profile viewer.
-        let backend = self.app_context.wallet_backend()?;
-        let info = crate::model::dashpay::ContactPrivateInfo {
-            nickname: self.nickname.clone(),
-            notes: self.notes.clone(),
-            is_hidden: self.is_hidden,
-        };
-        backend.dashpay_set_private_info(&owner_id, &self.contact_id, &info)?;
-        Ok(())
-    }
-
-    fn load_avatar_texture(&mut self, ctx: &egui::Context, url: &str) {
-        let _texture_id = format!("contact_avatar_{}", url);
-        let ctx_clone = ctx.clone();
-        let url_clone = url.to_string();
-
-        // Spawn async task to fetch and load the image
-        tokio::spawn(async move {
-            match crate::backend_task::dashpay::avatar_processing::fetch_image_bytes(&url_clone)
-                .await
-            {
-                Ok(image_bytes) => {
-                    // Try to load the image
-                    if let Ok(image) = image::load_from_memory(&image_bytes) {
-                        // Convert to RGBA
-                        let rgba_image = image.to_rgba8();
-                        let width = rgba_image.width();
-                        let height = rgba_image.height();
-
-                        // Center-crop to square if not already square
-                        let cropped_image = if width != height {
-                            let size = width.min(height);
-                            let x_offset = (width - size) / 2;
-                            let y_offset = (height - size) / 2;
-                            image::imageops::crop_imm(&rgba_image, x_offset, y_offset, size, size)
-                                .to_image()
-                        } else {
-                            rgba_image
-                        };
-
-                        let size = [
-                            cropped_image.width() as usize,
-                            cropped_image.height() as usize,
-                        ];
-                        let pixels = cropped_image.into_raw();
-
-                        // Create ColorImage
-                        let color_image = ColorImage::from_rgba_unmultiplied(size, &pixels);
-
-                        // Request repaint to load texture in UI thread
-                        ctx_clone.request_repaint();
-
-                        // Store the image data temporarily for the UI thread to pick up
-                        ctx_clone.data_mut(|data| {
-                            data.insert_temp(
-                                egui::Id::new(format!("contact_avatar_data_{}", url_clone)),
-                                color_image,
-                            );
-                        });
-                    }
-                }
-                Err(e) => {
-                    error!("Failed to fetch contact avatar image: {}", e);
-                }
-            }
-        });
+        // Persist the memo to the per-network k/v sidecar. Upstream owns the
+        // encrypted on-Platform copy; this is the DET-local plaintext overlay
+        // that powers the contact list and profile viewer.
+        persist_contact_private_info(
+            &self.app_context,
+            &self.identity.identity.id(),
+            &self.contact_id,
+            self.nickname.clone(),
+            self.notes.clone(),
+            self.is_hidden,
+        )
     }
 
     pub fn render(&mut self, ui: &mut Ui) -> AppAction {
@@ -256,96 +196,17 @@ impl ContactProfileViewerScreen {
                             egui::vec2(100.0, 120.0),
                             egui::Layout::top_down(egui::Align::Center),
                             |ui| {
-                                if let Some(avatar_url) = &profile.avatar_url {
-                                    if !avatar_url.is_empty() {
-                                        let texture_id = format!("contact_avatar_{}", avatar_url);
-
-                                        // Check if texture is already cached
-                                        if let Some(texture) = self.avatar_textures.get(&texture_id)
-                                        {
-                                            // Display the cached avatar image
-                                            ui.add(
-                                                egui::Image::new(texture)
-                                                    .fit_to_exact_size(egui::vec2(60.0, 60.0))
-                                                    .corner_radius(5.0),
-                                            );
-                                        } else {
-                                            // Check if image data was loaded by async task
-                                            let data_id =
-                                                format!("contact_avatar_data_{}", avatar_url);
-                                            let color_image = ui.ctx().data_mut(|data| {
-                                                data.get_temp::<ColorImage>(egui::Id::new(&data_id))
-                                            });
-
-                                            if let Some(color_image) = color_image {
-                                                // Create texture from loaded image
-                                                let texture = ui.ctx().load_texture(
-                                                    &texture_id,
-                                                    color_image,
-                                                    egui::TextureOptions::LINEAR,
-                                                );
-
-                                                // Display the image
-                                                ui.add(
-                                                    egui::Image::new(&texture)
-                                                        .fit_to_exact_size(egui::vec2(60.0, 60.0))
-                                                        .corner_radius(5.0),
-                                                );
-
-                                                // Cache the texture
-                                                self.avatar_textures.insert(texture_id, texture);
-                                                self.avatar_loading = false;
-
-                                                // Clear the temporary data
-                                                ui.ctx().data_mut(|data| {
-                                                    data.remove::<ColorImage>(egui::Id::new(
-                                                        &data_id,
-                                                    ));
-                                                });
-                                            } else if !self.avatar_loading {
-                                                // Start loading the avatar
-                                                self.avatar_loading = true;
-                                                self.load_avatar_texture(ui.ctx(), avatar_url);
-                                                // Show spinner while loading
-                                                ui.add(
-                                                    egui::Spinner::new()
-                                                        .color(DashColors::DASH_BLUE),
-                                                );
-                                            } else {
-                                                // Show loading indicator
-                                                ui.add(
-                                                    egui::Spinner::new()
-                                                        .color(DashColors::DASH_BLUE),
-                                                );
-                                            }
-                                        }
-                                        ui.label(
-                                            RichText::new("Avatar")
-                                                .small()
-                                                .color(DashColors::text_secondary(dark_mode)),
-                                        );
-                                    } else {
-                                        ui.label(
-                                            RichText::new("👤")
-                                                .size(60.0)
-                                                .color(DashColors::DEEP_BLUE),
-                                        );
-                                        ui.label(
-                                            RichText::new("No avatar")
-                                                .small()
-                                                .color(DashColors::text_secondary(dark_mode)),
-                                        );
-                                    }
-                                } else {
-                                    ui.label(
-                                        RichText::new("👤").size(60.0).color(DashColors::DEEP_BLUE),
-                                    );
-                                    ui.label(
-                                        RichText::new("No avatar")
-                                            .small()
-                                            .color(DashColors::text_secondary(dark_mode)),
-                                    );
-                                }
+                                let avatar_url = profile.avatar_url.as_deref().unwrap_or("");
+                                let has_avatar = !avatar_url.is_empty();
+                                action |= Avatar::new(Some(avatar_url), 60.0)
+                                    .corner_radius(5.0)
+                                    .show(ui, &mut self.avatar_cache)
+                                    .into_action();
+                                ui.label(
+                                    RichText::new(if has_avatar { "Avatar" } else { "No avatar" })
+                                        .small()
+                                        .color(DashColors::text_secondary(dark_mode)),
+                                );
                             },
                         );
 
@@ -713,6 +574,9 @@ impl ScreenLike for ContactProfileViewerScreen {
                 } else {
                     self.profile = None;
                 }
+            }
+            BackendTaskSuccessResult::DashPayAvatar { url, bytes } => {
+                self.avatar_cache.store(url, bytes);
             }
             BackendTaskSuccessResult::Message(_msg) => {
                 // Message display is handled globally by AppState

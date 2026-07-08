@@ -194,7 +194,7 @@ impl AppContext {
                         Ok(_) => None,
                         Err(e) => {
                             tracing::warn!("Failed to fetch Platform address balances: {}", e);
-                            Some(format!("Platform sync failed: {e}"))
+                            Some(Arc::new(e))
                         }
                     }
                 } else {

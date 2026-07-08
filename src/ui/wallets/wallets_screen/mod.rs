@@ -2794,12 +2794,13 @@ impl ScreenLike for WalletsBalancesScreen {
                 self.refreshing = false;
                 self.cached_tx_indices = None;
                 self.cached_tx_source_len = None;
-                if let Some(warn_msg) = warning {
+                if let Some(err) = warning {
                     MessageBanner::set_global(
                         self.app_context.egui_ctx(),
-                        format!("Wallet refreshed with warning: {}", warn_msg),
+                        "Wallet refreshed, but platform balances could not be updated. Retry in a moment.",
                         MessageType::Info,
-                    );
+                    )
+                    .with_details(err.as_ref());
                 } else {
                     MessageBanner::set_global(
                         self.app_context.egui_ctx(),

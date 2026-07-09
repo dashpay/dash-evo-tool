@@ -454,6 +454,10 @@ impl Database {
             }
         }
 
+        // Platform per-address balances + sync cursor are owned by the upstream
+        // coordinator; DET holds no at-rest copy and warm-starts from the
+        // coordinator's first push.
+
         Ok(wallets_map.into_values().collect())
     }
 

@@ -10,6 +10,8 @@ use dash_sdk::dpp::dashcore::secp256k1::{PublicKey, Secp256k1, SecretKey};
 use dash_sdk::dpp::key_wallet::bip32::{ChainCode, ExtendedPrivKey, ExtendedPubKey, Fingerprint};
 use dash_sdk::platform::Identifier;
 
+use super::DerivationError;
+
 /// Perform DIP-14 compliant 256-bit child key derivation for private keys
 ///
 /// This implements CKDpriv256 as specified in DIP-0014:
@@ -19,7 +21,7 @@ pub fn ckd_priv_256(
     parent_key: &ExtendedPrivKey,
     index: &[u8; 32], // 256-bit index
     hardened: bool,
-) -> Result<ExtendedPrivKey, String> {
+) -> Result<ExtendedPrivKey, DerivationError> {
     let secp = Secp256k1::new();
 
     // Check if this is a compatibility mode derivation (index < 2^32)
@@ -61,14 +63,10 @@ pub fn ckd_priv_256(
     let (i_l, i_r) = hmac_bytes.split_at(32);
 
     // Parse I_L as a private key and add to parent key
-    let i_l_key = SecretKey::from_slice(i_l)
-        .map_err(|e| format!("Failed to parse I_L as secret key: {}", e))?;
+    let i_l_key = SecretKey::from_slice(i_l)?;
 
     // k_i = parse_256(I_L) + k_par (mod n)
-    let child_key = parent_key
-        .private_key
-        .add_tweak(&i_l_key.into())
-        .map_err(|e| format!("Failed to add tweak to parent key: {}", e))?;
+    let child_key = parent_key.private_key.add_tweak(&i_l_key.into())?;
 
     // Chain code is I_R (32 bytes)
     let mut chain_code_bytes = [0u8; 32];
@@ -84,74 +82,8 @@ pub fn ckd_priv_256(
         network: parent_key.network,
         depth: parent_key.depth + 1,
         parent_fingerprint,
-        child_number: index_to_child_number(index, hardened)?,
+        child_number: index_to_child_number(index, hardened),
         private_key: child_key,
-        chain_code: child_chain_code,
-    })
-}
-
-/// Perform DIP-14 compliant 256-bit child key derivation for public keys
-///
-/// This implements CKDpub256 as specified in DIP-0014:
-/// - Only works for non-hardened derivation
-/// - For indices < 2^32, uses standard BIP32 derivation for compatibility
-/// - For indices >= 2^32, uses 256-bit derivation with ser_256(i)
-pub fn ckd_pub_256(
-    parent_key: &ExtendedPubKey,
-    index: &[u8; 32], // 256-bit index
-    hardened: bool,
-) -> Result<ExtendedPubKey, String> {
-    if hardened {
-        return Err("Cannot derive hardened child from extended public key".to_string());
-    }
-
-    let secp = Secp256k1::new();
-
-    // Check if this is a compatibility mode derivation (index < 2^32)
-    let is_compatibility_mode = is_index_less_than_2_32(index);
-
-    // Prepare HMAC data
-    let mut hmac_engine = HmacEngine::<sha512::Hash>::new(&parent_key.chain_code.to_bytes());
-
-    // Non-hardened derivation: ser_P(K_par) || ser(i)
-    hmac_engine.input(&parent_key.public_key.serialize());
-
-    if is_compatibility_mode {
-        // Use ser_32(i) for compatibility
-        hmac_engine.input(&index[28..32]);
-    } else {
-        // Use ser_256(i) for full 256-bit
-        hmac_engine.input(index);
-    }
-
-    let hmac_result = Hmac::<sha512::Hash>::from_engine(hmac_engine);
-    let hmac_bytes = hmac_result.to_byte_array();
-
-    // Split into I_L (first 32 bytes) and I_R (last 32 bytes)
-    let (i_l, i_r) = hmac_bytes.split_at(32);
-
-    // Parse I_L as a secret key for the tweak
-    let i_l_key = SecretKey::from_slice(i_l)
-        .map_err(|e| format!("Failed to parse I_L as secret key: {}", e))?;
-
-    // K_i = point(parse_256(I_L)) + K_par
-    let child_pubkey = parent_key
-        .public_key
-        .add_exp_tweak(&secp, &i_l_key.into())
-        .map_err(|e| format!("Failed to add tweak to parent public key: {}", e))?;
-
-    // Chain code is I_R (32 bytes)
-    let mut chain_code_bytes = [0u8; 32];
-    chain_code_bytes.copy_from_slice(i_r);
-    let child_chain_code = ChainCode::from(chain_code_bytes);
-
-    // Create the child extended public key
-    Ok(ExtendedPubKey {
-        network: parent_key.network,
-        depth: parent_key.depth + 1,
-        parent_fingerprint: parent_key.parent_fingerprint,
-        child_number: index_to_child_number(index, false)?,
-        public_key: child_pubkey,
         chain_code: child_chain_code,
     })
 }
@@ -168,25 +100,21 @@ pub fn derive_dashpay_incoming_xpub_dip14(
     account: u32,
     sender_id: &Identifier,
     recipient_id: &Identifier,
-) -> Result<ExtendedPubKey, String> {
+) -> Result<ExtendedPubKey, DerivationError> {
     use crate::model::wallet::coin_type_for_network;
     use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
     use std::str::FromStr;
 
     // Create extended private key from seed
-    let master_xprv = ExtendedPrivKey::new_master(network, master_seed)
-        .map_err(|e| format!("Failed to create master key: {}", e))?;
+    let master_xprv = ExtendedPrivKey::new_master(network, master_seed)?;
 
     // Build derivation path for the base: m/9'/coin'/15'/account'
     let coin_type = coin_type_for_network(network);
-    let base_path = DerivationPath::from_str(&format!("m/9'/{coin_type}'/15'/{account}'"))
-        .map_err(|e| format!("Invalid derivation path: {}", e))?;
+    let base_path = DerivationPath::from_str(&format!("m/9'/{coin_type}'/15'/{account}'"))?;
 
     // Derive to the account level using standard BIP32
     let secp = Secp256k1::new();
-    let account_xprv = master_xprv
-        .derive_priv(&secp, &base_path)
-        .map_err(|e| format!("Failed to derive account key: {}", e))?;
+    let account_xprv = master_xprv.derive_priv(&secp, &base_path)?;
 
     // Now use DIP-14 256-bit derivation for the identity levels
     // Derive: account_key/(sender_id)
@@ -219,7 +147,7 @@ fn is_index_less_than_2_32(index: &[u8; 32]) -> bool {
 fn index_to_child_number(
     index: &[u8; 32],
     hardened: bool,
-) -> Result<dash_sdk::dpp::key_wallet::bip32::ChildNumber, String> {
+) -> dash_sdk::dpp::key_wallet::bip32::ChildNumber {
     use dash_sdk::dpp::key_wallet::bip32::ChildNumber;
 
     // For compatibility with existing ChildNumber structure,
@@ -239,12 +167,11 @@ fn index_to_child_number(
     if hardened {
         // Set the hardened bit (bit 31)
         num |= 0x80000000;
-        Ok(ChildNumber::from(num))
     } else {
         // Clear bit 31 to ensure it's within normal range
         num &= 0x7FFFFFFF;
-        Ok(ChildNumber::from(num))
     }
+    ChildNumber::from(num)
 }
 
 /// Calculate fingerprint for a public key (first 4 bytes of HASH160)

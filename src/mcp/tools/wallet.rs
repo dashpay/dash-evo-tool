@@ -62,10 +62,7 @@ impl AsyncTool<DashMcpService> for GenerateReceiveAddress {
         service: &DashMcpService,
         param: WalletIdParams,
     ) -> Result<GenerateReceiveAddressOutput, McpToolError> {
-        let ctx = service
-            .ctx()
-            .await
-            .map_err(|e| McpToolError::Internal(e.to_string()))?;
+        let ctx = service.tool_ctx().await?;
         resolve::verify_network(&ctx, param.network.as_deref())?;
         let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
 
@@ -129,10 +126,7 @@ impl AsyncTool<DashMcpService> for WalletBalancesQuery {
         service: &DashMcpService,
         param: WalletIdParams,
     ) -> Result<WalletBalancesOutput, McpToolError> {
-        let ctx = service
-            .ctx()
-            .await
-            .map_err(|e| McpToolError::Internal(e.to_string()))?;
+        let ctx = service.tool_ctx().await?;
         resolve::verify_network(&ctx, param.network.as_deref())?;
         let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
 
@@ -225,23 +219,13 @@ impl AsyncTool<DashMcpService> for SendCoreFunds {
         service: &DashMcpService,
         param: SendFundsParams,
     ) -> Result<SendFundsOutput, McpToolError> {
-        let ctx = service
-            .ctx()
-            .await
-            .map_err(|e| McpToolError::Internal(e.to_string()))?;
+        let ctx = service.tool_ctx().await?;
 
-        // Network is mandatory for destructive operations
-        if param.network.is_empty() {
-            return Err(McpToolError::InvalidParam {
-                message: "The 'network' parameter must not be empty. \
-                          Use \"mainnet\", \"testnet\", \"devnet\", or \"local\"."
-                    .to_owned(),
-            });
-        }
+        // Network is mandatory for destructive operations.
         resolve::require_network(&ctx, Some(&param.network))?;
 
         // Validate inputs before dispatching
-        resolve::validate_amount(param.amount_duffs)?;
+        resolve::validate_positive_amount(param.amount_duffs, "duffs")?;
         resolve::validate_address(&param.address)?;
 
         let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
@@ -336,10 +320,7 @@ impl AsyncTool<DashMcpService> for FetchPlatformBalances {
         service: &DashMcpService,
         param: WalletIdParams,
     ) -> Result<PlatformBalancesOutput, McpToolError> {
-        let ctx = service
-            .ctx()
-            .await
-            .map_err(|e| McpToolError::Internal(e.to_string()))?;
+        let ctx = service.tool_ctx().await?;
         resolve::verify_network(&ctx, param.network.as_deref())?;
         let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
 
@@ -448,18 +429,8 @@ impl AsyncTool<DashMcpService> for ImportWallet {
         service: &DashMcpService,
         param: ImportWalletParams,
     ) -> Result<ImportWalletOutput, McpToolError> {
-        let ctx = service
-            .ctx()
-            .await
-            .map_err(|e| McpToolError::Internal(e.to_string()))?;
+        let ctx = service.tool_ctx().await?;
 
-        if param.network.is_empty() {
-            return Err(McpToolError::InvalidParam {
-                message: "The 'network' parameter must not be empty. \
-                          Use \"mainnet\", \"testnet\", \"devnet\", or \"local\"."
-                    .to_owned(),
-            });
-        }
         resolve::require_network(&ctx, Some(&param.network))?;
 
         // Hold the phrase in a zeroizing buffer so the cleartext seed words are
@@ -485,7 +456,7 @@ impl AsyncTool<DashMcpService> for ImportWallet {
 
         let wallet =
             crate::model::wallet::Wallet::new_from_seed(*seed, ctx.network(), alias.clone(), None)
-                .map_err(McpToolError::TaskFailed)?;
+                .map_err(|e| McpToolError::TaskFailed(e.into()))?;
         // Capture the seed hash before `register_wallet` consumes the wallet so
         // the already-imported branch can still report it.
         let seed_hash = wallet.seed_hash();
@@ -551,10 +522,7 @@ impl AsyncTool<DashMcpService> for ListWalletsTool {
         service: &DashMcpService,
         param: NetworkParams,
     ) -> Result<ListWalletsOutput, McpToolError> {
-        let ctx = service
-            .ctx()
-            .await
-            .map_err(|e| McpToolError::Internal(e.to_string()))?;
+        let ctx = service.tool_ctx().await?;
         resolve::verify_network(&ctx, param.network.as_deref())?;
         let wallets = ctx.wallets.read().unwrap_or_else(|e| e.into_inner());
         let entries: Vec<WalletEntry> = wallets

@@ -37,8 +37,6 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::Instant;
 
-use aes_gcm::aead::Aead;
-use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::KeyID;
 use platform_wallet_storage::secrets::{
@@ -50,8 +48,10 @@ use crate::backend_task::error::TaskError;
 use crate::model::qualified_identity::PrivateKeyTarget;
 use crate::model::single_key::ImportedKey;
 use crate::model::wallet::WalletSeedHash;
-use crate::model::wallet::encryption::derive_password_key;
+use crate::model::wallet::encryption::{DecryptError, decrypt_message};
 use crate::model::wallet::seed_envelope::StoredSeedEnvelope;
+use crate::wallet_backend::identity_key_store::identity_flavored;
+use crate::wallet_backend::poison::{read_recover, write_recover};
 use crate::wallet_backend::secret_prompt::{
     RememberPolicy, SecretPrompt, SecretPromptRequest, SecretPromptRetry, SecretScope,
 };
@@ -200,14 +200,14 @@ struct SecretAccessInner {
     /// The encrypted vault — decrypt-on-demand source of truth.
     secret_store: Arc<SecretStore>,
     /// HD wallet meta (seed hash → password hint / alias) for prompt copy.
-    wallet_meta: RwLock<BTreeMap<WalletSeedHash, WalletPromptMeta>>,
+    wallet_meta: RwLock<BTreeMap<WalletSeedHash, PromptMeta>>,
     /// Single-key index (address → alias / hint / has_passphrase) for
     /// prompt copy and the unprotected fast-path check.
     single_key_index: RwLock<BTreeMap<String, ImportedKey>>,
     /// Identity prompt-copy index (identity id → alias / password hint) for
     /// the sign-time prompt of an opted-in (Tier-2) identity. Display-only;
     /// the vault scheme — not this index — gates whether a prompt fires.
-    identity_prompt_index: RwLock<BTreeMap<[u8; 32], IdentityPromptMeta>>,
+    identity_prompt_index: RwLock<BTreeMap<[u8; 32], PromptMeta>>,
     /// The UI seam. `dyn` so the host is chosen at construction.
     prompt: Arc<dyn SecretPrompt>,
     /// Opt-in session cache. Empty by default; a scope lands here only on
@@ -219,30 +219,22 @@ struct SecretAccessInner {
     network: Network,
 }
 
-/// Minimal prompt-copy metadata for an HD wallet, mirrored from the
-/// wallet-meta sidecar so the chokepoint can build an informative
-/// [`SecretPromptRequest`] without reaching back into the wallet backend.
+/// Minimal prompt-copy metadata for a secret that may be password-protected —
+/// an HD wallet (mirrored from the wallet-meta sidecar) or an identity whose
+/// keys are opted-in Tier-2 (seeded from the loaded `QualifiedIdentity` alias
+/// and the DET-side `IdentityMetaView` hint at hydration). The chokepoint uses
+/// it to build an informative [`SecretPromptRequest`] without reaching back
+/// into the wallet backend.
+///
+/// Display-only: it NEVER decides whether to prompt (the vault scheme does, in
+/// [`SecretAccess::scope_has_passphrase`]). A missing entry degrades to a
+/// generic label, never an error.
 #[derive(Clone, Debug, Default)]
-pub struct WalletPromptMeta {
-    /// User-visible wallet name, if any.
+pub struct PromptMeta {
+    /// User-visible label — wallet name, or identity DPNS name / truncated id,
+    /// if any.
     pub alias: Option<String>,
     /// User-set password hint, if any.
-    pub password_hint: Option<String>,
-}
-
-/// Minimal prompt-copy metadata for an identity whose keys may be
-/// password-protected. Seeded from the loaded `QualifiedIdentity`
-/// alias and the DET-side `IdentityMetaView` hint at hydration so the
-/// sign-time prompt shows the right identity label and hint.
-///
-/// This is display-only: it NEVER decides whether to prompt (the vault scheme
-/// does, in [`SecretAccess::scope_has_passphrase`]). A missing entry degrades
-/// to a generic label, never an error.
-#[derive(Clone, Debug, Default)]
-pub struct IdentityPromptMeta {
-    /// User-visible identity label (DPNS name or truncated id), if any.
-    pub alias: Option<String>,
-    /// User-set password hint for this identity's keys, if any.
     pub password_hint: Option<String>,
 }
 
@@ -295,7 +287,7 @@ impl SecretAccess {
     /// prompts can show the wallet name and password hint. Poison-safe: a
     /// poisoned lock is recovered (matching `forget`/`forget_all`) so a panicked
     /// reader can never freeze prompt-copy metadata for the rest of the session.
-    pub fn set_wallet_meta(&self, meta: BTreeMap<WalletSeedHash, WalletPromptMeta>) {
+    pub fn set_wallet_meta(&self, meta: BTreeMap<WalletSeedHash, PromptMeta>) {
         let mut guard = self
             .inner
             .wallet_meta
@@ -323,7 +315,7 @@ impl SecretAccess {
     /// gates whether a prompt fires (the vault scheme does). Poison-safe: a
     /// poisoned lock is recovered so the index can self-heal after a panicked
     /// reader.
-    pub fn set_identity_prompt_index(&self, index: BTreeMap<[u8; 32], IdentityPromptMeta>) {
+    pub fn set_identity_prompt_index(&self, index: BTreeMap<[u8; 32], PromptMeta>) {
         let mut guard = self
             .inner
             .identity_prompt_index
@@ -370,11 +362,7 @@ impl SecretAccess {
             let now = Instant::now();
             let mut needs_evict = false;
             let held = {
-                let guard = self
-                    .inner
-                    .session
-                    .read()
-                    .map_err(|_| TaskError::SecretDecryptFailed)?;
+                let guard = read_recover(&self.inner.session);
                 match guard.get(scope) {
                     Some(entry) if entry.is_expired(now) => {
                         needs_evict = true;
@@ -390,7 +378,8 @@ impl SecretAccess {
                 };
                 return f(&session).await;
             }
-            if needs_evict && let Ok(mut guard) = self.inner.session.write() {
+            if needs_evict {
+                let mut guard = write_recover(&self.inner.session);
                 // Re-check expiry under the write lock to avoid racing a
                 // concurrent refresh, then drop (zeroize) the entry.
                 if guard.get(scope).is_some_and(|e| e.is_expired(now)) {
@@ -423,7 +412,9 @@ impl SecretAccess {
 
             match self.decrypt_jit(scope, Some(&reply.passphrase)) {
                 Ok(plaintext) => {
-                    self.maybe_remember(scope, &plaintext, reply.remember);
+                    // Cache a copy; the original is still needed for this op's
+                    // session borrow below.
+                    self.maybe_remember(scope, plaintext.to_op_copy(), reply.remember);
                     let session = SecretSession {
                         plaintext: &plaintext,
                     };
@@ -447,12 +438,14 @@ impl SecretAccess {
         plaintext: SecretPlaintext<'_>,
         policy: RememberPolicy,
     ) {
+        // Copy the borrowed plaintext into an owned `Plaintext` exactly once,
+        // then hand ownership to the cache (moved into the box, not re-copied).
         let owned = match plaintext {
             SecretPlaintext::HdSeed(s) => Plaintext::HdSeed(Zeroizing::new(**s)),
             SecretPlaintext::SingleKey(k) => Plaintext::SingleKey(Zeroizing::new(**k)),
             SecretPlaintext::IdentityKey(k) => Plaintext::IdentityKey(Zeroizing::new(**k)),
         };
-        self.maybe_remember(scope, &owned, policy);
+        self.maybe_remember(scope, owned, policy);
     }
 
     /// Decrypt an HD-seed envelope with an explicitly-supplied passphrase and
@@ -481,7 +474,7 @@ impl SecretAccess {
             seed_hash: *seed_hash,
         };
         let plaintext = self.decrypt_jit(&scope, passphrase)?;
-        self.maybe_remember(&scope, &plaintext, policy);
+        self.maybe_remember(&scope, plaintext, policy);
         Ok(())
     }
 
@@ -584,10 +577,7 @@ impl SecretAccess {
                 &SecretBytes::from_slice(new_key),
                 &password.0,
             )
-            .map_err(|e| match e {
-                TaskError::SecretSeam { source } => TaskError::IdentityKeyVault { source },
-                other => other,
-            })
+            .map_err(identity_flavored)
     }
 
     /// Forget the session-cached secret for `scope`, zeroizing it.
@@ -642,9 +632,16 @@ impl SecretAccess {
             .unwrap_or(false)
     }
 
-    /// Insert into the session cache iff `policy` requests it. Boxed value;
-    /// expiry stamped for `For(duration)`.
-    fn maybe_remember(&self, scope: &SecretScope, plaintext: &Plaintext, policy: RememberPolicy) {
+    /// Insert into the session cache iff `policy` requests it; expiry stamped
+    /// for `For(duration)`.
+    ///
+    /// Takes the plaintext **by value** and moves it straight into the boxed
+    /// cache entry, so the secret is copied exactly once — at the call boundary
+    /// — rather than copied to build the argument and copied again to box it. A
+    /// caller that must keep the plaintext after caching (mid-operation) passes
+    /// a [`Plaintext::to_op_copy`]; a caller that is done with it passes
+    /// ownership.
+    fn maybe_remember(&self, scope: &SecretScope, plaintext: Plaintext, policy: RememberPolicy) {
         let now = Instant::now();
         let expires_at = match policy {
             RememberPolicy::None => return,
@@ -654,20 +651,13 @@ impl SecretAccess {
             // here would mean "never expires".
             RememberPolicy::For(duration) => Some(now.checked_add(duration).unwrap_or(now)),
         };
-        let boxed = match plaintext {
-            Plaintext::HdSeed(s) => Box::new(Plaintext::HdSeed(Zeroizing::new(**s))),
-            Plaintext::SingleKey(k) => Box::new(Plaintext::SingleKey(Zeroizing::new(**k))),
-            Plaintext::IdentityKey(k) => Box::new(Plaintext::IdentityKey(Zeroizing::new(**k))),
-        };
-        if let Ok(mut guard) = self.inner.session.write() {
-            guard.insert(
-                scope.clone(),
-                SessionEntry {
-                    plaintext: boxed,
-                    expires_at,
-                },
-            );
-        }
+        write_recover(&self.inner.session).insert(
+            scope.clone(),
+            SessionEntry {
+                plaintext: Box::new(plaintext),
+                expires_at,
+            },
+        );
     }
 
     /// The typed error for a dismissed/absent prompt. A genuine user cancel
@@ -1058,43 +1048,17 @@ fn decrypt_hd_seed(
     }
 
     let passphrase = passphrase.ok_or(TaskError::HdPassphraseIncorrect)?;
-    let key = Zeroizing::new(
-        derive_password_key(passphrase.expose_secret(), &envelope.salt).map_err(|detail| {
-            tracing::warn!(
-                target = "wallet_backend::secret_access",
-                %detail,
-                "Argon2 key derivation failed during HD seed decrypt",
-            );
-            TaskError::SecretDecryptFailed
-        })?,
-    );
-    let cipher = Aes256Gcm::new_from_slice(&key).map_err(|detail| {
-        tracing::warn!(
-            target = "wallet_backend::secret_access",
-            error = %detail,
-            "AES-GCM init failed during HD seed decrypt",
-        );
-        TaskError::SecretDecryptFailed
+    let plaintext = decrypt_message(
+        &envelope.encrypted_seed,
+        &envelope.salt,
+        &envelope.nonce,
+        passphrase.expose_secret(),
+        "secret_access::decrypt_hd_seed",
+    )
+    .map_err(|e| match e {
+        DecryptError::WrongPassword => TaskError::HdPassphraseIncorrect,
+        DecryptError::Malformed => TaskError::SecretDecryptFailed,
     })?;
-    // Checked nonce conversion: a stored envelope with the wrong nonce length
-    // is a corrupt at-rest blob, not a panic. `Nonce::from_slice` would panic
-    // on a length mismatch and poison the long-lived secret-store mutex.
-    let nonce_bytes: &[u8; 12] = envelope.nonce.as_slice().try_into().map_err(|_| {
-        tracing::warn!(
-            target = "wallet_backend::secret_access",
-            nonce_len = envelope.nonce.len(),
-            "HD seed envelope nonce is not 12 bytes",
-        );
-        TaskError::SecretDecryptFailed
-    })?;
-    let plaintext = Zeroizing::new(
-        cipher
-            .decrypt(
-                Nonce::from_slice(nonce_bytes),
-                envelope.encrypted_seed.as_slice(),
-            )
-            .map_err(|_| TaskError::HdPassphraseIncorrect)?,
-    );
     let seed: [u8; HD_SEED_LEN] = plaintext.as_slice().try_into().map_err(|_| {
         tracing::warn!(
             target = "wallet_backend::secret_access",
@@ -1110,7 +1074,7 @@ fn decrypt_hd_seed(
 /// wrong-length blob to the typed [`TaskError::IdentityKeyMalformed`] (vault
 /// corruption / truncated write) rather than a panic or a generic decrypt
 /// error. Shared by the Tier-1 and Tier-2 identity-key decrypt arms.
-fn identity_key_from_bytes(bytes: &[u8]) -> Result<[u8; SINGLE_KEY_LEN], TaskError> {
+pub(crate) fn identity_key_from_bytes(bytes: &[u8]) -> Result<[u8; SINGLE_KEY_LEN], TaskError> {
     bytes.try_into().map_err(|_| {
         tracing::warn!(
             target = "wallet_backend::secret_access",
@@ -1165,8 +1129,11 @@ mod tests {
         seed: &[u8; 64],
         passphrase: &str,
     ) {
-        let (encrypted_seed, salt, nonce) =
-            encrypt_message(seed, passphrase).expect("encrypt seed");
+        let crate::model::wallet::encryption::EncryptedEnvelope {
+            ciphertext: encrypted_seed,
+            salt,
+            nonce,
+        } = encrypt_message(seed, passphrase).expect("encrypt seed");
         let envelope = StoredSeedEnvelope {
             encrypted_seed,
             salt,
@@ -2228,7 +2195,7 @@ mod tests {
         let sa = access(store, prompt.clone());
         sa.set_identity_prompt_index(BTreeMap::from([(
             identity_id,
-            IdentityPromptMeta {
+            PromptMeta {
                 alias: Some("alice.dash".to_string()),
                 password_hint: Some("the usual".to_string()),
             },

@@ -137,7 +137,7 @@ pub async fn shared_token() -> &'static SharedToken {
             let owner_id = si.qualified_identity.identity.id();
             let qualified_contracts = ctx
                 .app_context
-                .get_contracts(None, None)
+                .get_contracts()
                 .expect("SharedToken: failed to query contracts from DB");
 
             let contract = qualified_contracts

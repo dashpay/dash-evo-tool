@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
 use crate::backend_task::error::TaskError;
+use crate::wallet_backend::versioned_bincode::{decode_tagged_or, encode_tagged};
 
 /// Current on-disk version tag for [`SingleKeyEntry`].
 pub const SINGLE_KEY_ENTRY_VERSION: u8 = 1;
@@ -100,22 +101,20 @@ impl SingleKeyEntry {
         hint: Option<String>,
         public_key_bytes: Vec<u8>,
     ) -> Result<Self, TaskError> {
-        let (ciphertext, salt, nonce) = crate::model::wallet::encryption::encrypt_message(
-            raw_key, passphrase,
-        )
-        .map_err(|detail| {
-            tracing::warn!(
-                target = "wallet_backend::single_key_entry",
-                ?detail,
-                "Failed to encrypt single-key entry with user passphrase",
-            );
-            TaskError::SingleKeyCryptoFailure
-        })?;
+        let envelope = crate::model::wallet::encryption::encrypt_message(raw_key, passphrase)
+            .map_err(|detail| {
+                tracing::warn!(
+                    target = "wallet_backend::single_key_entry",
+                    ?detail,
+                    "Failed to encrypt single-key entry with user passphrase",
+                );
+                TaskError::SingleKeyCryptoFailure
+            })?;
         Ok(Self {
             has_passphrase: true,
-            salt,
-            nonce,
-            ciphertext,
+            salt: envelope.salt,
+            nonce: envelope.nonce,
+            ciphertext: envelope.ciphertext,
             passphrase_hint: hint,
             public_key_bytes,
         })
@@ -149,41 +148,21 @@ impl SingleKeyEntry {
                 return Err(TaskError::SingleKeyPassphraseIncorrect);
             }
         };
-        let key = crate::model::wallet::encryption::derive_password_key(passphrase, &self.salt)
-            .map_err(|detail| {
-                tracing::warn!(
-                    target = "wallet_backend::single_key_entry",
-                    ?detail,
-                    "Argon2 key derivation failed during single-key decrypt",
-                );
+        let plaintext = crate::model::wallet::encryption::decrypt_message(
+            &self.ciphertext,
+            &self.salt,
+            &self.nonce,
+            passphrase,
+            "single_key_entry::decrypt",
+        )
+        .map_err(|e| match e {
+            crate::model::wallet::encryption::DecryptError::WrongPassword => {
+                TaskError::SingleKeyPassphraseIncorrect
+            }
+            crate::model::wallet::encryption::DecryptError::Malformed => {
                 TaskError::SingleKeyCryptoFailure
-            })?;
-        use aes_gcm::aead::Aead;
-        use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
-        let cipher = Aes256Gcm::new_from_slice(&key).map_err(|detail| {
-            tracing::warn!(
-                target = "wallet_backend::single_key_entry",
-                error = %detail,
-                "AES-GCM init failed during single-key decrypt",
-            );
-            TaskError::SingleKeyCryptoFailure
+            }
         })?;
-        // Checked nonce conversion: a stored blob with the wrong nonce length
-        // is a corrupt at-rest entry, not a panic. `Nonce::from_slice` would
-        // panic on a length mismatch and poison the secret-store mutex.
-        let nonce_bytes: &[u8; 12] = self.nonce.as_slice().try_into().map_err(|_| {
-            tracing::warn!(
-                target = "wallet_backend::single_key_entry",
-                nonce_len = self.nonce.len(),
-                "Single-key entry nonce is not 12 bytes",
-            );
-            TaskError::SingleKeyCryptoFailure
-        })?;
-        let plaintext = Zeroizing::new(
-            cipher
-                .decrypt(Nonce::from_slice(nonce_bytes), self.ciphertext.as_slice())
-                .map_err(|_| TaskError::SingleKeyPassphraseIncorrect)?,
-        );
         let raw: [u8; 32] = plaintext.as_slice().try_into().map_err(|_| {
             tracing::warn!(
                 target = "wallet_backend::single_key_entry",
@@ -197,19 +176,14 @@ impl SingleKeyEntry {
 
     /// Encode for the upstream vault: `[version || bincode(self)]`.
     pub fn encode(&self) -> Result<Vec<u8>, TaskError> {
-        let body =
-            bincode::serde::encode_to_vec(self, bincode::config::standard()).map_err(|detail| {
-                tracing::warn!(
-                    target = "wallet_backend::single_key_entry",
-                    error = %detail,
-                    "bincode encode failed for single-key entry",
-                );
-                TaskError::SingleKeyCryptoFailure
-            })?;
-        let mut out = Vec::with_capacity(body.len() + 1);
-        out.push(SINGLE_KEY_ENTRY_VERSION);
-        out.extend_from_slice(&body);
-        Ok(out)
+        encode_tagged(SINGLE_KEY_ENTRY_VERSION, self).map_err(|detail| {
+            tracing::warn!(
+                target = "wallet_backend::single_key_entry",
+                error = %detail,
+                "bincode encode failed for single-key entry",
+            );
+            TaskError::SingleKeyCryptoFailure
+        })
     }
 
     /// Decode from the upstream vault. Accepts:
@@ -223,21 +197,21 @@ impl SingleKeyEntry {
             raw.copy_from_slice(bytes);
             return Ok(Self::unprotected(raw));
         }
-        let Some((&tag, rest)) = bytes.split_first() else {
-            return Err(TaskError::SingleKeyCryptoFailure);
-        };
-        if tag != SINGLE_KEY_ENTRY_VERSION {
-            tracing::warn!(
-                target = "wallet_backend::single_key_entry",
-                ?tag,
-                "Unknown single-key entry version tag",
-            );
-            return Err(TaskError::SingleKeyCryptoFailure);
-        }
-        let (decoded, _): (SingleKeyEntry, _) =
-            bincode::serde::decode_from_slice(rest, bincode::config::standard())
-                .map_err(|_| TaskError::SingleKeyCryptoFailure)?;
-        Ok(decoded)
+        // Not a 32-byte legacy raw key: it must be the version-tagged shape.
+        // Anything else (empty, unknown tag, or corrupt body) is a decode
+        // failure — the fallback here has no further legacy form to try.
+        decode_tagged_or(bytes, SINGLE_KEY_ENTRY_VERSION, |bytes| {
+            if let Some((&tag, _)) = bytes.split_first()
+                && tag != SINGLE_KEY_ENTRY_VERSION
+            {
+                tracing::warn!(
+                    target = "wallet_backend::single_key_entry",
+                    ?tag,
+                    "Unknown single-key entry version tag",
+                );
+            }
+            Err(TaskError::SingleKeyCryptoFailure)
+        })
     }
 }
 

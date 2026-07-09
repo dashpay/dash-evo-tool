@@ -7,16 +7,14 @@ use crate::ui::identities::add_new_identity_screen::{
     AddNewIdentityScreen, FundingMethod, WalletFundedScreenStep,
 };
 use crate::ui::theme::{ComponentStyles, DashColors};
+use crate::wallet_backend::poison::RwLockRecover;
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use egui::{Color32, ComboBox, RichText, Ui};
-
-/// Constants for credit/DASH conversion
-const CREDITS_PER_DUFF: u64 = 1000;
 
 impl AddNewIdentityScreen {
     fn show_platform_address_balance(&self, ui: &mut egui::Ui) {
         if let Some(selected_wallet) = &self.selected_wallet {
-            let wallet = selected_wallet.read().unwrap();
+            let wallet = selected_wallet.read_recover();
 
             let total_platform_balance: u64 = wallet
                 .platform_address_info
@@ -24,12 +22,10 @@ impl AddNewIdentityScreen {
                 .map(|info| info.balance)
                 .sum();
 
-            let dash_balance = total_platform_balance as f64 / CREDITS_PER_DUFF as f64 / 1e8;
-
             ui.horizontal(|ui| {
                 ui.label(format!(
-                    "Total Platform Address Balance: {:.8} DASH",
-                    dash_balance
+                    "Total Platform Address Balance: {}",
+                    format_credits_as_dash(total_platform_balance)
                 ));
             });
         } else {
@@ -54,7 +50,7 @@ impl AddNewIdentityScreen {
         let network = self.app_context.network;
         let platform_addresses: Vec<(String, PlatformAddress, u64)> =
             if let Some(wallet_arc) = &self.selected_wallet {
-                let wallet = wallet_arc.read().unwrap();
+                let wallet = wallet_arc.read_recover();
                 wallet
                     .platform_addresses(network)
                     .into_iter()
@@ -107,7 +103,6 @@ impl AddNewIdentityScreen {
             .selected_text(selected_addr_display)
             .show_ui(ui, |ui| {
                 for (bech32_addr_str, platform_addr, balance) in &platform_addresses {
-                    let dash_balance = *balance as f64 / CREDITS_PER_DUFF as f64 / 1e8;
                     // Truncate Bech32m address for display in dropdown
                     let addr_display = if bech32_addr_str.len() > 20 {
                         format!(
@@ -118,7 +113,7 @@ impl AddNewIdentityScreen {
                     } else {
                         bech32_addr_str.clone()
                     };
-                    let label = format!("{} ({:.4} DASH)", addr_display, dash_balance);
+                    let label = format!("{} ({})", addr_display, format_credits_as_dash(*balance));
                     let is_selected = self
                         .selected_platform_address_for_funding
                         .as_ref()
@@ -202,14 +197,17 @@ impl AddNewIdentityScreen {
 
         // Show selected amount info
         if let Some((_, amount)) = &self.selected_platform_address_for_funding {
-            let dash_amount = *amount as f64 / CREDITS_PER_DUFF as f64 / 1e8;
-            ui.label(format!("Will use: {:.8} DASH", dash_amount));
+            ui.label(format!("Will use: {}", format_credits_as_dash(*amount)));
         }
 
         ui.add_space(20.0);
 
         // Extract the step from the RwLock to minimize borrow scope
-        let step = *self.step.read().unwrap();
+        let step = self
+            .step
+            .read()
+            .map(|s| *s)
+            .unwrap_or(WalletFundedScreenStep::ChooseFundingMethod);
 
         // Display estimated fee before action button (reuse already calculated value)
         let dark_mode = ui.style().visuals.dark_mode;

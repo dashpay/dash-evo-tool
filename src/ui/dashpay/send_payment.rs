@@ -118,9 +118,10 @@ impl SendPaymentScreen {
             return AppAction::None;
         }
 
-        // Get amount in Dash (convert from duffs)
-        let amount_dash = match self.amount.dash_to_duffs() {
-            Ok(duffs) => duffs as f64 / 100_000_000.0,
+        // Resolve the amount in duffs at the UI edge — no floating-point value
+        // crosses into the backend.
+        let amount_duffs = match self.amount.dash_to_duffs() {
+            Ok(duffs) => duffs,
             Err(e) => {
                 MessageBanner::set_global(
                     self.app_context.egui_ctx(),
@@ -138,7 +139,7 @@ impl SendPaymentScreen {
             DashPayTask::SendPaymentToContact {
                 identity: self.from_identity.clone(),
                 contact_id: self.to_contact_id,
-                amount_dash,
+                amount_duffs,
                 memo: if self.memo.is_empty() {
                     None
                 } else {
@@ -761,8 +762,13 @@ impl PaymentHistory {
                         let contact_id = if contact_name.contains("(") && contact_name.contains(")")
                         {
                             // Extract ID from format "Unknown (abcd1234)"
-                            let start = contact_name.find('(').unwrap() + 1;
-                            let end = contact_name.find(')').unwrap();
+                            let start = contact_name
+                                .find('(')
+                                .expect("invariant: '(' present per the contains check above")
+                                + 1;
+                            let end = contact_name
+                                .find(')')
+                                .expect("invariant: ')' present per the contains check above");
                             let _id_str = &contact_name[start..end];
                             // This is likely a partial base58 ID, we'd need the full ID
                             // For now, we'll use a placeholder
@@ -784,10 +790,10 @@ impl PaymentHistory {
                             },
                         };
                         self.payments.push(payment);
-                        // Payment mirror dropped — `payments::send_payment_to_contact_impl`
-                        // already routes through `WalletBackend::dashpay_record_payment`
-                        // + the payment-timestamp sidecar, so the upstream wallet is
-                        // the single source of truth for outgoing payments.
+                        // `payments::send_payment_to_contact` records outgoing payments
+                        // through `WalletBackend::dashpay_record_payment` + the
+                        // payment-timestamp sidecar, so the upstream wallet is the
+                        // single source of truth; no mirror is needed here.
                         let _ = (contact_id, identity_id, tx_id, amount, memo, is_incoming);
                     }
                 } else {

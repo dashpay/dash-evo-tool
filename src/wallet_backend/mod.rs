@@ -47,10 +47,12 @@ pub(crate) mod kv_test_support;
 pub(crate) mod leak_test_support;
 mod loader;
 mod payments;
+pub(crate) mod poison;
 pub mod secret_access;
 pub mod secret_prompt;
 pub mod secret_seam;
 mod shielded;
+mod sidecar;
 #[cfg(any(test, feature = "bench"))]
 pub mod single_key;
 #[cfg(not(any(test, feature = "bench")))]
@@ -58,6 +60,7 @@ pub(crate) mod single_key;
 pub mod single_key_entry;
 mod snapshot;
 mod token_balance;
+mod versioned_bincode;
 #[cfg(any(test, feature = "bench"))]
 pub mod wallet_meta;
 #[cfg(not(any(test, feature = "bench")))]
@@ -71,12 +74,11 @@ pub use dashpay::DashpayView;
 pub(crate) use dashpay::{derive_contact_info_encryption_keys, derive_contact_xpub_material};
 
 pub(crate) use det_platform_signer::{DetPlatformSigner, PlatformPathIndex};
-pub(crate) use det_signer::DetSigner;
+pub(crate) use det_signer::{DetSigner, DetSignerError};
 pub use identity_key_store::IdentityKeyView;
 pub use identity_meta::IdentityMetaView;
 pub use secret_access::{
-    IdentityPromptMeta, SecretAccess, SecretPlaintext, SecretSession, VerifiedIdentityPassword,
-    WalletPromptMeta,
+    PromptMeta, SecretAccess, SecretPlaintext, SecretSession, VerifiedIdentityPassword,
 };
 pub use secret_prompt::{
     NullSecretPrompt, RememberPolicy, SecretPrompt, SecretPromptCancelled, SecretPromptReply,
@@ -90,13 +92,14 @@ pub use auth_pubkey_cache::AuthPubkeyCacheView;
 pub use avatar_cache::AvatarCacheView;
 pub use contact_profile_cache::{CachedContactProfile, ContactProfileCacheView};
 pub use event_bridge::EventBridge;
+pub(crate) use kv::network_prefix;
 pub use kv::{DetKv, DetScope, KvAdapterError, SCHEMA_VERSION as KV_SCHEMA_VERSION};
 pub use loader::{LoadedWallets, PersistedLoadSkip};
 pub use single_key::SingleKeyView;
 use snapshot::SnapshotStore;
 pub use snapshot::{DetUtxo, DetWalletBalance, WalletSnapshot};
 use token_balance::TokenBalanceStore;
-pub use token_balance::{TokenBalanceSnapshot, UpstreamTokenBalances};
+pub use token_balance::UpstreamTokenBalances;
 pub use wallet_meta::WalletMetaView;
 pub use wallet_seed_store::WalletSeedView;
 
@@ -129,6 +132,18 @@ use crate::utils::egui_mpsc::SenderAsync;
 /// does not write its own persister (removal-inventory: consume, don't
 /// reimplement).
 type DetPersister = SqlitePersister;
+
+/// Which side of a contact relationship
+/// [`WalletBackend::record_contact_request`] writes into the local
+/// wallet-manager. Selects the upstream `add_*_contact_request` call and the
+/// warning wording for the missing-managed-identity case.
+#[derive(Clone, Copy)]
+enum ContactRequestRecord {
+    /// Our outgoing request — recorded into `sent_contact_requests`.
+    Sent,
+    /// A peer's incoming request — recorded into `incoming_contact_requests`.
+    Incoming,
+}
 
 /// One-shot latch guarding chain-sync startup. The upstream
 /// `SpvRuntime::spawn_in_background` unconditionally spawns a fresh run loop
@@ -327,8 +342,8 @@ impl WalletBackend {
             task_result_sender.clone(),
             Arc::clone(&snapshots),
             Arc::clone(&coordinator_gate),
-            // Phase E push writer: the shielded sync-completed callback writes
-            // per-wallet balances into AppContext's frame-safe snapshot.
+            // The shielded sync-completed callback writes per-wallet balances
+            // into AppContext's frame-safe snapshot.
             Arc::clone(&ctx.shielded_balances),
             // Platform-address push writer: the platform address sync-completed callback
             // writes per-wallet owned-only balances into AppContext's frame-safe snapshot.
@@ -343,9 +358,8 @@ impl WalletBackend {
         // Wire the upstream shielded coordinator into the manager.
         //
         // Uses a dedicated SQLite file (`platform-wallet-shielded.sqlite`) owned
-        // entirely by the upstream coordinator — it is the single source of
-        // truth for all Orchard state now that DET's home-grown subsystem was
-        // retired (Phase D). The coordinator starts empty — no wallets are bound
+        // entirely by the upstream coordinator — the single source of truth for
+        // all Orchard state. The coordinator starts empty — no wallets are bound
         // until `ensure_shielded_bound` runs (on wallet unlock). Subsequent
         // calls with the same path are idempotent (upstream no-ops).
         pwm.configure_shielded(spv_storage_dir.join("platform-wallet-shielded.sqlite"))
@@ -612,23 +626,27 @@ impl WalletBackend {
         &self,
         pw: &platform_wallet::PlatformWallet,
     ) -> Option<Vec<u8>> {
-        use dash_sdk::dpp::key_wallet::account::{AccountType, StandardAccountType};
         let guard = pw.state().await;
-        guard
-            .wallet()
-            .accounts
-            .all_accounts()
-            .into_iter()
-            .find(|a| {
-                matches!(
-                    a.account_type,
-                    AccountType::Standard {
-                        index: 0,
-                        standard_account_type: StandardAccountType::BIP44Account,
-                    }
-                )
-            })
-            .map(|a| a.account_xpub.encode().to_vec())
+        bip44_account0_xpub(guard.wallet().accounts.all_accounts()).map(|x| x.encode().to_vec())
+    }
+
+    /// Build a short-lived signable wallet from the raw HD `seed`, with the
+    /// default account set, so hardened account xpubs and the `WalletId` can be
+    /// derived — the live wallet is watch-only and cannot derive hardened paths
+    /// itself. Callers read only the derived public material; the seed is
+    /// borrowed from an open secret session and never retained here.
+    fn seed_wallet(
+        &self,
+        seed: &[u8; 64],
+    ) -> Result<dash_sdk::dpp::key_wallet::wallet::Wallet, TaskError> {
+        use dash_sdk::dpp::key_wallet::wallet::Wallet as UpstreamWallet;
+        use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOptions;
+        UpstreamWallet::from_seed_bytes(
+            *seed,
+            self.inner.network,
+            WalletAccountCreationOptions::Default,
+        )
+        .map_err(|source| TaskError::SeedWalletBuildFailed { source })
     }
 
     /// The upstream `WalletId = SHA256(root_xpub ‖ chaincode)` and BIP44
@@ -645,34 +663,12 @@ impl WalletBackend {
         &self,
         seed: &[u8; 64],
     ) -> Result<(WalletId, Vec<u8>), TaskError> {
-        use dash_sdk::dpp::key_wallet::account::{AccountType, StandardAccountType};
-        use dash_sdk::dpp::key_wallet::wallet::Wallet as UpstreamWallet;
-        use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOptions;
-        let wallet = UpstreamWallet::from_seed_bytes(
-            *seed,
-            self.inner.network,
-            WalletAccountCreationOptions::Default,
-        )
-        .map_err(|e| TaskError::WalletBackend {
-            source: Box::new(platform_wallet::error::PlatformWalletError::WalletCreation(
-                e.to_string(),
-            )),
-        })?;
-        let account_xpub = wallet
-            .accounts
-            .all_accounts()
-            .into_iter()
-            .find(|a| {
-                matches!(
-                    a.account_type,
-                    AccountType::Standard {
-                        index: 0,
-                        standard_account_type: StandardAccountType::BIP44Account,
-                    }
-                )
-            })
-            .map(|a| a.account_xpub.encode().to_vec())
-            .ok_or(TaskError::WalletRegistrationXpubMismatch)?;
+        let wallet = self.seed_wallet(seed)?;
+        let account_xpub = bip44_account0_xpub(wallet.accounts.all_accounts())
+            .map(|x| x.encode().to_vec())
+            // A freshly-built default wallet always has its BIP44 account 0;
+            // its absence is an internal inconsistency, not an xpub mismatch.
+            .ok_or(TaskError::WalletStateInconsistent)?;
         Ok((wallet.wallet_id, account_xpub))
     }
 
@@ -1256,6 +1252,7 @@ impl WalletBackend {
     }
 
     /// Number of wallets currently registered with the backend.
+    #[cfg(test)]
     pub async fn wallet_count(&self) -> usize {
         self.inner.pwm.wallet_ids().await.len()
     }
@@ -1375,19 +1372,18 @@ impl WalletBackend {
         &self,
         reconstructed: &[(WalletSeedHash, crate::model::wallet::Wallet)],
     ) {
-        let wallet_meta: std::collections::BTreeMap<WalletSeedHash, WalletPromptMeta> =
-            reconstructed
-                .iter()
-                .map(|(seed_hash, wallet)| {
-                    (
-                        *seed_hash,
-                        WalletPromptMeta {
-                            alias: wallet.alias.clone(),
-                            password_hint: wallet.password_hint().clone(),
-                        },
-                    )
-                })
-                .collect();
+        let wallet_meta: std::collections::BTreeMap<WalletSeedHash, PromptMeta> = reconstructed
+            .iter()
+            .map(|(seed_hash, wallet)| {
+                (
+                    *seed_hash,
+                    PromptMeta {
+                        alias: wallet.alias.clone(),
+                        password_hint: wallet.password_hint().clone(),
+                    },
+                )
+            })
+            .collect();
         self.inner.secret_access.set_wallet_meta(wallet_meta);
 
         if let Ok(index) = self.inner.single_key_index.read() {
@@ -1416,6 +1412,10 @@ impl WalletBackend {
     /// (the chokepoint's unprotected fast-path). The decrypted key is
     /// borrowed by a [`DetSigner`] for the single sign and zeroized when the
     /// scope ends.
+    ///
+    /// Has no production caller yet — single-key *send* is still stubbed
+    /// upstream — but is the documented signing chokepoint for that flow and
+    /// is exercised by unit tests until it is un-gated.
     pub async fn sign_single_key(
         &self,
         address: &str,
@@ -1430,7 +1430,7 @@ impl WalletBackend {
                 let signer = DetSigner::from_held(plaintext, self.inner.network);
                 signer
                     .sign_single_key_ecdsa(msg)
-                    .map_err(|_| TaskError::SingleKeyCryptoFailure)
+                    .map_err(|source| TaskError::SingleKeySignFailed { source })
             })
             .await
     }
@@ -1466,21 +1466,20 @@ impl WalletBackend {
         use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
         let network = self.inner.network;
         let meta_view = self.identity_meta();
-        let index: std::collections::BTreeMap<[u8; 32], secret_access::IdentityPromptMeta> =
-            identities
-                .iter()
-                .map(|qi| {
-                    let id = qi.identity.id().to_buffer();
-                    let password_hint = meta_view.get(network, &id).and_then(|m| m.password_hint);
-                    (
-                        id,
-                        secret_access::IdentityPromptMeta {
-                            alias: Some(qi.to_string()),
-                            password_hint,
-                        },
-                    )
-                })
-                .collect();
+        let index: std::collections::BTreeMap<[u8; 32], secret_access::PromptMeta> = identities
+            .iter()
+            .map(|qi| {
+                let id = qi.identity.id().to_buffer();
+                let password_hint = meta_view.get(network, &id).and_then(|m| m.password_hint);
+                (
+                    id,
+                    secret_access::PromptMeta {
+                        alias: Some(qi.to_string()),
+                        password_hint,
+                    },
+                )
+            })
+            .collect();
         self.inner.secret_access.set_identity_prompt_index(index);
     }
 
@@ -1539,21 +1538,12 @@ impl WalletBackend {
     /// same per-network [`SqlitePersister`] as wallet state — selection
     /// is per-network by construction, no key prefix needed.
     pub fn get_selected_wallet(&self) -> SelectedWallet {
-        match self
-            .kv()
-            .get::<SelectedWallet>(DetScope::Global, SelectedWallet::KV_KEY)
-        {
-            Ok(Some(s)) => s,
-            Ok(None) => SelectedWallet::default(),
-            Err(e) => {
-                tracing::warn!(
-                    network = ?self.inner.network,
-                    error = ?e,
-                    "Failed to load SelectedWallet from wallet k/v; using default"
-                );
-                SelectedWallet::default()
-            }
-        }
+        kv::kv_get_or_default(
+            &self.kv(),
+            DetScope::Global,
+            SelectedWallet::KV_KEY,
+            "selected_wallet",
+        )
     }
 
     /// Persist the [`SelectedWallet`] pointer to this network's wallet
@@ -1570,21 +1560,12 @@ impl WalletBackend {
     /// per-network persister as wallet state — selection is per-network by
     /// construction.
     pub fn get_selected_identity(&self) -> SelectedIdentity {
-        match self
-            .kv()
-            .get::<SelectedIdentity>(DetScope::Global, SelectedIdentity::KV_KEY)
-        {
-            Ok(Some(s)) => s,
-            Ok(None) => SelectedIdentity::default(),
-            Err(e) => {
-                tracing::warn!(
-                    network = ?self.inner.network,
-                    error = ?e,
-                    "Failed to load SelectedIdentity from wallet k/v; using default"
-                );
-                SelectedIdentity::default()
-            }
-        }
+        kv::kv_get_or_default(
+            &self.kv(),
+            DetScope::Global,
+            SelectedIdentity::KV_KEY,
+            "selected_identity",
+        )
     }
 
     /// Persist the [`SelectedIdentity`] pointer to this network's wallet
@@ -1736,10 +1717,6 @@ impl WalletBackend {
         use dash_sdk::dpp::key_wallet::managed_account::ManagedCoreFundsAccount;
         use dash_sdk::dpp::key_wallet::managed_account::managed_account_trait::ManagedAccountTrait;
         use dash_sdk::dpp::key_wallet::managed_account::managed_account_type::ManagedAccountType;
-        use dash_sdk::dpp::key_wallet::wallet::Wallet as UpstreamWallet;
-        use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOptions;
-        use platform_wallet::error::PlatformWalletError;
-
         if contacts.is_empty() {
             return Ok(0);
         }
@@ -1750,11 +1727,7 @@ impl WalletBackend {
         // The DIP-15 receiving path is hardened, so derive the account xpubs
         // from a signable seed-built wallet — the live wallet is watch-only and
         // cannot derive hardened paths. Built once, reused for every contact.
-        let seed_wallet =
-            UpstreamWallet::from_seed_bytes(*seed, network, WalletAccountCreationOptions::Default)
-                .map_err(|e| TaskError::WalletBackend {
-                    source: Box::new(PlatformWalletError::WalletCreation(e.to_string())),
-                })?;
+        let seed_wallet = self.seed_wallet(seed)?;
 
         let mut accounts = Vec::with_capacity(contacts.len());
         for (owner, contact) in contacts {
@@ -1867,6 +1840,30 @@ impl WalletBackend {
         owner_id: &dash_sdk::platform::Identifier,
         contact_request: platform_wallet::ContactRequest,
     ) -> Result<(), TaskError> {
+        self.record_contact_request(
+            seed_hash,
+            owner_id,
+            contact_request,
+            ContactRequestRecord::Sent,
+        )
+        .await
+    }
+
+    /// Shared body for [`Self::record_sent_contact_request`] and
+    /// [`Self::record_incoming_contact_request`]: record `contact_request` on
+    /// the given `direction` into `owner_id`'s local wallet-manager, persisting
+    /// the resulting changeset.
+    ///
+    /// Non-fatal when the managed identity is not yet in the manager — logs a
+    /// direction-specific warning and returns `Ok(())` since the state
+    /// transition was already committed to Platform.
+    async fn record_contact_request(
+        &self,
+        seed_hash: &WalletSeedHash,
+        owner_id: &dash_sdk::platform::Identifier,
+        contact_request: platform_wallet::ContactRequest,
+        direction: ContactRequestRecord,
+    ) -> Result<(), TaskError> {
         let wallet = self.resolve_wallet(seed_hash).await?;
         let wallet_id = wallet.wallet_id();
         let persister = wallet.persister().clone();
@@ -1876,20 +1873,31 @@ impl WalletBackend {
             .ok_or(TaskError::WalletStateInconsistent)?;
         match info.identity_manager.managed_identity_mut(owner_id) {
             Some(managed) => {
-                managed
-                    .add_sent_contact_request(contact_request, &persister)
-                    .map_err(|e| TaskError::WalletBackend {
-                        source: Box::new(e.into()),
-                    })?;
+                let recorded = match direction {
+                    ContactRequestRecord::Sent => {
+                        managed.add_sent_contact_request(contact_request, &persister)
+                    }
+                    ContactRequestRecord::Incoming => {
+                        managed.add_incoming_contact_request(contact_request, &persister)
+                    }
+                };
+                recorded.map_err(|e| TaskError::WalletBackend {
+                    source: Box::new(e.into()),
+                })?;
             }
-            None => {
-                tracing::warn!(
+            None => match direction {
+                ContactRequestRecord::Sent => tracing::warn!(
                     owner_id = %owner_id,
                     "record_sent_contact_request: managed identity not \
                      found; state transition committed but local manager \
                      not updated",
-                );
-            }
+                ),
+                ContactRequestRecord::Incoming => tracing::warn!(
+                    owner_id = %owner_id,
+                    "record_incoming_contact_request: managed identity not \
+                     found; auto-establishment will depend on dashpay_sync",
+                ),
+            },
         }
         Ok(())
     }
@@ -1920,59 +1928,18 @@ impl WalletBackend {
         owner_id: &dash_sdk::platform::Identifier,
         contact_request: platform_wallet::ContactRequest,
     ) -> Result<(), TaskError> {
-        let wallet = self.resolve_wallet(seed_hash).await?;
-        let wallet_id = wallet.wallet_id();
-        let persister = wallet.persister().clone();
-        let mut wm = wallet.wallet_manager().write().await;
-        let info = wm
-            .get_wallet_info_mut(&wallet_id)
-            .ok_or(TaskError::WalletStateInconsistent)?;
-        match info.identity_manager.managed_identity_mut(owner_id) {
-            Some(managed) => {
-                managed
-                    .add_incoming_contact_request(contact_request, &persister)
-                    .map_err(|e| TaskError::WalletBackend {
-                        source: Box::new(e.into()),
-                    })?;
-            }
-            None => {
-                tracing::warn!(
-                    owner_id = %owner_id,
-                    "record_incoming_contact_request: managed identity not \
-                     found; auto-establishment will depend on dashpay_sync",
-                );
-            }
-        }
-        Ok(())
+        self.record_contact_request(
+            seed_hash,
+            owner_id,
+            contact_request,
+            ContactRequestRecord::Incoming,
+        )
+        .await
     }
 
-    /// Durably flush every registered wallet's buffered changesets to the
-    /// upstream persister. Called before the one-time migration's
-    /// strictly-last legacy-table DROP so the new persister is durable
-    /// before any legacy data is destroyed.
-    //
-    // TODO: remove the legacy `single_key_wallet` table ONLY
-    // via
-    // `crate::backend_task::migration::finish_unwire::drop_legacy_single_key_table_when_safe`,
-    // which runs the data-loss gate internally and aborts on error. A
-    // password-protected legacy single-key row is encrypted under the
-    // user's OLD password and has no other copy until T-SK-03 restores it —
-    // dropping the table early is permanent key loss.
-    pub async fn flush_persister(&self) -> Result<(), TaskError> {
-        let ids = self.inner.pwm.wallet_ids().await;
-        for id in ids {
-            if let Some(w) = self.inner.pwm.get_wallet(&id).await {
-                w.flush_persist()
-                    .map_err(|source| TaskError::WalletPersistenceFlushFailed { source })?;
-            }
-        }
-        Ok(())
-    }
-
-    /// Re-run the seedless watch-only load pass (idempotent). Exposed for
-    /// the one-time migration engine and the reload-survival tests; the
-    /// upstream `load_from_persistor` rebuilds each wallet watch-only and
-    /// re-provisions identity funding accounts per loaded wallet.
+    /// Re-run the seedless watch-only load pass (idempotent): the upstream
+    /// `load_from_persistor` rebuilds each wallet watch-only and re-provisions
+    /// identity funding accounts per loaded wallet.
     pub async fn ensure_wallets_registered(&self, ctx: &Arc<AppContext>) -> Result<(), TaskError> {
         self.register_persisted_wallets(ctx).await
     }
@@ -2219,17 +2186,18 @@ impl WalletBackend {
         network: Network,
     ) -> Option<std::net::SocketAddr> {
         use std::net::ToSocketAddrs;
-        if !matches!(network, Network::Devnet | Network::Regtest) {
-            return None;
-        }
+        /// Default Core P2P port on Devnet.
+        const DEVNET_P2P_PORT: u16 = 20001;
+        /// Default Core P2P port on Regtest.
+        const REGTEST_P2P_PORT: u16 = 19899;
+
+        let port = match network {
+            Network::Devnet => DEVNET_P2P_PORT,
+            Network::Regtest => REGTEST_P2P_PORT,
+            _ => return None,
+        };
         let cfg = ctx.config.read().ok()?;
         let host = cfg.core_host.as_deref()?;
-        let port = match network {
-            Network::Mainnet => 9999,
-            Network::Testnet => 19999,
-            Network::Devnet => 20001,
-            Network::Regtest => 19899,
-        };
         format!("{host}:{port}").to_socket_addrs().ok()?.next()
     }
 
@@ -2239,15 +2207,35 @@ impl WalletBackend {
     ) -> Result<std::path::PathBuf, TaskError> {
         let mut dir = app_data_dir.to_path_buf();
         dir.push("spv");
-        dir.push(match network {
-            Network::Mainnet => "mainnet",
-            Network::Testnet => "testnet",
-            Network::Devnet => "devnet",
-            Network::Regtest => "regtest",
-        });
+        dir.push(kv::network_prefix(network));
         std::fs::create_dir_all(&dir).map_err(|source| TaskError::FileSystem { source })?;
         Ok(dir)
     }
+}
+
+/// The BIP44 account-0 extended public key among `accounts`, or `None` when
+/// there is no BIP44 account-0.
+///
+/// The single definition of the fund-routing gate's account predicate: DET
+/// resolves a watch-only wallet to its seed by matching this exact account
+/// xpub, so the predicate must not drift between the seedless-load path and the
+/// pre-registration probe.
+fn bip44_account0_xpub<'a>(
+    accounts: impl IntoIterator<Item = &'a dash_sdk::dpp::key_wallet::Account>,
+) -> Option<dash_sdk::dpp::key_wallet::bip32::ExtendedPubKey> {
+    use dash_sdk::dpp::key_wallet::account::{AccountType, StandardAccountType};
+    accounts
+        .into_iter()
+        .find(|a| {
+            matches!(
+                a.account_type,
+                AccountType::Standard {
+                    index: 0,
+                    standard_account_type: StandardAccountType::BIP44Account,
+                }
+            )
+        })
+        .map(|a| a.account_xpub)
 }
 
 /// Map a [`PlatformWalletError`] from any shielded operation to the correct
@@ -2305,8 +2293,13 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
             source: Box::new(other),
         },
 
-        // ShieldedSpendUnconfirmed handled by the pre-flight above — unreachable.
-        P::ShieldedSpendUnconfirmed { .. } => unreachable!("handled by pre-flight"),
+        // Handled by the pre-flight above. Kept as a defensive fallthrough
+        // rather than `unreachable!`: this is a funds-safety path, so if the
+        // pre-flight ever stops covering a case it must degrade to the generic
+        // wrapper, never panic mid-operation.
+        other @ P::ShieldedSpendUnconfirmed { .. } => TaskError::WalletBackend {
+            source: Box::new(other),
+        },
 
         // Every remaining variant → generic WalletBackend wrapper.
         other @ (P::WalletCreation(_)
@@ -3077,7 +3070,6 @@ mod tests {
     /// [`WalletBackend::load_from_persistor_seedless`] gate relies on.
     #[test]
     fn bridge_account_xpub_matches_upstream_for_same_seed() {
-        use dash_sdk::dpp::key_wallet::account::{AccountType, StandardAccountType};
         use dash_sdk::dpp::key_wallet::wallet::Wallet as UpstreamWallet;
         use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOptions;
 
@@ -3094,20 +3086,8 @@ mod tests {
         let up =
             UpstreamWallet::from_seed_bytes(seed, network, WalletAccountCreationOptions::Default)
                 .expect("upstream wallet");
-        let up_xpub = up
-            .accounts
-            .all_accounts()
-            .into_iter()
-            .find(|a| {
-                matches!(
-                    a.account_type,
-                    AccountType::Standard {
-                        index: 0,
-                        standard_account_type: StandardAccountType::BIP44Account,
-                    }
-                )
-            })
-            .map(|a| a.account_xpub.encode().to_vec())
+        let up_xpub = bip44_account0_xpub(up.accounts.all_accounts())
+            .map(|x| x.encode().to_vec())
             .expect("upstream BIP44 account");
 
         assert_eq!(
@@ -3183,19 +3163,7 @@ mod tests {
         let network = Network::Testnet;
 
         let find_bip44_0 = |w: &UpstreamWallet| {
-            w.accounts
-                .all_accounts()
-                .into_iter()
-                .find(|a| {
-                    matches!(
-                        a.account_type,
-                        AccountType::Standard {
-                            index: 0,
-                            standard_account_type: StandardAccountType::BIP44Account,
-                        }
-                    )
-                })
-                .map(|a| a.account_xpub)
+            bip44_account0_xpub(w.accounts.all_accounts())
                 .expect("a fresh Default wallet must contain a BIP44 account-0")
         };
 

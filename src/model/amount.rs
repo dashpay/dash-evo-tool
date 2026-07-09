@@ -1,7 +1,5 @@
 use bincode::{Decode, Encode};
 use dash_sdk::dpp::balances::credits::{CREDITS_PER_DUFF, Duffs, TokenAmount};
-use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
-use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::accessors::v0::TokenConfigurationConventionV0Getters;
 use serde::{Deserialize, Serialize};
 use std::fmt::{Debug, Display};
 
@@ -31,8 +29,16 @@ pub struct Amount {
 }
 
 impl PartialOrd for Amount {
+    /// Orders two amounts by their underlying value, but only when they refer to
+    /// the same token (matching unit name and decimal places). Amounts of
+    /// different tokens are not comparable and yield `None`, keeping ordering
+    /// consistent with equality and preventing meaningless cross-token compares.
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.value.cmp(&other.value))
+        if self.is_same_token(other) {
+            Some(self.value.cmp(&other.value))
+        } else {
+            None
+        }
     }
 }
 
@@ -79,18 +85,6 @@ impl Amount {
             decimal_places,
             unit_name: None,
         }
-    }
-
-    /// Creates a new Amount configured for a specific token.
-    ///
-    /// This extracts the decimal places and token alias from the token configuration
-    /// and creates an Amount with the specified value.
-    pub fn from_token(
-        token_info: &crate::ui::tokens::tokens_screen::IdentityTokenInfo,
-        value: TokenAmount,
-    ) -> Self {
-        let decimal_places = token_info.token_config.conventions().decimals();
-        Self::new(value, decimal_places).with_unit_name(&token_info.token_alias)
     }
 
     /// Creates a new Amount based on a floating-point value.
@@ -357,47 +351,6 @@ impl AsRef<Amount> for Amount {
     }
 }
 
-/// Conversion implementations for token types
-impl From<&crate::ui::tokens::tokens_screen::IdentityTokenBalance> for Amount {
-    /// Converts an IdentityTokenBalance to an Amount.
-    ///
-    /// The decimal places are automatically determined from the token configuration,
-    /// and the token alias is used as the unit name.
-    fn from(token_balance: &crate::ui::tokens::tokens_screen::IdentityTokenBalance) -> Self {
-        let decimal_places = token_balance.token_config.conventions().decimals();
-        Self::new(token_balance.balance, decimal_places).with_unit_name(&token_balance.token_alias)
-    }
-}
-
-impl From<crate::ui::tokens::tokens_screen::IdentityTokenBalance> for Amount {
-    /// Converts an owned IdentityTokenBalance to an Amount.
-    fn from(token_balance: crate::ui::tokens::tokens_screen::IdentityTokenBalance) -> Self {
-        Self::from(&token_balance)
-    }
-}
-
-impl From<&crate::ui::tokens::tokens_screen::IdentityTokenBalanceWithActions> for Amount {
-    /// Converts an IdentityTokenBalanceWithActions to an Amount.
-    ///
-    /// The decimal places are automatically determined from the token configuration,
-    /// and the token alias is used as the unit name.
-    fn from(
-        token_balance: &crate::ui::tokens::tokens_screen::IdentityTokenBalanceWithActions,
-    ) -> Self {
-        let decimal_places = token_balance.token_config.conventions().decimals();
-        Self::new(token_balance.balance, decimal_places).with_unit_name(&token_balance.token_alias)
-    }
-}
-
-impl From<crate::ui::tokens::tokens_screen::IdentityTokenBalanceWithActions> for Amount {
-    /// Converts an owned IdentityTokenBalanceWithActions to an Amount.
-    fn from(
-        token_balance: crate::ui::tokens::tokens_screen::IdentityTokenBalanceWithActions,
-    ) -> Self {
-        Self::from(&token_balance)
-    }
-}
-
 /// Helper function to convert f64 to u64, with checks for overflow.
 /// It rounds the value to the nearest u64, ensuring it is within bounds.
 fn checked_round(value: f64) -> Result<u64, String> {
@@ -657,6 +610,27 @@ mod tests {
         assert_eq!(multi_word_unit.value(), 10000);
         assert_eq!(multi_word_unit.unit_name(), Some("US Dollar"));
         assert_eq!(format!("{}", multi_word_unit), "100 US Dollar");
+    }
+
+    #[test]
+    fn test_partial_cmp_same_token_orders_by_value() {
+        let a = Amount::new(100, 8).with_unit_name("BTC");
+        let b = Amount::new(200, 8).with_unit_name("BTC");
+        assert!(a < b);
+        assert!(b > a);
+        assert_eq!(a.partial_cmp(&a), Some(std::cmp::Ordering::Equal));
+    }
+
+    #[test]
+    fn test_partial_cmp_different_token_is_incomparable() {
+        let btc = Amount::new(100, 8).with_unit_name("BTC");
+        let usd = Amount::new(100, 8).with_unit_name("USD");
+        let btc_other_decimals = Amount::new(100, 2).with_unit_name("BTC");
+
+        // Different unit name or decimal places => not comparable, so every
+        // ordering query yields `None` and std's comparison operators are false.
+        assert_eq!(btc.partial_cmp(&usd), None);
+        assert_eq!(btc.partial_cmp(&btc_other_decimals), None);
     }
 
     #[test]

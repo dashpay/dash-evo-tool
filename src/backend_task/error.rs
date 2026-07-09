@@ -49,14 +49,30 @@ pub enum TaskError {
     )]
     WalletStateInconsistent,
 
-    /// An account type that this build does not support for identity funding
-    /// was supplied. Guards over [`dash_sdk::dpp::key_wallet::AccountType`],
-    /// which may gain variants upstream, so it is a typed error rather than a
-    /// panic. Not reachable from current call sites.
+    /// A short-lived signable wallet could not be built from the HD seed. DET
+    /// needs it to derive the hardened account xpubs the watch-only live
+    /// wallet cannot derive itself, so a failure here means the seed material
+    /// could not be turned into a usable wallet. The technical cause lives in
+    /// `Debug` and the logs.
     #[error(
-        "This wallet operation is not supported in this version. Update to the latest version to continue."
+        "Your wallet data could not be read correctly. Please restart the application and try again."
     )]
-    UnsupportedIdentityFundingAccount,
+    SeedWalletBuildFailed {
+        #[source]
+        source: dash_sdk::dpp::key_wallet::Error,
+    },
+
+    /// Provisioning an identity-funding account (the registration account or a
+    /// per-identity top-up account) failed while deriving its key or
+    /// registering it with the wallet. The technical cause lives in `Debug`
+    /// and the logs.
+    #[error(
+        "Your wallet data could not be read correctly. Please restart the application and try again."
+    )]
+    IdentityFundingAccountProvisionFailed {
+        #[source]
+        source: dash_sdk::dpp::key_wallet::Error,
+    },
 
     /// Single-key wallets are not supported in this version. Their data is
     /// preserved; HD (recovery-phrase) wallets remain fully functional.
@@ -407,6 +423,20 @@ pub enum TaskError {
         source: Box<crate::wallet_backend::KvAdapterError>,
     },
 
+    /// The DET contact-profile cache (a contact's display name, DPNS username,
+    /// avatar URL, and bio, kept for offline viewing) could not be read or
+    /// written. Lives in the same cross-network `det-app.sqlite` k/v file as
+    /// [`Self::AvatarCacheStorage`]; a failure here only costs the offline
+    /// contact card (the profile re-fetches from the network), so the user hint
+    /// is the same calm disk-space prompt.
+    #[error(
+        "Could not save the contact details for offline use. Check available disk space and try again."
+    )]
+    ContactProfileCacheStorage {
+        #[source]
+        source: Box<crate::wallet_backend::KvAdapterError>,
+    },
+
     /// A WIF-encoded private key supplied by the user could not be parsed.
     /// Wrapped distinctly from [`Self::SecretStore`] so the user sees an
     /// input-shape hint rather than a storage diagnostic.
@@ -536,6 +566,13 @@ pub enum TaskError {
         source: bincode::error::DecodeError,
     },
 
+    /// A token configuration could not be serialized for local storage.
+    #[error("Could not save token data. Check available disk space and try again.")]
+    TokenConfigSerialization {
+        #[source]
+        source: bincode::error::EncodeError,
+    },
+
     /// A per-wallet platform-address-info or sync-cursor entry could not be
     /// read or written in the per-wallet k/v store.
     #[error(
@@ -565,13 +602,6 @@ pub enum TaskError {
     WalletSyncStartFailed {
         #[source]
         source: Box<platform_wallet::error::PlatformWalletError>,
-    },
-
-    /// Buffered wallet data could not be durably written to storage.
-    #[error("Could not save wallet data. Check available disk space and restart the application.")]
-    WalletPersistenceFlushFailed {
-        #[source]
-        source: platform_wallet::changeset::PersistenceError,
     },
 
     /// A wallet just registered with the SPV backend produced an address
@@ -610,7 +640,7 @@ pub enum TaskError {
 
     /// GroveSTARK prover errors.
     #[error("Could not verify platform data. Please retry.")]
-    GroveStark(#[from] crate::model::grovestark_prover::GroveSTARKError),
+    GroveStark(#[from] crate::backend_task::grovestark::GroveSTARKError),
 
     /// Wallet errors.
     #[error(transparent)]
@@ -673,14 +703,6 @@ pub enum TaskError {
     #[error("Wallet is locked. Please unlock your wallet and try again.")]
     WalletLocked,
 
-    /// Refreshing wallet UTXOs from Dash Core failed.
-    #[error("Could not refresh wallet balance. Please try again.")]
-    WalletUtxoReloadFailed { detail: String },
-
-    /// Recalculating address balances after a transaction failed.
-    #[error("Could not update wallet balances after transaction. Please refresh your wallet.")]
-    WalletBalanceRecalculationFailed { detail: String },
-
     /// The requested document could not be found on the platform.
     #[error("The document could not be found. It may have been deleted or the ID is incorrect.")]
     DocumentNotFound,
@@ -724,10 +746,10 @@ pub enum TaskError {
     )]
     ConfirmationTimeout,
 
-    /// The operation's prerequisite was auto-fixed (e.g., Core wallet detected).
-    /// Callers should retry the failed operation.
-    #[error("{0}")]
-    MustRetry(String),
+    /// The Core wallet association was auto-detected and linked; the operation's
+    /// prerequisite is now satisfied. Callers should retry the failed operation.
+    #[error("Detected the Core wallet '{wallet_name}'. Retrying your last action now.")]
+    CoreWalletAutoDetected { wallet_name: String },
 
     /// Duplicate identity public key — this key's hash is already registered and
     /// the key is marked as unique, so it cannot be reused.
@@ -908,7 +930,10 @@ pub enum TaskError {
     #[error(
         "Could not prepare wallet addresses for sync. Please close and reopen your wallet, then retry."
     )]
-    WalletAddressProviderSetupFailed { detail: String },
+    WalletAddressProviderSetupFailed {
+        #[source]
+        source: crate::database::WalletError,
+    },
 
     /// A Core address could not be converted to a Platform address.
     #[error("Could not convert a wallet address for platform use. Please retry.")]
@@ -1039,13 +1064,6 @@ pub enum TaskError {
     DataContractNotFound,
 
     // ──────────────────────────────────────────────────────────────────────────
-    // Serialization errors
-    // ──────────────────────────────────────────────────────────────────────────
-    /// A data serialization or deserialization operation failed (e.g. bincode).
-    #[error("Could not process the data. Please retry the operation.")]
-    SerializationError { detail: String },
-
-    // ──────────────────────────────────────────────────────────────────────────
     // Identity creation / parsing errors
     // ──────────────────────────────────────────────────────────────────────────
     /// The provided identifier could not be parsed from the input.
@@ -1061,7 +1079,7 @@ pub enum TaskError {
 
     /// A private key could not be parsed or is invalid.
     #[error("The private key you entered is invalid. Please check the format and try again.")]
-    InvalidPrivateKey { detail: String },
+    InvalidPrivateKey,
 
     /// Fetching DPNS names for an identity failed.
     #[error("Could not look up names for this identity. Please check your connection and retry.")]
@@ -1252,7 +1270,9 @@ pub enum TaskError {
     #[error(
         "Could not read the withdrawal details. The data may be incomplete or in an unexpected format. Please retry."
     )]
-    WithdrawalDocumentParsingError { detail: String },
+    WithdrawalDocumentParsingError(
+        #[from] crate::backend_task::platform_info::WithdrawalParseError,
+    ),
 
     // ──────────────────────────────────────────────────────────────────────────
     // SDK / RPC setup errors
@@ -1264,10 +1284,6 @@ pub enum TaskError {
     )]
     SdkInitializationFailed { detail: String },
 
-    /// An RPC context provider or Core RPC client could not be constructed.
-    #[error("Could not set up the Dash Core connection. Please check your settings and retry.")]
-    RpcProviderCreationFailed { detail: String },
-
     /// The Core wallet name supplied by the user is syntactically invalid.
     #[error("The Core wallet name '{name}' is invalid. Please check your wallet configuration.")]
     InvalidCoreWalletName { name: String },
@@ -1275,21 +1291,6 @@ pub enum TaskError {
     /// Dash Core has no wallets loaded — required for wallet-scoped RPC calls.
     #[error("No wallets are loaded in Dash Core. Please open a wallet in Dash Core and retry.")]
     NoCoreWalletsLoaded,
-
-    // ──────────────────────────────────────────────────────────────────────────
-    // UTXO / asset-lock transaction build errors
-    // ──────────────────────────────────────────────────────────────────────────
-    /// A UTXO reload or removal operation failed.
-    #[error(
-        "Could not update your unspent transaction outputs. Please check your connection and retry."
-    )]
-    UtxoUpdateFailed { detail: String },
-
-    /// An asset lock transaction could not be built from the current wallet state.
-    #[error(
-        "Could not prepare the funding transaction. Please check your wallet balance and retry."
-    )]
-    AssetLockTransactionBuildFailed { detail: String },
 
     // ──────────────────────────────────────────────────────────────────────────
     // Wallet key / address errors
@@ -1379,10 +1380,6 @@ pub enum TaskError {
         source: dashcore::sighash::Error,
     },
 
-    /// A wallet payment operation failed (covers SPV and RPC payment paths).
-    #[error("Could not complete the payment. Please check your wallet balance and retry.")]
-    WalletPaymentFailed { detail: String },
-
     /// Could not access wallet information from the SPV manager.
     #[error("Your wallet is still loading. Please wait a moment and try again.")]
     WalletInfoUnavailable,
@@ -1467,9 +1464,16 @@ pub enum TaskError {
     // ──────────────────────────────────────────────────────────────────────────
     // Key input validation errors
     // ──────────────────────────────────────────────────────────────────────────
-    /// A raw private-key input string failed format validation.
-    #[error("The {key_name} key is invalid: {detail}. Please check the key format and retry.")]
-    KeyInputValidationFailed { key_name: String, detail: String },
+    /// A raw private-key input string failed format validation. The model
+    /// validator's `Display` is already a complete, actionable user sentence.
+    #[error(transparent)]
+    KeyInputValidationFailed(#[from] crate::model::key_input::KeyInputError),
+
+    /// A supplied private key could not be verified against the identity's keys.
+    #[error("{0} Please check the key and retry.")]
+    IdentityKeyVerificationFailed(
+        #[from] crate::backend_task::identity::KeyVerificationError,
+    ),
 
     /// The identity's public keys could not be converted to the platform format.
     #[error("Could not process the identity keys. Please check your key configuration and retry.")]
@@ -1536,10 +1540,6 @@ pub enum TaskError {
     /// The platform address was not found in the wallet's platform address info.
     #[error("The platform address could not be found in your wallet. Please refresh and retry.")]
     PlatformAddressNotFound,
-
-    /// A Merkle witness could not be obtained for a shielded note.
-    #[error("Could not prepare the shielded transaction. Please sync your notes and retry.")]
-    ShieldedMerkleWitnessUnavailable { detail: String },
 
     /// Failed to build a shielded state transition (shield, transfer, unshield, withdrawal).
     #[error("Could not build the shielded transaction. Please retry.")]
@@ -1703,13 +1703,7 @@ pub enum TaskError {
     #[error(
         "Could not sync shielded notes from the platform. Please check your connection and retry."
     )]
-    ShieldedSyncFailed { detail: String },
-
-    /// Failed to append or checkpoint the shielded commitment tree.
-    #[error(
-        "Could not update the local shielded data. Please check available disk space and retry."
-    )]
-    ShieldedTreeUpdateFailed { detail: String },
+    ShieldedSyncFailed(#[source] Box<SdkError>),
 
     /// Failed to persist a decrypted shielded note to the local sidecar.
     ///
@@ -1723,10 +1717,6 @@ pub enum TaskError {
         #[source]
         source: rusqlite::Error,
     },
-
-    /// Nullifier sync failed.
-    #[error("Could not check for spent shielded notes. Please check your connection and retry.")]
-    ShieldedNullifierSyncFailed { detail: String },
 
     /// The shielded transition fee could not be computed for the active
     /// protocol version.
@@ -1752,7 +1742,7 @@ pub enum TaskError {
     // ──────────────────────────────────────────────────────────────────────────
     /// Creating a network context failed during a network switch.
     #[error("Could not connect to {network}. Check your network configuration and retry.")]
-    NetworkContextCreationFailed { network: Network, detail: String },
+    NetworkContextCreationFailed { network: Network },
 
     // ──────────────────────────────────────────────────────────────────────────
     // Migration errors
@@ -1839,6 +1829,16 @@ pub enum TaskError {
         "Could not protect this imported key with a passphrase. Try again, or import it without a passphrase for now."
     )]
     SingleKeyCryptoFailure,
+
+    /// Raw ECDSA signing with an imported single key failed inside the JIT
+    /// signer. Distinct from [`Self::SingleKeyCryptoFailure`] (which covers
+    /// passphrase encrypt/decrypt): this carries the typed signer cause so the
+    /// failing digest / secret-kind mismatch is preserved in `Debug` and logs.
+    #[error("Could not sign with this imported key. Please try again.")]
+    SingleKeySignFailed {
+        #[source]
+        source: crate::wallet_backend::DetSignerError,
+    },
 
     /// A protected single-key restore (T-SK-03) was requested for an
     /// address that is not present as an un-restored `uses_password=1`
@@ -1979,17 +1979,22 @@ pub fn is_rpc_connection_error(e: &dashcore_rpc::Error) -> bool {
     false
 }
 
+/// Extracts the consensus error carried by an SDK error, whether it arrived as a
+/// broadcast-rejection cause or a direct protocol consensus error.
+pub fn consensus_cause(error: &SdkError) -> Option<&ConsensusError> {
+    match error {
+        SdkError::StateTransitionBroadcastError(broadcast_err) => broadcast_err.cause.as_ref(),
+        SdkError::Protocol(ProtocolError::ConsensusError(ce)) => Some(ce.as_ref()),
+        _ => None,
+    }
+}
+
 /// Returns `true` when the SDK error indicates an invalid instant asset lock
 /// proof signature — the structured equivalent of the old string-matching
 /// on `"Instant lock proof signature is invalid"`.
 pub fn is_instant_lock_proof_invalid(error: &SdkError) -> bool {
-    let consensus_error = match error {
-        SdkError::StateTransitionBroadcastError(broadcast_err) => broadcast_err.cause.as_ref(),
-        SdkError::Protocol(ProtocolError::ConsensusError(ce)) => Some(ce.as_ref()),
-        _ => None,
-    };
     matches!(
-        consensus_error,
+        consensus_cause(error),
         Some(ConsensusError::BasicError(
             BasicError::InvalidInstantAssetLockProofSignatureError(_),
         ))
@@ -2097,11 +2102,7 @@ pub fn shielded_build_error(detail: String) -> TaskError {
 /// `ShieldedInsufficientPoolNotes` when matched, falling back to
 /// `ShieldedBroadcastFailed` otherwise.
 pub fn shielded_broadcast_error(e: SdkError) -> TaskError {
-    let consensus_error = match &e {
-        SdkError::StateTransitionBroadcastError(broadcast_err) => broadcast_err.cause.as_ref(),
-        SdkError::Protocol(ProtocolError::ConsensusError(ce)) => Some(ce.as_ref()),
-        _ => None,
-    };
+    let consensus_error = consensus_cause(&e);
     if let Some(ConsensusError::StateError(StateError::InsufficientPoolNotesError(pool_err))) =
         consensus_error
     {
@@ -2139,6 +2140,38 @@ impl<T> From<std::sync::PoisonError<T>> for TaskError {
     fn from(_: std::sync::PoisonError<T>) -> Self {
         TaskError::LockPoisoned {
             resource: std::any::type_name::<T>(),
+        }
+    }
+}
+
+impl From<crate::model::wallet::passphrase::PassphraseError> for TaskError {
+    fn from(e: crate::model::wallet::passphrase::PassphraseError) -> Self {
+        use crate::model::wallet::passphrase::PassphraseError;
+        match e {
+            PassphraseError::TooShort { min } => TaskError::SingleKeyPassphraseTooShort { min },
+            PassphraseError::Mismatch => TaskError::SingleKeyPassphraseMismatch,
+        }
+    }
+}
+
+impl From<crate::model::wallet::PaymentValidationError> for TaskError {
+    fn from(e: crate::model::wallet::PaymentValidationError) -> Self {
+        use crate::model::wallet::PaymentValidationError;
+        match e {
+            PaymentValidationError::NoRecipients => TaskError::PaymentNoRecipients,
+            PaymentValidationError::ZeroAmount => TaskError::PaymentZeroAmount,
+        }
+    }
+}
+
+impl From<crate::model::wallet::WalletCreationError> for TaskError {
+    fn from(e: crate::model::wallet::WalletCreationError) -> Self {
+        use crate::model::wallet::WalletCreationError;
+        match e {
+            WalletCreationError::Encryption { detail } => TaskError::EncryptionError { detail },
+            WalletCreationError::KeyDerivation { source } => {
+                TaskError::WalletKeyDerivationFailed { source }
+            }
         }
     }
 }
@@ -2194,340 +2227,211 @@ impl From<SdkError> for TaskError {
             }
         }
 
-        enum ConsensusKind {
-            DuplicateKey,
-            DuplicateKeyId,
-            ContractBoundsConflict(String),
-            InvalidInstantLockProof,
-            InsufficientBalance {
-                available: u64,
-                required: u64,
-            },
-            AssetLockOutPointInsufficientBalance {
-                available: u64,
-                required: u64,
-            },
-            InsufficientPoolNotes {
-                current_count: u64,
-                minimum_required: u64,
-            },
-            InvalidTokenNameCharacter {
-                form: String,
-                token_name: String,
-            },
-            InvalidTokenNameLength {
-                form: String,
-                actual: usize,
-                min: usize,
-                max: usize,
-            },
-            InvalidTokenLanguageCode {
-                language_code: String,
-            },
-            TokenDecimalsOverLimit {
-                decimals: u8,
-                max_decimals: u8,
-            },
-            InvalidTokenBaseSupply {
-                base_supply: u64,
-            },
-            RecipientIdentityNotFound {
-                recipient_id: String,
-            },
-            TokenAccountNotFrozen {
-                identity_id: String,
-                token_id: String,
-                action: String,
-            },
-        }
+        // Each consensus arm names its DPP pattern and the `TaskError` it maps to
+        // in one place; the returned closure defers boxing the SDK error until
+        // after the borrow-checked match on the consensus cause ends.
+        type SdkErrorMapper = Box<dyn FnOnce(Box<SdkError>) -> TaskError>;
 
-        let kind: Option<ConsensusKind> = {
-            let consensus_error = match &error {
-                SdkError::StateTransitionBroadcastError(broadcast_err) => {
-                    broadcast_err.cause.as_ref()
-                }
-                SdkError::Protocol(ProtocolError::ConsensusError(ce)) => Some(ce.as_ref()),
-                _ => None,
-            };
-
-            consensus_error
-                .and_then(|ce| match ce {
+        let mapper: Option<SdkErrorMapper> = consensus_cause(&error)
+            .and_then(|ce| -> Option<SdkErrorMapper> {
+                match ce {
                     ConsensusError::StateError(
                         StateError::DuplicatedIdentityPublicKeyStateError(_),
-                    ) => Some(ConsensusKind::DuplicateKey),
+                    ) => Some(Box::new(|source_error| {
+                        TaskError::DuplicateIdentityPublicKey { source_error }
+                    })),
                     ConsensusError::StateError(
                         StateError::DuplicatedIdentityPublicKeyIdStateError(_),
-                    ) => Some(ConsensusKind::DuplicateKeyId),
+                    ) => Some(Box::new(|source_error| {
+                        TaskError::DuplicateIdentityPublicKeyId { source_error }
+                    })),
                     ConsensusError::StateError(
                         StateError::IdentityPublicKeyAlreadyExistsForUniqueContractBoundsError(e),
-                    ) => Some(ConsensusKind::ContractBoundsConflict(
-                        e.contract_id().to_string(Encoding::Base58),
-                    )),
+                    ) => {
+                        let contract_id = e.contract_id().to_string(Encoding::Base58);
+                        Some(Box::new(move |source_error| {
+                            TaskError::IdentityPublicKeyContractBoundsConflict {
+                                contract_id,
+                                source_error,
+                            }
+                        }))
+                    }
                     ConsensusError::StateError(StateError::IdentityInsufficientBalanceError(e)) => {
-                        Some(ConsensusKind::InsufficientBalance {
-                            available: e.balance(),
-                            required: e.required_balance(),
-                        })
+                        let (available, required) = (e.balance(), e.required_balance());
+                        Some(Box::new(move |source_error| {
+                            TaskError::IdentityInsufficientBalance {
+                                available,
+                                required,
+                                source_error,
+                            }
+                        }))
                     }
                     ConsensusError::BasicError(
                         BasicError::InvalidInstantAssetLockProofSignatureError(_),
-                    ) => Some(ConsensusKind::InvalidInstantLockProof),
+                    ) => Some(Box::new(|source_error| {
+                        TaskError::AssetLockInstantLockProofInvalid { source_error }
+                    })),
                     ConsensusError::BasicError(
                         BasicError::IdentityAssetLockTransactionOutPointNotEnoughBalanceError(e),
-                    ) => Some(ConsensusKind::AssetLockOutPointInsufficientBalance {
-                        available: e.credits_left(),
-                        required: e.credits_required(),
-                    }),
+                    ) => {
+                        let (available, required) = (e.credits_left(), e.credits_required());
+                        Some(Box::new(move |source_error| {
+                            TaskError::AssetLockOutPointInsufficientBalance {
+                                available,
+                                required,
+                                source_error,
+                            }
+                        }))
+                    }
                     ConsensusError::StateError(StateError::InsufficientPoolNotesError(e)) => {
-                        Some(ConsensusKind::InsufficientPoolNotes {
-                            current_count: e.current_count(),
-                            minimum_required: e.minimum_required(),
-                        })
+                        let (current_count, minimum_required) =
+                            (e.current_count(), e.minimum_required());
+                        Some(Box::new(move |source_error| {
+                            TaskError::ShieldedInsufficientPoolNotes {
+                                current_count,
+                                minimum_required,
+                                source_error,
+                            }
+                        }))
                     }
                     ConsensusError::BasicError(BasicError::InvalidTokenNameCharacterError(e)) => {
-                        Some(ConsensusKind::InvalidTokenNameCharacter {
-                            form: e.form().to_string(),
-                            token_name: e.token_name().to_string(),
-                        })
+                        let (form, token_name) = (e.form().to_string(), e.token_name().to_string());
+                        Some(Box::new(move |source_error| {
+                            TaskError::InvalidTokenNameCharacter {
+                                form,
+                                token_name,
+                                source_error,
+                            }
+                        }))
                     }
                     ConsensusError::BasicError(BasicError::InvalidTokenNameLengthError(e)) => {
-                        Some(ConsensusKind::InvalidTokenNameLength {
-                            form: e.form().to_string(),
-                            actual: e.actual(),
-                            min: e.min(),
-                            max: e.max(),
-                        })
+                        let (form, actual, min, max) =
+                            (e.form().to_string(), e.actual(), e.min(), e.max());
+                        Some(Box::new(move |source_error| {
+                            TaskError::InvalidTokenNameLength {
+                                form,
+                                actual,
+                                min,
+                                max,
+                                source_error,
+                            }
+                        }))
                     }
                     ConsensusError::BasicError(BasicError::InvalidTokenLanguageCodeError(e)) => {
-                        Some(ConsensusKind::InvalidTokenLanguageCode {
-                            language_code: e.language_code().to_string(),
-                        })
+                        let language_code = e.language_code().to_string();
+                        Some(Box::new(move |source_error| {
+                            TaskError::InvalidTokenLanguageCode {
+                                language_code,
+                                source_error,
+                            }
+                        }))
                     }
                     ConsensusError::BasicError(BasicError::DecimalsOverLimitError(e)) => {
-                        Some(ConsensusKind::TokenDecimalsOverLimit {
-                            decimals: e.decimals(),
-                            max_decimals: e.max_decimals(),
-                        })
+                        let (decimals, max_decimals) = (e.decimals(), e.max_decimals());
+                        Some(Box::new(move |source_error| {
+                            TaskError::TokenDecimalsOverLimit {
+                                decimals,
+                                max_decimals,
+                                source_error,
+                            }
+                        }))
                     }
                     ConsensusError::BasicError(BasicError::InvalidTokenBaseSupplyError(e)) => {
-                        Some(ConsensusKind::InvalidTokenBaseSupply {
-                            base_supply: e.base_supply(),
-                        })
+                        let base_supply = e.base_supply();
+                        Some(Box::new(move |source_error| {
+                            TaskError::InvalidTokenBaseSupply {
+                                base_supply,
+                                source_error,
+                            }
+                        }))
                     }
                     ConsensusError::StateError(StateError::RecipientIdentityDoesNotExistError(
                         e,
-                    )) => Some(ConsensusKind::RecipientIdentityNotFound {
-                        recipient_id: e.recipient_id().to_string(Encoding::Base58),
-                    }),
+                    )) => {
+                        let recipient_id = e.recipient_id().to_string(Encoding::Base58);
+                        Some(Box::new(move |source_error| {
+                            TaskError::TokenRecipientIdentityNotFound {
+                                recipient_id,
+                                source_error,
+                            }
+                        }))
+                    }
                     ConsensusError::StateError(StateError::IdentityTokenAccountNotFrozenError(
                         e,
-                    )) => Some(ConsensusKind::TokenAccountNotFrozen {
-                        identity_id: e.identity_id().to_string(Encoding::Base58),
-                        token_id: e.token_id().to_string(Encoding::Base58),
-                        action: e.action().to_string(),
-                    }),
-                    _ => None,
-                })
-                .or_else(|| {
-                    if let SdkError::StateTransitionBroadcastError(broadcast_err) = &error
-                        && broadcast_err.cause.is_none()
-                    {
-                        let msg = broadcast_err.message.to_lowercase();
-                        if msg.contains("duplicate") {
-                            return Some(ConsensusKind::DuplicateKey);
-                        }
+                    )) => {
+                        let (identity_id, token_id, action) = (
+                            e.identity_id().to_string(Encoding::Base58),
+                            e.token_id().to_string(Encoding::Base58),
+                            e.action().to_string(),
+                        );
+                        Some(Box::new(move |source_error| {
+                            TaskError::TokenAccountNotFrozen {
+                                identity_id,
+                                token_id,
+                                action,
+                                source_error,
+                            }
+                        }))
                     }
-                    None
-                })
-        };
+                    _ => None,
+                }
+            })
+            .or_else(|| -> Option<SdkErrorMapper> {
+                if let SdkError::StateTransitionBroadcastError(broadcast_err) = &error
+                    && broadcast_err.cause.is_none()
+                    && broadcast_err.message.to_lowercase().contains("duplicate")
+                {
+                    return Some(Box::new(|source_error| {
+                        TaskError::DuplicateIdentityPublicKey { source_error }
+                    }));
+                }
+                None
+            });
+
+        if let Some(mapper) = mapper {
+            return mapper(Box::new(error));
+        }
 
         let boxed = Box::new(error);
-        match kind {
-            Some(ConsensusKind::DuplicateKey) => TaskError::DuplicateIdentityPublicKey {
-                source_error: boxed,
-            },
-            Some(ConsensusKind::DuplicateKeyId) => TaskError::DuplicateIdentityPublicKeyId {
-                source_error: boxed,
-            },
-            Some(ConsensusKind::ContractBoundsConflict(contract_id)) => {
-                TaskError::IdentityPublicKeyContractBoundsConflict {
-                    contract_id,
-                    source_error: boxed,
-                }
-            }
-            Some(ConsensusKind::InvalidInstantLockProof) => {
-                TaskError::AssetLockInstantLockProofInvalid {
-                    source_error: boxed,
-                }
-            }
-            Some(ConsensusKind::InsufficientBalance {
-                available,
-                required,
-            }) => TaskError::IdentityInsufficientBalance {
-                available,
-                required,
-                source_error: boxed,
-            },
-            Some(ConsensusKind::AssetLockOutPointInsufficientBalance {
-                available,
-                required,
-            }) => TaskError::AssetLockOutPointInsufficientBalance {
-                available,
-                required,
-                source_error: boxed,
-            },
-            Some(ConsensusKind::InsufficientPoolNotes {
-                current_count,
-                minimum_required,
-            }) => TaskError::ShieldedInsufficientPoolNotes {
-                current_count,
-                minimum_required,
-                source_error: boxed,
-            },
-            Some(ConsensusKind::InvalidTokenNameCharacter { form, token_name }) => {
-                TaskError::InvalidTokenNameCharacter {
-                    form,
-                    token_name,
-                    source_error: boxed,
-                }
-            }
-            Some(ConsensusKind::InvalidTokenNameLength {
-                form,
-                actual,
-                min,
-                max,
-            }) => TaskError::InvalidTokenNameLength {
-                form,
-                actual,
-                min,
-                max,
-                source_error: boxed,
-            },
-            Some(ConsensusKind::InvalidTokenLanguageCode { language_code }) => {
-                TaskError::InvalidTokenLanguageCode {
-                    language_code,
-                    source_error: boxed,
-                }
-            }
-            Some(ConsensusKind::TokenDecimalsOverLimit {
-                decimals,
-                max_decimals,
-            }) => TaskError::TokenDecimalsOverLimit {
-                decimals,
-                max_decimals,
-                source_error: boxed,
-            },
-            Some(ConsensusKind::InvalidTokenBaseSupply { base_supply }) => {
-                TaskError::InvalidTokenBaseSupply {
-                    base_supply,
-                    source_error: boxed,
-                }
-            }
-            Some(ConsensusKind::RecipientIdentityNotFound { recipient_id }) => {
-                TaskError::TokenRecipientIdentityNotFound {
-                    recipient_id,
-                    source_error: boxed,
-                }
-            }
-            Some(ConsensusKind::TokenAccountNotFrozen {
-                identity_id,
-                token_id,
-                action,
-            }) => TaskError::TokenAccountNotFrozen {
-                identity_id,
-                token_id,
-                action,
-                source_error: boxed,
-            },
-            None => {
-                // Extract timeout duration before consuming boxed.
-                let timeout_secs = if let SdkError::TimeoutReached(d, _) = &*boxed {
-                    Some(d.as_secs())
-                } else {
-                    None
-                };
+        // Extract timeout duration before consuming boxed.
+        let timeout_secs = if let SdkError::TimeoutReached(d, _) = &*boxed {
+            Some(d.as_secs())
+        } else {
+            None
+        };
 
-                match &*boxed {
-                    // gRPC transport errors
-                    SdkError::DapiClientError(DapiClientError::Transport(
-                        TransportError::Grpc(status),
-                    )) => match status.code() {
-                        Code::Unavailable => {
-                            let msg = status.message().to_lowercase();
-                            if msg.contains("timed out") || msg.contains("timeout") {
-                                TaskError::DapiTimeout {
-                                    source_error: boxed,
-                                }
-                            } else if msg.contains("connect error")
-                                || msg.contains("connection refused")
-                            {
-                                TaskError::DapiConnectionRefused {
-                                    source_error: boxed,
-                                }
-                            } else {
-                                TaskError::DapiUnavailable {
-                                    source_error: boxed,
-                                }
+        match &*boxed {
+            // gRPC transport errors
+            SdkError::DapiClientError(DapiClientError::Transport(TransportError::Grpc(status))) => {
+                match status.code() {
+                    Code::Unavailable => {
+                        let msg = status.message().to_lowercase();
+                        if msg.contains("timed out") || msg.contains("timeout") {
+                            TaskError::DapiTimeout {
+                                source_error: boxed,
                             }
-                        }
-                        Code::Internal => TaskError::DapiInternalError {
-                            source_error: boxed,
-                        },
-                        Code::DeadlineExceeded => TaskError::DapiDeadlineExceeded {
-                            source_error: boxed,
-                        },
-                        Code::Unauthenticated | Code::PermissionDenied => {
-                            TaskError::DapiAccessDenied {
+                        } else if msg.contains("connect error")
+                            || msg.contains("connection refused")
+                        {
+                            TaskError::DapiConnectionRefused {
+                                source_error: boxed,
+                            }
+                        } else {
+                            TaskError::DapiUnavailable {
                                 source_error: boxed,
                             }
                         }
-                        Code::ResourceExhausted => TaskError::DapiResourceExhausted {
-                            source_error: boxed,
-                        },
-                        _ => TaskError::SdkError {
-                            source_error: boxed,
-                        },
-                    },
-                    // DAPI client errors (non-gRPC)
-                    SdkError::DapiClientError(DapiClientError::NoAvailableAddresses) => {
-                        TaskError::DapiNoAddresses {
-                            source_error: boxed,
-                        }
                     }
-                    SdkError::DapiClientError(DapiClientError::NoAvailableAddressesToRetry(_)) => {
-                        TaskError::DapiAllAddressesExhausted {
-                            source_error: boxed,
-                        }
-                    }
-                    SdkError::DapiClientError(_) => TaskError::SdkError {
+                    Code::Internal => TaskError::DapiInternalError {
                         source_error: boxed,
                     },
-                    // SDK-level errors
-                    SdkError::StateTransitionBroadcastError(_) => TaskError::PlatformRejected {
+                    Code::DeadlineExceeded => TaskError::DapiDeadlineExceeded {
                         source_error: boxed,
                     },
-                    SdkError::TimeoutReached(..) => TaskError::SdkTimeout {
-                        timeout_secs: timeout_secs.unwrap_or(0),
+                    Code::Unauthenticated | Code::PermissionDenied => TaskError::DapiAccessDenied {
                         source_error: boxed,
                     },
-                    SdkError::StaleNode(_) => TaskError::DapiStaleNode {
-                        source_error: boxed,
-                    },
-                    SdkError::NoAvailableAddressesToRetry(_) => {
-                        TaskError::DapiAllAddressesExhausted {
-                            source_error: boxed,
-                        }
-                    }
-                    SdkError::Cancelled(_) => TaskError::OperationCancelled {
-                        source_error: boxed,
-                    },
-                    SdkError::AlreadyExists(_) => TaskError::PlatformAlreadyExists {
-                        source_error: boxed,
-                    },
-                    SdkError::NonceOverflow(_) => TaskError::IdentityNonceOverflow {
-                        source_error: boxed,
-                    },
-                    SdkError::IdentityNonceNotFound(_) => TaskError::IdentityNonceNotFound {
+                    Code::ResourceExhausted => TaskError::DapiResourceExhausted {
                         source_error: boxed,
                     },
                     _ => TaskError::SdkError {
@@ -2535,6 +2439,49 @@ impl From<SdkError> for TaskError {
                     },
                 }
             }
+            // DAPI client errors (non-gRPC)
+            SdkError::DapiClientError(DapiClientError::NoAvailableAddresses) => {
+                TaskError::DapiNoAddresses {
+                    source_error: boxed,
+                }
+            }
+            SdkError::DapiClientError(DapiClientError::NoAvailableAddressesToRetry(_)) => {
+                TaskError::DapiAllAddressesExhausted {
+                    source_error: boxed,
+                }
+            }
+            SdkError::DapiClientError(_) => TaskError::SdkError {
+                source_error: boxed,
+            },
+            // SDK-level errors
+            SdkError::StateTransitionBroadcastError(_) => TaskError::PlatformRejected {
+                source_error: boxed,
+            },
+            SdkError::TimeoutReached(..) => TaskError::SdkTimeout {
+                timeout_secs: timeout_secs.unwrap_or(0),
+                source_error: boxed,
+            },
+            SdkError::StaleNode(_) => TaskError::DapiStaleNode {
+                source_error: boxed,
+            },
+            SdkError::NoAvailableAddressesToRetry(_) => TaskError::DapiAllAddressesExhausted {
+                source_error: boxed,
+            },
+            SdkError::Cancelled(_) => TaskError::OperationCancelled {
+                source_error: boxed,
+            },
+            SdkError::AlreadyExists(_) => TaskError::PlatformAlreadyExists {
+                source_error: boxed,
+            },
+            SdkError::NonceOverflow(_) => TaskError::IdentityNonceOverflow {
+                source_error: boxed,
+            },
+            SdkError::IdentityNonceNotFound(_) => TaskError::IdentityNonceNotFound {
+                source_error: boxed,
+            },
+            _ => TaskError::SdkError {
+                source_error: boxed,
+            },
         }
     }
 }
@@ -2657,9 +2604,14 @@ mod tests {
     }
 
     #[test]
-    fn must_retry_displays_inner_message() {
-        let err = TaskError::MustRetry("Auto-detected Core wallet 'mywallet'".to_string());
-        assert_eq!(err.to_string(), "Auto-detected Core wallet 'mywallet'");
+    fn core_wallet_auto_detected_displays_wallet_name() {
+        let err = TaskError::CoreWalletAutoDetected {
+            wallet_name: "mywallet".to_string(),
+        };
+        assert_eq!(
+            err.to_string(),
+            "Detected the Core wallet 'mywallet'. Retrying your last action now."
+        );
     }
 
     #[test]

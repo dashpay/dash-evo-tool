@@ -22,7 +22,7 @@ use crate::model::qualified_identity::{IdentityType, PrivateKeyTarget, Qualified
 use crate::model::secret::Secret;
 use crate::model::wallet::{Wallet, WalletArcRef, WalletSeedHash};
 use dash_sdk::Sdk;
-use dash_sdk::dashcore_rpc::dashcore::{Address, PrivateKey};
+use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dpp::ProtocolError;
 use dash_sdk::dpp::balances::credits::Duffs;
 use dash_sdk::dpp::dashcore::hashes::Hash;
@@ -416,7 +416,6 @@ pub struct RegisterDpnsNameInput {
 #[derive(Debug, Clone, PartialEq)]
 pub enum IdentityTask {
     LoadIdentity(IdentityInputToLoad),
-    #[allow(dead_code)] // May be used for finding identities in wallets
     SearchIdentityFromWallet(WalletArcRef, IdentityIndex),
     SearchIdentitiesUpToIndex(WalletArcRef, IdentityIndex),
     /// Search for an identity by its DPNS name (without .dash suffix)
@@ -472,37 +471,6 @@ pub enum IdentityTask {
     RegisterDpnsName(RegisterDpnsNameInput),
     RefreshIdentity(QualifiedIdentity),
     RefreshLoadedIdentitiesOwnedDPNSNames,
-}
-
-fn verify_key_input(
-    untrimmed_private_key: Secret,
-    type_key: &str,
-) -> Result<Option<[u8; 32]>, String> {
-    let private_key = untrimmed_private_key.expose_secret().trim();
-    match private_key.len() {
-        64 => {
-            // hex
-            match hex::decode(private_key) {
-                Ok(decoded) => Ok(Some(decoded.try_into().unwrap())),
-                Err(_) => Err(format!(
-                    "{} key is the size of a hex key but isn't hex",
-                    type_key
-                )),
-            }
-        }
-        51 | 52 => {
-            // wif
-            match PrivateKey::from_wif(private_key) {
-                Ok(key) => Ok(Some(key.inner.secret_bytes())),
-                Err(_) => Err(format!(
-                    "{} key is the length of a WIF key but is invalid",
-                    type_key
-                )),
-            }
-        }
-        0 => Ok(None),
-        _ => Err(format!("{} key is of incorrect size", type_key)),
-    }
 }
 
 /// Returns the default key specifications for a new identity.
@@ -632,7 +600,9 @@ pub fn build_identity_registration_with_seed(
 ///
 /// Resolves the wallet's HD seed once through the JIT chokepoint and delegates;
 /// callers that can `await` use this and never read the wallet's parked seed.
-#[allow(dead_code)] // Used by backend-e2e tests
+// Exercised by the backend-e2e integration tests (a separate crate the lib
+// build does not see), so it is dead in the lib build itself.
+#[allow(dead_code)]
 pub async fn build_identity_registration(
     app_context: &Arc<AppContext>,
     wallet_arc: &Arc<RwLock<Wallet>>,
@@ -659,12 +629,29 @@ pub async fn build_identity_registration(
         .await
 }
 
+/// Failure while checking that an identity carries a public key matching a
+/// user-supplied private key.
+#[derive(Debug, thiserror::Error)]
+pub enum KeyVerificationError {
+    /// The identity has no keys of the required purpose.
+    #[error("This identity does not contain any {purpose} keys.")]
+    NoKeysForPurpose { purpose: &'static str },
+
+    /// No public key on the identity matches the supplied private key.
+    #[error("This identity has no {purpose} public key matching this private key.")]
+    NoMatchingKey { purpose: &'static str },
+
+    /// The public key could not be derived from the supplied private key.
+    #[error("The public key could not be derived from the supplied private key.")]
+    PublicKeyDerivation(#[source] Box<ProtocolError>),
+}
+
 impl AppContext {
     fn verify_voting_key_exists_on_identity(
         &self,
         voting_identity: &Identity,
         private_voting_key: &[u8; 32],
-    ) -> Result<IdentityPublicKey, String> {
+    ) -> Result<IdentityPublicKey, KeyVerificationError> {
         // We start by getting all the voting keys
         let voting_keys: Vec<IdentityPublicKey> = voting_identity
             .public_keys()
@@ -677,7 +664,7 @@ impl AppContext {
             })
             .collect();
         if voting_keys.is_empty() {
-            return Err("This identity does not contain any voting keys".to_string());
+            return Err(KeyVerificationError::NoKeysForPurpose { purpose: "voting" });
         }
         // Then we get all the key types of the voting keys
         let key_types: HashSet<KeyType> = voting_keys.iter().map(|key| key.key_type()).collect();
@@ -692,7 +679,7 @@ impl AppContext {
                 ))
             })
             .collect::<Result<HashMap<KeyType, Vec<u8>>, ProtocolError>>()
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| KeyVerificationError::PublicKeyDerivation(Box::new(e)))?;
         let Some(key) = voting_keys.into_iter().find(|key| {
             let Some(public_key_bytes) = public_key_bytes_for_each_key_type.get(&key.key_type())
             else {
@@ -700,9 +687,7 @@ impl AppContext {
             };
             key.data().as_slice() == public_key_bytes.as_slice()
         }) else {
-            return Err(
-                "Identity does not have a voting public key matching this private key".to_string(),
-            );
+            return Err(KeyVerificationError::NoMatchingKey { purpose: "voting" });
         };
         Ok(key)
     }
@@ -711,7 +696,7 @@ impl AppContext {
         &self,
         identity: &Identity,
         private_voting_key: &[u8; 32],
-    ) -> Result<IdentityPublicKey, String> {
+    ) -> Result<IdentityPublicKey, KeyVerificationError> {
         // We start by getting all the voting keys
         let owner_keys: Vec<IdentityPublicKey> = identity
             .public_keys()
@@ -724,7 +709,7 @@ impl AppContext {
             })
             .collect();
         if owner_keys.is_empty() {
-            return Err("This identity does not contain any owner keys".to_string());
+            return Err(KeyVerificationError::NoKeysForPurpose { purpose: "owner" });
         }
         // Then we get all the key types of the voting keys
         let key_types: HashSet<KeyType> = owner_keys.iter().map(|key| key.key_type()).collect();
@@ -739,7 +724,7 @@ impl AppContext {
                 ))
             })
             .collect::<Result<HashMap<KeyType, Vec<u8>>, ProtocolError>>()
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| KeyVerificationError::PublicKeyDerivation(Box::new(e)))?;
         let Some(key) = owner_keys.into_iter().find(|key| {
             let Some(public_key_bytes) = public_key_bytes_for_each_key_type.get(&key.key_type())
             else {
@@ -747,9 +732,7 @@ impl AppContext {
             };
             key.data().as_slice() == public_key_bytes.as_slice()
         }) else {
-            return Err(
-                "Identity does not have an owner public key matching this private key".to_string(),
-            );
+            return Err(KeyVerificationError::NoMatchingKey { purpose: "owner" });
         };
         Ok(key)
     }
@@ -758,7 +741,7 @@ impl AppContext {
         &self,
         identity: &Identity,
         private_voting_key: &[u8; 32],
-    ) -> Result<IdentityPublicKey, String> {
+    ) -> Result<IdentityPublicKey, KeyVerificationError> {
         // We start by getting all the voting keys
         let owner_keys: Vec<IdentityPublicKey> = identity
             .public_keys()
@@ -774,7 +757,9 @@ impl AppContext {
             })
             .collect();
         if owner_keys.is_empty() {
-            return Err("This identity does not contain any owner keys".to_string());
+            return Err(KeyVerificationError::NoKeysForPurpose {
+                purpose: "payout address",
+            });
         }
         // Then we get all the key types of the voting keys
         let key_types: HashSet<KeyType> = owner_keys.iter().map(|key| key.key_type()).collect();
@@ -789,7 +774,7 @@ impl AppContext {
                 ))
             })
             .collect::<Result<HashMap<KeyType, Vec<u8>>, ProtocolError>>()
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| KeyVerificationError::PublicKeyDerivation(Box::new(e)))?;
         let Some(key) = owner_keys.into_iter().find(|key| {
             let Some(public_key_bytes) = public_key_bytes_for_each_key_type.get(&key.key_type())
             else {
@@ -797,9 +782,9 @@ impl AppContext {
             };
             key.data().as_slice() == public_key_bytes.as_slice()
         }) else {
-            return Err(
-                "Identity does not have a payout address matching this private key".to_string(),
-            );
+            return Err(KeyVerificationError::NoMatchingKey {
+                purpose: "payout address",
+            });
         };
         Ok(key)
     }
@@ -907,17 +892,7 @@ impl AppContext {
         // No `is_open()` gate: the chokepoint resolves an unprotected or
         // session-cached wallet without a prompt, and prompts a locked protected
         // one — returning `WalletLocked` only if the seed is truly unavailable.
-        let wallet_snapshot = {
-            let wallet = {
-                let wallets = self.wallets.read()?;
-                wallets
-                    .get(&wallet_seed_hash)
-                    .cloned()
-                    .ok_or(TaskError::WalletNotFound)?
-            };
-            let wallet_guard = wallet.read()?;
-            wallet_guard.clone()
-        };
+        let wallet_snapshot = self.wallet_arc(&wallet_seed_hash)?.read()?.clone();
 
         tracing::info!("Wallet loaded, calling top_up_from_addresses...");
 
@@ -971,7 +946,7 @@ impl AppContext {
         // Store the updated identity (use update to preserve wallet association)
         self.update_local_qualified_identity(&updated_identity)?;
 
-        let fee_result = FeeResult::new(estimated_fee, estimated_fee);
+        let fee_result = FeeResult::estimated_only(estimated_fee);
         Ok(BackendTaskSuccessResult::ToppedUpIdentity(
             updated_identity,
             fee_result,

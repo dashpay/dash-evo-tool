@@ -161,7 +161,7 @@ impl DocumentVisualizerScreen {
 
         egui::ScrollArea::both().show(ui, |ui| match &self.parse_status {
             DocumentParseStatus::Complete => {
-                ui.monospace(self.parsed_json.as_ref().unwrap());
+                ui.monospace(self.parsed_json.as_deref().unwrap_or_default());
             }
             DocumentParseStatus::WaitingForSelection => {
                 ui.colored_label(Color32::GRAY, "Select a contract and document type.");

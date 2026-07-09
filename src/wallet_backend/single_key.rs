@@ -13,8 +13,11 @@
 
 use std::sync::Arc;
 
+#[cfg(test)]
+use dash_sdk::dpp::dashcore::secp256k1::Message;
+use dash_sdk::dpp::dashcore::secp256k1::Secp256k1;
+#[cfg(test)]
 use dash_sdk::dpp::dashcore::secp256k1::ecdsa::Signature;
-use dash_sdk::dpp::dashcore::secp256k1::{Message, Secp256k1};
 use dash_sdk::dpp::dashcore::{Address, Network, PrivateKey, PublicKey};
 use platform_wallet_storage::secrets::{
     SecretBytes, SecretStore, SecretStoreError, SecretString, WalletId as SecretWalletId,
@@ -26,6 +29,8 @@ use crate::model::single_key::ImportedKey;
 use crate::model::wallet::single_key::{
     ClosedSingleKey, OpenSingleKey, SingleKeyData, SingleKeyHash, SingleKeyWallet,
 };
+use crate::wallet_backend::kv::network_prefix;
+use crate::wallet_backend::poison::{read_recover, write_recover};
 use crate::wallet_backend::secret_seam::{SecretScheme, SecretSeam};
 use crate::wallet_backend::single_key_entry::SingleKeyEntry;
 use crate::wallet_backend::{DetKv, DetScope};
@@ -60,18 +65,6 @@ pub const SINGLE_KEY_PRIV_LABEL_PREFIX: &str = "single_key_priv.";
 /// secret store. Mirrors the [`WalletMetaView`](super::WalletMetaView)
 /// shape (T-W-00) — same network-prefix convention.
 pub(crate) const SINGLE_KEY_META_INFIX: &str = ":single_key_meta:";
-
-/// Cross-network `<network>:` prefix matching the on-disk vocabulary in
-/// `resolve_spv_storage_dir` and the wallet-meta sidecar. Co-located with
-/// the secret-store helpers because every single-key key shape uses it.
-fn network_prefix(network: Network) -> &'static str {
-    match network {
-        Network::Mainnet => "mainnet",
-        Network::Testnet => "testnet",
-        Network::Devnet => "devnet",
-        Network::Regtest => "regtest",
-    }
-}
 
 /// Build the canonical sidecar key for `(network, address)`.
 pub(crate) fn meta_key_for(network: Network, address: &str) -> String {
@@ -238,15 +231,11 @@ impl<'a> SingleKeyView<'a> {
                     (true, passphrase.hint.clone())
                 }
                 _ => {
-                    self.secret_store
-                        .set(
-                            &single_key_namespace_id(),
-                            &label,
-                            &SecretBytes::from_slice(&*raw),
-                        )
-                        .map_err(|source| TaskError::SecretStore {
-                            source: Box::new(source),
-                        })?;
+                    SecretSeam::new(self.secret_store).put_secret(
+                        &single_key_namespace_id(),
+                        &label,
+                        &SecretBytes::from_slice(&*raw),
+                    )?;
                     (false, None)
                 }
             };
@@ -268,10 +257,7 @@ impl<'a> SingleKeyView<'a> {
                 })?;
         }
 
-        self.index
-            .write()
-            .map_err(|_| TaskError::ImportedKeyNotFound)?
-            .insert(address_str, imported.clone());
+        write_recover(self.index).insert(address_str, imported.clone());
         Ok(imported)
     }
 
@@ -286,10 +272,7 @@ impl<'a> SingleKeyView<'a> {
     /// construction path) — the in-memory index is still updated so the
     /// rename is visible in-session.
     pub fn set_alias(&self, address: &str, alias: Option<String>) -> Result<(), TaskError> {
-        let mut idx = self
-            .index
-            .write()
-            .map_err(|_| TaskError::ImportedKeyNotFound)?;
+        let mut idx = write_recover(self.index);
         let entry = idx.get_mut(address).ok_or(TaskError::ImportedKeyNotFound)?;
         entry.alias = alias;
         let updated = entry.clone();
@@ -304,57 +287,6 @@ impl<'a> SingleKeyView<'a> {
             })?;
         }
         Ok(())
-    }
-
-    /// Returns `true` when the imported key at `address` was stored
-    /// with a per-key passphrase. The UI uses this to decide whether to
-    /// prompt before signing.
-    pub fn has_passphrase(&self, address: &str) -> bool {
-        self.index
-            .read()
-            .map(|idx| idx.get(address).is_some_and(|k| k.has_passphrase))
-            .unwrap_or(false)
-    }
-
-    /// Read the raw private-key bytes for an **unprotected** imported key.
-    ///
-    /// Passphrase-protected keys are not unlocked here — they are obtained
-    /// through the JIT chokepoint
-    /// ([`SecretAccess::with_secret`](crate::wallet_backend::SecretAccess::with_secret)
-    /// with a [`SecretScope::SingleKey`](crate::wallet_backend::SecretScope)),
-    /// which prompts for the passphrase and decrypts just-in-time. A direct
-    /// call here for a protected key returns
-    /// [`TaskError::SingleKeyPassphraseRequired`] so non-interactive callers
-    /// get a typed signal rather than a silent failure.
-    fn raw_key_bytes(&self, address: &str) -> Result<Zeroizing<[u8; 32]>, TaskError> {
-        let label = label_for_address(address);
-        // A Tier-2-sealed key cannot be read without the passphrase — surface the
-        // typed "passphrase required" signal (the chokepoint is the unlock path),
-        // mirroring the legacy protected `SingleKeyEntry` case below.
-        if matches!(
-            SecretSeam::new(self.secret_store).scheme(&single_key_namespace_id(), &label)?,
-            SecretScheme::Protected
-        ) {
-            return Err(TaskError::SingleKeyPassphraseRequired {
-                addr: address.to_string(),
-            });
-        }
-        let payload = self
-            .secret_store
-            .get(&single_key_namespace_id(), &label)
-            .map_err(|source| TaskError::SecretStore {
-                source: Box::new(source),
-            })?
-            .ok_or(TaskError::ImportedKeyNotFound)?;
-        let entry = SingleKeyEntry::decode(payload.expose_secret())?;
-        if entry.has_passphrase {
-            return Err(TaskError::SingleKeyPassphraseRequired {
-                addr: address.to_string(),
-            });
-        }
-        // `decrypt` returns the key wrapped in `Zeroizing`, so it wipes on
-        // drop instead of lingering on the stack after the sign.
-        entry.decrypt(None)
     }
 
     /// Confirm that `passphrase` unlocks the protected imported key at
@@ -379,13 +311,17 @@ impl<'a> SingleKeyView<'a> {
             // correct one confirms without re-parking plaintext. No re-wrap.
             SecretScheme::Protected => {
                 let pw = SecretString::new(passphrase);
-                self.secret_store
-                    .get_secret(&single_key_namespace_id(), &label, Some(&pw))
-                    .map_err(|source| match source {
-                        SecretStoreError::WrongPassword => TaskError::SingleKeyPassphraseIncorrect,
-                        other => TaskError::SecretStore {
-                            source: Box::new(other),
-                        },
+                SecretSeam::new(self.secret_store)
+                    .get_secret_protected(&single_key_namespace_id(), &label, &pw)
+                    // A wrong password maps to the generic incorrect signal (no
+                    // oracle), matched structurally on the seam's typed source.
+                    .map_err(|e| match &e {
+                        TaskError::SecretSeam { source }
+                            if matches!(**source, SecretStoreError::WrongPassword) =>
+                        {
+                            TaskError::SingleKeyPassphraseIncorrect
+                        }
+                        _ => e,
                     })?
                     .ok_or(TaskError::ImportedKeyNotFound)?;
                 Ok(())
@@ -395,12 +331,8 @@ impl<'a> SingleKeyView<'a> {
             // to verify, then lazily re-wrap a protected entry to Tier-2 under the
             // SAME password. An unprotected entry ignores the passphrase.
             SecretScheme::Unprotected => {
-                let payload = self
-                    .secret_store
-                    .get(&single_key_namespace_id(), &label)
-                    .map_err(|source| TaskError::SecretStore {
-                        source: Box::new(source),
-                    })?
+                let payload = SecretSeam::new(self.secret_store)
+                    .get_secret(&single_key_namespace_id(), &label)?
                     .ok_or(TaskError::ImportedKeyNotFound)?;
                 let entry = SingleKeyEntry::decode(payload.expose_secret())?;
                 // Decrypt to verify, then drop immediately — the binding is wiped
@@ -408,16 +340,12 @@ impl<'a> SingleKeyView<'a> {
                 let verified: Zeroizing<[u8; 32]> = entry.decrypt(Some(passphrase))?;
                 if entry.has_passphrase {
                     let pw = SecretString::new(passphrase);
-                    self.secret_store
-                        .set_secret(
-                            &single_key_namespace_id(),
-                            &label,
-                            &SecretBytes::from_slice(&*verified),
-                            Some(&pw),
-                        )
-                        .map_err(|source| TaskError::SecretStore {
-                            source: Box::new(source),
-                        })?;
+                    SecretSeam::new(self.secret_store).put_secret_protected(
+                        &single_key_namespace_id(),
+                        &label,
+                        &SecretBytes::from_slice(&*verified),
+                        &pw,
+                    )?;
                 }
                 Ok(())
             }
@@ -428,10 +356,7 @@ impl<'a> SingleKeyView<'a> {
     /// address. Reads the in-memory index only — does not touch the
     /// secret vault.
     pub fn list(&self) -> Vec<ImportedKey> {
-        match self.index.read() {
-            Ok(map) => map.values().cloned().collect(),
-            Err(_) => Vec::new(),
-        }
+        read_recover(self.index).values().cloned().collect()
     }
 
     /// Forget the imported key at `address`: drop its index entry, delete
@@ -439,11 +364,7 @@ impl<'a> SingleKeyView<'a> {
     /// — absent addresses are an `Ok(())`.
     pub fn forget(&self, address: &str) -> Result<(), TaskError> {
         let label = label_for_address(address);
-        self.secret_store
-            .delete(&single_key_namespace_id(), &label)
-            .map_err(|source| TaskError::SecretStore {
-                source: Box::new(source),
-            })?;
+        SecretSeam::new(self.secret_store).delete_secret(&single_key_namespace_id(), &label)?;
         if let Some(kv) = self.app_kv {
             let key = meta_key_for(self.network, address);
             kv.delete(DetScope::Global, &key).map_err(|source| {
@@ -452,10 +373,7 @@ impl<'a> SingleKeyView<'a> {
                 }
             })?;
         }
-        self.index
-            .write()
-            .map_err(|_| TaskError::ImportedKeyNotFound)?
-            .remove(address);
+        write_recover(self.index).remove(address);
         Ok(())
     }
 
@@ -593,10 +511,7 @@ impl<'a> SingleKeyView<'a> {
         if metas.is_empty() {
             return Ok(());
         }
-        let mut idx = self
-            .index
-            .write()
-            .map_err(|_| TaskError::ImportedKeyNotFound)?;
+        let mut idx = write_recover(self.index);
         for meta in metas {
             idx.entry(meta.address.clone()).or_insert(meta);
         }
@@ -617,12 +532,9 @@ impl<'a> SingleKeyView<'a> {
         ) {
             return Ok(self.rebuild_closed_tier2_wallet(meta));
         }
-        let secret = match self
-            .secret_store
-            .get(&single_key_namespace_id(), &label)
-            .map_err(|source| TaskError::SecretStore {
-                source: Box::new(source),
-            })? {
+        let secret = match SecretSeam::new(self.secret_store)
+            .get_secret(&single_key_namespace_id(), &label)?
+        {
             Some(s) => s,
             None => {
                 tracing::warn!(
@@ -793,19 +705,6 @@ impl<'a> SingleKeyView<'a> {
             core_wallet_name: None,
         })
     }
-
-    /// Sign a 32-byte message hash with the **unprotected** imported key
-    /// registered at `address`. Pure ECDSA on secp256k1; no BIP-32
-    /// derivation is touched (TC-SK-008).
-    ///
-    /// Passphrase-protected keys must be signed through the JIT chokepoint
-    /// ([`WalletBackend::sign_single_key`](super::WalletBackend::sign_single_key)),
-    /// which prompts and decrypts just-in-time; a direct call here for a
-    /// protected key returns [`TaskError::SingleKeyPassphraseRequired`].
-    pub fn sign_with(&self, address: &str, msg: &[u8; 32]) -> Result<Signature, TaskError> {
-        let bytes = self.raw_key_bytes(address)?;
-        sign_message_with_raw_key(&bytes, msg)
-    }
 }
 
 /// Parse the stored address (network-checked) and the compressed public key
@@ -885,20 +784,6 @@ fn locked_key_handle(domain: &[u8], material: &[u8]) -> [u8; 32] {
     h
 }
 
-/// Sign a 32-byte digest with raw secp256k1 private-key bytes. Shared by the
-/// unprotected [`SingleKeyView::sign_with`] path and the JIT chokepoint path
-/// ([`WalletBackend::sign_single_key`](super::WalletBackend::sign_single_key)),
-/// which decrypts the key just-in-time and hands the borrowed bytes here.
-pub(crate) fn sign_message_with_raw_key(
-    bytes: &[u8; 32],
-    msg: &[u8; 32],
-) -> Result<Signature, TaskError> {
-    let sk = dash_sdk::dpp::dashcore::secp256k1::SecretKey::from_byte_array(bytes)
-        .map_err(|_| TaskError::ImportedKeyNotFound)?;
-    let message = Message::from_digest(*msg);
-    Ok(Secp256k1::new().sign_ecdsa(&message, &sk))
-}
-
 /// Open or create the file-backed secret store at `path`. The parent
 /// directory is created if missing; on Unix the vault file inherits its
 /// initial mode from upstream's writer (the encrypted-file backend
@@ -967,6 +852,68 @@ fn prepare_vault_dir(path: &std::path::Path) -> Result<(), SecretStoreError> {
         }
     }
     Ok(())
+}
+
+/// Test-only signing helpers. Production single-key signing goes through the
+/// JIT chokepoint ([`WalletBackend::sign_single_key`](super::WalletBackend::sign_single_key)),
+/// which resolves the plaintext via [`SecretAccess`](crate::wallet_backend::SecretAccess)
+/// and signs through [`DetSigner`](crate::wallet_backend::det_signer); these
+/// direct-from-view paths exist only to exercise the unprotected key lookup in
+/// unit tests.
+#[cfg(test)]
+impl<'a> SingleKeyView<'a> {
+    /// Read the raw private-key bytes for an **unprotected** imported key.
+    ///
+    /// A protected key (Tier-2-sealed or a legacy passphrase-protected
+    /// `SingleKeyEntry`) is never unlocked here — the direct call returns
+    /// [`TaskError::SingleKeyPassphraseRequired`], mirroring the production
+    /// chokepoint's typed signal.
+    fn raw_key_bytes(&self, address: &str) -> Result<Zeroizing<[u8; 32]>, TaskError> {
+        let label = label_for_address(address);
+        // A Tier-2-sealed key cannot be read without the passphrase — surface the
+        // typed "passphrase required" signal (the chokepoint is the unlock path),
+        // mirroring the legacy protected `SingleKeyEntry` case below.
+        if matches!(
+            SecretSeam::new(self.secret_store).scheme(&single_key_namespace_id(), &label)?,
+            SecretScheme::Protected
+        ) {
+            return Err(TaskError::SingleKeyPassphraseRequired {
+                addr: address.to_string(),
+            });
+        }
+        let payload = SecretSeam::new(self.secret_store)
+            .get_secret(&single_key_namespace_id(), &label)?
+            .ok_or(TaskError::ImportedKeyNotFound)?;
+        let entry = SingleKeyEntry::decode(payload.expose_secret())?;
+        if entry.has_passphrase {
+            return Err(TaskError::SingleKeyPassphraseRequired {
+                addr: address.to_string(),
+            });
+        }
+        // `decrypt` returns the key wrapped in `Zeroizing`, so it wipes on
+        // drop instead of lingering on the stack after the sign.
+        entry.decrypt(None)
+    }
+
+    /// Sign a 32-byte message hash with the **unprotected** imported key
+    /// registered at `address`. Pure ECDSA on secp256k1; no BIP-32
+    /// derivation is touched (TC-SK-008). A protected key returns
+    /// [`TaskError::SingleKeyPassphraseRequired`].
+    fn sign_with(&self, address: &str, msg: &[u8; 32]) -> Result<Signature, TaskError> {
+        let bytes = self.raw_key_bytes(address)?;
+        sign_message_with_raw_key(&bytes, msg)
+    }
+}
+
+/// Sign a 32-byte digest with raw secp256k1 private-key bytes. Test-only —
+/// the production JIT path signs inline through
+/// [`DetSigner`](crate::wallet_backend::det_signer::DetSigner).
+#[cfg(test)]
+fn sign_message_with_raw_key(bytes: &[u8; 32], msg: &[u8; 32]) -> Result<Signature, TaskError> {
+    let sk = dash_sdk::dpp::dashcore::secp256k1::SecretKey::from_byte_array(bytes)
+        .map_err(|_| TaskError::ImportedKeyNotFound)?;
+    let message = Message::from_digest(*msg);
+    Ok(Secp256k1::new().sign_ecdsa(&message, &sk))
 }
 
 #[cfg(test)]

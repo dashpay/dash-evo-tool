@@ -31,17 +31,19 @@ pub fn normalize_dpns_label(input: &str) -> String {
 /// Returns the bare label portion, or the full input if no suffix is present.
 pub fn strip_dash_suffix(input: &str) -> &str {
     let trimmed = input.trim();
-    let suffix_start = trimmed.len().saturating_sub(DASH_SUFFIX.len());
-    if trimmed.len() > DASH_SUFFIX.len()
-        && trimmed
-            .get(suffix_start..)
-            .is_some_and(|tail| tail.eq_ignore_ascii_case(DASH_SUFFIX))
-    {
-        &trimmed[..suffix_start]
+    if has_dash_suffix(trimmed) {
+        // `has_dash_suffix` guarantees a `.dash` tail longer than the suffix, so
+        // this ASCII-boundary slice is always valid.
+        &trimmed[..trimmed.len() - DASH_SUFFIX.len()]
     } else {
         trimmed
     }
 }
+
+/// The DPNS input carries a domain suffix other than `.dash`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("A DPNS name must end in .dash or be a plain label.")]
+pub struct NonDashDomainError;
 
 /// Validate that a DPNS username-or-ID input has an acceptable format.
 ///
@@ -50,11 +52,12 @@ pub fn strip_dash_suffix(input: &str) -> &str {
 /// - `.dash` names (case-insensitive): `"alice.dash"`, `"Alice.DASH"`
 /// - Identity IDs (no dots): `"4EfA..."`
 ///
-/// Returns `Err(input)` for inputs with non-`.dash` domains: `"alice.foo"`, `"alice.com"`
-pub fn validate_dpns_input(input: &str) -> Result<(), String> {
+/// Returns [`NonDashDomainError`] for inputs with non-`.dash` domains:
+/// `"alice.foo"`, `"alice.com"`.
+pub fn validate_dpns_input(input: &str) -> Result<(), NonDashDomainError> {
     let trimmed = input.trim();
     if trimmed.contains('.') && !has_dash_suffix(trimmed) {
-        Err(trimmed.to_string())
+        Err(NonDashDomainError)
     } else {
         Ok(())
     }
@@ -169,11 +172,11 @@ mod tests {
 
     #[test]
     fn validate_dpns_input_rejects_non_dash_domains() {
-        assert_eq!(validate_dpns_input("alice.foo"), Err("alice.foo".into()));
-        assert_eq!(validate_dpns_input("alice.com"), Err("alice.com".into()));
+        assert_eq!(validate_dpns_input("alice.foo"), Err(NonDashDomainError));
+        assert_eq!(validate_dpns_input("alice.com"), Err(NonDashDomainError));
         assert_eq!(
             validate_dpns_input("  alice.xyz  "),
-            Err("alice.xyz".into())
+            Err(NonDashDomainError)
         );
     }
 }

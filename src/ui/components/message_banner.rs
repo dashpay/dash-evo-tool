@@ -211,9 +211,9 @@ impl BannerHandle {
     /// (nested causes, variant names) that is more useful in a diagnostic
     /// details pane than the single-line `Display` output.
     ///
-    /// INTENTIONAL(RUST-003): When plain strings are passed, `{:?}` wraps them
-    /// in quotes. This is acceptable since `with_details` is primarily for
-    /// error types, not user-facing text.
+    /// When plain strings are passed, `{:?}` wraps them in quotes. This is
+    /// acceptable since `with_details` is primarily for error types, not
+    /// user-facing text.
     ///
     /// Returns `None` if the banner no longer exists.
     pub fn with_details(&self, details: impl fmt::Debug) -> Option<&Self> {
@@ -336,6 +336,8 @@ impl MessageBanner {
 
     /// Override the auto-dismiss duration for the current message.
     /// Resets the countdown timer. No-op if no message is set.
+    // Exercised by the `kittest` integration tests (a separate crate the lib
+    // build does not see), so it is dead in a plain lib build.
     #[allow(dead_code)]
     pub fn set_auto_dismiss(&mut self, duration: Duration) -> &mut Self {
         if let Some(state) = &mut self.state {
@@ -519,6 +521,8 @@ impl MessageBanner {
     }
 
     /// Returns whether any global banner messages exist.
+    // Exercised by the `kittest` integration tests (a separate crate the lib
+    // build does not see), so it is dead in a plain lib build.
     #[allow(dead_code)]
     pub fn has_global(ctx: &egui::Context) -> bool {
         !get_banners(ctx).is_empty()
@@ -932,24 +936,7 @@ pub trait OptionBannerExt {
     fn take_and_clear(&mut self);
 
     /// Clears any existing banner, sets a new global banner, and stores the handle.
-    ///
-    /// Prefer this over [`replace`](OptionBannerExt::replace) in new code — same
-    /// behavior, but the name doesn't collide with anything.
     fn raise(&mut self, ctx: &egui::Context, msg: impl fmt::Display, msg_type: MessageType);
-
-    /// Backward-compatible alias for [`raise`](OptionBannerExt::raise).
-    ///
-    /// **Do not call this from new code — use `raise` instead.** The name
-    /// collides with the inherent `Option::replace(&mut self, value: T) -> Option<T>`,
-    /// which always wins method-call resolution over a trait method of the same
-    /// name (Rust has no arity-based overload resolution between the two). So
-    /// `opt.replace(ctx, msg, msg_type)` does **not** call this method — it fails
-    /// to compile against the *inherent* one-argument `replace` (E0061, "this
-    /// function takes 1 argument but 3 arguments were supplied"). The only way to
-    /// reach this method is fully qualified: `OptionBannerExt::replace(&mut opt,
-    /// ctx, msg, msg_type)`. Kept only so any such existing call site keeps
-    /// compiling; do not add new ones.
-    fn replace(&mut self, ctx: &egui::Context, msg: impl fmt::Display, msg_type: MessageType);
 
     /// Like [`raise`](OptionBannerExt::raise), but also enables elapsed-time display on
     /// the new banner (useful for long-running operations).
@@ -981,10 +968,6 @@ impl OptionBannerExt for Option<BannerHandle> {
     fn raise(&mut self, ctx: &egui::Context, msg: impl fmt::Display, msg_type: MessageType) {
         self.take_and_clear();
         *self = Some(MessageBanner::set_global(ctx, msg.to_string(), msg_type));
-    }
-
-    fn replace(&mut self, ctx: &egui::Context, msg: impl fmt::Display, msg_type: MessageType) {
-        self.raise(ctx, msg, msg_type);
     }
 
     fn replace_with_elapsed(

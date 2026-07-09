@@ -16,6 +16,19 @@ use super::{
     map_identity_top_up_error, map_platform_address_fund_error,
 };
 
+/// The two identity-funding account flavours DET provisions. Parsing the
+/// caller's intent into this once (at [`WalletBackend::ensure_identity_funding_accounts`])
+/// removes the repeated `AccountType` matches — and their `unreachable!` arms —
+/// inside [`WalletBackend::provision_identity_funding_account`], and makes the
+/// unsupported-account-type case unrepresentable.
+#[derive(Clone, Copy)]
+enum Funding {
+    /// The identity-registration funding account.
+    Registration,
+    /// The per-identity top-up funding account at the given registration index.
+    TopUp(u32),
+}
+
 impl WalletBackend {
     /// Register a new identity on Platform funded by an asset lock built and
     /// tracked-to-finality by the upstream `AssetLockManager`. Returns the
@@ -311,21 +324,10 @@ impl WalletBackend {
         &self,
         seed_hash: &WalletSeedHash,
         seed: &[u8; 64],
-        account_type: dash_sdk::dpp::key_wallet::AccountType,
+        funding: Funding,
     ) -> Result<(), TaskError> {
         use dash_sdk::dpp::key_wallet::AccountType;
         use dash_sdk::dpp::key_wallet::managed_account::ManagedCoreKeysAccount;
-        use dash_sdk::dpp::key_wallet::wallet::Wallet as UpstreamWallet;
-        use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOptions;
-        use platform_wallet::error::PlatformWalletError;
-
-        // Restrict to the two identity-funding flavours; everything else is a
-        // misuse — keeping the match exhaustive forces a review if a new
-        // upstream identity-funding variant appears.
-        match account_type {
-            AccountType::IdentityRegistration | AccountType::IdentityTopUp { .. } => {}
-            _ => return Err(TaskError::UnsupportedIdentityFundingAccount),
-        }
 
         let wallet = self.resolve_wallet(seed_hash).await?;
         let wallet_id = wallet.wallet_id();
@@ -334,66 +336,53 @@ impl WalletBackend {
             .get_wallet_mut_and_info_mut(&wallet_id)
             .ok_or(TaskError::WalletStateInconsistent)?;
 
-        let in_wallet = match account_type {
-            AccountType::IdentityRegistration => kw.accounts.identity_registration.is_some(),
-            AccountType::IdentityTopUp { registration_index } => {
-                kw.accounts.identity_topup.contains_key(&registration_index)
-            }
-            _ => unreachable!("checked above"),
-        };
-        let in_managed = match account_type {
-            AccountType::IdentityRegistration => {
-                info.core_wallet.accounts.identity_registration.is_some()
-            }
-            AccountType::IdentityTopUp { registration_index } => info
-                .core_wallet
-                .accounts
-                .identity_topup
-                .contains_key(&registration_index),
-            _ => unreachable!("checked above"),
+        let (in_wallet, in_managed) = match funding {
+            Funding::Registration => (
+                kw.accounts.identity_registration.is_some(),
+                info.core_wallet.accounts.identity_registration.is_some(),
+            ),
+            Funding::TopUp(registration_index) => (
+                kw.accounts.identity_topup.contains_key(&registration_index),
+                info.core_wallet
+                    .accounts
+                    .identity_topup
+                    .contains_key(&registration_index),
+            ),
         };
         if in_wallet && in_managed {
             return Ok(());
         }
 
         if !in_wallet {
+            let account_type = match funding {
+                Funding::Registration => AccountType::IdentityRegistration,
+                Funding::TopUp(registration_index) => {
+                    AccountType::IdentityTopUp { registration_index }
+                }
+            };
             // The live wallet is watch-only: calling `add_account(…, None)` would
             // try to derive a hardened path from an absent private key and fail
             // with "Watch-only wallet has no private key". Derive the xpub from a
             // short-lived seed wallet instead and pass it as `Some(xpub)`.
-            let seed_wallet = UpstreamWallet::from_seed_bytes(
-                *seed,
-                self.inner.network,
-                WalletAccountCreationOptions::Default,
-            )
-            .map_err(|e| TaskError::WalletBackend {
-                source: Box::new(PlatformWalletError::WalletCreation(e.to_string())),
-            })?;
+            let seed_wallet = self.seed_wallet(seed)?;
 
             let path = account_type
                 .derivation_path(self.inner.network)
-                .map_err(|e| TaskError::WalletBackend {
-                    source: Box::new(PlatformWalletError::WalletCreation(e.to_string())),
-                })?;
+                .map_err(|source| TaskError::IdentityFundingAccountProvisionFailed { source })?;
 
-            let account_xpub = seed_wallet.derive_extended_public_key(&path).map_err(|e| {
-                TaskError::WalletBackend {
-                    source: Box::new(PlatformWalletError::WalletCreation(e.to_string())),
-                }
-            })?;
+            let account_xpub = seed_wallet
+                .derive_extended_public_key(&path)
+                .map_err(|source| TaskError::IdentityFundingAccountProvisionFailed { source })?;
 
             kw.add_account(account_type, Some(account_xpub))
-                .map_err(|e| TaskError::WalletBackend {
-                    source: Box::new(PlatformWalletError::AssetLockTransaction(e.to_string())),
-                })?;
+                .map_err(|source| TaskError::IdentityFundingAccountProvisionFailed { source })?;
         }
 
-        let derived = match account_type {
-            AccountType::IdentityRegistration => kw.accounts.identity_registration.as_ref(),
-            AccountType::IdentityTopUp { registration_index } => {
+        let derived = match funding {
+            Funding::Registration => kw.accounts.identity_registration.as_ref(),
+            Funding::TopUp(registration_index) => {
                 kw.accounts.identity_topup.get(&registration_index)
             }
-            _ => unreachable!("checked above"),
         }
         .ok_or(TaskError::WalletStateInconsistent)?;
 
@@ -401,13 +390,7 @@ impl WalletBackend {
         info.core_wallet
             .accounts
             .insert_keys_bearing_account(managed)
-            .map_err(|e| TaskError::WalletBackend {
-                source: Box::new(
-                    platform_wallet::error::PlatformWalletError::AssetLockTransaction(
-                        e.to_string(),
-                    ),
-                ),
-            })?;
+            .map_err(|source| TaskError::IdentityFundingAccountProvisionFailed { source })?;
         Ok(())
     }
 
@@ -423,14 +406,9 @@ impl WalletBackend {
         seed: &[u8; 64],
         registration_index: u32,
     ) -> Result<(), TaskError> {
-        use dash_sdk::dpp::key_wallet::AccountType;
-        self.provision_identity_funding_account(seed_hash, seed, AccountType::IdentityRegistration)
+        self.provision_identity_funding_account(seed_hash, seed, Funding::Registration)
             .await?;
-        self.provision_identity_funding_account(
-            seed_hash,
-            seed,
-            AccountType::IdentityTopUp { registration_index },
-        )
-        .await
+        self.provision_identity_funding_account(seed_hash, seed, Funding::TopUp(registration_index))
+            .await
     }
 }

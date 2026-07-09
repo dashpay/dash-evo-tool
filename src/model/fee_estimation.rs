@@ -12,9 +12,26 @@
 //! performed by Platform. For accurate fees, use Platform's EstimateStateTransitionFee
 //! endpoint (when available).
 
-use crate::model::amount::Amount;
-use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
+use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
+use dash_sdk::dashcore_rpc::dashcore::Address;
+use dash_sdk::dpp::address_funds::{AddressFundsFeeStrategyStep, PlatformAddress};
+use dash_sdk::dpp::balances::credits::{CREDITS_PER_DUFF, Credits};
+use dash_sdk::dpp::identity::core_script::CoreScript;
+use dash_sdk::dpp::prelude::{AddressNonce, AssetLockProof};
+use dash_sdk::dpp::state_transition::StateTransitionEstimatedFeeValidation;
+use dash_sdk::dpp::state_transition::address_credit_withdrawal_transition::AddressCreditWithdrawalTransition;
+use dash_sdk::dpp::state_transition::address_credit_withdrawal_transition::v0::AddressCreditWithdrawalTransitionV0;
+use dash_sdk::dpp::state_transition::address_funding_from_asset_lock_transition::AddressFundingFromAssetLockTransition;
+use dash_sdk::dpp::state_transition::address_funding_from_asset_lock_transition::v0::AddressFundingFromAssetLockTransitionV0;
 use dash_sdk::dpp::version::PlatformVersion;
+use dash_sdk::dpp::withdrawal::Pooling;
+use std::collections::BTreeMap;
+
+/// Maximum number of platform address inputs allowed per state transition.
+pub(crate) const MAX_PLATFORM_INPUTS: usize = 16;
+
+/// Estimated serialized bytes per input (address + signature/witness data).
+const ESTIMATED_BYTES_PER_INPUT: usize = 225;
 
 /// Storage fee constants from FEE_STORAGE_VERSION1 in rs-platform-version.
 /// These determine the cost of storing and processing data on Platform.
@@ -81,6 +98,29 @@ impl Default for DataContractRegistrationFees {
             search_keyword_fee: 10_000_000_000,             // 0.1 DASH
         }
     }
+}
+
+/// Component counts describing a data contract, used for detailed fee estimation.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ContractComponents {
+    /// Serialized size of the contract in bytes.
+    pub contract_bytes: usize,
+    /// Number of document types defined in the contract.
+    pub document_type_count: usize,
+    /// Number of non-unique indexes across all document types.
+    pub non_unique_index_count: usize,
+    /// Number of unique indexes across all document types.
+    pub unique_index_count: usize,
+    /// Number of contested indexes across all document types.
+    pub contested_index_count: usize,
+    /// Whether the contract defines a token.
+    pub has_token: bool,
+    /// Whether the token uses perpetual distribution.
+    pub has_perpetual_distribution: bool,
+    /// Whether the token uses pre-programmed distribution.
+    pub has_pre_programmed_distribution: bool,
+    /// Number of search keywords registered for the contract.
+    pub search_keyword_count: usize,
 }
 
 /// Minimum fees for state transitions (in credits).
@@ -177,12 +217,6 @@ impl PlatformFeeEstimator {
         }
     }
 
-    /// Try to create from platform version (for future dynamic fee support)
-    pub fn from_platform_version(_platform_version: &PlatformVersion) -> Self {
-        // For now, use default fees. In future, could read from platform_version
-        Self::new()
-    }
-
     /// Apply the fee multiplier to a base fee amount.
     /// Multiplier is in permille: 1000 = 1x, 1500 = 1.5x, 2000 = 2x
     fn apply_multiplier(&self, base_fee: u64) -> u64 {
@@ -263,7 +297,7 @@ impl PlatformFeeEstimator {
         // - Per-output costs
         // We add a 50% buffer to account for any additional costs
         let base_fee_credits = self.estimate_credit_transfer_to_addresses(output_count);
-        let fee_duffs = base_fee_credits / 1000; // Convert credits to duffs
+        let fee_duffs = base_fee_credits / CREDITS_PER_DUFF;
         // Add 50% buffer and ensure minimum of 10,000 duffs based on observed behavior
         fee_duffs.saturating_add(fee_duffs / 2).max(10_000)
     }
@@ -312,8 +346,6 @@ impl PlatformFeeEstimator {
         has_output: bool,
         key_count: usize,
     ) -> u64 {
-        // Estimated serialized bytes per input (address + signature/witness data)
-        const ESTIMATED_BYTES_PER_INPUT: usize = 225;
         // Estimated bytes for identity structure + keys
         const ESTIMATED_IDENTITY_BASE_BYTES: usize = 100;
         const ESTIMATED_BYTES_PER_KEY: usize = 50;
@@ -374,8 +406,6 @@ impl PlatformFeeEstimator {
     /// This includes base cost, asset lock cost, input costs, storage-based fees,
     /// and a 20% safety buffer to account for fee variability.
     pub fn estimate_identity_topup_from_addresses(&self, input_count: usize) -> u64 {
-        // Estimated serialized bytes per input (address + signature/witness data)
-        const ESTIMATED_BYTES_PER_INPUT: usize = 225;
         // Estimated bytes for top-up transaction structure
         const ESTIMATED_TOPUP_BASE_BYTES: usize = 100;
         // Estimated seek operations for tree traversal
@@ -576,20 +606,20 @@ impl PlatformFeeEstimator {
 
     /// Estimate fee for data contract creation with detailed component counts.
     /// This provides the most accurate estimate by accounting for all registration fees.
-    #[allow(clippy::too_many_arguments)]
-    pub fn estimate_contract_create_detailed(
-        &self,
-        contract_bytes: usize,
-        document_type_count: usize,
-        non_unique_index_count: usize,
-        unique_index_count: usize,
-        contested_index_count: usize,
-        has_token: bool,
-        has_perpetual_distribution: bool,
-        has_pre_programmed_distribution: bool,
-        search_keyword_count: usize,
-    ) -> u64 {
+    pub fn estimate_contract_create_detailed(&self, components: ContractComponents) -> u64 {
         const ESTIMATED_SEEKS: usize = 20;
+
+        let ContractComponents {
+            contract_bytes,
+            document_type_count,
+            non_unique_index_count,
+            unique_index_count,
+            contested_index_count,
+            has_token,
+            has_perpetual_distribution,
+            has_pre_programmed_distribution,
+            search_keyword_count,
+        } = components;
 
         let mut base_fee = self.registration_fees.base_contract_registration_fee;
 
@@ -706,13 +736,17 @@ impl PlatformFeeEstimator {
     }
 }
 
-/// Credits per DASH constant
-/// 1 DASH = 100,000,000,000 credits (100 billion)
-pub const CREDITS_PER_DASH: u64 = 100_000_000_000;
+/// Credits per DASH: 1 DASH = 10^DASH_DECIMAL_PLACES credits (100 billion).
+pub const CREDITS_PER_DASH: u64 = 10u64.pow(DASH_DECIMAL_PLACES as u32);
 
 /// Format credits as DASH for display
 pub fn format_credits_as_dash(credits: u64) -> String {
     Amount::dash_from_credits(credits).to_string()
+}
+
+/// Format an amount in duffs as DASH for display.
+pub fn format_duffs_as_dash(duffs: u64) -> String {
+    Amount::dash_from_duffs(duffs).to_string()
 }
 
 /// Format credits for display (with both credits and DASH)
@@ -723,6 +757,224 @@ pub fn format_credits(credits: u64) -> String {
     } else {
         format!("{} credits ({:.10} DASH)", credits, dash)
     }
+}
+
+/// Calculate the estimated fee for a platform address funds transfer.
+///
+/// Uses [`PlatformFeeEstimator`] for base costs (input/output fees) plus storage fees.
+pub(crate) fn estimate_platform_fee(estimator: &PlatformFeeEstimator, input_count: usize) -> u64 {
+    let inputs = input_count.max(1);
+
+    // Base fee from Platform's min fee structure
+    // - 500,000 credits per input (address_funds_transfer_input_cost)
+    // - 6,000,000 credits per output (address_funds_transfer_output_cost)
+    let base_fee = estimator.estimate_address_funds_transfer(inputs, 1);
+
+    // Add storage fees for serialized input bytes only
+    // (outputs don't add significant serialization overhead)
+    let estimated_bytes = inputs * ESTIMATED_BYTES_PER_INPUT;
+    let storage_fee = estimator.estimate_storage_based_fee(estimated_bytes, inputs);
+
+    // Total with 20% safety buffer
+    let total = base_fee.saturating_add(storage_fee);
+    total.saturating_add(total / 5)
+}
+
+/// Calculate the estimated fee for a Platform address withdrawal using a constructed state transition.
+pub(crate) fn estimate_withdrawal_fee_from_transition(
+    platform_version: &PlatformVersion,
+    inputs: &BTreeMap<PlatformAddress, u64>,
+    output_script: &CoreScript,
+) -> u64 {
+    let inputs_with_nonce: BTreeMap<PlatformAddress, (AddressNonce, Credits)> = inputs
+        .iter()
+        .map(|(addr, amount)| (*addr, (0, *amount)))
+        .collect();
+
+    let transition = AddressCreditWithdrawalTransition::V0(AddressCreditWithdrawalTransitionV0 {
+        inputs: inputs_with_nonce,
+        output: None,
+        fee_strategy: vec![AddressFundsFeeStrategyStep::DeductFromInput(0)],
+        core_fee_per_byte: 1,
+        pooling: Pooling::Never,
+        output_script: output_script.clone(),
+        user_fee_increase: 0,
+        input_witnesses: Vec::new(),
+    });
+
+    transition
+        .calculate_min_required_fee(platform_version)
+        .unwrap_or(0)
+}
+
+/// Calculate the estimated fee for funding a Platform address from an asset lock.
+pub(crate) fn estimate_address_funding_fee_from_transition(
+    platform_version: &PlatformVersion,
+    destination: &PlatformAddress,
+) -> u64 {
+    let mut outputs = BTreeMap::new();
+    outputs.insert(*destination, None);
+
+    let transition =
+        AddressFundingFromAssetLockTransition::V0(AddressFundingFromAssetLockTransitionV0 {
+            asset_lock_proof: AssetLockProof::default(),
+            inputs: BTreeMap::new(),
+            outputs,
+            fee_strategy: vec![AddressFundsFeeStrategyStep::ReduceOutput(0)],
+            user_fee_increase: 0,
+            ..Default::default()
+        });
+
+    transition
+        .calculate_min_required_fee(platform_version)
+        .unwrap_or(0)
+}
+
+/// Result of allocating platform addresses for a transfer.
+#[derive(Debug, Clone)]
+pub(crate) struct AddressAllocationResult {
+    /// Map of platform address to amount to transfer from each
+    pub inputs: BTreeMap<PlatformAddress, u64>,
+    /// Index of the fee payer in BTreeMap iteration order
+    pub fee_payer_index: u16,
+    /// Estimated fee for this transaction
+    pub estimated_fee: u64,
+    /// Amount that couldn't be covered (0 if fully covered)
+    pub shortfall: u64,
+    /// Addresses sorted by balance descending (for UI display)
+    pub sorted_addresses: Vec<(PlatformAddress, Address, u64)>,
+}
+
+/// Allocates platform addresses for a transfer, using a custom fee calculator.
+pub(crate) fn allocate_platform_addresses_with_fee<F>(
+    addresses: &[(PlatformAddress, Address, u64)],
+    amount_credits: u64,
+    destination: Option<&PlatformAddress>,
+    fee_for_inputs: F,
+) -> AddressAllocationResult
+where
+    F: Fn(&BTreeMap<PlatformAddress, u64>) -> u64,
+{
+    // Filter out the destination address if provided (protocol doesn't allow same address as input and output)
+    let filtered: Vec<_> = addresses
+        .iter()
+        .filter(|(platform_addr, _, _)| destination != Some(platform_addr))
+        .cloned()
+        .collect();
+
+    // Sort addresses by balance descending so the largest balance is used first
+    let mut sorted_addresses = filtered;
+    sorted_addresses.sort_by(|a, b| b.2.cmp(&a.2));
+
+    // Early return if no addresses available after filtering
+    if sorted_addresses.is_empty() {
+        return AddressAllocationResult {
+            inputs: BTreeMap::new(),
+            fee_payer_index: 0,
+            estimated_fee: fee_for_inputs(&BTreeMap::new()),
+            shortfall: amount_credits,
+            sorted_addresses: vec![],
+        };
+    }
+
+    // The highest-balance address (first in sorted order) will pay the fee
+    let fee_payer_addr = sorted_addresses.first().map(|(addr, _, _)| *addr);
+
+    let mut estimated_fee = fee_for_inputs(&BTreeMap::new());
+    let mut inputs: BTreeMap<PlatformAddress, u64> = BTreeMap::new();
+
+    // Iterate until fee estimate stabilizes (input count affects fee)
+    for _ in 0..=MAX_PLATFORM_INPUTS {
+        inputs.clear();
+        let mut remaining = amount_credits;
+
+        for (idx, (platform_addr, _, balance)) in sorted_addresses.iter().enumerate() {
+            if remaining == 0 || inputs.len() >= MAX_PLATFORM_INPUTS {
+                break;
+            }
+            let is_fee_payer = idx == 0;
+            let available = if is_fee_payer {
+                balance.saturating_sub(estimated_fee)
+            } else {
+                *balance
+            };
+            let use_amount = remaining.min(available);
+            if use_amount > 0 || is_fee_payer {
+                inputs.insert(*platform_addr, use_amount);
+                remaining = remaining.saturating_sub(use_amount);
+            }
+        }
+
+        let new_fee = fee_for_inputs(&inputs);
+        if new_fee == estimated_fee {
+            break;
+        }
+        estimated_fee = new_fee;
+    }
+
+    // Calculate shortfall (amount we couldn't allocate)
+    let total_allocated: u64 = inputs.values().sum();
+    let allocation_shortfall = amount_credits.saturating_sub(total_allocated);
+
+    // Check if fee payer can actually afford the fee from their remaining balance.
+    let fee_deficit = if let Some(fee_payer) = fee_payer_addr {
+        let fee_payer_balance = sorted_addresses.first().map(|(_, _, b)| *b).unwrap_or(0);
+        let fee_payer_contribution = inputs.get(&fee_payer).copied().unwrap_or(0);
+        let fee_payer_remaining = fee_payer_balance.saturating_sub(fee_payer_contribution);
+        estimated_fee.saturating_sub(fee_payer_remaining)
+    } else {
+        estimated_fee
+    };
+
+    let shortfall = allocation_shortfall.saturating_add(fee_deficit);
+
+    // Find the index of the fee payer in BTreeMap order (required by backend)
+    let fee_payer_index = fee_payer_addr
+        .and_then(|payer| {
+            inputs
+                .keys()
+                .enumerate()
+                .find(|(_, addr)| **addr == payer)
+                .map(|(idx, _)| idx as u16)
+        })
+        .unwrap_or(0);
+
+    AddressAllocationResult {
+        inputs,
+        fee_payer_index,
+        estimated_fee,
+        shortfall,
+        sorted_addresses,
+    }
+}
+
+/// Allocates platform addresses for a transfer, selecting which addresses to use
+/// and how much from each.
+///
+/// Algorithm:
+/// 1. Filters out the destination address (can't be both input and output)
+/// 2. Sorts addresses by balance descending (largest first)
+/// 3. The highest-balance address pays the fee
+/// 4. Iteratively allocates until fee estimate converges
+/// 5. Fee payer is always included in inputs (even with 0 contribution) so fee can be deducted
+///
+/// Returns the allocation result with inputs, fee payer index, and any shortfall.
+pub(crate) fn allocate_platform_addresses(
+    estimator: &PlatformFeeEstimator,
+    addresses: &[(PlatformAddress, Address, u64)],
+    amount_credits: u64,
+    destination: Option<&PlatformAddress>,
+) -> AddressAllocationResult {
+    let max_inputs = addresses
+        .iter()
+        .filter(|(platform_addr, _, _)| destination != Some(platform_addr))
+        .count()
+        .min(MAX_PLATFORM_INPUTS);
+
+    allocate_platform_addresses_with_fee(addresses, amount_credits, destination, |_| {
+        // Keep the legacy behavior: use a worst-case fee based on max possible inputs.
+        estimate_platform_fee(estimator, max_inputs.max(1))
+    })
 }
 
 /// Estimate the Core (L1) network fee, in duffs, for a simple wallet send.
@@ -819,6 +1071,22 @@ pub fn shielded_fee_for_actions(
     compute_minimum_shielded_fee(num_actions, platform_version).map_err(Box::new)
 }
 
+/// Fee headroom (credits) to reserve from the platform balance when shielding
+/// from it, so a "Max" amount still leaves enough to pay the shield's platform
+/// fee. `ShieldFromBalance` needs the shield fee on top of the shielded amount
+/// out of the same balance, so this must reserve the two-action shielded fee
+/// (scaled by the network multiplier) — not the far smaller plain
+/// platform-transfer estimate. Falls back to `0` if the active protocol version
+/// has no shielded-fee formula (the backend re-validates before dispatch).
+pub fn shield_from_balance_fee_headroom(
+    platform_version: &PlatformVersion,
+    fee_multiplier_permille: u64,
+) -> u64 {
+    let base_fee = shielded_fee_for_actions(2, platform_version).unwrap_or(0);
+    let multiplier = fee_multiplier_permille.max(1000);
+    base_fee.saturating_mul(multiplier) / 1000
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -879,7 +1147,7 @@ mod tests {
         );
     }
 
-    /// RUST-001: stale-HIGH `balance_before` must fall back to the estimate.
+    /// A stale-HIGH `balance_before` must fall back to the estimate.
     ///
     /// If the cached balance is *higher* than the post-top-up balance (e.g.
     /// because it was read before a spend cleared on-chain), then
@@ -912,7 +1180,7 @@ mod tests {
         assert_eq!(
             resolved,
             estimator.estimate_identity_topup(),
-            "stale-HIGH must fall back to the deterministic estimate (RUST-001)"
+            "stale-HIGH must fall back to the deterministic estimate"
         );
     }
 
@@ -996,17 +1264,17 @@ mod tests {
     fn test_contract_create_detailed_with_token() {
         let estimator = PlatformFeeEstimator::new();
         // Contract with a token
-        let fee = estimator.estimate_contract_create_detailed(
-            500,   // contract bytes
-            1,     // 1 document type
-            1,     // 1 non-unique index
-            0,     // 0 unique indexes
-            0,     // 0 contested indexes
-            true,  // has token
-            false, // no perpetual distribution
-            false, // no pre-programmed distribution
-            0,     // 0 search keywords
-        );
+        let fee = estimator.estimate_contract_create_detailed(ContractComponents {
+            contract_bytes: 500,
+            document_type_count: 1,
+            non_unique_index_count: 1,
+            unique_index_count: 0,
+            contested_index_count: 0,
+            has_token: true,
+            has_perpetual_distribution: false,
+            has_pre_programmed_distribution: false,
+            search_keyword_count: 0,
+        });
         // Base: 0.1 DASH + Document type: 0.02 DASH + Index: 0.01 DASH + Token: 0.1 DASH
         // = 0.23 DASH + storage fees
         let expected_registration = 10_000_000_000 + 2_000_000_000 + 1_000_000_000 + 10_000_000_000;
@@ -1106,6 +1374,36 @@ mod tests {
     }
 
     #[test]
+    fn shield_from_balance_headroom_reserves_shielded_fee_not_transfer_fee() {
+        let platform_version = PlatformVersion::latest();
+        let base_fee = shielded_fee_for_actions(2, platform_version).expect("known version");
+
+        // At the minimum (1000‰) multiplier the headroom equals the base fee.
+        let headroom = shield_from_balance_fee_headroom(platform_version, 1000);
+        assert_eq!(headroom, base_fee);
+
+        // It must reserve the full shielded fee (>50M), an order of magnitude
+        // above the plain platform-transfer estimate — under-reserving here is
+        // what got a Max shield-from-platform rejected upstream.
+        assert!(
+            headroom > 50_000_000,
+            "shield-from-balance headroom must reserve the shielded fee: {headroom}"
+        );
+        assert!(headroom > PlatformFeeEstimator::new().estimate_credit_transfer());
+
+        // Headroom scales with the multiplier and a sub-1000 multiplier is
+        // clamped up to 1000 so we never under-reserve.
+        assert_eq!(
+            shield_from_balance_fee_headroom(platform_version, 500),
+            base_fee
+        );
+        assert_eq!(
+            shield_from_balance_fee_headroom(platform_version, 2000),
+            base_fee.saturating_mul(2000) / 1000
+        );
+    }
+
+    #[test]
     fn test_shielded_fee_for_actions() {
         let platform_version = PlatformVersion::latest();
 
@@ -1138,5 +1436,125 @@ mod tests {
             (0.8..=1.2).contains(&ratio),
             "per-action cost should be roughly constant, got ratio {ratio}"
         );
+    }
+
+    /// A distinct P2PKH platform address for the given seed byte.
+    fn pa(byte: u8) -> PlatformAddress {
+        PlatformAddress::P2pkh([byte; 20])
+    }
+
+    /// A placeholder Core address; the allocation logic passes it through
+    /// untouched, so any valid address stands in.
+    fn any_core_address() -> Address {
+        use dash_sdk::dpp::dashcore::Network;
+        use dash_sdk::dpp::dashcore::PublicKey;
+        use dash_sdk::dpp::dashcore::secp256k1::{
+            PublicKey as SecpPublicKey, Secp256k1, SecretKey,
+        };
+        let secp = Secp256k1::new();
+        let sk = SecretKey::from_slice(&[1u8; 32]).expect("valid secret key");
+        let pubkey = PublicKey::from_slice(&SecpPublicKey::from_secret_key(&secp, &sk).serialize())
+            .expect("valid pubkey");
+        Address::p2pkh(&pubkey, Network::Testnet)
+    }
+
+    fn addrs(balances: &[(u8, u64)]) -> Vec<(PlatformAddress, Address, u64)> {
+        let core = any_core_address();
+        balances
+            .iter()
+            .map(|(byte, balance)| (pa(*byte), core.clone(), *balance))
+            .collect()
+    }
+
+    #[test]
+    fn allocate_covers_amount_from_single_address() {
+        let addresses = addrs(&[(1, 1000)]);
+        let result = allocate_platform_addresses_with_fee(&addresses, 500, None, |_| 100);
+
+        assert_eq!(
+            result.shortfall, 0,
+            "fully funded transfer has no shortfall"
+        );
+        assert_eq!(result.estimated_fee, 100);
+        assert_eq!(result.inputs.get(&pa(1)).copied(), Some(500));
+        assert_eq!(result.fee_payer_index, 0);
+    }
+
+    #[test]
+    fn allocate_converges_when_fee_depends_on_input_count() {
+        // Fee grows with input count, so the allocation loop must iterate until
+        // the fee estimate stabilizes rather than under-funding on the first pass.
+        let addresses = addrs(&[(1, 300), (2, 300)]);
+        let result = allocate_platform_addresses_with_fee(&addresses, 500, None, |inputs| {
+            inputs.len() as u64 * 10
+        });
+
+        assert_eq!(result.estimated_fee, 20, "fee converged for two inputs");
+        assert_eq!(result.inputs.len(), 2);
+        assert_eq!(result.inputs.values().sum::<u64>(), 500);
+        assert_eq!(result.shortfall, 0);
+    }
+
+    #[test]
+    fn allocate_reports_shortfall_when_underfunded() {
+        let addresses = addrs(&[(1, 100)]);
+        let result = allocate_platform_addresses_with_fee(&addresses, 500, None, |_| 50);
+
+        // 100 balance, 50 reserved for fee → only 50 allocatable against a 500 ask.
+        assert_eq!(result.estimated_fee, 50);
+        assert_eq!(result.inputs.get(&pa(1)).copied(), Some(50));
+        assert_eq!(result.shortfall, 450);
+    }
+
+    #[test]
+    fn allocate_picks_highest_balance_as_fee_payer_and_excludes_destination() {
+        let addresses = addrs(&[(1, 100), (2, 1000), (9, 5000)]);
+        let destination = pa(9);
+        let result =
+            allocate_platform_addresses_with_fee(&addresses, 200, Some(&destination), |_| 30);
+
+        assert!(
+            !result.inputs.contains_key(&destination),
+            "destination must never be used as an input",
+        );
+        // Highest remaining balance (pa(2)) sorts first and pays the fee.
+        assert_eq!(
+            result.sorted_addresses.first().map(|(a, _, _)| *a),
+            Some(pa(2))
+        );
+        assert_eq!(result.inputs.get(&pa(2)).copied(), Some(200));
+        assert_eq!(result.shortfall, 0);
+        let fee_payer_key = result
+            .inputs
+            .keys()
+            .nth(result.fee_payer_index as usize)
+            .copied();
+        assert_eq!(
+            fee_payer_key,
+            Some(pa(2)),
+            "fee_payer_index locates the fee payer"
+        );
+    }
+
+    #[test]
+    fn allocate_with_no_addresses_reports_full_shortfall() {
+        let result = allocate_platform_addresses_with_fee(&[], 500, None, |_| 10);
+
+        assert!(result.inputs.is_empty());
+        assert!(result.sorted_addresses.is_empty());
+        assert_eq!(result.shortfall, 500);
+        assert_eq!(result.estimated_fee, 10);
+    }
+
+    #[test]
+    fn allocate_with_estimator_uses_worst_case_platform_fee() {
+        let estimator = PlatformFeeEstimator::new();
+        let addresses = addrs(&[(1, 10_000_000_000)]);
+        let result = allocate_platform_addresses(&estimator, &addresses, 1_000_000, None);
+
+        assert_eq!(result.estimated_fee, estimate_platform_fee(&estimator, 1));
+        assert_eq!(result.shortfall, 0);
+        assert_eq!(result.fee_payer_index, 0);
+        assert_eq!(result.inputs.get(&pa(1)).copied(), Some(1_000_000));
     }
 }

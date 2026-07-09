@@ -3,11 +3,12 @@ use crate::backend_task::BackendTask;
 use crate::backend_task::migration::MigrationTask;
 use crate::context::AppContext;
 use crate::context::migration_status::{MigrationState, MigrationStep};
+use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::wallet::WalletSeedHash;
 use crate::ui::ScreenType;
 use crate::ui::components::wallet_unlock_popup::wallet_needs_unlock;
 use crate::ui::theme::DashColors;
-use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
+use crate::ui::wallets::send_screen::SendFlow;
 use eframe::egui::{self, Ui};
 use egui::{Color32, Frame, Margin, RichText};
 use std::sync::Arc;
@@ -107,6 +108,25 @@ impl ShieldedTabView {
         }
     }
 
+    /// Open the unified send screen pre-configured for `flow`, resolving the
+    /// wallet handle for this tab's seed hash. The three shielded flows (Shield,
+    /// Send Private, Unshield) are routes into the one canonical send screen —
+    /// there are no bespoke shielded send screens.
+    fn open_send_flow(&self, flow: SendFlow) -> AppAction {
+        let Some(wallet) = self
+            .app_context
+            .wallets
+            .read()
+            .ok()
+            .and_then(|wallets| wallets.get(&self.seed_hash).cloned())
+        else {
+            return AppAction::None;
+        };
+        AppAction::AddScreen(
+            ScreenType::WalletSendScreen(wallet, flow).create_screen(&self.app_context),
+        )
+    }
+
     /// Compute the J-3 indicator for the current frame. Reads the
     /// migration status atomic; cheap.
     fn current_indicator(&self) -> ShieldedIndicator {
@@ -151,12 +171,11 @@ impl ShieldedTabView {
     /// Sync local display state from the push balance snapshot and the
     /// upstream coordinator.
     ///
-    /// Phase D: the upstream `platform-wallet` coordinator owns all Orchard
-    /// state (keys, sync progress, note tree). Balance is read from the
-    /// frame-safe push snapshot; `is_initialized` / `tree_synced` are set
-    /// true whenever the wallet backend is wired so spend buttons are
-    /// enabled. Phase E will wire a push notification for fine-grained
-    /// sync progress.
+    /// The upstream `platform-wallet` coordinator owns all Orchard state (keys,
+    /// sync progress, note tree). Balance is read from the frame-safe push
+    /// snapshot; `is_initialized` / `tree_synced` are set true whenever the
+    /// wallet backend is wired so spend buttons are enabled. Fine-grained sync
+    /// progress arrives through the push-based [`ConnectionStatus`].
     fn refresh_from_backend_state(&mut self) {
         // Balance: use the frame-safe push snapshot (no lock in frame loop).
         self.shielded_balance = self.app_context.shielded_balance_credits(&self.seed_hash);
@@ -185,11 +204,11 @@ impl ShieldedTabView {
         .default_open(dev_mode);
 
         header.show(ui, |ui| {
-            // Phase D: shielded addresses are now derived by the upstream
-            // platform-wallet coordinator. The default address is available
-            // via the async WalletBackend::shielded_default_address API;
-            // a synchronous display path will be wired in Phase E via the
-            // push snapshot.
+            // Shielded addresses are derived by the upstream platform-wallet
+            // coordinator; the default address is available via the async
+            // WalletBackend::shielded_default_address API.
+            // TODO: render the default address here once a synchronous read is
+            // exposed through the push snapshot.
             ui.label(
                 RichText::new("Shielded address available after wallet unlock and sync.")
                     .color(DashColors::text_secondary(dark_mode)),
@@ -198,10 +217,7 @@ impl ShieldedTabView {
     }
 
     /// Handle backend task results for shielded operations.
-    ///
-    /// Phase D: variants for the retired DET-owned subsystem
-    /// (`ShieldedInitialized`, `ShieldedNotesSynced`, `ShieldedNullifiersChecked`)
-    /// have been removed. Only fund-moving results remain.
+    /// Fund-moving results only.
     pub fn handle_result(
         &mut self,
         result: &crate::backend_task::BackendTaskSuccessResult,
@@ -211,21 +227,26 @@ impl ShieldedTabView {
             BackendTaskSuccessResult::ShieldedCreditsShielded { seed_hash, amount }
                 if *seed_hash == self.seed_hash =>
             {
-                self.success_message =
-                    Some(format!("Shielded {} successfully", format_credits(*amount)));
+                self.success_message = Some(format!(
+                    "Shielded {} successfully",
+                    format_credits_as_dash(*amount)
+                ));
                 true
             }
             BackendTaskSuccessResult::ShieldedTransferComplete { seed_hash, amount }
                 if *seed_hash == self.seed_hash =>
             {
-                self.success_message =
-                    Some(format!("Transferred {} privately", format_credits(*amount)));
+                self.success_message = Some(format!(
+                    "Transferred {} privately",
+                    format_credits_as_dash(*amount)
+                ));
                 true
             }
             BackendTaskSuccessResult::ShieldedCreditsUnshielded { seed_hash, amount }
                 if *seed_hash == self.seed_hash =>
             {
-                self.success_message = Some(format!("Unshielded {}", format_credits(*amount)));
+                self.success_message =
+                    Some(format!("Unshielded {}", format_credits_as_dash(*amount)));
                 true
             }
             BackendTaskSuccessResult::ShieldedFromAssetLock { seed_hash, amount }
@@ -233,7 +254,7 @@ impl ShieldedTabView {
             {
                 self.success_message = Some(format!(
                     "Shielded {} from core wallet",
-                    format_credits(*amount)
+                    format_credits_as_dash(*amount)
                 ));
                 true
             }
@@ -242,7 +263,7 @@ impl ShieldedTabView {
             {
                 self.success_message = Some(format!(
                     "Withdrew {} to core address",
-                    format_credits(*amount)
+                    format_credits_as_dash(*amount)
                 ));
                 true
             }
@@ -264,7 +285,7 @@ impl ShieldedTabView {
     // The redesign should move buttons to the top and use collapsible sections.
 
     /// Render in-flight shielded sync progress, read from the push-based
-    /// [`ConnectionStatus`] (Phase E). Shows the downloaded-notes counter and
+    /// [`ConnectionStatus`]. Shows the downloaded-notes counter and
     /// the committed-to-tree ("checked") progress — a determinate bar when the
     /// on-chain leaf total is known, a spinner otherwise. Renders nothing
     /// between passes (both progress fields `None`).
@@ -466,7 +487,7 @@ impl ShieldedTabView {
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     ui.label(
-                        RichText::new(format_credits(self.shielded_balance))
+                        RichText::new(format_credits_as_dash(self.shielded_balance))
                             .size(28.0)
                             .strong()
                             .color(DashColors::text_primary(dark_mode)),
@@ -507,7 +528,7 @@ impl ShieldedTabView {
 
         ui.add_space(10.0);
 
-        // In-flight shielded sync progress (push-based; Phase E).
+        // In-flight shielded sync progress (push-based).
         self.render_sync_progress(ui, dark_mode);
 
         // Shielded Addresses (collapsible table)
@@ -537,9 +558,7 @@ impl ShieldedTabView {
                 })
                 .clicked()
             {
-                action |= AppAction::AddScreen(
-                    ScreenType::ShieldScreen(self.seed_hash).create_screen(&self.app_context),
-                );
+                action |= self.open_send_flow(SendFlow::Shield);
             }
 
             let can_spend =
@@ -562,9 +581,7 @@ impl ShieldedTabView {
                 })
                 .clicked()
             {
-                action |= AppAction::AddScreen(
-                    ScreenType::ShieldedSendScreen(self.seed_hash).create_screen(&self.app_context),
-                );
+                action |= self.open_send_flow(SendFlow::ShieldedSend);
             }
 
             let unshield_btn =
@@ -581,10 +598,7 @@ impl ShieldedTabView {
                 })
                 .clicked()
             {
-                action |= AppAction::AddScreen(
-                    ScreenType::UnshieldCreditsScreen(self.seed_hash)
-                        .create_screen(&self.app_context),
-                );
+                action |= self.open_send_flow(SendFlow::Unshield);
             }
         });
 
@@ -605,7 +619,7 @@ impl ShieldedTabView {
 
         ui.add_space(15.0);
 
-        // Shielded Notes (Phase D: notes are now owned by the upstream coordinator)
+        // Shielded Notes (owned by the upstream coordinator).
         let notes_header = egui::CollapsingHeader::new(
             RichText::new("Shielded Notes")
                 .size(16.0)
@@ -624,15 +638,6 @@ impl ShieldedTabView {
         });
 
         action
-    }
-}
-
-fn format_credits(credits: u64) -> String {
-    let dash = credits as f64 / CREDITS_PER_DUFF as f64 / 1e8;
-    if dash >= 0.01 {
-        format!("{:.4} DASH", dash)
-    } else {
-        format!("{} credits", credits)
     }
 }
 

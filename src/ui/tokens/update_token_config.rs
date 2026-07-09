@@ -14,7 +14,9 @@ use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
 use crate::ui::components::{MessageBanner, OptionBannerExt, ResultBannerExt};
-use crate::ui::helpers::{TransactionType, add_key_chooser, render_group_action_text};
+use crate::ui::helpers::{
+    TransactionType, add_key_chooser, check_token_authorization, render_group_action_text,
+};
 use crate::ui::identities::get_selected_wallet;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
@@ -22,7 +24,6 @@ use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::tokens::validate_signing_key;
 use crate::ui::{MessageType, Screen, ScreenLike};
 use dash_sdk::dpp::data_contract::GroupContractPosition;
-use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::TokenConfigurationConvention;
@@ -30,7 +31,6 @@ use dash_sdk::dpp::data_contract::associated_token::token_configuration_item::To
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::accessors::v0::TokenDistributionRulesV0Getters;
 use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
 use dash_sdk::dpp::data_contract::group::Group;
-use dash_sdk::dpp::data_contract::group::accessors::v0::GroupV0Getters;
 use dash_sdk::dpp::group::{GroupStateTransitionInfo, GroupStateTransitionInfoStatus};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
@@ -134,96 +134,16 @@ impl UpdateTokenConfigScreen {
             .token_config
             .authorized_action_takers_for_configuration_item(&self.change_item);
 
-        let group = match authorized_action_takers {
-            AuthorizedActionTakers::NoOne => {
-                super::set_error_banner(
-                    &self.app_context,
-                    "This action is not allowed on this token",
-                );
-                None
-            }
-            AuthorizedActionTakers::ContractOwner => {
-                if self.identity_token_info.data_contract.contract.owner_id()
-                    != self.identity_token_info.identity.identity.id()
-                {
-                    super::set_error_banner(
-                        &self.app_context,
-                        "You are not allowed to perform this action. Only the contract owner is.",
-                    );
-                }
-                None
-            }
-            AuthorizedActionTakers::Identity(identifier) => {
-                if identifier != self.identity_token_info.identity.identity.id() {
-                    super::set_error_banner(
-                        &self.app_context,
-                        "You are not allowed to perform this action",
-                    );
-                }
-                None
-            }
-            AuthorizedActionTakers::MainGroup => {
-                match self.identity_token_info.token_config.main_control_group() {
-                    None => {
-                        super::set_error_banner(
-                            &self.app_context,
-                            "Invalid contract: No main control group, though one should exist",
-                        );
-                        None
-                    }
-                    Some(group_pos) => {
-                        match self
-                            .identity_token_info
-                            .data_contract
-                            .contract
-                            .expected_group(group_pos)
-                        {
-                            Ok(group) => Some((group_pos, group.clone())),
-                            Err(e) => {
-                                super::set_error_banner(
-                                    &self.app_context,
-                                    &format!("Invalid contract: {}", e),
-                                );
-                                None
-                            }
-                        }
-                    }
-                }
-            }
-            AuthorizedActionTakers::Group(group_pos) => {
-                match self
-                    .identity_token_info
-                    .data_contract
-                    .contract
-                    .expected_group(group_pos)
-                {
-                    Ok(group) => Some((group_pos, group.clone())),
-                    Err(e) => {
-                        super::set_error_banner(
-                            &self.app_context,
-                            &format!("Invalid contract: {}", e),
-                        );
-                        None
-                    }
-                }
-            }
-        };
-
-        self.group = group;
-
-        // Update is_unilateral_group_member based on new group
-        self.is_unilateral_group_member = false;
-        if let Some((_, group)) = &self.group {
-            let your_power = group
-                .members()
-                .get(&self.identity_token_info.identity.identity.id());
-
-            if let Some(your_power) = your_power
-                && your_power >= &group.required_power()
-            {
-                self.is_unilateral_group_member = true;
-            }
+        let auth = check_token_authorization(
+            &authorized_action_takers,
+            &self.identity_token_info,
+            "Update",
+        );
+        if let Some(msg) = auth.error_message {
+            super::set_error_banner(&self.app_context, &msg);
         }
+        self.group = auth.group;
+        self.is_unilateral_group_member = auth.is_unilateral_group_member;
     }
 
     fn render_token_config_updater(&mut self, ui: &mut Ui) -> AppAction {
@@ -875,17 +795,16 @@ impl UpdateTokenConfigScreen {
                         );
 
                         if !id_str.is_empty() {
-                            let is_valid =
-                                Identifier::from_string(id_str, Encoding::Base58).is_ok();
-                            let (symbol, color) = if is_valid {
+                            let parsed = Identifier::from_string(id_str, Encoding::Base58);
+                            let (symbol, color) = if parsed.is_ok() {
                                 ("✔", Color32::DARK_GREEN)
                             } else {
                                 ("×", Color32::RED)
                             };
                             ui.label(RichText::new(symbol).color(color).strong());
 
-                            if is_valid {
-                                *id = Identifier::from_string(id_str, Encoding::Base58).unwrap();
+                            if let Ok(parsed_id) = parsed {
+                                *id = parsed_id;
                             }
                         }
                     });

@@ -11,11 +11,35 @@
 
 use std::fmt;
 
-use crate::mcp::error::McpToolError;
 use crate::model::qualified_identity::IdentityType;
 use crate::model::secret::Secret;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::prelude::Identifier;
+use thiserror::Error;
+
+/// Why a masternode/evonode tool input failed to parse.
+///
+/// Model-local so these pure validators carry no dependency on the MCP layer;
+/// the tool boundary converts these into `McpToolError::InvalidParam`.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum MasternodeInputError {
+    #[error("The 'node_type' must be \"masternode\" or \"evonode\".")]
+    InvalidNodeType,
+    #[error("The 'key_mode' must be \"owner\" or \"transfer\".")]
+    InvalidKeyMode,
+    #[error(
+        "Provide at least one of the owner or payout private key. \
+         The owner key withdraws to the registered payout address; \
+         the payout key withdraws to any address."
+    )]
+    NoSigningKey,
+    #[error(
+        "Could not read the identity ID: {input}. \
+         Provide a 64-character hex ProTxHash or the Base58 identity ID \
+         from masternode-identity-load."
+    )]
+    InvalidIdentityId { input: String },
+}
 
 /// Withdrawal key mode for the masternode credit-withdraw tool.
 ///
@@ -46,14 +70,13 @@ impl fmt::Display for KeyMode {
 ///
 /// # Errors
 ///
-/// Returns [`McpToolError::InvalidParam`] for `"user"` or any other value.
-pub fn parse_node_type(node_type: &str) -> Result<IdentityType, McpToolError> {
+/// Returns [`MasternodeInputError::InvalidNodeType`] for `"user"` or any other
+/// value.
+pub fn parse_node_type(node_type: &str) -> Result<IdentityType, MasternodeInputError> {
     match node_type.trim().to_ascii_lowercase().as_str() {
         "masternode" => Ok(IdentityType::Masternode),
         "evonode" => Ok(IdentityType::Evonode),
-        _ => Err(McpToolError::InvalidParam {
-            message: "The 'node_type' must be \"masternode\" or \"evonode\".".to_owned(),
-        }),
+        _ => Err(MasternodeInputError::InvalidNodeType),
     }
 }
 
@@ -63,14 +86,12 @@ pub fn parse_node_type(node_type: &str) -> Result<IdentityType, McpToolError> {
 ///
 /// # Errors
 ///
-/// Returns [`McpToolError::InvalidParam`] for any other value.
-pub fn parse_key_mode(key_mode: &str) -> Result<KeyMode, McpToolError> {
+/// Returns [`MasternodeInputError::InvalidKeyMode`] for any other value.
+pub fn parse_key_mode(key_mode: &str) -> Result<KeyMode, MasternodeInputError> {
     match key_mode.trim().to_ascii_lowercase().as_str() {
         "owner" => Ok(KeyMode::Owner),
         "transfer" => Ok(KeyMode::Transfer),
-        _ => Err(McpToolError::InvalidParam {
-            message: "The 'key_mode' must be \"owner\" or \"transfer\".".to_owned(),
-        }),
+        _ => Err(MasternodeInputError::InvalidKeyMode),
     }
 }
 
@@ -84,19 +105,14 @@ pub fn parse_key_mode(key_mode: &str) -> Result<KeyMode, McpToolError> {
 ///
 /// # Errors
 ///
-/// Returns [`McpToolError::InvalidParam`] naming both keys and explaining the
-/// two withdraw modes when neither is supplied.
+/// Returns [`MasternodeInputError::NoSigningKey`] naming both keys and
+/// explaining the two withdraw modes when neither is supplied.
 pub fn require_at_least_one_signing_key(
     owner_private_key: &Secret,
     payout_private_key: &Secret,
-) -> Result<(), McpToolError> {
+) -> Result<(), MasternodeInputError> {
     if owner_private_key.is_blank() && payout_private_key.is_blank() {
-        return Err(McpToolError::InvalidParam {
-            message: "Provide at least one of the owner or payout private key. \
-                      The owner key withdraws to the registered payout address; \
-                      the payout key withdraws to any address."
-                .to_owned(),
-        });
+        return Err(MasternodeInputError::NoSigningKey);
     }
     Ok(())
 }
@@ -109,16 +125,13 @@ pub fn require_at_least_one_signing_key(
 ///
 /// # Errors
 ///
-/// Returns [`McpToolError::InvalidParam`] when the input parses as neither.
-pub fn decode_identity_id(input: &str) -> Result<Identifier, McpToolError> {
+/// Returns [`MasternodeInputError::InvalidIdentityId`] when the input parses as
+/// neither.
+pub fn decode_identity_id(input: &str) -> Result<Identifier, MasternodeInputError> {
     Identifier::from_string(input, Encoding::Base58)
         .or_else(|_| Identifier::from_string(input, Encoding::Hex))
-        .map_err(|_| McpToolError::InvalidParam {
-            message: format!(
-                "Could not read the identity ID: {input}. \
-                 Provide a 64-character hex ProTxHash or the Base58 identity ID \
-                 from masternode-identity-load."
-            ),
+        .map_err(|_| MasternodeInputError::InvalidIdentityId {
+            input: input.to_owned(),
         })
 }
 
@@ -145,10 +158,10 @@ mod tests {
     #[test]
     fn node_type_user_rejected() {
         let err = parse_node_type("user").unwrap_err();
-        assert!(matches!(err, McpToolError::InvalidParam { .. }));
+        assert_eq!(err, MasternodeInputError::InvalidNodeType);
         assert_eq!(
             err.to_string(),
-            "Invalid parameter: The 'node_type' must be \"masternode\" or \"evonode\"."
+            "The 'node_type' must be \"masternode\" or \"evonode\"."
         );
     }
 
@@ -166,7 +179,10 @@ mod tests {
     fn node_type_garbage_rejected() {
         for bad in ["evo", "", "node", "masternodes"] {
             assert!(
-                matches!(parse_node_type(bad), Err(McpToolError::InvalidParam { .. })),
+                matches!(
+                    parse_node_type(bad),
+                    Err(MasternodeInputError::InvalidNodeType)
+                ),
                 "expected {bad:?} to be rejected"
             );
         }
@@ -192,7 +208,7 @@ mod tests {
             let err = parse_key_mode(bad).unwrap_err();
             assert_eq!(
                 err.to_string(),
-                "Invalid parameter: The 'key_mode' must be \"owner\" or \"transfer\".",
+                "The 'key_mode' must be \"owner\" or \"transfer\".",
                 "for input {bad:?}"
             );
         }
@@ -264,7 +280,7 @@ mod tests {
             assert!(
                 matches!(
                     decode_identity_id(bad),
-                    Err(McpToolError::InvalidParam { .. })
+                    Err(MasternodeInputError::InvalidIdentityId { .. })
                 ),
                 "expected {bad:?} to be rejected"
             );

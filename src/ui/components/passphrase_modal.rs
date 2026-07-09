@@ -3,10 +3,11 @@
 //! Both the wallet-unlock popup ([`WalletUnlockPopup`](super::wallet_unlock_popup))
 //! and the just-in-time secret prompt
 //! ([`EguiSecretPromptHost`](super::secret_prompt_host)) ask the user for a
-//! passphrase through the same centered, overlay-dimmed modal. This module
-//! owns that chrome once: the dark overlay, the bordered `Window`, focus-once,
-//! the [`PasswordInput`] field, an inline error line, an optional `extra` body
-//! (e.g. a "remember" checkbox), and the Cancel / Submit button row.
+//! passphrase through the same centered, overlay-dimmed modal built on the
+//! shared [`modal_chrome`](super::modal_chrome). This module adds the passphrase
+//! specifics: focus-once, the [`PasswordInput`] field, an inline error line, an
+//! optional `extra` body (e.g. a "remember" checkbox), and the Cancel / Submit
+//! button row.
 //!
 //! It resolves Cancel / Escape / X / click-outside uniformly to
 //! [`PassphraseModalOutcome::Cancel`] so callers never re-implement dismissal.
@@ -24,6 +25,7 @@ use std::fmt;
 use egui::Context;
 use zeroize::Zeroizing;
 
+use crate::ui::components::modal_chrome::{ModalChromeConfig, modal_chrome};
 use crate::ui::components::password_input::PasswordInput;
 use crate::ui::helpers::clicked_outside_window;
 use crate::ui::theme::{ComponentStyles, DashColors};
@@ -127,44 +129,24 @@ pub fn passphrase_modal(
             focus_requested: false,
         });
 
-    // Dark overlay behind the modal. The layer id is salted with the window
-    // title so a wallet-unlock modal and a JIT secret prompt drawn in the same
-    // frame get distinct overlay layers instead of fighting over one.
-    let screen_rect = ctx.content_rect();
-    let painter = ctx.layer_painter(egui::LayerId::new(
-        egui::Order::Background,
-        egui::Id::new("passphrase_modal_overlay").with(config.window_title),
-    ));
-    painter.rect_filled(screen_rect, 0.0, DashColors::modal_overlay());
-
     let mut should_submit = false;
     let mut should_cancel = false;
-    let mut window_is_open = true;
 
-    let window_response = egui::Window::new(config.window_title)
-        .collapsible(false)
-        .resizable(false)
-        // Render on Order::Foreground so the prompt stays above the blocking
-        // progress overlay (also Foreground, but drawn earlier this frame) — the
-        // overlay must never cover a secret prompt it triggered.
-        // Created after the overlay and focus-raised, so it wins within Foreground.
-        .order(egui::Order::Foreground)
-        .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-        .open(&mut window_is_open)
-        .frame(egui::Frame {
-            inner_margin: egui::Margin::same(20),
-            outer_margin: egui::Margin::same(0),
-            corner_radius: egui::CornerRadius::same(8),
-            shadow: egui::epaint::Shadow {
-                offset: [0, 8],
-                blur: 16,
-                spread: 0,
-                color: DashColors::popup_shadow(),
-            },
-            fill: ctx.global_style().visuals.window_fill,
-            stroke: egui::Stroke::new(1.0, DashColors::popup_border_glow()),
-        })
-        .show(ctx, |ui| {
+    // The overlay layer id is salted with the window title so a wallet-unlock modal and a JIT
+    // secret prompt drawn in the same frame get distinct overlays instead of fighting over one.
+    // The window renders on Order::Foreground so the prompt stays above the blocking progress
+    // overlay — that overlay must never cover a secret prompt it triggered.
+    let chrome = modal_chrome(
+        ctx,
+        ModalChromeConfig {
+            title: config.window_title.into(),
+            overlay_id: egui::Id::new("passphrase_modal_overlay").with(config.window_title),
+            overlay_order: egui::Order::Background,
+            window_order: egui::Order::Foreground,
+            resizable: false,
+            inner_margin: 20,
+        },
+        |ui| {
             ui.set_min_width(350.0);
             ui.set_max_width(400.0);
 
@@ -215,10 +197,11 @@ pub fn passphrase_modal(
                     ui.add_space(8.0);
                 });
             });
-        });
+        },
+    );
 
     // X button on the window title bar.
-    if !window_is_open {
+    if chrome.closed_via_x {
         should_cancel = true;
     }
 
@@ -232,10 +215,10 @@ pub fn passphrase_modal(
     }
 
     // Click outside the window.
-    if let Some(ref wr) = window_response
+    if let Some(ref wr) = chrome.window_response
         && !should_submit
         && !should_cancel
-        && clicked_outside_window(ctx, wr.response.rect)
+        && clicked_outside_window(ctx, wr.rect)
     {
         should_cancel = true;
     }

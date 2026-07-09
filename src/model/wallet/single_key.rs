@@ -1,7 +1,12 @@
-//! Single Key Wallet - A wallet backed by a single private key (not HD derived)
+//! LEGACY — Single-key wallet runtime backed by a single private key (not HD
+//! derived).
 //!
-//! This module provides support for importing and using individual private keys
-//! as wallets, similar to the functionality in platform-tui.
+//! Part of the Decision-#7 single-key carve-out: the `SingleKeyWallet` runtime
+//! type is retained (spending is gated) until single-key moves onto the
+//! upstream wallet runtime. Its on-disk persistence lives in
+//! [`crate::database::single_key_wallet`] (which reads UTXOs via
+//! [`crate::database::utxo`]). Not to be confused with the LIVE imported-key
+//! metadata sidecar in [`crate::model::single_key`], which is current code.
 
 use aes_gcm::aead::Aead;
 use aes_gcm::{Aes256Gcm, KeyInit, Nonce};
@@ -11,7 +16,7 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use zeroize::{Zeroize, Zeroizing};
 
-use super::encryption::derive_password_key;
+use super::encryption::{EncryptionError, derive_password_key};
 
 /// Hash of the private key, used as a unique identifier
 pub type SingleKeyHash = [u8; 32];
@@ -83,7 +88,7 @@ pub struct ClosedSingleKey {
 impl std::fmt::Debug for ClosedSingleKey {
     /// Redacting `Debug`: `encrypted_private_key` may hold raw 32 key bytes
     /// (the no-password / pre-migration shape), so a derived `Debug` would
-    /// leak them as a decimal byte array (finding `6a2818cd`). Mirrors
+    /// leak them as a decimal byte array. Mirrors
     /// `ClosedKeyItem` / `PrivateKeyData`: prints lengths and the non-secret
     /// `key_hash`, never the protected bytes. Parents `SingleKeyData` /
     /// `SingleKeyWallet` are safe by delegation.
@@ -103,7 +108,13 @@ impl SingleKeyData {
         match self {
             SingleKeyData::Open(_) => Ok(()),
             SingleKeyData::Closed(closed) => {
-                let private_key = closed.decrypt_private_key(password)?;
+                // `decrypt_private_key` is fully typed; this method's `String`
+                // return is pre-existing model/wallet debt (crypto + key-parse
+                // errors mixed) tracked for a later type-through, so the typed
+                // error is rendered through its `Display` here.
+                let private_key = closed
+                    .decrypt_private_key(password)
+                    .map_err(|e| e.to_string())?;
                 let open_key = OpenSingleKey {
                     private_key,
                     key_info: closed.clone(),
@@ -133,16 +144,6 @@ impl SingleKeyData {
                 *self = SingleKeyData::Open(open_key);
                 Ok(())
             }
-        }
-    }
-
-    /// Closes the key by securely erasing the decrypted data
-    #[allow(dead_code)]
-    pub fn close(&mut self) {
-        if let SingleKeyData::Open(open_key) = self {
-            let key_info = open_key.key_info.clone();
-            open_key.private_key.zeroize();
-            *self = SingleKeyData::Closed(key_info);
         }
     }
 
@@ -179,38 +180,35 @@ impl ClosedSingleKey {
         key_hash
     }
 
-    /// Encrypt a private key with a password
-    #[allow(clippy::type_complexity)]
-    pub fn encrypt_private_key(
+    /// Encrypt a private key with a password, returning the
+    /// [`EncryptedEnvelope`](super::encryption::EncryptedEnvelope).
+    pub(crate) fn encrypt_private_key(
         private_key: &[u8; 32],
         password: &str,
-    ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>), String> {
-        use super::encryption::encrypt_message;
-        encrypt_message(private_key, password)
+    ) -> Result<super::encryption::EncryptedEnvelope, EncryptionError> {
+        super::encryption::encrypt_message(private_key, password)
     }
 
     /// Decrypt the private key using a password
     #[allow(deprecated)]
-    pub fn decrypt_private_key(&self, password: &str) -> Result<[u8; 32], String> {
+    pub fn decrypt_private_key(&self, password: &str) -> Result<[u8; 32], EncryptionError> {
         // Both the derived AES key and the decrypted plaintext are
-        // secret-bearing; wrap them in `Zeroizing` so the intermediate
-        // buffers wipe on drop instead of lingering after the bytes are
-        // copied into the returned array.
-        let key = Zeroizing::new(derive_password_key(password, &self.salt)?);
-        let cipher = Aes256Gcm::new_from_slice(&key).map_err(|e| e.to_string())?;
+        // secret-bearing; `derive_password_key` already returns a `Zeroizing`
+        // buffer, and the plaintext below is wrapped too, so both intermediates
+        // wipe on drop instead of lingering after the bytes are copied out.
+        let key = derive_password_key(password, &self.salt)?;
+        let cipher = Aes256Gcm::new_from_slice(&key).map_err(|_| EncryptionError::Malformed)?;
         let nonce_arr = Nonce::from_slice(&self.nonce);
         let decrypted = Zeroizing::new(
             cipher
                 .decrypt(nonce_arr, self.encrypted_private_key.as_slice())
-                .map_err(|e| e.to_string())?,
+                .map_err(|_| EncryptionError::WrongPassword)?,
         );
 
-        let bytes: [u8; 32] = decrypted.as_slice().try_into().map_err(|_| {
-            format!(
-                "invalid private key length, expected 32 bytes, got {} bytes",
-                decrypted.len()
-            )
-        })?;
+        let bytes: [u8; 32] = decrypted
+            .as_slice()
+            .try_into()
+            .map_err(|_| EncryptionError::Malformed)?;
         Ok(bytes)
     }
 }
@@ -240,13 +238,17 @@ impl SingleKeyWallet {
         let key_hash = ClosedSingleKey::compute_key_hash(&private_key_bytes);
 
         let (private_key_data, uses_password) = if let Some(pwd) = password {
-            let (encrypted, salt, nonce) =
-                ClosedSingleKey::encrypt_private_key(&private_key_bytes, pwd)?;
+            // `encrypt_private_key` is fully typed; `new`'s `String` return is
+            // pre-existing model/wallet debt (crypto + key-parse errors mixed)
+            // tracked for a later type-through, so the typed error is rendered
+            // through its `Display` here.
+            let envelope = ClosedSingleKey::encrypt_private_key(&private_key_bytes, pwd)
+                .map_err(|e| e.to_string())?;
             let closed = ClosedSingleKey {
                 key_hash,
-                encrypted_private_key: encrypted,
-                salt,
-                nonce,
+                encrypted_private_key: envelope.ciphertext,
+                salt: envelope.salt,
+                nonce: envelope.nonce,
             };
             // Keep it open after creation
             (
@@ -452,9 +454,8 @@ mod tests {
         assert!(!wallet.address.to_string().is_empty());
     }
 
-    /// TS-DBG-01 (6a2818cd) — `ClosedSingleKey`'s `{:?}` exposes no raw 32
-    /// bytes, in neither hex nor decimal-array form (the latter is the shape
-    /// the pre-fix derived `Debug` actually leaked), and the guarantee holds
+    /// TS-DBG-01 — `ClosedSingleKey`'s `{:?}` exposes no raw 32 bytes, in
+    /// neither hex nor decimal-array form, and the guarantee holds
     /// transitively through `SingleKeyData::Closed` and a `SingleKeyWallet`
     /// that holds it.
     #[test]

@@ -676,7 +676,9 @@ impl AddressInput {
             );
         }
 
-        let detected_kind = detected.to_address_kind().unwrap();
+        let detected_kind = detected
+            .to_address_kind()
+            .expect("invariant: detected is a known type, Unknown handled above");
 
         // Check enabled kinds
         if !self.enabled_kinds.contains(&detected_kind) {
@@ -729,17 +731,12 @@ impl AddressInput {
             );
         }
         let canonical = trimmed.to_lowercase();
-        let expected_prefix = match self.network {
-            Network::Mainnet => "dash1",
-            _ => "tdash1",
-        };
-        if !canonical.starts_with(expected_prefix)
-            || canonical.starts_with(&format!("{}z", expected_prefix))
+        // Network prefix validation is centralized in `model/address.rs` so the
+        // GUI and the MCP tools share one source of truth.
+        if let Err(e) =
+            crate::model::address::validate_platform_address_for_network(&canonical, self.network)
         {
-            return (
-                Some("This address belongs to a different network. Please check you are using the correct network.".to_string()),
-                None,
-            );
+            return (Some(e.to_string()), None);
         }
         match PlatformAddress::from_bech32m_string(&canonical) {
             Ok(pa) => (
@@ -759,15 +756,30 @@ impl AddressInput {
     }
 
     fn validate_shielded(&self, trimmed: &str) -> (Option<String>, Option<ValidatedAddress>) {
-        let expected_prefix = match self.network {
-            Network::Mainnet => "dash1z",
-            _ => "tdash1z",
-        };
-        if !trimmed.starts_with(expected_prefix) {
-            return (
-                Some("This address belongs to a different network. Please check you are using the correct network.".to_string()),
-                None,
-            );
+        // Raw hex form (43 bytes = 86 hex chars) is network-agnostic — accept it
+        // directly via the shared parser. This preserves the "…or hex" recipient
+        // entry the standalone private-send screen advertised.
+        if trimmed.len() == crate::model::address::SHIELDED_ADDRESS_RAW_LEN * 2
+            && trimmed.bytes().all(|b| b.is_ascii_hexdigit())
+        {
+            return match crate::model::address::parse_shielded_recipient(trimmed) {
+                Some(_) => (None, Some(ValidatedAddress::Shielded(trimmed.to_string()))),
+                None => (
+                    Some(
+                        "This private address is not valid. Please check it and try again."
+                            .to_string(),
+                    ),
+                    None,
+                ),
+            };
+        }
+
+        // Network prefix validation is centralized in `model/address.rs` so the
+        // GUI and the MCP tools share one source of truth.
+        if let Err(e) =
+            crate::model::address::validate_orchard_address_for_network(trimmed, self.network)
+        {
+            return (Some(e.to_string()), None);
         }
         // Orchard shielded addresses are ~70+ chars; reject anything too short.
         if trimmed.len() < 60 {
@@ -1184,7 +1196,7 @@ impl AddressInput {
                 self.autocomplete_open = false;
             }
 
-            // Handle autocomplete selection (FIX 7: clear cached_detection)
+            // Handle autocomplete selection (clear cached_detection).
             let selected_this_frame = selected_entry.is_some();
             if let Some(entry) = selected_entry {
                 self.input_text = entry.address_string.clone();
@@ -1222,10 +1234,10 @@ impl AddressInput {
                 }
             }
 
-            // Build response
-            // FIX 1: blur validation produces a result => signal changed
+            // Build response.
+            // Blur validation producing a result signals changed.
             let blur_validated = lost_focus && validated_address.is_some();
-            // FIX 2: use one-frame local flag for autocomplete selection
+            // One-frame local flag for autocomplete selection.
             let changed = text_changed || selected_this_frame || self.changed || blur_validated;
             if self.changed {
                 self.changed = false;
@@ -1502,6 +1514,17 @@ mod tests {
     fn detect_shielded_testnet() {
         let result = detect_address_type("tdash1z_some_shielded_addr", true);
         assert_eq!(result, DetectedType::Shielded);
+    }
+
+    #[test]
+    fn detect_shielded_raw_hex() {
+        // 43-byte raw hex form (network-agnostic) routes to shielded validation
+        // so the "…or hex" recipient entry keeps working.
+        let hex_str = hex::encode(vec![
+            0xABu8;
+            crate::model::address::SHIELDED_ADDRESS_RAW_LEN
+        ]);
+        assert_eq!(detect_address_type(&hex_str, true), DetectedType::Shielded);
     }
 
     #[test]
@@ -1873,7 +1896,7 @@ mod tests {
         assert_eq!(va.to_address_string(), "dash1z_test");
     }
 
-    // --- FIX 1: Blur validation propagation ---
+    // --- Blur validation propagation ---
 
     #[test]
     fn blur_triggers_validation_for_valid_core_address() {
@@ -1904,7 +1927,7 @@ mod tests {
         assert_eq!(val.unwrap().kind(), AddressKind::Core);
     }
 
-    // --- FIX 4: Mixed-case bech32m rejection ---
+    // --- Mixed-case bech32m rejection ---
 
     #[test]
     fn platform_mixed_case_rejected() {

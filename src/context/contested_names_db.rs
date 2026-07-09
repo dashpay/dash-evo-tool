@@ -9,7 +9,7 @@
 use super::AppContext;
 use crate::backend_task::error::TaskError;
 use crate::model::contested_name::{ContestState, Contestant, ContestedName};
-use crate::wallet_backend::{DetKv, DetScope};
+use crate::wallet_backend::{DetScope, KvAdapterError};
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::data_contract::document_type::DocumentTypeRef;
 use dash_sdk::dpp::document::DocumentV0Getters;
@@ -60,11 +60,18 @@ struct StoredContestant {
     document_id: [u8; 32],
 }
 
+/// How long a DPNS name contest stays open before it locks or resolves.
+/// Mainnet runs the two-week production window; every other network uses a
+/// 90-minute fast-cycle window for testing. Mirrors platform's DPNS
+/// contested-name governance parameters (`ACTIVE_VOTE_DURATION`).
+const MAINNET_CONTEST_DURATION: Duration = Duration::from_secs(60 * 60 * 24 * 14);
+const NON_MAINNET_CONTEST_DURATION: Duration = Duration::from_secs(60 * 90);
+
 fn contest_duration_for_network(network: Network) -> Duration {
     if network == Network::Mainnet {
-        Duration::from_secs(60 * 60 * 24 * 14)
+        MAINNET_CONTEST_DURATION
     } else {
-        Duration::from_secs(60 * 90)
+        NON_MAINNET_CONTEST_DURATION
     }
 }
 
@@ -89,6 +96,8 @@ impl StoredContestedName {
                     .as_millis() as u64)
                     .saturating_sub(created_at),
             );
+            // New contenders may join only during the first half of the
+            // contest window; the second half is vote-only.
             if elapsed <= contest_duration / 2 {
                 ContestState::Joinable
             } else {
@@ -127,13 +136,18 @@ impl StoredContestedName {
     }
 }
 
+/// Map a k/v adapter failure to the DPNS-contest storage error.
+fn contest_err(source: KvAdapterError) -> TaskError {
+    TaskError::ContestStorage { source }
+}
+
 impl AppContext {
     /// Fetches every DPNS contest cached in the per-network k/v store.
     pub fn all_contested_names(&self) -> std::result::Result<Vec<ContestedName>, TaskError> {
-        let kv = self.contest_kv()?;
+        let kv = self.det_kv()?;
         let keys = kv
             .list(DetScope::Global, Some(CONTESTED_NAME_KEY_PREFIX))
-            .map_err(|source| TaskError::ContestStorage { source })?;
+            .map_err(contest_err)?;
         let mut out = Vec::with_capacity(keys.len());
         for key in keys {
             match kv.get::<StoredContestedName>(DetScope::Global, &key) {
@@ -156,10 +170,10 @@ impl AppContext {
             .elapsed()
             .unwrap_or_default()
             .as_millis() as u64;
-        let kv = self.contest_kv()?;
+        let kv = self.det_kv()?;
         let keys = kv
             .list(DetScope::Global, Some(CONTESTED_NAME_KEY_PREFIX))
-            .map_err(|source| TaskError::ContestStorage { source })?;
+            .map_err(contest_err)?;
         let mut out = Vec::new();
         for key in keys {
             match kv.get::<StoredContestedName>(DetScope::Global, &key) {
@@ -186,7 +200,7 @@ impl AppContext {
         &self,
         name_contests: Vec<String>,
     ) -> std::result::Result<Vec<String>, TaskError> {
-        let kv = self.contest_kv()?;
+        let kv = self.det_kv()?;
         let stale_threshold = chrono::Utc::now().timestamp() - 30;
         let mut new_names: Vec<String> = Vec::new();
         let mut stale: Vec<(String, Option<i64>)> = Vec::new();
@@ -195,7 +209,7 @@ impl AppContext {
             let key = contested_name_key(&name);
             match kv
                 .get::<StoredContestedName>(DetScope::Global, &key)
-                .map_err(|source| TaskError::ContestStorage { source })?
+                .map_err(contest_err)?
             {
                 None => {
                     let stored = StoredContestedName {
@@ -203,7 +217,7 @@ impl AppContext {
                         ..Default::default()
                     };
                     kv.put(DetScope::Global, &key, &stored)
-                        .map_err(|source| TaskError::ContestStorage { source })?;
+                        .map_err(contest_err)?;
                     new_names.push(name);
                 }
                 Some(stored) => {
@@ -232,13 +246,13 @@ impl AppContext {
         contenders: &Contenders,
         dpns_domain_document_type: DocumentTypeRef,
     ) -> std::result::Result<(), TaskError> {
-        let kv = self.contest_kv()?;
+        let kv = self.det_kv()?;
         let key = contested_name_key(normalized_contested_name);
         let last_updated = chrono::Utc::now().timestamp() as u64;
 
         let mut stored = kv
             .get::<StoredContestedName>(DetScope::Global, &key)
-            .map_err(|source| TaskError::ContestStorage { source })?
+            .map_err(contest_err)?
             .unwrap_or_else(|| StoredContestedName {
                 normalized_contested_name: normalized_contested_name.to_string(),
                 ..Default::default()
@@ -252,14 +266,14 @@ impl AppContext {
                     stored.last_updated = Some(last_updated);
                     stored.end_time = Some(block_info.time_ms);
                     kv.put(DetScope::Global, &key, &stored)
-                        .map_err(|source| TaskError::ContestStorage { source })?;
+                        .map_err(contest_err)?;
                 }
                 ContestedDocumentVotePollWinnerInfo::Locked => {
                     stored.locked = true;
                     stored.last_updated = Some(last_updated);
                     stored.end_time = Some(block_info.time_ms);
                     kv.put(DetScope::Global, &key, &stored)
-                        .map_err(|source| TaskError::ContestStorage { source })?;
+                        .map_err(contest_err)?;
                 }
             }
             return Ok(());
@@ -318,7 +332,7 @@ impl AppContext {
         }
 
         kv.put(DetScope::Global, &key, &stored)
-            .map_err(|source| TaskError::ContestStorage { source })?;
+            .map_err(contest_err)?;
         Ok(())
     }
 
@@ -332,12 +346,12 @@ impl AppContext {
     where
         I: IntoIterator<Item = (String, TimestampMillis)>,
     {
-        let kv = self.contest_kv()?;
+        let kv = self.det_kv()?;
         for (name, new_end_time) in name_contests {
             let key = contested_name_key(&name);
             let Some(mut stored) = kv
                 .get::<StoredContestedName>(DetScope::Global, &key)
-                .map_err(|source| TaskError::ContestStorage { source })?
+                .map_err(contest_err)?
             else {
                 continue;
             };
@@ -346,22 +360,18 @@ impl AppContext {
                 _ => {
                     stored.end_time = Some(new_end_time);
                     kv.put(DetScope::Global, &key, &stored)
-                        .map_err(|source| TaskError::ContestStorage { source })?;
+                        .map_err(contest_err)?;
                 }
             }
         }
         Ok(())
-    }
-
-    fn contest_kv(&self) -> std::result::Result<DetKv, TaskError> {
-        let backend = self.wallet_backend()?;
-        Ok(backend.kv())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::wallet_backend::DetKv;
     use crate::wallet_backend::kv_test_support::InMemoryKv;
     use std::sync::Arc;
 

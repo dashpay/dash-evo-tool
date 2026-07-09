@@ -1,8 +1,8 @@
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
-use crate::model::proof_log_item::RequestType;
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::request_type::RequestType;
 use dash_sdk::Sdk;
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_key::TokenDistributionType;
@@ -43,54 +43,62 @@ impl AppContext {
             builder = builder.with_state_transition_creation_options(options);
         }
 
-        let result = sdk
-            .token_claim(builder, &signing_key, actor_identity)
-            .await
-            .map_err(|e| self.log_drive_proof_error(e, RequestType::BroadcastStateTransition))?;
+        self.execute_token_op(
+            async {
+                sdk.token_claim(builder, &signing_key, actor_identity)
+                    .await
+                    .map_err(|e| {
+                        self.log_drive_proof_error(e, RequestType::BroadcastStateTransition)
+                    })
+            },
+            |result| {
+                // Using the result, update the balance of the claimer identity
+                if let Some(token_id) = data_contract.token_id(token_position) {
+                    match result {
+                        // Standard claim result - extract claimer and amount from document
+                        ClaimResult::Document(document) => {
+                            if let (Some(claimer_value), Some(amount_value)) =
+                                (document.get("claimerId"), document.get("amount"))
+                                && let (Value::Identifier(claimer_bytes), Value::U64(amount)) =
+                                    (claimer_value, amount_value)
+                                && let Ok(claimer_id) = Identifier::from_bytes(claimer_bytes)
+                                && let Err(e) = self.insert_token_identity_balance(
+                                    &token_id,
+                                    &claimer_id,
+                                    *amount,
+                                )
+                            {
+                                tracing::error!(
+                                    "Failed to update token balance from claim document: {}",
+                                    e
+                                );
+                            }
+                        }
 
-        // Using the result, update the balance of the claimer identity
-        if let Some(token_id) = data_contract.token_id(token_position) {
-            match result {
-                // Standard claim result - extract claimer and amount from document
-                ClaimResult::Document(document) => {
-                    if let (Some(claimer_value), Some(amount_value)) =
-                        (document.get("claimerId"), document.get("amount"))
-                        && let (Value::Identifier(claimer_bytes), Value::U64(amount)) =
-                            (claimer_value, amount_value)
-                        && let Ok(claimer_id) = Identifier::from_bytes(claimer_bytes)
-                        && let Err(e) =
-                            self.insert_token_identity_balance(&token_id, &claimer_id, *amount)
-                    {
-                        tracing::error!(
-                            "Failed to update token balance from claim document: {}",
-                            e
-                        );
+                        // Group action with document - assume completed if document exists
+                        ClaimResult::GroupActionWithDocument(_, document) => {
+                            if let (Some(claimer_value), Some(amount_value)) =
+                                (document.get("claimerId"), document.get("amount"))
+                                && let (Value::Identifier(claimer_bytes), Value::U64(amount)) =
+                                    (claimer_value, amount_value)
+                                && let Ok(claimer_id) = Identifier::from_bytes(claimer_bytes)
+                                && let Err(e) = self.insert_token_identity_balance(
+                                    &token_id,
+                                    &claimer_id,
+                                    *amount,
+                                )
+                            {
+                                tracing::error!(
+                                    "Failed to update token balance from group action document: {}",
+                                    e
+                                );
+                            }
+                        }
                     }
                 }
-
-                // Group action with document - assume completed if document exists
-                ClaimResult::GroupActionWithDocument(_, document) => {
-                    if let (Some(claimer_value), Some(amount_value)) =
-                        (document.get("claimerId"), document.get("amount"))
-                        && let (Value::Identifier(claimer_bytes), Value::U64(amount)) =
-                            (claimer_value, amount_value)
-                        && let Ok(claimer_id) = Identifier::from_bytes(claimer_bytes)
-                        && let Err(e) =
-                            self.insert_token_identity_balance(&token_id, &claimer_id, *amount)
-                    {
-                        tracing::error!(
-                            "Failed to update token balance from group action document: {}",
-                            e
-                        );
-                    }
-                }
-            }
-        }
-
-        // Return success with fee result
-        use crate::backend_task::FeeResult;
-        let estimated_fee = self.fee_estimator().estimate_document_batch(1);
-        let fee_result = FeeResult::new(estimated_fee, estimated_fee);
-        Ok(BackendTaskSuccessResult::ClaimedTokens(fee_result))
+            },
+            BackendTaskSuccessResult::ClaimedTokens,
+        )
+        .await
     }
 }

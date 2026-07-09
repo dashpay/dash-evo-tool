@@ -1,6 +1,7 @@
 use crate::app::AppAction;
 use crate::model::wallet::{DerivationPathHelpers, DerivationPathReference};
-use crate::ui::wallets::account_summary::{AccountCategory, categorize_account_path};
+use crate::ui::state::account_summary::{AccountCategory, categorize_account_path};
+use crate::wallet_backend::poison::RwLockRecover;
 use dash_sdk::dashcore_rpc::dashcore::{Address, Network};
 use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
 use dash_sdk::dpp::key_wallet::bip32::{ChildNumber, DerivationPath};
@@ -127,9 +128,14 @@ impl WalletsBalancesScreen {
             })
             .unwrap_or_default();
 
+        // Without a selected wallet there is no address data to render.
+        let Some(selected_wallet) = self.selected_wallet.as_ref() else {
+            return action;
+        };
+
         // Move the data preparation into its own scope
         let mut address_data = {
-            let wallet = self.selected_wallet.as_ref().unwrap().read().unwrap();
+            let wallet = selected_wallet.read_recover();
 
             // Prepare data for the table
             wallet

@@ -77,12 +77,9 @@ impl AsyncTool<DashMcpService> for IdentityCreditsTopup {
         service: &DashMcpService,
         param: IdentityTopupParams,
     ) -> Result<IdentityTopupOutput, McpToolError> {
-        let ctx = service
-            .ctx()
-            .await
-            .map_err(|e| McpToolError::Internal(e.to_string()))?;
+        let ctx = service.tool_ctx().await?;
         resolve::require_network(&ctx, Some(&param.network))?;
-        resolve::validate_amount(param.amount_duffs)?;
+        resolve::validate_positive_amount(param.amount_duffs, "duffs")?;
 
         let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
         let qi = resolve::qualified_identity(&ctx, &param.identity_id)?;
@@ -118,7 +115,7 @@ impl AsyncTool<DashMcpService> for IdentityCreditsTopup {
                     identity_id: identity_id_str,
                     amount_duffs: param.amount_duffs,
                     estimated_fee: fee_result.estimated_fee,
-                    actual_fee: fee_result.actual_fee,
+                    actual_fee: fee_result.actual_fee.unwrap_or(fee_result.estimated_fee),
                 })
             }
             other => Err(McpToolError::Internal(format!(
@@ -189,12 +186,9 @@ impl AsyncTool<DashMcpService> for IdentityCreditsTopupFromPlatform {
         service: &DashMcpService,
         param: IdentityTopupFromPlatformParams,
     ) -> Result<IdentityTopupFromPlatformOutput, McpToolError> {
-        let ctx = service
-            .ctx()
-            .await
-            .map_err(|e| McpToolError::Internal(e.to_string()))?;
+        let ctx = service.tool_ctx().await?;
         resolve::require_network(&ctx, Some(&param.network))?;
-        resolve::validate_credits(param.amount_credits)?;
+        resolve::validate_positive_amount(param.amount_credits, "credits")?;
 
         // INTENTIONAL: no SPV sync needed — this tool only dispatches Platform state transitions,
         // not Core UTXO spends
@@ -262,7 +256,7 @@ impl AsyncTool<DashMcpService> for IdentityCreditsTopupFromPlatform {
                     identity_id: identity_id_str,
                     amount_credits: param.amount_credits,
                     estimated_fee: fee_result.estimated_fee,
-                    actual_fee: fee_result.actual_fee,
+                    actual_fee: fee_result.actual_fee.unwrap_or(fee_result.estimated_fee),
                 })
             }
             other => Err(McpToolError::Internal(format!(
@@ -336,12 +330,9 @@ impl AsyncTool<DashMcpService> for IdentityCreditsTransfer {
         service: &DashMcpService,
         param: IdentityTransferParams,
     ) -> Result<IdentityTransferOutput, McpToolError> {
-        let ctx = service
-            .ctx()
-            .await
-            .map_err(|e| McpToolError::Internal(e.to_string()))?;
+        let ctx = service.tool_ctx().await?;
         resolve::require_network(&ctx, Some(&param.network))?;
-        resolve::validate_credits(param.amount_credits)?;
+        resolve::validate_positive_amount(param.amount_credits, "credits")?;
         // INTENTIONAL: no SPV sync needed — this tool only dispatches Platform state transitions,
         // not Core UTXO spends
         let _seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
@@ -373,7 +364,7 @@ impl AsyncTool<DashMcpService> for IdentityCreditsTransfer {
                     to_identity_id: param.to_identity_id,
                     amount_credits: param.amount_credits,
                     estimated_fee: fee_result.estimated_fee,
-                    actual_fee: fee_result.actual_fee,
+                    actual_fee: fee_result.actual_fee.unwrap_or(fee_result.estimated_fee),
                 })
             }
             other => Err(McpToolError::Internal(format!(
@@ -447,12 +438,9 @@ impl AsyncTool<DashMcpService> for IdentityCreditsWithdraw {
         service: &DashMcpService,
         param: IdentityWithdrawParams,
     ) -> Result<IdentityWithdrawOutput, McpToolError> {
-        let ctx = service
-            .ctx()
-            .await
-            .map_err(|e| McpToolError::Internal(e.to_string()))?;
+        let ctx = service.tool_ctx().await?;
         resolve::require_network(&ctx, Some(&param.network))?;
-        resolve::validate_credits(param.amount_credits)?;
+        resolve::validate_positive_amount(param.amount_credits, "credits")?;
         resolve::validate_address(&param.to_address)?;
 
         // The backend calls `Identity::fetch_by_identifier` and reads the identity nonce —
@@ -494,7 +482,7 @@ impl AsyncTool<DashMcpService> for IdentityCreditsWithdraw {
                     to_address: param.to_address,
                     amount_credits: param.amount_credits,
                     estimated_fee: fee_result.estimated_fee,
-                    actual_fee: fee_result.actual_fee,
+                    actual_fee: fee_result.actual_fee.unwrap_or(fee_result.estimated_fee),
                 })
             }
             other => Err(McpToolError::Internal(format!(
@@ -567,12 +555,9 @@ impl AsyncTool<DashMcpService> for IdentityCreditsToAddress {
         service: &DashMcpService,
         param: IdentityToAddressParams,
     ) -> Result<IdentityToAddressOutput, McpToolError> {
-        let ctx = service
-            .ctx()
-            .await
-            .map_err(|e| McpToolError::Internal(e.to_string()))?;
+        let ctx = service.tool_ctx().await?;
         resolve::require_network(&ctx, Some(&param.network))?;
-        resolve::validate_credits(param.amount_credits)?;
+        resolve::validate_positive_amount(param.amount_credits, "credits")?;
         // INTENTIONAL: no SPV sync needed — this tool only dispatches Platform state transitions,
         // not Core UTXO spends
         let _seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
@@ -584,6 +569,19 @@ impl AsyncTool<DashMcpService> for IdentityCreditsToAddress {
                 .map_err(|e| McpToolError::InvalidParam {
                 message: format!("Invalid Platform address: {e}"),
             })?;
+
+        // Gate the destination against the ACTIVE network. The `network` param
+        // only pins which network is active; it does NOT validate the
+        // destination, so a mainnet `dash1…` address could otherwise be paid on
+        // testnet (or vice-versa), misdirecting credits. Checked after parsing
+        // so a malformed address still reports "invalid", not "wrong network".
+        crate::model::address::validate_platform_address_for_network(
+            &param.to_address,
+            ctx.network(),
+        )
+        .map_err(|e| McpToolError::InvalidParam {
+            message: e.to_string(),
+        })?;
 
         let mut outputs = BTreeMap::new();
         outputs.insert(platform_addr, param.amount_credits);
@@ -605,7 +603,7 @@ impl AsyncTool<DashMcpService> for IdentityCreditsToAddress {
                     to_address: param.to_address,
                     amount_credits: param.amount_credits,
                     estimated_fee: fee_result.estimated_fee,
-                    actual_fee: fee_result.actual_fee,
+                    actual_fee: fee_result.actual_fee.unwrap_or(fee_result.estimated_fee),
                 })
             }
             other => Err(McpToolError::Internal(format!(

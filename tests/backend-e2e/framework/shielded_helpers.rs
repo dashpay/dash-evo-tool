@@ -7,7 +7,7 @@
 //! drives a coordinator pass and returns the resulting push-snapshot balance.
 
 use dash_evo_tool::context::AppContext;
-use dash_evo_tool::model::feature_gate::FeatureGate;
+use dash_evo_tool::context::feature_gate::FeatureGate;
 use dash_evo_tool::model::wallet::WalletSeedHash;
 use std::sync::Arc;
 

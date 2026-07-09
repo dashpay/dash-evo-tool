@@ -2,8 +2,8 @@ use crate::backend_task::error::TaskError;
 use crate::backend_task::identity::{IdentityRegistrationInfo, RegisterIdentityFundingMethod};
 use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
-use crate::model::proof_log_item::RequestType;
 use crate::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
+use crate::model::request_type::RequestType;
 use dash_sdk::dash_spv::Network;
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::fee::Credits;
@@ -243,7 +243,7 @@ impl AppContext {
         // table is only consulted on the legacy staged-asset-lock recovery
         // path, so no mirror write is needed here.
 
-        let fee_result = FeeResult::new(estimated_fee, estimated_fee);
+        let fee_result = FeeResult::estimated_only(estimated_fee);
         Ok(BackendTaskSuccessResult::RegisteredIdentity(
             qualified_identity,
             fee_result,
@@ -375,7 +375,7 @@ impl AppContext {
                         .insert(wallet_identity_index, qualified_identity.identity.clone());
                 }
 
-                let fee_result = FeeResult::new(estimated_fee, estimated_fee);
+                let fee_result = FeeResult::estimated_only(estimated_fee);
                 Ok(BackendTaskSuccessResult::RegisteredIdentity(
                     qualified_identity,
                     fee_result,

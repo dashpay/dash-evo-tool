@@ -279,19 +279,11 @@ pub fn render_gated(ui: &mut Ui, handle: Option<&str>) -> AppAction {
     if response.primary_clicked {
         // Route to the Settings tab — that is where the user actually edits
         // display name and avatar (social-profile fields). Resolution goes
-        // through the pure `contacts_button_kind` dispatcher, so `identity-
-        // hub` feature gating is handled in one place.
+        // through the pure `contacts_button_kind` dispatcher so routing lives
+        // in one place.
         match contacts_button_kind(ContactsButton::GateSetUpProfile) {
-            #[cfg(feature = "identity-hub")]
             ContactsButtonKind::SwitchHubTab(tab) => {
                 return AppAction::SwitchIdentityHubTab(tab);
-            }
-            #[cfg(not(feature = "identity-hub"))]
-            ContactsButtonKind::SwitchHubTab(_) => {
-                // Without the identity-hub feature, there is no hub to
-                // switch to — the gate card should not even be reachable
-                // in that build, but we defend against it rather than
-                // silently drop the click.
             }
             ContactsButtonKind::OpenScreen(_) => {
                 // Not possible today (dispatcher returns SwitchHubTab), but
@@ -524,10 +516,7 @@ fn resolve_contacts_button(button: ContactsButton, app_context: &Arc<AppContext>
             };
             AppAction::AddScreen(screen.create_screen(app_context))
         }
-        #[cfg(feature = "identity-hub")]
         ContactsButtonKind::SwitchHubTab(tab) => AppAction::SwitchIdentityHubTab(tab),
-        #[cfg(not(feature = "identity-hub"))]
-        ContactsButtonKind::SwitchHubTab(_) => AppAction::None,
     }
 }
 

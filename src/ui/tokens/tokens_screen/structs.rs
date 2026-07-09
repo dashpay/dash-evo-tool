@@ -1,5 +1,6 @@
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
+use crate::model::amount::Amount;
 use crate::model::qualified_contract::QualifiedContract;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::tokens::tokens_screen::validate_perpetual_distribution_recipient;
@@ -7,6 +8,7 @@ use dash_sdk::dpp::balances::credits::TokenAmount;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_configuration::accessors::v0::TokenConfigurationV0Getters;
+use dash_sdk::dpp::data_contract::associated_token::token_configuration_convention::accessors::v0::TokenConfigurationConventionV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::accessors::v0::TokenDistributionRulesV0Getters;
 use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::methods::v0::TokenPerpetualDistributionV0Accessors;
 use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
@@ -171,38 +173,6 @@ impl IdentityTokenInfo {
             token_position: *token_position,
         })
     }
-    // Allow dead_code: This constructor creates token info from identity balances with lookup,
-    // useful for token management screens requiring detailed context resolution
-    #[allow(dead_code)]
-    pub fn try_from_identity_token_balance_with_actions_with_lookup(
-        identity_token_balance: &IdentityTokenBalanceWithActions,
-        app_context: &AppContext,
-    ) -> Result<Self, TaskError> {
-        let IdentityTokenBalanceWithActions {
-            token_id,
-            token_alias,
-            token_config,
-            identity_id,
-            data_contract_id,
-            token_position,
-            ..
-        } = identity_token_balance;
-        let identity = app_context
-            .get_identity_by_id(identity_id)?
-            .ok_or(TaskError::IdentityNotFoundLocally)?;
-        let data_contract = app_context
-            .get_contract_by_id(data_contract_id)?
-            .ok_or(TaskError::DataContractNotFound)?;
-        Ok(Self {
-            token_id: *token_id,
-            token_alias: token_alias.clone(),
-            identity,
-            data_contract,
-            token_config: token_config.clone(),
-            token_position: *token_position,
-        })
-    }
-
     pub fn try_from_identity_token_maybe_balance_with_actions_with_lookup(
         identity_token_balance: &IdentityTokenMaybeBalanceWithActions,
         app_context: &AppContext,
@@ -553,5 +523,42 @@ pub fn get_available_token_actions_for_identity(
             ),
         can_transfer,
         can_update_config,
+    }
+}
+
+impl Amount {
+    /// Creates an [`Amount`] for a token, taking decimals and unit name from
+    /// the token configuration.
+    pub fn from_token(token_info: &IdentityTokenInfo, value: TokenAmount) -> Self {
+        let decimal_places = token_info.token_config.conventions().decimals();
+        Self::new(value, decimal_places).with_unit_name(&token_info.token_alias)
+    }
+}
+
+impl From<&IdentityTokenBalance> for Amount {
+    /// Uses the token configuration's decimals and the token alias as the unit name.
+    fn from(token_balance: &IdentityTokenBalance) -> Self {
+        let decimal_places = token_balance.token_config.conventions().decimals();
+        Self::new(token_balance.balance, decimal_places).with_unit_name(&token_balance.token_alias)
+    }
+}
+
+impl From<IdentityTokenBalance> for Amount {
+    fn from(token_balance: IdentityTokenBalance) -> Self {
+        Self::from(&token_balance)
+    }
+}
+
+impl From<&IdentityTokenBalanceWithActions> for Amount {
+    /// Uses the token configuration's decimals and the token alias as the unit name.
+    fn from(token_balance: &IdentityTokenBalanceWithActions) -> Self {
+        let decimal_places = token_balance.token_config.conventions().decimals();
+        Self::new(token_balance.balance, decimal_places).with_unit_name(&token_balance.token_alias)
+    }
+}
+
+impl From<IdentityTokenBalanceWithActions> for Amount {
+    fn from(token_balance: IdentityTokenBalanceWithActions) -> Self {
+        Self::from(&token_balance)
     }
 }

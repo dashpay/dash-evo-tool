@@ -1,4 +1,9 @@
-//! Database operations for single key wallets
+//! LEGACY — Database operations for the Decision-#7 single-key carve-out.
+//!
+//! Persists the [`crate::model::wallet::single_key::SingleKeyWallet`] runtime
+//! type and reads its UTXOs via [`crate::database::utxo`]. Retained (spending
+//! gated) until single-key moves onto the upstream wallet runtime. The LIVE
+//! imported-key metadata sidecar is [`crate::model::single_key`].
 
 use crate::database::Database;
 use rusqlite::Connection;

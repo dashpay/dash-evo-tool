@@ -19,9 +19,12 @@ impl AddNewIdentityScreen {
                 }
             };
 
-            let total_balance: u64 = self.app_context.snapshot_balance(&wallet.seed_hash()).total;
+            let spendable_balance: u64 = self
+                .app_context
+                .snapshot_balance(&wallet.seed_hash())
+                .spendable();
 
-            let dash_balance = total_balance as f64 * 1e-8; // Convert to DASH units
+            let dash_balance = spendable_balance as f64 * 1e-8; // Convert to DASH units
 
             ui.horizontal(|ui| {
                 ui.label(format!("Wallet Balance: {:.8} DASH", dash_balance));
@@ -106,7 +109,11 @@ impl AddNewIdentityScreen {
         self.render_funding_amount_input(ui);
 
         // Extract the step from the RwLock to minimize borrow scope
-        let step = *self.step.read().unwrap();
+        let step = self
+            .step
+            .read()
+            .map(|s| *s)
+            .unwrap_or(WalletFundedScreenStep::ChooseFundingMethod);
 
         // Check if we have a valid amount before showing the button
         let has_valid_amount = self

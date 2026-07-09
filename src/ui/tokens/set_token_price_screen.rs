@@ -81,7 +81,12 @@ pub enum SetTokenPriceStatus {
     Complete,
 }
 
-/// A UI Screen for minting tokens from an existing token contract
+/// A UI Screen for setting a token's direct-purchase price.
+//
+// TODO(det): fold into the shared `TokenActionScreen<A>` scaffold like the other
+// single-shot token actions. Deferred because the pricing form (single price vs.
+// schedule) is large and the verb-based authorization message template does not
+// fit "set/change price" grammatically.
 pub struct SetTokenPriceScreen {
     pub identity_token_info: IdentityTokenInfo,
     selected_key: Option<IdentityPublicKey>,

@@ -2,19 +2,16 @@
 
 use dash_evo_tool::*;
 
-use crate::app_dir::{app_user_data_dir_path, create_app_user_data_directory_if_not_exists};
+use crate::boot::prepare_environment;
 use crate::cpu_compatibility::check_cpu_compatibility;
 use crate::logging::{
-    capture_stderr_to_file, initialize_logger, install_fatal_signal_handler,
-    report_startup_failure_to_terminal,
+    capture_stderr_to_file, install_fatal_signal_handler, report_startup_failure_to_terminal,
 };
 
 fn main() -> eframe::Result<()> {
-    create_app_user_data_directory_if_not_exists()
-        .expect("Failed to create app user_data directory");
-    let app_data_dir =
-        app_user_data_dir_path().expect("Failed to get app user_data directory path");
-    initialize_logger();
+    // Single owner of dir/env/logger setup; runs again inside `BootApp` boot,
+    // where the logger's `Once` guard makes the repeat a no-op.
+    let app_data_dir = prepare_environment().expect("Failed to prepare app environment");
     // Redirect stderr to a sidecar file so native crashes (SIGSEGV, abort, OOM)
     // that bypass the tracing panic hook still leave evidence on disk, then
     // mark which fatal signal fired. Both must run before the eframe/tokio

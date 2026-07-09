@@ -11,8 +11,8 @@ use crate::backend_task::core::CoreTask;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::context::connection_status::spv_phase_summary;
-use crate::model::amount::Amount;
-use crate::model::feature_gate::FeatureGate;
+use crate::context::feature_gate::FeatureGate;
+use crate::model::fee_estimation::format_duffs_as_dash;
 use crate::model::spv_status::SpvStatus;
 use crate::model::wallet::{TransactionStatus, Wallet, WalletSeedHash, WalletTransaction};
 use crate::ui::components::MessageBanner;
@@ -26,11 +26,12 @@ use crate::ui::components::wallet_unlock_popup::{WalletUnlockPopup, WalletUnlock
 use crate::ui::helpers::clicked_outside_window;
 use crate::ui::helpers::copy_text_to_clipboard;
 use crate::ui::state::TrackedAssetLockCache;
-use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
-use crate::ui::wallets::account_summary::{
+use crate::ui::state::account_summary::{
     AccountCategory, AccountSummary, collect_account_summaries,
 };
+use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::{MessageType, RootScreenType, ScreenLike, ScreenType};
+use crate::wallet_backend::poison::RwLockRecover;
 use chrono::{DateTime, Utc};
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use eframe::egui::{self, ComboBox, Context, Ui};
@@ -46,7 +47,6 @@ use crate::ui::wallets::shielded_tab::ShieldedTabView;
 use address_table::{SortColumn, SortOrder};
 use dialogs::{
     FundPlatformAddressDialogState, MineDialogState, PrivateKeyDialogState, ReceiveDialogState,
-    SendDialogState,
 };
 
 /// Tab selector for the Accounts & Addresses section.
@@ -59,7 +59,7 @@ use dialogs::{
 enum AccountTab {
     /// Regular account category (BIP44, PlatformPayment)
     Category(AccountCategory, Option<u32>),
-    /// Shielded wallet view (replaces the old top-level Shielded tab)
+    /// Shielded wallet view.
     Shielded,
     /// Consolidated system tab (developer mode only) — shows all non-primary
     /// account categories as collapsible sections.
@@ -197,7 +197,6 @@ pub struct WalletsBalancesScreen {
     remove_wallet_dialog: Option<ConfirmationDialog>,
     pending_wallet_removal: Option<WalletSeedHash>,
     pending_wallet_removal_alias: Option<String>,
-    send_dialog: SendDialogState,
     receive_dialog: ReceiveDialogState,
     fund_platform_dialog: FundPlatformAddressDialogState,
     private_key_dialog: PrivateKeyDialogState,
@@ -231,12 +230,11 @@ pub struct WalletsBalancesScreen {
     /// (rather than constructed fresh each frame) so the underlying tracing
     /// log fires once on mode entry instead of every repaint.
     pub(crate) sk_spv_warning_banner: crate::ui::components::MessageBanner,
-    /// J-6 "Import private key (advanced)" modal dialog. Routes single-key
-    /// imports through [`crate::wallet_backend::SingleKeyView::import_wif`]
-    /// instead of the legacy `single_key_wallets` DB path.
+    /// "Import private key (advanced)" modal dialog. Routes single-key imports
+    /// through [`crate::wallet_backend::SingleKeyView::import_wif`].
     import_single_key_dialog: ImportSingleKeyDialog,
-    /// T-SK-03 "Restore a protected imported key" modal dialog. Opened from
-    /// the post-migration restore banner; routes the legacy password through
+    /// "Restore a protected imported key" modal dialog. Opened from the
+    /// post-migration restore banner; routes the password through
     /// [`crate::backend_task::migration::single_key_restore::restore_protected_single_key`].
     restore_single_key_dialog: RestoreSingleKeyDialog,
     /// Protected single-key rows preserved by the migration that still need
@@ -285,12 +283,11 @@ impl WalletsBalancesScreen {
             }
 
             // Default: try HD wallet first, then single key wallet
-            let hd_wallet = app_context.wallets.read().unwrap().values().next().cloned();
+            let hd_wallet = app_context.wallets.read_recover().values().next().cloned();
             let sk_wallet = if hd_wallet.is_none() {
                 app_context
                     .single_key_wallets
-                    .read()
-                    .unwrap()
+                    .read_recover()
                     .values()
                     .next()
                     .cloned()
@@ -328,7 +325,6 @@ impl WalletsBalancesScreen {
             remove_wallet_dialog: None,
             pending_wallet_removal: None,
             pending_wallet_removal_alias: None,
-            send_dialog: SendDialogState::default(),
             receive_dialog: ReceiveDialogState::default(),
             fund_platform_dialog: FundPlatformAddressDialogState::default(),
             private_key_dialog: PrivateKeyDialogState::default(),
@@ -516,7 +512,7 @@ impl WalletsBalancesScreen {
         // Add HD wallets
         if let Ok(wallets_guard) = self.app_context.wallets.read() {
             for wallet in wallets_guard.values() {
-                let guard = wallet.read().unwrap();
+                let guard = wallet.read_recover();
                 let seed_hash = guard.seed_hash();
                 let core_balance = self.core_balance_duffs(&seed_hash);
                 let platform_balance = self.platform_balance_duffs(&seed_hash);
@@ -535,7 +531,7 @@ impl WalletsBalancesScreen {
         // Add single key wallets
         if let Ok(wallets_guard) = self.app_context.single_key_wallets.read() {
             for wallet in wallets_guard.values() {
-                let guard = wallet.read().unwrap();
+                let guard = wallet.read_recover();
                 let balance_dash = guard.total_balance_duffs() as f64 * 1e-8;
                 let label = format!(
                     "SK: {} ({:.4} DASH)",
@@ -634,7 +630,7 @@ impl WalletsBalancesScreen {
 
                     ui.colored_label(
                         DashColors::text_primary(ui.style().visuals.dark_mode),
-                        format!(" Balance: {}", Self::format_dash(current_balance)),
+                        format!(" Balance: {}", format_duffs_as_dash(current_balance)),
                     );
                 });
 
@@ -766,7 +762,7 @@ impl WalletsBalancesScreen {
         let wallet_is_open = self
             .selected_wallet
             .as_ref()
-            .is_some_and(|wallet_guard| wallet_guard.read().unwrap().is_open());
+            .is_some_and(|wallet_guard| wallet_guard.read_recover().is_open());
 
         // Only show "Add Receiving Address" button for Dash Core account (BIP44 account 0)
         let is_main_account = self
@@ -802,7 +798,7 @@ impl WalletsBalancesScreen {
                     .corner_radius(4.0);
 
             if ui.add(remove_button).clicked() {
-                let wallet = selected_wallet.read().unwrap();
+                let wallet = selected_wallet.read_recover();
                 let alias = wallet
                     .alias
                     .clone()
@@ -970,10 +966,6 @@ impl WalletsBalancesScreen {
             });
     }
 
-    fn format_dash(amount_duffs: u64) -> String {
-        Amount::dash_from_duffs(amount_duffs).to_string()
-    }
-
     /// Format a Unix timestamp (seconds since epoch) as a relative "time ago" string.
     fn format_unix_time_ago(unix_ts: u64) -> String {
         let now = std::time::SystemTime::now()
@@ -1008,7 +1000,7 @@ impl WalletsBalancesScreen {
     }
 
     fn transaction_amount_display(tx: &WalletTransaction, dark_mode: bool) -> (String, Color32) {
-        let amount = Self::format_dash(tx.amount_abs());
+        let amount = format_duffs_as_dash(tx.amount_abs());
         if tx.is_incoming() {
             (format!("+{}", amount), DashColors::SUCCESS)
         } else if tx.is_outgoing() {
@@ -1076,8 +1068,7 @@ impl WalletsBalancesScreen {
             .and_then(|w| w.read().ok().map(|g| g.seed_hash()))
     }
 
-    /// UTXO-derived per-address balances from the snapshot (P4a). Replaces
-    /// the dropped `Wallet.address_balances`.
+    /// UTXO-derived per-address balances from the snapshot.
     fn snapshot_address_balances(
         &self,
         seed_hash: &WalletSeedHash,
@@ -1101,8 +1092,7 @@ impl WalletsBalancesScreen {
             .unwrap_or_default()
     }
 
-    /// Full transaction history from the snapshot (P4a). Replaces the
-    /// dropped `Wallet.transactions`.
+    /// Full transaction history from the snapshot.
     fn snapshot_transactions(&self, seed_hash: &WalletSeedHash) -> Vec<WalletTransaction> {
         self.app_context
             .wallet_backend()
@@ -1125,8 +1115,11 @@ impl WalletsBalancesScreen {
             {
                 if let Some(wallet) = &self.selected_wallet {
                     action = AppAction::AddScreen(
-                        crate::ui::ScreenType::WalletSendScreen(wallet.clone())
-                            .create_screen(&self.app_context),
+                        crate::ui::ScreenType::WalletSendScreen(
+                            wallet.clone(),
+                            crate::ui::wallets::send_screen::SendFlow::General,
+                        )
+                        .create_screen(&self.app_context),
                     );
                 } else if let Some(sk_wallet) = &self.selected_single_key_wallet {
                     action = AppAction::AddScreen(
@@ -1302,7 +1295,7 @@ impl WalletsBalancesScreen {
         };
         let network = self.app_context.network;
         for (path, info) in &wallet.watched_addresses {
-            let (cat, _) = crate::ui::wallets::account_summary::categorize_account_path(
+            let (cat, _) = crate::ui::state::account_summary::categorize_account_path(
                 path,
                 network,
                 info.path_reference,
@@ -1619,14 +1612,13 @@ impl WalletsBalancesScreen {
         };
 
         let selected_seed_hash = {
-            let wallet_guard = wallet_arc.read().unwrap();
+            let wallet_guard = wallet_arc.read_recover();
             wallet_guard.seed_hash()
         };
 
         // Transaction history comes from the display-only `WalletBackend`
-        // snapshot (P4a), not the legacy `Wallet.transactions`. Pre-first-sync
-        // there is no snapshot yet → render the "syncing" state rather than a
-        // misleading "no transactions" message.
+        // snapshot. Pre-first-sync there is no snapshot yet → render the
+        // "syncing" state rather than a misleading "no transactions" message.
         let backend_ready = self
             .app_context
             .wallet_backend()
@@ -1757,7 +1749,7 @@ impl WalletsBalancesScreen {
                             row.col(|ui| {
                                 let fee_text = tx
                                     .fee
-                                    .map(Self::format_dash)
+                                    .map(format_duffs_as_dash)
                                     .unwrap_or_else(|| "-".to_string());
                                 ui.label(fee_text);
                             });
@@ -1915,9 +1907,10 @@ impl WalletsBalancesScreen {
                 });
 
                 // -- Shielded balance --
-                // The upstream coordinator's 60-second sync loop keeps the
-                // push snapshot current; the detailed per-note / nullifier
-                // sync display returns with the Phase-F coordinator read path.
+                // The upstream coordinator's 60-second sync loop keeps the push
+                // snapshot current.
+                // TODO: restore the detailed per-note / nullifier sync display
+                // once the coordinator exposes a read path for it.
                 let shielded_seed_hash = self
                     .selected_wallet
                     .as_ref()
@@ -1927,7 +1920,7 @@ impl WalletsBalancesScreen {
                     let shielded_text = match shielded_seed_hash {
                         Some(hash) => format!(
                             "Shielded: {}",
-                            Self::format_dash(self.app_context.shielded_balance_duffs(&hash))
+                            format_duffs_as_dash(self.app_context.shielded_balance_duffs(&hash))
                         ),
                         None => "Shielded: unavailable".to_string(),
                     };
@@ -1947,7 +1940,7 @@ impl WalletsBalancesScreen {
         let total = core_balance + platform_balance + shielded_balance;
 
         ui.label(
-            RichText::new(format!("Balance: {}", Self::format_dash(total)))
+            RichText::new(format!("Balance: {}", format_duffs_as_dash(total)))
                 .color(DashColors::text_primary(dark_mode))
                 .size(20.0)
                 .strong(),
@@ -1972,11 +1965,17 @@ impl WalletsBalancesScreen {
 
         header.show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.label(format!("Core: {}", Self::format_dash(core_balance)));
+                ui.label(format!("Core: {}", format_duffs_as_dash(core_balance)));
                 ui.label(" | ");
-                ui.label(format!("Platform: {}", Self::format_dash(platform_balance)));
+                ui.label(format!(
+                    "Platform: {}",
+                    format_duffs_as_dash(platform_balance)
+                ));
                 ui.label(" | ");
-                ui.label(format!("Shielded: {}", Self::format_dash(shielded_balance)));
+                ui.label(format!(
+                    "Shielded: {}",
+                    format_duffs_as_dash(shielded_balance)
+                ));
             });
         });
     }
@@ -1988,7 +1987,7 @@ impl WalletsBalancesScreen {
         };
 
         let (alias, _seed_hash, _wallet_is_main) = {
-            let wallet = wallet_arc.read().unwrap();
+            let wallet = wallet_arc.read_recover();
             (
                 wallet
                     .alias
@@ -2037,7 +2036,7 @@ impl WalletsBalancesScreen {
 
                                 // Total balance line
                                 {
-                                    let wallet = wallet_arc.read().unwrap();
+                                    let wallet = wallet_arc.read_recover();
                                     self.render_balance_total(ui, &wallet);
                                 }
                             });
@@ -2048,7 +2047,7 @@ impl WalletsBalancesScreen {
 
                                 // Collapsible balance breakdown
                                 {
-                                    let wallet = wallet_arc.read().unwrap();
+                                    let wallet = wallet_arc.read_recover();
                                     self.render_balance_breakdown_detail(ui, &wallet);
                                 }
 
@@ -2065,7 +2064,7 @@ impl WalletsBalancesScreen {
                         ui.separator();
 
                         let summaries = {
-                            let seed_hash = wallet_arc.read().unwrap().seed_hash();
+                            let seed_hash = wallet_arc.read_recover().seed_hash();
                             let address_balances = self.snapshot_address_balances(&seed_hash);
                             let address_paths = self.snapshot_address_paths(&seed_hash);
                             collect_account_summaries(
@@ -2451,12 +2450,11 @@ impl ScreenLike for WalletsBalancesScreen {
                     // single keys may be all the user has left to restore.
                     self.render_protected_restore_banner(ui);
 
-                    let has_hd_wallets = !self.app_context.wallets.read().unwrap().is_empty();
+                    let has_hd_wallets = !self.app_context.wallets.read_recover().is_empty();
                     let has_single_key_wallets = !self
                         .app_context
                         .single_key_wallets
-                        .read()
-                        .unwrap()
+                        .read_recover()
                         .is_empty();
 
                     if !has_hd_wallets && !has_single_key_wallets {
@@ -2485,7 +2483,6 @@ impl ScreenLike for WalletsBalancesScreen {
             inner_action
         });
 
-        action |= self.render_send_dialog(ctx);
         action |= self.render_receive_dialog(ctx);
         action |= self.render_fund_platform_dialog(ctx);
         action |= self.render_mine_dialog(ctx);
@@ -2564,7 +2561,7 @@ impl ScreenLike for WalletsBalancesScreen {
 
                                 // Handle HD wallet rename
                                 if let Some(selected_wallet) = &self.selected_wallet {
-                                    let mut wallet = selected_wallet.write().unwrap();
+                                    let mut wallet = selected_wallet.write_recover();
                                     wallet.alias = Some(self.rename_input.clone());
 
                                     // T-W-01: alias persistence goes
@@ -2620,7 +2617,7 @@ impl ScreenLike for WalletsBalancesScreen {
                                     // touching the legacy `single_key_wallet`
                                     // table.
                                     let address =
-                                        selected_sk_wallet.read().unwrap().address.to_string();
+                                        selected_sk_wallet.read_recover().address.to_string();
                                     let new_alias = self.rename_input.clone();
                                     let persisted = match self.app_context.wallet_backend() {
                                         Ok(backend) => backend
@@ -2630,7 +2627,7 @@ impl ScreenLike for WalletsBalancesScreen {
                                     };
                                     match persisted {
                                         Ok(()) => {
-                                            selected_sk_wallet.write().unwrap().alias =
+                                            selected_sk_wallet.write_recover().alias =
                                                 Some(new_alias);
                                             self.show_rename_dialog = false;
                                             self.rename_input.clear();
@@ -2930,14 +2927,14 @@ impl ScreenLike for WalletsBalancesScreen {
                     let (address, amount) = &recipients[0];
                     format!(
                         "Sent {} to {}\nTxID: {}",
-                        Self::format_dash(*amount),
+                        format_duffs_as_dash(*amount),
                         address,
                         txid
                     )
                 } else {
                     format!(
                         "Sent {} total to {} recipients\nTxID: {}",
-                        Self::format_dash(total_amount),
+                        format_duffs_as_dash(total_amount),
                         recipients.len(),
                         txid
                     )
@@ -3255,9 +3252,8 @@ mod tests {
         );
     }
 
-    /// QA-002 companion: a funded `Other(Unknown)` address — the exact drift
-    /// class the deleted health check used to warn about — surfaces the
-    /// reconciling tab in default mode.
+    /// A funded `Other(Unknown)` address surfaces the reconciling tab in
+    /// default mode.
     #[test]
     fn default_mode_surfaces_other_tab_for_unknown_funded_address() {
         let summaries = vec![

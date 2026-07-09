@@ -1,6 +1,6 @@
 use crate::app::AppAction;
 use crate::context::AppContext;
-use crate::ui::components::left_panel::load_svg_icon;
+use crate::ui::components::icons::load_svg_icon;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::theme::{DashColors, Shadow, Shape, Spacing};
 use crate::ui::{RootScreenType, ScreenType};

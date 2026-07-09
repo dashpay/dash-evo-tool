@@ -1,11 +1,11 @@
 use super::encryption::decrypt_extended_public_key;
-use super::hd_derivation::derive_payment_address;
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::dashpay::{
     PaymentDirection as StoredPaymentDirection, PaymentStatus as StoredPaymentStatus,
 };
+use crate::model::dashpay_derivation::derive_payment_address;
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::Sdk;
 use dash_sdk::dpp::dashcore::Address;
@@ -187,7 +187,8 @@ pub async fn derive_contact_payment_address(
         network,
         depth: 0,
         parent_fingerprint: Fingerprint::default(),
-        child_number: ChildNumber::from_normal_idx(0).unwrap(),
+        child_number: ChildNumber::from_normal_idx(0)
+            .expect("invariant: BIP32 child index 0 is below 2^31"),
         public_key: pubkey,
         chain_code: ChainCode::from(chain_code),
     };
@@ -203,43 +204,21 @@ pub async fn derive_contact_payment_address(
     Ok((address, address_index))
 }
 
-/// Send a payment to a contact using the wallet's SPV capabilities
-/// (Legacy function - preserved for reference)
-#[allow(dead_code)]
+/// Send a payment to a contact using the wallet's SPV capabilities.
+///
+/// `amount_duffs` is the amount in duffs (1 DASH = 100,000,000 duffs); the UI
+/// converts from user input at its edge, so no floating-point value crosses
+/// this boundary.
 pub async fn send_payment_to_contact(
     app_context: &Arc<AppContext>,
     sdk: &Sdk,
     from_identity: QualifiedIdentity,
     to_contact_id: Identifier,
-    amount_dash: f64,
-    memo: Option<String>,
-) -> Result<BackendTaskSuccessResult, TaskError> {
-    send_payment_to_contact_impl(
-        app_context,
-        sdk,
-        from_identity,
-        to_contact_id,
-        amount_dash,
-        memo,
-    )
-    .await
-}
-
-/// Send a payment to a contact using the wallet's SPV capabilities
-/// This is the main implementation called from the DashPay task handler
-pub async fn send_payment_to_contact_impl(
-    app_context: &Arc<AppContext>,
-    sdk: &Sdk,
-    from_identity: QualifiedIdentity,
-    to_contact_id: Identifier,
-    amount_dash: f64,
+    amount_duffs: u64,
     memo: Option<String>,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
     use crate::backend_task::core::{CoreTask, PaymentRecipient, WalletPaymentRequest};
     use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-
-    // Convert Dash to duffs (1 Dash = 100,000,000 duffs)
-    let amount_duffs = (amount_dash * 100_000_000.0).round() as u64;
 
     // Get a wallet from the identity's associated wallets
     let wallet = from_identity
@@ -340,13 +319,10 @@ pub async fn send_payment_to_contact_impl(
     )
     .await;
 
-    // Convert to Dash for display
-    let amount_dash = amount_duffs as f64 / 100_000_000.0;
-
     Ok(BackendTaskSuccessResult::DashPayPaymentSent(
         to_contact_id.to_string(Encoding::Base58),
         to_address.to_string(),
-        amount_dash,
+        amount_duffs,
     ))
 }
 
@@ -357,18 +333,22 @@ pub async fn load_payment_history(
     app_context: &Arc<AppContext>,
     identity_id: &Identifier,
     contact_id: Option<&Identifier>,
-) -> Result<Vec<PaymentRecord>, String> {
-    let backend = app_context
-        .wallet_backend()
-        .map_err(|e| format!("Wallet backend not yet available: {}", e))?;
+) -> Result<Vec<PaymentRecord>, TaskError> {
+    let backend = app_context.wallet_backend()?;
     let stored_payments = backend.dashpay_view().payments(identity_id).await;
 
     let mut records = Vec::new();
     for sp in stored_payments {
-        let from_id = Identifier::from_bytes(&sp.from_identity_id)
-            .map_err(|e| format!("Invalid from_identity_id: {}", e))?;
-        let to_id = Identifier::from_bytes(&sp.to_identity_id)
-            .map_err(|e| format!("Invalid to_identity_id: {}", e))?;
+        let from_id = Identifier::from_bytes(&sp.from_identity_id).map_err(|_| {
+            TaskError::IdentifierParsingError {
+                input: hex::encode(&sp.from_identity_id),
+            }
+        })?;
+        let to_id = Identifier::from_bytes(&sp.to_identity_id).map_err(|_| {
+            TaskError::IdentifierParsingError {
+                input: hex::encode(&sp.to_identity_id),
+            }
+        })?;
 
         // If a contact filter is specified, skip non-matching records
         if let Some(filter_id) = contact_id

@@ -139,9 +139,10 @@ impl AddContactScreen {
             }
 
             // Validate username format if it looks like a username
-            if let Err(input) = crate::model::dpns::validate_dpns_input(&self.username_or_id) {
-                self.status =
-                    ContactRequestStatus::Error(DashPayError::InvalidUsername { username: input });
+            if crate::model::dpns::validate_dpns_input(&self.username_or_id).is_err() {
+                self.status = ContactRequestStatus::Error(DashPayError::InvalidUsername {
+                    username: self.username_or_id.trim().to_string(),
+                });
                 return AppAction::None;
             }
 
@@ -384,7 +385,7 @@ impl ScreenLike for AddContactScreen {
                 ui.group(|ui| {
                 ui.horizontal(|ui| {
                     ui.vertical(|ui| {
-                        ui.label(RichText::new(err.user_message()).color(error_color));
+                        ui.label(RichText::new(err.to_string()).color(error_color));
 
                         // Show retry suggestion for recoverable errors
                         if err.is_recoverable() {
@@ -714,21 +715,7 @@ fn classify_send_error(error: &TaskError, username_or_id: &str) -> Option<DashPa
             DashPayError::ContactRequestAlreadySent { to } => {
                 Some(DashPayError::ContactRequestAlreadySent { to: to.clone() })
             }
-            DashPayError::RateLimited { operation } => Some(DashPayError::RateLimited {
-                operation: operation.clone(),
-            }),
-            DashPayError::NetworkError { reason } => Some(DashPayError::NetworkError {
-                reason: reason.clone(),
-            }),
-            DashPayError::PlatformError { reason } => Some(DashPayError::PlatformError {
-                reason: reason.clone(),
-            }),
-            DashPayError::BroadcastFailed { reason } => Some(DashPayError::BroadcastFailed {
-                reason: reason.clone(),
-            }),
-            DashPayError::QueryFailed { reason } => Some(DashPayError::QueryFailed {
-                reason: reason.clone(),
-            }),
+            DashPayError::NetworkError => Some(DashPayError::NetworkError),
             _ => None,
         },
         _ => None,
@@ -771,9 +758,7 @@ mod tests {
     #[test]
     fn recoverable_errors_map_through_so_retry_is_offered() {
         let mapped = classify_send_error(
-            &TaskError::DashPay(DashPayError::NetworkError {
-                reason: "timeout".to_string(),
-            }),
+            &TaskError::DashPay(DashPayError::NetworkError),
             "alice.dash",
         );
         let mapped = mapped.expect("network errors should be classified");

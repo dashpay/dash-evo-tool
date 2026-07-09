@@ -1,7 +1,7 @@
 use crate::app::TaskResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
-use crate::model::proof_log_item::RequestType;
+use crate::model::request_type::RequestType;
 use dash_sdk::Sdk;
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::data_contract::document_type::accessors::DocumentTypeV0Getters;
@@ -59,26 +59,12 @@ impl AppContext {
                 }
                 Err(e) => {
                     tracing::error!("Error fetching vote contenders: {}", e);
-                    if let dash_sdk::Error::Proof(dash_sdk::ProofVerifierError::GroveDBError {
-                        proof_bytes,
-                        height,
-                        time_ms,
-                        error,
-                        ..
-                    }) = &e
-                    {
-                        tracing::error!(
-                            target: "proof_log",
-                            request_type = ?RequestType::GetContestedResourceIdentityVotes,
-                            height = *height,
-                            time_ms = *time_ms,
-                            proof_bytes_len = proof_bytes.len(),
-                            error = %error,
-                            "drive proof verification failed while querying DPNS vote contenders",
-                        );
-                    }
-                    // TODO: Replace the "contract not found" string match with a
-                    // structural SDK variant when one is available.
+                    super::log_contested_proof_error(
+                        &e,
+                        RequestType::GetContestedResourceIdentityVotes,
+                    );
+                    // TODO(#875): replace substring match once the SDK exposes a
+                    // structural "contract not found" variant.
                     if matches!(e, dash_sdk::Error::StaleNode(_))
                         || e.to_string().contains(
                             "contract not found when querying from value with contract info",

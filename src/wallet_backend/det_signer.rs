@@ -229,8 +229,11 @@ mod tests {
         seed_hash: &WalletSeedHash,
     ) -> Arc<platform_wallet_storage::secrets::SecretStore> {
         let store = Arc::new(open_secret_store(&dir.join("v.pwsvault")).expect("vault"));
-        let (encrypted_seed, salt, nonce) =
-            encrypt_message(&SENTINEL_SEED, SENTINEL_PASSPHRASE).expect("enc");
+        let crate::model::wallet::encryption::EncryptedEnvelope {
+            ciphertext: encrypted_seed,
+            salt,
+            nonce,
+        } = encrypt_message(&SENTINEL_SEED, SENTINEL_PASSPHRASE).expect("enc");
         let envelope = StoredSeedEnvelope {
             encrypted_seed,
             salt,

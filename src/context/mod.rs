@@ -1,22 +1,23 @@
 pub mod connection_status;
 mod contested_names_db;
 mod contract_token_db;
+pub mod feature_gate;
 mod identity_db;
 pub mod migration_status;
 mod settings_db;
 mod wallet_lifecycle;
 
 use crate::app_dir::core_cookie_path;
-use crate::backend_task::error::{TaskError, is_rpc_connection_error};
+use crate::backend_task::error::TaskError;
 use crate::config::{Config, NetworkConfig};
-use crate::context_provider_spv::SpvProvider;
+use crate::context::feature_gate::FeatureGate;
+use crate::context_provider::SpvProvider;
 use crate::database::Database;
-use crate::model::feature_gate::FeatureGate;
 use crate::model::fee_estimation::PlatformFeeEstimator;
-use crate::model::proof_log_item::RequestType;
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::request_type::RequestType;
 use crate::model::wallet::single_key::{SingleKeyHash, SingleKeyWallet};
-use crate::model::wallet::{PlatformAddressUpdates, Wallet, WalletSeedHash};
+use crate::model::wallet::{PlatformAddressEntry, PlatformAddressUpdates, Wallet, WalletSeedHash};
 use crate::sdk_wrapper::initialize_sdk;
 use crate::utils::tasks::TaskManager;
 use crate::wallet_backend::{
@@ -233,13 +234,7 @@ impl AppContext {
 
         // Create the SDK context provider; bind to app context later
         // (post construction) due to circularity.
-        let spv_provider = match SpvProvider::new(db.clone(), network) {
-            Ok(p) => p,
-            Err(e) => {
-                tracing::error!(?network, "Failed to initialize SPV provider: {e}");
-                return None;
-            }
-        };
+        let spv_provider = SpvProvider::new(network);
 
         // Parse configured DAPI addresses directly (no auto-discovery at startup)
         let address_list = match &network_config.dapi_addresses {
@@ -273,50 +268,19 @@ impl AppContext {
         };
         let platform_version = sdk.version();
 
-        let dpns_contract =
-            match load_system_data_contract(SystemDataContract::DPNS, platform_version) {
-                Ok(c) => c,
-                Err(e) => {
-                    tracing::error!(?network, "Failed to load DPNS contract: {e}");
-                    return None;
-                }
-            };
+        let load_contract = |contract: SystemDataContract, label: &str| {
+            load_system_data_contract(contract, platform_version)
+                .inspect_err(|e| tracing::error!(?network, "Failed to load {label} contract: {e}"))
+                .ok()
+        };
 
-        let withdrawal_contract =
-            match load_system_data_contract(SystemDataContract::Withdrawals, platform_version) {
-                Ok(c) => c,
-                Err(e) => {
-                    tracing::error!(?network, "Failed to load Withdrawals contract: {e}");
-                    return None;
-                }
-            };
-
+        let dpns_contract = load_contract(SystemDataContract::DPNS, "DPNS")?;
+        let withdrawal_contract = load_contract(SystemDataContract::Withdrawals, "Withdrawals")?;
         let token_history_contract =
-            match load_system_data_contract(SystemDataContract::TokenHistory, platform_version) {
-                Ok(c) => c,
-                Err(e) => {
-                    tracing::error!(?network, "Failed to load TokenHistory contract: {e}");
-                    return None;
-                }
-            };
-
+            load_contract(SystemDataContract::TokenHistory, "TokenHistory")?;
         let keyword_search_contract =
-            match load_system_data_contract(SystemDataContract::KeywordSearch, platform_version) {
-                Ok(c) => c,
-                Err(e) => {
-                    tracing::error!(?network, "Failed to load KeywordSearch contract: {e}");
-                    return None;
-                }
-            };
-
-        let dashpay_contract =
-            match load_system_data_contract(SystemDataContract::Dashpay, platform_version) {
-                Ok(c) => c,
-                Err(e) => {
-                    tracing::error!(?network, "Failed to load Dashpay contract: {e}");
-                    return None;
-                }
-            };
+            load_contract(SystemDataContract::KeywordSearch, "KeywordSearch")?;
+        let dashpay_contract = load_contract(SystemDataContract::Dashpay, "Dashpay")?;
 
         let addr = format!(
             "http://{}:{}",
@@ -413,14 +377,12 @@ impl AppContext {
         // Bind the SDK context provider. Chain sync is SPV-only (owned by
         // upstream platform-wallet); the SPV provider is the sole SDK
         // quorum/context provider.
-        if let Err(e) = app_context
-            .spv_context_provider
-            .read()
-            .map_err(|e| e.to_string())
-            .and_then(|provider| provider.bind_app_context(app_context.clone()))
-        {
-            tracing::error!("Failed to bind SPV provider: {}", e);
-            return None;
+        match app_context.spv_context_provider.read() {
+            Ok(provider) => provider.bind_app_context(app_context.clone()),
+            Err(e) => {
+                tracing::error!("Failed to bind SPV provider: {}", e);
+                return None;
+            }
         }
 
         Some(app_context)
@@ -446,6 +408,13 @@ impl AppContext {
     /// Shared app-level k/v store. Cheap clone — `Arc<DetKv>` is `Arc`-backed.
     pub fn app_kv(&self) -> Arc<DetKv> {
         Arc::clone(&self.app_kv)
+    }
+
+    /// The per-network DET key/value store, or a typed error when the wallet
+    /// backend is not yet initialized. Single accessor shared by every
+    /// `context/*_db.rs` module.
+    pub(crate) fn det_kv(&self) -> Result<DetKv, TaskError> {
+        Ok(self.wallet_backend()?.kv())
     }
 
     /// Shared encrypted HD-seed vault. Cheap clone — `Arc<SecretStore>` is
@@ -644,54 +613,68 @@ impl AppContext {
         }
     }
 
-    /// Populate each wallet's `platform_address_info` from a coordinator-push batch.
+    /// Shared per-address seeding loop for the platform-address maps.
     ///
-    /// Called by `AppState` when a [`BackendTaskSuccessResult::PlatformAddressSyncPushed`]
-    /// result arrives. Converts each raw 20-byte P2PKH hash in `updates` to a
-    /// `dashcore::Address` using the active network, then calls
-    /// [`Wallet::set_platform_address_info`] for each address.
+    /// For each `(seed_hash, entries)` batch, converts every raw 20-byte P2PKH
+    /// hash to a canonical address, hands it to `write_info` (the caller picks
+    /// overwrite vs seed-if-absent semantics), and registers the address for
+    /// signing — the exact DIP-17 index when known, the bounded
+    /// reverse-derivation scan otherwise. Without the signer registration a
+    /// balance is visible yet unwithdrawable.
     ///
-    /// This keeps the per-address tab consistent with the coordinator-push total
-    /// balance without requiring a manual Refresh on cold start.
-    pub fn apply_platform_address_push(&self, updates: PlatformAddressUpdates) {
+    /// Each wallet write lock is held briefly for a pure `BTreeMap` update — no
+    /// I/O, no network, no await — matching the codebase's frame-loop write
+    /// pattern.
+    fn seed_platform_address_entries<'a, I, W>(&self, batches: I, write_info: W)
+    where
+        I: IntoIterator<Item = (&'a WalletSeedHash, &'a [PlatformAddressEntry])>,
+        W: Fn(&mut Wallet, dash_sdk::dpp::dashcore::Address, u64, u32),
+    {
         use dash_sdk::dpp::key_wallet::PlatformP2PKHAddress;
         let network = self.network;
-        if let Ok(wallets) = self.wallets.read() {
-            for (seed_hash, entries) in updates {
-                // Wallet write lock is held briefly for a pure BTreeMap update —
-                // no I/O, no network, no await. Consistent with the codebase's
-                // existing frame-loop write pattern (QA-B2-002, intentional).
-                if let Some(wallet_arc) = wallets.get(&seed_hash)
-                    && let Ok(mut wallet) = wallet_arc.write()
-                {
-                    for entry in entries {
-                        let addr = PlatformP2PKHAddress::new(entry.hash).to_address(network);
-                        let canonical = Wallet::canonical_address(&addr, network);
-                        wallet.set_platform_address_info(
-                            canonical.clone(),
-                            entry.balance,
-                            entry.nonce,
-                        );
-                        // Register the address for signing. The push now carries
-                        // the exact DIP-17 index, so register the derivation path
-                        // directly; only legacy entries without an index fall back
-                        // to the bounded reverse-derivation scan. Without this the
-                        // balance is visible yet unwithdrawable.
-                        match entry.index {
-                            Some(index) => wallet.register_platform_payment_address(
-                                &canonical,
-                                entry.account,
-                                index,
-                                network,
-                            ),
-                            None => {
-                                wallet.reconcile_platform_address(&canonical, network);
-                            }
+        let Ok(wallets) = self.wallets.read() else {
+            return;
+        };
+        for (seed_hash, entries) in batches {
+            if let Some(wallet_arc) = wallets.get(seed_hash)
+                && let Ok(mut wallet) = wallet_arc.write()
+            {
+                for entry in entries {
+                    let addr = PlatformP2PKHAddress::new(entry.hash).to_address(network);
+                    let canonical = Wallet::canonical_address(&addr, network);
+                    write_info(&mut wallet, canonical.clone(), entry.balance, entry.nonce);
+                    match entry.index {
+                        Some(index) => wallet.register_platform_payment_address(
+                            &canonical,
+                            entry.account,
+                            index,
+                            network,
+                        ),
+                        None => {
+                            wallet.reconcile_platform_address(&canonical, network);
                         }
                     }
                 }
             }
         }
+    }
+
+    /// Populate each wallet's `platform_address_info` from a coordinator-push batch.
+    ///
+    /// Called by `AppState` when a [`BackendTaskSuccessResult::PlatformAddressSyncPushed`]
+    /// result arrives. Overwrites each address's cached info via
+    /// [`Wallet::set_platform_address_info`], keeping the per-address tab
+    /// consistent with the coordinator-push total balance without requiring a
+    /// manual Refresh on cold start.
+    pub fn apply_platform_address_push(&self, updates: PlatformAddressUpdates) {
+        self.seed_platform_address_entries(
+            updates
+                .iter()
+                .map(|(seed_hash, entries)| (seed_hash, entries.as_slice())),
+            |wallet, address, balance, nonce| {
+                wallet.set_platform_address_info(address, balance, nonce)
+            },
+        );
     }
 
     /// Warm-start the platform-address UI from persisted upstream state.
@@ -714,44 +697,18 @@ impl AppContext {
             return;
         }
 
-        // Seed the per-address tab with the same insert-if-absent guard the
-        // balance and cursor maps use below, so a live push that somehow landed
-        // first is never clobbered by staler persisted data.
-        {
-            use dash_sdk::dpp::key_wallet::PlatformP2PKHAddress;
-            let network = self.network;
-            if let Ok(wallets) = self.wallets.read() {
-                for (seed_hash, entries, _) in seeds.iter().filter(|(_, e, _)| !e.is_empty()) {
-                    if let Some(wallet_arc) = wallets.get(seed_hash)
-                        && let Ok(mut wallet) = wallet_arc.write()
-                    {
-                        for entry in entries {
-                            let addr = PlatformP2PKHAddress::new(entry.hash).to_address(network);
-                            let canonical = Wallet::canonical_address(&addr, network);
-                            wallet.seed_platform_address_info(
-                                canonical.clone(),
-                                entry.balance,
-                                entry.nonce,
-                            );
-                            // Same signer registration as the live push path:
-                            // exact DIP-17 index when known, reverse-derivation
-                            // fallback otherwise.
-                            match entry.index {
-                                Some(index) => wallet.register_platform_payment_address(
-                                    &canonical,
-                                    entry.account,
-                                    index,
-                                    network,
-                                ),
-                                None => {
-                                    wallet.reconcile_platform_address(&canonical, network);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        // Seed the per-address tab with an insert-if-absent write so a live
+        // push that somehow landed first is never clobbered by staler persisted
+        // data (the balance and cursor maps below use the same `or_insert` guard).
+        self.seed_platform_address_entries(
+            seeds
+                .iter()
+                .filter(|(_, e, _)| !e.is_empty())
+                .map(|(seed_hash, entries, _)| (seed_hash, entries.as_slice())),
+            |wallet, address, balance, nonce| {
+                wallet.seed_platform_address_info(address, balance, nonce)
+            },
+        );
 
         if let Ok(mut balances) = self.platform_balances.lock() {
             for (seed_hash, entries, _) in seeds.iter().filter(|(_, e, _)| !e.is_empty()) {
@@ -860,8 +817,7 @@ impl AppContext {
         // bind_app_context also registers the provider with the SDK.
         self.spv_context_provider
             .read()?
-            .bind_app_context(self.clone())
-            .map_err(|e| TaskError::SdkInitializationFailed { detail: e })?;
+            .bind_app_context(self.clone());
 
         Ok(())
     }
@@ -891,25 +847,6 @@ impl AppContext {
             ),
         )
         .map_err(|e| TaskError::CoreRpc { source: e })
-    }
-
-    /// Convert an RPC error to `TaskError`, enriching connection failures with
-    /// the configured host:port so the user knows which address was unreachable.
-    pub(crate) fn rpc_error_with_url(&self, e: dash_sdk::dashcore_rpc::Error) -> TaskError {
-        if is_rpc_connection_error(&e) {
-            let url = self
-                .config
-                .read()
-                .ok()
-                .map(|c| format!("{}:{}", c.rpc_host(), c.rpc_port(self.network)))
-                .unwrap_or_else(|| "unknown".to_string());
-            TaskError::CoreRpcConnectionFailed {
-                url,
-                source: Some(Box::new(e)),
-            }
-        } else {
-            TaskError::from(e)
-        }
     }
 
     /// Convert an SDK error to a [`TaskError`], with special handling for
@@ -944,6 +881,53 @@ impl AppContext {
             }
             e => TaskError::from(e),
         }
+    }
+
+    /// Recovers from a Drive proof error on a contract put/update.
+    ///
+    /// Logs the proof failure via [`Self::log_drive_proof_error`], notifies the
+    /// UI, then re-fetches the contract by id — the transition may have
+    /// committed despite the proof error — and persists it through `persist`.
+    /// Returns [`BackendTaskSuccessResult::ContractSavedAfterProofError`] when
+    /// the contract is found, otherwise the original proof error.
+    pub(crate) async fn recover_contract_after_proof_error(
+        &self,
+        sdk: &Sdk,
+        contract_id: Identifier,
+        proof_error: dash_sdk::Error,
+        sender: &crate::utils::egui_mpsc::SenderAsync<crate::app::TaskResult>,
+        persist: impl FnOnce(&Self, &DataContract),
+    ) -> Result<crate::backend_task::BackendTaskSuccessResult, TaskError> {
+        use crate::app::TaskResult;
+        use crate::backend_task::BackendTaskSuccessResult;
+        use dash_sdk::platform::Fetch;
+
+        // Give the network time to propagate the block before re-fetching.
+        const REFETCH_DELAY_REGTEST: std::time::Duration = std::time::Duration::from_secs(3);
+        const REFETCH_DELAY_DEFAULT: std::time::Duration = std::time::Duration::from_secs(10);
+
+        let task_error =
+            self.log_drive_proof_error(proof_error, RequestType::BroadcastStateTransition);
+
+        sender
+            .send(TaskResult::Success(Box::new(
+                BackendTaskSuccessResult::ProofErrorLogged,
+            )))
+            .await
+            .map_err(|_| TaskError::InternalSendError)?;
+
+        let delay = match self.network {
+            Network::Regtest => REFETCH_DELAY_REGTEST,
+            _ => REFETCH_DELAY_DEFAULT,
+        };
+        tokio::time::sleep(delay).await;
+
+        if let Ok(Some(contract)) = DataContract::fetch(sdk, contract_id).await {
+            persist(self, &contract);
+            return Ok(BackendTaskSuccessResult::ContractSavedAfterProofError);
+        }
+
+        Err(task_error)
     }
 
     /// Lazily build the wallet seam, idempotently.
@@ -1307,14 +1291,10 @@ impl AppContext {
 }
 
 /// Returns the default platform version for the given network.
-pub(crate) const fn default_platform_version(network: &Network) -> &'static PlatformVersion {
-    // TODO: Ideally use sdk.load().version() but this is a free function with no sdk access
-    match network {
-        Network::Mainnet => &PLATFORM_V11,
-        Network::Testnet => &PLATFORM_V11,
-        Network::Devnet => &PLATFORM_V11,
-        Network::Regtest => &PLATFORM_V11,
-    }
+// TODO: Ideally use sdk.load().version() but this is a free function with no sdk access.
+// Every network currently pins the same version.
+pub(crate) const fn default_platform_version(_network: &Network) -> &'static PlatformVersion {
+    &PLATFORM_V11
 }
 
 #[cfg(test)]

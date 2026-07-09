@@ -18,8 +18,6 @@ use std::sync::{Arc, RwLock};
 
 #[derive(Debug, Clone)]
 pub enum CoreTask {
-    #[allow(dead_code)] // May be used for getting single chain lock
-    GetBestChainLock,
     GetBestChainLocks,
     /// Refresh wallet info from Core. The bool controls whether to also sync
     /// Platform address balances (true = sync Platform, false = Core only).
@@ -45,8 +43,7 @@ impl PartialEq for CoreTask {
     fn eq(&self, other: &Self) -> bool {
         matches!(
             (self, other),
-            (CoreTask::GetBestChainLock, CoreTask::GetBestChainLock)
-                | (CoreTask::GetBestChainLocks, CoreTask::GetBestChainLocks)
+            (CoreTask::GetBestChainLocks, CoreTask::GetBestChainLocks)
                 | (
                     CoreTask::RefreshWalletInfo(_, _),
                     CoreTask::RefreshWalletInfo(_, _)
@@ -111,17 +108,6 @@ impl AppContext {
         task: CoreTask,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         match task {
-            CoreTask::GetBestChainLock => self
-                .core_client
-                .read()?
-                .get_best_chain_lock()
-                .map(|chain_lock| {
-                    BackendTaskSuccessResult::CoreItem(CoreItem::ChainLock(
-                        chain_lock,
-                        self.network,
-                    ))
-                })
-                .map_err(|e| self.rpc_error_with_url(e)),
             CoreTask::GetBestChainLocks => {
                 // Load configs
                 let config = Config::load_from(&self.data_dir)?;
@@ -157,9 +143,6 @@ impl AppContext {
                     tracing::warn!(network = ?self.network, error = %e, "Chain lock query failed on active network");
                     Some(format!("RPC error: {e}"))
                 } else {
-                    // Successful chain lock fetch — clear any lingering RPC error
-                    // so the connection status recovers after a transient outage.
-                    self.connection_status.set_rpc_last_error(None);
                     None
                 };
 
@@ -228,9 +211,9 @@ impl AppContext {
                         identity_index,
                     )
                     .await?;
-                Ok(BackendTaskSuccessResult::Message(format!(
-                    "Asset lock transaction broadcast successfully. TX ID: {txid}"
-                )))
+                Ok(BackendTaskSuccessResult::AssetLockBroadcast {
+                    txid: txid.to_string(),
+                })
             }
             CoreTask::CreateTopUpAssetLock(wallet, amount, identity_index, _top_up_index) => {
                 let backend = self.wallet_backend()?;
@@ -244,9 +227,9 @@ impl AppContext {
                         identity_index,
                     )
                     .await?;
-                Ok(BackendTaskSuccessResult::Message(format!(
-                    "Asset lock transaction broadcast successfully. TX ID: {txid}"
-                )))
+                Ok(BackendTaskSuccessResult::AssetLockBroadcast {
+                    txid: txid.to_string(),
+                })
             }
             CoreTask::SendWalletPayment { wallet, request } => {
                 // `WalletBackend::send_payment` builds via the upstream
@@ -296,8 +279,8 @@ impl AppContext {
                 })
             }
             // Single-key send/refresh unsupported this release — by design (single-key-mock.md, Decision #7).
-            // TODO: broadcast itself is already wired and F1-independent
-            //   (`WalletBackend::broadcast_transaction` → `SpvBroadcaster`). What is
+            // TODO: raw-tx broadcast is available upstream (`SpvBroadcaster`) and
+            //   F1-independent. What is
             //   missing is coin selection over the imported key's UTXOs, which depends
             //   on the same UTXO-discovery upstream change as the refresh path above
             //   (the key-wallet single-address pool helper + the platform-wallet

@@ -180,7 +180,7 @@ mod tests {
     /// `Display` at render time — `MigrationState` itself never owns a
     /// stringified copy.
     #[test]
-    fn failed_state_is_terminal() {
+    fn failed_state_clears_running_and_carries_typed_error() {
         use crate::backend_task::migration::MigrationError;
 
         let status = MigrationStatus::new_idle();

@@ -1,4 +1,3 @@
-pub mod account_summary;
 pub mod add_new_wallet_screen;
 pub mod asset_lock_detail_screen;
 pub mod create_asset_lock_screen;
@@ -6,9 +5,6 @@ pub mod import_mnemonic_screen;
 pub mod import_single_key;
 pub mod restore_single_key;
 pub mod send_screen;
-pub mod shield_screen;
-pub mod shielded_send_screen;
 pub mod shielded_tab;
 pub mod single_key_send_screen;
-pub mod unshield_credits_screen;
 pub mod wallets_screen;

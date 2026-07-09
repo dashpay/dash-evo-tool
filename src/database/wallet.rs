@@ -29,7 +29,7 @@ impl Database {
     /// removal before that wipe (the F17/F20 leak).
     pub fn remove_wallet(&self, seed_hash: &[u8; 32], network: &Network) -> rusqlite::Result<()> {
         let network_str = network.to_string();
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.locked_conn();
         let tx = conn.transaction()?;
 
         if self.table_exists(&tx, "wallet_addresses")? && self.table_exists(&tx, "utxos")? {
@@ -159,7 +159,7 @@ impl Database {
     /// funds.
     pub fn get_wallets(&self, network: &Network) -> rusqlite::Result<Vec<Wallet>> {
         let network_str = network.to_string();
-        let conn = self.conn.lock().unwrap();
+        let conn = self.locked_conn();
 
         tracing::trace!("step 1: retrieve all wallets for the given network");
         let mut stmt = conn.prepare(
@@ -347,10 +347,11 @@ impl Database {
         })?;
 
         tracing::trace!("step 3: add addresses, balances, and known addresses to wallets");
-        for row in address_rows {
-            if row.is_err() {
-                continue;
-            }
+        for (index, row) in address_rows.enumerate() {
+            // A single corrupt address row must not abort loading the whole
+            // wallet, but skipping silently could hide a missing address and
+            // lead to lost funds — so log loudly and continue, matching the
+            // wallet_backend hydration skip-logging discipline.
             let (
                 seed_array,
                 address,
@@ -359,7 +360,17 @@ impl Database {
                 path_reference,
                 path_type,
                 _total_received,
-            ) = row?;
+            ) = match row {
+                Ok(parsed) => parsed,
+                Err(e) => {
+                    tracing::warn!(
+                        address_row_index = index,
+                        error = ?e,
+                        "Skipping corrupt wallet address row while loading wallets from the database"
+                    );
+                    continue;
+                }
+            };
             if let Some(wallet) = wallets_map.get_mut(&seed_array) {
                 // Canonicalize Platform addresses to avoid duplicate representations
                 let canonical_address = Wallet::canonical_address(&address, *network);
@@ -385,14 +396,9 @@ impl Database {
             }
         }
 
-        // Step 4: asset-lock state lives in the upstream `AssetLockManager`
-        // (queried via `WalletBackend::list_tracked_asset_locks`). The
-        // `asset_lock_transaction` DET module was deleted; existing rows
-        // on legacy installs are inert and migrated via git history.
-
         tracing::trace!(
             network = network_str,
-            "step 8: retrieve identities for wallets"
+            "step 4: retrieve identities for wallets"
         );
         let mut identity_stmt = conn.prepare(
             "SELECT data, wallet, wallet_index FROM identity WHERE network = ? AND wallet IS NOT NULL AND wallet_index IS NOT NULL",
@@ -462,7 +468,7 @@ impl Database {
     /// by the caller (see the network-chooser dev-tool button).
     pub fn clear_all_platform_addresses(&self, network: &Network) -> rusqlite::Result<usize> {
         let network_str = network.to_string();
-        let conn = self.conn.lock().unwrap();
+        let conn = self.locked_conn();
 
         // Delete platform addresses from wallet_addresses (path_reference = 16 is PlatformPayment)
         // We need to join with wallet table to filter by network
@@ -523,6 +529,31 @@ pub enum WalletError {
         input_index: usize,
         #[source]
         source: dash_sdk::dpp::dashcore::sighash::Error,
+    },
+
+    /// A freshly derived public key could not be parsed.
+    #[error(
+        "Could not read a wallet key. The wallet may be corrupted — try re-importing your recovery phrase."
+    )]
+    PublicKeyParse(#[source] Box<dash_sdk::dpp::dashcore::key::Error>),
+
+    /// The derivation path for a wallet account type could not be built.
+    #[error(
+        "Could not derive a wallet key. The wallet may be corrupted — try re-importing your recovery phrase."
+    )]
+    AccountDerivationPath(#[source] Box<dash_sdk::dpp::key_wallet::Error>),
+
+    /// A derived address could not be converted for platform use.
+    #[error("Could not prepare a wallet address for platform use. Please retry.")]
+    PlatformAddressConversion(#[source] Box<dash_sdk::dpp::ProtocolError>),
+
+    /// A derived address did not validate for the wallet's network.
+    #[error(
+        "The wallet address {address} did not match the {network} network. Switch to the correct network and try again."
+    )]
+    AddressNetworkMismatch {
+        address: dash_sdk::dpp::dashcore::Address,
+        network: Network,
     },
 }
 

@@ -3,13 +3,20 @@ use egui::{
 };
 use std::sync::atomic::{AtomicBool, Ordering};
 
-/// Theme mode enumeration
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ThemeMode {
-    Light,
-    Dark,
-    #[default]
-    System,
+pub use crate::model::settings::ThemeMode;
+
+use crate::model::qualified_identity::IdentityStatus;
+
+impl From<IdentityStatus> for Color32 {
+    fn from(value: IdentityStatus) -> Self {
+        match value {
+            IdentityStatus::Active => Color32::from_rgb(0, 128, 0), // Green
+            IdentityStatus::Unknown => Color32::from_rgb(128, 128, 128), // Gray
+            IdentityStatus::PendingCreation => Color32::from_rgb(255, 165, 0), // Orange
+            IdentityStatus::NotFound => Color32::from_rgb(255, 0, 0), // Red
+            IdentityStatus::FailedCreation => Color32::from_rgb(255, 0, 0), // Red
+        }
+    }
 }
 
 /// Detect system theme preference
@@ -66,7 +73,6 @@ pub fn resolve_theme_mode(preference: ThemeMode) -> ThemeMode {
 /// Dash brand colors according to official guidelines
 pub struct DashColors;
 
-#[allow(dead_code)]
 impl DashColors {
     /// Primary Dash Blue (#008de4)
     pub const DASH_BLUE: Color32 = Color32::from_rgb(0, 141, 228);
@@ -584,7 +590,6 @@ pub fn network_label(network: dash_sdk::dashcore_rpc::dashcore::Network) -> &'st
 /// Typography scale and font configuration
 pub struct Typography;
 
-#[allow(dead_code)]
 impl Typography {
     pub const SCALE_XS: f32 = 12.0;
     pub const SCALE_SM: f32 = 14.0;
@@ -647,7 +652,6 @@ impl Typography {
 /// Spacing constants for consistent layout
 pub struct Spacing;
 
-#[allow(dead_code)]
 impl Spacing {
     pub const XXS: f32 = 2.0;
     pub const XS: f32 = 4.0;
@@ -674,7 +678,6 @@ impl Spacing {
 /// Border radius and shape constants
 pub struct Shape;
 
-#[allow(dead_code)]
 impl Shape {
     pub const RADIUS_NONE: u8 = 0;
     pub const RADIUS_SM: u8 = 6;
@@ -690,7 +693,6 @@ impl Shape {
 /// Modern shadow definitions for depth and visual appeal
 pub struct Shadow;
 
-#[allow(dead_code)]
 impl Shadow {
     pub fn small() -> egui::Shadow {
         egui::Shadow {
@@ -753,7 +755,6 @@ impl Shadow {
 /// Component style definitions
 pub struct ComponentStyles;
 
-#[allow(dead_code)]
 impl ComponentStyles {
     /// Standard minimum size for dialog buttons (width × height)
     pub const DIALOG_BUTTON_MIN_SIZE: Vec2 = Vec2::new(96.0, 36.0);
@@ -842,7 +843,7 @@ impl ComponentStyles {
                 .clone()
                 .strong()
                 .color(Self::primary_button_text()),
-            // INTENTIONAL(CMT-010): LayoutJob/Galley variants not used by any callsite
+            // LayoutJob/Galley variants are not used by any callsite.
             other => RichText::new(other.text().to_string())
                 .strong()
                 .color(Self::primary_button_text()),
@@ -864,7 +865,7 @@ impl ComponentStyles {
                 .clone()
                 .strong()
                 .color(Self::secondary_button_text(dark_mode)),
-            // INTENTIONAL(CMT-010): LayoutJob/Galley variants not used by any callsite
+            // LayoutJob/Galley variants are not used by any callsite.
             other => RichText::new(other.text().to_string())
                 .strong()
                 .color(Self::secondary_button_text(dark_mode)),
@@ -886,7 +887,7 @@ impl ComponentStyles {
                 .clone()
                 .strong()
                 .color(Self::danger_button_text()),
-            // INTENTIONAL(CMT-010): LayoutJob/Galley variants not used by any callsite
+            // LayoutJob/Galley variants are not used by any callsite.
             other => RichText::new(other.text().to_string())
                 .strong()
                 .color(Self::danger_button_text()),
@@ -928,7 +929,7 @@ impl ComponentStyles {
                     .clone()
                     .strong()
                     .color(Self::button_disabled_text(dark_mode)),
-                // INTENTIONAL(CMT-010): LayoutJob/Galley variants not used by any callsite
+                // LayoutJob/Galley variants are not used by any callsite.
                 other => RichText::new(other.text().to_string())
                     .strong()
                     .color(Self::button_disabled_text(dark_mode)),
@@ -984,7 +985,7 @@ impl ComponentStyles {
     pub fn toolbar_button(label: impl Into<WidgetText>, fill: egui::Color32) -> Button<'static> {
         let text = match label.into() {
             WidgetText::RichText(rt) => rt.as_ref().clone().color(DashColors::WHITE),
-            // INTENTIONAL(CMT-010): LayoutJob/Galley variants not used by any callsite
+            // LayoutJob/Galley variants are not used by any callsite.
             other => RichText::new(other.text().to_string()).color(DashColors::WHITE),
         };
         Button::new(text)

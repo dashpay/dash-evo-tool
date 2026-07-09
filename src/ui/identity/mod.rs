@@ -19,19 +19,9 @@
 //! `docs/ai-design/2026-04-23-identity-hub-impl/` (requirements, UX plan,
 //! test-case spec, dev plan).
 //!
-//! The module is compiled unconditionally so the screen and enum variants are
-//! always present (avoiding unreachable-variant errors in match dispatch).
-//! The `identity-hub` Cargo feature controls two integration sites:
-//!
-//! 1. the left-nav `Identity Hub` entry in `src/ui/components/left_panel.rs`
-//!    (rendered only when the feature is on), and
-//! 2. the `main_screens` map in `src/app.rs::AppState::new` — the
-//!    `RootScreenIdentityHub` entry is inserted only when the feature is on.
-//!
-//! When the feature is off, the screen type still compiles but is not
-//! registered in `AppState`, so `AppState::active_root_screen_mut()` must
-//! guard against a persisted `RootScreenIdentityHub` selection by falling
-//! back to a registered screen (handled by the resolver in `AppState::new`).
+//! Integration sites: the left-nav `Identity Hub` entry in
+//! `src/ui/components/left_panel.rs`, and the `RootScreenIdentityHub` entry in
+//! the `main_screens` map in `src/app.rs::AppState::new`.
 
 pub mod activity;
 pub mod avatar;

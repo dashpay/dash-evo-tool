@@ -3,6 +3,7 @@ use crate::model::wallet::Wallet;
 use crate::ui::components::passphrase_modal::{
     KEEP_UNLOCKED_LABEL, PassphraseModalConfig, PassphraseModalOutcome, passphrase_modal,
 };
+use crate::wallet_backend::poison::RwLockRecover;
 use egui;
 use std::sync::{Arc, RwLock};
 use zeroize::Zeroizing;
@@ -114,20 +115,31 @@ impl WalletUnlockPopup {
                 WalletUnlockResult::Cancelled
             }
             PassphraseModalOutcome::Submit(text) => {
-                let mut wallet_guard = wallet.write().unwrap();
+                let mut wallet_guard = wallet.write_recover();
                 match wallet_guard.wallet_seed.open(&text) {
                     Ok(_) => {
                         drop(wallet_guard);
-                        // Mark the wallet open for display. Promote the
-                        // just-verified seed into the session cache only when
-                        // the user opted in; otherwise the next operation
-                        // re-prompts (secure default). The remembered passphrase
-                        // copy is zeroized on drop.
-                        let passphrase = self.remember.then(|| Zeroizing::new((*text).clone()));
-                        app_context.handle_wallet_unlocked(
-                            wallet,
-                            passphrase.as_deref().map(|s| s.as_str()),
-                        );
+                        // The wallet is already flipped open for display. Promote
+                        // the just-verified seed into the session cache only when
+                        // the user opted to keep it unlocked; the copy is zeroized
+                        // on drop.
+                        if self.remember {
+                            let passphrase = Zeroizing::new((*text).clone());
+                            app_context.handle_wallet_unlocked(wallet, &passphrase);
+                        } else {
+                            // Non-remember unlock: nothing to promote — the next
+                            // operation re-prompts (secure default).
+                            //
+                            // TODO(det): a non-remember unlock (this branch, no
+                            // passphrase handed to handle_wallet_unlocked) skips
+                            // drive_unlock_registration, so the wallet is not
+                            // re-registered with the upstream SPV backend until the
+                            // next launch. Deferred 2026-07-08 pending a decision on
+                            // whether this path should re-drive registration using
+                            // the passphrase already verified by the unlock gesture
+                            // itself (see the recorded wallet-unlock-registration
+                            // gap in project memory).
+                        }
                         self.close();
                         WalletUnlockResult::Unlocked
                     }
@@ -150,42 +162,37 @@ impl WalletUnlockPopup {
 
 /// Helper function to check if a wallet needs unlocking
 pub fn wallet_needs_unlock(wallet: &Arc<RwLock<Wallet>>) -> bool {
-    let wallet_guard = wallet.read().unwrap();
+    let wallet_guard = wallet.read_recover();
     wallet_guard.uses_password && !wallet_guard.is_open()
 }
 
-/// Open a no-password wallet and route it through the unlock chokepoint.
+/// Open a no-password wallet for display.
 ///
-/// For wallets that do not use a password this flips the in-memory seed to
-/// `Open` for display and then notifies [`AppContext::handle_wallet_unlocked`].
-/// Signing pulls the seed just-in-time from the encrypted vault — a
-/// no-password wallet signs even without this call (the chokepoint's
-/// unprotected fast-path), so this is a UX convenience, not a correctness
-/// gate; no passphrase is passed because there is none. Password wallets are a
-/// no-op here — they unlock through the password popup, which promotes the
-/// seed only when the user opts to keep the wallet unlocked.
+/// Flips the in-memory seed to `Open`. Signing pulls the seed just-in-time from
+/// the encrypted vault — a no-password wallet signs even without this call (the
+/// chokepoint's unprotected fast-path), so this is a UX convenience, not a
+/// correctness gate. Password wallets are a no-op here — they unlock through the
+/// password popup, which promotes the seed only when the user opts to keep the
+/// wallet unlocked.
+// TODO(cleanup): dead `_app_context` param — drop it and update the ~40 UI callsites.
 pub fn try_open_wallet_no_password(
-    app_context: &Arc<AppContext>,
+    _app_context: &Arc<AppContext>,
     wallet: &Arc<RwLock<Wallet>>,
 ) -> Result<(), String> {
-    {
-        let mut wallet_guard = wallet.write().unwrap();
-        if wallet_guard.uses_password {
-            return Ok(());
-        }
-        if let Err(detail) = wallet_guard.wallet_seed.open_no_password() {
-            // The raw error is a length-mismatch diagnostic (jargon). Log it
-            // and return a calm, jargon-free message the callsite can show.
-            tracing::error!(error = %detail, "Failed to open no-password wallet");
-            return Err(
-                "This wallet's saved data looks damaged and could not be opened. \
-                 Re-add it from its recovery phrase to restore it."
-                    .to_string(),
-            );
-        }
+    let mut wallet_guard = wallet.write_recover();
+    if wallet_guard.uses_password {
+        return Ok(());
     }
-    // The write guard is dropped above; notify only after releasing it.
-    app_context.handle_wallet_unlocked(wallet, None);
+    if let Err(detail) = wallet_guard.wallet_seed.open_no_password() {
+        // The raw error is a length-mismatch diagnostic (jargon). Log it
+        // and return a calm, jargon-free message the callsite can show.
+        tracing::error!(error = %detail, "Failed to open no-password wallet");
+        return Err(
+            "This wallet's saved data looks damaged and could not be opened. \
+             Re-add it from its recovery phrase to restore it."
+                .to_string(),
+        );
+    }
     Ok(())
 }
 

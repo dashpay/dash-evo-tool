@@ -9,10 +9,11 @@
 //! content change.
 //!
 //! Keys live under [`DetScope::Global`] (avatars are not network-specific and
-//! should outlive wallet deletion) with the shape:
+//! should outlive wallet deletion) with two shapes per URL:
 //!
 //! ```text
-//! det:avatar:<sha256(url)_hex>
+//! det:avatar:<sha256(url)_hex>     the validated image bytes
+//! det:avatar_ts:<sha256(url)_hex>  sibling index: the fetch time only
 //! ```
 //!
 //! Hashing the URL keeps the key bounded and free of the colon / pattern
@@ -30,6 +31,9 @@
 //! [`put`] evicts the oldest entries once the entry count exceeds
 //! [`MAX_AVATAR_ENTRIES`], so the cross-network Global scope cannot grow
 //! without limit, and the whole cache is cleared when a wallet is forgotten.
+//! Eviction orders entries by the sibling `det:avatar_ts:` index, so it reads
+//! only the small fetch timestamps rather than deserializing every cached
+//! image's full bytes on each [`put`].
 //!
 //! [`get`]: AvatarCacheView::get
 //! [`put`]: AvatarCacheView::put
@@ -40,28 +44,44 @@ use dash_sdk::dpp::dashcore::hashes::{Hash, sha256};
 
 use crate::backend_task::error::TaskError;
 use crate::model::dashpay::CachedAvatar;
-use crate::wallet_backend::kv::KvAdapterError;
+use crate::wallet_backend::kv::{KvAdapterError, kv_get_logged, map_kv_storage_error};
 use crate::wallet_backend::{DetKv, DetScope};
 
-/// Key prefix for every cached avatar entry.
+/// Key prefix for every cached avatar entry (the image bytes).
 const KEY_PREFIX: &str = "det:avatar:";
+
+/// Key prefix for the sibling timestamp index. Each cached avatar has a
+/// matching `det:avatar_ts:<hash>` entry holding only its `fetched_at_ms`, so
+/// [`AvatarCacheView::put`] can order entries for eviction by reading these
+/// small i64 values instead of deserializing every image's bytes.
+const TS_KEY_PREFIX: &str = "det:avatar_ts:";
 
 /// Maximum age of a cached avatar before [`AvatarCacheView::get`] treats it as
 /// stale and re-fetches. Seven days balances offline survival against picking
 /// up a changed avatar at a stable URL within a reasonable window.
-pub const AVATAR_TTL_MS: i64 = 7 * 24 * 60 * 60 * 1000;
+const AVATAR_TTL_MS: i64 = 7 * 24 * 60 * 60 * 1000;
 
 /// Maximum number of cached avatar entries kept in the Global scope. Once a
 /// [`AvatarCacheView::put`] would exceed this, the oldest entries are evicted
 /// so the cache stays bounded regardless of how many distinct contacts are
 /// viewed over a wallet's lifetime.
-pub const MAX_AVATAR_ENTRIES: usize = 256;
+const MAX_AVATAR_ENTRIES: usize = 256;
 
-/// Build the canonical k/v key for an avatar URL. The URL is SHA-256 hashed
-/// so the key is fixed-length and carries no URL metacharacters.
-fn key_for(url: &str) -> String {
+/// SHA-256 of `url`, hex-encoded — the fixed-length, metacharacter-free suffix
+/// shared by an avatar's byte key and its timestamp-index key.
+fn digest_hex(url: &str) -> String {
     let digest = sha256::Hash::hash(url.as_bytes());
-    format!("{KEY_PREFIX}{}", hex::encode(digest.to_byte_array()))
+    hex::encode(digest.to_byte_array())
+}
+
+/// Build the canonical k/v key for an avatar URL (the image bytes).
+fn key_for(url: &str) -> String {
+    format!("{KEY_PREFIX}{}", digest_hex(url))
+}
+
+/// Build the sibling timestamp-index key for an avatar URL.
+fn ts_key_for(url: &str) -> String {
+    format!("{TS_KEY_PREFIX}{}", digest_hex(url))
 }
 
 /// View borrowing a shared [`DetKv`] handle. Cheap to construct, so callers
@@ -90,17 +110,8 @@ impl<'a> AvatarCacheView<'a> {
     /// than [`AVATAR_TTL_MS`] is invalidated and reported absent.
     fn get_at(&self, url: &str, now_ms: i64) -> Option<CachedAvatar> {
         let key = key_for(url);
-        let cached = match self.kv.get::<CachedAvatar>(DetScope::Global, &key) {
-            Ok(v) => v?,
-            Err(e) => {
-                tracing::warn!(
-                    target = "wallet_backend::avatar_cache",
-                    error = ?e,
-                    "Failed to read cached avatar; treating as absent",
-                );
-                return None;
-            }
-        };
+        let cached =
+            kv_get_logged::<CachedAvatar>(self.kv, DetScope::Global, &key, "avatar_cache")?;
 
         if now_ms.saturating_sub(cached.fetched_at_ms) > AVATAR_TTL_MS {
             // Stale: drop so a changed avatar at the same URL is re-fetched.
@@ -133,9 +144,12 @@ impl<'a> AvatarCacheView<'a> {
             sha256,
             fetched_at_ms: now_ms,
         };
-        let key = key_for(url);
         self.kv
-            .put(DetScope::Global, &key, &entry)
+            .put(DetScope::Global, &key_for(url), &entry)
+            .map_err(map_kv_error_to_task_error)?;
+        // Sibling index: lets eviction order entries without loading image bytes.
+        self.kv
+            .put(DetScope::Global, &ts_key_for(url), &now_ms)
             .map_err(map_kv_error_to_task_error)?;
         self.evict_to_bound()?;
         Ok(())
@@ -145,9 +159,11 @@ impl<'a> AvatarCacheView<'a> {
     /// `Ok(())`. Used to invalidate a stale image (e.g. the profile's
     /// `avatarUrl` changed, leaving the old URL's bytes orphaned).
     pub fn invalidate(&self, url: &str) -> Result<(), TaskError> {
-        let key = key_for(url);
         self.kv
-            .delete(DetScope::Global, &key)
+            .delete(DetScope::Global, &key_for(url))
+            .map_err(map_kv_error_to_task_error)?;
+        self.kv
+            .delete(DetScope::Global, &ts_key_for(url))
             .map_err(map_kv_error_to_task_error)
     }
 
@@ -155,17 +171,19 @@ impl<'a> AvatarCacheView<'a> {
     /// outlive the wallets whose contacts populated it. Best-effort per entry —
     /// a single delete failure is logged and the sweep continues.
     pub fn clear(&self) -> Result<(), TaskError> {
-        let keys = self
-            .kv
-            .list(DetScope::Global, Some(KEY_PREFIX))
-            .map_err(map_kv_error_to_task_error)?;
-        for key in keys {
-            if let Err(e) = self.kv.delete(DetScope::Global, &key) {
-                tracing::debug!(
-                    target = "wallet_backend::avatar_cache",
-                    error = ?e,
-                    "Failed to delete cached avatar during clear",
-                );
+        for prefix in [KEY_PREFIX, TS_KEY_PREFIX] {
+            let keys = self
+                .kv
+                .list(DetScope::Global, Some(prefix))
+                .map_err(map_kv_error_to_task_error)?;
+            for key in keys {
+                if let Err(e) = self.kv.delete(DetScope::Global, &key) {
+                    tracing::debug!(
+                        target = "wallet_backend::avatar_cache",
+                        error = ?e,
+                        "Failed to delete cached avatar during clear",
+                    );
+                }
             }
         }
         Ok(())
@@ -174,40 +192,50 @@ impl<'a> AvatarCacheView<'a> {
     /// Evict the oldest entries until the cache holds at most
     /// [`MAX_AVATAR_ENTRIES`]. A best-effort housekeeping pass run after each
     /// `put`; a read or delete failure on any single entry is non-fatal.
+    ///
+    /// Ordering reads only the sibling `det:avatar_ts:` index (small `i64`
+    /// timestamps), never the cached image bytes.
     fn evict_to_bound(&self) -> Result<(), TaskError> {
-        let keys = self
+        let ts_keys = self
             .kv
-            .list(DetScope::Global, Some(KEY_PREFIX))
+            .list(DetScope::Global, Some(TS_KEY_PREFIX))
             .map_err(map_kv_error_to_task_error)?;
-        if keys.len() <= MAX_AVATAR_ENTRIES {
+        if ts_keys.len() <= MAX_AVATAR_ENTRIES {
             return Ok(());
         }
 
-        // Order by fetch time so the oldest are dropped first. Unreadable
-        // entries sort to the front (treated as age 0) and are evicted first.
-        let mut aged: Vec<(i64, String)> = keys
+        // Order by fetch time so the oldest are dropped first. Entries with a
+        // missing/unreadable timestamp sort to the front (age 0) and go first.
+        let mut aged: Vec<(i64, String)> = ts_keys
             .into_iter()
-            .map(|key| {
+            .map(|ts_key| {
                 let age = self
                     .kv
-                    .get::<CachedAvatar>(DetScope::Global, &key)
+                    .get::<i64>(DetScope::Global, &ts_key)
                     .ok()
                     .flatten()
-                    .map(|c| c.fetched_at_ms)
                     .unwrap_or(0);
-                (age, key)
+                (age, ts_key)
             })
             .collect();
         aged.sort_by_key(|(age, _)| *age);
 
         let evict = aged.len().saturating_sub(MAX_AVATAR_ENTRIES);
-        for (_, key) in aged.into_iter().take(evict) {
-            if let Err(e) = self.kv.delete(DetScope::Global, &key) {
-                tracing::debug!(
-                    target = "wallet_backend::avatar_cache",
-                    error = ?e,
-                    "Failed to evict cached avatar over bound",
-                );
+        for (_, ts_key) in aged.into_iter().take(evict) {
+            // Drop both the image and its sibling timestamp so the index stays
+            // in lock-step with the byte entries.
+            let avatar_key = format!(
+                "{KEY_PREFIX}{}",
+                ts_key.strip_prefix(TS_KEY_PREFIX).unwrap_or(&ts_key)
+            );
+            for key in [avatar_key, ts_key] {
+                if let Err(e) = self.kv.delete(DetScope::Global, &key) {
+                    tracing::debug!(
+                        target = "wallet_backend::avatar_cache",
+                        error = ?e,
+                        "Failed to evict cached avatar over bound",
+                    );
+                }
             }
         }
         Ok(())
@@ -217,9 +245,7 @@ impl<'a> AvatarCacheView<'a> {
 /// Avatar-cache adapter errors funnel into the dedicated
 /// [`TaskError::AvatarCacheStorage`] envelope.
 fn map_kv_error_to_task_error(e: KvAdapterError) -> TaskError {
-    TaskError::AvatarCacheStorage {
-        source: Box::new(e),
-    }
+    map_kv_storage_error(e, |source| TaskError::AvatarCacheStorage { source })
 }
 
 #[cfg(test)]
@@ -382,6 +408,75 @@ mod tests {
         view.clear().expect("clear");
         assert_eq!(view.get(URL_A), None);
         assert_eq!(view.get(URL_B), None);
+    }
+
+    /// Every `put` maintains a sibling timestamp entry, and `invalidate` drops
+    /// both — so the index never drifts from the byte entries.
+    #[test]
+    fn put_and_invalidate_keep_timestamp_index_in_lockstep() {
+        let kv = kv();
+        let view = AvatarCacheView::new(&kv);
+        view.put_at(URL_A, b"a".to_vec(), 42).expect("put");
+
+        let ts = kv
+            .get::<i64>(DetScope::Global, &ts_key_for(URL_A))
+            .expect("read ts")
+            .expect("ts present");
+        assert_eq!(ts, 42, "the sibling index stores the fetch time");
+
+        view.invalidate(URL_A).expect("invalidate");
+        assert_eq!(
+            kv.get::<i64>(DetScope::Global, &ts_key_for(URL_A))
+                .expect("read ts"),
+            None,
+            "invalidate must drop the sibling timestamp too"
+        );
+    }
+
+    /// Eviction removes the sibling timestamp alongside the byte entry, leaving
+    /// no orphaned index keys behind.
+    #[test]
+    fn eviction_drops_sibling_timestamp_entries() {
+        let kv = kv();
+        let view = AvatarCacheView::new(&kv);
+        for i in 0..MAX_AVATAR_ENTRIES {
+            let url = format!("https://example.com/a{i}.png");
+            view.put_at(&url, vec![i as u8], i as i64).expect("put");
+        }
+        view.put_at("https://example.com/overflow.png", vec![0xff], i64::MAX)
+            .expect("put overflow");
+
+        let byte_keys = kv
+            .list(DetScope::Global, Some(KEY_PREFIX))
+            .expect("list bytes");
+        let ts_keys = kv
+            .list(DetScope::Global, Some(TS_KEY_PREFIX))
+            .expect("list ts");
+        assert_eq!(
+            byte_keys.len(),
+            MAX_AVATAR_ENTRIES,
+            "byte entries stay at the bound"
+        );
+        assert_eq!(
+            ts_keys.len(),
+            MAX_AVATAR_ENTRIES,
+            "the sibling index tracks the byte entries exactly, no orphans"
+        );
+    }
+
+    #[test]
+    fn clear_drops_timestamp_index() {
+        let kv = kv();
+        let view = AvatarCacheView::new(&kv);
+        view.put(URL_A, b"a".to_vec()).expect("put a");
+        view.put(URL_B, b"b".to_vec()).expect("put b");
+        view.clear().expect("clear");
+        assert!(
+            kv.list(DetScope::Global, Some(TS_KEY_PREFIX))
+                .expect("list ts")
+                .is_empty(),
+            "clear must sweep the sibling timestamp index too"
+        );
     }
 
     #[test]

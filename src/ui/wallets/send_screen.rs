@@ -7,7 +7,11 @@ use crate::context::AppContext;
 use crate::model::address::{AddressKind, ValidatedAddress};
 use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
 use crate::model::fee_estimation::{
-    core_max_send_amount_duffs, core_max_send_reserve_duffs, format_credits_as_dash,
+    MAX_PLATFORM_INPUTS, PlatformFeeEstimator, allocate_platform_addresses,
+    allocate_platform_addresses_with_fee, core_max_send_amount_duffs, core_max_send_reserve_duffs,
+    estimate_address_funding_fee_from_transition, estimate_platform_fee,
+    estimate_withdrawal_fee_from_transition, format_credits_as_dash, format_duffs_as_dash,
+    shield_from_balance_fee_headroom,
 };
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::{Wallet, WalletSeedHash};
@@ -25,249 +29,14 @@ use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dashcore_rpc::dashcore::address::NetworkUnchecked;
-use dash_sdk::dpp::address_funds::AddressFundsFeeStrategyStep;
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::balances::credits::{CREDITS_PER_DUFF, Credits};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::core_script::CoreScript;
-use dash_sdk::dpp::prelude::AddressNonce;
-use dash_sdk::dpp::prelude::AssetLockProof;
-use dash_sdk::dpp::state_transition::StateTransitionEstimatedFeeValidation;
-use dash_sdk::dpp::state_transition::address_credit_withdrawal_transition::AddressCreditWithdrawalTransition;
-use dash_sdk::dpp::state_transition::address_credit_withdrawal_transition::v0::AddressCreditWithdrawalTransitionV0;
-use dash_sdk::dpp::state_transition::address_funding_from_asset_lock_transition::AddressFundingFromAssetLockTransition;
-use dash_sdk::dpp::state_transition::address_funding_from_asset_lock_transition::v0::AddressFundingFromAssetLockTransitionV0;
-use dash_sdk::dpp::withdrawal::Pooling;
 use eframe::egui::{self, Context, RichText, Ui};
 use egui::{Color32, Frame, Margin};
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
-
-/// Maximum number of platform address inputs allowed per state transition
-const MAX_PLATFORM_INPUTS: usize = 16;
-
-use crate::model::fee_estimation::PlatformFeeEstimator;
-
-/// Estimated serialized bytes per input (address + signature/witness data)
-const ESTIMATED_BYTES_PER_INPUT: usize = 225;
-
-/// Calculate the estimated fee for a platform address funds transfer.
-///
-/// Uses PlatformFeeEstimator for base costs (input/output fees) plus storage fees.
-fn estimate_platform_fee(estimator: &PlatformFeeEstimator, input_count: usize) -> u64 {
-    let inputs = input_count.max(1);
-
-    // Base fee from Platform's min fee structure
-    // - 500,000 credits per input (address_funds_transfer_input_cost)
-    // - 6,000,000 credits per output (address_funds_transfer_output_cost)
-    let base_fee = estimator.estimate_address_funds_transfer(inputs, 1);
-
-    // Add storage fees for serialized input bytes only
-    // (outputs don't add significant serialization overhead)
-    let estimated_bytes = inputs * ESTIMATED_BYTES_PER_INPUT;
-    let storage_fee = estimator.estimate_storage_based_fee(estimated_bytes, inputs);
-
-    // Total with 20% safety buffer
-    let total = base_fee.saturating_add(storage_fee);
-    total.saturating_add(total / 5)
-}
-
-/// Calculate the estimated fee for a Platform address withdrawal using a constructed state transition.
-fn estimate_withdrawal_fee_from_transition(
-    platform_version: &dash_sdk::dpp::version::PlatformVersion,
-    inputs: &BTreeMap<PlatformAddress, u64>,
-    output_script: &CoreScript,
-) -> u64 {
-    let inputs_with_nonce: BTreeMap<PlatformAddress, (AddressNonce, Credits)> = inputs
-        .iter()
-        .map(|(addr, amount)| (*addr, (0, *amount)))
-        .collect();
-
-    let transition = AddressCreditWithdrawalTransition::V0(AddressCreditWithdrawalTransitionV0 {
-        inputs: inputs_with_nonce,
-        output: None,
-        fee_strategy: vec![AddressFundsFeeStrategyStep::DeductFromInput(0)],
-        core_fee_per_byte: 1,
-        pooling: Pooling::Never,
-        output_script: output_script.clone(),
-        user_fee_increase: 0,
-        input_witnesses: Vec::new(),
-    });
-
-    transition
-        .calculate_min_required_fee(platform_version)
-        .unwrap_or(0)
-}
-
-/// Calculate the estimated fee for funding a Platform address from an asset lock.
-fn estimate_address_funding_fee_from_transition(
-    platform_version: &dash_sdk::dpp::version::PlatformVersion,
-    destination: &PlatformAddress,
-) -> u64 {
-    let mut outputs = BTreeMap::new();
-    outputs.insert(*destination, None);
-
-    let transition =
-        AddressFundingFromAssetLockTransition::V0(AddressFundingFromAssetLockTransitionV0 {
-            asset_lock_proof: AssetLockProof::default(),
-            inputs: BTreeMap::new(),
-            outputs,
-            fee_strategy: vec![AddressFundsFeeStrategyStep::ReduceOutput(0)],
-            user_fee_increase: 0,
-            ..Default::default()
-        });
-
-    transition
-        .calculate_min_required_fee(platform_version)
-        .unwrap_or(0)
-}
-
-/// Result of allocating platform addresses for a transfer.
-#[derive(Debug, Clone)]
-struct AddressAllocationResult {
-    /// Map of platform address to amount to transfer from each
-    inputs: BTreeMap<PlatformAddress, u64>,
-    /// Index of the fee payer in BTreeMap iteration order
-    fee_payer_index: u16,
-    /// Estimated fee for this transaction
-    estimated_fee: u64,
-    /// Amount that couldn't be covered (0 if fully covered)
-    shortfall: u64,
-    /// Addresses sorted by balance descending (for UI display)
-    sorted_addresses: Vec<(PlatformAddress, Address, u64)>,
-}
-
-/// Allocates platform addresses for a transfer, using a custom fee calculator.
-fn allocate_platform_addresses_with_fee<F>(
-    addresses: &[(PlatformAddress, Address, u64)],
-    amount_credits: u64,
-    destination: Option<&PlatformAddress>,
-    fee_for_inputs: F,
-) -> AddressAllocationResult
-where
-    F: Fn(&BTreeMap<PlatformAddress, u64>) -> u64,
-{
-    // Filter out the destination address if provided (protocol doesn't allow same address as input and output)
-    let filtered: Vec<_> = addresses
-        .iter()
-        .filter(|(platform_addr, _, _)| destination != Some(platform_addr))
-        .cloned()
-        .collect();
-
-    // Sort addresses by balance descending so the largest balance is used first
-    let mut sorted_addresses = filtered;
-    sorted_addresses.sort_by(|a, b| b.2.cmp(&a.2));
-
-    // Early return if no addresses available after filtering
-    if sorted_addresses.is_empty() {
-        return AddressAllocationResult {
-            inputs: BTreeMap::new(),
-            fee_payer_index: 0,
-            estimated_fee: fee_for_inputs(&BTreeMap::new()),
-            shortfall: amount_credits,
-            sorted_addresses: vec![],
-        };
-    }
-
-    // The highest-balance address (first in sorted order) will pay the fee
-    let fee_payer_addr = sorted_addresses.first().map(|(addr, _, _)| *addr);
-
-    let mut estimated_fee = fee_for_inputs(&BTreeMap::new());
-    let mut inputs: BTreeMap<PlatformAddress, u64> = BTreeMap::new();
-
-    // Iterate until fee estimate stabilizes (input count affects fee)
-    for _ in 0..=MAX_PLATFORM_INPUTS {
-        inputs.clear();
-        let mut remaining = amount_credits;
-
-        for (idx, (platform_addr, _, balance)) in sorted_addresses.iter().enumerate() {
-            if remaining == 0 || inputs.len() >= MAX_PLATFORM_INPUTS {
-                break;
-            }
-            let is_fee_payer = idx == 0;
-            let available = if is_fee_payer {
-                balance.saturating_sub(estimated_fee)
-            } else {
-                *balance
-            };
-            let use_amount = remaining.min(available);
-            if use_amount > 0 || is_fee_payer {
-                inputs.insert(*platform_addr, use_amount);
-                remaining = remaining.saturating_sub(use_amount);
-            }
-        }
-
-        let new_fee = fee_for_inputs(&inputs);
-        if new_fee == estimated_fee {
-            break;
-        }
-        estimated_fee = new_fee;
-    }
-
-    // Calculate shortfall (amount we couldn't allocate)
-    let total_allocated: u64 = inputs.values().sum();
-    let allocation_shortfall = amount_credits.saturating_sub(total_allocated);
-
-    // Check if fee payer can actually afford the fee from their remaining balance.
-    let fee_deficit = if let Some(fee_payer) = fee_payer_addr {
-        let fee_payer_balance = sorted_addresses.first().map(|(_, _, b)| *b).unwrap_or(0);
-        let fee_payer_contribution = inputs.get(&fee_payer).copied().unwrap_or(0);
-        let fee_payer_remaining = fee_payer_balance.saturating_sub(fee_payer_contribution);
-        estimated_fee.saturating_sub(fee_payer_remaining)
-    } else {
-        estimated_fee
-    };
-
-    let shortfall = allocation_shortfall.saturating_add(fee_deficit);
-
-    // Find the index of the fee payer in BTreeMap order (required by backend)
-    let fee_payer_index = fee_payer_addr
-        .and_then(|payer| {
-            inputs
-                .keys()
-                .enumerate()
-                .find(|(_, addr)| **addr == payer)
-                .map(|(idx, _)| idx as u16)
-        })
-        .unwrap_or(0);
-
-    AddressAllocationResult {
-        inputs,
-        fee_payer_index,
-        estimated_fee,
-        shortfall,
-        sorted_addresses,
-    }
-}
-
-/// Allocates platform addresses for a transfer, selecting which addresses to use
-/// and how much from each.
-///
-/// Algorithm:
-/// 1. Filters out the destination address (can't be both input and output)
-/// 2. Sorts addresses by balance descending (largest first)
-/// 3. The highest-balance address pays the fee
-/// 4. Iteratively allocates until fee estimate converges
-/// 5. Fee payer is always included in inputs (even with 0 contribution) so fee can be deducted
-///
-/// Returns the allocation result with inputs, fee payer index, and any shortfall.
-fn allocate_platform_addresses(
-    estimator: &PlatformFeeEstimator,
-    addresses: &[(PlatformAddress, Address, u64)],
-    amount_credits: u64,
-    destination: Option<&PlatformAddress>,
-) -> AddressAllocationResult {
-    let max_inputs = addresses
-        .iter()
-        .filter(|(platform_addr, _, _)| destination != Some(platform_addr))
-        .count()
-        .min(MAX_PLATFORM_INPUTS);
-
-    allocate_platform_addresses_with_fee(addresses, amount_credits, destination, |_| {
-        // Keep the legacy behavior: use a worst-case fee based on max possible inputs.
-        estimate_platform_fee(estimator, max_inputs.max(1))
-    })
-}
 
 /// Source selection for sending
 #[derive(Debug, Clone, PartialEq)]
@@ -280,6 +49,71 @@ pub enum SourceSelection {
     Identity(Box<QualifiedIdentity>),
     /// Use shielded pool balance (stores seed_hash and balance in credits)
     Shielded(WalletSeedHash, u64),
+}
+
+/// Optional preset that opens the send screen pre-configured for one of the
+/// shielded flows launched from the Shielded tab.
+///
+/// [`SendFlow::General`] is the full free-form send screen (any source, any
+/// destination). The other variants lock the source — and, for
+/// [`SendFlow::Shield`], the destination — so the screen presents only the
+/// controls that flow needs while reusing the unified screen's validation and
+/// dispatch. This is how the three former standalone shielded screens are
+/// expressed as routes into the one canonical send screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SendFlow {
+    /// Free-form send: any source, any destination.
+    #[default]
+    General,
+    /// Shield into the wallet's own shielded pool (Core or Platform → Shielded).
+    Shield,
+    /// Private transfer within the shielded pool (Shielded → Shielded).
+    ShieldedSend,
+    /// Move credits out of the shielded pool (Shielded → Platform or Core).
+    Unshield,
+}
+
+impl SendFlow {
+    /// Whether this is a locked shielded preset (anything but `General`).
+    fn is_preset(self) -> bool {
+        !matches!(self, SendFlow::General)
+    }
+
+    /// Heading shown at the top of the send screen for this flow.
+    fn heading(self) -> &'static str {
+        match self {
+            SendFlow::General => "Send Dash",
+            SendFlow::Shield => "Shield",
+            SendFlow::ShieldedSend => "Send (Private)",
+            SendFlow::Unshield => "Unshield Credits",
+        }
+    }
+
+    /// One-line description shown under the heading, if any.
+    fn description(self) -> Option<&'static str> {
+        match self {
+            SendFlow::General => None,
+            SendFlow::Shield => {
+                Some("Move funds from your wallet or platform balance into the shielded pool.")
+            }
+            SendFlow::ShieldedSend => Some("Transfer credits privately within the shielded pool."),
+            SendFlow::Unshield => Some(
+                "Move credits from the shielded pool to a platform address or a core DASH address.",
+            ),
+        }
+    }
+
+    /// Destination address kinds accepted by a preset flow that takes a
+    /// recipient address. Returns `None` for `General` (the caller derives the
+    /// kinds from the selected source) and for `Shield` (the destination is the
+    /// wallet's own pool, so no address input is rendered).
+    fn preset_destination_kinds(self) -> Option<Vec<AddressKind>> {
+        match self {
+            SendFlow::General | SendFlow::Shield => None,
+            SendFlow::ShieldedSend => Some(vec![AddressKind::Shielded]),
+            SendFlow::Unshield => Some(vec![AddressKind::Platform, AddressKind::Core]),
+        }
+    }
 }
 
 /// Status of the send operation
@@ -349,9 +183,6 @@ pub struct CoreAddressInput {
 pub struct PlatformAddressInput {
     /// The platform address
     pub platform_address: PlatformAddress,
-    /// The corresponding core address (for lookup/display)
-    #[allow(dead_code)]
-    pub core_address: Address,
     /// Amount to send from this address (as string for input field)
     pub amount: String,
 }
@@ -368,7 +199,6 @@ pub struct AdvancedOutput {
 pub struct WalletSendScreen {
     pub app_context: Arc<AppContext>,
     pub selected_wallet: Option<Arc<RwLock<Wallet>>>,
-    #[allow(dead_code)]
     selected_wallet_seed_hash: Option<WalletSeedHash>,
 
     // Unified send fields (simple mode)
@@ -394,6 +224,10 @@ pub struct WalletSendScreen {
     // State
     send_status: SendStatus,
     send_banner: Option<BannerHandle>,
+
+    /// Preset flow this screen was opened for. `General` is the full send
+    /// screen; the shielded presets lock source/destination for that flow.
+    flow: SendFlow,
 
     // Wallet unlock
     wallet_unlock_popup: WalletUnlockPopup,
@@ -424,9 +258,28 @@ impl WalletSendScreen {
             selected_identity: None,
             send_status: SendStatus::NotStarted,
             send_banner: None,
+            flow: SendFlow::General,
             wallet_unlock_popup: WalletUnlockPopup::new(),
             wallet_open_attempted: false,
         }
+    }
+
+    /// The preset flow this screen was opened for.
+    pub fn flow(&self) -> SendFlow {
+        self.flow
+    }
+
+    /// Open the screen pre-configured for a shielded [`SendFlow`]. The flow
+    /// locks the source (and, for [`SendFlow::Shield`], the destination) so the
+    /// screen shows only the controls that flow needs.
+    pub fn with_flow(mut self, flow: SendFlow) -> Self {
+        self.flow = flow;
+        // For shielded-source presets, seed the source immediately so the first
+        // frame's amount limits are correct; `sync_flow_state` keeps it fresh.
+        if flow.is_preset() {
+            self.selected_source = None;
+        }
+        self
     }
 
     fn estimate_max_fee_for_platform_send(
@@ -477,6 +330,23 @@ impl WalletSendScreen {
         self.validated_destination = None;
     }
 
+    /// Reset all wallet-bound state on a network switch. The old wallet, its
+    /// seed hash, and any source/destination/amount selection belong to the
+    /// previous network — leaving the seed hash behind would let a preset flow
+    /// resurrect a stale source and show the previous network's balance. Source
+    /// resets to the Core-wallet default so the free-form screen behaves as it
+    /// does on first open; a preset re-derives its source once a wallet for the
+    /// new network is selected.
+    pub(crate) fn reset_for_network_switch(&mut self) {
+        self.selected_wallet = None;
+        self.selected_wallet_seed_hash = None;
+        self.selected_source = Some(SourceSelection::CoreWallet);
+        self.selected_identity = None;
+        self.amount = None;
+        self.amount_input = None;
+        self.invalidate_address_input();
+    }
+
     fn reset_form(&mut self) {
         self.address_input = None;
         self.validated_destination = None;
@@ -499,13 +369,21 @@ impl WalletSendScreen {
         self.send_status = SendStatus::WaitingForResult;
     }
 
-    fn format_dash(amount_duffs: u64) -> String {
-        Amount::dash_from_duffs(amount_duffs).to_string()
-    }
-
-    fn format_credits(credits: Credits) -> String {
-        let dash = credits as f64 / 1000.0 / 100_000_000.0;
-        format!("{:.8} DASH", dash)
+    /// Renders the fee summary appended to a completed-send message. Shows the
+    /// settled fee only when the platform reported one; otherwise labels the
+    /// value as an estimate.
+    fn format_fee_info(fee_result: &crate::backend_task::FeeResult) -> String {
+        match fee_result.actual_fee {
+            Some(actual) => format!(
+                "\n\nFee: Estimated {} • Actual {}",
+                format_credits_as_dash(fee_result.estimated_fee),
+                format_credits_as_dash(actual)
+            ),
+            None => format!(
+                "\n\nFee: Estimated {}",
+                format_credits_as_dash(fee_result.estimated_fee)
+            ),
+        }
     }
 
     fn parse_amount_to_duffs(input: &str) -> Result<u64, String> {
@@ -871,8 +749,8 @@ impl WalletSendScreen {
         if amount_duffs > balance {
             return Err(format!(
                 "Insufficient balance. Need {} but have {}",
-                Self::format_dash(amount_duffs),
-                Self::format_dash(balance)
+                format_duffs_as_dash(amount_duffs),
+                format_duffs_as_dash(balance)
             ));
         }
 
@@ -923,8 +801,8 @@ impl WalletSendScreen {
         if required > balance {
             return Err(format!(
                 "Insufficient balance. Need {} (including fee) but have {}",
-                Self::format_dash(required),
-                Self::format_dash(balance)
+                format_duffs_as_dash(required),
+                format_duffs_as_dash(balance)
             ));
         }
 
@@ -964,16 +842,16 @@ impl WalletSendScreen {
 
         tracing::debug!(
             "Platform transfer: {} requested, {} total balance across {} addresses",
-            Self::format_credits(amount_credits),
-            Self::format_credits(total_balance),
+            format_credits_as_dash(amount_credits),
+            format_credits_as_dash(total_balance),
             addresses.len()
         );
 
         if amount_credits > total_balance {
             return Err(format!(
                 "Insufficient balance. Need {} but have {}",
-                Self::format_credits(amount_credits),
-                Self::format_credits(total_balance)
+                format_credits_as_dash(amount_credits),
+                format_credits_as_dash(total_balance)
             ));
         }
 
@@ -1004,8 +882,8 @@ impl WalletSendScreen {
         if amount_credits > available_balance {
             return Err(format!(
                 "Insufficient balance from other addresses. Need {} but have {} (excluding destination address)",
-                Self::format_credits(amount_credits),
-                Self::format_credits(available_balance)
+                format_credits_as_dash(amount_credits),
+                format_credits_as_dash(available_balance)
             ));
         }
 
@@ -1033,14 +911,14 @@ impl WalletSendScreen {
                  • Estimated fee: {} (for {} inputs)\n\
                  • Shortfall: {}\n\n\
                  Try reducing the amount slightly to account for fees.",
-                Self::format_credits(amount_credits),
-                Self::format_credits(max_sendable),
+                format_credits_as_dash(amount_credits),
+                format_credits_as_dash(max_sendable),
                 addresses_available,
-                Self::format_credits(max_balance),
+                format_credits_as_dash(max_balance),
                 MAX_PLATFORM_INPUTS,
-                Self::format_credits(allocation.estimated_fee),
+                format_credits_as_dash(allocation.estimated_fee),
                 allocation.inputs.len(),
-                Self::format_credits(allocation.shortfall)
+                format_credits_as_dash(allocation.shortfall)
             ));
         }
 
@@ -1052,9 +930,9 @@ impl WalletSendScreen {
         tracing::debug!(
             "Platform transfer: {} inputs totaling {}, output {}, fee {} (payer idx {})",
             allocation.inputs.len(),
-            Self::format_credits(total_input),
-            Self::format_credits(amount_credits),
-            Self::format_credits(allocation.estimated_fee),
+            format_credits_as_dash(total_input),
+            format_credits_as_dash(amount_credits),
+            format_credits_as_dash(allocation.estimated_fee),
             allocation.fee_payer_index
         );
 
@@ -1090,16 +968,16 @@ impl WalletSendScreen {
 
         tracing::debug!(
             "Platform withdrawal: {} requested, {} total balance across {} addresses",
-            Self::format_credits(amount_credits),
-            Self::format_credits(total_balance),
+            format_credits_as_dash(amount_credits),
+            format_credits_as_dash(total_balance),
             addresses.len()
         );
 
         if amount_credits > total_balance {
             return Err(format!(
                 "Insufficient balance. Need {} but have {}",
-                Self::format_credits(amount_credits),
-                Self::format_credits(total_balance)
+                format_credits_as_dash(amount_credits),
+                format_credits_as_dash(total_balance)
             ));
         }
 
@@ -1150,14 +1028,14 @@ impl WalletSendScreen {
                  • Estimated fee: {} (for {} inputs)\n\
                  • Shortfall: {}\n\n\
                  Try reducing the amount slightly to account for fees.",
-                Self::format_credits(amount_credits),
-                Self::format_credits(max_sendable),
+                format_credits_as_dash(amount_credits),
+                format_credits_as_dash(max_sendable),
                 addresses_available,
-                Self::format_credits(max_balance),
+                format_credits_as_dash(max_balance),
                 MAX_PLATFORM_INPUTS,
-                Self::format_credits(allocation.estimated_fee),
+                format_credits_as_dash(allocation.estimated_fee),
                 allocation.inputs.len(),
-                Self::format_credits(allocation.shortfall)
+                format_credits_as_dash(allocation.shortfall)
             ));
         }
 
@@ -1166,9 +1044,9 @@ impl WalletSendScreen {
         tracing::debug!(
             "Platform withdrawal: {} inputs totaling {}, withdraw {}, fee {} (payer idx {})",
             allocation.inputs.len(),
-            Self::format_credits(total_input),
-            Self::format_credits(amount_credits),
-            Self::format_credits(allocation.estimated_fee),
+            format_credits_as_dash(total_input),
+            format_credits_as_dash(amount_credits),
+            format_credits_as_dash(allocation.estimated_fee),
             allocation.fee_payer_index
         );
 
@@ -1310,6 +1188,163 @@ impl WalletSendScreen {
         action
     }
 
+    /// Keep a preset flow's source (and, for `Shield`, the sentinel own-pool
+    /// destination) in sync with current balances. Idempotent — safe to call
+    /// every frame. Reads only the frame-safe push snapshot.
+    fn sync_flow_state(&mut self) {
+        let Some(seed_hash) = self.selected_wallet_seed_hash else {
+            return;
+        };
+        match self.flow {
+            SendFlow::ShieldedSend | SendFlow::Unshield => {
+                // Source is always the wallet's shielded pool; refresh the
+                // captured balance so the amount cap tracks spends.
+                let balance = self.app_context.shielded_balance_credits(&seed_hash);
+                self.selected_source = Some(SourceSelection::Shielded(seed_hash, balance));
+            }
+            SendFlow::Shield => {
+                // Default to shielding the whole Core wallet; the user may switch
+                // to the platform balance via the toggle.
+                if !matches!(
+                    self.selected_source,
+                    Some(SourceSelection::CoreWallet | SourceSelection::PlatformAddresses(_))
+                ) {
+                    self.selected_source = Some(SourceSelection::CoreWallet);
+                }
+                // Shielding always targets the wallet's own pool and the dispatch
+                // ignores the destination address, so satisfy the router with a
+                // sentinel shielded destination instead of rendering an input.
+                if !matches!(
+                    self.validated_destination,
+                    Some(ValidatedAddress::Shielded(_))
+                ) {
+                    self.validated_destination = Some(ValidatedAddress::Shielded(String::new()));
+                }
+            }
+            SendFlow::General => {}
+        }
+    }
+
+    /// Render the source controls for a preset flow: a Core/Platform toggle for
+    /// `Shield`, or a read-only shielded-balance line for the spend presets.
+    fn render_flow_source(&mut self, ui: &mut Ui) {
+        let dark_mode = ui.style().visuals.dark_mode;
+        match self.flow {
+            SendFlow::Shield => {
+                let has_platform = !self.get_platform_addresses().is_empty();
+                ui.label(
+                    RichText::new("Shield from")
+                        .color(DashColors::text_primary(dark_mode))
+                        .strong()
+                        .size(14.0),
+                );
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    let mut is_core =
+                        matches!(self.selected_source, Some(SourceSelection::CoreWallet));
+                    if ui
+                        .radio_value(&mut is_core, true, "Core wallet (whole balance)")
+                        .changed()
+                        && is_core
+                    {
+                        self.selected_source = Some(SourceSelection::CoreWallet);
+                        self.amount = None;
+                        self.amount_input = None;
+                    }
+                    ui.add_enabled_ui(has_platform, |ui| {
+                        let mut is_platform = matches!(
+                            self.selected_source,
+                            Some(SourceSelection::PlatformAddresses(_))
+                        );
+                        if ui
+                            .radio_value(&mut is_platform, true, "Platform balance")
+                            .changed()
+                            && is_platform
+                        {
+                            let addresses: Vec<_> = self
+                                .get_platform_addresses()
+                                .into_iter()
+                                .map(|(core_addr, platform_addr, balance)| {
+                                    (platform_addr, core_addr, balance)
+                                })
+                                .collect();
+                            self.selected_source =
+                                Some(SourceSelection::PlatformAddresses(addresses));
+                            self.amount = None;
+                            self.amount_input = None;
+                        }
+                    });
+                });
+                ui.add_space(4.0);
+                let balance_label = match &self.selected_source {
+                    Some(SourceSelection::PlatformAddresses(addresses)) => {
+                        let total: u64 = addresses.iter().map(|(_, _, b)| *b).sum();
+                        format!(
+                            "Available platform balance: {}",
+                            format_credits_as_dash(total)
+                        )
+                    }
+                    _ => format!(
+                        "Available core wallet balance: {}",
+                        format_duffs_as_dash(self.get_core_balance())
+                    ),
+                };
+                ui.label(RichText::new(balance_label).color(DashColors::success_color(dark_mode)));
+            }
+            SendFlow::ShieldedSend | SendFlow::Unshield => {
+                let balance = match &self.selected_source {
+                    Some(SourceSelection::Shielded(_, balance)) => *balance,
+                    _ => 0,
+                };
+                ui.label(
+                    RichText::new(format!(
+                        "Available shielded balance: {}",
+                        format_credits_as_dash(balance)
+                    ))
+                    .color(DashColors::success_color(dark_mode)),
+                );
+            }
+            SendFlow::General => {}
+        }
+    }
+
+    /// Render a preset shielded flow (Shield / Send Private / Unshield): a
+    /// locked source, a flow-scoped destination (or none for Shield), the shared
+    /// amount input, and the shared send button.
+    fn render_flow_send(&mut self, ui: &mut Ui) -> AppAction {
+        let mut action = AppAction::None;
+
+        self.render_wallet_info(ui);
+        if !self.render_unlock_gate(ui) {
+            return AppAction::None;
+        }
+        ui.add_space(10.0);
+
+        self.sync_flow_state();
+        self.render_flow_source(ui);
+
+        ui.add_space(10.0);
+        ui.separator();
+        ui.add_space(10.0);
+
+        // Destination (Shield targets the own pool and renders no input).
+        if let Some(kinds) = self.flow.preset_destination_kinds() {
+            self.render_destination_input_with_kinds(ui, &kinds);
+            ui.add_space(10.0);
+            ui.separator();
+            ui.add_space(10.0);
+        }
+
+        self.render_amount_input(ui);
+
+        ui.add_space(10.0);
+        ui.separator();
+        ui.add_space(10.0);
+
+        action |= self.render_send_button(ui);
+        action
+    }
+
     fn render_wallet_info(&self, ui: &mut Ui) {
         let dark_mode = ui.style().visuals.dark_mode;
 
@@ -1356,13 +1391,8 @@ impl WalletSendScreen {
             .value();
 
         let recipient = self.destination_address_string();
-        let recipient_bytes = if let Ok(addr) =
-            dash_sdk::dpp::address_funds::OrchardAddress::from_bech32m_string(&recipient)
-        {
-            addr.to_raw_bytes().to_vec()
-        } else {
-            return Err("Invalid shielded address".to_string());
-        };
+        let recipient_bytes = crate::model::address::parse_shielded_recipient(&recipient)
+            .ok_or_else(|| "Invalid shielded address".to_string())?;
 
         self.send_status = SendStatus::WaitingForResult;
         Ok(AppAction::BackendTask(
@@ -1431,8 +1461,8 @@ impl WalletSendScreen {
         if amount_duffs > balance {
             return Err(format!(
                 "Insufficient balance. Need {} but have {}",
-                Self::format_dash(amount_duffs),
-                Self::format_dash(balance)
+                format_duffs_as_dash(amount_duffs),
+                format_duffs_as_dash(balance)
             ));
         }
 
@@ -1460,8 +1490,8 @@ impl WalletSendScreen {
         if amount_duffs > balance {
             return Err(format!(
                 "Insufficient balance. Need {} but have {}",
-                Self::format_dash(amount_duffs),
-                Self::format_dash(balance)
+                format_duffs_as_dash(amount_duffs),
+                format_duffs_as_dash(balance)
             ));
         }
 
@@ -1797,7 +1827,7 @@ impl WalletSendScreen {
                     );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         ui.label(
-                            RichText::new(Self::format_dash(core_balance))
+                            RichText::new(format_duffs_as_dash(core_balance))
                                 .color(DashColors::success_color(dark_mode))
                                 .strong(),
                         );
@@ -1855,7 +1885,7 @@ impl WalletSendScreen {
                         );
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             ui.label(
-                                RichText::new(Self::format_credits(total_platform_balance))
+                                RichText::new(format_credits_as_dash(total_platform_balance))
                                     .color(DashColors::success_color(dark_mode))
                                     .strong(),
                             );
@@ -1925,7 +1955,7 @@ impl WalletSendScreen {
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
                                     ui.label(
-                                        RichText::new(Self::format_credits(
+                                        RichText::new(format_credits_as_dash(
                                             qi.identity.balance(),
                                         ))
                                         .color(DashColors::success_color(dark_mode))
@@ -1938,7 +1968,7 @@ impl WalletSendScreen {
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
                                     ui.label(
-                                        RichText::new(Self::format_credits(
+                                        RichText::new(format_credits_as_dash(
                                             first.identity.balance(),
                                         ))
                                         .color(DashColors::success_color(dark_mode))
@@ -1970,7 +2000,7 @@ impl WalletSendScreen {
                                 format!(
                                     "{} ({})",
                                     name,
-                                    Self::format_credits(qi.identity.balance())
+                                    format_credits_as_dash(qi.identity.balance())
                                 )
                             })
                             .unwrap_or_else(|| "Select identity".to_string());
@@ -1998,7 +2028,7 @@ impl WalletSendScreen {
                                         format!(
                                             "{} ({})",
                                             name,
-                                            Self::format_credits(identity.identity.balance())
+                                            format_credits_as_dash(identity.identity.balance())
                                         )
                                     };
                                     let is_selected = self
@@ -2060,7 +2090,7 @@ impl WalletSendScreen {
                         );
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             ui.label(
-                                RichText::new(Self::format_credits(balance))
+                                RichText::new(format_credits_as_dash(balance))
                                     .color(DashColors::success_color(dark_mode))
                                     .strong(),
                             );
@@ -2070,9 +2100,49 @@ impl WalletSendScreen {
         }
     }
 
-    fn render_destination_input(&mut self, ui: &mut Ui) {
+    /// Destination address kinds for the free-form (General) send, derived from
+    /// the selected source. Shielded destinations are developer-mode only here.
+    fn general_destination_kinds(&self) -> Vec<AddressKind> {
         let developer_mode = self.app_context.is_developer_mode();
-        // Pre-load data outside the closure to avoid double-borrow of self.
+        match &self.selected_source {
+            Some(SourceSelection::CoreWallet) => {
+                let mut kinds = vec![AddressKind::Core, AddressKind::Platform];
+                if developer_mode {
+                    kinds.push(AddressKind::Shielded);
+                }
+                kinds.push(AddressKind::Identity);
+                kinds
+            }
+            Some(SourceSelection::PlatformAddresses(_)) => {
+                let mut kinds = vec![AddressKind::Platform, AddressKind::Core];
+                if developer_mode {
+                    kinds.push(AddressKind::Shielded);
+                }
+                kinds.push(AddressKind::Identity);
+                kinds
+            }
+            Some(SourceSelection::Identity(_)) => {
+                vec![
+                    AddressKind::Core,
+                    AddressKind::Platform,
+                    AddressKind::Identity,
+                ]
+            }
+            Some(SourceSelection::Shielded(..)) => {
+                vec![
+                    AddressKind::Shielded,
+                    AddressKind::Platform,
+                    AddressKind::Core,
+                ]
+            }
+            None => AddressKind::ALL.to_vec(),
+        }
+    }
+
+    /// Build a fresh destination [`AddressInput`] for `allowed_kinds`, wired
+    /// with wallet and identity autocomplete. Returns the widget so callers can
+    /// assign it without holding a mutable borrow of `self` across the build.
+    fn build_address_input(&self, allowed_kinds: &[AddressKind]) -> AddressInput {
         // Filter out the source identity (if any) to prevent self-sends.
         let source_identity_id = if let Some(SourceSelection::Identity(qi)) = &self.selected_source
         {
@@ -2080,97 +2150,59 @@ impl WalletSendScreen {
         } else {
             None
         };
-        // Only load identities and shielded state when building a new AddressInput
-        // (get_or_insert_with fires once). Avoids per-frame DB queries.
-        let addr_input = if self.address_input.is_some() {
-            self.address_input.as_mut().unwrap()
-        } else {
-            let loaded_identities: Vec<_> = self
-                .get_loaded_identities()
-                .into_iter()
-                .filter(|qi| Some(qi.identity.id()) != source_identity_id)
+        let loaded_identities: Vec<_> = self
+            .get_loaded_identities()
+            .into_iter()
+            .filter(|qi| Some(qi.identity.id()) != source_identity_id)
+            .collect();
+
+        let mut builder = AddressInput::new(self.app_context.network)
+            .with_label("Send to")
+            .with_address_kinds(allowed_kinds)
+            .with_exclude_change(true);
+
+        // Provide all wallet addresses for autocomplete.
+        if let Ok(wallets_guard) = self.app_context.wallets.read() {
+            let all_wallets: Vec<_> = wallets_guard
+                .values()
+                .map(|w| {
+                    let seed_hash = w.read().map(|g| g.seed_hash()).unwrap_or_default();
+                    (
+                        w.clone(),
+                        self.app_context.snapshot_address_balances(&seed_hash),
+                    )
+                })
                 .collect();
-            // The wallet's own shielded receive address comes from the upstream
-            // coordinator's bound keys, which is an async read — not available
-            // synchronously in the frame loop. The "send to my shielded address"
-            // chip therefore shows balance only here; the address affordance
-            // returns with the Phase-F coordinator read path.
-            // TODO(Phase F): source the default Orchard address via the upstream
-            // coordinator read path and restore the address chip.
-            let shielded_info: Option<(String, u64)> = None;
-            self.address_input.get_or_insert_with(|| {
-                let allowed_kinds = match &self.selected_source {
-                    Some(SourceSelection::CoreWallet) => {
-                        let mut kinds = vec![AddressKind::Core, AddressKind::Platform];
-                        if developer_mode {
-                            kinds.push(AddressKind::Shielded);
-                        }
-                        kinds.push(AddressKind::Identity);
-                        kinds
-                    }
-                    Some(SourceSelection::PlatformAddresses(_)) => {
-                        let mut kinds = vec![AddressKind::Platform, AddressKind::Core];
-                        if developer_mode {
-                            kinds.push(AddressKind::Shielded);
-                        }
-                        kinds.push(AddressKind::Identity);
-                        kinds
-                    }
-                    Some(SourceSelection::Identity(_)) => {
-                        vec![
-                            AddressKind::Core,
-                            AddressKind::Platform,
-                            AddressKind::Identity,
-                        ]
-                    }
-                    Some(SourceSelection::Shielded(..)) => {
-                        vec![
-                            AddressKind::Shielded,
-                            AddressKind::Platform,
-                            AddressKind::Core,
-                        ]
-                    }
-                    None => AddressKind::ALL.to_vec(),
-                };
+            if !all_wallets.is_empty() {
+                builder = builder.with_wallets(&all_wallets);
+            }
+        }
 
-                let mut builder = AddressInput::new(self.app_context.network)
-                    .with_label("Send to")
-                    .with_address_kinds(&allowed_kinds)
-                    .with_exclude_change(true);
+        // Add identities for autocomplete (searchable by alias/DPNS name).
+        if !loaded_identities.is_empty() {
+            builder = builder.with_identities(&loaded_identities);
+        }
 
-                // Provide all wallet addresses for autocomplete
-                if let Ok(wallets_guard) = self.app_context.wallets.read() {
-                    let all_wallets: Vec<_> = wallets_guard
-                        .values()
-                        .map(|w| {
-                            let seed_hash = w.read().map(|g| g.seed_hash()).unwrap_or_default();
-                            (
-                                w.clone(),
-                                self.app_context.snapshot_address_balances(&seed_hash),
-                            )
-                        })
-                        .collect();
-                    if !all_wallets.is_empty() {
-                        builder = builder.with_wallets(&all_wallets);
-                    }
-                }
+        builder
+    }
 
-                // Add identities for autocomplete (searchable by alias/DPNS name)
-                if !loaded_identities.is_empty() {
-                    builder = builder.with_identities(&loaded_identities);
-                }
-
-                // Add shielded address for autocomplete (if wallet has shielded state)
-                if let Some((addr_str, balance)) = &shielded_info {
-                    builder = builder.with_shielded_balance(addr_str.clone(), *balance);
-                }
-
-                builder
-            })
-        };
-
-        let resp = addr_input.show(ui);
+    /// Render the destination address input for `allowed_kinds`. Lazily builds
+    /// the widget once (avoiding per-frame DB queries) then shows it.
+    fn render_destination_input_with_kinds(&mut self, ui: &mut Ui, allowed_kinds: &[AddressKind]) {
+        if self.address_input.is_none() {
+            self.address_input = Some(self.build_address_input(allowed_kinds));
+        }
+        let resp = self
+            .address_input
+            .as_mut()
+            .expect("invariant: address_input set to Some immediately above")
+            .show(ui);
         resp.inner.update(&mut self.validated_destination);
+    }
+
+    fn render_destination_input(&mut self, ui: &mut Ui) {
+        let kinds = self.general_destination_kinds();
+        self.render_destination_input_with_kinds(ui, &kinds);
     }
 
     fn render_amount_input(&mut self, ui: &mut Ui) {
@@ -2207,7 +2239,7 @@ impl WalletSendScreen {
                             max = max.map(|amount| amount.saturating_sub(estimated_fee));
                             Some(format!(
                                 "Estimated platform fee ~{} (deducted from amount)",
-                                Self::format_credits(estimated_fee)
+                                format_credits_as_dash(estimated_fee)
                             ))
                         } else {
                             None
@@ -2221,7 +2253,7 @@ impl WalletSendScreen {
                         max = max.map(|amount| amount.saturating_sub(total_fee_credits));
                         Some(format!(
                             "~{} reserved for shield fees",
-                            Self::format_credits(total_fee_credits)
+                            format_credits_as_dash(total_fee_credits)
                         ))
                     }
                     Some(AddressKind::Core) => {
@@ -2249,7 +2281,7 @@ impl WalletSendScreen {
                                     .unwrap_or(0);
                                     Some(format!(
                                         "~{} reserved for the network fee",
-                                        Self::format_credits(fee_duffs * CREDITS_PER_DUFF)
+                                        format_credits_as_dash(fee_duffs * CREDITS_PER_DUFF)
                                     ))
                                 }
                                 None => {
@@ -2270,6 +2302,26 @@ impl WalletSendScreen {
                     _ => None,
                 };
                 (max, hint)
+            }
+            Some(SourceSelection::PlatformAddresses(addresses))
+                if self.destination_kind() == Some(AddressKind::Shielded) =>
+            {
+                // Shield-from-Platform: the coordinator selects the inputs and
+                // the shield fee is paid from the same balance as the amount, so
+                // reserve the two-action shielded-fee headroom (far larger than
+                // the plain platform-transfer estimate) against the full balance.
+                let total: u64 = addresses.iter().map(|(_, _, balance)| *balance).sum();
+                let headroom = shield_from_balance_fee_headroom(
+                    self.app_context.platform_version(),
+                    self.app_context.fee_multiplier_permille(),
+                );
+                (
+                    Some(total.saturating_sub(headroom)),
+                    Some(format!(
+                        "~{} reserved for the shield fee",
+                        format_credits_as_dash(headroom)
+                    )),
+                )
             }
             Some(SourceSelection::PlatformAddresses(addresses)) => {
                 // Extract destination to exclude it from max calculation (can't send to yourself)
@@ -2303,10 +2355,10 @@ impl WalletSendScreen {
                     format!(
                         "Limited to {} input addresses per transaction, ~{} reserved for fees",
                         MAX_PLATFORM_INPUTS,
-                        Self::format_credits(max_fee)
+                        format_credits_as_dash(max_fee)
                     )
                 } else {
-                    format!("~{} reserved for fees", Self::format_credits(max_fee))
+                    format!("~{} reserved for fees", format_credits_as_dash(max_fee))
                 };
                 (Some(total.saturating_sub(max_fee)), Some(hint))
             }
@@ -2321,7 +2373,7 @@ impl WalletSendScreen {
                     Some(available),
                     Some(format!(
                         "~{} reserved for fees",
-                        Self::format_credits(estimated_fee)
+                        format_credits_as_dash(estimated_fee)
                     )),
                 )
             }
@@ -2439,7 +2491,7 @@ impl WalletSendScreen {
                         );
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             ui.label(
-                                RichText::new(Self::format_credits(*use_amount))
+                                RichText::new(format_credits_as_dash(*use_amount))
                                     .color(DashColors::success_color(dark_mode))
                                     .size(11.0),
                             );
@@ -2756,7 +2808,7 @@ impl WalletSendScreen {
                                     .monospace(),
                             );
                             ui.label(
-                                RichText::new(format!("({})", Self::format_dash(balance)))
+                                RichText::new(format!("({})", format_duffs_as_dash(balance)))
                                     .color(DashColors::success_color(dark_mode))
                                     .size(12.0),
                             );
@@ -2810,7 +2862,7 @@ impl WalletSendScreen {
                         let display = format!(
                             "{}... ({})",
                             &addr_str[..12.min(addr_str.len())],
-                            Self::format_dash(*balance)
+                            format_duffs_as_dash(*balance)
                         );
                         if ui.selectable_label(false, display).clicked() {
                             self.core_inputs.push(CoreAddressInput {
@@ -2884,7 +2936,7 @@ impl WalletSendScreen {
                                     .monospace(),
                             );
                             ui.label(
-                                RichText::new(format!("({})", Self::format_credits(balance)))
+                                RichText::new(format!("({})", format_credits_as_dash(balance)))
                                     .color(DashColors::success_color(dark_mode))
                                     .size(12.0),
                             );
@@ -2933,17 +2985,16 @@ impl WalletSendScreen {
             egui::ComboBox::from_id_salt("add_platform_input")
                 .selected_text("+ Add Platform Address")
                 .show_ui(ui, |ui| {
-                    for (core_addr, platform_addr, balance) in available_addresses {
+                    for (_core_addr, platform_addr, balance) in available_addresses {
                         let addr_str = platform_addr.to_bech32m_string(network);
                         let display = format!(
                             "{}... ({})",
                             &addr_str[..20.min(addr_str.len())],
-                            Self::format_credits(*balance)
+                            format_credits_as_dash(*balance)
                         );
                         if ui.selectable_label(false, display).clicked() {
                             self.platform_inputs.push(PlatformAddressInput {
                                 platform_address: *platform_addr,
-                                core_address: core_addr.clone(),
                                 amount: String::new(),
                             });
                         }
@@ -3228,8 +3279,8 @@ impl WalletSendScreen {
         if total_output > total_input {
             return Err(format!(
                 "Insufficient input amount. Outputs total {} but inputs only {}",
-                Self::format_dash(total_output),
-                Self::format_dash(total_input)
+                format_duffs_as_dash(total_output),
+                format_duffs_as_dash(total_input)
             ));
         }
 
@@ -3275,8 +3326,8 @@ impl WalletSendScreen {
         if amount_duffs > total_input {
             return Err(format!(
                 "Insufficient input amount. Output is {} but inputs only {}",
-                Self::format_dash(amount_duffs),
-                Self::format_dash(total_input)
+                format_duffs_as_dash(amount_duffs),
+                format_duffs_as_dash(total_input)
             ));
         }
 
@@ -3429,7 +3480,10 @@ impl ScreenLike for WalletSendScreen {
         action |= add_top_panel(
             ui,
             &self.app_context,
-            vec![("Wallets", AppAction::PopScreen), ("Send", AppAction::None)],
+            vec![
+                ("Wallets", AppAction::PopScreen),
+                (self.flow.heading(), AppAction::None),
+            ],
             vec![],
         );
 
@@ -3450,21 +3504,39 @@ impl ScreenLike for WalletSendScreen {
             egui::ScrollArea::vertical()
                 .auto_shrink([true; 2])
                 .show(ui, |ui| {
-                    // Heading with advanced options checkbox
+                    // Heading. Advanced options apply to the free-form send only;
+                    // shielded presets hide the toggle.
                     ui.horizontal(|ui| {
                         ui.heading(
-                            RichText::new("Send Dash")
+                            RichText::new(self.flow.heading())
                                 .color(DashColors::text_primary(dark_mode))
                                 .size(24.0),
                         );
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.checkbox(&mut self.show_advanced_options, "Advanced Options");
-                        });
+                        if !self.flow.is_preset() {
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    ui.checkbox(
+                                        &mut self.show_advanced_options,
+                                        "Advanced Options",
+                                    );
+                                },
+                            );
+                        }
                     });
+
+                    if let Some(description) = self.flow.description() {
+                        ui.add_space(4.0);
+                        ui.label(
+                            RichText::new(description).color(DashColors::text_secondary(dark_mode)),
+                        );
+                    }
 
                     ui.add_space(15.0);
 
-                    if self.show_advanced_options {
+                    if self.flow.is_preset() {
+                        inner_action |= self.render_flow_send(ui);
+                    } else if self.show_advanced_options {
                         inner_action |= self.render_advanced_send(ui);
                     } else {
                         inner_action |= self.render_unified_send(ui);
@@ -3519,22 +3591,18 @@ impl ScreenLike for WalletSendScreen {
             } => {
                 let msg = if recipients.len() == 1 {
                     let (address, amount) = &recipients[0];
-                    format!("Sent {} to {}", Self::format_dash(*amount), address,)
+                    format!("Sent {} to {}", format_duffs_as_dash(*amount), address,)
                 } else {
                     format!(
                         "Sent {} to {} recipients",
-                        Self::format_dash(total_amount),
+                        format_duffs_as_dash(total_amount),
                         recipients.len(),
                     )
                 };
                 self.send_status = SendStatus::Complete(msg);
             }
             crate::backend_task::BackendTaskSuccessResult::TransferredCredits(fee_result) => {
-                let fee_info = format!(
-                    "\n\nFee: Estimated {} • Actual {}",
-                    format_credits_as_dash(fee_result.estimated_fee),
-                    format_credits_as_dash(fee_result.actual_fee)
-                );
+                let fee_info = Self::format_fee_info(&fee_result);
                 self.send_status =
                     SendStatus::Complete(format!("Credits transferred successfully!{}", fee_info));
             }
@@ -3578,21 +3646,13 @@ impl ScreenLike for WalletSendScreen {
                 _identity,
                 fee_result,
             ) => {
-                let fee_info = format!(
-                    "\n\nFee: Estimated {} • Actual {}",
-                    format_credits_as_dash(fee_result.estimated_fee),
-                    format_credits_as_dash(fee_result.actual_fee)
-                );
+                let fee_info = Self::format_fee_info(&fee_result);
                 self.send_status =
                     SendStatus::Complete(format!("Identity topped up successfully!{}", fee_info));
             }
             // Identity->Core withdrawal result
             crate::backend_task::BackendTaskSuccessResult::WithdrewFromIdentity(fee_result) => {
-                let fee_info = format!(
-                    "\n\nFee: Estimated {} • Actual {}",
-                    format_credits_as_dash(fee_result.estimated_fee),
-                    format_credits_as_dash(fee_result.actual_fee)
-                );
+                let fee_info = Self::format_fee_info(&fee_result);
                 self.send_status = SendStatus::Complete(format!(
                     "Identity withdrawal initiated. Funds will appear on the Core chain after confirmation.{}",
                     fee_info
@@ -3639,4 +3699,54 @@ impl ScreenLike for WalletSendScreen {
     fn refresh_on_arrival(&mut self) {}
 
     fn refresh(&mut self) {}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn general_flow_is_not_a_preset() {
+        assert!(!SendFlow::General.is_preset());
+        assert!(SendFlow::Shield.is_preset());
+        assert!(SendFlow::ShieldedSend.is_preset());
+        assert!(SendFlow::Unshield.is_preset());
+    }
+
+    #[test]
+    fn preset_headings_match_former_standalone_screens() {
+        assert_eq!(SendFlow::Shield.heading(), "Shield");
+        assert_eq!(SendFlow::ShieldedSend.heading(), "Send (Private)");
+        assert_eq!(SendFlow::Unshield.heading(), "Unshield Credits");
+    }
+
+    #[test]
+    fn preset_destination_kinds_scope_each_flow() {
+        // Shield targets the own pool — no destination input.
+        assert_eq!(SendFlow::Shield.preset_destination_kinds(), None);
+        // General derives kinds from the source elsewhere.
+        assert_eq!(SendFlow::General.preset_destination_kinds(), None);
+        // Private send accepts only shielded recipients.
+        assert_eq!(
+            SendFlow::ShieldedSend.preset_destination_kinds(),
+            Some(vec![AddressKind::Shielded])
+        );
+        // Unshield exits to platform or core, never back to shielded.
+        assert_eq!(
+            SendFlow::Unshield.preset_destination_kinds(),
+            Some(vec![AddressKind::Platform, AddressKind::Core])
+        );
+    }
+
+    #[test]
+    fn every_preset_has_a_description() {
+        assert!(SendFlow::General.description().is_none());
+        for flow in [SendFlow::Shield, SendFlow::ShieldedSend, SendFlow::Unshield] {
+            let description = flow.description().expect("preset has a description");
+            assert!(
+                description.ends_with('.'),
+                "description is a complete sentence: {description}"
+            );
+        }
+    }
 }

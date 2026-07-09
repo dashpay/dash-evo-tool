@@ -2,6 +2,7 @@ use crate::app::AppAction;
 use crate::model::wallet::DerivationPathHelpers;
 use crate::ui::ScreenType;
 use crate::ui::theme::{DashColors, ResponseExt};
+use crate::wallet_backend::poison::RwLockRecover;
 use eframe::egui::{self, Ui};
 use egui::{Color32, Frame, Margin, RichText};
 use egui_extras::{Column, TableBuilder};
@@ -23,7 +24,7 @@ impl WalletsBalancesScreen {
         };
 
         let (seed_hash, platform_addresses) = {
-            let wallet = arc_wallet.read().unwrap();
+            let wallet = arc_wallet.read_recover();
             let network = self.app_context.network;
             let platform_addresses: Vec<(String, u64)> = wallet
                 .known_addresses

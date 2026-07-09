@@ -91,7 +91,7 @@ impl GroveSTARKScreen {
 
         // Load initial contracts (exclude system contracts)
         let excluded_aliases = ["dpns", "keyword_search", "token_history", "withdrawals"];
-        let all_contracts = app_context.get_contracts(None, None).unwrap_or_default();
+        let all_contracts = app_context.get_contracts().unwrap_or_default();
 
         tracing::info!(
             "ZK Proofs screen found {} total contracts",
@@ -242,7 +242,7 @@ impl GroveSTARKScreen {
 
     fn refresh_contracts(&mut self, app_context: &AppContext) {
         let excluded_aliases = ["dpns", "keyword_search", "token_history", "withdrawals"];
-        let all_contracts = app_context.get_contracts(None, None).unwrap_or_default();
+        let all_contracts = app_context.get_contracts().unwrap_or_default();
 
         self.available_contracts = all_contracts
             .into_iter()
@@ -272,7 +272,7 @@ impl GroveSTARKScreen {
         self.available_document_types.clear();
         self.selected_document_type = None;
 
-        if let Ok(contracts) = app_context.get_contracts(None, None) {
+        if let Ok(contracts) = app_context.get_contracts() {
             for contract in contracts {
                 let id = contract
                     .contract

@@ -7,10 +7,7 @@
 //!   the visual shape called out in the design spec §B.6 and in Frame F6 of
 //!   `wireframe.html`,
 //! - a gated empty state pointing users to the legacy DashPay Payments screen
-//!   when the `identity-hub-activity-feed` Cargo feature is off (default),
-//! - a feature-gated placeholder that says `Unified activity feed coming soon`
-//!   when the feature is on — the aggregator backend is deliberately out of
-//!   scope for T10 (additive-only; no new backend task).
+//!   until the aggregator backend lands.
 //!
 //! Retry plumbing for failed rows will be wired through a reusable row
 //! component once the aggregator backend exists — the caller will decide
@@ -96,22 +93,8 @@ pub fn render(ui: &mut Ui, _app_context: &Arc<AppContext>) -> AppAction {
 
         ui.add_space(16.0);
 
-        #[cfg(feature = "identity-hub-activity-feed")]
         {
-            // Feature-gated placeholder. No live aggregator yet — T10 is
-            // additive-only and does not introduce a new backend task.
-            ui.label(
-                RichText::new("Unified activity feed coming soon.")
-                    .strong()
-                    .color(DashColors::text_primary(dark_mode)),
-            );
-            ui.add_space(8.0);
-            action |= legacy_payments_link(ui);
-        }
-
-        #[cfg(not(feature = "identity-hub-activity-feed"))]
-        {
-            // Default (feature off): gated empty state. Point users to the
+            // Gated empty state — no live aggregator yet. Point users to the
             // legacy DashPay Payments screen so they can still see their
             // activity while the aggregator is built.
             ui.label(
@@ -161,8 +144,7 @@ fn legacy_payments_link(ui: &mut Ui) -> AppAction {
 /// `ActivityButton::Retry(ActivityRowId)` without changing the UI shell.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActivityButton {
-    /// `Open DashPay Payments` link, rendered in both the empty state
-    /// (feature off) and the feed placeholder (feature on).
+    /// `Open DashPay Payments` link, rendered in the gated empty state.
     LegacyPaymentsLink,
 }
 

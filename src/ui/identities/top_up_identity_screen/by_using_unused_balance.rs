@@ -1,8 +1,7 @@
 use crate::app::AppAction;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::ui::RootScreenType;
-use crate::ui::identities::add_new_identity_screen::FundingMethod;
-use crate::ui::identities::funding_common::spendable_covers_minimum;
+use crate::ui::identities::funding_common::{FundingMethod, spendable_covers_minimum};
 use crate::ui::identities::top_up_identity_screen::{TopUpIdentityScreen, WalletFundedScreenStep};
 use crate::ui::theme::DashColors;
 use egui::{Color32, Frame, Margin, RichText, Ui};
@@ -18,9 +17,12 @@ impl TopUpIdentityScreen {
                 }
             };
 
-            let total_balance: u64 = self.app_context.snapshot_balance(&wallet.seed_hash()).total;
+            let spendable_balance: u64 = self
+                .app_context
+                .snapshot_balance(&wallet.seed_hash())
+                .spendable();
 
-            let dash_balance = total_balance as f64 * 1e-8; // Convert to DASH units
+            let dash_balance = spendable_balance as f64 * 1e-8; // Convert to DASH units
 
             ui.horizontal(|ui| {
                 ui.label(format!("Wallet Balance: {:.8} DASH", dash_balance));
@@ -98,7 +100,7 @@ impl TopUpIdentityScreen {
         self.top_up_funding_amount_input(ui);
 
         // Extract the step from the RwLock to minimize borrow scope
-        let step = *self.step.read().unwrap();
+        let step = self.current_step();
 
         // Only show the fee estimate and Top Up button once a positive amount
         // is entered — otherwise clicking Top Up would silently no-op.

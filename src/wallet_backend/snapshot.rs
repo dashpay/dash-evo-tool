@@ -92,8 +92,7 @@ pub struct WalletSnapshot {
     pub transactions: Vec<WalletTransaction>,
     pub utxos: Vec<DetUtxo>,
     /// UTXO-derived per-address balances, summed across this wallet's UTXOs.
-    /// Feeds the account-summary view that used to read
-    /// `Wallet.address_balances`.
+    /// Feeds the account-summary view.
     pub address_balances: BTreeMap<Address, u64>,
     /// The BIP-44 external (receive) addresses SPV actually watches, as strings.
     /// The Receive flow renders this set, so it can only ever show, copy, or QR
@@ -649,8 +648,7 @@ mod tests {
     /// off the event-bridge recompute. Publishing a watched set makes it the
     /// only set the read accessor returns, so the rendered list ⊆ watched set by
     /// construction (it shows nothing else). Pins the round-trip the UI relies
-    /// on; before this seam the list read the legacy map and could show unwatched
-    /// indices (30, 31, …) with Copy + QR.
+    /// on: the Receive list can never surface an unwatched index with Copy + QR.
     #[test]
     fn published_monitored_set_is_the_only_receive_list_source() {
         let store = SnapshotStore::new();
@@ -1199,7 +1197,7 @@ mod tests {
     #[test]
     fn header_total_reconciles_with_core_tab_breakdown_through_real_accessors() {
         use crate::model::wallet::DerivationPathReference;
-        use crate::ui::wallets::account_summary::{AccountCategory, collect_account_summaries};
+        use crate::ui::state::account_summary::{AccountCategory, collect_account_summaries};
 
         // account #0: two receive addresses (3.5 DASH); account #1: one (0.5).
         let a0 = addr(20);
@@ -1287,7 +1285,7 @@ mod tests {
     /// fails loudly, flagging that the dedup path is now live.
     #[test]
     fn generated_paths_never_categorize_as_platform_payment_today() {
-        use crate::ui::wallets::account_summary::{AccountCategory, collect_account_summaries};
+        use crate::ui::state::account_summary::{AccountCategory, collect_account_summaries};
         use dash_sdk::dpp::key_wallet::wallet::Wallet as UpstreamWallet;
         use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOptions;
         use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::ManagedWalletInfo;

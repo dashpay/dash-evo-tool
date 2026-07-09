@@ -186,7 +186,9 @@ impl AddKeyScreen {
         // Convert the input string to bytes (hex decoding)
         match hex::decode(self.private_key_input.text()) {
             Ok(private_key_bytes_vec) if private_key_bytes_vec.len() == 32 => {
-                let private_key_bytes = private_key_bytes_vec.try_into().unwrap();
+                let private_key_bytes: [u8; 32] = private_key_bytes_vec
+                    .try_into()
+                    .expect("invariant: length checked to be 32 in the match guard");
                 let public_key_data_result = self.key_type.public_key_data_from_private_key_data(
                     &private_key_bytes,
                     self.app_context.network,
@@ -233,7 +235,9 @@ impl AddKeyScreen {
                         key_type: self.key_type,
                         purpose: self.purpose,
                         security_level: self.security_level,
-                        data: public_key_data_result.unwrap().into(),
+                        data: public_key_data_result
+                            .expect("invariant: Err handled in the preceding branch")
+                            .into(),
                         read_only: false,
                         disabled_at: None,
                         contract_bounds,
@@ -249,7 +253,9 @@ impl AddKeyScreen {
                             format!("Issue verifying private key: {}", err),
                             MessageType::Error,
                         );
-                    } else if validation_result.unwrap() {
+                    } else if validation_result
+                        .expect("invariant: Err handled in the preceding branch")
+                    {
                         let new_qualified_key = QualifiedIdentityPublicKey {
                             identity_public_key: new_key.into(),
                             in_wallet_at_derivation_path: None,

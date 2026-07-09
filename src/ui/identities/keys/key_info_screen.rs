@@ -23,6 +23,7 @@ use crate::ui::components::wallet_unlock_popup::{
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, ScreenLike};
 use crate::wallet_backend::IdentityKeyView;
+use crate::wallet_backend::poison::RwLockRecover;
 use crate::wallet_backend::secret_seam::SecretScheme;
 use dash_sdk::dashcore_rpc::dashcore::PrivateKey as RPCPrivateKey;
 use dash_sdk::dpp::dashcore::address::Payload;
@@ -457,7 +458,7 @@ impl ScreenLike for KeyInfoScreen {
                                                 .color(ui.visuals().text_color()),
                                         );
                                         let wif = Secret::new(private_key.to_wif());
-                                        // INTENTIONAL(CODE-003): WIF displayed as plaintext label — user-initiated key view.
+                                        // WIF displayed as plaintext label — user-initiated key view.
                                         // Secret wrapper provides zeroize-on-drop for the Rust-side variable.
                                         ui.label(
                                             RichText::new(wif.expose_secret())
@@ -472,7 +473,7 @@ impl ScreenLike for KeyInfoScreen {
                                             .color(ui.visuals().text_color()),
                                     );
                                     let private_key_hex = Secret::new(hex::encode(clear));
-                                    // INTENTIONAL(CODE-003): WIF displayed as plaintext label — user-initiated key view.
+                                    // WIF displayed as plaintext label — user-initiated key view.
                                     // Secret wrapper provides zeroize-on-drop for the Rust-side variable.
                                     ui.label(
                                         RichText::new(private_key_hex.expose_secret())
@@ -740,7 +741,7 @@ impl KeyInfoScreen {
     ) -> Self {
         let selected_wallet =
             if let Some((_, Some(wallet_derivation_path))) = private_key_data.as_ref() {
-                let wallets = app_context.wallets.read().unwrap();
+                let wallets = app_context.wallets.read_recover();
                 wallets
                     .get(&wallet_derivation_path.wallet_seed_hash)
                     .cloned()
@@ -789,7 +790,10 @@ impl KeyInfoScreen {
         // Convert the input string to bytes (hex decoding)
         let private_key_bytes = match hex::decode(self.private_key_input.text()) {
             Ok(private_key_bytes_vec) if private_key_bytes_vec.len() == 32 => {
-                private_key_bytes_vec.try_into().unwrap()
+                let bytes: [u8; 32] = private_key_bytes_vec
+                    .try_into()
+                    .expect("invariant: length checked to be 32 in the match guard");
+                bytes
             }
             Ok(_) => {
                 MessageBanner::set_global(
@@ -821,7 +825,7 @@ impl KeyInfoScreen {
                 format!("Issue verifying private key {}", err),
                 MessageType::Error,
             );
-        } else if validation_result.unwrap() {
+        } else if validation_result.expect("invariant: Err handled in the preceding branch") {
             // If valid, store the private key in the context and reset the input field
             self.private_key_data = Some((PrivateKeyData::Clear(private_key_bytes), None));
             self.identity.private_keys.insert_non_encrypted(

@@ -47,10 +47,6 @@ use egui::{Color32, ComboBox, Response, Ui};
 
 use super::tokens::tokens_screen::IdentityTokenInfo;
 
-/// Layout of labels and buttons in the UI fails to vertically align properly containers that contain buttons and other items (labels, text fields, etc.).
-/// This constant provides a constant padding to be used in such cases to ensure proper alignment.
-pub const BUTTON_ADJUSTMENT_PADDING_TOP: f32 = 15.0;
-
 /// Formats a key label for display in combo boxes and lists.
 /// Returns a string like "Key 0 | AUTHENTICATION | CRITICAL | ECDSA_SECP256K1"
 pub fn format_key_label(key: &IdentityPublicKey) -> String {
@@ -260,42 +256,6 @@ pub fn copy_text_to_clipboard(text: &str) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
-/// Returns the newly selected key (if changed), otherwise the existing one.
-// Allow dead_code: This function provides UI for key selection within identities,
-// useful for identity-based operations and key management interfaces
-pub fn render_key_selector(
-    ui: &mut Ui,
-    selected_identity: &QualifiedIdentity,
-    selected_key: &Option<IdentityPublicKey>,
-) -> Option<IdentityPublicKey> {
-    let mut new_selected_key = selected_key.clone();
-
-    ui.horizontal(|ui| {
-        ui.label("Key:");
-        ComboBox::from_id_salt("key_selector")
-            .selected_text(
-                selected_key
-                    .as_ref()
-                    .map(|k| format!("Key {} Security {}", k.id(), k.security_level()))
-                    .unwrap_or_else(|| "Choose key…".into()),
-            )
-            .show_ui(ui, |cb| {
-                for key_ref in selected_identity.available_authentication_keys_non_master() {
-                    let key = &key_ref.identity_public_key;
-                    let label = format!("Key {} Security {}", key.id(), key.security_level());
-                    if cb
-                        .selectable_label(Some(key) == selected_key.as_ref(), label)
-                        .clicked()
-                    {
-                        new_selected_key = Some(key.clone());
-                    }
-                }
-            });
-    });
-
-    new_selected_key
-}
-
 /// Transaction types that require specific key filtering
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum TransactionType {
@@ -375,6 +335,161 @@ impl TransactionType {
 
 /// Key chooser that filters keys based on transaction type and dev mode.
 /// Use this when you already have a specific identity and just need to select a key.
+/// Whether `identity` has (a) a loaded private key eligible for the transaction and
+/// (b) an eligible public key whose private key is not yet loaded.
+fn key_eligibility(
+    identity: &QualifiedIdentity,
+    allowed_purposes: &[Purpose],
+    allowed_security_levels: &[SecurityLevel],
+) -> (bool, bool) {
+    let has_suitable_keys_with_private =
+        identity
+            .private_keys
+            .identity_public_keys()
+            .iter()
+            .any(|key_ref| {
+                let key = &key_ref.1.identity_public_key;
+                allowed_purposes.contains(&key.purpose())
+                    && allowed_security_levels.contains(&key.security_level())
+            });
+
+    let has_eligible_public_keys_without_private =
+        identity.identity.public_keys().iter().any(|(_, pub_key)| {
+            let basic_ok = allowed_purposes.contains(&pub_key.purpose())
+                && allowed_security_levels.contains(&pub_key.security_level());
+            let has_private = identity
+                .private_keys
+                .identity_public_keys()
+                .iter()
+                .any(|key_ref| key_ref.1.identity_public_key.id() == pub_key.id());
+            basic_ok && !has_private
+        });
+
+    (
+        has_suitable_keys_with_private,
+        has_eligible_public_keys_without_private,
+    )
+}
+
+/// Renders the "no eligible key" notice plus an "Add New Key" button for `identity`.
+fn render_no_eligible_key_group(
+    ui: &mut Ui,
+    app_context: &Arc<AppContext>,
+    identity: &QualifiedIdentity,
+    transaction_type: TransactionType,
+    has_eligible_public_keys_without_private: bool,
+) -> AppAction {
+    let mut action = AppAction::None;
+    ui.group(|ui| {
+        ui.set_min_width(220.0);
+        ui.vertical(|ui| {
+            ui.label("No eligible key. This transaction type requires:");
+            ui.label(format!("{} key", transaction_type.label()));
+
+            if has_eligible_public_keys_without_private {
+                ui.label(
+                    "This identity has an eligible public key, but its private key isn't loaded into Dash Evo Tool yet.",
+                );
+                ui.label(
+                    "Load the private key from the Identities screen, or add a new key with the button below.",
+                );
+            }
+
+            ui.add_space(5.0);
+
+            if ui.button("Add New Key to Identity").clicked() {
+                action = AppAction::AddScreen(Screen::AddKeyScreen(AddKeyScreen::new(
+                    identity.clone(),
+                    app_context,
+                )));
+            }
+        });
+    });
+    action
+}
+
+/// Renders a ComboBox listing `identity`'s loaded private keys eligible for the transaction.
+///
+/// With `identity` `None`, prompts the user to pick an identity first. Developer mode also
+/// lists otherwise-ineligible keys, tagged via [`format_key_label_dev`].
+#[allow(clippy::too_many_arguments)]
+fn render_key_combo(
+    ui: &mut Ui,
+    combo_id: &str,
+    width: f32,
+    identity: Option<&QualifiedIdentity>,
+    selected_key: &mut Option<IdentityPublicKey>,
+    allowed_purposes: &[Purpose],
+    allowed_security_levels: &[SecurityLevel],
+    is_dev_mode: bool,
+) {
+    ComboBox::from_id_salt(combo_id)
+        .width(width)
+        .selected_text(
+            selected_key
+                .as_ref()
+                .map(format_key_label)
+                .unwrap_or_else(|| "Select Key…".into()),
+        )
+        .show_ui(ui, |kui| {
+            let Some(qi) = identity else {
+                kui.label("Pick an identity first");
+                return;
+            };
+            for key_ref in qi.private_keys.identity_public_keys() {
+                let key = &key_ref.1.identity_public_key;
+
+                let is_allowed = is_dev_mode
+                    || (allowed_purposes.contains(&key.purpose())
+                        && allowed_security_levels.contains(&key.security_level()));
+                if !is_allowed {
+                    continue;
+                }
+
+                let is_dev_override = is_dev_mode
+                    && (!allowed_purposes.contains(&key.purpose())
+                        || !allowed_security_levels.contains(&key.security_level()));
+                let label = if is_dev_override {
+                    format_key_label_dev(key)
+                } else {
+                    format_key_label(key)
+                };
+
+                if kui
+                    .selectable_label(selected_key.as_ref() == Some(key), label)
+                    .clicked()
+                {
+                    *selected_key = Some(key.clone());
+                }
+            }
+        });
+}
+
+/// Renders a centered title + description block (used above success-screen buttons).
+fn render_info_section(ui: &mut Ui, title: &str, description: &str) {
+    ui.add_space(24.0);
+    let description_width = 500.0_f32.min(ui.available_width() - 40.0);
+    ui.allocate_ui_with_layout(
+        egui::Vec2::new(description_width, 0.0),
+        egui::Layout::top_down(egui::Align::Center),
+        |ui| {
+            let dark_mode = ui.style().visuals.dark_mode;
+            ui.label(
+                egui::RichText::new(title)
+                    .size(16.0)
+                    .strong()
+                    .color(DashColors::text_primary(dark_mode)),
+            );
+            ui.add_space(8.0);
+            ui.label(
+                egui::RichText::new(description)
+                    .size(14.0)
+                    .color(DashColors::text_secondary(dark_mode)),
+            );
+        },
+    );
+}
+
 pub fn add_key_chooser(
     ui: &mut Ui,
     app_context: &Arc<AppContext>,
@@ -408,100 +523,33 @@ pub fn add_key_chooser_with_doc_type(
     let allowed_purposes = transaction_type.allowed_purposes();
     let allowed_security_levels = compute_allowed_security_levels(transaction_type, document_type);
 
-    // Check for keys with private keys loaded
-    let has_suitable_keys_with_private =
-        identity
-            .private_keys
-            .identity_public_keys()
-            .iter()
-            .any(|key_ref| {
-                let key = &key_ref.1.identity_public_key;
-
-                allowed_purposes.contains(&key.purpose())
-                    && allowed_security_levels.contains(&key.security_level())
-            });
-
-    // Check if there are eligible public keys without private keys
-    let has_eligible_public_keys_without_private =
-        identity.identity.public_keys().iter().any(|(_, pub_key)| {
-            let basic_ok = allowed_purposes.contains(&pub_key.purpose())
-                && allowed_security_levels.contains(&pub_key.security_level());
-
-            let has_private = identity
-                .private_keys
-                .identity_public_keys()
-                .iter()
-                .any(|key_ref| key_ref.1.identity_public_key.id() == pub_key.id());
-
-            basic_ok && !has_private
-        });
+    let (has_suitable_keys_with_private, has_eligible_public_keys_without_private) =
+        key_eligibility(identity, &allowed_purposes, &allowed_security_levels);
 
     if !is_dev_mode && !has_suitable_keys_with_private {
-        // Show message and buttons when no suitable keys
-        ui.group(|ui| {
-            ui.set_min_width(220.0);
-            ui.vertical(|ui| {
-                ui.label("No eligible key. This transaction type requires:");
-                ui.label(format!("{} key", transaction_type.label()));
-
-                if has_eligible_public_keys_without_private {
-                    ui.label(
-                        "This Identity has an eligible public key but the private key isn't loaded.",
-                    );
-                }
-
-                ui.add_space(5.0);
-
-                if ui.button("Add New Key to Identity").clicked() {
-                    action = AppAction::AddScreen(Screen::AddKeyScreen(AddKeyScreen::new(
-                        identity.clone(),
-                        app_context,
-                    )));
-                }
-            });
-        });
+        action = render_no_eligible_key_group(
+            ui,
+            app_context,
+            identity,
+            transaction_type,
+            has_eligible_public_keys_without_private,
+        );
     } else {
-        // Show key combo box
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
                 ui.add_space(15.0);
                 ui.label("Key:");
             });
-            ComboBox::from_id_salt("key_chooser_combo")
-                .width(300.0)
-                .selected_text(
-                    selected_key
-                        .as_ref()
-                        .map(format_key_label)
-                        .unwrap_or_else(|| "Select Key...".into()),
-                )
-                .show_ui(ui, |kui| {
-                    for key_ref in identity.private_keys.identity_public_keys() {
-                        let key = &key_ref.1.identity_public_key;
-
-                        let is_allowed = is_dev_mode
-                            || (allowed_purposes.contains(&key.purpose())
-                                && allowed_security_levels.contains(&key.security_level()));
-
-                        if is_allowed {
-                            let is_dev_override = is_dev_mode
-                                && (!allowed_purposes.contains(&key.purpose())
-                                    || !allowed_security_levels.contains(&key.security_level()));
-                            let label = if is_dev_override {
-                                format_key_label_dev(key)
-                            } else {
-                                format_key_label(key)
-                            };
-
-                            if kui
-                                .selectable_label(selected_key.as_ref() == Some(key), label)
-                                .clicked()
-                            {
-                                *selected_key = Some(key.clone());
-                            }
-                        }
-                    }
-                });
+            render_key_combo(
+                ui,
+                "key_chooser_combo",
+                300.0,
+                Some(identity),
+                selected_key,
+                &allowed_purposes,
+                &allowed_security_levels,
+                is_dev_mode,
+            );
         });
     }
 
@@ -566,10 +614,7 @@ where
                         for qi in identities {
                             let label = identity_display_label(qi);
                             if iui
-                                .selectable_label(
-                                    selected_identity.as_ref() == Some(qi),
-                                    label,
-                                )
+                                .selectable_label(selected_identity.as_ref() == Some(qi), label)
                                 .clicked()
                             {
                                 *selected_identity = Some(qi.clone());
@@ -584,121 +629,39 @@ where
             ui.label("Key:");
 
             ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
-                // Check if selected identity has suitable keys
+                let allowed_purposes = transaction_type.allowed_purposes();
+                let allowed_security_levels =
+                    compute_allowed_security_levels(transaction_type, document_type);
+
+                // Show the "no eligible key" notice instead of the combo when the selected
+                // identity has no loaded eligible key (outside developer mode).
                 let mut show_combo = true;
-                if let Some(qi) = selected_identity {
-                    let allowed_purposes = transaction_type.allowed_purposes();
-                    let allowed_security_levels =
-                        compute_allowed_security_levels(transaction_type, document_type);
-
-                    // Check for keys with private keys loaded
-                    let has_suitable_keys_with_private = qi
-                        .private_keys
-                        .identity_public_keys()
-                        .iter()
-                        .any(|key_ref| {
-                            let key = &key_ref.1.identity_public_key;
-
-                            allowed_purposes.contains(&key.purpose())
-                                && allowed_security_levels.contains(&key.security_level())
-                        });
-
-                    // Check if there are eligible public keys without private keys
-                    let has_eligible_public_keys_without_private = qi
-                        .identity
-                        .public_keys()
-                        .iter()
-                        .any(|(_, pub_key)| {
-                            // Check if this public key meets the criteria
-                            let basic_ok = allowed_purposes.contains(&pub_key.purpose())
-                                && allowed_security_levels.contains(&pub_key.security_level());
-
-                            // Check if we don't have the private key for this public key
-                            let has_private = qi.private_keys
-                                .identity_public_keys()
-                                .iter()
-                                .any(|key_ref| key_ref.1.identity_public_key.id() == pub_key.id());
-
-                            basic_ok && !has_private
-                        });
-
+                if let Some(qi) = selected_identity.as_ref() {
+                    let (has_suitable_keys_with_private, has_eligible_public_keys_without_private) =
+                        key_eligibility(qi, &allowed_purposes, &allowed_security_levels);
                     if !is_dev_mode && !has_suitable_keys_with_private {
                         show_combo = false;
-                        // Show message and buttons in a proper group/frame
-                        ui.group(|ui| {
-                            ui.set_min_width(220.0); // Match the combo box width
-                            ui.vertical(|ui| {
-                                // Identity has eligible keys but private keys not loaded
-                                ui.label("⚠ No eligible key. This transaction type requires:");
-                                ui.label(format!("• {} key", transaction_type.label()));
-
-                                if has_eligible_public_keys_without_private {
-                                    ui.label(
-                                        "This Identity already has an eligible public key but the private key isn't loaded into Dash Evo Tool yet.",
-                                    );
-                                    ui.label("Go to the Identities screen to load an existing private key, or use the button below to add a new key:");
-                                }
-
-                                ui.add_space(5.0);
-
-                                // Always show option to add new key
-                                if ui.button("Add New Key to Identity").clicked() {
-                                    action = AppAction::AddScreen(Screen::AddKeyScreen(
-                                        AddKeyScreen::new(
-                                            qi.clone(),
-                                            app_context,
-                                        ),
-                                    ));
-                                }
-                            });
-                        });
+                        action = render_no_eligible_key_group(
+                            ui,
+                            app_context,
+                            qi,
+                            transaction_type,
+                            has_eligible_public_keys_without_private,
+                        );
                     }
                 }
 
                 if show_combo {
-                    ComboBox::from_id_salt("key_combo")
-                        .width(220.0)
-                        .selected_text(
-                            selected_key
-                                .as_ref()
-                                .map(format_key_label)
-                                .unwrap_or_else(|| "Select Key…".into()),
-                        )
-                        .show_ui(ui, |kui| {
-                            if let Some(qi) = selected_identity {
-                                let allowed_purposes = transaction_type.allowed_purposes();
-                                let allowed_security_levels =
-                                    compute_allowed_security_levels(transaction_type, document_type);
-
-                                for key_ref in qi.private_keys.identity_public_keys() {
-                                    let key = &key_ref.1.identity_public_key;
-
-                                    let is_allowed = is_dev_mode
-                                        || (allowed_purposes.contains(&key.purpose())
-                                            && allowed_security_levels.contains(&key.security_level()));
-
-                                    if is_allowed {
-                                        let is_dev_override = is_dev_mode
-                                            && (!allowed_purposes.contains(&key.purpose())
-                                                || !allowed_security_levels.contains(&key.security_level()));
-                                        let label = if is_dev_override {
-                                            format_key_label_dev(key)
-                                        } else {
-                                            format_key_label(key)
-                                        };
-
-                                        if kui
-                                            .selectable_label(selected_key.as_ref() == Some(key), label)
-                                            .clicked()
-                                        {
-                                            *selected_key = Some(key.clone());
-                                        }
-                                    }
-                                }
-                            } else {
-                                kui.label("Pick an identity first");
-                            }
-                        });
+                    render_key_combo(
+                        ui,
+                        "key_combo",
+                        220.0,
+                        selected_identity.as_ref(),
+                        selected_key,
+                        &allowed_purposes,
+                        &allowed_security_levels,
+                        is_dev_mode,
+                    );
                 }
             });
             ui.end_row();
@@ -714,7 +677,7 @@ pub fn add_contract_doc_type_chooser_with_filtering(
     selected_contract: &mut Option<QualifiedContract>,
     selected_doc_type: &mut Option<DocumentType>,
 ) {
-    let contracts = app_context.get_contracts(None, None).unwrap_or_default();
+    let contracts = app_context.get_contracts().unwrap_or_default();
     let search_term_lowercase = search_term.to_lowercase();
     let filtered = contracts.iter().filter(|qc| {
         contract_display_label(qc)
@@ -958,7 +921,6 @@ pub fn show_success_screen_with_info(
     info_section: Option<(&str, &str)>,
 ) -> AppAction {
     let mut action = AppAction::None;
-    let dark_mode = ui.style().visuals.dark_mode;
 
     ui.vertical_centered(|ui| {
         ui.add_space(if info_section.is_some() { 60.0 } else { 100.0 });
@@ -967,27 +929,7 @@ pub fn show_success_screen_with_info(
 
         // Optional info section (above buttons)
         if let Some((title, description)) = info_section {
-            ui.add_space(24.0);
-
-            let description_width = 500.0_f32.min(ui.available_width() - 40.0);
-            ui.allocate_ui_with_layout(
-                egui::Vec2::new(description_width, 0.0),
-                egui::Layout::top_down(egui::Align::Center),
-                |ui| {
-                    ui.label(
-                        egui::RichText::new(title)
-                            .size(16.0)
-                            .strong()
-                            .color(DashColors::text_primary(dark_mode)),
-                    );
-                    ui.add_space(8.0);
-                    ui.label(
-                        egui::RichText::new(description)
-                            .size(14.0)
-                            .color(DashColors::text_secondary(dark_mode)),
-                    );
-                },
-            );
+            render_info_section(ui, title, description);
         }
 
         ui.add_space(20.0);
@@ -1041,7 +983,6 @@ pub fn show_group_token_success_screen_with_fee(
     fee_info: Option<(&str, &str)>,
 ) -> AppAction {
     let mut action = AppAction::None;
-    let dark_mode = ui.style().visuals.dark_mode;
 
     ui.vertical_centered(|ui| {
         ui.add_space(if fee_info.is_some() { 60.0 } else { 100.0 });
@@ -1058,27 +999,7 @@ pub fn show_group_token_success_screen_with_fee(
 
         // Optional fee info section
         if let Some((title, description)) = fee_info {
-            ui.add_space(24.0);
-
-            let description_width = 500.0_f32.min(ui.available_width() - 40.0);
-            ui.allocate_ui_with_layout(
-                egui::Vec2::new(description_width, 0.0),
-                egui::Layout::top_down(egui::Align::Center),
-                |ui| {
-                    ui.label(
-                        egui::RichText::new(title)
-                            .size(16.0)
-                            .strong()
-                            .color(DashColors::text_primary(dark_mode)),
-                    );
-                    ui.add_space(8.0);
-                    ui.label(
-                        egui::RichText::new(description)
-                            .size(14.0)
-                            .color(DashColors::text_secondary(dark_mode)),
-                    );
-                },
-            );
+            render_info_section(ui, title, description);
         }
 
         ui.add_space(20.0);
@@ -1112,19 +1033,3 @@ pub fn show_group_token_success_screen_with_fee(
     });
     action
 }
-
-/// Check if a string looks like a Platform Bech32m address.
-///
-/// Delegates to [`is_platform_address_string`] which uses the canonical
-/// HRP constants and case-insensitive comparison.
-pub fn is_platform_address(s: &str) -> bool {
-    is_platform_address_string(s)
-}
-
-/// Human-readable hint for Platform address input fields.
-pub const PLATFORM_ADDRESS_HINT: &str =
-    "Enter a Platform address starting with \"dash1\" or \"tdash1\".";
-
-/// Example Platform address prefixes for error messages.
-pub const PLATFORM_ADDRESS_EXAMPLES: &str =
-    "Valid prefixes are \"dash1\" for mainnet and \"tdash1\" for testnet.";

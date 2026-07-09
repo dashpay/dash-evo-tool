@@ -28,20 +28,6 @@ use crate::model::masternode_input::{self, KeyMode};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::secret::Secret;
 
-/// Reject a blank `network` parameter with a friendly message.
-///
-/// `resolve::require_network` would compare an empty string against the active
-/// network and report a confusing `NetworkMismatch { expected: "" }`.  A blank
-/// value means "not provided", so we surface the clearer "required" message.
-fn require_nonblank_network(network: &str) -> Result<(), McpToolError> {
-    if network.trim().is_empty() {
-        return Err(McpToolError::InvalidParam {
-            message: "The network parameter is required.".to_owned(),
-        });
-    }
-    Ok(())
-}
-
 // ---------------------------------------------------------------------------
 // MasternodeIdentityLoad — load a masternode/evonode identity by ProTxHash
 // ---------------------------------------------------------------------------
@@ -151,15 +137,11 @@ impl AsyncTool<DashMcpService> for MasternodeIdentityLoad {
         service: &DashMcpService,
         param: MasternodeIdentityLoadParams,
     ) -> Result<MasternodeIdentityLoadOutput, McpToolError> {
-        let ctx = service
-            .ctx()
-            .await
-            .map_err(|e| McpToolError::Internal(e.to_string()))?;
+        let ctx = service.tool_ctx().await?;
 
         // ── Cheap pre-flight validation (before the SPV wait) ───────────────
         // Network presence/match, node type, key presence, and ProTxHash
         // format are all pure checks that reject without touching the network.
-        require_nonblank_network(&param.network)?;
         resolve::require_network(&ctx, Some(&param.network))?;
         let identity_type = masternode_input::parse_node_type(&param.node_type)?;
         // Keys are `Secret`-typed; presence check uses `is_blank()` so no
@@ -455,15 +437,11 @@ impl AsyncTool<DashMcpService> for MasternodeCreditsWithdraw {
         service: &DashMcpService,
         param: MasternodeCreditsWithdrawParams,
     ) -> Result<MasternodeCreditsWithdrawOutput, McpToolError> {
-        let ctx = service
-            .ctx()
-            .await
-            .map_err(|e| McpToolError::Internal(e.to_string()))?;
+        let ctx = service.tool_ctx().await?;
 
         // Cheap validation first, before the SPV wait.
-        require_nonblank_network(&param.network)?;
         resolve::require_network(&ctx, Some(&param.network))?;
-        resolve::validate_credits(param.amount_credits)?;
+        resolve::validate_positive_amount(param.amount_credits, "credits")?;
         let key_mode = masternode_input::parse_key_mode(&param.key_mode)?;
 
         // Surface the owner+address contradiction before resolving the identity
@@ -519,7 +497,7 @@ impl AsyncTool<DashMcpService> for MasternodeCreditsWithdraw {
             to_address: plan.echo_address.to_string(),
             amount_credits: param.amount_credits,
             estimated_fee: fee_result.estimated_fee,
-            actual_fee: fee_result.actual_fee,
+            actual_fee: fee_result.actual_fee.unwrap_or(fee_result.estimated_fee),
         })
     }
 }
@@ -641,29 +619,14 @@ mod tests {
         }
     }
 
-    // ── Blank-network guard (TC-MN-013) ──────────────────────────────────
-
-    #[test]
-    fn blank_network_rejected_with_required_message() {
-        for blank in ["", "   "] {
-            let err = require_nonblank_network(blank).unwrap_err();
-            assert!(matches!(err, McpToolError::InvalidParam { .. }));
-            assert_eq!(
-                err.to_string(),
-                "Invalid parameter: The network parameter is required."
-            );
-        }
-        assert!(require_nonblank_network("testnet").is_ok());
-    }
-
     // ── Tool B pure pre-flight checks (TC-MN-031/032/033/034/035) ─────────
 
     #[test]
     fn withdraw_amount_zero_rejected() {
-        // TC-MN-032 — delegated to the shared resolve::validate_credits.
-        let err = resolve::validate_credits(0).unwrap_err();
+        // TC-MN-032 — delegated to the shared resolve::validate_positive_amount.
+        let err = resolve::validate_positive_amount(0, "credits").unwrap_err();
         assert!(err.to_string().contains("greater than zero"), "got: {err}");
-        assert!(resolve::validate_credits(1).is_ok());
+        assert!(resolve::validate_positive_amount(1, "credits").is_ok());
     }
 
     #[test]
@@ -783,10 +746,11 @@ mod tests {
         use crate::backend_task::error::TaskError;
         use rmcp::ErrorData as McpError;
 
-        let err = McpToolError::TaskFailed(TaskError::KeyInputValidationFailed {
-            key_name: "Owner".to_owned(),
-            detail: "key is of incorrect size".to_owned(),
-        });
+        let err = McpToolError::TaskFailed(TaskError::KeyInputValidationFailed(
+            crate::model::key_input::KeyInputError::UnsupportedLength {
+                key_name: "Owner".to_owned(),
+            },
+        ));
 
         let mcp: McpError = err.into();
         let message = mcp.message.to_string();

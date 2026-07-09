@@ -271,7 +271,7 @@ Screens hold `Arc<AppContext>` and manage their own UI state.
 
 ### ConnectionStatus (single source of truth for connection health)
 
-`ConnectionStatus` (`src/context/connection_status.rs`) is the **single source of truth** for all high-level connection health state — RPC, ZMQ, SPV, and DAPI. For connection health (status, peer counts, errors, overall state), always read from `ConnectionStatus`, not directly from `SpvManager` or other subsystems.
+`ConnectionStatus` (`src/context/connection_status.rs`) is the **single source of truth** for all high-level connection health state — SPV and DAPI. For connection health (status, peer counts, errors, overall state), always read from `ConnectionStatus`, not directly from `SpvManager` or other subsystems.
 
 SPV status is **push-based**: `SpvManager` event handlers write directly to `ConnectionStatus` atomics (status, peer count, errors) as events arrive. The UI frame loop calls `refresh_state()` to recompute `overall_state` from these atomics, but does not poll SPV for health. This means `ConnectionStatus` is up-to-date in both GUI and headless/test contexts. Detailed SPV sync progress (heights, phase summaries used by tooltips) may still be read directly from `SpvManager.status()` until that progress reporting is migrated into `ConnectionStatus`.
 
@@ -327,4 +327,4 @@ Single SQLite connection wrapped in `Mutex<Connection>`. Schema initialized in `
 
 Linux (x86_64/aarch64), Windows (x86_64), macOS (x86_64/aarch64 with code signing)
 
-Requires protoc v25.2+ for protocol buffer compilation. Different ZMQ libraries for Windows (`zeromq`) vs Unix (`zmq`).
+Requires protoc v25.2+ for protocol buffer compilation.

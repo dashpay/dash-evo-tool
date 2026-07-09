@@ -4,8 +4,8 @@ use crate::app::TaskResult;
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
-use crate::model::proof_log_item::RequestType;
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::request_type::RequestType;
 use dash_sdk::Sdk;
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
 use dash_sdk::dpp::document::DocumentV0Getters;
@@ -47,14 +47,18 @@ impl AppContext {
             builder = builder.with_state_transition_creation_options(options);
         }
 
-        let result = sdk
-            .token_transfer(builder, &signing_key, sending_identity)
-            .await
-            .map_err(|e| self.log_drive_proof_error(e, RequestType::BroadcastStateTransition))?;
-
-        // Using the result, update the balance of both sender and recipient identities
-        if let Some(token_id) = data_contract.token_id(token_position) {
-            match result {
+        self.execute_token_op(
+            async {
+                sdk.token_transfer(builder, &signing_key, sending_identity)
+                    .await
+                    .map_err(|e| {
+                        self.log_drive_proof_error(e, RequestType::BroadcastStateTransition)
+                    })
+            },
+            |result| {
+                // Using the result, update the balance of both sender and recipient identities
+                if let Some(token_id) = data_contract.token_id(token_position) {
+                    match result {
                 // Standard transfer result - update balances from map
                 TransferResult::IdentitiesBalances(balances_map) => {
                     for (identity_id, balance) in balances_map {
@@ -168,15 +172,13 @@ impl AppContext {
                     }
                 }
 
-                // Other variants don't require balance updates
-                _ => {}
-            }
-        }
-
-        // Return success with fee result
-        use crate::backend_task::FeeResult;
-        let estimated_fee = self.fee_estimator().estimate_document_batch(1);
-        let fee_result = FeeResult::new(estimated_fee, estimated_fee);
-        Ok(BackendTaskSuccessResult::TransferredTokens(fee_result))
+                        // Other variants don't require balance updates
+                        _ => {}
+                    }
+                }
+            },
+            BackendTaskSuccessResult::TransferredTokens,
+        )
+        .await
     }
 }

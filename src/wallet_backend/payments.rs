@@ -1,13 +1,12 @@
-//! Payment, asset-lock, and broadcast operations on [`WalletBackend`] — the
-//! funds-signing path.
+//! Payment and asset-lock operations on [`WalletBackend`] — the funds-signing
+//! path.
 //!
 //! Every seed-bearing operation here opens a single just-in-time
 //! [`SecretAccess`](super::SecretAccess) session so the HD seed is decrypted
 //! once, borrowed by the [`DetSigner`] for signing, and zeroized when the
 //! scope ends. `send_payment` builds and broadcasts a BIP-44 payment;
 //! `create_asset_lock_proof` builds a non-identity asset lock and returns its
-//! one-time credit-output key; `broadcast_transaction` is the network-level
-//! raw-tx broadcast used for asset locks built outside the per-wallet path.
+//! one-time credit-output key.
 
 use crate::backend_task::error::TaskError;
 use crate::model::wallet::WalletSeedHash;
@@ -15,23 +14,6 @@ use crate::model::wallet::WalletSeedHash;
 use super::{DEFAULT_BIP44_ACCOUNT, DetSigner, SecretPlaintext, WalletBackend};
 
 impl WalletBackend {
-    /// Broadcast a raw transaction over the network via the upstream
-    /// `SpvRuntime`. Network-level (not tied to a specific wallet); used for
-    /// asset-lock transactions built outside the per-wallet send path.
-    pub async fn broadcast_transaction(
-        &self,
-        tx: &dash_sdk::dpp::dashcore::Transaction,
-    ) -> Result<dash_sdk::dpp::dashcore::Txid, TaskError> {
-        use platform_wallet::broadcaster::{SpvBroadcaster, TransactionBroadcaster};
-        let broadcaster = SpvBroadcaster::new(self.inner.pwm.spv_arc());
-        broadcaster
-            .broadcast(tx)
-            .await
-            .map_err(|e| TaskError::WalletBackend {
-                source: Box::new(e.into()),
-            })
-    }
-
     /// Derive the secp256k1 [`PrivateKey`](dash_sdk::dpp::dashcore::PrivateKey) at `path` from a held HD seed.
     /// Used after `create_asset_lock_proof` to obtain the one-time
     /// credit-output key needed to sign DET-retained non-identity state

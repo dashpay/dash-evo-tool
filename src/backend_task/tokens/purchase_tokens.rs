@@ -2,8 +2,8 @@ use crate::app::TaskResult;
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
-use crate::model::proof_log_item::RequestType;
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::request_type::RequestType;
 use dash_sdk::Sdk;
 use dash_sdk::dpp::balances::credits::TokenAmount;
 use dash_sdk::dpp::data_contract::accessors::v1::DataContractV1Getters;
@@ -41,79 +41,93 @@ impl AppContext {
             builder = builder.with_state_transition_creation_options(options);
         }
 
-        let result = sdk
-            .token_purchase(builder, &signing_key, sending_identity)
-            .await
-            .map_err(|e| self.log_drive_proof_error(e, RequestType::BroadcastStateTransition))?;
+        self.execute_token_op(
+            async {
+                sdk.token_purchase(builder, &signing_key, sending_identity)
+                    .await
+                    .map_err(|e| {
+                        self.log_drive_proof_error(e, RequestType::BroadcastStateTransition)
+                    })
+            },
+            |result| {
+                // Update token balance from the proof-verified result
+                if let Some(token_id) = data_contract.token_id(token_position) {
+                    match result {
+                        // Standard purchase result - update purchaser's balance
+                        DirectPurchaseResult::TokenBalance(identity_id, balance) => {
+                            tracing::info!(
+                                "PurchaseTokens: identity {} new balance {}",
+                                identity_id,
+                                balance
+                            );
+                            if let Err(e) =
+                                self.insert_token_identity_balance(&token_id, &identity_id, balance)
+                            {
+                                tracing::warn!("Failed to update token balance: {}", e);
+                            }
+                        }
 
-        // Update token balance from the proof-verified result
-        if let Some(token_id) = data_contract.token_id(token_position) {
-            match result {
-                // Standard purchase result - update purchaser's balance
-                DirectPurchaseResult::TokenBalance(identity_id, balance) => {
-                    tracing::info!(
-                        "PurchaseTokens: identity {} new balance {}",
-                        identity_id,
-                        balance
-                    );
-                    if let Err(e) =
-                        self.insert_token_identity_balance(&token_id, &identity_id, balance)
-                    {
-                        tracing::warn!("Failed to update token balance: {}", e);
+                        // Historical document - extract purchaser and balance from document
+                        DirectPurchaseResult::HistoricalDocument(document) => {
+                            tracing::info!(
+                                "PurchaseTokens: historical document id={}",
+                                document.id()
+                            );
+                            if let (Some(purchaser_value), Some(balance_value)) =
+                                (document.get("purchaserId"), document.get("balance"))
+                                && let (Value::Identifier(purchaser_bytes), Value::U64(balance)) =
+                                    (purchaser_value, balance_value)
+                                && let Ok(purchaser_id) = Identifier::from_bytes(purchaser_bytes)
+                                && let Err(e) = self.insert_token_identity_balance(
+                                    &token_id,
+                                    &purchaser_id,
+                                    *balance,
+                                )
+                            {
+                                tracing::warn!(
+                                    "Failed to update token balance from historical document: {}",
+                                    e
+                                );
+                            }
+                        }
+
+                        // Group action with document
+                        DirectPurchaseResult::GroupActionWithDocument(power, Some(document)) => {
+                            tracing::info!(
+                                "PurchaseTokens: group action power={}, doc_id={}",
+                                power,
+                                document.id()
+                            );
+                            if let (Some(purchaser_value), Some(balance_value)) =
+                                (document.get("purchaserId"), document.get("balance"))
+                                && let (Value::Identifier(purchaser_bytes), Value::U64(balance)) =
+                                    (purchaser_value, balance_value)
+                                && let Ok(purchaser_id) = Identifier::from_bytes(purchaser_bytes)
+                                && let Err(e) = self.insert_token_identity_balance(
+                                    &token_id,
+                                    &purchaser_id,
+                                    *balance,
+                                )
+                            {
+                                tracing::warn!(
+                                    "Failed to update token balance from group action document: {}",
+                                    e
+                                );
+                            }
+                        }
+
+                        // Group action without document - no balance to update
+                        DirectPurchaseResult::GroupActionWithDocument(power, None) => {
+                            tracing::info!(
+                                "PurchaseTokens: group action power={}, no document",
+                                power
+                            );
+                        }
                     }
                 }
-
-                // Historical document - extract purchaser and balance from document
-                DirectPurchaseResult::HistoricalDocument(document) => {
-                    tracing::info!("PurchaseTokens: historical document id={}", document.id());
-                    if let (Some(purchaser_value), Some(balance_value)) =
-                        (document.get("purchaserId"), document.get("balance"))
-                        && let (Value::Identifier(purchaser_bytes), Value::U64(balance)) =
-                            (purchaser_value, balance_value)
-                        && let Ok(purchaser_id) = Identifier::from_bytes(purchaser_bytes)
-                        && let Err(e) =
-                            self.insert_token_identity_balance(&token_id, &purchaser_id, *balance)
-                    {
-                        tracing::warn!(
-                            "Failed to update token balance from historical document: {}",
-                            e
-                        );
-                    }
-                }
-
-                // Group action with document
-                DirectPurchaseResult::GroupActionWithDocument(power, Some(document)) => {
-                    tracing::info!(
-                        "PurchaseTokens: group action power={}, doc_id={}",
-                        power,
-                        document.id()
-                    );
-                    if let (Some(purchaser_value), Some(balance_value)) =
-                        (document.get("purchaserId"), document.get("balance"))
-                        && let (Value::Identifier(purchaser_bytes), Value::U64(balance)) =
-                            (purchaser_value, balance_value)
-                        && let Ok(purchaser_id) = Identifier::from_bytes(purchaser_bytes)
-                        && let Err(e) =
-                            self.insert_token_identity_balance(&token_id, &purchaser_id, *balance)
-                    {
-                        tracing::warn!(
-                            "Failed to update token balance from group action document: {}",
-                            e
-                        );
-                    }
-                }
-
-                // Group action without document - no balance to update
-                DirectPurchaseResult::GroupActionWithDocument(power, None) => {
-                    tracing::info!("PurchaseTokens: group action power={}, no document", power);
-                }
-            }
-        }
-
-        // Return success with fee result
-        use crate::backend_task::FeeResult;
-        let estimated_fee = self.fee_estimator().estimate_document_batch(1);
-        let fee_result = FeeResult::new(estimated_fee, estimated_fee);
-        Ok(BackendTaskSuccessResult::PurchasedTokens(fee_result))
+            },
+            BackendTaskSuccessResult::PurchasedTokens,
+        )
+        .await
     }
 }

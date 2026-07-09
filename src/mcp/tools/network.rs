@@ -55,10 +55,7 @@ impl AsyncTool<DashMcpService> for NetworkTool {
         service: &DashMcpService,
         _param: EmptyParams,
     ) -> Result<NetworkOutput, McpToolError> {
-        let ctx = service
-            .ctx()
-            .await
-            .map_err(|e| McpToolError::Internal(e.to_string()))?;
+        let ctx = service.tool_ctx().await?;
         let active = network_display_name(ctx.network()).to_owned();
 
         let config = crate::config::Config::load_from(ctx.data_dir())
@@ -125,10 +122,7 @@ impl AsyncTool<DashMcpService> for NetworkReinitSdk {
         service: &DashMcpService,
         param: ReinitSdkParams,
     ) -> Result<ReinitSdkOutput, McpToolError> {
-        let ctx = service
-            .ctx()
-            .await
-            .map_err(|e| McpToolError::Internal(e.to_string()))?;
+        let ctx = service.tool_ctx().await?;
         resolve::require_network(&ctx, Some(&param.network))?;
 
         let task = BackendTask::ReinitCoreClientAndSdk;
@@ -218,10 +212,7 @@ impl AsyncTool<DashMcpService> for NetworkSwitch {
     ) -> Result<NetworkSwitchOutput, McpToolError> {
         let target = parse_network(&param.network)?;
 
-        let ctx = service
-            .ctx()
-            .await
-            .map_err(|e| McpToolError::Internal(e.to_string()))?;
+        let ctx = service.tool_ctx().await?;
 
         // Already on the target network — no-op.
         if ctx.network() == target {

@@ -10,11 +10,8 @@ pub mod avatar_processing;
 pub mod contact_info;
 pub mod contact_requests;
 pub mod contacts;
-pub mod dip14_derivation;
 pub mod encryption;
-pub mod encryption_tests;
 pub mod errors;
-pub mod hd_derivation;
 pub mod incoming_payments;
 pub mod payments;
 pub mod profile;
@@ -54,6 +51,12 @@ pub enum DashPayTask {
         identity: QualifiedIdentity,
         contact_id: Identifier,
     },
+    /// Fetch an avatar image for a URL, consulting and populating the DET avatar
+    /// disk cache. Off the egui frame loop; the result flows back to the
+    /// screen's [`AvatarCache`](crate::ui::state::avatar_cache::AvatarCache).
+    FetchAvatar {
+        url: String,
+    },
     SearchProfiles {
         search_query: String,
     },
@@ -84,7 +87,7 @@ pub enum DashPayTask {
     SendPaymentToContact {
         identity: QualifiedIdentity,
         contact_id: Identifier,
-        amount_dash: f64,
+        amount_duffs: u64,
         memo: Option<String>,
     },
     UpdateContactInfo {
@@ -148,6 +151,10 @@ impl AppContext {
                 identity,
                 contact_id,
             } => Ok(profile::fetch_contact_profile(self, sdk, identity, contact_id).await?),
+            DashPayTask::FetchAvatar { url } => {
+                let bytes = avatar_processing::fetch_avatar_cached(self, &url).await;
+                Ok(BackendTaskSuccessResult::DashPayAvatar { url, bytes })
+            }
             DashPayTask::SearchProfiles { search_query } => {
                 Ok(profile::search_profiles(self, sdk, search_query).await?)
             }
@@ -208,18 +215,11 @@ impl AppContext {
                     );
                 }
 
-                let records = payments::load_payment_history(self, &identity_id, None)
-                    .await
-                    .map_err(
-                        |e| crate::backend_task::dashpay::errors::DashPayError::Internal {
-                            message: e,
-                        },
-                    )?;
+                let records = payments::load_payment_history(self, &identity_id, None).await?;
 
-                // Post-D4c: the WalletBackend DashPay adapter is the sole
-                // source of truth for contacts. Pre-wire (e.g. cold start)
-                // we surface an empty list rather than reading from DET —
-                // a missing backend simply means "not loaded yet".
+                // The WalletBackend DashPay adapter is the sole source of truth
+                // for contacts. Before it is wired (e.g. cold start) we surface
+                // an empty list — a missing backend means "not loaded yet".
                 let contacts = match self.wallet_backend() {
                     Ok(backend) => backend.dashpay_view().contacts(&identity_id).await,
                     Err(_) => Vec::new(),
@@ -263,15 +263,15 @@ impl AppContext {
             DashPayTask::SendPaymentToContact {
                 identity,
                 contact_id,
-                amount_dash,
+                amount_duffs,
                 memo,
             } => {
-                payments::send_payment_to_contact_impl(
+                payments::send_payment_to_contact(
                     self,
                     sdk,
                     identity,
                     contact_id,
-                    amount_dash,
+                    amount_duffs,
                     memo,
                 )
                 .await
@@ -297,23 +297,13 @@ impl AppContext {
             DashPayTask::RegisterDashPayAddresses { identity } => {
                 let result =
                     incoming_payments::register_dashpay_addresses_for_identity(self, &identity)
-                        .await
-                        .map_err(|e| {
-                            crate::backend_task::dashpay::errors::DashPayError::Internal {
-                                message: e,
-                            }
-                        })?;
+                        .await?;
 
-                Ok(BackendTaskSuccessResult::Message(format!(
-                    "Registered {} DashPay addresses for {} contacts{}",
-                    result.addresses_registered,
-                    result.contacts_processed,
-                    if result.errors.is_empty() {
-                        String::new()
-                    } else {
-                        format!(" ({} errors)", result.errors.len())
-                    }
-                )))
+                Ok(BackendTaskSuccessResult::DashPayAddressesRegistered {
+                    addresses: result.addresses_registered,
+                    contacts: result.contacts_processed,
+                    errors: result.errors.len(),
+                })
             }
             DashPayTask::DetectIncomingContactPayments { outputs } => {
                 let recorded =
@@ -334,10 +324,7 @@ impl AppContext {
                     account_reference,
                     validity_hours,
                 )
-                .await
-                .map_err(|message| {
-                    crate::backend_task::dashpay::errors::DashPayError::Internal { message }
-                })?;
+                .await?;
                 Ok(BackendTaskSuccessResult::DashPayAutoAcceptQrCode(
                     proof.to_qr_string(),
                 ))

@@ -425,7 +425,7 @@ impl ContactRequests {
             } else {
                 egui::Color32::DARK_RED
             };
-            let error_msg = err.user_message();
+            let error_msg = err.to_string();
             let is_missing_encryption_key = matches!(err, DashPayError::MissingEncryptionKey);
 
             ui.group(|ui| {
@@ -895,7 +895,13 @@ impl ScreenLike for ContactRequests {
                 self.has_fetched_requests = true;
 
                 // Get current identity for saving to database
-                let current_identity_id = self.selected_identity.as_ref().unwrap().identity.id();
+                let Some(selected_identity) = self.selected_identity.as_ref() else {
+                    tracing::warn!(
+                        "Contact requests arrived with no selected identity; skipping save"
+                    );
+                    return;
+                };
+                let current_identity_id = selected_identity.identity.id();
 
                 // Process incoming requests
                 for (id, doc) in incoming.iter() {

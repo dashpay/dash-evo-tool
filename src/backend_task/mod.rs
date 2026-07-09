@@ -28,7 +28,6 @@ use dash_sdk::dpp::prelude::DataContract;
 use dash_sdk::dpp::state_transition::StateTransition;
 use dash_sdk::dpp::tokens::token_pricing_schedule::TokenPricingSchedule;
 use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
-use dash_sdk::dpp::voting::votes::Vote;
 use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::Start;
 use dash_sdk::platform::{Document, Identifier};
 use dash_sdk::query_types::{Documents, IndexMap};
@@ -58,9 +57,6 @@ pub mod system_task;
 pub mod tokens;
 pub mod update_data_contract;
 pub mod wallet;
-
-// TODO: Refactor how we handle errors and messages, and remove it from here
-pub(crate) const NO_IDENTITIES_FOUND: &str = "No identities found";
 
 /// Returns `true` for backend tasks that read or write the
 /// `WalletBackend` (and therefore the upstream `SecretStore` / sidecar
@@ -95,20 +91,30 @@ fn is_terminal_storage_open_error(error: &TaskError) -> bool {
     )
 }
 
-/// Information about fees paid for a platform state transition
+/// Information about fees for a platform state transition.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FeeResult {
-    /// The fee that was estimated before the operation
+    /// The fee that was estimated before the operation.
     pub estimated_fee: u64,
-    /// The actual fee that was paid (in credits)
-    pub actual_fee: u64,
+    /// The actual fee paid, in credits. `None` when the operation only knows
+    /// the estimate (the platform did not report a settled fee).
+    pub actual_fee: Option<u64>,
 }
 
 impl FeeResult {
+    /// Records both an estimate and the settled actual fee.
     pub fn new(estimated_fee: u64, actual_fee: u64) -> Self {
         Self {
             estimated_fee,
-            actual_fee,
+            actual_fee: Some(actual_fee),
+        }
+    }
+
+    /// Records only the estimate; no actual fee is known.
+    pub fn estimated_only(estimated_fee: u64) -> Self {
+        Self {
+            estimated_fee,
+            actual_fee: None,
         }
     }
 }
@@ -178,17 +184,16 @@ pub enum BackendTaskSuccessResult {
     },
 
     // Specific results
-    #[allow(dead_code)] // May be used for individual document operations
-    Document(Document),
     Documents(Documents),
     BroadcastedDocument(Document),
     CoreItem(CoreItem),
     RegisteredIdentity(QualifiedIdentity, FeeResult),
     ToppedUpIdentity(QualifiedIdentity, FeeResult),
-    #[allow(dead_code)] // May be used for reporting successful votes
-    SuccessfulVotes(Vec<Vote>),
-    DPNSVoteResults(Vec<(String, ResourceVoteChoice, Result<(), String>)>),
+    DPNSVoteResults(Vec<(String, ResourceVoteChoice, Result<(), Arc<TaskError>>)>),
     CastScheduledVote(ScheduledDPNSVote),
+    /// The scheduled votes that the `CastDueScheduledVotes` sweep is about to
+    /// cast this cycle, so the Scheduled Votes screen can mark them in progress.
+    ScheduledVotesInProgress(Vec<ScheduledDPNSVote>),
     FetchedContract(DataContract),
     FetchedContractWithTokenPosition(
         DataContract,
@@ -196,8 +201,6 @@ pub enum BackendTaskSuccessResult {
     ),
     FetchedContracts(Vec<Option<DataContract>>),
     PageDocuments(IndexMap<Identifier, Option<Document>>, Option<Start>),
-    #[allow(dead_code)] // May be used for token search results
-    TokensByKeyword(Vec<TokenInfo>, Option<Start>),
     DescriptionsByKeyword(Vec<ContractDescriptionInfo>, Option<Start>),
     TokenEstimatedNonClaimedPerpetualDistributionAmountWithExplanation(
         IdentityTokenIdentifier,
@@ -232,7 +235,14 @@ pub enum BackendTaskSuccessResult {
     DashPayContactRequestRejected(Identifier), // Request ID that was rejected
     DashPayContactAlreadyEstablished(Identifier), // Contact ID that already exists
     DashPayContactInfoUpdated(Identifier), // Contact ID whose info was updated
-    DashPayPaymentSent(String, String, f64), // (recipient, address, amount)
+    DashPayPaymentSent(String, String, u64), // (recipient, address, amount in duffs)
+    /// Result of a [`FetchAvatar`](crate::backend_task::dashpay::DashPayTask::FetchAvatar):
+    /// the validated image bytes for `url`, or `None` when the fetch failed. Routed
+    /// into the screen's avatar fetch cache keyed by `url`.
+    DashPayAvatar {
+        url: String,
+        bytes: Option<Vec<u8>>,
+    },
     /// Received outputs the `EventBridge` saw on a freshly-detected wallet
     /// transaction. The app dispatches `DetectIncomingContactPayments` for
     /// these — the backend resolves each against the per-identity DashPay
@@ -466,9 +476,24 @@ pub enum BackendTaskSuccessResult {
         count: usize,
         addresses_csv: String,
     },
-}
 
-impl BackendTaskSuccessResult {}
+    /// An asset-lock funding transaction was broadcast successfully.
+    AssetLockBroadcast {
+        txid: String,
+    },
+
+    /// DashPay contact receiving addresses were registered for an identity.
+    DashPayAddressesRegistered {
+        addresses: usize,
+        contacts: usize,
+        errors: usize,
+    },
+
+    /// Identities were discovered and loaded from a wallet by index search.
+    IdentitiesLoaded {
+        count: u32,
+    },
+}
 
 impl AppContext {
     /// Run backend tasks sequentially
@@ -479,10 +504,7 @@ impl AppContext {
     ) -> Vec<Result<BackendTaskSuccessResult, TaskError>> {
         let mut results = Vec::new();
         for task in tasks {
-            match self.run_backend_task(task, sender.clone()).await {
-                Ok(result) => results.push(Ok(result)),
-                Err(e) => results.push(Err(e)),
-            };
+            results.push(self.run_backend_task(task, sender.clone()).await);
         }
         results
     }
@@ -614,10 +636,7 @@ impl AppContext {
                         secret_store,
                     )
                 })
-                .ok_or(TaskError::NetworkContextCreationFailed {
-                    network,
-                    detail: "AppContext::new() returned None".into(),
-                })?;
+                .ok_or(TaskError::NetworkContextCreationFailed { network })?;
 
                 // Wire the freshly-built context's wallet backend and then start
                 // chain sync. The old code called `start_spv()` on an unwired
@@ -804,7 +823,7 @@ mod tests {
             WalletTask::GenerateReceiveAddress { seed_hash },
         )));
         assert!(is_wallet_touching(&BackendTask::CoreTask(
-            CoreTask::GetBestChainLock,
+            CoreTask::GetBestChainLocks,
         )));
         assert!(is_wallet_touching(&BackendTask::ShieldedTask(
             shielded::ShieldedTask::ShieldFromBalance {

@@ -26,163 +26,55 @@
 use std::sync::Arc;
 
 use dash_sdk::dpp::dashcore::Network;
-use dash_sdk::dpp::dashcore::base58;
 
 use crate::backend_task::error::TaskError;
 use crate::model::wallet::WalletSeedHash;
 use crate::model::wallet::meta::{WalletMeta, WalletMetaV1};
-use crate::wallet_backend::kv::KvAdapterError;
-use crate::wallet_backend::{DetKv, DetScope};
+use crate::wallet_backend::DetKv;
+use crate::wallet_backend::kv::{KvAdapterError, map_kv_storage_error};
+#[cfg(test)]
+use crate::wallet_backend::sidecar::sidecar_key;
+use crate::wallet_backend::sidecar::{SidecarScope, SidecarValue, SidecarView};
 
 /// Colon-separated namespace shared across networks. The full key is
-/// `<network>:wallet_meta:<seed_hash_base58>` — the prefix below is
-/// the cross-network shape used by [`list`](WalletMetaView::list).
+/// `<network>:wallet_meta:<seed_hash_base58>`.
 pub(crate) const KEY_INFIX: &str = ":wallet_meta:";
 
-/// Build the canonical k/v key for a wallet's metadata blob.
+/// Build the canonical k/v key for a wallet's metadata blob. The generic view
+/// builds keys itself; this mirror exists for key-shape tests.
+#[cfg(test)]
 pub(crate) fn key_for(network: Network, seed_hash: &WalletSeedHash) -> String {
-    let net = network_prefix(network);
-    let hash = base58::encode_slice(seed_hash);
-    format!("{net}{KEY_INFIX}{hash}")
+    sidecar_key(network, KEY_INFIX, seed_hash)
 }
 
-/// Cross-network prefix `<network>:` used by every entry key. Matches
-/// the network display convention already in
-/// `src/wallet_backend/mod.rs::resolve_spv_storage_dir` so the same
-/// vocabulary appears in both the on-disk path and the k/v keys.
-fn network_prefix(network: Network) -> &'static str {
-    match network {
-        Network::Mainnet => "mainnet",
-        Network::Testnet => "testnet",
-        Network::Devnet => "devnet",
-        Network::Regtest => "regtest",
-    }
-}
-
-/// Build the `<network>:wallet_meta:` prefix used to enumerate every
-/// wallet meta entry for a single network.
-fn prefix_for(network: Network) -> String {
-    format!("{}{KEY_INFIX}", network_prefix(network))
-}
-
-/// View borrowing a shared [`DetKv`] handle. Cheap to construct, so
-/// callers can build one per operation rather than threading it.
-pub struct WalletMetaView<'a> {
-    kv: &'a Arc<DetKv>,
-}
-
-impl<'a> WalletMetaView<'a> {
-    /// Borrow a [`DetKv`] handle as a typed wallet-metadata view. Kept
-    /// `pub` so benches and downstream tooling can build the view
-    /// without going through [`WalletBackend::wallet_meta`].
-    pub fn new(kv: &'a Arc<DetKv>) -> Self {
-        Self { kv }
-    }
-
-    /// All `(seed_hash, meta)` pairs persisted for `network`.
-    ///
-    /// Decode errors on individual entries are logged and skipped so a
-    /// single corrupt row cannot poison the picker; the wallet listing
-    /// degrades to "name unknown" rather than refusing to open the
-    /// app. The same key parser is used by both the cross-network
-    /// listing and the one-shot migration writer (T-W-00) so a key
-    /// shape change forces a review here.
-    pub fn list(&self, network: Network) -> Vec<(WalletSeedHash, WalletMeta)> {
-        let prefix = prefix_for(network);
-        let keys = match self.kv.list(DetScope::Global, Some(&prefix)) {
-            Ok(k) => k,
-            Err(e) => {
-                tracing::warn!(
-                    target = "wallet_backend::wallet_meta",
-                    network = ?network,
-                    error = ?e,
-                    "Failed to list wallet-meta keys; returning empty list",
-                );
-                return Vec::new();
-            }
-        };
-        let mut out = Vec::with_capacity(keys.len());
-        for key in keys {
-            let Some(hash) = parse_seed_hash(&key, &prefix) else {
-                tracing::warn!(
-                    target = "wallet_backend::wallet_meta",
-                    key = %key,
-                    "Skipping wallet-meta key with non-base58 seed-hash suffix",
-                );
-                continue;
-            };
-            match self.read_meta(&key) {
-                Ok(Some(meta)) => out.push((hash, meta)),
-                Ok(None) => {}
-                Err(e) => {
-                    tracing::warn!(
-                        target = "wallet_backend::wallet_meta",
-                        key = %key,
-                        error = ?e,
-                        "Skipping unreadable wallet-meta blob",
-                    );
-                }
-            }
-        }
-        out
-    }
-
-    /// Fetch the metadata for a single wallet. `None` when the key is
-    /// absent or the blob fails to decode (logged).
-    pub fn get(&self, network: Network, seed_hash: &WalletSeedHash) -> Option<WalletMeta> {
-        let key = key_for(network, seed_hash);
-        match self.read_meta(&key) {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::warn!(
-                    target = "wallet_backend::wallet_meta",
-                    key = %key,
-                    error = ?e,
-                    "Failed to read wallet meta; treating as absent",
-                );
-                None
-            }
-        }
-    }
-
-    /// Upsert the metadata for a single wallet. Re-writing the same
-    /// value is a no-op-effective write (DetKv upserts by key). Written in the
-    /// current `WalletMeta` shape directly through the `DetKv` schema envelope.
-    pub fn set(
-        &self,
-        network: Network,
-        seed_hash: &WalletSeedHash,
-        meta: &WalletMeta,
-    ) -> Result<(), TaskError> {
-        let key = key_for(network, seed_hash);
-        self.kv
-            .put(DetScope::Global, &key, meta)
-            .map_err(map_kv_error_to_task_error)
-    }
-
+impl SidecarValue for WalletMeta {
     /// Read a single wallet-meta blob with a dual-format fallback. Tries the
     /// current 6-field [`WalletMeta`] shape first; on a decode failure (an old
     /// 4-field blob runs out of bytes for the appended fields) falls back to the
     /// legacy [`WalletMetaV1`] shape and RE-STORES it in the current shape
     /// (one-shot migration). `Ok(None)` when the key is absent.
-    fn read_meta(&self, key: &str) -> Result<Option<WalletMeta>, KvAdapterError> {
+    fn read(
+        kv: &DetKv,
+        scope: crate::wallet_backend::DetScope<'_>,
+        key: &str,
+    ) -> Result<Option<Self>, KvAdapterError> {
         // New shape first. The DetKv schema-version mismatch is a hard error
         // (propagate); only a bincode *decode* failure means "try legacy".
-        match self.kv.get::<WalletMeta>(DetScope::Global, key) {
+        match kv.get::<WalletMeta>(scope, key) {
             Ok(opt) => return Ok(opt),
             Err(KvAdapterError::Decode(_)) => {}
             Err(e) => return Err(e),
         }
         // Legacy 4-field shape. A success here is an old blob: migrate it.
-        let Some(v1) = self.kv.get::<WalletMetaV1>(DetScope::Global, key)? else {
+        let Some(v1) = kv.get::<WalletMetaV1>(scope, key)? else {
             return Ok(None);
         };
         let migrated: WalletMeta = v1.into();
-        if let Err(e) = self.kv.put(DetScope::Global, key, &migrated) {
+        if let Err(e) = kv.put(scope, key, &migrated) {
             // Re-store is best-effort: the in-memory value is correct this
             // session; the next read retries the migration.
             tracing::warn!(
-                target = "wallet_backend::wallet_meta",
+                target: "wallet_backend::wallet_meta",
                 key = %key,
                 error = ?e,
                 "Could not re-store migrated wallet meta; will retry next read",
@@ -190,14 +82,58 @@ impl<'a> WalletMetaView<'a> {
         }
         Ok(Some(migrated))
     }
+}
+
+/// Typed wallet-metadata sidecar (T-W-00). A thin wrapper over the generic
+/// [`SidecarView`]: metadata (`alias` / `is_main` / `core_wallet_name` / xpub /
+/// password fields) is `Global`-scoped because the picker renders it before any
+/// wallet is registered with `PlatformWalletManager` — so per-wallet scope is
+/// unavailable and the seed hash is the stable DET-level key. Reads degrade to
+/// `None`/skip on a corrupt blob (with a legacy-format fallback, see
+/// [`SidecarValue::read`]) so the picker never blocks.
+pub struct WalletMetaView<'a>(SidecarView<'a, WalletMeta>);
+
+impl<'a> WalletMetaView<'a> {
+    /// Borrow a [`DetKv`] handle as a typed wallet-metadata view. Kept
+    /// `pub` so benches and downstream tooling can build the view
+    /// without going through [`WalletBackend::wallet_meta`].
+    pub fn new(kv: &'a Arc<DetKv>) -> Self {
+        Self(SidecarView::new(
+            kv,
+            KEY_INFIX,
+            SidecarScope::Global,
+            map_kv_error_to_task_error,
+        ))
+    }
+
+    /// All `(seed_hash, meta)` pairs persisted for `network`. A single corrupt
+    /// row is logged and skipped so the wallet listing degrades to "name
+    /// unknown" rather than refusing to open the app.
+    pub fn list(&self, network: Network) -> Vec<(WalletSeedHash, WalletMeta)> {
+        self.0.list(network)
+    }
+
+    /// Fetch the metadata for a single wallet. `None` when the key is
+    /// absent or the blob fails to decode (logged).
+    pub fn get(&self, network: Network, seed_hash: &WalletSeedHash) -> Option<WalletMeta> {
+        self.0.get(network, seed_hash)
+    }
+
+    /// Upsert the metadata for a single wallet. Re-writing the same value is an
+    /// idempotent overwrite (DetKv upserts by key).
+    pub fn set(
+        &self,
+        network: Network,
+        seed_hash: &WalletSeedHash,
+        meta: &WalletMeta,
+    ) -> Result<(), TaskError> {
+        self.0.set(network, seed_hash, meta)
+    }
 
     /// Delete the metadata for a single wallet. Idempotent — a
     /// missing key returns `Ok(())`.
     pub fn delete(&self, network: Network, seed_hash: &WalletSeedHash) -> Result<(), TaskError> {
-        let key = key_for(network, seed_hash);
-        self.kv
-            .delete(DetScope::Global, &key)
-            .map_err(map_kv_error_to_task_error)
+        self.0.delete(network, seed_hash)
     }
 }
 
@@ -206,25 +142,19 @@ impl<'a> WalletMetaView<'a> {
 /// matches the surface ("wallet details") rather than the more
 /// generic upstream wallet-storage one.
 fn map_kv_error_to_task_error(e: KvAdapterError) -> TaskError {
-    TaskError::KvSidecarStorage {
+    map_kv_storage_error(e, |source| TaskError::KvSidecarStorage {
         sidecar: "wallet_meta",
-        source: Box::new(e),
-    }
-}
-
-/// Extract the base58 seed-hash suffix from a key starting with
-/// `prefix`. Returns `None` when the suffix is not 32 bytes of
-/// base58, which catches both prefix mismatches and corrupt keys.
-fn parse_seed_hash(key: &str, prefix: &str) -> Option<WalletSeedHash> {
-    let rest = key.strip_prefix(prefix)?;
-    let bytes = base58::decode(rest).ok()?;
-    bytes.try_into().ok()
+        source,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    use dash_sdk::dpp::dashcore::base58;
+
+    use crate::wallet_backend::DetScope;
     use crate::wallet_backend::kv_test_support::InMemoryKv;
 
     fn kv() -> Arc<DetKv> {

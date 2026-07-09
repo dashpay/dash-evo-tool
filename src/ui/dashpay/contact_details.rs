@@ -183,16 +183,15 @@ impl ContactDetailsScreen {
         // in flight. Best-effort: a sidecar miss never blocks the user
         // action.
         let identity_id = self.identity.identity.id();
-        if let Ok(backend) = self.app_context.wallet_backend() {
-            let info = crate::model::dashpay::ContactPrivateInfo {
-                nickname: self.edit_nickname.clone(),
-                notes: self.edit_note.clone(),
-                is_hidden: self.edit_hidden,
-            };
-            if let Err(e) = backend.dashpay_set_private_info(&identity_id, &self.contact_id, &info)
-            {
-                tracing::warn!("DashPay private-info sidecar write failed: {e:?}");
-            }
+        if let Err(e) = crate::ui::dashpay::persist_contact_private_info(
+            &self.app_context,
+            &identity_id,
+            &self.contact_id,
+            self.edit_nickname.clone(),
+            self.edit_note.clone(),
+            self.edit_hidden,
+        ) {
+            tracing::warn!("DashPay private-info sidecar write failed: {e:?}");
         }
 
         self.editing_info = false;
@@ -586,10 +585,10 @@ impl ScreenLike for ContactDetailsScreen {
                     .and_then(|v| v.as_text())
                     .map(|s| s.to_string());
 
-                // Public-profile caching dropped — `FetchContactProfile`
-                // re-queries Platform on each open, and the WalletBackend
-                // mirror covers identities we manage. Out-of-wallet contact
-                // profiles are not cacheable through the upstream seam.
+                // `FetchContactProfile` re-queries Platform on each open, and
+                // the WalletBackend mirror covers identities we manage.
+                // Out-of-wallet contact profiles are not cached through the
+                // upstream seam.
 
                 // Update the in-memory contact info
                 if let Some(info) = &mut self.contact_info {

@@ -34,6 +34,23 @@ use crate::ui::components::passphrase_modal::{
 
 type BootError = Box<dyn std::error::Error + Send + Sync>;
 
+/// Sole owner of the production boot environment: resolve the app data
+/// directory (creating it if needed), ensure the `.env` file exists, and
+/// initialize logging. Returns the resolved data directory.
+///
+/// Called from `main` before the tokio runtime starts and again from
+/// [`AppState::boot_inputs`](crate::app::AppState::boot_inputs) inside the
+/// eframe boot; the logger's `Once` guard makes the second call a no-op, so
+/// this stays the single place the sequence is written.
+pub fn prepare_environment() -> Result<PathBuf, std::io::Error> {
+    use crate::app_dir::{app_user_data_dir_path, ensure_data_dir_exists, ensure_env_file};
+    let data_dir = app_user_data_dir_path()?;
+    ensure_data_dir_exists(&data_dir)?;
+    ensure_env_file(&data_dir);
+    crate::logging::initialize_logger();
+    Ok(data_dir)
+}
+
 /// The eframe application during boot: either still collecting the legacy
 /// vault passphrase, or the fully built [`AppState`].
 pub enum BootApp {

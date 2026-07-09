@@ -74,11 +74,12 @@ const TIP_BADGE_EVONODE: &str =
 const GATED_COMING_SOON: &str =
     "Coming soon. This control will activate when the backend task lands.";
 
-// Limits — match `src/ui/dashpay/profile_screen.rs` so the two edit surfaces
-// agree on validation without either depending on the other.
-const MAX_DISPLAY_NAME: usize = 25;
-const MAX_BIO: usize = 140;
-const MAX_AVATAR_URL: usize = 500;
+// Limits and validation come from the shared model validator, the single
+// source of truth also used by the DashPay profile editor and the backend.
+use crate::model::dashpay::{
+    MAX_AVATAR_URL_CHARS as MAX_AVATAR_URL, MAX_BIO_CHARS as MAX_BIO,
+    MAX_DISPLAY_NAME_CHARS as MAX_DISPLAY_NAME, ProfileFieldError, validate_profile_fields,
+};
 
 // ---------------------------------------------------------------------------
 // Stateful tab component
@@ -773,23 +774,16 @@ impl SettingsTab {
     }
 
     /// Validation check used to drive Save button state. Returns `None` when
-    /// input is valid, else a stable error string. We do not persist this in
-    /// a banner because users can self-correct inline using the counter.
-    fn validation_error(&self) -> Option<&'static str> {
-        if self.edit_display_name.chars().count() > MAX_DISPLAY_NAME {
-            return Some("Display name is too long.");
-        }
-        if self.edit_bio.chars().count() > MAX_BIO {
-            return Some("Bio is too long.");
-        }
-        if self.edit_avatar_url.chars().count() > MAX_AVATAR_URL {
-            return Some("Avatar URL is too long.");
-        }
-        let avatar = self.edit_avatar_url.trim();
-        if !(avatar.is_empty() || avatar.starts_with("http://") || avatar.starts_with("https://")) {
-            return Some("Avatar URL must start with http:// or https://.");
-        }
-        None
+    /// input is valid, else the first violation. We do not persist this in a
+    /// banner because users can self-correct inline using the counter.
+    fn validation_error(&self) -> Option<ProfileFieldError> {
+        validate_profile_fields(
+            &self.edit_display_name,
+            &self.edit_bio,
+            &self.edit_avatar_url,
+        )
+        .into_iter()
+        .next()
     }
 
     // -----------------------------------------------------------------

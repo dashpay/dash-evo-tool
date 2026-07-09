@@ -35,11 +35,28 @@
 
 use std::sync::Arc;
 
+use dash_sdk::dpp::dashcore::Network;
 use platform_wallet_storage::{KvError, KvStore, ObjectId, SqlitePersister};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
+use crate::backend_task::error::TaskError;
 use crate::model::wallet::WalletSeedHash;
+
+/// Stable lowercase network token (`mainnet` / `testnet` / `devnet` /
+/// `regtest`) used across the wallet-backend sidecars, SPV storage paths, and
+/// migration sentinels.
+///
+/// Hardcoded rather than derived from [`Network`]'s `Display` so an upstream
+/// change to that impl cannot silently shift already-persisted on-disk keys.
+pub(crate) fn network_prefix(network: Network) -> &'static str {
+    match network {
+        Network::Mainnet => "mainnet",
+        Network::Testnet => "testnet",
+        Network::Devnet => "devnet",
+        Network::Regtest => "regtest",
+    }
+}
 
 /// Schema version prefix prepended to every encoded value, the envelope
 /// that makes stored blobs migratable.
@@ -90,7 +107,10 @@ fn to_object_id(scope: DetScope<'_>) -> ObjectId {
 /// Errors returned by the [`DetKv`] adapter.
 #[derive(Debug, thiserror::Error)]
 pub enum KvAdapterError {
-    /// The underlying key/value store rejected an operation.
+    /// The underlying key/value store rejected an operation. The store accepts
+    /// scoped writes whose parent object does not exist yet (an `AFTER DELETE`
+    /// trigger reaps the metadata if the object is later removed), so there is
+    /// no FK-violation variant to promote — every store error maps here.
     #[error("kv store error")]
     Store(#[source] KvError),
 
@@ -111,14 +131,6 @@ pub enum KvAdapterError {
     /// `bincode` failed to decode a stored value.
     #[error("kv value decode failed")]
     Decode(#[from] bincode::error::DecodeError),
-}
-
-/// Wrap an upstream [`KvError`] as a [`KvAdapterError::Store`]. The store
-/// accepts scoped writes whose parent object does not exist yet (an
-/// `AFTER DELETE` trigger reaps the metadata if the object is later
-/// removed), so there is no FK-violation variant to promote.
-fn map_kv_error(err: KvError) -> KvAdapterError {
-    KvAdapterError::Store(err)
 }
 
 /// Typed key/value adapter. Cheap to clone (`Arc<dyn KvStore>` inside).
@@ -149,7 +161,7 @@ impl DetKv {
         let raw = self
             .store
             .get(&to_object_id(scope), key)
-            .map_err(map_kv_error)?;
+            .map_err(KvAdapterError::Store)?;
         let Some(bytes) = raw else {
             return Ok(None);
         };
@@ -178,7 +190,7 @@ impl DetKv {
         buf.extend_from_slice(&body);
         self.store
             .put(&to_object_id(scope), key, &buf)
-            .map_err(map_kv_error)?;
+            .map_err(KvAdapterError::Store)?;
         Ok(())
     }
 
@@ -186,7 +198,7 @@ impl DetKv {
     pub fn delete(&self, scope: DetScope<'_>, key: &str) -> Result<(), KvAdapterError> {
         self.store
             .delete(&to_object_id(scope), key)
-            .map_err(map_kv_error)?;
+            .map_err(KvAdapterError::Store)?;
         Ok(())
     }
 
@@ -201,7 +213,7 @@ impl DetKv {
     ) -> Result<Vec<String>, KvAdapterError> {
         self.store
             .list_keys(&to_object_id(scope), prefix)
-            .map_err(map_kv_error)
+            .map_err(KvAdapterError::Store)
     }
 }
 
@@ -209,6 +221,57 @@ impl std::fmt::Debug for DetKv {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DetKv").finish_non_exhaustive()
     }
+}
+
+/// Read `(scope, key)` as `T`, treating a decode/store failure as absence.
+///
+/// Absence (`Ok(None)`) returns `None` silently — the steady state for an
+/// unwritten optional slot. Only an error is logged (at `warn`), tagged with
+/// `context` so the failing sidecar is identifiable. The single home for the
+/// "read a best-effort k/v value, degrade to absent on error" pattern.
+pub(crate) fn kv_get_logged<T: DeserializeOwned>(
+    kv: &DetKv,
+    scope: DetScope<'_>,
+    key: &str,
+    context: &str,
+) -> Option<T> {
+    match kv.get::<T>(scope, key) {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(
+                target: "wallet_backend::kv",
+                context,
+                key = %key,
+                error = ?e,
+                "Failed to read k/v value; treating as absent",
+            );
+            None
+        }
+    }
+}
+
+/// [`kv_get_logged`] with a [`Default`] fallback for both absence and error.
+/// Callers that always want a concrete value (never an `Option`) use this.
+pub(crate) fn kv_get_or_default<T: DeserializeOwned + Default>(
+    kv: &DetKv,
+    scope: DetScope<'_>,
+    key: &str,
+    context: &str,
+) -> T {
+    kv_get_logged(kv, scope, key, context).unwrap_or_default()
+}
+
+/// Wrap a [`KvAdapterError`] into the caller's chosen [`TaskError`] variant.
+///
+/// The single boxing/funnel point shared by every offline-cache and sidecar
+/// mapper: `into_variant` names which surface failed (avatar cache, contact
+/// profile, wallet/identity metadata) so the banner copy matches while the
+/// error chain is preserved through the boxed `#[source]`.
+pub(crate) fn map_kv_storage_error(
+    e: KvAdapterError,
+    into_variant: impl FnOnce(Box<KvAdapterError>) -> TaskError,
+) -> TaskError {
+    into_variant(Box::new(e))
 }
 
 #[cfg(test)]
@@ -395,6 +458,58 @@ mod tests {
 
         let no_match = kv.list(DetScope::Global, Some("regtest:")).unwrap();
         assert!(no_match.is_empty());
+    }
+
+    /// K10: `network_prefix` is a stable lowercase token per network — the
+    /// on-disk key shape must not shift.
+    #[test]
+    fn network_prefix_is_stable() {
+        assert_eq!(network_prefix(Network::Mainnet), "mainnet");
+        assert_eq!(network_prefix(Network::Testnet), "testnet");
+        assert_eq!(network_prefix(Network::Devnet), "devnet");
+        assert_eq!(network_prefix(Network::Regtest), "regtest");
+    }
+
+    /// K11: `kv_get_or_default` returns the stored value when present and the
+    /// `Default` for both a missing key and a corrupt (wrong-schema) blob.
+    #[test]
+    fn kv_get_or_default_present_missing_and_corrupt() {
+        let store = Arc::new(InMemoryKv::default());
+        let kv = DetKv::from_store(store.clone());
+
+        kv.put(DetScope::Global, "present", &7u64).unwrap();
+        let got: u64 = kv_get_or_default(&kv, DetScope::Global, "present", "k11");
+        assert_eq!(got, 7);
+
+        let missing: u64 = kv_get_or_default(&kv, DetScope::Global, "absent", "k11");
+        assert_eq!(missing, 0);
+
+        // Plant a blob with a bad leading schema byte: read degrades to default.
+        store
+            .put(
+                &ObjectId::Global,
+                "corrupt",
+                &[SCHEMA_VERSION.wrapping_add(1), 0x00],
+            )
+            .unwrap();
+        let corrupt: u64 = kv_get_or_default(&kv, DetScope::Global, "corrupt", "k11");
+        assert_eq!(corrupt, 0);
+    }
+
+    /// K12: `kv_get_logged` reports absence and read failure as `None`, and the
+    /// stored value as `Some`.
+    #[test]
+    fn kv_get_logged_reports_none_on_absence_and_error() {
+        let kv = fixture();
+        assert_eq!(
+            kv_get_logged::<u64>(&kv, DetScope::Global, "absent", "k12"),
+            None
+        );
+        kv.put(DetScope::Global, "present", &42u64).unwrap();
+        assert_eq!(
+            kv_get_logged::<u64>(&kv, DetScope::Global, "present", "k12"),
+            Some(42)
+        );
     }
 
     /// K9: an upstream store failure surfaces on the generic `Store` arm.

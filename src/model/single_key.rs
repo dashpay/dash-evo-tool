@@ -1,8 +1,13 @@
-//! DET-side metadata for an imported single-key wallet entry.
+//! DET-side metadata for an imported single-key wallet entry (LIVE / current).
 //!
 //! The actual private-key bytes live in the encrypted secret store; this
 //! struct is the public-facing handle that backend tasks and the UI use
 //! to list, label, and address-route imported keys.
+//!
+//! Distinct from the LEGACY Decision-#7 pair — the
+//! [`crate::model::wallet::single_key::SingleKeyWallet`] runtime type and its
+//! [`crate::database::single_key_wallet`] persistence — which are retained
+//! (spending gated) until single-key moves onto the upstream wallet runtime.
 
 use dash_sdk::dpp::dashcore::key::Error as KeyError;
 use dash_sdk::dpp::dashcore::secp256k1::Secp256k1;

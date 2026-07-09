@@ -6,10 +6,10 @@ pub mod passphrase;
 pub mod seed_envelope;
 pub mod single_key;
 
-use crate::backend_task::error::TaskError;
 use crate::database::WalletError;
 use crate::model::secret::Secret;
 use crate::model::wallet::auth_pubkey_cache::AuthPubkeyCache;
+use crate::wallet_backend::poison::RwLockRecover;
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::async_trait::async_trait;
 use dash_sdk::dpp::key_wallet::account::AccountType;
@@ -28,6 +28,38 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Debug;
 use std::ops::Range;
 use std::sync::{Arc, RwLock};
+use thiserror::Error;
+
+/// Why a set of payment recipients was rejected.
+///
+/// Model-local so this pure validator carries no dependency on the
+/// backend-task layer; `TaskError` provides a `From` conversion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum PaymentValidationError {
+    /// The payment named no recipients.
+    #[error("Add at least one recipient before sending a payment.")]
+    NoRecipients,
+    /// A recipient was given a zero amount.
+    #[error("Enter an amount greater than zero for every recipient, then try again.")]
+    ZeroAmount,
+}
+
+/// Why constructing a wallet from a seed failed.
+///
+/// Model-local so [`Wallet::new_from_seed`] carries no dependency on the
+/// backend-task layer; `TaskError` provides a `From` conversion.
+#[derive(Debug, Error)]
+pub enum WalletCreationError {
+    /// Encrypting the seed with the supplied password failed.
+    #[error("Could not process encrypted data. Please check your keys and try again.")]
+    Encryption { detail: String },
+    /// Deriving the master or account keys failed.
+    #[error("Could not create the wallet. Key derivation failed — please try again.")]
+    KeyDerivation {
+        #[source]
+        source: Box<dyn std::error::Error + Send + Sync>,
+    },
+}
 
 // BIP44 derivation path constants for Dash HD wallets.
 // Mainnet: m/44'/5'/0'   Testnet/Devnet/Regtest: m/44'/1'/0'
@@ -66,14 +98,14 @@ pub const fn coin_type_for_network(network: Network) -> u32 {
 ///
 /// # Errors
 ///
-/// - [`TaskError::PaymentNoRecipients`] when `amounts_duffs` is empty.
-/// - [`TaskError::PaymentZeroAmount`] when any amount is `0`.
-pub fn validate_payment_recipients(amounts_duffs: &[u64]) -> Result<(), TaskError> {
+/// - [`PaymentValidationError::NoRecipients`] when `amounts_duffs` is empty.
+/// - [`PaymentValidationError::ZeroAmount`] when any amount is `0`.
+pub fn validate_payment_recipients(amounts_duffs: &[u64]) -> Result<(), PaymentValidationError> {
     if amounts_duffs.is_empty() {
-        return Err(TaskError::PaymentNoRecipients);
+        return Err(PaymentValidationError::NoRecipients);
     }
     if amounts_duffs.contains(&0) {
-        return Err(TaskError::PaymentZeroAmount);
+        return Err(PaymentValidationError::ZeroAmount);
     }
     Ok(())
 }
@@ -186,10 +218,7 @@ pub trait DerivationPathHelpers {
 }
 
 pub(crate) fn is_bip44_path(path: &DerivationPath, network: Network) -> bool {
-    let coin_type = match network {
-        Network::Mainnet => 5,
-        _ => 1,
-    };
+    let coin_type = coin_type_for_network(network);
     let components = path.as_ref();
     components.len() >= 4
         && components[0] == ChildNumber::Hardened { index: 44 }
@@ -223,10 +252,7 @@ impl DerivationPathHelpers for DerivationPath {
     }
 
     fn is_asset_lock_funding(&self, network: Network) -> bool {
-        let coin_type = match network {
-            Network::Mainnet => 5,
-            _ => 1,
-        };
+        let coin_type = coin_type_for_network(network);
         let components = self.as_ref();
         components.len() == 5
             && components[0] == ChildNumber::Hardened { index: 9 }
@@ -252,10 +278,7 @@ impl DerivationPathHelpers for DerivationPath {
 
     /// Check if this path is a DIP-17 Platform payment path: m/9'/coin_type'/17'/account'/key_class'/index
     fn is_platform_payment(&self, network: Network) -> bool {
-        let coin_type = match network {
-            Network::Mainnet => 5,
-            _ => 1,
-        };
+        let coin_type = coin_type_for_network(network);
         let components = self.as_ref();
         // DIP-17: m/9'/coin_type'/17'/account'/key_class'/index
         components.len() == 6
@@ -271,10 +294,7 @@ impl DerivationPathHelpers for DerivationPath {
         key_class: u32,
         index: u32,
     ) -> DerivationPath {
-        let coin_type = match network {
-            Network::Mainnet => 5,
-            _ => 1,
-        };
+        let coin_type = coin_type_for_network(network);
         DerivationPath::from(vec![
             ChildNumber::Hardened { index: 9 },
             ChildNumber::Hardened { index: coin_type },
@@ -408,13 +428,20 @@ impl Wallet {
         network: Network,
         alias: Option<String>,
         password: Option<&Secret>,
-    ) -> Result<Self, TaskError> {
+    ) -> Result<Self, WalletCreationError> {
         // Encrypt seed or store plaintext
         let (encrypted_seed, salt, nonce, uses_password) = match password {
             Some(pw) if !pw.is_empty() => {
-                let (enc, s, n) = ClosedKeyItem::encrypt_seed(&seed, pw.expose_secret())
-                    .map_err(|e| TaskError::EncryptionError { detail: e })?;
-                (enc, s, n, true)
+                // `encrypt_seed` is fully typed; `WalletCreationError::Encryption`
+                // still carries a `String` (pre-existing debt tracked for a later
+                // type-through), so the typed error is rendered via `Display` here.
+                let envelope =
+                    ClosedKeyItem::encrypt_seed(&seed, pw.expose_secret()).map_err(|e| {
+                        WalletCreationError::Encryption {
+                            detail: e.to_string(),
+                        }
+                    })?;
+                (envelope.ciphertext, envelope.salt, envelope.nonce, true)
             }
             _ => (seed.to_vec(), vec![], vec![], false),
         };
@@ -423,14 +450,14 @@ impl Wallet {
 
         // Derive master BIP44 extended public key
         let master_priv = ExtendedPrivKey::new_master(network, &seed).map_err(|e| {
-            TaskError::WalletKeyDerivationFailed {
+            WalletCreationError::KeyDerivation {
                 source: Box::new(e),
             }
         })?;
         let bip44_path = Self::bip44_account0_path(network);
         let secp = Secp256k1::new();
         let account_priv = master_priv.derive_priv(&secp, &bip44_path).map_err(|e| {
-            TaskError::WalletKeyDerivationFailed {
+            WalletCreationError::KeyDerivation {
                 source: Box::new(e),
             }
         })?;
@@ -447,14 +474,14 @@ impl Wallet {
             PLATFORM_PAYMENT_KEY_CLASS,
         )
         .map(Some)
-        .map_err(|e| TaskError::WalletKeyDerivationFailed {
+        .map_err(|e| WalletCreationError::KeyDerivation {
             source: Box::new(e),
         })?;
 
         // Derive the first receive address (m/44'/coin'/0'/0/0)
         let (known_addresses, watched_addresses) =
             Self::derive_first_address(&master_bip44_ecdsa_extended_public_key, network, &secp)
-                .map_err(|e| TaskError::WalletKeyDerivationFailed { source: e.into() })?;
+                .map_err(|e| WalletCreationError::KeyDerivation { source: e.into() })?;
 
         Ok(Wallet {
             wallet_seed: WalletSeed::Open(OpenWalletSeed {
@@ -499,7 +526,7 @@ impl Wallet {
             BTreeMap<Address, DerivationPath>,
             BTreeMap<DerivationPath, AddressInfo>,
         ),
-        String,
+        WalletError,
     > {
         let mut known_addresses = BTreeMap::new();
         let mut watched_addresses = BTreeMap::new();
@@ -512,9 +539,7 @@ impl Wallet {
             .as_slice(),
         );
 
-        let pk = master_pub
-            .derive_pub(secp, &address_path)
-            .map_err(|e| format!("Failed to derive first receive address: {e}"))?;
+        let pk = master_pub.derive_pub(secp, &address_path)?;
         let address = Address::p2pkh(&pk.to_pub(), network);
         let bip44 = match network {
             Network::Mainnet => &DASH_BIP44_ACCOUNT_0_PATH_MAINNET,
@@ -741,8 +766,13 @@ impl WalletSeed {
             }
             WalletSeed::Closed(closed_seed) => {
                 // Decrypt to PROVE the password is correct, then drop the
-                // plaintext (`Zeroizing`) without parking it.
-                let _verified = Zeroizing::new(closed_seed.decrypt_seed(password)?);
+                // plaintext (`Zeroizing`) without parking it. `decrypt_seed` is
+                // fully typed; this method's `String` return is pre-existing
+                // model/wallet debt tracked for a later type-through, so the
+                // typed error is rendered through its `Display` here.
+                let _verified = closed_seed
+                    .decrypt_seed(password)
+                    .map_err(|e| e.to_string())?;
                 let open_wallet_seed = OpenWalletSeed {
                     wallet_info: closed_seed.clone(),
                 };
@@ -783,9 +813,7 @@ impl WalletSeed {
     }
 
     /// Transition the wallet back to the locked (`Closed`) state.
-    // Allow dead_code: This method provides explicit wallet closure functionality,
-    // useful for security-conscious applications requiring manual wallet management
-    #[allow(dead_code)]
+    /// Drop the decrypted seed, transitioning the wallet to its closed state.
     pub fn close(&mut self) {
         match self {
             WalletSeed::Open(open_seed) => {
@@ -857,7 +885,7 @@ impl Wallet {
             tracing::warn!("Failed to bootstrap provider addresses: {}", err);
         }
 
-        if let Err(err) = self.bootstrap_platform_payment_addresses(seed, network, app_context) {
+        if let Err(err) = self.bootstrap_platform_payment_addresses(seed, network) {
             tracing::warn!("Failed to bootstrap Platform payment addresses: {}", err);
         }
     }
@@ -897,16 +925,14 @@ impl Wallet {
         }
     }
 
-    // Allow dead_code: This utility method finds wallets by seed hash in collections,
-    // useful for wallet lookup operations and multi-wallet management
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn find_in_arc_rw_lock_slice(
         slice: &[Arc<RwLock<Wallet>>],
         wallet_seed_hash: WalletSeedHash,
     ) -> Option<Arc<RwLock<Wallet>>> {
         for wallet in slice {
             // Attempt to read the wallet from the RwLock
-            let wallet_ref = wallet.read().unwrap();
+            let wallet_ref = wallet.read_recover();
             // Check if the wallet's seed hash matches the provided wallet_seed_hash
             if wallet_ref.seed_hash() == wallet_seed_hash {
                 // Return a clone of the Arc<RwLock<Wallet>> that matches
@@ -927,9 +953,9 @@ impl Wallet {
         seed: &[u8; 64],
         derivation_path: &DerivationPath,
         network: Network,
-    ) -> Result<Option<Zeroizing<[u8; 32]>>, String> {
+    ) -> Result<Option<Zeroizing<[u8; 32]>>, WalletError> {
         for wallet in slice {
-            let wallet_ref = wallet.read().unwrap();
+            let wallet_ref = wallet.read_recover();
             if wallet_ref.seed_hash() == wallet_seed_hash {
                 // SECURITY: `ExtendedPrivKey` is a `Copy` BIP-32 type from
                 // key_wallet with no `Drop`, so its inner SecretKey + ChainCode
@@ -939,8 +965,7 @@ impl Wallet {
                 // unavoidable residue of a third-party `Copy` type.
                 let secret = Zeroizing::new(
                     derivation_path
-                        .derive_priv_ecdsa_for_master_seed(seed, network)
-                        .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())?
+                        .derive_priv_ecdsa_for_master_seed(seed, network)?
                         .private_key
                         .secret_bytes(),
                 );
@@ -958,10 +983,9 @@ impl Wallet {
         seed: &[u8; 64],
         derivation_path: &DerivationPath,
         network: Network,
-    ) -> Result<PrivateKey, String> {
-        let extended_private_key = derivation_path
-            .derive_priv_ecdsa_for_master_seed(seed, network)
-            .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())?;
+    ) -> Result<PrivateKey, WalletError> {
+        let extended_private_key =
+            derivation_path.derive_priv_ecdsa_for_master_seed(seed, network)?;
         Ok(extended_private_key.to_priv())
     }
 
@@ -976,14 +1000,14 @@ impl Wallet {
         seed: &[u8; 64],
         address: &Address,
         network: Network,
-    ) -> Result<Option<PrivateKey>, String> {
+    ) -> Result<Option<PrivateKey>, WalletError> {
         self.known_addresses
             .get(address)
             .map(|derivation_path| {
                 derivation_path
                     .derive_priv_ecdsa_for_master_seed(seed, network)
                     .map(|extended_private_key| extended_private_key.to_priv())
-                    .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())
+                    .map_err(|e| WalletError::KeyDerivation { source: e })
             })
             .transpose()
     }
@@ -1001,16 +1025,15 @@ impl Wallet {
         network: Network,
         identity_index: u32,
         key_index: u32,
-    ) -> Result<PublicKey, String> {
+    ) -> Result<PublicKey, WalletError> {
         let derivation_path = DerivationPath::identity_authentication_path(
             network,
             KeyDerivationType::ECDSA,
             identity_index,
             key_index,
         );
-        let extended_public_key = derivation_path
-            .derive_pub_ecdsa_for_master_seed(seed, network)
-            .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())?;
+        let extended_public_key =
+            derivation_path.derive_pub_ecdsa_for_master_seed(seed, network)?;
         Ok(extended_public_key.to_pub())
     }
 }
@@ -1052,7 +1075,7 @@ impl Wallet {
         network: Network,
         identity_index: u32,
         key_index_range: Range<u32>,
-    ) -> Result<AuthKeyMaps, String> {
+    ) -> Result<AuthKeyMaps, WalletError> {
         let mut by_serialized = BTreeMap::new();
         let mut by_hash160 = BTreeMap::new();
         let mut misses = Vec::new();
@@ -1095,7 +1118,7 @@ impl Wallet {
         network: Network,
         identity_index: u32,
         missing_key_indices: &[u32],
-    ) -> Result<DerivedAuthKeyMaps, String> {
+    ) -> Result<DerivedAuthKeyMaps, WalletError> {
         let mut by_serialized = BTreeMap::new();
         let mut by_hash160 = BTreeMap::new();
         let mut derived = Vec::with_capacity(missing_key_indices.len());
@@ -1140,7 +1163,7 @@ impl Wallet {
         identity_index: u32,
         key_index: u32,
         public_key: &PublicKey,
-    ) -> Result<(), String> {
+    ) -> Result<(), WalletError> {
         public_key_result_map.insert(public_key.inner.serialize().to_vec(), key_index);
         public_key_hash_result_map.insert(public_key.pubkey_hash().to_byte_array(), key_index);
         if register_addresses {
@@ -1168,7 +1191,7 @@ impl Wallet {
         path_type: DerivationPathType,
         path_reference: DerivationPathReference,
         app_context: &AppContext,
-    ) -> Result<(), String> {
+    ) -> Result<(), WalletError> {
         let secp = Secp256k1::new();
         let address = Address::p2pkh(&private_key.public_key(&secp), app_context.network);
         self.register_address(
@@ -1187,7 +1210,7 @@ impl Wallet {
         path_type: DerivationPathType,
         path_reference: DerivationPathReference,
         app_context: &AppContext,
-    ) -> Result<(), String> {
+    ) -> Result<(), WalletError> {
         let address = Address::p2pkh(public_key, app_context.network);
         self.register_address(
             address,
@@ -1204,17 +1227,17 @@ impl Wallet {
         path_type: DerivationPathType,
         path_reference: DerivationPathReference,
         app_context: &AppContext,
-    ) -> Result<(), String> {
+    ) -> Result<(), WalletError> {
         // `Address` no longer carries a full `Network` field; use
         // `is_valid_for_network` on the unchecked view for the network guard.
         if !address
             .as_unchecked()
             .is_valid_for_network(app_context.network)
         {
-            return Err(format!(
-                "address {} is not valid for wallet network {}",
-                address, app_context.network
-            ));
+            return Err(WalletError::AddressNetworkMismatch {
+                address,
+                network: app_context.network,
+            });
         }
 
         // T-W-01: addresses are derived deterministically from the
@@ -1246,8 +1269,8 @@ impl Wallet {
         &mut self,
         network: Network,
         app_context: &AppContext,
-    ) -> Result<(), String> {
-        let coin_type = Self::coin_type(network);
+    ) -> Result<(), WalletError> {
+        let coin_type = coin_type_for_network(network);
         let secp = Secp256k1::new();
         for (change_flag, max) in [
             (false, BOOTSTRAP_BIP44_EXTERNAL_COUNT),
@@ -1262,10 +1285,9 @@ impl Wallet {
                 ];
                 let derived = self
                     .master_bip44_ecdsa_extended_public_key
-                    .derive_pub(&secp, &child_path)
-                    .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())?;
+                    .derive_pub(&secp, &child_path)?;
                 let dash_public_key = PublicKey::from_slice(&derived.public_key.serialize())
-                    .map_err(|e| e.to_string())?;
+                    .map_err(|e| WalletError::PublicKeyParse(Box::new(e)))?;
                 let derivation_path = DerivationPath::from(vec![
                     ChildNumber::Hardened { index: 44 },
                     ChildNumber::Hardened { index: coin_type },
@@ -1292,16 +1314,15 @@ impl Wallet {
         seed: &[u8; 64],
         network: Network,
         app_context: &AppContext,
-    ) -> Result<(), String> {
+    ) -> Result<(), WalletError> {
         for account in 0..BOOTSTRAP_BIP32_ACCOUNT_COUNT {
             for index in 0..BOOTSTRAP_BIP32_ADDRESS_COUNT {
                 let derivation_path = DerivationPath::from(vec![
                     ChildNumber::Hardened { index: account },
                     ChildNumber::Normal { index },
                 ]);
-                let extended_private_key = derivation_path
-                    .derive_priv_ecdsa_for_master_seed(seed, network)
-                    .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())?;
+                let extended_private_key =
+                    derivation_path.derive_priv_ecdsa_for_master_seed(seed, network)?;
                 let private_key = extended_private_key.to_priv();
                 self.register_address_from_private_key(
                     &private_key,
@@ -1320,16 +1341,15 @@ impl Wallet {
         seed: &[u8; 64],
         network: Network,
         app_context: &AppContext,
-    ) -> Result<(), String> {
+    ) -> Result<(), WalletError> {
         for account in 0..BOOTSTRAP_COINJOIN_ACCOUNT_COUNT {
             let base_path = DerivationPath::coinjoin_path(network, account);
             for index in 0..BOOTSTRAP_COINJOIN_ADDRESS_COUNT {
                 let mut components = base_path.as_ref().to_vec();
                 components.push(ChildNumber::Normal { index });
                 let derivation_path = DerivationPath::from(components);
-                let extended_private_key = derivation_path
-                    .derive_priv_ecdsa_for_master_seed(seed, network)
-                    .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())?;
+                let extended_private_key =
+                    derivation_path.derive_priv_ecdsa_for_master_seed(seed, network)?;
                 let private_key = extended_private_key.to_priv();
                 self.register_address_from_private_key(
                     &private_key,
@@ -1348,7 +1368,7 @@ impl Wallet {
         seed: &[u8; 64],
         network: Network,
         app_context: &AppContext,
-    ) -> Result<(), String> {
+    ) -> Result<(), WalletError> {
         let registration_indices = self.identity_registration_indices();
         self.bootstrap_identity_registration_addresses(
             seed,
@@ -1367,12 +1387,11 @@ impl Wallet {
         network: Network,
         app_context: &AppContext,
         registration_indices: &BTreeSet<u32>,
-    ) -> Result<(), String> {
+    ) -> Result<(), WalletError> {
         for &index in registration_indices {
             let derivation_path = DerivationPath::identity_registration_path(network, index);
-            let extended_private_key = derivation_path
-                .derive_priv_ecdsa_for_master_seed(seed, network)
-                .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())?;
+            let extended_private_key =
+                derivation_path.derive_priv_ecdsa_for_master_seed(seed, network)?;
             let private_key = extended_private_key.to_priv();
             self.register_address_from_private_key(
                 &private_key,
@@ -1390,12 +1409,11 @@ impl Wallet {
         seed: &[u8; 64],
         network: Network,
         app_context: &AppContext,
-    ) -> Result<(), String> {
+    ) -> Result<(), WalletError> {
         for index in 0..BOOTSTRAP_IDENTITY_INVITATION_COUNT {
             let derivation_path = DerivationPath::identity_invitation_path(network, index);
-            let extended_private_key = derivation_path
-                .derive_priv_ecdsa_for_master_seed(seed, network)
-                .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())?;
+            let extended_private_key =
+                derivation_path.derive_priv_ecdsa_for_master_seed(seed, network)?;
             let private_key = extended_private_key.to_priv();
             self.register_address_from_private_key(
                 &private_key,
@@ -1414,14 +1432,13 @@ impl Wallet {
         network: Network,
         app_context: &AppContext,
         registration_indices: &BTreeSet<u32>,
-    ) -> Result<(), String> {
+    ) -> Result<(), WalletError> {
         for &registration_index in registration_indices {
             for top_up_index in 0..BOOTSTRAP_IDENTITY_TOPUP_PER_REGISTRATION {
                 let derivation_path =
                     DerivationPath::identity_top_up_path(network, registration_index, top_up_index);
-                let extended_private_key = derivation_path
-                    .derive_priv_ecdsa_for_master_seed(seed, network)
-                    .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())?;
+                let extended_private_key =
+                    derivation_path.derive_priv_ecdsa_for_master_seed(seed, network)?;
                 let private_key = extended_private_key.to_priv();
                 self.register_address_from_private_key(
                     &private_key,
@@ -1440,17 +1457,16 @@ impl Wallet {
         network: Network,
         app_context: &AppContext,
         seed: &[u8; 64],
-    ) -> Result<(), String> {
+    ) -> Result<(), WalletError> {
         let base_path = AccountType::IdentityTopUpNotBoundToIdentity
             .derivation_path(network)
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| WalletError::AccountDerivationPath(Box::new(e)))?;
         for index in 0..BOOTSTRAP_IDENTITY_TOPUP_NOT_BOUND_COUNT {
             let mut components = base_path.as_ref().to_vec();
             components.push(ChildNumber::Normal { index });
             let derivation_path = DerivationPath::from(components);
-            let extended_private_key = derivation_path
-                .derive_priv_ecdsa_for_master_seed(seed, network)
-                .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())?;
+            let extended_private_key =
+                derivation_path.derive_priv_ecdsa_for_master_seed(seed, network)?;
             let private_key = extended_private_key.to_priv();
             self.register_address_from_private_key(
                 &private_key,
@@ -1477,7 +1493,7 @@ impl Wallet {
         seed: &[u8; 64],
         network: Network,
         app_context: &AppContext,
-    ) -> Result<(), String> {
+    ) -> Result<(), WalletError> {
         self.bootstrap_provider_account(
             seed,
             network,
@@ -1499,10 +1515,10 @@ impl Wallet {
         network: Network,
         app_context: &AppContext,
         account_type: AccountType,
-    ) -> Result<(), String> {
+    ) -> Result<(), WalletError> {
         let base_path = account_type
             .derivation_path(network)
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| WalletError::AccountDerivationPath(Box::new(e)))?;
         let key_wallet_reference = account_type.derivation_path_reference();
         let path_reference = DerivationPathReference::try_from(key_wallet_reference as u32)
             .unwrap_or(DerivationPathReference::Unknown);
@@ -1512,9 +1528,8 @@ impl Wallet {
                 index: provider_index,
             });
             let derivation_path = DerivationPath::from(components);
-            let extended_private_key = derivation_path
-                .derive_priv_ecdsa_for_master_seed(seed, network)
-                .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())?;
+            let extended_private_key =
+                derivation_path.derive_priv_ecdsa_for_master_seed(seed, network)?;
             let private_key = extended_private_key.to_priv();
             self.register_address_from_private_key(
                 &private_key,
@@ -1533,8 +1548,7 @@ impl Wallet {
         &mut self,
         seed: &[u8; 64],
         network: Network,
-        app_context: &AppContext,
-    ) -> Result<(), String> {
+    ) -> Result<(), WalletError> {
         // Default account 0', default key_class 0' (as per DIP-17)
         let account = 0u32;
         let key_class = 0u32;
@@ -1542,9 +1556,8 @@ impl Wallet {
         for index in 0..BOOTSTRAP_PLATFORM_PAYMENT_ADDRESS_COUNT {
             let derivation_path =
                 DerivationPath::platform_payment_path(network, account, key_class, index);
-            let extended_private_key = derivation_path
-                .derive_priv_ecdsa_for_master_seed(seed, network)
-                .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())?;
+            let extended_private_key =
+                derivation_path.derive_priv_ecdsa_for_master_seed(seed, network)?;
             let private_key = extended_private_key.to_priv();
 
             // Create a P2PKH address for platform payment
@@ -1552,59 +1565,27 @@ impl Wallet {
             let public_key = private_key.public_key(&secp);
             let platform_address = Address::p2pkh(&public_key, network);
 
-            // Register the Platform address
-            self.register_platform_address(
-                platform_address,
-                &derivation_path,
-                DerivationPathType::CLEAR_FUNDS,
-                DerivationPathReference::PlatformPayment,
-                app_context,
-            )?;
+            let canonical = Wallet::canonical_address(&platform_address, network);
+            self.register_platform_payment_entry(canonical, derivation_path);
         }
         Ok(())
     }
 
-    /// Register a Platform payment address (DIP-17/18).
-    /// Platform addresses use different version bytes and are NOT valid on Core chain.
-    fn register_platform_address(
-        &mut self,
-        address: Address,
-        derivation_path: &DerivationPath,
-        path_type: DerivationPathType,
-        path_reference: DerivationPathReference,
-        app_context: &AppContext,
-    ) -> Result<(), String> {
-        let canonical_address = Wallet::canonical_address(&address, app_context.network);
-
-        // T-W-01: dead legacy `wallet_addresses` write removed — the
-        // in-memory maps below are the single runtime source of truth
-        // and the picker rederives from the master xpub at cold boot.
-        // Platform payment addresses are still not imported to Core (the
-        // address format differs).
-        self.known_addresses
-            .insert(canonical_address.clone(), derivation_path.clone());
+    /// Insert a platform-payment `address` at `path` into the in-memory address
+    /// maps exactly as the sync provider would (`CLEAR_FUNDS` /
+    /// `PlatformPayment`). `address` must already be canonical (see
+    /// [`Wallet::canonical_address`]). Platform payment addresses are not
+    /// imported to Core — their address format differs. Idempotent.
+    fn register_platform_payment_entry(&mut self, address: Address, path: DerivationPath) {
+        self.known_addresses.insert(address.clone(), path.clone());
         self.watched_addresses.insert(
-            derivation_path.clone(),
+            path,
             AddressInfo {
-                address: canonical_address.clone(),
-                path_type,
-                path_reference,
+                address,
+                path_type: DerivationPathType::CLEAR_FUNDS,
+                path_reference: DerivationPathReference::PlatformPayment,
             },
         );
-
-        tracing::trace!(
-            address = ?&address,
-            network = &app_context.network.to_string(),
-            "registered new Platform payment address"
-        );
-        Ok(())
-    }
-
-    fn coin_type(network: Network) -> u32 {
-        match network {
-            Network::Mainnet => 5,
-            _ => 1,
-        }
     }
 
     /// Derive and register a *new* Platform payment address at the next unused
@@ -1638,8 +1619,7 @@ impl Wallet {
         &mut self,
         seed: &[u8; 64],
         network: Network,
-        register: Option<&AppContext>,
-    ) -> Result<Address, String> {
+    ) -> Result<Address, WalletError> {
         let secp = Secp256k1::new();
         let account = 0u32;
         let key_class = 0u32;
@@ -1654,37 +1634,16 @@ impl Wallet {
 
         let derivation_path =
             DerivationPath::platform_payment_path(network, account, key_class, next_index);
-        let extended_private_key = derivation_path
-            .derive_priv_ecdsa_for_master_seed(seed, network)
-            .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())?;
+        let extended_private_key =
+            derivation_path.derive_priv_ecdsa_for_master_seed(seed, network)?;
         let private_key = extended_private_key.to_priv();
         let public_key = private_key.public_key(&secp);
 
         // Create a P2PKH address for platform payment
         let platform_address = Address::p2pkh(&public_key, network);
 
-        // Register the new address
-        if let Some(app_context) = register {
-            self.register_platform_address(
-                platform_address.clone(),
-                &derivation_path,
-                DerivationPathType::CLEAR_FUNDS,
-                DerivationPathReference::PlatformPayment,
-                app_context,
-            )?;
-        } else {
-            // Just update local state without persisting
-            self.known_addresses
-                .insert(platform_address.clone(), derivation_path.clone());
-            self.watched_addresses.insert(
-                derivation_path,
-                AddressInfo {
-                    address: platform_address.clone(),
-                    path_type: DerivationPathType::CLEAR_FUNDS,
-                    path_reference: DerivationPathReference::PlatformPayment,
-                },
-            );
-        }
+        let canonical = Wallet::canonical_address(&platform_address, network);
+        self.register_platform_payment_entry(canonical, derivation_path);
 
         Ok(platform_address)
     }
@@ -1694,7 +1653,7 @@ impl Wallet {
         network: Network,
         change: bool,
         address_index: u32,
-    ) -> Result<Address, String> {
+    ) -> Result<Address, WalletError> {
         let secp = Secp256k1::new();
         let path_extension = [
             ChildNumber::Normal {
@@ -1706,8 +1665,7 @@ impl Wallet {
         ];
         let public_key = self
             .master_bip44_ecdsa_extended_public_key
-            .derive_pub(&secp, &path_extension)
-            .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())?
+            .derive_pub(&secp, &path_extension)?
             .to_pub();
         Ok(Address::p2pkh(&public_key, network))
     }
@@ -1904,15 +1862,7 @@ impl Wallet {
                     PLATFORM_PAYMENT_KEY_CLASS,
                     index,
                 );
-                self.known_addresses.insert(canonical.clone(), path.clone());
-                self.watched_addresses.insert(
-                    path,
-                    AddressInfo {
-                        address: canonical,
-                        path_type: DerivationPathType::CLEAR_FUNDS,
-                        path_reference: DerivationPathReference::PlatformPayment,
-                    },
-                );
+                self.register_platform_payment_entry(canonical, path);
                 return true;
             }
         }
@@ -1948,15 +1898,7 @@ impl Wallet {
             PLATFORM_PAYMENT_KEY_CLASS,
             index,
         );
-        self.known_addresses.insert(canonical.clone(), path.clone());
-        self.watched_addresses.insert(
-            path,
-            AddressInfo {
-                address: canonical,
-                path_type: DerivationPathType::CLEAR_FUNDS,
-                path_reference: DerivationPathReference::PlatformPayment,
-            },
-        );
+        self.register_platform_payment_entry(canonical, path);
     }
 }
 
@@ -2058,7 +2000,7 @@ impl WalletAddressProvider {
     ///
     /// # Errors
     /// Returns an error if the account-level xpub cannot be derived.
-    pub fn new(wallet: &Wallet, network: Network, seed: &[u8; 64]) -> Result<Self, String> {
+    pub fn new(wallet: &Wallet, network: Network, seed: &[u8; 64]) -> Result<Self, WalletError> {
         Self::with_gap_limit(wallet, network, DEFAULT_GAP_LIMIT, seed)
     }
 
@@ -2072,11 +2014,10 @@ impl WalletAddressProvider {
         network: Network,
         gap_limit: AddressIndex,
         seed: &[u8; 64],
-    ) -> Result<Self, String> {
+    ) -> Result<Self, WalletError> {
         let account = PLATFORM_PAYMENT_ACCOUNT;
         let key_class = PLATFORM_PAYMENT_KEY_CLASS;
-        let account_xpub = derive_platform_payment_account_xpub(seed, network, account, key_class)
-            .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())?;
+        let account_xpub = derive_platform_payment_account_xpub(seed, network, account, key_class)?;
 
         let mut provider = Self {
             network,
@@ -2156,8 +2097,10 @@ impl WalletAddressProvider {
             .map(|(idx, (_, addr))| (Wallet::canonical_address(addr, self.network), *idx))
             .collect();
 
+        let mut total_balance: u64 = 0;
         for (address, funds) in &self.found_balances {
             let canonical_address = Wallet::canonical_address(address, self.network);
+            total_balance = total_balance.saturating_add(funds.balance);
 
             // Update wallet with synced balances
             wallet.set_platform_address_info(canonical_address.clone(), funds.balance, funds.nonce);
@@ -2172,21 +2115,16 @@ impl WalletAddressProvider {
                     self.key_class,
                     index,
                 );
-
-                wallet
-                    .known_addresses
-                    .insert(canonical_address.clone(), derivation_path.clone());
-
-                wallet.watched_addresses.insert(
-                    derivation_path,
-                    AddressInfo {
-                        address: canonical_address.clone(),
-                        path_type: DerivationPathType::CLEAR_FUNDS,
-                        path_reference: DerivationPathReference::PlatformPayment,
-                    },
-                );
+                wallet.register_platform_payment_entry(canonical_address, derivation_path);
             }
         }
+
+        tracing::info!(
+            addresses_with_balance = self.found_balances.len(),
+            total_balance,
+            network = %self.network,
+            "Applied platform-address sync results to wallet"
+        );
     }
 
     /// Derive a Platform address at the given index from the account-level
@@ -2199,12 +2137,11 @@ impl WalletAddressProvider {
     fn derive_address_at_index(
         &self,
         index: AddressIndex,
-    ) -> Result<(PlatformAddress, Address), String> {
+    ) -> Result<(PlatformAddress, Address), WalletError> {
         let secp = Secp256k1::new();
         let child = self
             .account_xpub
-            .derive_pub(&secp, &[ChildNumber::Normal { index }])
-            .map_err(|e| WalletError::KeyDerivation { source: e }.to_string())?;
+            .derive_pub(&secp, &[ChildNumber::Normal { index }])?;
         let public_key = child.to_pub();
 
         // Create P2PKH address
@@ -2212,13 +2149,13 @@ impl WalletAddressProvider {
 
         // Convert to PlatformAddress (the SDK address-sync key type)
         let platform_addr = PlatformAddress::try_from(address.clone())
-            .map_err(|e| format!("Failed to convert to PlatformAddress: {}", e))?;
+            .map_err(|e| WalletError::PlatformAddressConversion(Box::new(e)))?;
 
         Ok((platform_addr, address))
     }
 
     /// Ensure we have addresses derived up to and including the given index.
-    fn ensure_addresses_up_to(&mut self, max_index: AddressIndex) -> Result<(), String> {
+    fn ensure_addresses_up_to(&mut self, max_index: AddressIndex) -> Result<(), WalletError> {
         let current_max = self.pending.keys().max().copied();
 
         let start = current_max.map(|m| m + 1).unwrap_or(0);
@@ -2233,7 +2170,7 @@ impl WalletAddressProvider {
     }
 
     /// Extend pending addresses based on gap limit after finding an address.
-    fn extend_for_gap_limit(&mut self, found_index: AddressIndex) -> Result<(), String> {
+    fn extend_for_gap_limit(&mut self, found_index: AddressIndex) -> Result<(), WalletError> {
         let new_end = found_index.saturating_add(self.gap_limit);
         self.ensure_addresses_up_to(new_end)
     }
@@ -2263,31 +2200,18 @@ impl AddressProvider for WalletAddressProvider {
     ) {
         self.resolved.insert(index);
 
-        // Log what the SDK is returning
-        if let Some((_, core_address)) = self.pending.get(&index) {
-            // Also show Platform address format for comparison
-            let platform_addr_str = PlatformAddress::try_from(core_address.clone())
-                .map(|p| p.to_bech32m_string(self.network))
-                .unwrap_or_else(|_| "conversion failed".to_string());
-            tracing::info!(
-                "on_address_found: index={}, core_address={}, platform_address={}, balance={}, nonce={}",
-                index,
-                core_address,
-                platform_addr_str,
-                funds.balance,
-                funds.nonce
-            );
-        } else {
-            tracing::warn!(
-                "on_address_found: index={} not in pending! balance={}",
-                index,
-                funds.balance
-            );
-        }
-
-        if let Some((_, core_address)) = self.pending.get(&index) {
-            let canonical_address = Wallet::canonical_address(core_address, self.network);
-            self.found_balances.insert(canonical_address, funds);
+        match self.pending.get(&index) {
+            Some((_, core_address)) => {
+                let canonical_address = Wallet::canonical_address(core_address, self.network);
+                self.found_balances.insert(canonical_address, funds);
+            }
+            None => {
+                tracing::warn!(
+                    index,
+                    balance = funds.balance,
+                    "Address sync reported a balance for an index the provider never handed out."
+                );
+            }
         }
 
         if funds.balance > 0 {
@@ -2296,7 +2220,7 @@ impl AddressProvider for WalletAddressProvider {
 
             // Extend the address range based on gap limit
             if let Err(e) = self.extend_for_gap_limit(index) {
-                tracing::warn!("Failed to extend addresses for gap limit: {}", e);
+                tracing::warn!(index, error = %e, "Could not extend the address-scan window after a balance was found.");
             }
         }
     }
@@ -2420,20 +2344,19 @@ mod tests {
     #[test]
     fn open_no_password_rejects_protected_envelope() {
         let seed = [0x42u8; 64];
-        let (encrypted_seed, salt, nonce) =
-            ClosedKeyItem::encrypt_seed(&seed, "a-passphrase").expect("encrypt");
+        let envelope = ClosedKeyItem::encrypt_seed(&seed, "a-passphrase").expect("encrypt");
         // Precondition: a protected blob is longer than a bare 64-byte seed.
         assert_ne!(
-            encrypted_seed.len(),
+            envelope.ciphertext.len(),
             64,
             "protected ciphertext must not be exactly 64 bytes"
         );
 
         let mut wallet_seed = WalletSeed::Closed(ClosedKeyItem {
             seed_hash: ClosedKeyItem::compute_seed_hash(&seed),
-            encrypted_seed,
-            salt,
-            nonce,
+            encrypted_seed: envelope.ciphertext,
+            salt: envelope.salt,
+            nonce: envelope.nonce,
             password_hint: None,
         });
 
@@ -2862,7 +2785,7 @@ mod tests {
     /// this representative set proves the whole bootstrap address set is
     /// unchanged by the seed-source switch.
     fn representative_bootstrap_paths(network: Network) -> Vec<DerivationPath> {
-        let coin_type = Wallet::coin_type(network);
+        let coin_type = coin_type_for_network(network);
         let coinjoin = {
             let mut c = DerivationPath::coinjoin_path(network, 0).as_ref().to_vec();
             c.push(ChildNumber::Normal { index: 3 });
@@ -2994,7 +2917,7 @@ mod tests {
             let reference = Address::p2pkh(&reference_xprv.to_priv().public_key(&secp), network);
 
             let param = param_wallet
-                .generate_platform_receive_address_with_seed(&seed, network, None)
+                .generate_platform_receive_address_with_seed(&seed, network)
                 .expect("seed-param generate");
             assert_eq!(
                 reference, param,
@@ -3428,7 +3351,7 @@ mod tests {
     fn validate_payment_recipients_rejects_empty_list() {
         assert!(matches!(
             validate_payment_recipients(&[]),
-            Err(TaskError::PaymentNoRecipients)
+            Err(PaymentValidationError::NoRecipients)
         ));
     }
 
@@ -3436,12 +3359,12 @@ mod tests {
     fn validate_payment_recipients_rejects_zero_amount() {
         assert!(matches!(
             validate_payment_recipients(&[0]),
-            Err(TaskError::PaymentZeroAmount)
+            Err(PaymentValidationError::ZeroAmount)
         ));
         // A zero anywhere in the list is rejected, not just the first slot.
         assert!(matches!(
             validate_payment_recipients(&[100_000, 0, 50_000]),
-            Err(TaskError::PaymentZeroAmount)
+            Err(PaymentValidationError::ZeroAmount)
         ));
     }
 
@@ -3450,7 +3373,7 @@ mod tests {
         // An empty list reports the no-recipients error, never the zero error.
         assert!(matches!(
             validate_payment_recipients(&[]),
-            Err(TaskError::PaymentNoRecipients)
+            Err(PaymentValidationError::NoRecipients)
         ));
     }
 
@@ -3549,7 +3472,7 @@ mod tests {
         // The fixed path: a registered platform-payment address is watched.
         let mut wallet = test_wallet();
         let platform_core_addr = wallet
-            .generate_platform_receive_address_with_seed(&seed, network, None)
+            .generate_platform_receive_address_with_seed(&seed, network)
             .expect("platform receive address");
         let platform_change =
             PlatformAddress::try_from(platform_core_addr).expect("platform address conversion");
@@ -3595,7 +3518,7 @@ mod tests {
         for _ in 0..=DEFAULT_GAP_LIMIT {
             last_addr = Some(
                 wallet
-                    .generate_platform_receive_address_with_seed(&seed, network, None)
+                    .generate_platform_receive_address_with_seed(&seed, network)
                     .expect("platform receive address"),
             );
         }

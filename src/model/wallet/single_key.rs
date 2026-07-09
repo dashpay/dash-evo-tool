@@ -16,7 +16,7 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use zeroize::{Zeroize, Zeroizing};
 
-use super::encryption::derive_password_key;
+use super::encryption::{EncryptionError, derive_password_key};
 
 /// Hash of the private key, used as a unique identifier
 pub type SingleKeyHash = [u8; 32];
@@ -108,7 +108,13 @@ impl SingleKeyData {
         match self {
             SingleKeyData::Open(_) => Ok(()),
             SingleKeyData::Closed(closed) => {
-                let private_key = closed.decrypt_private_key(password)?;
+                // `decrypt_private_key` is fully typed; this method's `String`
+                // return is pre-existing model/wallet debt (crypto + key-parse
+                // errors mixed) tracked for a later type-through, so the typed
+                // error is rendered through its `Display` here.
+                let private_key = closed
+                    .decrypt_private_key(password)
+                    .map_err(|e| e.to_string())?;
                 let open_key = OpenSingleKey {
                     private_key,
                     key_info: closed.clone(),
@@ -179,32 +185,30 @@ impl ClosedSingleKey {
     pub(crate) fn encrypt_private_key(
         private_key: &[u8; 32],
         password: &str,
-    ) -> Result<super::encryption::EncryptedEnvelope, String> {
+    ) -> Result<super::encryption::EncryptedEnvelope, EncryptionError> {
         super::encryption::encrypt_message(private_key, password)
     }
 
     /// Decrypt the private key using a password
     #[allow(deprecated)]
-    pub fn decrypt_private_key(&self, password: &str) -> Result<[u8; 32], String> {
+    pub fn decrypt_private_key(&self, password: &str) -> Result<[u8; 32], EncryptionError> {
         // Both the derived AES key and the decrypted plaintext are
-        // secret-bearing; wrap them in `Zeroizing` so the intermediate
-        // buffers wipe on drop instead of lingering after the bytes are
-        // copied into the returned array.
-        let key = Zeroizing::new(derive_password_key(password, &self.salt)?);
-        let cipher = Aes256Gcm::new_from_slice(&key).map_err(|e| e.to_string())?;
+        // secret-bearing; `derive_password_key` already returns a `Zeroizing`
+        // buffer, and the plaintext below is wrapped too, so both intermediates
+        // wipe on drop instead of lingering after the bytes are copied out.
+        let key = derive_password_key(password, &self.salt)?;
+        let cipher = Aes256Gcm::new_from_slice(&key).map_err(|_| EncryptionError::Malformed)?;
         let nonce_arr = Nonce::from_slice(&self.nonce);
         let decrypted = Zeroizing::new(
             cipher
                 .decrypt(nonce_arr, self.encrypted_private_key.as_slice())
-                .map_err(|e| e.to_string())?,
+                .map_err(|_| EncryptionError::WrongPassword)?,
         );
 
-        let bytes: [u8; 32] = decrypted.as_slice().try_into().map_err(|_| {
-            format!(
-                "invalid private key length, expected 32 bytes, got {} bytes",
-                decrypted.len()
-            )
-        })?;
+        let bytes: [u8; 32] = decrypted
+            .as_slice()
+            .try_into()
+            .map_err(|_| EncryptionError::Malformed)?;
         Ok(bytes)
     }
 }
@@ -234,7 +238,12 @@ impl SingleKeyWallet {
         let key_hash = ClosedSingleKey::compute_key_hash(&private_key_bytes);
 
         let (private_key_data, uses_password) = if let Some(pwd) = password {
-            let envelope = ClosedSingleKey::encrypt_private_key(&private_key_bytes, pwd)?;
+            // `encrypt_private_key` is fully typed; `new`'s `String` return is
+            // pre-existing model/wallet debt (crypto + key-parse errors mixed)
+            // tracked for a later type-through, so the typed error is rendered
+            // through its `Display` here.
+            let envelope = ClosedSingleKey::encrypt_private_key(&private_key_bytes, pwd)
+                .map_err(|e| e.to_string())?;
             let closed = ClosedSingleKey {
                 key_hash,
                 encrypted_private_key: envelope.ciphertext,

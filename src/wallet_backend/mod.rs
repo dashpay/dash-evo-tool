@@ -47,6 +47,7 @@ pub(crate) mod kv_test_support;
 pub(crate) mod leak_test_support;
 mod loader;
 mod payments;
+pub(crate) mod poison;
 pub mod secret_access;
 pub mod secret_prompt;
 pub mod secret_seam;

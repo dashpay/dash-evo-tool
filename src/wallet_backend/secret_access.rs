@@ -51,6 +51,7 @@ use crate::model::wallet::WalletSeedHash;
 use crate::model::wallet::encryption::{DecryptError, decrypt_message};
 use crate::model::wallet::seed_envelope::StoredSeedEnvelope;
 use crate::wallet_backend::identity_key_store::identity_flavored;
+use crate::wallet_backend::poison::{read_recover, write_recover};
 use crate::wallet_backend::secret_prompt::{
     RememberPolicy, SecretPrompt, SecretPromptRequest, SecretPromptRetry, SecretScope,
 };
@@ -361,11 +362,7 @@ impl SecretAccess {
             let now = Instant::now();
             let mut needs_evict = false;
             let held = {
-                let guard = self
-                    .inner
-                    .session
-                    .read()
-                    .map_err(|_| TaskError::SecretDecryptFailed)?;
+                let guard = read_recover(&self.inner.session);
                 match guard.get(scope) {
                     Some(entry) if entry.is_expired(now) => {
                         needs_evict = true;
@@ -381,7 +378,8 @@ impl SecretAccess {
                 };
                 return f(&session).await;
             }
-            if needs_evict && let Ok(mut guard) = self.inner.session.write() {
+            if needs_evict {
+                let mut guard = write_recover(&self.inner.session);
                 // Re-check expiry under the write lock to avoid racing a
                 // concurrent refresh, then drop (zeroize) the entry.
                 if guard.get(scope).is_some_and(|e| e.is_expired(now)) {
@@ -653,15 +651,13 @@ impl SecretAccess {
             // here would mean "never expires".
             RememberPolicy::For(duration) => Some(now.checked_add(duration).unwrap_or(now)),
         };
-        if let Ok(mut guard) = self.inner.session.write() {
-            guard.insert(
-                scope.clone(),
-                SessionEntry {
-                    plaintext: Box::new(plaintext),
-                    expires_at,
-                },
-            );
-        }
+        write_recover(&self.inner.session).insert(
+            scope.clone(),
+            SessionEntry {
+                plaintext: Box::new(plaintext),
+                expires_at,
+            },
+        );
     }
 
     /// The typed error for a dismissed/absent prompt. A genuine user cancel

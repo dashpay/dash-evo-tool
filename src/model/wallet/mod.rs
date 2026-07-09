@@ -431,8 +431,15 @@ impl Wallet {
         // Encrypt seed or store plaintext
         let (encrypted_seed, salt, nonce, uses_password) = match password {
             Some(pw) if !pw.is_empty() => {
-                let envelope = ClosedKeyItem::encrypt_seed(&seed, pw.expose_secret())
-                    .map_err(|e| WalletCreationError::Encryption { detail: e })?;
+                // `encrypt_seed` is fully typed; `WalletCreationError::Encryption`
+                // still carries a `String` (pre-existing debt tracked for a later
+                // type-through), so the typed error is rendered via `Display` here.
+                let envelope =
+                    ClosedKeyItem::encrypt_seed(&seed, pw.expose_secret()).map_err(|e| {
+                        WalletCreationError::Encryption {
+                            detail: e.to_string(),
+                        }
+                    })?;
                 (envelope.ciphertext, envelope.salt, envelope.nonce, true)
             }
             _ => (seed.to_vec(), vec![], vec![], false),
@@ -758,8 +765,13 @@ impl WalletSeed {
             }
             WalletSeed::Closed(closed_seed) => {
                 // Decrypt to PROVE the password is correct, then drop the
-                // plaintext (`Zeroizing`) without parking it.
-                let _verified = Zeroizing::new(closed_seed.decrypt_seed(password)?);
+                // plaintext (`Zeroizing`) without parking it. `decrypt_seed` is
+                // fully typed; this method's `String` return is pre-existing
+                // model/wallet debt tracked for a later type-through, so the
+                // typed error is rendered through its `Display` here.
+                let _verified = closed_seed
+                    .decrypt_seed(password)
+                    .map_err(|e| e.to_string())?;
                 let open_wallet_seed = OpenWalletSeed {
                     wallet_info: closed_seed.clone(),
                 };

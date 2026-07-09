@@ -287,8 +287,7 @@ impl WalletsBalancesScreen {
             let sk_wallet = if hd_wallet.is_none() {
                 app_context
                     .single_key_wallets
-                    .read()
-                    .unwrap()
+                    .read_recover()
                     .values()
                     .next()
                     .cloned()
@@ -2455,8 +2454,7 @@ impl ScreenLike for WalletsBalancesScreen {
                     let has_single_key_wallets = !self
                         .app_context
                         .single_key_wallets
-                        .read()
-                        .unwrap()
+                        .read_recover()
                         .is_empty();
 
                     if !has_hd_wallets && !has_single_key_wallets {

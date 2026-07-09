@@ -503,8 +503,7 @@ impl AddNewIdentityScreen {
         self.selected_wallet
             .as_ref()
             .unwrap()
-            .read()
-            .unwrap()
+            .read_recover()
             .identities
             .keys()
             .copied()

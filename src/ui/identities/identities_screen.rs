@@ -1108,8 +1108,7 @@ impl ScreenLike for IdentitiesScreen {
             // Create a vec of RefreshIdentity(identity) DesiredAppAction for each identity
             let backend_tasks: Vec<BackendTask> = self
                 .identities
-                .lock()
-                .unwrap()
+                .lock_recover()
                 .values()
                 .map(|qi| BackendTask::IdentityTask(IdentityTask::RefreshIdentity(qi.clone())))
                 .collect();

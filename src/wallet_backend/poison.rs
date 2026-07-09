@@ -1,23 +1,28 @@
-//! Poison-recovery for the wallet backend's in-memory `RwLock`s.
+//! Poison-recovery for locks guarding **derived, rebuildable** in-memory state.
 //!
-//! The locks these helpers guard — the single-key in-memory index and the
-//! just-in-time secret session cache — protect **derived, rebuildable** state,
-//! not a source of truth. The index is reconstructed from the k/v sidecar plus
-//! the secret vault on demand (`rehydrate_index`, `hydrate_wallets`); the
-//! session cache is a TTL'd convenience over the vault that can always be
-//! re-resolved by decrypting again. A thread that panics mid-update poisons the
-//! lock, but the guarded map is at worst missing or holding a single stale
-//! entry — never a corruption that risks funds — and the next read re-derives
-//! it.
+//! The free functions ([`read_recover`], [`write_recover`], [`lock_recover`])
+//! and their extension-trait forms ([`RwLockRecover`], [`MutexRecover`]) recover
+//! a poisoned guard (`PoisonError::into_inner`) instead of propagating the
+//! poison. They apply across the app wherever a lock protects state that is not
+//! a source of truth and can always be re-derived: the wallet backend's
+//! single-key in-memory index (rebuilt from the k/v sidecar plus the secret
+//! vault) and secret session cache (a TTL'd convenience over the vault); the
+//! loaded-wallet map and per-screen view state (`RwLock<Wallet>`,
+//! `RwLock<WalletFundedScreenStep>`, the settings cache); the Identities / DPNS /
+//! token-search screen caches (`Mutex`, re-fetched on demand); the coordinator
+//! gate's action slot; and the SQLite connection mutex (a `rusqlite::Connection`
+//! carries no cross-call invariant a panic can break).
 //!
-//! Failing every subsequent operation because an unrelated thread panicked
-//! (the default `RwLock` poison behavior) is therefore the wrong policy here: it
-//! turns a recoverable, self-healing cache into a dead subsystem. These helpers
-//! recover the guard instead (`PoisonError::into_inner`), matching the
-//! recovery direction already taken by `WalletMetaView` and the desired
-//! `open_wallets` behavior. Use them for rebuildable in-memory state only — a
-//! lock guarding a non-reconstructable invariant should keep failing (via the
-//! blanket `From<PoisonError<T>>` for `TaskError::LockPoisoned`).
+//! A thread that panics mid-update poisons the lock, but the guarded value is at
+//! worst missing or holding a single stale entry — never a corruption that risks
+//! funds — and the next read re-derives it. Failing every subsequent operation
+//! because an unrelated thread panicked (the default poison behavior) would turn
+//! a recoverable, self-healing subsystem into a dead one, so recovery is the
+//! correct policy. Use these helpers for rebuildable state only — a lock
+//! guarding a non-reconstructable invariant should keep failing (via the blanket
+//! `From<PoisonError<T>>` for `TaskError::LockPoisoned`), and a lock whose
+//! poison must fail loud for fund safety (the DashPay address-index mutex) keeps
+//! its explicit `.expect(...)`.
 
 use std::sync::{Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 

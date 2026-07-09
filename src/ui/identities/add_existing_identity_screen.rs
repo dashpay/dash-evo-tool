@@ -218,8 +218,7 @@ impl AddExistingIdentityScreen {
                 .values()
                 .map(|wallet| {
                     let alias = wallet
-                        .read()
-                        .unwrap()
+                        .read_recover()
                         .alias
                         .clone()
                         .unwrap_or_else(|| "Unnamed Wallet".to_string());
@@ -773,8 +772,7 @@ impl AddExistingIdentityScreen {
                 .values()
                 .map(|wallet| {
                     let alias = wallet
-                        .read()
-                        .unwrap()
+                        .read_recover()
                         .alias
                         .clone()
                         .unwrap_or_else(|| "Unnamed Wallet".to_string());

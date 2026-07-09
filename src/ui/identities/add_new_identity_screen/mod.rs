@@ -31,6 +31,7 @@ use crate::ui::identities::funding_common::{
 use crate::ui::state::TrackedAssetLockCache;
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, ScreenLike};
+use crate::wallet_backend::poison::RwLockRecover;
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dashcore_rpc::dashcore::transaction::special_transaction::TransactionPayload;
 use dash_sdk::dpp::dashcore::OutPoint;
@@ -138,7 +139,7 @@ impl AddNewIdentityScreen {
         let mut selected_wallet = None;
 
         if app_context.has_wallet.load(Ordering::Relaxed) {
-            let wallets = &app_context.wallets.read().unwrap();
+            let wallets = &app_context.wallets.read_recover();
             // If a specific wallet seed hash is provided, use that wallet
             if let Some(seed_hash) = wallet_seed_hash
                 && let Some(wallet) = wallets.get(&seed_hash)
@@ -223,7 +224,7 @@ impl AddNewIdentityScreen {
         };
 
         let (seed_hash, is_open) = {
-            let wallet = wallet_lock.read().unwrap();
+            let wallet = wallet_lock.read_recover();
             (wallet.seed_hash(), wallet.is_open())
         };
         if !is_open {
@@ -307,7 +308,7 @@ impl AddNewIdentityScreen {
 
             // Check if we have access to the selected wallet
             if let Some(wallet_guard) = self.selected_wallet.as_ref() {
-                let wallet = wallet_guard.read().unwrap();
+                let wallet = wallet_guard.read_recover();
                 let used_indices: HashSet<u32> = wallet.identities.keys().cloned().collect();
 
                 // Modify the selected text to include "(used)" if the current index is used
@@ -544,7 +545,7 @@ impl AddNewIdentityScreen {
                 }
 
                 let (has_unused_asset_lock, has_balance) = {
-                    let wallet = selected_wallet.read().unwrap();
+                    let wallet = selected_wallet.read_recover();
                     let seed_hash = wallet.seed_hash();
                     // Offer the option on a failed fetch too, so the user can
                     // reach the picker's Retry rather than the option vanishing.
@@ -590,7 +591,7 @@ impl AddNewIdentityScreen {
                 }
                 // Check if wallet has Platform address balance
                 let has_platform_balance = {
-                    let wallet = selected_wallet.read().unwrap();
+                    let wallet = selected_wallet.read_recover();
                     wallet
                         .platform_address_info
                         .values()
@@ -956,7 +957,7 @@ impl AddNewIdentityScreen {
                         },
                     };
 
-                    let mut step = self.step.write().unwrap();
+                    let mut step = self.step.write_recover();
                     *step = WalletFundedScreenStep::WaitingForPlatformAcceptance;
 
                     AppAction::BackendTask(BackendTask::IdentityTask(
@@ -978,7 +979,7 @@ impl AddNewIdentityScreen {
                     return AppAction::None;
                 }
 
-                let wallet_seed_hash = hex::encode(selected_wallet.read().unwrap().seed_hash());
+                let wallet_seed_hash = hex::encode(selected_wallet.read_recover().seed_hash());
                 tracing::debug!(wallet_seed_hash, "funding with wallet balance");
                 let identity_input = IdentityRegistrationInfo {
                     alias_input: self.alias_input.clone(),
@@ -991,7 +992,7 @@ impl AddNewIdentityScreen {
                     ),
                 };
 
-                let mut step = self.step.write().unwrap();
+                let mut step = self.step.write_recover();
                 *step = WalletFundedScreenStep::WaitingForAssetLock;
 
                 // Create the backend task to register the identity
@@ -1020,7 +1021,7 @@ impl AddNewIdentityScreen {
                     return AppAction::None;
                 }
 
-                let wallet_seed_hash = selected_wallet.read().unwrap().seed_hash();
+                let wallet_seed_hash = selected_wallet.read_recover().seed_hash();
 
                 let mut inputs = std::collections::BTreeMap::new();
                 inputs.insert(platform_addr, amount);
@@ -1037,7 +1038,7 @@ impl AddNewIdentityScreen {
                         },
                 };
 
-                let mut step = self.step.write().unwrap();
+                let mut step = self.step.write_recover();
                 *step = WalletFundedScreenStep::WaitingForPlatformAcceptance;
 
                 AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::RegisterIdentity(
@@ -1049,7 +1050,7 @@ impl AddNewIdentityScreen {
     }
 
     fn render_funding_amount_input(&mut self, ui: &mut egui::Ui) {
-        let funding_method = *self.funding_method.read().unwrap();
+        let funding_method = *self.funding_method.read_recover();
 
         // Only apply the max-amount restriction when using wallet balance;
         // reserve the estimated identity-creation fee out of the spendable
@@ -1179,7 +1180,7 @@ impl AddNewIdentityScreen {
         let Some(wallet_lock) = self.selected_wallet.clone() else {
             return;
         };
-        let seed_hash = wallet_lock.read().unwrap().seed_hash();
+        let seed_hash = wallet_lock.read_recover().seed_hash();
         let network = self.app_context.network;
         let identity_index = self.identity_id_number;
         let new_key_index = self.identity_keys.others.len() as u32 + 1;
@@ -1218,7 +1219,7 @@ impl ScreenLike for AddNewIdentityScreen {
         if matches!(message_type, MessageType::Error | MessageType::Warning) {
             // Reset step so we stop showing "Waiting for Platform acknowledgement".
             // The error itself is displayed by the global MessageBanner.
-            let mut step = self.step.write().unwrap();
+            let mut step = self.step.write_recover();
             *step = WalletFundedScreenStep::ReadyToCreate;
         }
     }
@@ -1253,12 +1254,12 @@ impl ScreenLike for AddNewIdentityScreen {
         {
             self.successful_qualified_identity_id = Some(qualified_identity.identity.id());
             self.completed_fee_result = Some(fee_result);
-            let mut step = self.step.write().unwrap();
+            let mut step = self.step.write_recover();
             *step = WalletFundedScreenStep::Success;
             return;
         }
 
-        let mut step = self.step.write().unwrap();
+        let mut step = self.step.write_recover();
         let current_step = *step;
         match current_step {
             WalletFundedScreenStep::ChooseFundingMethod => {}
@@ -1278,7 +1279,7 @@ impl ScreenLike for AddNewIdentityScreen {
                             return false;
                         };
                         if let Some(wallet) = &self.selected_wallet {
-                            let wallet = wallet.read().unwrap();
+                            let wallet = wallet.read_recover();
                             wallet.known_addresses.contains_key(&address)
                         } else {
                             false
@@ -1323,7 +1324,7 @@ impl ScreenLike for AddNewIdentityScreen {
             let mut inner_action = AppAction::None;
 
             ScrollArea::vertical().show(ui, |ui| {
-                let step = {*self.step.read().unwrap()};
+                let step = {*self.step.read_recover()};
                 if step == WalletFundedScreenStep::Success {
                     inner_action |= self.show_success(ui);
                     return;
@@ -1362,7 +1363,10 @@ impl ScreenLike for AddNewIdentityScreen {
                 };
 
                 // Check if wallet needs unlocking
-                let wallet = self.selected_wallet.as_ref().unwrap();
+                let wallet = self
+                    .selected_wallet
+                    .as_ref()
+                    .expect("invariant: selected_wallet checked Some above");
 
                 // Try to open wallet without password if it doesn't use one
                 if !self.wallet_open_attempted {
@@ -1396,8 +1400,11 @@ impl ScreenLike for AddNewIdentityScreen {
 
                     // Display the heading with an info icon that shows a tooltip on hover
                     ui.horizontal(|ui| {
-                        let wallet_guard = self.selected_wallet.as_ref().unwrap();
-                        let wallet = wallet_guard.read().unwrap();
+                        let wallet_guard = self
+                            .selected_wallet
+                            .as_ref()
+                            .expect("invariant: selected_wallet checked Some above");
+                        let wallet = wallet_guard.read_recover();
                         if wallet.identities.is_empty() {
                             ui.heading(format!(
                                 "{}. Choose an identity index for the wallet. Leaving this 0 is recommended.",
@@ -1473,7 +1480,7 @@ impl ScreenLike for AddNewIdentityScreen {
                 ui.separator();
 
                 // Extract the funding method from the RwLock to minimize borrow scope
-                let funding_method = *self.funding_method.read().unwrap();
+                let funding_method = *self.funding_method.read_recover();
 
                 if funding_method == FundingMethod::NoSelection {
                     return;
@@ -1547,7 +1554,7 @@ impl ScreenLike for AddNewIdentityScreen {
         if let Some((_key_id, derivation_path)) = self.pending_wif_request.take()
             && let Some(wallet) = &self.selected_wallet
         {
-            let seed_hash = wallet.read().unwrap().seed_hash();
+            let seed_hash = wallet.read_recover().seed_hash();
             pending_tasks.push(BackendTask::WalletTask(WalletTask::DeriveKeyForDisplay {
                 seed_hash,
                 derivation_path,
@@ -1557,7 +1564,7 @@ impl ScreenLike for AddNewIdentityScreen {
         // Fetch the selected wallet's tracked asset locks once (off the UI
         // thread) so the funding-method gate and the picker can read them.
         if let Some(wallet) = &self.selected_wallet {
-            let seed_hash = wallet.read().unwrap().seed_hash();
+            let seed_hash = wallet.read_recover().seed_hash();
             if let Some(task) = self.asset_lock_cache.ensure_requested(seed_hash) {
                 pending_tasks.push(task);
             }

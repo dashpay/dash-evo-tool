@@ -270,15 +270,21 @@ fn register_dashpay_address(
     // m/9'/coin'/15'/0'/<owner_hash>/<contact_hash>/<index>
     // Note: We use a simplified representation since full 256-bit paths don't fit in standard BIP32
     let coin_type = coin_type_for_network(app_context.network);
+    // Every index below is a valid BIP32 child index (< 2^31): the hardened
+    // constants (9, 15, 0) and the small per-network coin type are in range,
+    // and `hash_identifier_to_u32` masks its output with `& 0x7FFFFFFF`, so the
+    // identity indices are non-hardened by construction. `address_index` is a
+    // non-hardened receiving index, also below 2^31 by invariant.
+    let idx = "invariant: BIP32 child index is below 2^31";
     let path = DerivationPath::from(vec![
-        ChildNumber::from_hardened_idx(9).unwrap(), // Feature purpose
-        ChildNumber::from_hardened_idx(coin_type).unwrap(), // Coin type (per network)
-        ChildNumber::from_hardened_idx(15).unwrap(), // DashPay feature
-        ChildNumber::from_hardened_idx(0).unwrap(), // Account
+        ChildNumber::from_hardened_idx(9).expect(idx), // Feature purpose
+        ChildNumber::from_hardened_idx(coin_type).expect(idx), // Coin type (per network)
+        ChildNumber::from_hardened_idx(15).expect(idx), // DashPay feature
+        ChildNumber::from_hardened_idx(0).expect(idx), // Account
         // For the identity indices, we use a hash to fit in u32
-        ChildNumber::from_normal_idx(hash_identifier_to_u32(owner_id)).unwrap(),
-        ChildNumber::from_normal_idx(hash_identifier_to_u32(contact_id)).unwrap(),
-        ChildNumber::from_normal_idx(address_index).unwrap(),
+        ChildNumber::from_normal_idx(hash_identifier_to_u32(owner_id)).expect(idx),
+        ChildNumber::from_normal_idx(hash_identifier_to_u32(contact_id)).expect(idx),
+        ChildNumber::from_normal_idx(address_index).expect(idx),
     ]);
 
     // Store the DashPay address mapping in the k/v sidecar so the

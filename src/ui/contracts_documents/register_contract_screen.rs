@@ -258,15 +258,28 @@ impl RegisterDataContractScreen {
                 new_style.spacing.button_padding = egui::vec2(10.0, 5.0);
                 ui.set_style(new_style);
                 if ComponentStyles::add_primary_button(ui, "Register Contract").clicked() {
-                    // Fire off a backend task
-                    app_action = AppAction::BackendTask(BackendTask::ContractTask(Box::new(
-                        ContractTask::RegisterDataContract(
-                            (**contract).clone(),
-                            self.contract_alias_input.clone(),
-                            self.selected_qualified_identity.clone().unwrap(), // unwrap should be safe here
-                            self.selected_key.clone().unwrap(), // unwrap should be safe here
-                        ),
-                    )));
+                    // The button is only reachable once an identity and key are
+                    // selected; guard rather than unwrap so a missing selection
+                    // degrades to an actionable banner instead of a panic.
+                    if let (Some(qualified_identity), Some(key)) = (
+                        self.selected_qualified_identity.clone(),
+                        self.selected_key.clone(),
+                    ) {
+                        app_action = AppAction::BackendTask(BackendTask::ContractTask(Box::new(
+                            ContractTask::RegisterDataContract(
+                                (**contract).clone(),
+                                self.contract_alias_input.clone(),
+                                qualified_identity,
+                                key,
+                            ),
+                        )));
+                    } else {
+                        MessageBanner::set_global(
+                            self.app_context.egui_ctx(),
+                            "Select an identity and key before registering the contract.",
+                            MessageType::Error,
+                        );
+                    }
                 }
             }
             BroadcastStatus::Broadcasting => {

@@ -617,8 +617,14 @@ impl AppState {
                     .into(),
             );
         }
-        let chosen_network = *network_contexts.keys().next().unwrap();
-        let active_context = network_contexts.get(&chosen_network).unwrap().clone();
+        let chosen_network = *network_contexts
+            .keys()
+            .next()
+            .expect("invariant: network_contexts is non-empty after the emptiness check above");
+        let active_context = network_contexts
+            .get(&chosen_network)
+            .expect("invariant: chosen_network was just taken from network_contexts")
+            .clone();
 
         // load fonts
         ctx.set_fonts(crate::bundled::fonts().expect("failed to load fonts"));
@@ -1218,7 +1224,9 @@ impl AppState {
         if self.screen_stack.is_empty() {
             self.active_root_screen_mut()
         } else {
-            self.screen_stack.last_mut().unwrap()
+            self.screen_stack
+                .last_mut()
+                .expect("invariant: screen_stack is non-empty in this branch")
         }
     }
 

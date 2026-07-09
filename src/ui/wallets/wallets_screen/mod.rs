@@ -31,6 +31,7 @@ use crate::ui::state::account_summary::{
 };
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::{MessageType, RootScreenType, ScreenLike, ScreenType};
+use crate::wallet_backend::poison::RwLockRecover;
 use chrono::{DateTime, Utc};
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use eframe::egui::{self, ComboBox, Context, Ui};
@@ -282,7 +283,7 @@ impl WalletsBalancesScreen {
             }
 
             // Default: try HD wallet first, then single key wallet
-            let hd_wallet = app_context.wallets.read().unwrap().values().next().cloned();
+            let hd_wallet = app_context.wallets.read_recover().values().next().cloned();
             let sk_wallet = if hd_wallet.is_none() {
                 app_context
                     .single_key_wallets
@@ -512,7 +513,7 @@ impl WalletsBalancesScreen {
         // Add HD wallets
         if let Ok(wallets_guard) = self.app_context.wallets.read() {
             for wallet in wallets_guard.values() {
-                let guard = wallet.read().unwrap();
+                let guard = wallet.read_recover();
                 let seed_hash = guard.seed_hash();
                 let core_balance = self.core_balance_duffs(&seed_hash);
                 let platform_balance = self.platform_balance_duffs(&seed_hash);
@@ -531,7 +532,7 @@ impl WalletsBalancesScreen {
         // Add single key wallets
         if let Ok(wallets_guard) = self.app_context.single_key_wallets.read() {
             for wallet in wallets_guard.values() {
-                let guard = wallet.read().unwrap();
+                let guard = wallet.read_recover();
                 let balance_dash = guard.total_balance_duffs() as f64 * 1e-8;
                 let label = format!(
                     "SK: {} ({:.4} DASH)",
@@ -762,7 +763,7 @@ impl WalletsBalancesScreen {
         let wallet_is_open = self
             .selected_wallet
             .as_ref()
-            .is_some_and(|wallet_guard| wallet_guard.read().unwrap().is_open());
+            .is_some_and(|wallet_guard| wallet_guard.read_recover().is_open());
 
         // Only show "Add Receiving Address" button for Dash Core account (BIP44 account 0)
         let is_main_account = self
@@ -798,7 +799,7 @@ impl WalletsBalancesScreen {
                     .corner_radius(4.0);
 
             if ui.add(remove_button).clicked() {
-                let wallet = selected_wallet.read().unwrap();
+                let wallet = selected_wallet.read_recover();
                 let alias = wallet
                     .alias
                     .clone()
@@ -1612,7 +1613,7 @@ impl WalletsBalancesScreen {
         };
 
         let selected_seed_hash = {
-            let wallet_guard = wallet_arc.read().unwrap();
+            let wallet_guard = wallet_arc.read_recover();
             wallet_guard.seed_hash()
         };
 
@@ -1987,7 +1988,7 @@ impl WalletsBalancesScreen {
         };
 
         let (alias, _seed_hash, _wallet_is_main) = {
-            let wallet = wallet_arc.read().unwrap();
+            let wallet = wallet_arc.read_recover();
             (
                 wallet
                     .alias
@@ -2036,7 +2037,7 @@ impl WalletsBalancesScreen {
 
                                 // Total balance line
                                 {
-                                    let wallet = wallet_arc.read().unwrap();
+                                    let wallet = wallet_arc.read_recover();
                                     self.render_balance_total(ui, &wallet);
                                 }
                             });
@@ -2047,7 +2048,7 @@ impl WalletsBalancesScreen {
 
                                 // Collapsible balance breakdown
                                 {
-                                    let wallet = wallet_arc.read().unwrap();
+                                    let wallet = wallet_arc.read_recover();
                                     self.render_balance_breakdown_detail(ui, &wallet);
                                 }
 
@@ -2064,7 +2065,7 @@ impl WalletsBalancesScreen {
                         ui.separator();
 
                         let summaries = {
-                            let seed_hash = wallet_arc.read().unwrap().seed_hash();
+                            let seed_hash = wallet_arc.read_recover().seed_hash();
                             let address_balances = self.snapshot_address_balances(&seed_hash);
                             let address_paths = self.snapshot_address_paths(&seed_hash);
                             collect_account_summaries(
@@ -2450,7 +2451,7 @@ impl ScreenLike for WalletsBalancesScreen {
                     // single keys may be all the user has left to restore.
                     self.render_protected_restore_banner(ui);
 
-                    let has_hd_wallets = !self.app_context.wallets.read().unwrap().is_empty();
+                    let has_hd_wallets = !self.app_context.wallets.read_recover().is_empty();
                     let has_single_key_wallets = !self
                         .app_context
                         .single_key_wallets
@@ -2562,7 +2563,7 @@ impl ScreenLike for WalletsBalancesScreen {
 
                                 // Handle HD wallet rename
                                 if let Some(selected_wallet) = &self.selected_wallet {
-                                    let mut wallet = selected_wallet.write().unwrap();
+                                    let mut wallet = selected_wallet.write_recover();
                                     wallet.alias = Some(self.rename_input.clone());
 
                                     // T-W-01: alias persistence goes
@@ -2618,7 +2619,7 @@ impl ScreenLike for WalletsBalancesScreen {
                                     // touching the legacy `single_key_wallet`
                                     // table.
                                     let address =
-                                        selected_sk_wallet.read().unwrap().address.to_string();
+                                        selected_sk_wallet.read_recover().address.to_string();
                                     let new_alias = self.rename_input.clone();
                                     let persisted = match self.app_context.wallet_backend() {
                                         Ok(backend) => backend
@@ -2628,7 +2629,7 @@ impl ScreenLike for WalletsBalancesScreen {
                                     };
                                     match persisted {
                                         Ok(()) => {
-                                            selected_sk_wallet.write().unwrap().alias =
+                                            selected_sk_wallet.write_recover().alias =
                                                 Some(new_alias);
                                             self.show_rename_dialog = false;
                                             self.rename_input.clear();

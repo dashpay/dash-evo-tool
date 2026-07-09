@@ -2,6 +2,7 @@ use crate::app::AppAction;
 use crate::ui::components::component_trait::Component;
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, ScreenType};
+use crate::wallet_backend::poison::RwLockRecover;
 use eframe::egui;
 use egui::{Frame, Margin, RichText, Ui};
 
@@ -27,7 +28,7 @@ impl WalletsBalancesScreen {
             None => return action,
         };
 
-        let wallet = wallet_arc.read().unwrap();
+        let wallet = wallet_arc.read_recover();
         let address = wallet.address.to_string();
         let alias = wallet
             .alias

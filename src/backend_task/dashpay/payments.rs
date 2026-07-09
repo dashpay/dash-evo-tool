@@ -187,7 +187,8 @@ pub async fn derive_contact_payment_address(
         network,
         depth: 0,
         parent_fingerprint: Fingerprint::default(),
-        child_number: ChildNumber::from_normal_idx(0).unwrap(),
+        child_number: ChildNumber::from_normal_idx(0)
+            .expect("invariant: BIP32 child index 0 is below 2^31"),
         public_key: pubkey,
         chain_code: ChainCode::from(chain_code),
     };

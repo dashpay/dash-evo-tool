@@ -143,7 +143,10 @@ impl AddContractsScreen {
                         .collect::<Vec<_>>(),
                 );
             }
-            let alias_inputs = self.alias_inputs.as_mut().unwrap();
+            let alias_inputs = self
+                .alias_inputs
+                .as_mut()
+                .expect("invariant: alias_inputs set to Some immediately above");
 
             // Clone the options to avoid borrowing self.add_contracts_status during the UI closure
             let options = self.maybe_found_contracts.clone();

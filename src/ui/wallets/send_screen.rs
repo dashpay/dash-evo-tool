@@ -2196,7 +2196,11 @@ impl WalletSendScreen {
         if self.address_input.is_none() {
             self.address_input = Some(self.build_address_input(allowed_kinds));
         }
-        let resp = self.address_input.as_mut().unwrap().show(ui);
+        let resp = self
+            .address_input
+            .as_mut()
+            .expect("invariant: address_input set to Some immediately above")
+            .show(ui);
         resp.inner.update(&mut self.validated_destination);
     }
 

@@ -840,11 +840,17 @@ impl Screen {
             Screen::AddNewWalletScreen(_) => ScreenType::AddNewWallet,
             Screen::WalletsBalancesScreen(_) => ScreenType::WalletsBalances,
             Screen::ImportMnemonicScreen(_) => ScreenType::ImportMnemonic,
-            Screen::WalletSendScreen(screen) => {
-                ScreenType::WalletSendScreen(screen.selected_wallet.clone().unwrap(), screen.flow())
-            }
+            Screen::WalletSendScreen(screen) => ScreenType::WalletSendScreen(
+                screen
+                    .selected_wallet
+                    .clone()
+                    .expect("invariant: a live WalletSendScreen always has a selected wallet"),
+                screen.flow(),
+            ),
             Screen::SingleKeyWalletSendScreen(screen) => {
-                ScreenType::SingleKeyWalletSendScreen(screen.selected_wallet.clone().unwrap())
+                ScreenType::SingleKeyWalletSendScreen(screen.selected_wallet.clone().expect(
+                    "invariant: a live SingleKeyWalletSendScreen always has a selected wallet",
+                ))
             }
             Screen::AddContractsScreen(_) => ScreenType::AddContracts,
             Screen::ProofVisualizerScreen(_) => ScreenType::ProofVisualizer,

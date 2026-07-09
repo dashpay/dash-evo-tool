@@ -7,13 +7,14 @@ use crate::ui::identities::add_new_identity_screen::{
     AddNewIdentityScreen, FundingMethod, WalletFundedScreenStep,
 };
 use crate::ui::theme::{ComponentStyles, DashColors};
+use crate::wallet_backend::poison::RwLockRecover;
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use egui::{Color32, ComboBox, RichText, Ui};
 
 impl AddNewIdentityScreen {
     fn show_platform_address_balance(&self, ui: &mut egui::Ui) {
         if let Some(selected_wallet) = &self.selected_wallet {
-            let wallet = selected_wallet.read().unwrap();
+            let wallet = selected_wallet.read_recover();
 
             let total_platform_balance: u64 = wallet
                 .platform_address_info
@@ -49,7 +50,7 @@ impl AddNewIdentityScreen {
         let network = self.app_context.network;
         let platform_addresses: Vec<(String, PlatformAddress, u64)> =
             if let Some(wallet_arc) = &self.selected_wallet {
-                let wallet = wallet_arc.read().unwrap();
+                let wallet = wallet_arc.read_recover();
                 wallet
                     .platform_addresses(network)
                     .into_iter()

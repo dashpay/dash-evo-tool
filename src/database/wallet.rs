@@ -29,7 +29,7 @@ impl Database {
     /// removal before that wipe (the F17/F20 leak).
     pub fn remove_wallet(&self, seed_hash: &[u8; 32], network: &Network) -> rusqlite::Result<()> {
         let network_str = network.to_string();
-        let mut conn = self.conn.lock().unwrap();
+        let mut conn = self.locked_conn();
         let tx = conn.transaction()?;
 
         if self.table_exists(&tx, "wallet_addresses")? && self.table_exists(&tx, "utxos")? {
@@ -159,7 +159,7 @@ impl Database {
     /// funds.
     pub fn get_wallets(&self, network: &Network) -> rusqlite::Result<Vec<Wallet>> {
         let network_str = network.to_string();
-        let conn = self.conn.lock().unwrap();
+        let conn = self.locked_conn();
 
         tracing::trace!("step 1: retrieve all wallets for the given network");
         let mut stmt = conn.prepare(
@@ -473,7 +473,7 @@ impl Database {
     /// by the caller (see the network-chooser dev-tool button).
     pub fn clear_all_platform_addresses(&self, network: &Network) -> rusqlite::Result<usize> {
         let network_str = network.to_string();
-        let conn = self.conn.lock().unwrap();
+        let conn = self.locked_conn();
 
         // Delete platform addresses from wallet_addresses (path_reference = 16 is PlatformPayment)
         // We need to join with wallet table to filter by network

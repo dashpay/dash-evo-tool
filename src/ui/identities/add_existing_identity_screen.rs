@@ -17,6 +17,7 @@ use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::identities::funding_common::wallet_selection_combo;
 use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::{MessageType, ScreenLike};
+use crate::wallet_backend::poison::RwLockRecover;
 use bip39::rand::{prelude::IteratorRandom, thread_rng};
 use dash_sdk::dashcore_rpc::dashcore::Network;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
@@ -148,7 +149,7 @@ pub struct AddExistingIdentityScreen {
 
 impl AddExistingIdentityScreen {
     pub fn new(app_context: &Arc<AppContext>) -> Self {
-        let selected_wallet = app_context.wallets.read().unwrap().values().next().cloned();
+        let selected_wallet = app_context.wallets.read_recover().values().next().cloned();
         let (testnet_loaded_nodes, init_error) = if app_context.network == Network::Testnet {
             match load_testnet_nodes_from_yml(".testnet_nodes.yml") {
                 Ok(nodes) => (nodes, None),
@@ -212,7 +213,7 @@ impl AddExistingIdentityScreen {
         }
 
         let wallets_snapshot: Vec<(String, Arc<RwLock<Wallet>>)> = {
-            let wallets_guard = self.app_context.wallets.read().unwrap();
+            let wallets_guard = self.app_context.wallets.read_recover();
             wallets_guard
                 .values()
                 .map(|wallet| {
@@ -605,7 +606,10 @@ impl AddExistingIdentityScreen {
             return action;
         };
 
-        let wallet = self.selected_wallet.as_ref().unwrap();
+        let wallet = self
+            .selected_wallet
+            .as_ref()
+            .expect("invariant: selected_wallet checked Some above");
 
         // Try to open wallet without password if it doesn't use one
         if !self.wallet_open_attempted {
@@ -719,7 +723,12 @@ impl AddExistingIdentityScreen {
                 .map(validate_search_index)
             {
                 Some(Ok(identity_index)) => {
-                    let wallet_ref = self.selected_wallet.as_ref().unwrap().clone().into();
+                    let wallet_ref = self
+                        .selected_wallet
+                        .as_ref()
+                        .expect("invariant: selected_wallet checked Some above")
+                        .clone()
+                        .into();
                     action = AppAction::BackendTask(BackendTask::IdentityTask(
                         match self.wallet_search_mode {
                             WalletIdentitySearchMode::SpecificIndex => {
@@ -759,7 +768,7 @@ impl AddExistingIdentityScreen {
         ui.add_space(15.0);
 
         let wallets_snapshot: Vec<(String, Arc<RwLock<Wallet>>)> = {
-            let wallets_guard = self.app_context.wallets.read().unwrap();
+            let wallets_guard = self.app_context.wallets.read_recover();
             wallets_guard
                 .values()
                 .map(|wallet| {
@@ -893,7 +902,7 @@ impl AddExistingIdentityScreen {
             let selected_wallet_seed_hash = if self.identity_associated_with_wallet {
                 self.selected_wallet
                     .as_ref()
-                    .map(|wallet| wallet.read().unwrap().seed_hash())
+                    .map(|wallet| wallet.read_recover().seed_hash())
             } else {
                 None
             };
@@ -918,7 +927,7 @@ impl AddExistingIdentityScreen {
         let selected_wallet_seed_hash = if self.identity_associated_with_wallet {
             self.selected_wallet
                 .as_ref()
-                .map(|wallet| wallet.read().unwrap().seed_hash())
+                .map(|wallet| wallet.read_recover().seed_hash())
         } else {
             None
         };
@@ -1188,7 +1197,7 @@ impl ScreenLike for AddExistingIdentityScreen {
                         }
                         LoadIdentityMode::Wallet => {
                             let wallets_len = {
-                                let wallets = self.app_context.wallets.read().unwrap();
+                                let wallets = self.app_context.wallets.read_recover();
                                 wallets.len()
                             };
                             inner_action |= self.render_by_wallet(ui, wallets_len);

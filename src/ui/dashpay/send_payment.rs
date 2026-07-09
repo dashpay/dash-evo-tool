@@ -762,8 +762,13 @@ impl PaymentHistory {
                         let contact_id = if contact_name.contains("(") && contact_name.contains(")")
                         {
                             // Extract ID from format "Unknown (abcd1234)"
-                            let start = contact_name.find('(').unwrap() + 1;
-                            let end = contact_name.find(')').unwrap();
+                            let start = contact_name
+                                .find('(')
+                                .expect("invariant: '(' present per the contains check above")
+                                + 1;
+                            let end = contact_name
+                                .find(')')
+                                .expect("invariant: ')' present per the contains check above");
                             let _id_str = &contact_name[start..end];
                             // This is likely a partial base58 ID, we'd need the full ID
                             // For now, we'll use a placeholder

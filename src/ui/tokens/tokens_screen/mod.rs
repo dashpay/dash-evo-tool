@@ -11,6 +11,7 @@ pub use structs::*;
 
 pub use groups::*;
 
+use crate::wallet_backend::poison::MutexRecover;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, RwLock};
 use tracing::error;
@@ -2755,11 +2756,8 @@ impl ScreenLike for TokensScreen {
                             inner_action |= self.render_my_tokens_subscreen(ui);
                         }
                         TokensSubscreen::SearchTokens => {
-                            if self.selected_contract_id.is_some() {
-                                inner_action |= self.render_contract_details(
-                                    ui,
-                                    &self.selected_contract_id.unwrap(),
-                                );
+                            if let Some(contract_id) = self.selected_contract_id {
+                                inner_action |= self.render_contract_details(ui, &contract_id);
                                 // Render the JSON popup if needed
                                 if self.show_json_popup {
                                     self.render_data_contract_json_popup(ui);
@@ -2933,7 +2931,7 @@ impl ScreenLike for TokensScreen {
 
         match backend_task_success_result {
             BackendTaskSuccessResult::DescriptionsByKeyword(descriptions, next_cursor) => {
-                let mut sr = self.search_results.lock().unwrap();
+                let mut sr = self.search_results.lock_recover();
                 *sr = descriptions;
                 self.search_has_next_page = next_cursor.is_some();
                 if let Some(cursor) = next_cursor {
@@ -2944,8 +2942,9 @@ impl ScreenLike for TokensScreen {
             }
             BackendTaskSuccessResult::ContractsWithDescriptions(contracts_with_descriptions) => {
                 let default_info = (None, vec![]);
-                let info = contracts_with_descriptions
-                    .get(&self.selected_contract_id.unwrap())
+                let info = self
+                    .selected_contract_id
+                    .and_then(|id| contracts_with_descriptions.get(&id))
                     .unwrap_or(&default_info);
 
                 self.selected_contract_description = info.0.clone();

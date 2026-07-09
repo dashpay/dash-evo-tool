@@ -41,7 +41,7 @@ impl Database {
         address: &str,
         network: &str,
     ) -> rusqlite::Result<Vec<(OutPoint, TxOut)>> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.locked_conn();
 
         let mut stmt = conn.prepare(
             "SELECT txid, vout, value, script_pubkey FROM utxos

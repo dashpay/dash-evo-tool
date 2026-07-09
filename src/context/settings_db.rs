@@ -10,6 +10,7 @@ use super::{AppContext, SettingsCacheGuard};
 use crate::model::settings::{AppSettings, detect_dash_qt_path};
 use crate::ui::RootScreenType;
 use crate::ui::theme::ThemeMode;
+use crate::wallet_backend::poison::RwLockRecover;
 use crate::wallet_backend::{DetScope, KvAdapterError};
 
 impl AppContext {
@@ -68,7 +69,7 @@ impl AppContext {
     /// until the underlying k/v operation completes. This ensures atomicity and
     /// prevents race conditions regardless of whether the write succeeds.
     pub fn invalidate_settings_cache(&'_ self) -> SettingsCacheGuard<'_> {
-        let mut guard = self.cached_settings.write().unwrap();
+        let mut guard = self.cached_settings.write_recover();
         *guard = None;
         guard
     }
@@ -80,7 +81,7 @@ impl AppContext {
     /// in-memory between updates.
     pub fn get_app_settings(&self) -> AppSettings {
         // Fast path: cache hit under a read lock.
-        if let Some(cached) = self.cached_settings.read().unwrap().clone() {
+        if let Some(cached) = self.cached_settings.read_recover().clone() {
             return cached;
         }
 
@@ -88,7 +89,7 @@ impl AppContext {
         // concurrent `set_app_settings` (which also holds this write lock for
         // its whole duration) cannot slip a fresh value in between our read and
         // write and then be clobbered by our stale load.
-        let mut guard = self.cached_settings.write().unwrap();
+        let mut guard = self.cached_settings.write_recover();
         // Double-check: a racer may have populated the cache while we waited.
         if let Some(cached) = guard.clone() {
             return cached;

@@ -949,6 +949,42 @@ impl DocumentActionScreen {
         action
     }
 
+    /// Resolve the four selections every document action needs — document
+    /// type, contract, identity, and signing key.
+    ///
+    /// The action buttons are only enabled once all four are chosen, so a
+    /// missing one is a broken UI invariant rather than normal input. Instead
+    /// of panicking, show an actionable banner and return `None` so the caller
+    /// degrades to `BackendTask::None`.
+    #[allow(clippy::type_complexity)]
+    fn require_selections(
+        &self,
+    ) -> Option<(
+        &DocumentType,
+        &QualifiedContract,
+        &QualifiedIdentity,
+        &IdentityPublicKey,
+    )> {
+        match (
+            self.selected_document_type.as_ref(),
+            self.selected_contract.as_ref(),
+            self.selected_identity.as_ref(),
+            self.selected_key.as_ref(),
+        ) {
+            (Some(doc_type), Some(contract), Some(identity), Some(key)) => {
+                Some((doc_type, contract, identity, key))
+            }
+            _ => {
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    "Select a document type, contract, identity, and key before continuing.",
+                    crate::ui::MessageType::Error,
+                );
+                None
+            }
+        }
+    }
+
     fn create_document_action(&mut self) -> BackendTask {
         match self.action_type {
             DocumentActionType::Create => self.create_document_task(),
@@ -963,7 +999,9 @@ impl DocumentActionScreen {
     fn create_document_task(&mut self) -> BackendTask {
         match self.try_build_document() {
             Ok((doc, entropy)) => {
-                let doc_type = self.selected_document_type.as_ref().unwrap();
+                let Some((doc_type, contract, identity, key)) = self.require_selections() else {
+                    return BackendTask::None;
+                };
 
                 let token_payment_info =
                     doc_type
@@ -984,11 +1022,9 @@ impl DocumentActionScreen {
                     token_payment_info,
                     entropy,
                     document_type: doc_type.clone(),
-                    data_contract: Arc::new(
-                        self.selected_contract.as_ref().unwrap().contract.clone(),
-                    ),
-                    qualified_identity: self.selected_identity.as_ref().unwrap().clone(),
-                    identity_key: self.selected_key.as_ref().unwrap().clone(),
+                    data_contract: Arc::new(contract.contract.clone()),
+                    qualified_identity: identity.clone(),
+                    identity_key: key.clone(),
                 }))
             }
             Err(e) => {
@@ -1006,7 +1042,9 @@ impl DocumentActionScreen {
         let document_id =
             Identifier::from_string(&self.document_id_input, Encoding::Base58).unwrap_or_default();
 
-        let doc_type = self.selected_document_type.as_ref().unwrap();
+        let Some((doc_type, contract, identity, key)) = self.require_selections() else {
+            return BackendTask::None;
+        };
 
         let token_payment_info =
             doc_type
@@ -1024,9 +1062,9 @@ impl DocumentActionScreen {
         BackendTask::DocumentTask(Box::new(DocumentTask::DeleteDocument {
             document_id,
             document_type: doc_type.clone(),
-            data_contract: Arc::new(self.selected_contract.as_ref().unwrap().contract.clone()),
-            qualified_identity: self.selected_identity.as_ref().unwrap().clone(),
-            identity_key: self.selected_key.as_ref().unwrap().clone(),
+            data_contract: Arc::new(contract.contract.clone()),
+            qualified_identity: identity.clone(),
+            identity_key: key.clone(),
             token_payment_info,
         }))
     }
@@ -1035,7 +1073,9 @@ impl DocumentActionScreen {
         let document_id =
             Identifier::from_string(&self.document_id_input, Encoding::Base58).unwrap_or_default();
 
-        let doc_type = self.selected_document_type.as_ref().unwrap();
+        let Some((doc_type, contract, identity, key)) = self.require_selections() else {
+            return BackendTask::None;
+        };
 
         let token_payment_info =
             doc_type
@@ -1054,9 +1094,9 @@ impl DocumentActionScreen {
             price: self.fetched_price.unwrap_or(0),
             document_id,
             document_type: doc_type.clone(),
-            data_contract: Arc::new(self.selected_contract.as_ref().unwrap().contract.clone()),
-            qualified_identity: self.selected_identity.as_ref().unwrap().clone(),
-            identity_key: self.selected_key.as_ref().unwrap().clone(),
+            data_contract: Arc::new(contract.contract.clone()),
+            qualified_identity: identity.clone(),
+            identity_key: key.clone(),
             token_payment_info,
         }))
     }
@@ -1065,7 +1105,10 @@ impl DocumentActionScreen {
         if let Some(_original_doc) = &self.original_doc {
             match self.try_build_document_from_original() {
                 Ok((updated_doc, _entropy)) => {
-                    let doc_type = self.selected_document_type.as_ref().unwrap();
+                    let Some((doc_type, contract, identity, key)) = self.require_selections()
+                    else {
+                        return BackendTask::None;
+                    };
 
                     let token_payment_info =
                         doc_type
@@ -1084,11 +1127,9 @@ impl DocumentActionScreen {
                     BackendTask::DocumentTask(Box::new(DocumentTask::ReplaceDocument {
                         document: updated_doc,
                         document_type: doc_type.clone(),
-                        data_contract: Arc::new(
-                            self.selected_contract.as_ref().unwrap().contract.clone(),
-                        ),
-                        qualified_identity: self.selected_identity.as_ref().unwrap().clone(),
-                        identity_key: self.selected_key.as_ref().unwrap().clone(),
+                        data_contract: Arc::new(contract.contract.clone()),
+                        qualified_identity: identity.clone(),
+                        identity_key: key.clone(),
                         token_payment_info,
                     }))
                 }
@@ -1102,7 +1143,9 @@ impl DocumentActionScreen {
                 }
             }
         } else {
-            let doc_type = self.selected_document_type.as_ref().unwrap();
+            let Some((doc_type, contract, identity, key)) = self.require_selections() else {
+                return BackendTask::None;
+            };
 
             let token_payment_info =
                 doc_type
@@ -1120,9 +1163,9 @@ impl DocumentActionScreen {
             BackendTask::DocumentTask(Box::new(DocumentTask::ReplaceDocument {
                 document: DocumentV0::default().into(),
                 document_type: doc_type.clone(),
-                data_contract: Arc::new(self.selected_contract.as_ref().unwrap().contract.clone()),
-                qualified_identity: self.selected_identity.as_ref().unwrap().clone(),
-                identity_key: self.selected_key.as_ref().unwrap().clone(),
+                data_contract: Arc::new(contract.contract.clone()),
+                qualified_identity: identity.clone(),
+                identity_key: key.clone(),
                 token_payment_info,
             }))
         }
@@ -1133,7 +1176,9 @@ impl DocumentActionScreen {
             Identifier::from_string(&self.document_id_input, Encoding::Base58).unwrap_or_default();
         let price = self.price_input.parse::<u64>().unwrap_or(0);
 
-        let doc_type = self.selected_document_type.as_ref().unwrap();
+        let Some((doc_type, contract, identity, key)) = self.require_selections() else {
+            return BackendTask::None;
+        };
 
         let token_payment_info =
             doc_type
@@ -1152,9 +1197,9 @@ impl DocumentActionScreen {
             price,
             document_id,
             document_type: doc_type.clone(),
-            data_contract: Arc::new(self.selected_contract.as_ref().unwrap().contract.clone()),
-            qualified_identity: self.selected_identity.as_ref().unwrap().clone(),
-            identity_key: self.selected_key.as_ref().unwrap().clone(),
+            data_contract: Arc::new(contract.contract.clone()),
+            qualified_identity: identity.clone(),
+            identity_key: key.clone(),
             token_payment_info,
         }))
     }
@@ -1165,7 +1210,9 @@ impl DocumentActionScreen {
         let recipient_id =
             Identifier::from_string(&self.recipient_id_input, Encoding::Base58).unwrap_or_default();
 
-        let doc_type = self.selected_document_type.as_ref().unwrap();
+        let Some((doc_type, contract, identity, key)) = self.require_selections() else {
+            return BackendTask::None;
+        };
 
         let token_payment_info =
             doc_type
@@ -1184,9 +1231,9 @@ impl DocumentActionScreen {
             document_id,
             new_owner_id: recipient_id,
             document_type: doc_type.clone(),
-            data_contract: Arc::new(self.selected_contract.as_ref().unwrap().contract.clone()),
-            qualified_identity: self.selected_identity.as_ref().unwrap().clone(),
-            identity_key: self.selected_key.as_ref().unwrap().clone(),
+            data_contract: Arc::new(contract.contract.clone()),
+            qualified_identity: identity.clone(),
+            identity_key: key.clone(),
             token_payment_info,
         }))
     }
@@ -1670,8 +1717,13 @@ impl ScreenLike for DocumentActionScreen {
                             self.original_doc = Some(doc.clone());
                             // Populate field inputs with existing values
                             // Only include properties that are defined in the document type schema
-                            let doc_type_properties =
-                                self.selected_document_type.as_ref().unwrap().properties();
+                            let Some(doc_type) = self.selected_document_type.as_ref() else {
+                                tracing::warn!(
+                                    "Replace results arrived without a selected document type; skipping field population"
+                                );
+                                return;
+                            };
+                            let doc_type_properties = doc_type.properties();
                             self.field_inputs = doc
                                 .properties()
                                 .iter()

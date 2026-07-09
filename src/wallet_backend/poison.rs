@@ -19,7 +19,7 @@
 //! lock guarding a non-reconstructable invariant should keep failing (via the
 //! blanket `From<PoisonError<T>>` for `TaskError::LockPoisoned`).
 
-use std::sync::{PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 /// Acquire a read guard, recovering it if the lock is poisoned.
 ///
@@ -35,6 +35,54 @@ pub(crate) fn read_recover<T>(lock: &RwLock<T>) -> RwLockReadGuard<'_, T> {
 /// the module docs); a poisoned lock yields the same guard the happy path would.
 pub(crate) fn write_recover<T>(lock: &RwLock<T>) -> RwLockWriteGuard<'_, T> {
     lock.write().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Ergonomic `.read_recover()` / `.write_recover()` on `RwLock`, delegating to
+/// [`read_recover`] / [`write_recover`].
+///
+/// Lets call sites read as naturally as `.read().unwrap()` while routing every
+/// lock acquisition through the single recovery policy — no panic on a poisoned
+/// lock. Same contract as the free functions: rebuildable in-memory state only.
+/// A lock guarding a non-reconstructable invariant must keep failing via the
+/// blanket `From<PoisonError<T>>` for `TaskError::LockPoisoned` instead.
+pub(crate) trait RwLockRecover<T> {
+    /// Acquire a read guard, recovering a poisoned lock instead of panicking.
+    fn read_recover(&self) -> RwLockReadGuard<'_, T>;
+    /// Acquire a write guard, recovering a poisoned lock instead of panicking.
+    fn write_recover(&self) -> RwLockWriteGuard<'_, T>;
+}
+
+impl<T> RwLockRecover<T> for RwLock<T> {
+    fn read_recover(&self) -> RwLockReadGuard<'_, T> {
+        read_recover(self)
+    }
+    fn write_recover(&self) -> RwLockWriteGuard<'_, T> {
+        write_recover(self)
+    }
+}
+
+/// Acquire a `Mutex` guard, recovering it if the lock is poisoned.
+///
+/// Recovery is safe for the rebuildable in-memory state these locks guard (see
+/// the module docs); a poisoned lock yields the same guard the happy path would.
+pub(crate) fn lock_recover<T>(lock: &Mutex<T>) -> MutexGuard<'_, T> {
+    lock.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// Ergonomic `.lock_recover()` on `Mutex`, delegating to [`lock_recover`].
+///
+/// The `Mutex` analog of [`RwLockRecover`]: routes lock acquisition through the
+/// single recovery policy so a thread panicking mid-update never wedges the
+/// subsystem. Same contract — rebuildable in-memory state only.
+pub(crate) trait MutexRecover<T> {
+    /// Acquire the guard, recovering a poisoned lock instead of panicking.
+    fn lock_recover(&self) -> MutexGuard<'_, T>;
+}
+
+impl<T> MutexRecover<T> for Mutex<T> {
+    fn lock_recover(&self) -> MutexGuard<'_, T> {
+        lock_recover(self)
+    }
 }
 
 #[cfg(test)]

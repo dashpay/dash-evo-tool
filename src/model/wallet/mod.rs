@@ -9,6 +9,7 @@ pub mod single_key;
 use crate::database::WalletError;
 use crate::model::secret::Secret;
 use crate::model::wallet::auth_pubkey_cache::AuthPubkeyCache;
+use crate::wallet_backend::poison::RwLockRecover;
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::async_trait::async_trait;
 use dash_sdk::dpp::key_wallet::account::AccountType;
@@ -931,7 +932,7 @@ impl Wallet {
     ) -> Option<Arc<RwLock<Wallet>>> {
         for wallet in slice {
             // Attempt to read the wallet from the RwLock
-            let wallet_ref = wallet.read().unwrap();
+            let wallet_ref = wallet.read_recover();
             // Check if the wallet's seed hash matches the provided wallet_seed_hash
             if wallet_ref.seed_hash() == wallet_seed_hash {
                 // Return a clone of the Arc<RwLock<Wallet>> that matches
@@ -954,7 +955,7 @@ impl Wallet {
         network: Network,
     ) -> Result<Option<Zeroizing<[u8; 32]>>, WalletError> {
         for wallet in slice {
-            let wallet_ref = wallet.read().unwrap();
+            let wallet_ref = wallet.read_recover();
             if wallet_ref.seed_hash() == wallet_seed_hash {
                 // SECURITY: `ExtendedPrivKey` is a `Copy` BIP-32 type from
                 // key_wallet with no `Drop`, so its inner SecretKey + ChainCode

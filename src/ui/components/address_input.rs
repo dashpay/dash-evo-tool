@@ -676,7 +676,9 @@ impl AddressInput {
             );
         }
 
-        let detected_kind = detected.to_address_kind().unwrap();
+        let detected_kind = detected
+            .to_address_kind()
+            .expect("invariant: detected is a known type, Unknown handled above");
 
         // Check enabled kinds
         if !self.enabled_kinds.contains(&detected_kind) {

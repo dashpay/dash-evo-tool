@@ -1564,8 +1564,8 @@ impl TokensScreen {
                         Color32::DARK_RED,
                         format!("Schema validation error: {}", error),
                     );
-                } else if self.parsed_document_schemas.is_some() {
-                    let schema_count = self.parsed_document_schemas.as_ref().unwrap().len();
+                } else if let Some(parsed_document_schemas) = self.parsed_document_schemas.as_ref() {
+                    let schema_count = parsed_document_schemas.len();
                     if schema_count > 0 {
                         ui.colored_label(
                             Color32::DARK_GREEN,

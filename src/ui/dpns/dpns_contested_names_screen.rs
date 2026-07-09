@@ -1,3 +1,4 @@
+use crate::wallet_backend::poison::MutexRecover;
 use std::sync::{Arc, Mutex};
 use tracing::error;
 
@@ -339,7 +340,7 @@ impl DPNSScreen {
         });
 
         let contested_names = {
-            let guard = self.contested_names.lock().unwrap();
+            let guard = self.contested_names.lock_recover();
             let mut cn = guard.clone();
             if !self.active_filter_term.is_empty() {
                 let mut filter_lc = self.active_filter_term.to_lowercase();
@@ -663,7 +664,7 @@ impl DPNSScreen {
         });
 
         let contested_names = {
-            let guard = self.contested_names.lock().unwrap();
+            let guard = self.contested_names.lock_recover();
             let mut cn = guard.clone();
             cn.retain(|c| c.awarded_to.is_some() || c.state == ContestState::Locked);
             // 1) Filter by `past_filter_term`
@@ -840,7 +841,7 @@ impl DPNSScreen {
         });
 
         let mut filtered_names = {
-            let guard = self.local_dpns_names.lock().unwrap();
+            let guard = self.local_dpns_names.lock_recover();
             let mut name_infos = guard.clone();
             if !self.owned_filter_term.is_empty() {
                 let filter_lc = self.owned_filter_term.to_lowercase();
@@ -987,7 +988,7 @@ impl DPNSScreen {
     fn render_table_scheduled_votes(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
         let mut sorted_votes = {
-            let guard = self.scheduled_votes.lock().unwrap();
+            let guard = self.scheduled_votes.lock_recover();
             guard.clone()
         };
         // Sort by contested_name or time
@@ -1766,9 +1767,9 @@ impl DPNSScreen {
 impl ScreenLike for DPNSScreen {
     fn refresh(&mut self) {
         self.scheduled_vote_cast_in_progress = false;
-        let mut contested_names = self.contested_names.lock().unwrap();
-        let mut dpns_names = self.local_dpns_names.lock().unwrap();
-        let mut scheduled_votes = self.scheduled_votes.lock().unwrap();
+        let mut contested_names = self.contested_names.lock_recover();
+        let mut dpns_names = self.local_dpns_names.lock_recover();
+        let mut scheduled_votes = self.scheduled_votes.lock_recover();
 
         match self.dpns_subscreen {
             DPNSSubscreen::Active => {
@@ -1932,7 +1933,7 @@ impl ScreenLike for DPNSScreen {
         let ctx = &ctx;
         let has_identity_that_can_register = !self.user_identities.is_empty();
         let has_active_contests = {
-            let guard = self.contested_names.lock().unwrap();
+            let guard = self.contested_names.lock_recover();
             !guard.is_empty()
         };
 
@@ -2055,7 +2056,7 @@ impl ScreenLike for DPNSScreen {
             match self.dpns_subscreen {
                 DPNSSubscreen::Active => {
                     let has_any = {
-                        let guard = self.contested_names.lock().unwrap();
+                        let guard = self.contested_names.lock_recover();
                         !guard.is_empty()
                     };
                     if has_any {
@@ -2066,7 +2067,7 @@ impl ScreenLike for DPNSScreen {
                 }
                 DPNSSubscreen::Past => {
                     let has_any = {
-                        let guard = self.contested_names.lock().unwrap();
+                        let guard = self.contested_names.lock_recover();
                         !guard.is_empty()
                     };
                     if has_any {
@@ -2077,7 +2078,7 @@ impl ScreenLike for DPNSScreen {
                 }
                 DPNSSubscreen::Owned => {
                     let has_any = {
-                        let guard = self.local_dpns_names.lock().unwrap();
+                        let guard = self.local_dpns_names.lock_recover();
                         !guard.is_empty()
                     };
                     if has_any {
@@ -2088,7 +2089,7 @@ impl ScreenLike for DPNSScreen {
                 }
                 DPNSSubscreen::ScheduledVotes => {
                     let has_any = {
-                        let guard = self.scheduled_votes.lock().unwrap();
+                        let guard = self.scheduled_votes.lock_recover();
                         !guard.is_empty()
                     };
                     if has_any {

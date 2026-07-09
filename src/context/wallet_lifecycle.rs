@@ -14,6 +14,7 @@ use crate::model::wallet::meta::WalletMeta;
 use crate::model::wallet::seed_envelope::StoredSeedEnvelope;
 use crate::model::wallet::single_key::SingleKeyWallet;
 use crate::model::wallet::{Wallet, WalletSeedHash};
+use crate::wallet_backend::poison::RwLockRecover;
 use crate::wallet_backend::{
     DetScope, WalletBackend, WalletMetaView, WalletSeedView, network_prefix,
 };
@@ -1370,7 +1371,7 @@ impl AppContext {
 
     pub async fn bootstrap_loaded_wallets(self: &Arc<Self>) {
         let wallets: Vec<_> = {
-            let guard = self.wallets.read().unwrap();
+            let guard = self.wallets.read_recover();
             guard.values().cloned().collect()
         };
 
@@ -1900,7 +1901,7 @@ mod tests {
         // still `Open` for display, but no plaintext seed is cached anywhere.
         backend.forget_all_secrets();
         assert!(
-            wallet_arc.read().unwrap().is_open(),
+            wallet_arc.read_recover().is_open(),
             "the wallet is still Open after the session cache is dropped"
         );
 
@@ -2525,7 +2526,7 @@ mod tests {
         assert_eq!(returned_hash, seed_hash);
 
         assert!(
-            ctx.wallets.read().unwrap().contains_key(&seed_hash),
+            ctx.wallets.read_recover().contains_key(&seed_hash),
             "the wallet must be registered in-memory after register_wallet"
         );
         assert!(
@@ -2765,7 +2766,7 @@ mod tests {
             "no legacy envelope must survive clear"
         );
         assert!(
-            ctx.wallets.read().unwrap().is_empty(),
+            ctx.wallets.read_recover().is_empty(),
             "the in-memory wallet map must be empty after clear"
         );
 
@@ -2854,7 +2855,7 @@ mod tests {
             "register_wallet must fail closed when the seed envelope cannot be saved"
         );
         assert!(
-            !ctx.wallets.read().unwrap().contains_key(&seed_hash),
+            !ctx.wallets.read_recover().contains_key(&seed_hash),
             "a wallet whose seed was not saved must not be kept in memory"
         );
         assert!(
@@ -2905,7 +2906,7 @@ mod tests {
             "register_wallet must fail closed when the wallet-meta sidecar cannot be saved"
         );
         assert!(
-            !ctx.wallets.read().unwrap().contains_key(&seed_hash),
+            !ctx.wallets.read_recover().contains_key(&seed_hash),
             "a wallet with no meta row must not be kept in memory (it would never hydrate)"
         );
         assert!(
@@ -2965,7 +2966,7 @@ mod tests {
             .await
             .expect("ensure_wallet_backend should succeed offline");
         assert!(
-            !ctx.wallets.read().unwrap().contains_key(&seed_hash),
+            !ctx.wallets.read_recover().contains_key(&seed_hash),
             "precondition: the migrated wallet is not yet hydrated (sidecars empty at wiring)"
         );
 
@@ -2976,7 +2977,7 @@ mod tests {
 
         // The migrated wallet must be visible WITHOUT a second backend build.
         assert!(
-            ctx.wallets.read().unwrap().contains_key(&seed_hash),
+            ctx.wallets.read_recover().contains_key(&seed_hash),
             "the migrated wallet must be in ctx.wallets right after migration (no second restart)"
         );
         assert!(
@@ -3171,11 +3172,11 @@ mod tests {
             .cloned()
             .expect("protected wallet must be hydrated into ctx.wallets after migration");
         assert!(
-            !wallet_arc.read().unwrap().is_open(),
+            !wallet_arc.read_recover().is_open(),
             "a migrated protected wallet must hydrate locked (WalletSeed::Closed)"
         );
         assert!(
-            wallet_arc.read().unwrap().uses_password,
+            wallet_arc.read_recover().uses_password,
             "the hydrated wallet must carry the password flag"
         );
 
@@ -3287,7 +3288,7 @@ mod tests {
         // Precondition: the locked protected wallet is NOT yet registered — the
         // exact `WalletNotLoaded`-producing state the unlock must clear.
         assert!(
-            !wallet_arc.read().unwrap().is_open(),
+            !wallet_arc.read_recover().is_open(),
             "precondition: the protected wallet hydrates locked"
         );
         assert!(
@@ -3917,7 +3918,7 @@ mod tests {
         let snapshot: Vec<WalletSeedHash> = ctx
             .open_wallets()
             .iter()
-            .map(|w| w.read().unwrap().seed_hash())
+            .map(|w| w.read_recover().seed_hash())
             .collect();
 
         assert!(

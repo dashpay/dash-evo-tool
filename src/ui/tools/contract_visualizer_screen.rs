@@ -142,7 +142,7 @@ impl ContractVisualizerScreen {
 
         ScrollArea::vertical().show(ui, |ui| match &self.parse_status {
             ContractParseStatus::Complete => {
-                ui.monospace(self.parsed_json.as_ref().unwrap());
+                ui.monospace(self.parsed_json.as_deref().unwrap_or_default());
             }
             ContractParseStatus::Error(msg) => {
                 let error_color = DashColors::ERROR;

@@ -842,23 +842,35 @@ impl ContactsList {
                                         if self.app_context.is_developer_mode()
                                             && ui.button("Pay").clicked()
                                         {
-                                            action = AppAction::AddScreen(
-                                                ScreenType::DashPaySendPayment(
-                                                    self.selected_identity.clone().unwrap(),
-                                                    contact.identity_id,
-                                                )
-                                                .create_screen(&self.app_context),
-                                            );
+                                            if let Some(identity) = self.selected_identity.clone() {
+                                                action = AppAction::AddScreen(
+                                                    ScreenType::DashPaySendPayment(
+                                                        identity,
+                                                        contact.identity_id,
+                                                    )
+                                                    .create_screen(&self.app_context),
+                                                );
+                                            } else {
+                                                tracing::warn!(
+                                                    "Pay clicked with no selected identity; ignoring"
+                                                );
+                                            }
                                         }
 
                                         if ui.button("View Profile").clicked() {
-                                            action = AppAction::AddScreen(
-                                                ScreenType::DashPayContactProfileViewer(
-                                                    self.selected_identity.clone().unwrap(),
-                                                    contact.identity_id,
-                                                )
-                                                .create_screen(&self.app_context),
-                                            );
+                                            if let Some(identity) = self.selected_identity.clone() {
+                                                action = AppAction::AddScreen(
+                                                    ScreenType::DashPayContactProfileViewer(
+                                                        identity,
+                                                        contact.identity_id,
+                                                    )
+                                                    .create_screen(&self.app_context),
+                                                );
+                                            } else {
+                                                tracing::warn!(
+                                                    "View Profile clicked with no selected identity; ignoring"
+                                                );
+                                            }
                                         }
                                     },
                                 );

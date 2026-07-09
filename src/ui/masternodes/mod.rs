@@ -5,6 +5,7 @@
 //! a sibling root screen behind the Expert-Mode nav gate (FR-1); its identities
 //! are page-scoped and never leak into the everyday-user surfaces (FR-6, B1).
 
+pub mod card;
 pub mod list_screen;
 
 pub use list_screen::MasternodesScreen;

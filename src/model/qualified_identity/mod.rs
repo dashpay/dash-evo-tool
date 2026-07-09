@@ -85,6 +85,25 @@ impl Display for IdentityType {
     }
 }
 
+/// Presence of the three masternode/evonode key roles on a loaded node.
+///
+/// A node loads read-only without any keys; each role can be present or absent
+/// independently. Used by the Masternodes card grid to render the compact
+/// `V O P` key-status indicator (present roles emphasised, absent roles dimmed)
+/// — never colour-only (NFR-6).
+///
+/// Role → purpose mapping (see `verify_*_key_exists_on_identity` in
+/// `backend_task/identity/mod.rs`):
+/// * Voting  → a `PrivateKeyOnVoterIdentity` key / `associated_voter_identity`
+/// * Owner   → a main-identity key with [`Purpose::OWNER`]
+/// * Payout  → a main-identity key with [`Purpose::TRANSFER`]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct MasternodeKeyPresence {
+    pub voting: bool,
+    pub owner: bool,
+    pub payout: bool,
+}
+
 #[derive(Debug, Encode, Decode, Clone, Hash, Ord, PartialOrd, Eq, PartialEq)]
 #[allow(clippy::enum_variant_names)]
 pub enum PrivateKeyTarget {
@@ -506,6 +525,31 @@ impl QualifiedIdentity {
             .map_err(|e| format!("Failed to decode QualifiedIdentity: {}", e))
     }
 
+    /// Which masternode/evonode key roles are loaded for this identity.
+    ///
+    /// Voting presence is signalled by a loaded voter identity
+    /// (`associated_voter_identity`) OR any [`Purpose::VOTING`] key; owner by a
+    /// [`Purpose::OWNER`] key; payout by a [`Purpose::TRANSFER`] key. Intended
+    /// for masternode/evonode identities — a `User` identity may carry a
+    /// `TRANSFER` key for withdrawals, which this method would report as
+    /// `payout`, so callers must scope it to the Masternodes surface.
+    pub fn masternode_key_presence(&self) -> MasternodeKeyPresence {
+        let mut presence = MasternodeKeyPresence {
+            voting: self.associated_voter_identity.is_some(),
+            owner: false,
+            payout: false,
+        };
+        for (public_key, _) in self.private_keys.private_keys.values() {
+            match public_key.identity_public_key.purpose() {
+                Purpose::VOTING => presence.voting = true,
+                Purpose::OWNER => presence.owner = true,
+                Purpose::TRANSFER => presence.payout = true,
+                _ => {}
+            }
+        }
+        presence
+    }
+
     /// Resolve the 32-byte private key for `(target, key_id)` without ever
     /// reading a wallet's parked seed.
     ///
@@ -884,5 +928,124 @@ impl QualifiedIdentity {
             .next();
 
         Ok(wallet_info)
+    }
+}
+
+#[cfg(test)]
+mod masternode_key_presence_tests {
+    use super::*;
+    use crate::model::qualified_identity::encrypted_key_storage::PrivateKeyData;
+    use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
+    use dash_sdk::dpp::platform_value::BinaryData;
+    use dash_sdk::dpp::version::PlatformVersion;
+    use dash_sdk::platform::Identifier;
+
+    /// Build a main-identity public key with an explicit purpose. Only the
+    /// purpose is read by [`QualifiedIdentity::masternode_key_presence`]; the
+    /// key type and data are inert placeholders.
+    fn key_with_purpose(id: KeyID, purpose: Purpose) -> IdentityPublicKey {
+        IdentityPublicKey::V0(IdentityPublicKeyV0 {
+            id,
+            purpose,
+            security_level: SecurityLevel::HIGH,
+            contract_bounds: None,
+            key_type: KeyType::ECDSA_HASH160,
+            read_only: false,
+            data: BinaryData::new(vec![0u8; 20]),
+            disabled_at: None,
+        })
+    }
+
+    /// Assemble a masternode-shaped `QualifiedIdentity`: `voting` attaches a
+    /// voter identity; each purpose in `main_key_purposes` becomes a
+    /// main-identity key.
+    fn qi_with(voting: bool, main_key_purposes: &[Purpose]) -> QualifiedIdentity {
+        let pv = PlatformVersion::latest();
+        let identity =
+            Identity::create_basic_identity(Identifier::from([1u8; 32]), pv).expect("identity");
+
+        let mut ks = KeyStorage::default();
+        for (i, purpose) in main_key_purposes.iter().enumerate() {
+            let key = key_with_purpose(i as KeyID, *purpose);
+            ks.private_keys.insert(
+                (PrivateKeyTarget::PrivateKeyOnMainIdentity, key.id()),
+                (
+                    QualifiedIdentityPublicKey::from(key),
+                    PrivateKeyData::Clear([0u8; 32]),
+                ),
+            );
+        }
+
+        let associated_voter_identity = voting.then(|| {
+            let voter = Identity::create_basic_identity(Identifier::from([2u8; 32]), pv)
+                .expect("voter identity");
+            let voting_key = key_with_purpose(0, Purpose::VOTING);
+            (voter, voting_key)
+        });
+
+        QualifiedIdentity {
+            identity,
+            associated_voter_identity,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::Masternode,
+            alias: None,
+            private_keys: ks,
+            dpns_names: vec![],
+            associated_wallets: BTreeMap::new(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: BTreeMap::new(),
+            status: IdentityStatus::Active,
+            network: Network::Testnet,
+        }
+    }
+
+    /// TC-FR3-08 — all eight bit-combinations of {Voting, Owner, Payout} are
+    /// reported exactly, with all-off and all-on distinct from partial states.
+    #[test]
+    fn tc_fr3_08_all_vop_combinations() {
+        for mask in 0u8..8 {
+            let voting = mask & 0b100 != 0;
+            let owner = mask & 0b010 != 0;
+            let payout = mask & 0b001 != 0;
+
+            let mut purposes = Vec::new();
+            if owner {
+                purposes.push(Purpose::OWNER);
+            }
+            if payout {
+                purposes.push(Purpose::TRANSFER);
+            }
+
+            let presence = qi_with(voting, &purposes).masternode_key_presence();
+            assert_eq!(
+                presence,
+                MasternodeKeyPresence {
+                    voting,
+                    owner,
+                    payout,
+                },
+                "mask {mask:03b} (V={voting} O={owner} P={payout}) misreported"
+            );
+        }
+    }
+
+    /// A `Purpose::VOTING` key on the main identity signals voting readiness
+    /// even without a separately loaded voter identity.
+    #[test]
+    fn voting_purpose_key_counts_as_voting_present() {
+        let presence = qi_with(false, &[Purpose::VOTING]).masternode_key_presence();
+        assert!(presence.voting);
+        assert!(!presence.owner);
+        assert!(!presence.payout);
+    }
+
+    /// A node loaded read-only (no keys, no voter identity) reports every role
+    /// absent.
+    #[test]
+    fn read_only_node_has_no_keys() {
+        let presence = qi_with(false, &[]).masternode_key_presence();
+        assert_eq!(presence, MasternodeKeyPresence::default());
     }
 }

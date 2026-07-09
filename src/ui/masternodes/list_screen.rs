@@ -117,7 +117,7 @@ impl MasternodesScreen {
             .collect();
     }
 
-    /// Reset the screen after a network switch (QA-001). A load form or detail
+    /// Reset the screen after a network switch. A load form or detail
     /// view left open belongs to the previous network's node — keeping it
     /// actionable would let the user submit a cross-network operation. Drop back
     /// to the List view and reload from the now-active network's local store.
@@ -274,7 +274,7 @@ impl MasternodesScreen {
                 if ComponentStyles::add_toolbar_button(ui, "Refresh", network_accent).clicked() {
                     // Re-read the local cache immediately (optimistic) AND
                     // dispatch a network re-fetch of every loaded node plus the
-                    // DPNS contests (QA-003) — Refresh must reach the network,
+                    // DPNS contests — Refresh must reach the network,
                     // not just re-read the store.
                     self.reload();
                     inner = self.refresh_from_network();
@@ -296,7 +296,7 @@ impl MasternodesScreen {
     }
 
     /// Build the network re-fetch dispatched by the list Refresh button
-    /// (QA-003): one `RefreshIdentity` per loaded node, plus a DPNS contests
+    /// one `RefreshIdentity` per loaded node, plus a DPNS contests
     /// re-query so vote counts refresh too. Returns `None` when no node is
     /// loaded (nothing to refresh).
     fn refresh_from_network(&self) -> AppAction {
@@ -354,6 +354,14 @@ impl ScreenLike for MasternodesScreen {
         // A completed load (or any task routed here) may have added a node —
         // re-read the cached list so the new card appears.
         self.reload();
+        // if a detail view is open, its own backend task (voting, an
+        // Add-voting-key merge, a RefreshIdentity) just updated the store.
+        // Re-open the detail view for that node so the on-screen view reflects
+        // the fresh data instead of the stale clone captured at open time.
+        if let MasternodesView::Detail(detail) = &self.view {
+            let node_id = detail.node_id();
+            self.open_detail(node_id);
+        }
     }
 
     fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {

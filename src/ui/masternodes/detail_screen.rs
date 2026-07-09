@@ -25,13 +25,16 @@ use crate::model::qualified_identity::{
     IdentityType, MasternodeKeyPresence, PrivateKeyTarget, QualifiedIdentity,
 };
 use crate::model::secret::Secret;
-use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
-use crate::ui::{Screen, ScreenType};
+use crate::ui::components::MessageBanner;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::password_input::PasswordInput;
+use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::identity::identity_picker_card::draw_type_badge;
 use crate::ui::identity::identity_pill::shorten_id;
 use crate::ui::theme::{ComponentStyles, DashColors};
+use crate::ui::tokens::claim_tokens_screen::ClaimTokensScreen;
+use crate::ui::tokens::tokens_screen::IdentityTokenBasicInfo;
+use crate::ui::{MessageType, Screen, ScreenType};
 use crate::wallet_backend::IdentityKeyView;
 use crate::wallet_backend::secret_seam::SecretScheme;
 
@@ -191,7 +194,7 @@ impl MasternodeDetailView {
     }
 
     /// Build the network re-fetch dispatched by the detail Refresh button
-    /// (QA-003): refresh this node's identity, plus a DPNS contests re-query
+    /// refresh this node's identity, plus a DPNS contests re-query
     /// when the node has a voter identity that can vote.
     fn refresh_from_network(&self) -> AppAction {
         let mut tasks = vec![BackendTask::IdentityTask(IdentityTask::RefreshIdentity(
@@ -244,6 +247,12 @@ impl MasternodeDetailView {
                 _ => {}
             }
         }
+        // TODO: a mixed state (some Tier-1, some Tier-2) currently maps to
+        // Protected, so the aggregate "Add password protection…" CTA is hidden
+        // even though unprotected keys remain. This is mitigated by the per-key
+        // Manage-keys list (each unprotected key can still be sealed from its
+        // KeyInfoScreen); a dedicated "partially protected" tier could re-offer
+        // the aggregate CTA.
         match (protected, unprotected) {
             (0, 0) => ProtectionTier::NoVaultKeys,
             (0, _) => ProtectionTier::Unprotected,
@@ -267,7 +276,7 @@ impl MasternodeDetailView {
                 if ComponentStyles::add_toolbar_button(ui, "Refresh", network_accent).clicked() {
                     // Re-read the local contest cache immediately (optimistic)
                     // AND dispatch a network re-fetch of this node plus the DPNS
-                    // contests (QA-003) — Refresh must reach the network.
+                    // contests — Refresh must reach the network.
                     self.refresh_contests();
                     outcome = DetailOutcome::Forward(Box::new(self.refresh_from_network()));
                 }
@@ -365,16 +374,58 @@ impl MasternodeDetailView {
                     .on_hover_text("Claim this evonode's token rewards.")
                     .clicked()
             {
-                // TODO(B8): scope the existing `ClaimTokensScreen` to the
-                // evonode's reward token once that token context is resolved.
-                // Routing to the Tokens area preserves reuse without fabricating
-                // token info here.
-                action = Some(AppAction::SetMainScreen(
-                    crate::ui::RootScreenType::RootScreenMyTokenBalances,
-                ));
+                action = Some(self.claim_token_rewards_action(ui.ctx()));
             }
         });
         action
+    }
+
+    /// Route the evonode "Claim token rewards" CTA (FR-11). When this
+    /// evonode holds exactly one token in the local registry, push a
+    /// `ClaimTokensScreen` scoped to it (the real claim flow). With zero or
+    /// several tokens the correct target is ambiguous, so fall back to the My
+    /// Tokens area where the user picks the token to claim.
+    fn claim_token_rewards_action(&self, ctx: &egui::Context) -> AppAction {
+        let fallback =
+            AppAction::SetMainScreen(crate::ui::RootScreenType::RootScreenMyTokenBalances);
+        let node_id = self.identity.identity.id();
+        let mut mine: Vec<_> = self
+            .app_context
+            .identity_token_balances()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|(key, _)| key.identity_id == node_id)
+            .map(|(_, balance)| balance)
+            .collect();
+        if mine.len() != 1 {
+            return fallback;
+        }
+        let itb = mine.remove(0);
+        match self.app_context.get_contract_by_token_id(&itb.token_id) {
+            Ok(Some(contract)) => {
+                let basic = IdentityTokenBasicInfo {
+                    token_id: itb.token_id,
+                    token_alias: itb.token_alias.clone(),
+                    identity_id: itb.identity_id,
+                    contract_id: itb.data_contract_id,
+                    token_position: itb.token_position,
+                };
+                AppAction::AddScreen(Screen::ClaimTokensScreen(ClaimTokensScreen::new(
+                    basic,
+                    contract,
+                    itb.token_config,
+                    &self.app_context,
+                )))
+            }
+            _ => {
+                MessageBanner::set_global(
+                    ctx,
+                    "This token's details aren't available yet. Open My Tokens to claim.",
+                    MessageType::Info,
+                );
+                fallback
+            }
+        }
     }
 
     fn render_keys_section(&mut self, ui: &mut Ui, dark_mode: bool) -> Option<AppAction> {
@@ -427,7 +478,7 @@ impl MasternodeDetailView {
         ui.label(RichText::new(tier.label()).color(DashColors::text_secondary(dark_mode)));
 
         // Per-key "Manage keys" list. Each key opens its own `KeyInfoScreen`
-        // (QA-007) — the real, interactive per-key screen with view/sign/seal
+        // — the real, interactive per-key screen with view/sign/seal
         // actions — not the static read-only `KeysScreen` table. This mirrors
         // `identities_screen.rs`: one button per key, each pushing
         // `Screen::KeyInfoScreen`.
@@ -461,7 +512,7 @@ impl MasternodeDetailView {
 
     /// Every key of this node, main-identity keys first then voter-identity
     /// keys, each paired with the `PrivateKeyTarget` that scopes it. Backs the
-    /// per-key "Manage keys" list and the Add-protection routing (QA-007).
+    /// per-key "Manage keys" list and the Add-protection routing.
     fn identity_keys(&self) -> Vec<(PrivateKeyTarget, dash_sdk::platform::IdentityPublicKey)> {
         let mut keys = Vec::new();
         for key in self.identity.identity.public_keys().values() {
@@ -477,7 +528,7 @@ impl MasternodeDetailView {
 
     /// The first key whose private material this node actually holds — the only
     /// keys that can be sealed. Used to route the Add-protection CTA straight
-    /// into an interactive `KeyInfoScreen` seal flow (QA-007).
+    /// into an interactive `KeyInfoScreen` seal flow.
     fn first_protectable_key(
         &self,
     ) -> Option<(PrivateKeyTarget, dash_sdk::platform::IdentityPublicKey)> {
@@ -490,7 +541,7 @@ impl MasternodeDetailView {
     }
 
     /// Build the `AddScreen` action that opens `KeyInfoScreen` for one key,
-    /// carrying its held private-key data if any (QA-007). Mirrors the
+    /// carrying its held private-key data if any. Mirrors the
     /// per-key push in `identities_screen.rs`.
     fn open_key_info(
         &self,
@@ -513,14 +564,21 @@ impl MasternodeDetailView {
     /// open-contest count in the header). Inline voting reuses the existing
     /// `vote_on_dpns_name` backend (locked decision #1 — not a deep-link).
     fn render_dpns_section(&mut self, ui: &mut Ui, dark_mode: bool) -> Option<AppAction> {
+        // Diziet-F3: when the node has no voter key, the "Add voting key" CTA is
+        // the primary next step — render it above, outside the collapsed-by-
+        // default DPNS section, so it is visible without expanding anything.
+        // The empty DPNS section (no contests possible without a voter) is
+        // omitted in that state.
+        if self.identity.associated_voter_identity.is_none() {
+            return self.render_missing_voter(ui, dark_mode);
+        }
+
         let mut action = None;
         let header = dpns_section_header(self.contest_summary.open_contest_count);
         egui::CollapsingHeader::new(header)
             .default_open(false)
             .show(ui, |ui| {
-                if self.identity.associated_voter_identity.is_none() {
-                    action = self.render_missing_voter(ui, dark_mode);
-                } else if self.open_contests.is_empty() {
+                if self.open_contests.is_empty() {
                     ui.label(
                         RichText::new(NO_OPEN_CONTESTS_MESSAGE)
                             .color(DashColors::text_secondary(dark_mode)),
@@ -697,7 +755,7 @@ impl MasternodeDetailView {
             if let Some(status) = response.inner.dialog_response {
                 self.remove_dialog = None;
                 if status == ConfirmationStatus::Confirmed {
-                    removed = self.remove_node();
+                    removed = self.remove_node(ui.ctx());
                 }
             }
         }
@@ -705,10 +763,19 @@ impl MasternodeDetailView {
     }
 
     /// Delete the node and its associated voter identity from local storage.
-    fn remove_node(&self) -> bool {
+    /// On the primary delete failing, surface an actionable error banner rather
+    /// than failing silently, and keep the detail view open so the user can
+    /// retry. The secondary voter-identity delete failing is non-fatal (the node
+    /// is already gone) and only logged.
+    fn remove_node(&self, ctx: &egui::Context) -> bool {
         let node_id = self.identity.identity.id();
         if let Err(e) = self.app_context.delete_local_qualified_identity(&node_id) {
-            tracing::warn!("Failed to remove masternode identity: {e}");
+            MessageBanner::set_global(
+                ctx,
+                "This masternode couldn't be removed from this device. Try again in a moment.",
+                MessageType::Error,
+            )
+            .with_details(e);
             return false;
         }
         if let Some((voter, _)) = self.identity.associated_voter_identity.as_ref()
@@ -761,5 +828,130 @@ mod tests {
         assert!(ProtectionTier::Unprotected.offers_add_protection());
         assert!(!ProtectionTier::Protected.offers_add_protection());
         assert!(!ProtectionTier::NoVaultKeys.offers_add_protection());
+    }
+
+    /// TC-FR8-07 — a load-time / after-load Tier-2 seal is reflected by
+    /// `protection_tier()`: an unsealed keyed node reports `Unprotected`, and
+    /// once its keys are sealed under a password it reports `Protected` (so the
+    /// detail view shows "Keys: password-protected" and stops offering
+    /// Add-protection). Drives the real `IdentityKeyView` scheme path on an
+    /// offline wired `AppContext` — no network I/O.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn tc_fr8_07_protection_tier_reflects_tier2_seal() {
+        use crate::app::TaskResult;
+        use crate::app_dir::ensure_env_file;
+        use crate::context::connection_status::ConnectionStatus;
+        use crate::database::test_helpers::create_database_at_path;
+        use crate::model::qualified_identity::IdentityStatus;
+        use crate::model::qualified_identity::encrypted_key_storage::{KeyStorage, PrivateKeyData};
+        use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
+        use crate::utils::egui_mpsc::SenderAsync;
+        use crate::utils::tasks::TaskManager;
+        use dash_sdk::dpp::dashcore::Network;
+        use dash_sdk::dpp::identity::Identity;
+        use dash_sdk::dpp::version::PlatformVersion;
+        use dash_sdk::platform::{Identifier, IdentityPublicKey};
+
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = temp_dir.path().to_path_buf();
+        ensure_env_file(&data_dir);
+        let db = Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
+        let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
+        let secret_store = AppContext::open_secret_store(&data_dir).expect("secret store");
+        let ctx = Arc::new(
+            AppContext::new(
+                data_dir,
+                Network::Testnet,
+                db,
+                Arc::new(TaskManager::new()),
+                Arc::new(ConnectionStatus::new()),
+                egui::Context::default(),
+                app_kv,
+                secret_store,
+            )
+            .expect("offline testnet AppContext::new"),
+        );
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("wire wallet backend offline");
+
+        // A masternode-shaped identity carrying one owner key on the main
+        // identity — enough for `protection_tier` to have a key to inspect.
+        let pv = PlatformVersion::latest();
+        let owner = IdentityPublicKey::random_key(1, Some(1), pv);
+        let mut ks = KeyStorage::default();
+        ks.private_keys.insert(
+            (PrivateKeyTarget::PrivateKeyOnMainIdentity, owner.id()),
+            (
+                QualifiedIdentityPublicKey::from(owner),
+                PrivateKeyData::Clear([0xA0; 32]),
+            ),
+        );
+        let identity =
+            Identity::create_basic_identity(Identifier::random(), pv).expect("basic identity");
+        let qi = QualifiedIdentity {
+            identity,
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::Masternode,
+            alias: None,
+            private_keys: ks,
+            dpns_names: vec![],
+            associated_wallets: BTreeMap::new(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: BTreeMap::new(),
+            status: IdentityStatus::Active,
+            network: Network::Testnet,
+        };
+        let identity_id = qi.identity.id();
+        ctx.insert_local_qualified_identity(&qi, &None)
+            .expect("insert masternode identity");
+
+        // Before sealing: the key is keyless (Tier-1) → Unprotected.
+        let view = MasternodeDetailView::new(&ctx, qi.clone());
+        assert_eq!(
+            view.protection_tier(),
+            ProtectionTier::Unprotected,
+            "an unsealed keyed node must report Unprotected",
+        );
+        assert!(
+            view.protection_tier().offers_add_protection(),
+            "an unsealed node must offer Add-protection",
+        );
+
+        // Seal the node's keys Tier-2 via the real backend task (the same task
+        // the FR-8 seal flow dispatches).
+        ctx.run_backend_task(
+            BackendTask::IdentityTask(IdentityTask::ProtectIdentityKeys {
+                identity_id,
+                password: Secret::new("one-identity-password"),
+                hint: None,
+            }),
+            SenderAsync::new(
+                tokio::sync::mpsc::channel::<TaskResult>(4).0,
+                ctx.egui_ctx().clone(),
+            ),
+        )
+        .await
+        .expect("seal task must succeed");
+
+        // After sealing: the detail view reports Protected and stops offering
+        // Add-protection. Rebuild the view to re-read the vault scheme.
+        let view = MasternodeDetailView::new(&ctx, qi);
+        assert_eq!(
+            view.protection_tier(),
+            ProtectionTier::Protected,
+            "a Tier-2 sealed node must report Protected",
+        );
+        assert!(
+            !view.protection_tier().offers_add_protection(),
+            "a sealed node must not re-offer Add-protection",
+        );
+
+        ctx.wallet_backend().expect("backend").shutdown().await;
     }
 }

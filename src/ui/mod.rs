@@ -678,7 +678,7 @@ impl Screen {
                 screen.app_context = app_context;
                 // A network switch invalidates any open load form or detail view
                 // (they belong to the previous network's node). Reset to the List
-                // view and reload from the now-active network (QA-001).
+                // view and reload from the now-active network.
                 screen.reset_for_network_change();
                 return;
             }

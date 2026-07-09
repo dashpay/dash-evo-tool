@@ -126,9 +126,12 @@ impl MasternodeLoadForm {
                 if let Some((name, node)) = nodes.hp_masternodes.iter().choose(&mut thread_rng()) {
                     self.pro_tx_hash_input = node.protx_tx_hash.clone();
                     self.alias_input = name.clone();
-                    self.voting_key.set_text(node.voter.private_key.clone());
-                    self.owner_key.set_text(node.owner.private_key.clone());
-                    self.payout_key.set_text(node.payout.private_key.clone());
+                    self.voting_key
+                        .set_text(node.voter.private_key.expose_secret());
+                    self.owner_key
+                        .set_text(node.owner.private_key.expose_secret());
+                    self.payout_key
+                        .set_text(node.payout.private_key.expose_secret());
                     self.pro_tx_hash_touched = false;
                 }
             }
@@ -136,8 +139,10 @@ impl MasternodeLoadForm {
                 if let Some((name, node)) = nodes.masternodes.iter().choose(&mut thread_rng()) {
                     self.pro_tx_hash_input = node.pro_tx_hash.clone();
                     self.alias_input = name.clone();
-                    self.voting_key.set_text(node.voter.private_key.clone());
-                    self.owner_key.set_text(node.owner.private_key.clone());
+                    self.voting_key
+                        .set_text(node.voter.private_key.expose_secret());
+                    self.owner_key
+                        .set_text(node.owner.private_key.expose_secret());
                     // MasternodeInfo has no payout key — leave Payout blank.
                     self.pro_tx_hash_touched = false;
                 }
@@ -352,6 +357,7 @@ impl MasternodeLoadForm {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::secret::Secret;
     use crate::ui::masternodes::testnet_fixture::{HpMasternodeInfo, KeyInfo, MasternodeInfo};
     use std::collections::HashMap;
 
@@ -362,10 +368,10 @@ mod tests {
             MasternodeInfo {
                 pro_tx_hash: "aa".repeat(32),
                 owner: KeyInfo {
-                    private_key: "owner-wif".to_string(),
+                    private_key: Secret::new("owner-wif"),
                 },
                 voter: KeyInfo {
-                    private_key: "voter-wif".to_string(),
+                    private_key: Secret::new("voter-wif"),
                 },
             },
         );
@@ -375,13 +381,13 @@ mod tests {
             HpMasternodeInfo {
                 protx_tx_hash: "bb".repeat(32),
                 owner: KeyInfo {
-                    private_key: "hp-owner-wif".to_string(),
+                    private_key: Secret::new("hp-owner-wif"),
                 },
                 voter: KeyInfo {
-                    private_key: "hp-voter-wif".to_string(),
+                    private_key: Secret::new("hp-voter-wif"),
                 },
                 payout: KeyInfo {
-                    private_key: "hp-payout-wif".to_string(),
+                    private_key: Secret::new("hp-payout-wif"),
                 },
             },
         );
@@ -407,7 +413,7 @@ mod tests {
         assert_eq!(form.alias_input, "mn-fixture");
         assert_eq!(form.voting_key.text(), "voter-wif");
         assert_eq!(form.owner_key.text(), "owner-wif");
-        // MasternodeInfo has no payout key — Payout stays blank (PROJ-003).
+        // MasternodeInfo has no payout key — Payout stays blank.
         assert!(form.payout_key.is_empty());
     }
 

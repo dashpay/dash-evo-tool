@@ -143,6 +143,9 @@ pub fn decode_identity_id(input: &str) -> Result<Identifier, MasternodeInputErro
 /// [`decode_identity_id`]; the backend load task performs the authoritative
 /// existence and duplicate checks.
 pub fn is_valid_pro_tx_hash(input: &str) -> bool {
+    // TODO: this duplicates the Base58-then-hex decode of `decode_identity_id`.
+    // Fold this into `decode_identity_id(input).is_ok()` once the McpToolError
+    // dependency in that function is acceptable at every call site.
     let trimmed = input.trim();
     !trimmed.is_empty()
         && (Identifier::from_string(trimmed, Encoding::Base58).is_ok()

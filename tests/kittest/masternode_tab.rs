@@ -42,6 +42,63 @@ fn seed_node(app_context: &Arc<AppContext>, byte: u8, alias: &str, node_type: Id
         .expect("seed masternode insert");
 }
 
+/// Seed a masternode that has an associated voter identity, inserting BOTH the
+/// node and its (separately stored) voter identity into the local DB. Returns
+/// the voter identity's id so a test can assert its deletion. The node id is
+/// `[byte; 32]`; the voter id is `[byte ^ 0xFF; 32]`.
+fn seed_node_with_voter(app_context: &Arc<AppContext>, byte: u8, alias: &str) -> Identifier {
+    let pv = PlatformVersion::latest();
+    let voter_id = Identifier::from([byte ^ 0xFF; 32]);
+    let voter_identity =
+        Identity::create_basic_identity(voter_id, pv).expect("voter basic identity");
+    let voter_key = dash_sdk::platform::IdentityPublicKey::random_key(1, Some(1), pv);
+
+    // The voter identity is stored as its own local record so its deletion on
+    // node removal is observable.
+    let voter_qi = QualifiedIdentity {
+        identity: voter_identity.clone(),
+        associated_voter_identity: None,
+        associated_operator_identity: None,
+        associated_owner_key_id: None,
+        identity_type: IdentityType::User,
+        alias: Some(format!("{alias}-voter")),
+        private_keys: KeyStorage::default(),
+        dpns_names: vec![],
+        associated_wallets: BTreeMap::new(),
+        secret_access: None,
+        wallet_index: None,
+        top_ups: BTreeMap::new(),
+        status: IdentityStatus::Active,
+        network: app_context.network(),
+    };
+    app_context
+        .insert_local_qualified_identity(&voter_qi, &None)
+        .expect("seed voter insert");
+
+    let node_identity = Identity::create_basic_identity(Identifier::from([byte; 32]), pv)
+        .expect("node basic identity");
+    let node_qi = QualifiedIdentity {
+        identity: node_identity,
+        associated_voter_identity: Some((voter_identity, voter_key)),
+        associated_operator_identity: None,
+        associated_owner_key_id: None,
+        identity_type: IdentityType::Masternode,
+        alias: Some(alias.to_string()),
+        private_keys: KeyStorage::default(),
+        dpns_names: vec![],
+        associated_wallets: BTreeMap::new(),
+        secret_access: None,
+        wallet_index: None,
+        top_ups: BTreeMap::new(),
+        status: IdentityStatus::PendingCreation,
+        network: app_context.network(),
+    };
+    app_context
+        .insert_local_qualified_identity(&node_qi, &None)
+        .expect("seed node-with-voter insert");
+    voter_id
+}
+
 /// TC-FR1-01…04 — the Masternodes nav entry is absent when Expert Mode is off
 /// and present when it is on. Toggling `enable_developer_mode` flips the gate;
 /// the nav rail re-evaluates the per-entry `FeatureGate::DeveloperMode` skip
@@ -368,34 +425,24 @@ fn dpns_section_missing_voter_scoped_prompt() {
         harness.get_by_label("Open mn-vote-01").click();
         harness.run_steps(3);
 
-        // Collapsed by default: header present with count, body absent (TC-DPNS-01/02).
+        // Diziet-F3: with no voter key the "Add voting key" CTA and its
+        // actionable message are rendered ABOVE, outside the collapsed-by-default
+        // DPNS section, so they are visible immediately without expanding
+        // anything. The empty DPNS header is omitted in this state (no contests
+        // are possible without a voter).
         assert!(
             harness
                 .query_by_label("DPNS name contests to vote on (0)")
-                .is_some(),
-            "DPNS header must show the open-contest count"
-        );
-        assert!(
-            harness
-                .query_by_label(
-                    "This node has no voting key loaded. Add its voting private key to cast votes."
-                )
                 .is_none(),
-            "section body must be hidden while collapsed"
+            "the empty DPNS header must be omitted when the node has no voter key"
         );
-
-        // Expand → actionable missing-voter message + Add-voting-key action (TC-DPNS-09).
-        harness
-            .get_by_label("DPNS name contests to vote on (0)")
-            .click();
-        harness.run_steps(3);
         assert!(
             harness
                 .query_by_label(
                     "This node has no voting key loaded. Add its voting private key to cast votes."
                 )
                 .is_some(),
-            "expanded section must show the actionable missing-voter message"
+            "the actionable missing-voter message must be visible without expanding"
         );
         assert!(
             harness.query_by_label("Add voting key").is_some(),
@@ -529,6 +576,69 @@ fn remove_flow_deletes_only_target_node() {
         assert!(
             harness.query_all_by_label("mn-keep-me").count() >= 1,
             "kept node's card must remain"
+        );
+    });
+}
+
+/// TC-US4-05 — removing a node also deletes its associated voter identity from
+/// local storage, not just the node record. Seeds a masternode whose voter
+/// identity is stored separately, removes the node through the confirm flow,
+/// and asserts both the node and the voter identity are gone.
+#[test]
+fn remove_flow_deletes_associated_voter_identity() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let mut harness = mount_app(RootScreenType::RootScreenIdentities);
+        let app_context = harness.state().current_app_context().clone();
+        let voter_id = seed_node_with_voter(&app_context, 0xA1, "mn-with-voter");
+        activate_masternodes_tab(&mut harness, &app_context);
+
+        // Precondition: both the node and its voter identity are stored.
+        assert_eq!(
+            app_context
+                .load_local_masternode_identities()
+                .expect("load")
+                .len(),
+            1,
+            "the masternode must be seeded"
+        );
+        assert!(
+            app_context
+                .get_local_qualified_identity(&voter_id)
+                .expect("voter read")
+                .is_some(),
+            "the voter identity must be seeded"
+        );
+
+        // Open the node's detail and confirm removal.
+        harness.get_by_label("Open mn-with-voter").click();
+        harness.run_steps(3);
+        harness.get_by_label("Remove masternode").click();
+        harness.run_steps(3);
+        let confirm = harness
+            .query_all_by_label("Remove masternode")
+            .last()
+            .expect("confirm button present");
+        confirm.click();
+        harness.run_steps(3);
+
+        // Both the node and its voter identity are deleted.
+        assert_eq!(
+            app_context
+                .load_local_masternode_identities()
+                .expect("load")
+                .len(),
+            0,
+            "the masternode must be removed"
+        );
+        assert!(
+            app_context
+                .get_local_qualified_identity(&voter_id)
+                .expect("voter read")
+                .is_none(),
+            "the associated voter identity must be removed too (TC-US4-05)"
         );
     });
 }

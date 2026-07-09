@@ -118,9 +118,7 @@ impl AppContext {
         let existing_stored = self.get_local_qualified_identity(&identity_id)?;
         match load_mode {
             IdentityLoadMode::RejectIfExists if existing_stored.is_some() => {
-                return Err(TaskError::DuplicateProTxHash {
-                    identity_id,
-                });
+                return Err(TaskError::DuplicateProTxHash { identity_id });
             }
             _ => {}
         }
@@ -808,7 +806,7 @@ mod tests {
         backend.shutdown().await;
     }
 
-    /// QA-005 / §10.8 — the testable core of the "Add voting key" in-place
+    /// §10.8 — the testable core of the "Add voting key" in-place
     /// update. A voter-key-only rebuild (blank Owner/Payout, so `associated_*`
     /// and the Owner/Payout private keys are absent) MUST NOT erase the
     /// already-stored Owner and Payout keys: `merge_existing_keys_into` carries
@@ -864,7 +862,7 @@ mod tests {
         );
     }
 
-    /// QA-006 / §10.9 / TC-EDGE-07 — a fresh load (`RejectIfExists`) of a
+    /// §10.9 / TC-EDGE-07 — a fresh load (`RejectIfExists`) of a
     /// ProTxHash already stored is rejected with [`TaskError::DuplicateProTxHash`]
     /// BEFORE any network fetch, and the already-stored node is left untouched.
     /// Runs fully offline: the existence check fires before the SDK is used.
@@ -928,7 +926,10 @@ mod tests {
             .expect("first node still stored");
         for (t, k) in &triple {
             assert!(
-                still.private_keys.private_keys.contains_key(&(t.clone(), *k)),
+                still
+                    .private_keys
+                    .private_keys
+                    .contains_key(&(t.clone(), *k)),
                 "key ({t:?}, {k}) of the first node must survive a rejected duplicate load",
             );
         }

@@ -25,9 +25,7 @@
 use crate::framework::harness::ctx;
 use crate::framework::task_runner::run_task;
 use dash_evo_tool::backend_task::error::TaskError;
-use dash_evo_tool::backend_task::identity::{
-    IdentityInputToLoad, IdentityLoadMode, IdentityTask,
-};
+use dash_evo_tool::backend_task::identity::{IdentityInputToLoad, IdentityLoadMode, IdentityTask};
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
 use dash_evo_tool::mcp::server::DashMcpService;
 use dash_evo_tool::mcp::tools::masternode::{

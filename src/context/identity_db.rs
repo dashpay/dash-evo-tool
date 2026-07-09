@@ -655,6 +655,34 @@ impl AppContext {
             .collect())
     }
 
+    /// Read one stored qualified identity by id, hydrated like the list loads
+    /// (status, wallet index, network, wallets, secret access). `None` when no
+    /// identity with `id` is stored. Backs the load-path existence check
+    /// (duplicate-ProTxHash rejection) and the in-place voter-key merge.
+    pub fn get_local_qualified_identity(
+        &self,
+        id: &Identifier,
+    ) -> std::result::Result<Option<QualifiedIdentity>, TaskError> {
+        let kv = self.identity_kv()?;
+        let id_buf = id.to_buffer();
+        let Some(stored) = kv
+            .get::<StoredQualifiedIdentity>(DetScope::Identity(&id_buf), IDENTITY_KEY)
+            .map_err(|source| TaskError::IdentityStorage { source })?
+        else {
+            return Ok(None);
+        };
+        let wallets = self.wallets.read().unwrap_or_else(|e| e.into_inner());
+        let mut qi = decode_stored_identity(&stored.qi_bytes, self.network)?;
+        qi.status = IdentityStatus::from_u8(stored.status);
+        qi.wallet_index = stored.wallet_index;
+        qi.network = self.network;
+        qi.associated_wallets = wallets.clone();
+        qi.secret_access = self.wallet_backend().ok().map(|b| b.secret_access());
+        qi.top_ups = BTreeMap::new();
+        self.migrate_identity_keys_to_vault(&kv, &id_buf, &mut qi);
+        Ok(Some(qi))
+    }
+
     /// Internal: read every stored identity via the Global enumeration
     /// index, decode it, rehydrate the metadata kept outside the bincode
     /// blob, and apply `keep` as a pre-decode filter on the wrapper.

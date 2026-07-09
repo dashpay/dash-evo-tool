@@ -946,6 +946,9 @@ impl AddExistingIdentityScreen {
             // Legacy load screen has no password field; the optional load-time
             // encryption (FR-8) is exposed on the new Masternodes load form (B4).
             encryption_password: None,
+            // Legacy User re-load: preserve the historical overwrite/upsert
+            // behaviour (re-loading to add keys is a supported User workflow).
+            load_mode: crate::backend_task::identity::IdentityLoadMode::Overwrite,
         };
 
         AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::LoadIdentity(

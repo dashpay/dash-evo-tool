@@ -17,7 +17,7 @@ use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoic
 use crate::app::AppAction;
 use crate::backend_task::BackendTask;
 use crate::backend_task::contested_names::ContestedResourceTask;
-use crate::backend_task::identity::{IdentityInputToLoad, IdentityTask};
+use crate::backend_task::identity::{IdentityInputToLoad, IdentityLoadMode, IdentityTask};
 use crate::context::AppContext;
 use crate::model::contested_name::{ContestedName, MasternodeContestSummary};
 use crate::model::qualified_identity::{IdentityType, MasternodeKeyPresence, QualifiedIdentity};
@@ -476,6 +476,9 @@ impl MasternodeDetailView {
             derive_keys_from_wallets: false,
             selected_wallet_seed_hash: None,
             encryption_password: None,
+            // In-place update: merge the new voting key into the already-loaded
+            // node, preserving its Owner/Payout keys (§10.8). Never overwrite.
+            load_mode: IdentityLoadMode::MergeIntoExisting,
         };
         Some(AppAction::BackendTask(BackendTask::IdentityTask(
             IdentityTask::LoadIdentity(input),

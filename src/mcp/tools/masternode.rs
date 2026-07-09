@@ -178,6 +178,10 @@ impl AsyncTool<DashMcpService> for MasternodeIdentityLoad {
             // password param and thread it here once MCP secret handling is
             // designed.
             encryption_password: None,
+            // Headless load preserves the overwrite/upsert behaviour (a repeat
+            // load refreshes the stored node); duplicate rejection is a GUI-form
+            // affordance, not a headless contract.
+            load_mode: crate::backend_task::identity::IdentityLoadMode::Overwrite,
         };
 
         let task = BackendTask::IdentityTask(IdentityTask::LoadIdentity(input));

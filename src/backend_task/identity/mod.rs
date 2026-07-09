@@ -39,6 +39,29 @@ use dash_sdk::platform::{Identifier, Identity, IdentityPublicKey};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
+/// How a load resolves against an already-stored identity of the same id.
+///
+/// The storage layer (`insert_local_qualified_identity`) is `INSERT OR REPLACE`,
+/// so a load with no guard silently overwrites an existing record and its keys.
+/// This enum lets each entry point declare its intent so the two masternode
+/// paths — a *new* load (must reject a duplicate ProTxHash, §10.9) and an
+/// *in-place* voter-key update (must merge, not clobber, §10.8) — never share
+/// one blind-overwrite path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum IdentityLoadMode {
+    /// Overwrite any existing stored identity (legacy behaviour; the User
+    /// re-load and headless flows that always resubmit their full key set).
+    #[default]
+    Overwrite,
+    /// A fresh load: reject with [`TaskError::DuplicateProTxHash`] when an
+    /// identity with this id is already stored (§10.9 / TC-EDGE-07).
+    RejectIfExists,
+    /// An in-place update: merge the newly-supplied keys into the existing
+    /// stored identity's keys, preserving keys the caller did not resupply
+    /// (§10.8 / the "Add voting key" fix-up). Exempt from duplicate rejection.
+    MergeIntoExisting,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct IdentityInputToLoad {
     pub identity_id_input: String,
@@ -56,6 +79,8 @@ pub struct IdentityInputToLoad {
     /// envelope (Argon2id + XChaCha20-Poly1305) — no new crypto, no second
     /// persistence path. When `None`, the keyless Tier-1 path is unchanged.
     pub encryption_password: Option<Secret>,
+    /// How this load resolves against an already-stored identity of the same id.
+    pub load_mode: IdentityLoadMode,
 }
 
 /// One chosen identity key, public-only.

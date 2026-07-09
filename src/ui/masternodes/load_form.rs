@@ -5,7 +5,7 @@
 use bip39::rand::prelude::IteratorRandom;
 use bip39::rand::thread_rng;
 
-use crate::backend_task::identity::IdentityInputToLoad;
+use crate::backend_task::identity::{IdentityInputToLoad, IdentityLoadMode};
 use crate::model::masternode_input::is_valid_pro_tx_hash;
 use crate::model::qualified_identity::IdentityType;
 use crate::ui::components::password_input::PasswordInput;
@@ -168,6 +168,9 @@ impl MasternodeLoadForm {
             derive_keys_from_wallets: false,
             selected_wallet_seed_hash: None,
             encryption_password,
+            // A fresh load rejects an already-loaded ProTxHash (§10.9) rather
+            // than silently overwriting the existing node.
+            load_mode: IdentityLoadMode::RejectIfExists,
         }
     }
 

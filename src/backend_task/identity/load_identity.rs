@@ -1,6 +1,6 @@
 use super::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
-use crate::backend_task::identity::IdentityInputToLoad;
+use crate::backend_task::identity::{IdentityInputToLoad, IdentityLoadMode};
 use crate::context::AppContext;
 use crate::model::identity_key_protection::validate_protection_password;
 use crate::model::key_input::verify_key_input;
@@ -39,6 +39,30 @@ use std::sync::{Arc, RwLock};
 type WalletKeyMap = BTreeMap<(PrivateKeyTarget, u32), (QualifiedIdentityPublicKey, PrivateKeyData)>;
 type WalletMatchResult = Option<(WalletSeedHash, u32, WalletKeyMap)>;
 
+/// Merge an already-stored identity's keys and associations into a freshly
+/// built one, preserving anything the new (partial) load did not resupply
+/// (§10.8, the "Add voting key" in-place update). Keys the new load provides
+/// win on collision; keys it omits (e.g. Owner/Payout on a voting-key-only
+/// update) are carried over from `existing` rather than lost. The existing
+/// alias and identity associations are kept only when the new build lacks them.
+fn merge_existing_keys_into(new: &mut QualifiedIdentity, existing: QualifiedIdentity) {
+    for (key, value) in existing.private_keys.private_keys {
+        new.private_keys.private_keys.entry(key).or_insert(value);
+    }
+    if new.alias.is_none() {
+        new.alias = existing.alias;
+    }
+    if new.associated_voter_identity.is_none() {
+        new.associated_voter_identity = existing.associated_voter_identity;
+    }
+    if new.associated_operator_identity.is_none() {
+        new.associated_operator_identity = existing.associated_operator_identity;
+    }
+    if new.associated_owner_key_id.is_none() {
+        new.associated_owner_key_id = existing.associated_owner_key_id;
+    }
+}
+
 impl AppContext {
     pub(super) async fn load_identity(
         &self,
@@ -56,6 +80,7 @@ impl AppContext {
             derive_keys_from_wallets,
             selected_wallet_seed_hash,
             encryption_password,
+            load_mode,
         } = input;
 
         // FR-8: validate the load-time encryption password up front, before the
@@ -85,6 +110,20 @@ impl AppContext {
                 });
             }
         };
+
+        // §10.9 / TC-EDGE-07: a fresh load rejects a ProTxHash already stored,
+        // before any network fetch — so the existing node's alias/keys/protection
+        // tier are never silently overwritten. Checked here, at the storage
+        // layer, so every `RejectIfExists` caller is guarded uniformly.
+        let existing_stored = self.get_local_qualified_identity(&identity_id)?;
+        match load_mode {
+            IdentityLoadMode::RejectIfExists if existing_stored.is_some() => {
+                return Err(TaskError::DuplicateProTxHash {
+                    identity_id,
+                });
+            }
+            _ => {}
+        }
 
         // Fetch the identity using the SDK
         let identity = match Identity::fetch_by_identifier(sdk, identity_id).await {
@@ -346,7 +385,7 @@ impl AppContext {
             None
         };
 
-        let qualified_identity = QualifiedIdentity {
+        let mut qualified_identity = QualifiedIdentity {
             identity,
             associated_voter_identity,
             associated_operator_identity: None,
@@ -368,6 +407,16 @@ impl AppContext {
             status: IdentityStatus::Active,
             network: self.network,
         };
+        // §10.8: an in-place update (the "Add voting key" fix-up) merges the
+        // newly-supplied keys into the already-stored identity's keys instead of
+        // clobbering them — the new voting key is added while the existing
+        // Owner/Payout keys (which the update leaves blank) survive.
+        if load_mode == IdentityLoadMode::MergeIntoExisting
+            && let Some(existing) = existing_stored
+        {
+            merge_existing_keys_into(&mut qualified_identity, existing);
+        }
+
         let wallet_info = qualified_identity
             .determine_wallet_info()
             .map_err(|e| TaskError::WalletInfoDeterminationFailed { detail: e })?;
@@ -757,5 +806,133 @@ mod tests {
         }
 
         backend.shutdown().await;
+    }
+
+    /// QA-005 / §10.8 — the testable core of the "Add voting key" in-place
+    /// update. A voter-key-only rebuild (blank Owner/Payout, so `associated_*`
+    /// and the Owner/Payout private keys are absent) MUST NOT erase the
+    /// already-stored Owner and Payout keys: `merge_existing_keys_into` carries
+    /// over every key the new partial build omitted, while the resupplied voting
+    /// key wins on collision.
+    #[test]
+    fn merge_preserves_owner_and_payout_when_only_voting_key_resupplied() {
+        // `existing`: a fully-loaded masternode (owner + voter + identity keys).
+        let (existing, triple) = masternode_shaped_qi();
+        let [owner_key, voter_key, idkey_key] = triple;
+
+        // `new`: what the scoped "Add voting key" prompt rebuilds — a voter key
+        // only. It carries the freshly-entered voting key but nothing else.
+        let mut new = existing.clone();
+        new.alias = None;
+        new.associated_voter_identity = None;
+        new.associated_operator_identity = None;
+        new.associated_owner_key_id = None;
+        new.private_keys = KeyStorage::default();
+        // Resupply ONLY the voting key, with a distinct byte so we can prove the
+        // new value wins on collision.
+        let (voter_pk, _) = existing
+            .private_keys
+            .private_keys
+            .get(&voter_key)
+            .expect("existing voter key")
+            .clone();
+        new.private_keys.private_keys.insert(
+            voter_key.clone(),
+            (voter_pk, PrivateKeyData::Clear([0xEE; 32])),
+        );
+
+        merge_existing_keys_into(&mut new, existing);
+
+        // Owner and identity-auth keys survive the voter-key-only update.
+        assert!(
+            new.private_keys.private_keys.contains_key(&owner_key),
+            "owner key must survive a voting-key-only update",
+        );
+        assert!(
+            new.private_keys.private_keys.contains_key(&idkey_key),
+            "identity-auth key must survive a voting-key-only update",
+        );
+        // The resupplied voting key wins on collision (0xEE, not the old 0xB0).
+        let (_, merged_voter) = new
+            .private_keys
+            .private_keys
+            .get(&voter_key)
+            .expect("voter key present after merge");
+        assert!(
+            matches!(merged_voter, PrivateKeyData::Clear(b) if *b == [0xEE; 32]),
+            "the resupplied voting key must win on collision",
+        );
+    }
+
+    /// QA-006 / §10.9 / TC-EDGE-07 — a fresh load (`RejectIfExists`) of a
+    /// ProTxHash already stored is rejected with [`TaskError::DuplicateProTxHash`]
+    /// BEFORE any network fetch, and the already-stored node is left untouched.
+    /// Runs fully offline: the existence check fires before the SDK is used.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn reject_if_exists_rejects_duplicate_pro_tx_hash_offline() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = temp_dir.path().to_path_buf();
+        ensure_env_file(&data_dir);
+        let db = Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
+        let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
+        let secret_store = AppContext::open_secret_store(&data_dir).expect("secret store");
+        let ctx = AppContext::new(
+            data_dir,
+            Network::Testnet,
+            db,
+            Arc::new(TaskManager::new()),
+            Arc::new(ConnectionStatus::new()),
+            egui::Context::default(),
+            app_kv,
+            secret_store,
+        )
+        .expect("offline testnet AppContext::new");
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("wire wallet backend offline");
+
+        let (qi, triple) = masternode_shaped_qi();
+        let identity_id = qi.identity.id();
+        ctx.insert_local_qualified_identity(&qi, &None)
+            .expect("insert first masternode identity");
+
+        let input = IdentityInputToLoad {
+            identity_id_input: identity_id.to_string(Encoding::Hex),
+            identity_type: IdentityType::Masternode,
+            alias_input: String::new(),
+            voting_private_key_input: Secret::new(""),
+            owner_private_key_input: Secret::new(""),
+            payout_address_private_key_input: Secret::new(""),
+            keys_input: vec![],
+            derive_keys_from_wallets: false,
+            selected_wallet_seed_hash: None,
+            encryption_password: None,
+            load_mode: IdentityLoadMode::RejectIfExists,
+        };
+
+        let sdk = ctx.sdk();
+        let result = ctx.load_identity(&sdk, input).await;
+        match result {
+            Err(TaskError::DuplicateProTxHash { identity_id: got }) => {
+                assert_eq!(got, identity_id, "reject must name the duplicate id");
+            }
+            other => panic!("expected DuplicateProTxHash, got {other:?}"),
+        }
+
+        // The first node's stored keys are untouched by the rejected load.
+        let still = ctx
+            .get_local_qualified_identity(&identity_id)
+            .expect("read stored identity")
+            .expect("first node still stored");
+        for (t, k) in &triple {
+            assert!(
+                still.private_keys.private_keys.contains_key(&(t.clone(), *k)),
+                "key ({t:?}, {k}) of the first node must survive a rejected duplicate load",
+            );
+        }
+
+        ctx.wallet_backend().expect("backend").shutdown().await;
     }
 }

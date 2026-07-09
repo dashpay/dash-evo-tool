@@ -4,6 +4,7 @@ use crate::backend_task::identity::{IdentityInputToLoad, IdentityLoadMode};
 use crate::context::AppContext;
 use crate::model::identity_key_protection::validate_protection_password;
 use crate::model::key_input::verify_key_input;
+use crate::model::masternode_input::{classify_protx_node_type, node_type_conflict};
 use crate::model::qualified_identity::PrivateKeyTarget::{
     self, PrivateKeyOnMainIdentity, PrivateKeyOnVoterIdentity,
 };
@@ -17,7 +18,9 @@ use crate::model::qualified_identity::{
 use crate::model::wallet::{Wallet, WalletSeedHash};
 use crate::ui::identities::add_new_identity_screen::MAX_IDENTITY_INDEX;
 use dash_sdk::Sdk;
+use dash_sdk::dashcore_rpc::RpcApi;
 use dash_sdk::dashcore_rpc::dashcore::PrivateKey;
+use dash_sdk::dashcore_rpc::dashcore::ProTxHash;
 use dash_sdk::dashcore_rpc::dashcore::key::Secp256k1;
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::document::DocumentV0Getters;
@@ -118,6 +121,25 @@ impl AppContext {
                 });
             }
         };
+
+        // Cross-check the selected node type against the node's actual on-chain
+        // registration. A masternode's Platform identity id IS its ProTxHash, so
+        // the node is looked up by that hash via Core RPC `protx info`. On a
+        // confirmed mismatch the load is rejected — the user picked the wrong
+        // Masternode/Evonode toggle, and silently trusting it would mis-badge the
+        // node and expose Evonode-only actions on a regular masternode. When the
+        // on-chain type cannot be determined (Core RPC unavailable, as on an
+        // SPV-only setup with no Core node), the load proceeds unverified rather
+        // than blocking — no regression versus the prior always-trust behavior.
+        if identity_type != IdentityType::User
+            && let Some(actual) =
+                node_type_conflict(identity_type, self.onchain_node_type(&identity_id))
+        {
+            return Err(TaskError::NodeTypeMismatch {
+                selected: identity_type,
+                actual,
+            });
+        }
 
         // §10.9 / TC-EDGE-07: a fresh load rejects a ProTxHash already stored,
         // before any network fetch — so the existing node's alias/keys/protection
@@ -481,6 +503,41 @@ impl AppContext {
         }
 
         Ok(BackendTaskSuccessResult::LoadedIdentity(qualified_identity))
+    }
+
+    /// The node's actual on-chain type (Masternode vs Evonode), looked up by
+    /// its ProTxHash via Core RPC `protx info`. `identity_id` is the node's
+    /// Platform identity id, which equals its ProTxHash, so its hex is a valid
+    /// `protx info` lookup key.
+    ///
+    /// Returns `None` when the type cannot be determined — Core RPC is
+    /// unreachable (e.g. an SPV-only setup with no Core node), the ProTxHash
+    /// could not be built, or Core reported no/unknown type. Callers must treat
+    /// `None` as "no cross-check possible" and never as a mismatch. This is
+    /// best-effort verification, not a load precondition.
+    fn onchain_node_type(&self, identity_id: &Identifier) -> Option<IdentityType> {
+        let pro_tx_hash = match ProTxHash::from_hex(&identity_id.to_string(Encoding::Hex)) {
+            Ok(hash) => hash,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "Could not derive a ProTxHash for node-type verification; skipping the check",
+                );
+                return None;
+            }
+        };
+        let client = self.core_client.read().ok()?;
+        match client.get_protx_info(&pro_tx_hash, None) {
+            Ok(info) => classify_protx_node_type(info.mn_type.as_deref()),
+            Err(e) => {
+                tracing::warn!(
+                    pro_tx_hash = %pro_tx_hash.to_hex(),
+                    error = %e,
+                    "Could not verify node type via Core RPC; proceeding with the selected type",
+                );
+                None
+            }
+        }
     }
 
     /// Seal every resident-plaintext key of `qi` Tier-2 under an

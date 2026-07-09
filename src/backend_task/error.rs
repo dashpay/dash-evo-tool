@@ -1087,6 +1087,21 @@ pub enum TaskError {
     )]
     MalformedProTxHash { input: String },
 
+    /// The node type chosen on the load form does not match the node's actual
+    /// on-chain registration. Carries both typed node types so the message can
+    /// name them (no stored user-facing strings). `actual` is the on-chain
+    /// truth; `selected` is what the user picked.
+    #[error(
+        "This node is registered on the network as a {actual}, but you selected {selected}. \
+         Switch the node type to {actual} and load it again."
+    )]
+    NodeTypeMismatch {
+        /// The node type the user selected on the load form.
+        selected: crate::model::qualified_identity::IdentityType,
+        /// The node type the network says this ProTxHash actually is.
+        actual: crate::model::qualified_identity::IdentityType,
+    },
+
     /// The identity could not be constructed from the given parameters.
     #[error("Could not create the identity. Please check your input and try again.")]
     IdentityCreationError {

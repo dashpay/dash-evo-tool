@@ -20,7 +20,6 @@ mod progress_overlay;
 mod register_dpns_name_screen;
 mod restore_single_key;
 mod secret_prompt;
-mod skipped_wallets_banner;
 mod startup;
 mod support;
 mod tokens_screen;

@@ -842,6 +842,16 @@ impl AppState {
                 RootScreenType::RootScreenDashPayProfileSearch,
                 Screen::DashPayProfileSearchScreen(dashpay_profile_search_screen),
             ),
+            (
+                // Always registered — the Masternodes tab is gated at runtime by
+                // Expert Mode (the nav entry + route), not by a Cargo feature, so
+                // the screen must always exist to switch into when Expert Mode
+                // is on. Live de-gating falls back to Identities (see below).
+                RootScreenType::RootScreenMasternodes,
+                Screen::MasternodesScreen(crate::ui::masternodes::MasternodesScreen::new(
+                    &active_context,
+                )),
+            ),
         ]
         .into_iter()
         .chain({
@@ -1036,6 +1046,15 @@ impl AppState {
     }
 
     pub fn active_root_screen_mut(&mut self) -> &mut Screen {
+        // Live de-gating (§10.11): if Expert Mode flipped off while the
+        // Masternodes tab was active, fall back to the neutral Identities tab so
+        // the Expert-gated screen is never shown without its gate. Identities is
+        // always registered, so the subsequent lookup cannot fail.
+        if self.selected_main_screen == RootScreenType::RootScreenMasternodes
+            && !self.current_app_context().is_developer_mode()
+        {
+            self.selected_main_screen = RootScreenType::RootScreenIdentities;
+        }
         self.main_screens
             .get_mut(&self.selected_main_screen)
             .expect("expected to get screen")

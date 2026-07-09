@@ -77,15 +77,28 @@ pub fn add_left_panel(
     // legacy `Identities` entry so the three identity-related entries cluster
     // together while the old ones stay clickable.
     let mut buttons: Vec<(&str, RootScreenType, &str, Option<FeatureGate>)> =
-        Vec::with_capacity(legacy_buttons.len() + 1);
+        Vec::with_capacity(legacy_buttons.len() + 2);
     for entry in legacy_buttons.iter() {
         buttons.push(*entry);
         if entry.1 == RootScreenType::RootScreenIdentities {
+            #[cfg(feature = "identity-hub")]
             buttons.push((
                 "Identity Hub",
                 RootScreenType::RootScreenIdentityHub,
                 "identity.png",
                 None,
+            ));
+            // Masternodes sits directly below the identity cluster (locked
+            // decision #3), gated behind Expert Mode — the nav item and route
+            // are both absent when Expert Mode is off (the gate skip below drops
+            // the entry). Independent of the `identity-hub` Cargo feature.
+            // TODO: swap `voting.png` for a dedicated node/server glyph when one
+            // is added to `icons/` (distinct from `identity.png`).
+            buttons.push((
+                "Masternodes",
+                RootScreenType::RootScreenMasternodes,
+                "voting.png",
+                Some(FeatureGate::DeveloperMode),
             ));
         }
     }

@@ -56,6 +56,7 @@ use identities::add_new_identity_screen::AddNewIdentityScreen;
 use identities::identities_screen::IdentitiesScreen;
 use identities::register_dpns_name_screen::{RegisterDpnsNameScreen, RegisterDpnsNameSource};
 use identity::IdentityHubScreen;
+use masternodes::MasternodesScreen;
 use std::fmt;
 use std::sync::Arc;
 use std::sync::RwLock;
@@ -81,6 +82,7 @@ pub mod dpns;
 pub mod helpers;
 pub mod identities;
 pub mod identity;
+pub mod masternodes;
 pub mod network_chooser_screen;
 pub mod state;
 pub mod theme;
@@ -124,6 +126,7 @@ impl From<RootScreenType> for ScreenType {
             RootScreenType::RootScreenToolsAddressBalanceScreen => ScreenType::AddressBalance,
             RootScreenType::RootScreenDashpay => ScreenType::Dashpay,
             RootScreenType::RootScreenIdentityHub => ScreenType::IdentityHub,
+            RootScreenType::RootScreenMasternodes => ScreenType::Masternodes,
         }
     }
 }
@@ -169,6 +172,8 @@ pub enum ScreenType {
     Dashpay,
     /// Unified Identities hub (new four-tab section).
     IdentityHub,
+    /// Masternodes section (Expert-Mode gated).
+    Masternodes,
     CreateDocument,
     DeleteDocument,
     ReplaceDocument,
@@ -359,6 +364,9 @@ impl ScreenType {
             }
             ScreenType::IdentityHub => {
                 Screen::IdentityHubScreen(IdentityHubScreen::new(app_context))
+            }
+            ScreenType::Masternodes => {
+                Screen::MasternodesScreen(MasternodesScreen::new(app_context))
             }
             ScreenType::CreateDocument => Screen::DocumentActionScreen(DocumentActionScreen::new(
                 app_context.clone(),
@@ -570,6 +578,9 @@ pub enum Screen {
 
     // New unified Identities hub
     IdentityHubScreen(IdentityHubScreen),
+
+    // Masternodes section (Expert-Mode gated)
+    MasternodesScreen(MasternodesScreen),
 }
 
 impl Screen {
@@ -706,7 +717,8 @@ impl Screen {
             DashPayContactProfileViewerScreen,
             DashPaySendPaymentScreen,
             DashPayQRGeneratorScreen,
-            DashPayProfileSearchScreen;
+            DashPayProfileSearchScreen,
+            MasternodesScreen;
             common_set:
             MintTokensScreen,
             BurnTokensScreen,
@@ -947,6 +959,7 @@ impl Screen {
             Screen::DashPayQRGeneratorScreen(_) => ScreenType::DashPayQRGenerator,
             Screen::DashPayProfileSearchScreen(_) => ScreenType::DashPayProfileSearch,
             Screen::IdentityHubScreen(_) => ScreenType::IdentityHub,
+            Screen::MasternodesScreen(_) => ScreenType::Masternodes,
         }
     }
 }
@@ -1013,6 +1026,7 @@ macro_rules! delegate_to_screen {
             Screen::DashPayQRGeneratorScreen($screen) => $call,
             Screen::DashPayProfileSearchScreen($screen) => $call,
             Screen::IdentityHubScreen($screen) => $call,
+            Screen::MasternodesScreen($screen) => $call,
         }
     };
 }

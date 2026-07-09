@@ -171,6 +171,13 @@ impl AsyncTool<DashMcpService> for MasternodeIdentityLoad {
             keys_input: vec![],
             derive_keys_from_wallets: false,
             selected_wallet_seed_hash: None,
+            // FR-8 load-time key encryption is GUI-only this iteration
+            // (requirements §2.3): this tool is a confirmed keyless (Tier-1)
+            // entry point, so it loads unprotected.
+            // TODO: headless password parity — accept an optional encryption
+            // password param and thread it here once MCP secret handling is
+            // designed.
+            encryption_password: None,
         };
 
         let task = BackendTask::IdentityTask(IdentityTask::LoadIdentity(input));

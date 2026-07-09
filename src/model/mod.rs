@@ -7,6 +7,7 @@ pub mod dpns;
 pub mod fee_estimation;
 pub mod grovestark_prover;
 pub mod identity_discovery;
+pub mod identity_key_protection;
 pub mod key_input;
 /// Stateless input parsing for the headless masternode/evonode MCP tools.
 #[cfg(any(feature = "mcp", feature = "cli"))]

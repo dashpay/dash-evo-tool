@@ -50,6 +50,12 @@ pub struct IdentityInputToLoad {
     pub keys_input: Vec<Secret>,
     pub derive_keys_from_wallets: bool,
     pub selected_wallet_seed_hash: Option<WalletSeedHash>,
+    /// Optional load-time key encryption (FR-8). When `Some`, the loaded
+    /// voting/owner/payout and identity keys are sealed Tier-2 under this
+    /// password at load time through the existing per-identity protect
+    /// envelope (Argon2id + XChaCha20-Poly1305) — no new crypto, no second
+    /// persistence path. When `None`, the keyless Tier-1 path is unchanged.
+    pub encryption_password: Option<Secret>,
 }
 
 /// One chosen identity key, public-only.

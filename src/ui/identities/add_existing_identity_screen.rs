@@ -944,6 +944,9 @@ impl AddExistingIdentityScreen {
                 .collect(),
             derive_keys_from_wallets: self.identity_associated_with_wallet,
             selected_wallet_seed_hash,
+            // Legacy load screen has no password field; the optional load-time
+            // encryption (FR-8) is exposed on the new Masternodes load form (B4).
+            encryption_password: None,
         };
 
         AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::LoadIdentity(

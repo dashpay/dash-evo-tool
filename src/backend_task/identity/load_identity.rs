@@ -2,6 +2,7 @@ use super::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::backend_task::identity::IdentityInputToLoad;
 use crate::context::AppContext;
+use crate::model::identity_key_protection::validate_protection_password;
 use crate::model::key_input::verify_key_input;
 use crate::model::qualified_identity::PrivateKeyTarget::{
     self, PrivateKeyOnMainIdentity, PrivateKeyOnVoterIdentity,
@@ -54,7 +55,15 @@ impl AppContext {
             keys_input,
             derive_keys_from_wallets,
             selected_wallet_seed_hash,
+            encryption_password,
         } = input;
+
+        // FR-8: validate the load-time encryption password up front, before the
+        // network fetch, so a too-short password fails fast. The seal path
+        // re-enforces the same rule authoritatively after insert.
+        if let Some(password) = &encryption_password {
+            validate_protection_password(password)?;
+        }
 
         // Verify the owner private key
         let owner_private_key_bytes = verify_key_input(owner_private_key_input, "Owner")?;
@@ -375,6 +384,16 @@ impl AppContext {
                 .insert(identity_index, qualified_identity.identity.clone());
         }
 
+        // FR-8: when a load-time password was supplied, seal the just-inserted
+        // keyless keys Tier-2 through the existing per-identity protect
+        // envelope. `insert_local_qualified_identity` migrated the resident
+        // plaintext into the keyless vault, so `protect_identity_keys`
+        // (validate → fail-closed guard → seal via the secret_seam chokepoint)
+        // reloads from the DB and seals them — one path, no new crypto.
+        if let Some(password) = encryption_password {
+            self.protect_identity_keys(qualified_identity.identity.id(), password, None)?;
+        }
+
         Ok(BackendTaskSuccessResult::LoadedIdentity(qualified_identity))
     }
 
@@ -588,5 +607,155 @@ impl AppContext {
                 ))
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::TaskResult;
+    use crate::app_dir::ensure_env_file;
+    use crate::context::connection_status::ConnectionStatus;
+    use crate::database::test_helpers::create_database_at_path;
+    use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
+    use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
+    use crate::model::secret::Secret;
+    use crate::utils::egui_mpsc::SenderAsync;
+    use crate::utils::tasks::TaskManager;
+    use crate::wallet_backend::IdentityKeyView;
+    use crate::wallet_backend::secret_seam::SecretScheme;
+    use dash_sdk::dpp::dashcore::Network;
+    use dash_sdk::dpp::identity::Identity;
+    use dash_sdk::dpp::identity::KeyID;
+    use dash_sdk::dpp::version::PlatformVersion;
+    use dash_sdk::platform::IdentityPublicKey;
+    use platform_wallet_storage::secrets::SecretString;
+
+    const M: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnMainIdentity;
+    const V: PrivateKeyTarget = PrivateKeyTarget::PrivateKeyOnVoterIdentity;
+
+    /// A keyless masternode-shaped identity: an owner key + an identity auth key
+    /// on the main identity, plus a voting key on the voter identity — the shape
+    /// `load_identity` builds for a Masternode. Returns the qi and its
+    /// `(target, key_id)` triple.
+    fn masternode_shaped_qi() -> (QualifiedIdentity, [(PrivateKeyTarget, KeyID); 3]) {
+        let pv = PlatformVersion::latest();
+        let mut ks = KeyStorage::default();
+        let owner = IdentityPublicKey::random_key(1, Some(1), pv);
+        let voter = IdentityPublicKey::random_key(2, Some(2), pv);
+        let id_key = IdentityPublicKey::random_key(3, Some(3), pv);
+        let triple = [(M, owner.id()), (V, voter.id()), (M, id_key.id())];
+        ks.private_keys.insert(
+            (M, owner.id()),
+            (
+                QualifiedIdentityPublicKey::from(owner),
+                PrivateKeyData::Clear([0xA0; 32]),
+            ),
+        );
+        ks.private_keys.insert(
+            (V, voter.id()),
+            (
+                QualifiedIdentityPublicKey::from(voter),
+                PrivateKeyData::Clear([0xB0; 32]),
+            ),
+        );
+        ks.private_keys.insert(
+            (M, id_key.id()),
+            (
+                QualifiedIdentityPublicKey::from(id_key),
+                PrivateKeyData::Clear([0xC0; 32]),
+            ),
+        );
+        let identity =
+            Identity::create_basic_identity(Identifier::random(), pv).expect("basic identity");
+        let qi = QualifiedIdentity {
+            identity,
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::Masternode,
+            alias: None,
+            private_keys: ks,
+            dpns_names: vec![],
+            associated_wallets: BTreeMap::new(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: BTreeMap::new(),
+            status: IdentityStatus::Active,
+            network: Network::Testnet,
+        };
+        (qi, triple)
+    }
+
+    /// TC-FR8-01/02/10 — a load-time encryption password seals ALL of a
+    /// masternode's keys (voting, owner, and identity auth) Tier-2 through the
+    /// existing per-identity protect envelope. Without a password the same keys
+    /// stay keyless (Tier-1) after insert. Drives the exact call
+    /// [`load_identity`] makes when `encryption_password` is `Some`, on an
+    /// offline wired `AppContext` (no network I/O).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn load_time_password_seals_voting_owner_and_identity_keys() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = temp_dir.path().to_path_buf();
+        ensure_env_file(&data_dir);
+        let db = Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
+        let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
+        let secret_store = AppContext::open_secret_store(&data_dir).expect("secret store");
+        let ctx = AppContext::new(
+            data_dir,
+            Network::Testnet,
+            db,
+            Arc::new(TaskManager::new()),
+            Arc::new(ConnectionStatus::new()),
+            egui::Context::default(),
+            app_kv,
+            secret_store,
+        )
+        .expect("offline testnet AppContext::new");
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("wire wallet backend offline");
+
+        let (qi, triple) = masternode_shaped_qi();
+        let identity_id = qi.identity.id();
+        // Insert migrates the resident-plaintext keys into the keyless vault
+        // (Tier-1), exactly as the load path does before the optional seal.
+        ctx.insert_local_qualified_identity(&qi, &None)
+            .expect("insert masternode identity");
+
+        let backend = ctx.wallet_backend().expect("backend wired");
+        let view = IdentityKeyView::new(backend.secret_store(), identity_id.to_buffer());
+
+        // No-password (None) path: every key is keyless after insert.
+        for (t, k) in &triple {
+            assert_eq!(
+                view.scheme(t, *k).expect("scheme"),
+                SecretScheme::Unprotected,
+                "key ({t:?}, {k}) must be keyless before any load-time seal",
+            );
+        }
+
+        // The exact call `load_identity` makes for `encryption_password = Some`.
+        ctx.protect_identity_keys(identity_id, Secret::new("one-identity-password"), None)
+            .expect("load-time seal must succeed");
+
+        let pw = SecretString::new("one-identity-password");
+        for (t, k) in &triple {
+            assert_eq!(
+                view.scheme(t, *k).expect("scheme"),
+                SecretScheme::Protected,
+                "key ({t:?}, {k}) must be sealed Tier-2 after the load-time password",
+            );
+            assert!(
+                view.get_protected(t, *k, &pw)
+                    .expect("get_protected")
+                    .is_some(),
+                "sealed key ({t:?}, {k}) must round-trip under the password",
+            );
+        }
+
+        backend.shutdown().await;
     }
 }

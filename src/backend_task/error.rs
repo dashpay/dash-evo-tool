@@ -16,6 +16,7 @@ use dash_sdk::dpp::consensus::state::state_error::StateError;
 use dash_sdk::dpp::dashcore;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+use dash_sdk::platform::Identifier;
 use thiserror::Error;
 
 /// Dash Core RPC error code: wallet file not specified (multi-wallet node).
@@ -1069,6 +1070,22 @@ pub enum TaskError {
     /// The provided identifier could not be parsed from the input.
     #[error("The identifier you entered could not be read. Please check the format and try again.")]
     IdentifierParsingError { input: String },
+
+    /// A masternode or evonode with this ProTxHash is already loaded. Carries
+    /// the resolved identity id so the caller can point the user at the
+    /// existing node.
+    #[error(
+        "This masternode is already loaded. Open it from the list instead of loading it again."
+    )]
+    DuplicateProTxHash { identity_id: Identifier },
+
+    /// The ProTxHash could not be read as a hex ProTxHash or a Base58 identity
+    /// id. Carries the offending input (data, not a message).
+    #[error(
+        "The ProTxHash you entered could not be read. Enter a 64-character hex ProTxHash or the \
+         Base58 identity ID."
+    )]
+    MalformedProTxHash { input: String },
 
     /// The identity could not be constructed from the given parameters.
     #[error("Could not create the identity. Please check your input and try again.")]

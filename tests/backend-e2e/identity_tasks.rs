@@ -428,6 +428,7 @@ async fn tc_027_load_identity() {
         keys_input: vec![],
         derive_keys_from_wallets: true,
         selected_wallet_seed_hash: Some(si.wallet_seed_hash),
+        encryption_password: None,
     };
 
     let result = run_task(
@@ -533,6 +534,7 @@ async fn tc_030_load_nonexistent_identity() {
         keys_input: vec![],
         derive_keys_from_wallets: false,
         selected_wallet_seed_hash: None,
+        encryption_password: None,
     };
 
     let result = run_task(

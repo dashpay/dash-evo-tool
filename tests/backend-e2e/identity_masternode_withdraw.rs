@@ -93,6 +93,7 @@ fn load_task(
         keys_input: vec![],
         derive_keys_from_wallets: false,
         selected_wallet_seed_hash: None,
+        encryption_password: None,
     };
     BackendTask::IdentityTask(IdentityTask::LoadIdentity(input))
 }

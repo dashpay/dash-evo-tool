@@ -63,8 +63,8 @@ impl AppContext {
                         &e,
                         RequestType::GetContestedResourceIdentityVotes,
                     );
-                    // TODO: Replace the "contract not found" string match with a
-                    // structural SDK variant when one is available.
+                    // TODO(#875): replace substring match once the SDK exposes a
+                    // structural "contract not found" variant.
                     if matches!(e, dash_sdk::Error::StaleNode(_))
                         || e.to_string().contains(
                             "contract not found when querying from value with contract info",

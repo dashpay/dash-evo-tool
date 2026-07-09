@@ -22,7 +22,7 @@ use crate::model::qualified_identity::{IdentityType, PrivateKeyTarget, Qualified
 use crate::model::secret::Secret;
 use crate::model::wallet::{Wallet, WalletArcRef, WalletSeedHash};
 use dash_sdk::Sdk;
-use dash_sdk::dashcore_rpc::dashcore::{Address, PrivateKey};
+use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dpp::ProtocolError;
 use dash_sdk::dpp::balances::credits::Duffs;
 use dash_sdk::dpp::dashcore::hashes::Hash;
@@ -472,37 +472,6 @@ pub enum IdentityTask {
     RegisterDpnsName(RegisterDpnsNameInput),
     RefreshIdentity(QualifiedIdentity),
     RefreshLoadedIdentitiesOwnedDPNSNames,
-}
-
-fn verify_key_input(
-    untrimmed_private_key: Secret,
-    type_key: &str,
-) -> Result<Option<[u8; 32]>, String> {
-    let private_key = untrimmed_private_key.expose_secret().trim();
-    match private_key.len() {
-        64 => {
-            // hex
-            match hex::decode(private_key) {
-                Ok(decoded) => Ok(Some(decoded.try_into().unwrap())),
-                Err(_) => Err(format!(
-                    "{} key is the size of a hex key but isn't hex",
-                    type_key
-                )),
-            }
-        }
-        51 | 52 => {
-            // wif
-            match PrivateKey::from_wif(private_key) {
-                Ok(key) => Ok(Some(key.inner.secret_bytes())),
-                Err(_) => Err(format!(
-                    "{} key is the length of a WIF key but is invalid",
-                    type_key
-                )),
-            }
-        }
-        0 => Ok(None),
-        _ => Err(format!("{} key is of incorrect size", type_key)),
-    }
 }
 
 /// Returns the default key specifications for a new identity.

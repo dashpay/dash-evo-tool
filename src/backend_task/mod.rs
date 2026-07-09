@@ -643,10 +643,7 @@ impl AppContext {
                         secret_store,
                     )
                 })
-                .ok_or(TaskError::NetworkContextCreationFailed {
-                    network,
-                    detail: "AppContext::new() returned None".into(),
-                })?;
+                .ok_or(TaskError::NetworkContextCreationFailed { network })?;
 
                 // Wire the freshly-built context's wallet backend and then start
                 // chain sync. The old code called `start_spv()` on an unwired

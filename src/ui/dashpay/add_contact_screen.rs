@@ -715,21 +715,7 @@ fn classify_send_error(error: &TaskError, username_or_id: &str) -> Option<DashPa
             DashPayError::ContactRequestAlreadySent { to } => {
                 Some(DashPayError::ContactRequestAlreadySent { to: to.clone() })
             }
-            DashPayError::RateLimited { operation } => Some(DashPayError::RateLimited {
-                operation: operation.clone(),
-            }),
-            DashPayError::NetworkError { reason } => Some(DashPayError::NetworkError {
-                reason: reason.clone(),
-            }),
-            DashPayError::PlatformError { reason } => Some(DashPayError::PlatformError {
-                reason: reason.clone(),
-            }),
-            DashPayError::BroadcastFailed { reason } => Some(DashPayError::BroadcastFailed {
-                reason: reason.clone(),
-            }),
-            DashPayError::QueryFailed { reason } => Some(DashPayError::QueryFailed {
-                reason: reason.clone(),
-            }),
+            DashPayError::NetworkError => Some(DashPayError::NetworkError),
             _ => None,
         },
         _ => None,
@@ -772,9 +758,7 @@ mod tests {
     #[test]
     fn recoverable_errors_map_through_so_retry_is_offered() {
         let mapped = classify_send_error(
-            &TaskError::DashPay(DashPayError::NetworkError {
-                reason: "timeout".to_string(),
-            }),
+            &TaskError::DashPay(DashPayError::NetworkError),
             "alice.dash",
         );
         let mapped = mapped.expect("network errors should be classified");

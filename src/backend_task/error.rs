@@ -703,14 +703,6 @@ pub enum TaskError {
     #[error("Wallet is locked. Please unlock your wallet and try again.")]
     WalletLocked,
 
-    /// Refreshing wallet UTXOs from Dash Core failed.
-    #[error("Could not refresh wallet balance. Please try again.")]
-    WalletUtxoReloadFailed { detail: String },
-
-    /// Recalculating address balances after a transaction failed.
-    #[error("Could not update wallet balances after transaction. Please refresh your wallet.")]
-    WalletBalanceRecalculationFailed { detail: String },
-
     /// The requested document could not be found on the platform.
     #[error("The document could not be found. It may have been deleted or the ID is incorrect.")]
     DocumentNotFound,
@@ -1072,13 +1064,6 @@ pub enum TaskError {
     DataContractNotFound,
 
     // ──────────────────────────────────────────────────────────────────────────
-    // Serialization errors
-    // ──────────────────────────────────────────────────────────────────────────
-    /// A data serialization or deserialization operation failed (e.g. bincode).
-    #[error("Could not process the data. Please retry the operation.")]
-    SerializationError { detail: String },
-
-    // ──────────────────────────────────────────────────────────────────────────
     // Identity creation / parsing errors
     // ──────────────────────────────────────────────────────────────────────────
     /// The provided identifier could not be parsed from the input.
@@ -1094,7 +1079,7 @@ pub enum TaskError {
 
     /// A private key could not be parsed or is invalid.
     #[error("The private key you entered is invalid. Please check the format and try again.")]
-    InvalidPrivateKey { detail: String },
+    InvalidPrivateKey,
 
     /// Fetching DPNS names for an identity failed.
     #[error("Could not look up names for this identity. Please check your connection and retry.")]
@@ -1285,7 +1270,9 @@ pub enum TaskError {
     #[error(
         "Could not read the withdrawal details. The data may be incomplete or in an unexpected format. Please retry."
     )]
-    WithdrawalDocumentParsingError { detail: String },
+    WithdrawalDocumentParsingError(
+        #[from] crate::backend_task::platform_info::WithdrawalParseError,
+    ),
 
     // ──────────────────────────────────────────────────────────────────────────
     // SDK / RPC setup errors
@@ -1297,10 +1284,6 @@ pub enum TaskError {
     )]
     SdkInitializationFailed { detail: String },
 
-    /// An RPC context provider or Core RPC client could not be constructed.
-    #[error("Could not set up the Dash Core connection. Please check your settings and retry.")]
-    RpcProviderCreationFailed { detail: String },
-
     /// The Core wallet name supplied by the user is syntactically invalid.
     #[error("The Core wallet name '{name}' is invalid. Please check your wallet configuration.")]
     InvalidCoreWalletName { name: String },
@@ -1308,21 +1291,6 @@ pub enum TaskError {
     /// Dash Core has no wallets loaded — required for wallet-scoped RPC calls.
     #[error("No wallets are loaded in Dash Core. Please open a wallet in Dash Core and retry.")]
     NoCoreWalletsLoaded,
-
-    // ──────────────────────────────────────────────────────────────────────────
-    // UTXO / asset-lock transaction build errors
-    // ──────────────────────────────────────────────────────────────────────────
-    /// A UTXO reload or removal operation failed.
-    #[error(
-        "Could not update your unspent transaction outputs. Please check your connection and retry."
-    )]
-    UtxoUpdateFailed { detail: String },
-
-    /// An asset lock transaction could not be built from the current wallet state.
-    #[error(
-        "Could not prepare the funding transaction. Please check your wallet balance and retry."
-    )]
-    AssetLockTransactionBuildFailed { detail: String },
 
     // ──────────────────────────────────────────────────────────────────────────
     // Wallet key / address errors
@@ -1412,10 +1380,6 @@ pub enum TaskError {
         source: dashcore::sighash::Error,
     },
 
-    /// A wallet payment operation failed (covers SPV and RPC payment paths).
-    #[error("Could not complete the payment. Please check your wallet balance and retry.")]
-    WalletPaymentFailed { detail: String },
-
     /// Could not access wallet information from the SPV manager.
     #[error("Your wallet is still loading. Please wait a moment and try again.")]
     WalletInfoUnavailable,
@@ -1500,9 +1464,10 @@ pub enum TaskError {
     // ──────────────────────────────────────────────────────────────────────────
     // Key input validation errors
     // ──────────────────────────────────────────────────────────────────────────
-    /// A raw private-key input string failed format validation.
-    #[error("The {key_name} key is invalid: {detail}. Please check the key format and retry.")]
-    KeyInputValidationFailed { key_name: String, detail: String },
+    /// A raw private-key input string failed format validation. The model
+    /// validator's `Display` is already a complete, actionable user sentence.
+    #[error(transparent)]
+    KeyInputValidationFailed(#[from] crate::model::key_input::KeyInputError),
 
     /// A supplied private key could not be verified against the identity's keys.
     #[error("{0} Please check the key and retry.")]
@@ -1575,10 +1540,6 @@ pub enum TaskError {
     /// The platform address was not found in the wallet's platform address info.
     #[error("The platform address could not be found in your wallet. Please refresh and retry.")]
     PlatformAddressNotFound,
-
-    /// A Merkle witness could not be obtained for a shielded note.
-    #[error("Could not prepare the shielded transaction. Please sync your notes and retry.")]
-    ShieldedMerkleWitnessUnavailable { detail: String },
 
     /// Failed to build a shielded state transition (shield, transfer, unshield, withdrawal).
     #[error("Could not build the shielded transaction. Please retry.")]
@@ -1742,13 +1703,7 @@ pub enum TaskError {
     #[error(
         "Could not sync shielded notes from the platform. Please check your connection and retry."
     )]
-    ShieldedSyncFailed { detail: String },
-
-    /// Failed to append or checkpoint the shielded commitment tree.
-    #[error(
-        "Could not update the local shielded data. Please check available disk space and retry."
-    )]
-    ShieldedTreeUpdateFailed { detail: String },
+    ShieldedSyncFailed(#[source] Box<SdkError>),
 
     /// Failed to persist a decrypted shielded note to the local sidecar.
     ///
@@ -1762,10 +1717,6 @@ pub enum TaskError {
         #[source]
         source: rusqlite::Error,
     },
-
-    /// Nullifier sync failed.
-    #[error("Could not check for spent shielded notes. Please check your connection and retry.")]
-    ShieldedNullifierSyncFailed { detail: String },
 
     /// The shielded transition fee could not be computed for the active
     /// protocol version.
@@ -1791,7 +1742,7 @@ pub enum TaskError {
     // ──────────────────────────────────────────────────────────────────────────
     /// Creating a network context failed during a network switch.
     #[error("Could not connect to {network}. Check your network configuration and retry.")]
-    NetworkContextCreationFailed { network: Network, detail: String },
+    NetworkContextCreationFailed { network: Network },
 
     // ──────────────────────────────────────────────────────────────────────────
     // Migration errors

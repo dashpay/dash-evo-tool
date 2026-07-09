@@ -746,10 +746,11 @@ mod tests {
         use crate::backend_task::error::TaskError;
         use rmcp::ErrorData as McpError;
 
-        let err = McpToolError::TaskFailed(TaskError::KeyInputValidationFailed {
-            key_name: "Owner".to_owned(),
-            detail: "key is of incorrect size".to_owned(),
-        });
+        let err = McpToolError::TaskFailed(TaskError::KeyInputValidationFailed(
+            crate::model::key_input::KeyInputError::UnsupportedLength {
+                key_name: "Owner".to_owned(),
+            },
+        ));
 
         let mcp: McpError = err.into();
         let message = mcp.message.to_string();

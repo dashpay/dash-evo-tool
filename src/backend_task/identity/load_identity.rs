@@ -1,7 +1,8 @@
 use super::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
-use crate::backend_task::identity::{IdentityInputToLoad, verify_key_input};
+use crate::backend_task::identity::IdentityInputToLoad;
 use crate::context::AppContext;
+use crate::model::key_input::verify_key_input;
 use crate::model::qualified_identity::PrivateKeyTarget::{
     self, PrivateKeyOnMainIdentity, PrivateKeyOnVoterIdentity,
 };
@@ -55,29 +56,14 @@ impl AppContext {
             selected_wallet_seed_hash,
         } = input;
 
-        // Verify the voting private key
-        let owner_private_key_bytes =
-            verify_key_input(owner_private_key_input, "Owner").map_err(|e| {
-                TaskError::KeyInputValidationFailed {
-                    key_name: "Owner".to_string(),
-                    detail: e,
-                }
-            })?;
+        // Verify the owner private key
+        let owner_private_key_bytes = verify_key_input(owner_private_key_input, "Owner")?;
 
         // Verify the voting private key
-        let voting_private_key_bytes = verify_key_input(voting_private_key_input, "Voting")
-            .map_err(|e| TaskError::KeyInputValidationFailed {
-                key_name: "Voting".to_string(),
-                detail: e,
-            })?;
+        let voting_private_key_bytes = verify_key_input(voting_private_key_input, "Voting")?;
 
         let payout_address_private_key_bytes =
-            verify_key_input(payout_address_private_key_input, "Payout Address").map_err(|e| {
-                TaskError::KeyInputValidationFailed {
-                    key_name: "Payout Address".to_string(),
-                    detail: e,
-                }
-            })?;
+            verify_key_input(payout_address_private_key_input, "Payout Address")?;
 
         // Parse the identity ID
         let identity_id = match Identifier::from_string(&identity_id_input, Encoding::Base58)
@@ -199,9 +185,7 @@ impl AppContext {
                     );
                     Some((voter_identity, key))
                 } else {
-                    return Err(TaskError::InvalidPrivateKey {
-                        detail: "Voting private key is not valid".to_string(),
-                    });
+                    return Err(TaskError::InvalidPrivateKey);
                 }
             } else {
                 None
@@ -218,17 +202,11 @@ impl AppContext {
                 .filter_map(|key_string| {
                     Some(
                         verify_key_input(key_string, "User Key")
-                            .map_err(|e| TaskError::KeyInputValidationFailed {
-                                key_name: "User Key".to_string(),
-                                detail: e,
-                            })
+                            .map_err(TaskError::from)
                             .transpose()?
                             .and_then(|sk| {
-                                PrivateKey::from_byte_array(&sk, self.network).map_err(|e| {
-                                    TaskError::InvalidPrivateKey {
-                                        detail: e.to_string(),
-                                    }
-                                })
+                                PrivateKey::from_byte_array(&sk, self.network)
+                                    .map_err(|_| TaskError::InvalidPrivateKey)
                             }),
                     )
                 })

@@ -7,6 +7,7 @@
 use std::sync::Arc;
 
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use eframe::egui::{self, Color32, RichText, Ui};
 
@@ -20,9 +21,12 @@ use crate::backend_task::contested_names::ContestedResourceTask;
 use crate::backend_task::identity::{IdentityInputToLoad, IdentityLoadMode, IdentityTask};
 use crate::context::AppContext;
 use crate::model::contested_name::{ContestedName, MasternodeContestSummary};
-use crate::model::qualified_identity::{IdentityType, MasternodeKeyPresence, QualifiedIdentity};
+use crate::model::qualified_identity::{
+    IdentityType, MasternodeKeyPresence, PrivateKeyTarget, QualifiedIdentity,
+};
 use crate::model::secret::Secret;
-use crate::ui::ScreenType;
+use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
+use crate::ui::{Screen, ScreenType};
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::password_input::PasswordInput;
 use crate::ui::identity::identity_picker_card::draw_type_badge;
@@ -45,6 +49,26 @@ fn dpns_section_header(open_contest_count: usize) -> String {
 
 /// The fixed top→bottom section order. Actions must precede Keys (TC-FR5-01).
 pub const SECTION_ORDER: [&str; 5] = ["Header", "Actions", "Keys", "DPNS", "Remove"];
+
+/// A short, human label for a masternode key button, derived from its purpose
+/// and the identity it lives on. Voter-identity keys are always "Voting"; on
+/// the main identity, Owner/Payout keys are named by purpose, everything else
+/// falls back to its purpose name.
+fn key_role_label(
+    target: &PrivateKeyTarget,
+    key: &dash_sdk::platform::IdentityPublicKey,
+) -> String {
+    use dash_sdk::dpp::identity::Purpose;
+    if *target == PrivateKeyTarget::PrivateKeyOnVoterIdentity {
+        return "Voting".to_string();
+    }
+    match key.purpose() {
+        Purpose::OWNER => "Owner".to_string(),
+        Purpose::TRANSFER => "Payout".to_string(),
+        Purpose::AUTHENTICATION => "Authentication".to_string(),
+        other => format!("{other:?}"),
+    }
+}
 
 /// At-rest protection posture of a node's vault keys, reduced to what the detail
 /// view needs: the tier label and whether an `Add password protection…` action
@@ -166,6 +190,21 @@ impl MasternodeDetailView {
         self.open_contests = Self::load_open_contests(&self.app_context, voter_id);
     }
 
+    /// Build the network re-fetch dispatched by the detail Refresh button
+    /// (QA-003): refresh this node's identity, plus a DPNS contests re-query
+    /// when the node has a voter identity that can vote.
+    fn refresh_from_network(&self) -> AppAction {
+        let mut tasks = vec![BackendTask::IdentityTask(IdentityTask::RefreshIdentity(
+            self.identity.clone(),
+        ))];
+        if self.identity.associated_voter_identity.is_some() {
+            tasks.push(BackendTask::ContestedResourceTask(
+                ContestedResourceTask::QueryDPNSContests,
+            ));
+        }
+        AppAction::BackendTasks(tasks, crate::app::BackendTasksExecutionMode::Concurrent)
+    }
+
     /// The node's identity id — used by the list screen to match the open node.
     pub fn node_id(&self) -> dash_sdk::platform::Identifier {
         self.identity.identity.id()
@@ -226,7 +265,11 @@ impl MasternodeDetailView {
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ComponentStyles::add_toolbar_button(ui, "Refresh", network_accent).clicked() {
+                    // Re-read the local contest cache immediately (optimistic)
+                    // AND dispatch a network re-fetch of this node plus the DPNS
+                    // contests (QA-003) — Refresh must reach the network.
                     self.refresh_contests();
+                    outcome = DetailOutcome::Forward(Box::new(self.refresh_from_network()));
                 }
             });
         });
@@ -382,18 +425,88 @@ impl MasternodeDetailView {
         // Protection tier + conditional Add-protection (FR-8 / NFR-4).
         let tier = self.protection_tier();
         ui.label(RichText::new(tier.label()).color(DashColors::text_secondary(dark_mode)));
-        ui.horizontal(|ui| {
-            if tier.offers_add_protection() && ui.button("Add password protection…").clicked() {
-                // The seal flow (password entry → `IdentityTask::ProtectIdentityKeys`)
-                // lives in the reused key screens; route there rather than
-                // duplicating the password form on this page.
-                action = Some(self.push(ScreenType::Keys(self.identity.identity.clone())));
+
+        // Per-key "Manage keys" list. Each key opens its own `KeyInfoScreen`
+        // (QA-007) — the real, interactive per-key screen with view/sign/seal
+        // actions — not the static read-only `KeysScreen` table. This mirrors
+        // `identities_screen.rs`: one button per key, each pushing
+        // `Screen::KeyInfoScreen`.
+        ui.add_space(4.0);
+        ui.label(
+            RichText::new("Manage keys")
+                .strong()
+                .color(DashColors::text_primary(dark_mode)),
+        );
+        for (target, key) in self.identity_keys() {
+            if ui
+                .button(format!("{} key ›", key_role_label(&target, &key)))
+                .clicked()
+            {
+                action = Some(self.open_key_info(target, &key));
             }
-            if ui.button("Manage keys ›").clicked() {
-                action = Some(self.push(ScreenType::Keys(self.identity.identity.clone())));
-            }
-        });
+        }
+
+        // Add-protection CTA (FR-8): the seal form (password entry →
+        // `IdentityTask::ProtectIdentityKeys`, which seals the whole identity)
+        // lives inside `KeyInfoScreen`. Open the first held key so the user
+        // lands directly on the interactive seal flow.
+        if tier.offers_add_protection()
+            && let Some((target, key)) = self.first_protectable_key()
+            && ui.button("Add password protection…").clicked()
+        {
+            action = Some(self.open_key_info(target, &key));
+        }
         action
+    }
+
+    /// Every key of this node, main-identity keys first then voter-identity
+    /// keys, each paired with the `PrivateKeyTarget` that scopes it. Backs the
+    /// per-key "Manage keys" list and the Add-protection routing (QA-007).
+    fn identity_keys(&self) -> Vec<(PrivateKeyTarget, dash_sdk::platform::IdentityPublicKey)> {
+        let mut keys = Vec::new();
+        for key in self.identity.identity.public_keys().values() {
+            keys.push((PrivateKeyTarget::PrivateKeyOnMainIdentity, key.clone()));
+        }
+        if let Some((voter, _)) = self.identity.associated_voter_identity.as_ref() {
+            for key in voter.public_keys().values() {
+                keys.push((PrivateKeyTarget::PrivateKeyOnVoterIdentity, key.clone()));
+            }
+        }
+        keys
+    }
+
+    /// The first key whose private material this node actually holds — the only
+    /// keys that can be sealed. Used to route the Add-protection CTA straight
+    /// into an interactive `KeyInfoScreen` seal flow (QA-007).
+    fn first_protectable_key(
+        &self,
+    ) -> Option<(PrivateKeyTarget, dash_sdk::platform::IdentityPublicKey)> {
+        self.identity_keys().into_iter().find(|(target, key)| {
+            self.identity
+                .private_keys
+                .get_cloned_private_key_data_and_wallet_info(&(target.clone(), key.id()))
+                .is_some()
+        })
+    }
+
+    /// Build the `AddScreen` action that opens `KeyInfoScreen` for one key,
+    /// carrying its held private-key data if any (QA-007). Mirrors the
+    /// per-key push in `identities_screen.rs`.
+    fn open_key_info(
+        &self,
+        target: PrivateKeyTarget,
+        key: &dash_sdk::platform::IdentityPublicKey,
+    ) -> AppAction {
+        let holding = self
+            .identity
+            .private_keys
+            .get_cloned_private_key_data_and_wallet_info(&(target, key.id()));
+        AppAction::AddScreen(Screen::KeyInfoScreen(KeyInfoScreen::new(
+            self.identity.clone(),
+            key.clone(),
+            holding,
+            &self.app_context,
+        )))
     }
 
     /// Render the collapsible DPNS voting section (collapsed by default,

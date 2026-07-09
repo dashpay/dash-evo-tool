@@ -10,8 +10,9 @@ use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::Identifier;
 use eframe::egui::{self, RichText};
 
-use crate::app::AppAction;
+use crate::app::{AppAction, BackendTasksExecutionMode};
 use crate::backend_task::BackendTask;
+use crate::backend_task::contested_names::ContestedResourceTask;
 use crate::backend_task::identity::IdentityTask;
 use crate::context::AppContext;
 use crate::model::contested_name::MasternodeContestSummary;
@@ -114,6 +115,15 @@ impl MasternodesScreen {
                 }
             })
             .collect();
+    }
+
+    /// Reset the screen after a network switch (QA-001). A load form or detail
+    /// view left open belongs to the previous network's node — keeping it
+    /// actionable would let the user submit a cross-network operation. Drop back
+    /// to the List view and reload from the now-active network's local store.
+    pub fn reset_for_network_change(&mut self) {
+        self.view = MasternodesView::List;
+        self.reload();
     }
 
     /// Build a fresh load form, attaching the Testnet Fill-Random fixture only
@@ -262,7 +272,12 @@ impl MasternodesScreen {
         ui.horizontal(|ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ComponentStyles::add_toolbar_button(ui, "Refresh", network_accent).clicked() {
+                    // Re-read the local cache immediately (optimistic) AND
+                    // dispatch a network re-fetch of every loaded node plus the
+                    // DPNS contests (QA-003) — Refresh must reach the network,
+                    // not just re-read the store.
                     self.reload();
+                    inner = self.refresh_from_network();
                 }
                 ui.add_space(8.0);
                 if ComponentStyles::add_toolbar_button(ui, "+ Load", network_accent).clicked() {
@@ -278,6 +293,28 @@ impl MasternodesScreen {
             inner |= self.render_card_grid(ui);
         }
         inner
+    }
+
+    /// Build the network re-fetch dispatched by the list Refresh button
+    /// (QA-003): one `RefreshIdentity` per loaded node, plus a DPNS contests
+    /// re-query so vote counts refresh too. Returns `None` when no node is
+    /// loaded (nothing to refresh).
+    fn refresh_from_network(&self) -> AppAction {
+        let identities = self
+            .app_context
+            .load_local_masternode_identities()
+            .unwrap_or_default();
+        if identities.is_empty() {
+            return AppAction::None;
+        }
+        let mut tasks: Vec<BackendTask> = identities
+            .into_iter()
+            .map(|qi| BackendTask::IdentityTask(IdentityTask::RefreshIdentity(qi)))
+            .collect();
+        tasks.push(BackendTask::ContestedResourceTask(
+            ContestedResourceTask::QueryDPNSContests,
+        ));
+        AppAction::BackendTasks(tasks, BackendTasksExecutionMode::Concurrent)
     }
 
     /// Render the load form; map its outcome to a backend load task and return

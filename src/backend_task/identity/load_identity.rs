@@ -129,16 +129,21 @@ impl AppContext {
         // Masternode/Evonode toggle, and silently trusting it would mis-badge the
         // node and expose Evonode-only actions on a regular masternode. When the
         // on-chain type cannot be determined (Core RPC unavailable, as on an
-        // SPV-only setup with no Core node), the load proceeds unverified rather
-        // than blocking — no regression versus the prior always-trust behavior.
-        if identity_type != IdentityType::User
-            && let Some(actual) =
-                node_type_conflict(identity_type, self.onchain_node_type(&identity_id))
-        {
-            return Err(TaskError::NodeTypeMismatch {
-                selected: identity_type,
-                actual,
-            });
+        // SPV-only setup with no Core node), the load proceeds but is flagged
+        // unverified so the UI surfaces a visible "type unverified" warning
+        // instead of presenting the selected badge as authoritative.
+        let mut node_type_verified = true;
+        if identity_type != IdentityType::User {
+            let onchain = self.onchain_node_type(&identity_id);
+            if let Some(actual) = node_type_conflict(identity_type, onchain) {
+                return Err(TaskError::NodeTypeMismatch {
+                    selected: identity_type,
+                    actual,
+                });
+            }
+            // Verified only when the network gave a definite (matching) type;
+            // an indeterminate lookup (`None`) leaves the type unverified.
+            node_type_verified = onchain.is_some();
         }
 
         // §10.9 / TC-EDGE-07: a fresh load rejects a ProTxHash already stored,
@@ -502,7 +507,13 @@ impl AppContext {
             self.protect_identity_keys(qualified_identity.identity.id(), password, None)?;
         }
 
-        Ok(BackendTaskSuccessResult::LoadedIdentity(qualified_identity))
+        if node_type_verified {
+            Ok(BackendTaskSuccessResult::LoadedIdentity(qualified_identity))
+        } else {
+            Ok(BackendTaskSuccessResult::LoadedIdentityTypeUnverified(
+                qualified_identity,
+            ))
+        }
     }
 
     /// The node's actual on-chain type (Masternode vs Evonode), looked up by

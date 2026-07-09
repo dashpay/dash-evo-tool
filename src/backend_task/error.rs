@@ -2571,6 +2571,29 @@ mod tests {
     }
 
     #[test]
+    fn node_type_mismatch_message_names_both_types_and_the_action() {
+        use crate::model::qualified_identity::IdentityType;
+        // The reported bug: user selected Evonode, node is a regular masternode.
+        let msg = TaskError::NodeTypeMismatch {
+            selected: IdentityType::Evonode,
+            actual: IdentityType::Masternode,
+        }
+        .to_string();
+        assert!(
+            msg.contains("Masternode"),
+            "message must name the actual (Masternode) type: {msg}"
+        );
+        assert!(
+            msg.contains("Evonode"),
+            "message must name the selected (Evonode) type: {msg}"
+        );
+        assert!(
+            msg.to_lowercase().contains("switch"),
+            "message must tell the user the self-service action (switch the type): {msg}"
+        );
+    }
+
+    #[test]
     fn secret_store_copy_drops_misleading_disk_space_claim() {
         use platform_wallet_storage::secrets::SecretStoreError;
         let msg = TaskError::SecretStore {

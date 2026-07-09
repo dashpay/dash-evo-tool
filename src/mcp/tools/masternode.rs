@@ -89,11 +89,6 @@ impl std::fmt::Debug for MasternodeIdentityLoadParams {
 pub struct MasternodeIdentityLoadOutput {
     identity_id: String,
     node_type: String,
-    /// Whether `node_type` was verified against the node's on-chain
-    /// registration (Core RPC `protx info`). `false` when the on-chain type
-    /// could not be determined (Core RPC unreachable), so `node_type` reflects
-    /// the requested value rather than a confirmed fact.
-    node_type_verified: bool,
     alias: Option<String>,
     owner_key_loaded: bool,
     voting_key_loaded: bool,
@@ -200,17 +195,10 @@ impl AsyncTool<DashMcpService> for MasternodeIdentityLoad {
             .await
             .map_err(McpToolError::TaskFailed)?;
 
-        // Both load results carry the identity; they differ only in whether the
-        // node type was verified on-chain (unverified when Core RPC is
-        // unreachable). Surface that distinction in the output.
-        let (qi, node_type_verified) = match result {
-            BackendTaskSuccessResult::LoadedIdentity(qi) => (qi, true),
-            BackendTaskSuccessResult::LoadedIdentityTypeUnverified(qi) => (qi, false),
-            other => {
-                return Err(McpToolError::Internal(format!(
-                    "Unexpected task result: {other:?}"
-                )));
-            }
+        let BackendTaskSuccessResult::LoadedIdentity(qi) = result else {
+            return Err(McpToolError::Internal(format!(
+                "Unexpected task result: {result:?}"
+            )));
         };
 
         let mut owner_key_loaded = false;
@@ -239,7 +227,6 @@ impl AsyncTool<DashMcpService> for MasternodeIdentityLoad {
         Ok(MasternodeIdentityLoadOutput {
             identity_id: qi.identity.id().to_string(Encoding::Base58),
             node_type: identity_type.to_string().to_ascii_lowercase(),
-            node_type_verified,
             alias: qi.alias.clone(),
             owner_key_loaded,
             voting_key_loaded: qi.associated_voter_identity.is_some(),

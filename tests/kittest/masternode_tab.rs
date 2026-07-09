@@ -2,7 +2,6 @@
 //! empty state + card grid (B3).
 
 use crate::support::{mount_app, with_isolated_data_dir};
-use dash_evo_tool::backend_task::BackendTaskSuccessResult;
 use dash_evo_tool::context::AppContext;
 use dash_evo_tool::model::qualified_identity::encrypted_key_storage::KeyStorage;
 use dash_evo_tool::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
@@ -407,62 +406,6 @@ fn load_form_back_link_returns_to_list() {
         assert!(
             harness.query_by_label("No masternodes loaded").is_some(),
             "the back link must return to the list without loading"
-        );
-    });
-}
-
-/// When a node loads but its type could NOT be verified on-chain (Core RPC
-/// unreachable), the load task returns `LoadedIdentityTypeUnverified` and the
-/// Masternodes screen must surface a visible warning banner — not just a log
-/// line — so the Masternode/Evonode badge is not presented as an authoritative
-/// fact.
-#[test]
-fn unverified_node_type_load_surfaces_warning_banner() {
-    with_isolated_data_dir(|| {
-        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
-        let _guard = rt.enter();
-
-        let mut harness = mount_app(RootScreenType::RootScreenIdentities);
-        let app_context = harness.state().current_app_context().clone();
-        activate_masternodes_tab(&mut harness, &app_context);
-
-        // Build a masternode identity as the load task would hand back on the
-        // "type could not be verified" path.
-        let pv = PlatformVersion::latest();
-        let identity = Identity::create_basic_identity(Identifier::from([0x5A; 32]), pv)
-            .expect("basic identity");
-        let qi = QualifiedIdentity {
-            identity,
-            associated_voter_identity: None,
-            associated_operator_identity: None,
-            associated_owner_key_id: None,
-            identity_type: IdentityType::Evonode,
-            alias: Some("mn-unverified".to_string()),
-            private_keys: KeyStorage::default(),
-            dpns_names: vec![],
-            associated_wallets: BTreeMap::new(),
-            secret_access: None,
-            wallet_index: None,
-            top_ups: BTreeMap::new(),
-            status: IdentityStatus::PendingCreation,
-            network: app_context.network(),
-        };
-
-        // Drive the unverified-type load result into the visible Masternodes
-        // screen (the exact result `load_identity` returns when Core RPC can't
-        // confirm the type).
-        harness
-            .state_mut()
-            .visible_screen_mut()
-            .display_task_result(BackendTaskSuccessResult::LoadedIdentityTypeUnverified(qi));
-        harness.run_steps(3);
-
-        // The warning is surfaced to the UI (a rendered banner), not just logged.
-        assert!(
-            harness
-                .query_by_label_contains("could not be verified")
-                .is_some(),
-            "an unverified node-type load must surface a visible warning banner",
         );
     });
 }

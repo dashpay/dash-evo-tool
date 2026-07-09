@@ -1087,21 +1087,6 @@ pub enum TaskError {
     )]
     MalformedProTxHash { input: String },
 
-    /// The node type chosen on the load form does not match the node's actual
-    /// on-chain registration. Carries both typed node types so the message can
-    /// name them (no stored user-facing strings). `actual` is the on-chain
-    /// truth; `selected` is what the user picked.
-    #[error(
-        "This node is registered on the network as a {actual}, but you selected {selected}. \
-         Switch the node type to {actual} and load it again."
-    )]
-    NodeTypeMismatch {
-        /// The node type the user selected on the load form.
-        selected: crate::model::qualified_identity::IdentityType,
-        /// The node type the network says this ProTxHash actually is.
-        actual: crate::model::qualified_identity::IdentityType,
-    },
-
     /// The identity could not be constructed from the given parameters.
     #[error("Could not create the identity. Please check your input and try again.")]
     IdentityCreationError {
@@ -2568,29 +2553,6 @@ mod tests {
 
         // A wholly unrelated variant is fatal.
         assert!(!TaskError::ImportedKeyNotFound.is_secret_store_wrong_passphrase());
-    }
-
-    #[test]
-    fn node_type_mismatch_message_names_both_types_and_the_action() {
-        use crate::model::qualified_identity::IdentityType;
-        // The reported bug: user selected Evonode, node is a regular masternode.
-        let msg = TaskError::NodeTypeMismatch {
-            selected: IdentityType::Evonode,
-            actual: IdentityType::Masternode,
-        }
-        .to_string();
-        assert!(
-            msg.contains("Masternode"),
-            "message must name the actual (Masternode) type: {msg}"
-        );
-        assert!(
-            msg.contains("Evonode"),
-            "message must name the selected (Evonode) type: {msg}"
-        );
-        assert!(
-            msg.to_lowercase().contains("switch"),
-            "message must tell the user the self-service action (switch the type): {msg}"
-        );
     }
 
     #[test]

@@ -381,13 +381,6 @@ pub enum BackendTaskSuccessResult {
     RegisteredDpnsName(FeeResult),
     RefreshedIdentity(QualifiedIdentity),
     LoadedIdentity(QualifiedIdentity),
-    /// A masternode/evonode was loaded, but its node type could NOT be verified
-    /// against the network (Core RPC unreachable — e.g. an SPV-only setup). The
-    /// node is stored with the user-selected type, and the UI must surface a
-    /// visible "type unverified" warning so the badge is not presented as
-    /// authoritative. Same payload as [`Self::LoadedIdentity`]; a distinct
-    /// variant so the load screen can branch to a warning.
-    LoadedIdentityTypeUnverified(QualifiedIdentity),
     /// This identity's keys were sealed under a password (opt-in).
     /// The `count` keys newly sealed (0 when the task was an idempotent re-run
     /// over an already-protected identity).

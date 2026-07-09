@@ -18,7 +18,6 @@ use crate::context::AppContext;
 use crate::model::contested_name::MasternodeContestSummary;
 use crate::model::qualified_identity::{IdentityStatus, IdentityType, MasternodeKeyPresence};
 use crate::ui::components::left_panel::add_left_panel;
-use crate::ui::components::message_banner::MessageBanner;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel_with_global_nav;
 use crate::ui::identity::identity_pill::shorten_id;
@@ -28,18 +27,11 @@ use crate::ui::masternodes::detail_screen::{DetailOutcome, MasternodeDetailView}
 use crate::ui::masternodes::load_form::{LoadFormOutcome, MasternodeLoadForm};
 use crate::ui::state::masternodes_view::masternodes_page_nav_spec;
 use crate::ui::theme::{ComponentStyles, DashColors};
-use crate::ui::{MessageType, RootScreenType, ScreenLike};
+use crate::ui::{RootScreenType, ScreenLike};
 
 /// Minimum horizontal gap between cards in the grid (matches the identity
 /// picker grid).
 const GRID_GAP: f32 = 16.0;
-
-/// Shown when a node loads but its Masternode/Evonode type could not be
-/// verified against the network (Core RPC unreachable). The badge then reflects
-/// the user's selection, not a confirmed fact — this warns the user and points
-/// to the self-service action (reload later to confirm).
-const NODE_TYPE_UNVERIFIED_WARNING: &str = "The node type could not be verified with the network right now, so it is shown as you \
-     selected it. Reload this node later to confirm whether it is a masternode or an evonode.";
 
 /// Pre-resolved display data for one masternode/evonode card. Computed at
 /// reload time so the per-frame render never touches the database.
@@ -384,28 +376,15 @@ impl ScreenLike for MasternodesScreen {
     }
 
     fn display_task_result(&mut self, result: crate::backend_task::BackendTaskSuccessResult) {
-        use crate::backend_task::BackendTaskSuccessResult as R;
-        // Clear the load gate only on the load task's OWN result variants (both
-        // the verified and the type-unverified load results). This screen also
-        // receives detail-view results (voting, RefreshIdentity) — clearing on
-        // any of those would re-enable `+ Load` while a real load is still in
-        // flight, so match the load's results specifically.
-        match &result {
-            R::LoadedIdentity(_) => {
-                self.load_in_flight = false;
-            }
-            R::LoadedIdentityTypeUnverified(_) => {
-                self.load_in_flight = false;
-                // Visible caveat: the node loaded, but its Masternode/Evonode
-                // type could not be checked against the network, so the badge
-                // reflects the user's selection, not a verified fact.
-                MessageBanner::set_global(
-                    self.app_context.egui_ctx(),
-                    NODE_TYPE_UNVERIFIED_WARNING,
-                    MessageType::Warning,
-                );
-            }
-            _ => {}
+        // Clear the load gate only on the load task's OWN result variant. This
+        // screen also receives detail-view results (voting, RefreshIdentity) —
+        // clearing on any of those would re-enable `+ Load` while a real load is
+        // still in flight, so match the load's result specifically.
+        if matches!(
+            result,
+            crate::backend_task::BackendTaskSuccessResult::LoadedIdentity(_)
+        ) {
+            self.load_in_flight = false;
         }
         self.reload();
         // if a detail view is open, its own backend task (voting, an

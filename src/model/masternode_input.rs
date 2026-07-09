@@ -135,6 +135,20 @@ pub fn decode_identity_id(input: &str) -> Result<Identifier, MasternodeInputErro
         })
 }
 
+/// Whether `input` is a syntactically valid ProTxHash / identity id — Base58 or
+/// hex, shape-only (no on-chain existence check). Empty input is not valid.
+///
+/// Single source of truth for the Masternodes load form's inline on-blur
+/// ProTxHash validation (FR-4). Uses the same Base58-then-hex decode contract as
+/// [`decode_identity_id`]; the backend load task performs the authoritative
+/// existence and duplicate checks.
+pub fn is_valid_pro_tx_hash(input: &str) -> bool {
+    let trimmed = input.trim();
+    !trimmed.is_empty()
+        && (Identifier::from_string(trimmed, Encoding::Base58).is_ok()
+            || Identifier::from_string(trimmed, Encoding::Hex).is_ok())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -284,6 +298,29 @@ mod tests {
                 ),
                 "expected {bad:?} to be rejected"
             );
+        }
+    }
+
+    // ── is_valid_pro_tx_hash — UI on-blur shape check (TC-FR4-08/09) ──────
+
+    #[test]
+    fn pro_tx_hash_accepts_hex_and_base58() {
+        let id = Identifier::random();
+        assert!(is_valid_pro_tx_hash(&id.to_string(Encoding::Hex)));
+        assert!(is_valid_pro_tx_hash(&id.to_string(Encoding::Base58)));
+    }
+
+    #[test]
+    fn pro_tx_hash_accepts_surrounding_whitespace() {
+        let id = Identifier::random();
+        let padded = format!("  {}  ", id.to_string(Encoding::Hex));
+        assert!(is_valid_pro_tx_hash(&padded));
+    }
+
+    #[test]
+    fn pro_tx_hash_rejects_empty_and_malformed() {
+        for bad in ["", "   ", "not-a-hash", &"a".repeat(63), &"b".repeat(65)] {
+            assert!(!is_valid_pro_tx_hash(bad), "expected {bad:?} rejected");
         }
     }
 

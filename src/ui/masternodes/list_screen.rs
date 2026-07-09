@@ -18,6 +18,8 @@ use dash_sdk::platform::Identifier;
 use eframe::egui::{self, RichText};
 
 use crate::app::AppAction;
+use crate::backend_task::BackendTask;
+use crate::backend_task::identity::IdentityTask;
 use crate::context::AppContext;
 use crate::model::contested_name::MasternodeContestSummary;
 use crate::model::qualified_identity::{IdentityStatus, IdentityType, MasternodeKeyPresence};
@@ -27,6 +29,7 @@ use crate::ui::components::top_panel::{add_top_panel_with_global_nav, subdued_wa
 use crate::ui::identity::identity_pill::shorten_id;
 use crate::ui::identity::picker::compute_column_count;
 use crate::ui::masternodes::card::MasternodeCard;
+use crate::ui::masternodes::load_form::{LoadFormOutcome, MasternodeLoadForm};
 use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::{RootScreenType, ScreenLike};
 
@@ -46,18 +49,26 @@ struct NodeCardData {
     status: IdentityStatus,
 }
 
+/// Which sub-view of the Masternodes section is showing. The detail view (B5a)
+/// and the page-scoped view-state machine (B7) extend this enum.
+enum MasternodesView {
+    /// Empty state or card grid.
+    List,
+    /// The masternode/evonode load form (FR-4).
+    Load(Box<MasternodeLoadForm>),
+}
+
 /// Root screen for the Masternodes section.
 pub struct MasternodesScreen {
     pub app_context: Arc<AppContext>,
     /// Cached card data for the active network, refreshed on arrival, on
     /// `refresh`, and on the Refresh button.
     nodes: Vec<NodeCardData>,
+    /// The active sub-view (list vs. load form).
+    view: MasternodesView,
     /// The node whose detail view should open — consumed by B5a/B7 wiring.
     #[allow(dead_code, reason = "read by the B5a/B7 detail-view routing")]
     selected_node: Option<Identifier>,
-    /// Set when the user asks to load a new node — consumed by B4 wiring.
-    #[allow(dead_code, reason = "read by the B4 load-form routing")]
-    load_form_requested: bool,
 }
 
 impl MasternodesScreen {
@@ -68,8 +79,8 @@ impl MasternodesScreen {
         let mut screen = Self {
             app_context: app_context.clone(),
             nodes: Vec::new(),
+            view: MasternodesView::List,
             selected_node: None,
-            load_form_requested: false,
         };
         screen.reload();
         screen
@@ -135,8 +146,7 @@ impl MasternodesScreen {
             );
             ui.add_space(20.0);
             if ComponentStyles::add_primary_button(ui, "Load a masternode").clicked() {
-                self.load_form_requested = true;
-                // TODO(B4): open the dedicated load form once it exists.
+                self.view = MasternodesView::Load(Box::default());
             }
             ui.add_space(12.0);
             ui.label(
@@ -196,6 +206,54 @@ impl MasternodesScreen {
 
         AppAction::None
     }
+
+    /// Render the list view: toolbar (`+ Load`, `Refresh`) + empty state or grid.
+    fn render_list_view(&mut self, ui: &mut egui::Ui, network_accent: egui::Color32) -> AppAction {
+        let mut inner = AppAction::None;
+
+        // Top-right toolbar: `+ Load` (FR-4 entry) + `Refresh` (FR-7).
+        ui.horizontal(|ui| {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ComponentStyles::add_toolbar_button(ui, "Refresh", network_accent).clicked() {
+                    self.reload();
+                }
+                ui.add_space(8.0);
+                if ComponentStyles::add_toolbar_button(ui, "+ Load", network_accent).clicked() {
+                    self.view = MasternodesView::Load(Box::default());
+                }
+            });
+        });
+        ui.add_space(8.0);
+
+        if self.nodes.is_empty() {
+            inner |= self.render_empty_state(ui);
+        } else {
+            inner |= self.render_card_grid(ui);
+        }
+        inner
+    }
+
+    /// Render the load form; map its outcome to a backend load task and return
+    /// to the list on cancel or submit.
+    fn render_load_view(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let outcome = match &mut self.view {
+            MasternodesView::Load(form) => form.show(ui),
+            MasternodesView::List => return AppAction::None,
+        };
+        match outcome {
+            LoadFormOutcome::None => AppAction::None,
+            LoadFormOutcome::Cancel => {
+                self.view = MasternodesView::List;
+                AppAction::None
+            }
+            LoadFormOutcome::Submit(input) => {
+                self.view = MasternodesView::List;
+                AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::LoadIdentity(
+                    *input,
+                )))
+            }
+        }
+    }
 }
 
 impl ScreenLike for MasternodesScreen {
@@ -204,6 +262,12 @@ impl ScreenLike for MasternodesScreen {
     }
 
     fn refresh_on_arrival(&mut self) {
+        self.reload();
+    }
+
+    fn display_task_result(&mut self, _result: crate::backend_task::BackendTaskSuccessResult) {
+        // A completed load (or any task routed here) may have added a node —
+        // re-read the cached list so the new card appears.
         self.reload();
     }
 
@@ -221,28 +285,15 @@ impl ScreenLike for MasternodesScreen {
 
         let network_accent =
             DashColors::network_accent(self.app_context.network, ui.style().visuals.dark_mode);
+        let is_load = matches!(self.view, MasternodesView::Load(_));
 
         action |= island_central_panel(ui, |ui| {
             ui.set_min_width(ui.available_width());
-            let mut inner = AppAction::None;
-
-            // Top-right toolbar: Refresh (FR-7).
-            ui.horizontal(|ui| {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ComponentStyles::add_toolbar_button(ui, "Refresh", network_accent).clicked()
-                    {
-                        self.reload();
-                    }
-                });
-            });
-            ui.add_space(8.0);
-
-            if self.nodes.is_empty() {
-                inner |= self.render_empty_state(ui);
+            if is_load {
+                self.render_load_view(ui)
             } else {
-                inner |= self.render_card_grid(ui);
+                self.render_list_view(ui, network_accent)
             }
-            inner
         });
 
         action

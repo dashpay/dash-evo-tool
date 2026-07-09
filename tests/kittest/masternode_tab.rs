@@ -214,3 +214,65 @@ fn card_grid_renders_seeded_nodes() {
         );
     });
 }
+
+/// TC-FR4-01/02/04/18/21 — the empty-state CTA opens the load form with the
+/// full MN/Evonode field set (ProTxHash, both type segments, key inputs,
+/// always-visible Warning note) and no User segment; Cancel returns to the list.
+#[test]
+fn load_form_opens_from_cta_and_cancels() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let mut harness = mount_app(RootScreenType::RootScreenIdentities);
+        let app_context = harness.state().current_app_context().clone();
+        activate_masternodes_tab(&mut harness, &app_context);
+
+        // Open the load form from the empty-state primary CTA.
+        harness.get_by_label("Load a masternode").click();
+        harness.run_steps(3);
+
+        // Field set present (TC-FR4-01/02): ProTxHash + both type segments + the
+        // submit button. The empty-state heading is gone.
+        assert!(
+            harness.query_by_label("No masternodes loaded").is_none(),
+            "empty state must be replaced by the load form"
+        );
+        assert!(
+            harness.query_by_label("ProTxHash").is_some(),
+            "ProTxHash field label must render"
+        );
+        assert!(
+            harness.query_all_by_label("Masternode").count() >= 1,
+            "Masternode type segment must render"
+        );
+        assert!(
+            harness.query_by_label("Evonode").is_some(),
+            "Evonode type segment must render (TC-FR4-04: no User segment)"
+        );
+        assert!(
+            harness.query_by_label("Load masternode").is_some(),
+            "the Load submit button must render"
+        );
+
+        // Warning-tone key-storage note is always visible (TC-FR4-18).
+        assert!(
+            harness
+                .query_by_label(
+                    "Set an optional password to encrypt these keys on this device. Without one, \
+                     they are stored unencrypted and you can add protection later from the key \
+                     screen."
+                )
+                .is_some(),
+            "the always-visible Warning-tone key-storage note must render verbatim"
+        );
+
+        // Cancel returns to the list / empty state (TC-FR4-21).
+        harness.get_by_label("Cancel").click();
+        harness.run_steps(3);
+        assert!(
+            harness.query_by_label("No masternodes loaded").is_some(),
+            "Cancel must return to the list without loading"
+        );
+    });
+}

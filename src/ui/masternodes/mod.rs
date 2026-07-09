@@ -7,5 +7,6 @@
 
 pub mod card;
 pub mod list_screen;
+pub mod load_form;
 
 pub use list_screen::MasternodesScreen;

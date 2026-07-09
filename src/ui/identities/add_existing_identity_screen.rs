@@ -379,21 +379,20 @@ impl AddExistingIdentityScreen {
 
                 // Advanced: Identity Type selector
                 if self.show_advanced_options {
+                    // This generic screen loads User identities only. Masternode
+                    // and Evonode identities have a dedicated flow on the
+                    // Masternodes tab (`ui/masternodes/load_form.rs`), so the old
+                    // Masternode/Evonode options are removed here to avoid a
+                    // second, competing entry point (§10.2 / TC-FR4-22, FR-6).
                     ui.label("Identity Type:");
                     ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
                         egui::ComboBox::from_id_salt("identity_type_selector")
                             .selected_text(format!("{:?}", self.identity_type))
                             .show_ui(ui, |ui| {
-                                ui.selectable_value(&mut self.identity_type, IdentityType::User, "User");
                                 ui.selectable_value(
                                     &mut self.identity_type,
-                                    IdentityType::Masternode,
-                                    "Masternode",
-                                );
-                                ui.selectable_value(
-                                    &mut self.identity_type,
-                                    IdentityType::Evonode,
-                                    "Evonode",
+                                    IdentityType::User,
+                                    "User",
                                 );
                             });
                     });

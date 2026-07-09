@@ -570,6 +570,19 @@ impl AsyncTool<DashMcpService> for IdentityCreditsToAddress {
                 message: format!("Invalid Platform address: {e}"),
             })?;
 
+        // Gate the destination against the ACTIVE network. The `network` param
+        // only pins which network is active; it does NOT validate the
+        // destination, so a mainnet `dash1…` address could otherwise be paid on
+        // testnet (or vice-versa), misdirecting credits. Checked after parsing
+        // so a malformed address still reports "invalid", not "wrong network".
+        crate::model::address::validate_platform_address_for_network(
+            &param.to_address,
+            ctx.network(),
+        )
+        .map_err(|e| McpToolError::InvalidParam {
+            message: e.to_string(),
+        })?;
+
         let mut outputs = BTreeMap::new();
         outputs.insert(platform_addr, param.amount_credits);
 

@@ -729,17 +729,12 @@ impl AddressInput {
             );
         }
         let canonical = trimmed.to_lowercase();
-        let expected_prefix = match self.network {
-            Network::Mainnet => "dash1",
-            _ => "tdash1",
-        };
-        if !canonical.starts_with(expected_prefix)
-            || canonical.starts_with(&format!("{}z", expected_prefix))
+        // Network prefix validation is centralized in `model/address.rs` so the
+        // GUI and the MCP tools share one source of truth.
+        if let Err(e) =
+            crate::model::address::validate_platform_address_for_network(&canonical, self.network)
         {
-            return (
-                Some("This address belongs to a different network. Please check you are using the correct network.".to_string()),
-                None,
-            );
+            return (Some(e.to_string()), None);
         }
         match PlatformAddress::from_bech32m_string(&canonical) {
             Ok(pa) => (
@@ -777,15 +772,12 @@ impl AddressInput {
             };
         }
 
-        let expected_prefix = match self.network {
-            Network::Mainnet => "dash1z",
-            _ => "tdash1z",
-        };
-        if !trimmed.starts_with(expected_prefix) {
-            return (
-                Some("This address belongs to a different network. Please check you are using the correct network.".to_string()),
-                None,
-            );
+        // Network prefix validation is centralized in `model/address.rs` so the
+        // GUI and the MCP tools share one source of truth.
+        if let Err(e) =
+            crate::model::address::validate_orchard_address_for_network(trimmed, self.network)
+        {
+            return (Some(e.to_string()), None);
         }
         // Orchard shielded addresses are ~70+ chars; reject anything too short.
         if trimmed.len() < 60 {

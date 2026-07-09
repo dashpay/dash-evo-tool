@@ -1,10 +1,82 @@
 use dash_sdk::dashcore_rpc::dashcore::Address;
-#[cfg(test)]
 use dash_sdk::dashcore_rpc::dashcore::Network;
 use dash_sdk::dashcore_rpc::dashcore::address::NetworkUnchecked;
 use dash_sdk::dpp::address_funds::{PLATFORM_HRP_MAINNET, PLATFORM_HRP_TESTNET, PlatformAddress};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::Identifier;
+
+/// A destination address whose bech32m network prefix does not match the active
+/// network — e.g. a mainnet `dash1…` address used on testnet.
+///
+/// Funds-safety guard: sending to a cross-network address would misdirect
+/// credits, so both the GUI and the MCP tools reject it up front.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error(
+    "This address belongs to a different network. Please check you are using the correct network."
+)]
+pub struct AddressNetworkMismatch;
+
+/// The bech32m human-readable prefix that Platform and Orchard addresses use on
+/// `network` (`dash` on mainnet, `tdash` otherwise). The two families share the
+/// HRP; an Orchard address additionally begins its data section with `z`.
+fn platform_hrp_for_network(network: Network) -> &'static str {
+    match network {
+        Network::Mainnet => PLATFORM_HRP_MAINNET,
+        _ => PLATFORM_HRP_TESTNET,
+    }
+}
+
+/// Case-insensitive ASCII prefix test that never panics on multi-byte input.
+fn starts_with_ignore_ascii_case(s: &str, prefix: &str) -> bool {
+    let (s, prefix) = (s.as_bytes(), prefix.as_bytes());
+    s.len() >= prefix.len() && s[..prefix.len()].eq_ignore_ascii_case(prefix)
+}
+
+/// Validate that a bech32m **Platform** address is for `network` by its prefix.
+///
+/// The single source of truth for Platform address↔network checks. Parses the
+/// human-readable prefix (`dash1…` mainnet, `tdash1…` testnet, case-insensitive)
+/// and rejects a cross-network address. It does not validate the address body —
+/// callers still parse it with `PlatformAddress::from_bech32m_string`.
+///
+/// # Errors
+///
+/// Returns [`AddressNetworkMismatch`] when the prefix is not the one `network`
+/// expects (including any input that is not a recognized Platform prefix).
+pub fn validate_platform_address_for_network(
+    address: &str,
+    network: Network,
+) -> Result<(), AddressNetworkMismatch> {
+    let expected = format!("{}1", platform_hrp_for_network(network));
+    if starts_with_ignore_ascii_case(address.trim(), &expected) {
+        Ok(())
+    } else {
+        Err(AddressNetworkMismatch)
+    }
+}
+
+/// Validate that a bech32m **Orchard** (shielded) address is for `network`.
+///
+/// The Orchard twin of [`validate_platform_address_for_network`]: same HRP, but
+/// the data section begins with `z` (`dash1z…` mainnet, `tdash1z…` testnet,
+/// case-insensitive). Does not validate the address body — callers still parse
+/// it with `OrchardAddress::from_bech32m_string`.
+///
+/// # Errors
+///
+/// Returns [`AddressNetworkMismatch`] when the prefix is not the one `network`
+/// expects.
+pub fn validate_orchard_address_for_network(
+    address: &str,
+    network: Network,
+) -> Result<(), AddressNetworkMismatch> {
+    let expected = format!("{}1z", platform_hrp_for_network(network));
+    if starts_with_ignore_ascii_case(address.trim(), &expected) {
+        Ok(())
+    } else {
+        Err(AddressNetworkMismatch)
+    }
+}
 
 /// Checks if a string looks like a Platform address (bech32m with dash/tdash HRP per DIP-18).
 ///
@@ -481,6 +553,69 @@ mod tests {
     #[test]
     fn detect_garbage_returns_none() {
         assert_eq!(AddressKind::detect("not-an-address"), None);
+    }
+
+    // --- Platform/Orchard address↔network validators ---
+
+    #[test]
+    fn platform_address_matches_its_network() {
+        assert!(validate_platform_address_for_network("dash1qwer1234", Network::Mainnet).is_ok());
+        assert!(validate_platform_address_for_network("tdash1qwer1234", Network::Testnet).is_ok());
+    }
+
+    #[test]
+    fn platform_address_wrong_network_is_typed_mismatch() {
+        // Mainnet address on testnet, and testnet address on mainnet.
+        assert_eq!(
+            validate_platform_address_for_network("dash1qwer1234", Network::Testnet),
+            Err(AddressNetworkMismatch)
+        );
+        assert_eq!(
+            validate_platform_address_for_network("tdash1qwer1234", Network::Mainnet),
+            Err(AddressNetworkMismatch)
+        );
+    }
+
+    #[test]
+    fn orchard_address_matches_its_network() {
+        assert!(validate_orchard_address_for_network("dash1zqwer1234", Network::Mainnet).is_ok());
+        assert!(validate_orchard_address_for_network("tdash1zqwer1234", Network::Testnet).is_ok());
+    }
+
+    #[test]
+    fn orchard_address_wrong_network_is_typed_mismatch() {
+        assert_eq!(
+            validate_orchard_address_for_network("dash1zqwer1234", Network::Testnet),
+            Err(AddressNetworkMismatch)
+        );
+        assert_eq!(
+            validate_orchard_address_for_network("tdash1zqwer1234", Network::Mainnet),
+            Err(AddressNetworkMismatch)
+        );
+    }
+
+    #[test]
+    fn platform_validator_rejects_orchard_prefix_as_wrong_family_on_wrong_network() {
+        // A mainnet Orchard address (`dash1z…`) is not a testnet Platform address.
+        assert_eq!(
+            validate_platform_address_for_network("dash1zqwer1234", Network::Testnet),
+            Err(AddressNetworkMismatch)
+        );
+    }
+
+    #[test]
+    fn network_mismatch_message_is_user_facing() {
+        // The Display string is the calm, jargon-free banner both layers show.
+        assert_eq!(
+            AddressNetworkMismatch.to_string(),
+            "This address belongs to a different network. Please check you are using the correct network."
+        );
+    }
+
+    #[test]
+    fn network_validators_ignore_surrounding_whitespace_and_case() {
+        assert!(validate_platform_address_for_network("  DASH1QWER  ", Network::Mainnet).is_ok());
+        assert!(validate_orchard_address_for_network("  TDASH1ZQWER  ", Network::Testnet).is_ok());
     }
 
     // --- is_platform_address_string pitfall guard (TC-MN-031) ---

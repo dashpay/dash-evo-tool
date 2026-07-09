@@ -348,3 +348,70 @@ fn detail_view_opens_from_card_with_sections_and_back() {
         );
     });
 }
+
+/// TC-DPNS-01/02/09/10 — the DPNS section is collapsed by default (its body is
+/// not rendered), the header carries the open-contest count, and for a node with
+/// no voter identity the expanded section shows the actionable missing-voter
+/// message with an `Add voting key` action that opens a scoped in-place prompt
+/// (not FR-4's load form — no ProTxHash field).
+#[test]
+fn dpns_section_missing_voter_scoped_prompt() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let mut harness = mount_app(RootScreenType::RootScreenIdentities);
+        let app_context = harness.state().current_app_context().clone();
+        seed_node(&app_context, 0x95, "mn-vote-01", IdentityType::Masternode);
+        activate_masternodes_tab(&mut harness, &app_context);
+        harness.get_by_label("Open mn-vote-01").click();
+        harness.run_steps(3);
+
+        // Collapsed by default: header present with count, body absent (TC-DPNS-01/02).
+        assert!(
+            harness
+                .query_by_label("DPNS name contests to vote on (0)")
+                .is_some(),
+            "DPNS header must show the open-contest count"
+        );
+        assert!(
+            harness
+                .query_by_label(
+                    "This node has no voting key loaded. Add its voting private key to cast votes."
+                )
+                .is_none(),
+            "section body must be hidden while collapsed"
+        );
+
+        // Expand → actionable missing-voter message + Add-voting-key action (TC-DPNS-09).
+        harness
+            .get_by_label("DPNS name contests to vote on (0)")
+            .click();
+        harness.run_steps(3);
+        assert!(
+            harness
+                .query_by_label(
+                    "This node has no voting key loaded. Add its voting private key to cast votes."
+                )
+                .is_some(),
+            "expanded section must show the actionable missing-voter message"
+        );
+        assert!(
+            harness.query_by_label("Add voting key").is_some(),
+            "missing-voter state must offer an Add voting key action"
+        );
+
+        // Click Add voting key → scoped in-place prompt (Save/Cancel), NOT the
+        // load form (no ProTxHash field) (TC-DPNS-10/11).
+        harness.get_by_label("Add voting key").click();
+        harness.run_steps(3);
+        assert!(
+            harness.query_by_label("Save").is_some(),
+            "scoped voter-key prompt must open with a Save action"
+        );
+        assert!(
+            harness.query_by_label("ProTxHash").is_none(),
+            "the scoped prompt must not be FR-4's load form (no ProTxHash re-entry)"
+        );
+    });
+}

@@ -433,3 +433,34 @@ pub fn add_top_panel_with_global_nav(
     action |= apply_global_nav_effect(app_context, effect);
     action
 }
+
+/// Like [`add_top_panel_with_global_nav`], but also returns the page-scoped
+/// object the user picked from an interactive page-scoped pill (the masternode
+/// pill on the Masternodes page), if any. All other effects (segment-1 nav,
+/// wallet switch) are applied here as usual; `SelectPageObject` is **only**
+/// surfaced to the caller — never written to `AppContext::selected_identity_id`
+/// (the FR-6 boundary). Returns `(action, picked_page_object)`.
+pub fn add_top_panel_with_global_nav_capturing(
+    ui: &mut Ui,
+    app_context: &Arc<AppContext>,
+    spec: PageNavSpec,
+    right_buttons: Vec<(&str, DesiredAppAction)>,
+) -> (AppAction, Option<dash_sdk::platform::Identifier>) {
+    let mut effect = GlobalNavEffect::None;
+    let mut selection = HubSelection::default();
+    let mut action = render_top_island(
+        ui,
+        app_context,
+        |ui| {
+            effect = global_nav_switcher::render(ui, app_context, &spec, &mut selection);
+            AppAction::None
+        },
+        right_buttons,
+    );
+    let picked = match effect {
+        GlobalNavEffect::SelectPageObject(id) => Some(id),
+        _ => None,
+    };
+    action |= apply_global_nav_effect(app_context, effect);
+    (action, picked)
+}

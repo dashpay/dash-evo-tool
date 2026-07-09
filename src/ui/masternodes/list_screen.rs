@@ -25,12 +25,14 @@ use crate::model::contested_name::MasternodeContestSummary;
 use crate::model::qualified_identity::{IdentityStatus, IdentityType, MasternodeKeyPresence};
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
-use crate::ui::components::top_panel::{add_top_panel_with_global_nav, subdued_wallet_only_spec};
+use crate::ui::components::top_panel::add_top_panel_with_global_nav_capturing;
 use crate::ui::identity::identity_pill::shorten_id;
 use crate::ui::identity::picker::compute_column_count;
 use crate::ui::masternodes::card::MasternodeCard;
 use crate::ui::masternodes::detail_screen::{DetailOutcome, MasternodeDetailView};
 use crate::ui::masternodes::load_form::{LoadFormOutcome, MasternodeLoadForm};
+use crate::ui::state::global_nav::PageObjectItem;
+use crate::ui::state::masternodes_view::masternodes_page_nav_spec;
 use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::{RootScreenType, ScreenLike};
 
@@ -325,14 +327,34 @@ impl ScreenLike for MasternodesScreen {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
-        // TODO(B7): replace the wallet-only spec with the page-scoped masternode
-        // pill (IdentityPillScope::PageScopedObject).
-        let mut action = add_top_panel_with_global_nav(
-            ui,
-            &self.app_context,
-            subdued_wallet_only_spec("Masternodes", RootScreenType::RootScreenMasternodes),
-            vec![],
-        );
+        // Page-scoped masternode pill (IdentityPillScope::PageScopedObject): its
+        // selection lives here, never in `AppContext::selected_identity_id`
+        // (the FR-6 boundary). The pill mirrors the page's own selection — the
+        // node in detail, or the placeholder on the empty/list views (§10.4).
+        let items: Vec<PageObjectItem> = self
+            .nodes
+            .iter()
+            .map(|node| PageObjectItem {
+                id: node.node_id,
+                label: node
+                    .alias
+                    .clone()
+                    .filter(|s| !s.trim().is_empty())
+                    .unwrap_or_else(|| node.node_id_short.clone()),
+            })
+            .collect();
+        let selected = match &self.view {
+            MasternodesView::Detail(detail) => Some(detail.node_id()),
+            _ => None,
+        };
+        let spec = masternodes_page_nav_spec(items, selected);
+        let (mut action, picked) =
+            add_top_panel_with_global_nav_capturing(ui, &self.app_context, spec, vec![]);
+        // Picking a node from the pill opens its detail (two-way with the grid);
+        // this is a page-scoped selection, never the app-global identity.
+        if let Some(node_id) = picked {
+            self.open_detail(node_id);
+        }
 
         action |= add_left_panel(ui, &self.app_context, RootScreenType::RootScreenMasternodes);
 

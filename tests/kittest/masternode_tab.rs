@@ -298,9 +298,10 @@ fn detail_view_opens_from_card_with_sections_and_back() {
         harness.get_by_label("Open mn-detail-01").click();
         harness.run_steps(3);
 
-        // Section presence + Actions row (TC-FR5-01, TC-FR9-01).
+        // Section presence + Actions row (TC-FR5-01, TC-FR9-01). The alias shows
+        // both in the header and the page-scoped pill, so count ≥ 1.
         assert!(
-            harness.query_by_label("mn-detail-01").is_some(),
+            harness.query_all_by_label("mn-detail-01").count() >= 1,
             "header alias"
         );
         assert!(
@@ -335,7 +336,7 @@ fn detail_view_opens_from_card_with_sections_and_back() {
         harness.get_by_label("‹ All masternodes").click();
         harness.run_steps(3);
         assert!(
-            harness.query_by_label("mn-detail-01").is_some(),
+            harness.query_all_by_label("mn-detail-01").count() >= 1,
             "back row returns to the card grid"
         );
 
@@ -412,6 +413,60 @@ fn dpns_section_missing_voter_scoped_prompt() {
         assert!(
             harness.query_by_label("ProTxHash").is_none(),
             "the scoped prompt must not be FR-4's load form (no ProTxHash re-entry)"
+        );
+    });
+}
+
+/// TC-NAV-12 / TC-FR6-07 (release-blocking) — selecting a masternode on the
+/// Masternodes page (opening its detail sets the page-scoped pill) must NEVER
+/// write the app-global identity selection. With no User identity loaded, the
+/// app-global selection must stay `None` even after a masternode is in view, and
+/// stay `None` after navigating away to Identities/Identity Hub.
+#[test]
+fn masternode_selection_never_leaks_to_app_global_identity() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let mut harness = mount_app(RootScreenType::RootScreenIdentities);
+        let app_context = harness.state().current_app_context().clone();
+        seed_node(&app_context, 0x96, "mn-leak-01", IdentityType::Masternode);
+
+        // Baseline: no app-global identity selected.
+        assert!(
+            app_context.selected_identity_id().is_none(),
+            "no app-global identity should be selected initially"
+        );
+
+        // Open the masternode's detail — this sets the page-scoped selection.
+        activate_masternodes_tab(&mut harness, &app_context);
+        harness.get_by_label("Open mn-leak-01").click();
+        harness.run_steps(3);
+
+        // FR-6 boundary: the masternode must NOT have become the app-global
+        // identity, nor resolve as one.
+        assert!(
+            app_context.selected_identity_id().is_none(),
+            "masternode selection must not write the app-global identity id"
+        );
+        assert!(
+            app_context.resolve_selected_identity().is_none(),
+            "a masternode must never resolve as the app-global identity"
+        );
+
+        // Navigate away to Identities and Identity Hub — still no leak.
+        harness.state_mut().selected_main_screen = RootScreenType::RootScreenIdentities;
+        harness.run_steps(3);
+        assert!(
+            app_context.selected_identity_id().is_none(),
+            "the app-global identity stays unset on Identities after MN selection"
+        );
+
+        harness.state_mut().selected_main_screen = RootScreenType::RootScreenIdentityHub;
+        harness.run_steps(3);
+        assert!(
+            app_context.resolve_selected_identity().is_none(),
+            "the app-global identity stays unset on the Hub after MN selection"
         );
     });
 }

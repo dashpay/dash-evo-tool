@@ -583,7 +583,9 @@ impl MasternodeDetailView {
                     "This removes the node and its voting identity from this device. \
                      You can load it again later with its ProTxHash.",
                 )
-                .danger_mode(true),
+                .danger_mode(true)
+                // §7 confirm verb (TC-US4-02).
+                .confirm_text(Some("Remove masternode")),
             );
         }
 

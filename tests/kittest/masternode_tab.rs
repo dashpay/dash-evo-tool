@@ -470,3 +470,65 @@ fn masternode_selection_never_leaks_to_app_global_identity() {
         );
     });
 }
+
+/// TC-US4-01/02/06/07 — the detail Remove flow: the danger button opens a
+/// confirmation with the `Remove masternode` verb; confirming deletes only the
+/// target node (its card disappears) and leaves other nodes intact (isolation).
+#[test]
+fn remove_flow_deletes_only_target_node() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let mut harness = mount_app(RootScreenType::RootScreenIdentities);
+        let app_context = harness.state().current_app_context().clone();
+        seed_node(&app_context, 0x97, "mn-remove-me", IdentityType::Masternode);
+        seed_node(&app_context, 0x98, "mn-keep-me", IdentityType::Masternode);
+        activate_masternodes_tab(&mut harness, &app_context);
+
+        // Two nodes present in the DB.
+        assert_eq!(
+            app_context
+                .load_local_masternode_identities()
+                .expect("load")
+                .len(),
+            2
+        );
+
+        // Open the target node's detail and click the danger Remove button
+        // (unique before the dialog opens).
+        harness.get_by_label("Open mn-remove-me").click();
+        harness.run_steps(3);
+        harness.get_by_label("Remove masternode").click();
+        harness.run_steps(3);
+
+        // The confirmation is open with the `Remove masternode` verb; confirm by
+        // clicking the danger button (last node with that label — the section
+        // button, dialog title, and confirm button all share the verb).
+        let confirm = harness
+            .query_all_by_label("Remove masternode")
+            .last()
+            .expect("confirm button present");
+        confirm.click();
+        harness.run_steps(3);
+
+        // Only the target node was deleted; the other remains (isolation).
+        let remaining = app_context
+            .load_local_masternode_identities()
+            .expect("load");
+        assert_eq!(remaining.len(), 1, "exactly one node removed");
+        assert_eq!(
+            remaining[0].alias.as_deref(),
+            Some("mn-keep-me"),
+            "the untargeted node must survive"
+        );
+        assert!(
+            harness.query_by_label("mn-remove-me").is_none(),
+            "removed node's card must be gone"
+        );
+        assert!(
+            harness.query_all_by_label("mn-keep-me").count() >= 1,
+            "kept node's card must remain"
+        );
+    });
+}

@@ -286,6 +286,104 @@ fn add_contact_defaults_to_app_scoped_identity() {
     });
 }
 
+/// Seed a wallet-less masternode identity into the local DB.
+fn seed_dp_masternode(app_context: &Arc<AppContext>, byte: u8, alias: &str) -> Identifier {
+    let pv = PlatformVersion::latest();
+    let identity =
+        Identity::create_basic_identity(Identifier::from([byte; 32]), pv).expect("basic identity");
+    let id = identity.id();
+    let qi = QualifiedIdentity {
+        identity,
+        associated_voter_identity: None,
+        associated_operator_identity: None,
+        associated_owner_key_id: None,
+        identity_type: IdentityType::Masternode,
+        alias: Some(alias.to_string()),
+        private_keys: KeyStorage::default(),
+        dpns_names: vec![],
+        associated_wallets: BTreeMap::new(),
+        secret_access: None,
+        wallet_index: None,
+        top_ups: BTreeMap::new(),
+        status: IdentityStatus::PendingCreation,
+        network: app_context.network(),
+    };
+    app_context
+        .insert_local_qualified_identity(&qi, &None)
+        .expect("seed dashpay masternode");
+    id
+}
+
+/// SEC-005 / FR-6 boundary through a DashPay screen: a masternode/evonode must
+/// never become selectable in a DashPay identity selector, and so can never be
+/// written to the app-global identity via the selector's `syncing_global`
+/// write-back. The DashPay selectors source their list from the User-filtered
+/// accessor. With ONLY a masternode stored, a DashPay screen must seed no
+/// identity (the masternode is not eligible) — before the fix it fell back to
+/// the masternode as `identities.first()`, leaking it into the sync path.
+#[test]
+fn masternode_never_selectable_in_dashpay_screens() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let _guard = rt.enter();
+
+        let (_h, ctx) = build_ctx();
+
+        // Only a masternode is stored — no User identity.
+        let mn_id = seed_dp_masternode(&ctx, 0x4D, "mn-dashpay-leak");
+
+        // It IS in the unfiltered store (proving the screens filter, not that
+        // the DB is empty).
+        assert_eq!(
+            ctx.load_local_qualified_identities().expect("load").len(),
+            1,
+            "the masternode must be present in the unfiltered store"
+        );
+        assert!(
+            ctx.selected_identity_id().is_none(),
+            "no app-global identity should be selected initially"
+        );
+
+        // Every DashPay screen that carries a `syncing_global` selector must
+        // seed NO identity from a masternode-only store.
+        assert!(
+            ContactsList::new(ctx.clone()).selected_identity.is_none(),
+            "ContactsList must not seed a masternode as the selected identity"
+        );
+        assert!(
+            ContactRequests::new(ctx.clone())
+                .selected_identity
+                .is_none(),
+            "ContactRequests must not seed a masternode as the selected identity"
+        );
+        assert!(
+            PaymentHistory::new(ctx.clone()).selected_identity.is_none(),
+            "PaymentHistory must not seed a masternode as the selected identity"
+        );
+        assert!(
+            ProfileScreen::new(ctx.clone()).selected_identity.is_none(),
+            "ProfileScreen must not seed a masternode as the selected identity"
+        );
+        assert!(
+            AddContactScreen::new(ctx.clone())
+                .selected_identity
+                .is_none(),
+            "AddContactScreen must not seed a masternode as the selected identity"
+        );
+
+        // The FR-6 invariant: no masternode ever reached the app-global identity.
+        assert!(
+            ctx.selected_identity_id().is_none(),
+            "a masternode must never be written to the app-global identity via DashPay"
+        );
+        assert_ne!(
+            ctx.selected_identity_id(),
+            Some(mn_id),
+            "the app-global identity must never be the masternode"
+        );
+    });
+}
+
 /// Non-Contacts subscreens have no classifier embedded, so they must not
 /// claim the error — it belongs to the global banner there.
 #[test]

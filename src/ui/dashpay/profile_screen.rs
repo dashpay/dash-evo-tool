@@ -111,7 +111,7 @@ impl ProfileScreen {
 
         // Seed from the app-scoped selected identity (W3 SYNC); fall back to first.
         // Profile is loaded asynchronously by `LoadProfile` dispatch in `render()`.
-        if let Ok(identities) = app_context.load_local_qualified_identities()
+        if let Ok(identities) = app_context.load_local_user_identities()
             && !identities.is_empty()
         {
             use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -184,7 +184,7 @@ impl ProfileScreen {
 
         // Seed from the app-scoped selected identity if none yet selected (W3 SYNC).
         if self.selected_identity.is_none()
-            && let Ok(identities) = self.app_context.load_local_qualified_identities()
+            && let Ok(identities) = self.app_context.load_local_user_identities()
             && !identities.is_empty()
         {
             use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -353,7 +353,7 @@ impl ProfileScreen {
         // Identity selector or no identities message
         let identities = self
             .app_context
-            .load_local_qualified_identities()
+            .load_local_user_identities()
             .unwrap_or_default();
 
         // Header with identity selector on the right
@@ -362,7 +362,8 @@ impl ProfileScreen {
 
             if !identities.is_empty() {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    // SYNC: write-back via syncing_global on user pick.
+                    // SYNC: write-back via syncing_global on user pick (FR-6: the source list is
+                    // User-only, so a masternode/evonode can never leak to the app-global identity).
                     let response = ui.add(
                         IdentitySelector::new(
                             "profile_identity_selector",

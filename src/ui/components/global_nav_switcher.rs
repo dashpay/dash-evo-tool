@@ -172,9 +172,12 @@ fn derive_app_global_context(
     app_context: &Arc<AppContext>,
     wallets: &[(WalletSeedHash, String)],
 ) -> AppGlobalContext {
-    let all_identities = app_context
-        .load_local_qualified_identities()
-        .unwrap_or_default();
+    // FR-6: the app-global identity pill and its dropdown (including the
+    // wallet-less "no wallet on this device" group) list User identities only —
+    // masternode/evonode identities never appear on everyday-user surfaces
+    // (TC-NAV-17). The wallet-scoped list below is wallet-owned, so it is
+    // User-only by construction (masternodes are wallet-less).
+    let all_identities = app_context.load_local_user_identities().unwrap_or_default();
     let all_ids: Vec<Identifier> = all_identities.iter().map(|qi| qi.identity.id()).collect();
     let active_id = app_context.selected_identity_id();
     // The identity pill reflects an *explicitly* chosen identity (or a lone

@@ -14,7 +14,7 @@ use crate::context::feature_gate::FeatureGate;
 use crate::context_provider::SpvProvider;
 use crate::database::Database;
 use crate::model::fee_estimation::PlatformFeeEstimator;
-use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
 use crate::model::request_type::RequestType;
 use crate::model::wallet::single_key::{SingleKeyHash, SingleKeyWallet};
 use crate::model::wallet::{PlatformAddressEntry, PlatformAddressUpdates, Wallet, WalletSeedHash};
@@ -1080,11 +1080,26 @@ impl AppContext {
 
     /// Resolve the active identity every operate-as read uses: the selected
     /// identity when still loaded, else the first loaded identity, else `None`.
+    ///
+    /// FR-6 boundary (resolution layer): the app-global operate-as identity is
+    /// **always** a User identity. The candidate set is filtered to
+    /// [`IdentityType::User`] before resolving, so neither the keep-if-loaded
+    /// check nor the first-loaded fallback can ever resolve a masternode/evonode
+    /// — even when a masternode is the only or first loaded identity, or was
+    /// persisted as the selection in a prior session. Masternode/evonode
+    /// identities are page-scoped (the Masternodes page), never the app-global
+    /// identity.
     pub fn resolve_selected_identity(&self) -> Option<QualifiedIdentity> {
         let identities = self.load_local_qualified_identities().ok()?;
-        let ids: Vec<Identifier> = identities.iter().map(|qi| qi.identity.id()).collect();
-        let chosen =
-            crate::model::selected_identity::resolve_selected(self.selected_identity_id(), &ids)?;
+        let user_ids: Vec<Identifier> = identities
+            .iter()
+            .filter(|qi| qi.identity_type == IdentityType::User)
+            .map(|qi| qi.identity.id())
+            .collect();
+        let chosen = crate::model::selected_identity::resolve_selected(
+            self.selected_identity_id(),
+            &user_ids,
+        )?;
         identities.into_iter().find(|qi| qi.identity.id() == chosen)
     }
 
@@ -1143,9 +1158,17 @@ impl AppContext {
         }
         let reconciled = match hash {
             Some(h) => {
+                // FR-6 boundary: reconcile only over the wallet's User identities
+                // so a masternode/evonode is never resolved as the app-global
+                // identity via this cross-axis wallet-switch side effect.
                 let ids: Vec<Identifier> = self
                     .load_local_qualified_identities_for_wallet(&h)
-                    .map(|v| v.iter().map(|qi| qi.identity.id()).collect())
+                    .map(|v| {
+                        v.iter()
+                            .filter(|qi| qi.identity_type == IdentityType::User)
+                            .map(|qi| qi.identity.id())
+                            .collect()
+                    })
                     .unwrap_or_default();
                 crate::model::selected_identity::resolve_selected(self.selected_identity_id(), &ids)
             }
@@ -1212,11 +1235,23 @@ impl AppContext {
             return;
         };
         let stored = backend.get_selected_identity().identity_id;
-        let loaded: Vec<Identifier> = self
+        // FR-6 one-time sanitization: masternodes were Hub-pickable in prior
+        // sessions, so a persisted `selected_identity_id` may point at a
+        // masternode/evonode. The app-global identity must always be a User
+        // identity, so keep the persisted selection only if it is a still-loaded
+        // User identity — otherwise clear it (the count-based hub default takes
+        // over). In-memory only, matching the non-destructive restore contract:
+        // a transient empty load leaves the KV blob untouched for the next pass.
+        let user_ids: Vec<Identifier> = self
             .load_local_qualified_identities()
-            .map(|v| v.iter().map(|qi| qi.identity.id()).collect())
+            .map(|v| {
+                v.iter()
+                    .filter(|qi| qi.identity_type == IdentityType::User)
+                    .map(|qi| qi.identity.id())
+                    .collect()
+            })
             .unwrap_or_default();
-        let kept = crate::model::selected_identity::keep_if_loaded(stored, &loaded);
+        let kept = crate::model::selected_identity::keep_if_loaded(stored, &user_ids);
         if let Ok(mut g) = self.selected_identity_id.lock() {
             *g = kept;
         }
@@ -1299,6 +1334,8 @@ pub(crate) const fn default_platform_version(_network: &Network) -> &'static Pla
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
     fn wallet_name_with_spaces_is_url_encoded() {
         let base = "http://127.0.0.1:9998";
@@ -1307,5 +1344,181 @@ mod tests {
         let url = format!("{}/wallet/{}", base, encoded);
         assert_eq!(url, "http://127.0.0.1:9998/wallet/my%20test%20wallet");
         assert!(!url.contains(' '));
+    }
+
+    // ── FR-6 resolution-layer boundary (B1) ──────────────────────────────────
+
+    /// Build an offline, wired `AppContext` (no network I/O) so the identity
+    /// store is a real, writable DB the accessors read from. Returns the temp
+    /// dir (kept alive by the caller) alongside the context.
+    async fn offline_ctx() -> (tempfile::TempDir, std::sync::Arc<AppContext>) {
+        use crate::app::TaskResult;
+        use crate::app_dir::ensure_env_file;
+        use crate::context::connection_status::ConnectionStatus;
+        use crate::database::test_helpers::create_database_at_path;
+        use crate::utils::egui_mpsc::SenderAsync;
+        use crate::utils::tasks::TaskManager;
+
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = temp_dir.path().to_path_buf();
+        ensure_env_file(&data_dir);
+        let db =
+            std::sync::Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
+        let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
+        let secret_store = AppContext::open_secret_store(&data_dir).expect("secret store");
+        let ctx = AppContext::new(
+            data_dir,
+            dash_sdk::dpp::dashcore::Network::Testnet,
+            db,
+            std::sync::Arc::new(TaskManager::new()),
+            std::sync::Arc::new(ConnectionStatus::new()),
+            egui::Context::default(),
+            app_kv,
+            secret_store,
+        )
+        .expect("offline testnet AppContext::new");
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("wire wallet backend offline");
+        (temp_dir, ctx)
+    }
+
+    /// Seed one wallet-less identity of `identity_type` into the live identity
+    /// DB and return its id.
+    fn seed_typed(ctx: &AppContext, byte: u8, identity_type: IdentityType) -> Identifier {
+        use crate::model::qualified_identity::IdentityStatus;
+        use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
+        use dash_sdk::dpp::identity::Identity;
+        use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+        use dash_sdk::dpp::version::PlatformVersion;
+
+        let pv = PlatformVersion::latest();
+        let identity = Identity::create_basic_identity(Identifier::from([byte; 32]), pv)
+            .expect("basic identity");
+        let id = identity.id();
+        let qi = QualifiedIdentity {
+            identity,
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type,
+            alias: Some(format!("seed-{byte:02x}")),
+            private_keys: KeyStorage::default(),
+            dpns_names: vec![],
+            associated_wallets: std::collections::BTreeMap::new(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: std::collections::BTreeMap::new(),
+            status: IdentityStatus::PendingCreation,
+            network: ctx.network(),
+        };
+        ctx.insert_local_qualified_identity(&qi, &None)
+            .expect("seed identity insert");
+        id
+    }
+
+    /// TC-FR6-01…06 + TC-NAV-12b — the User-only / masternode accessors split by
+    /// type, and `resolve_selected_identity()` never resolves a masternode: not
+    /// via keep-if-loaded, and not via the first-loaded fallback even when a
+    /// masternode is the only/first loaded identity.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn fr6_accessors_and_resolution_filter_exclude_masternodes() {
+        let (_dir, ctx) = offline_ctx().await;
+
+        // TC-NAV-12b: only a masternode loaded, nothing selected → resolve is
+        // None, never the masternode via the first-loaded fallback.
+        let mn = seed_typed(&ctx, 0x91, IdentityType::Masternode);
+        assert_eq!(ctx.selected_identity_id(), None, "nothing selected");
+        assert!(
+            ctx.resolve_selected_identity().is_none(),
+            "a lone masternode must never resolve as the app-global identity"
+        );
+        assert_eq!(
+            ctx.load_local_masternode_identities().unwrap().len(),
+            1,
+            "the masternode accessor lists the masternode"
+        );
+        assert!(
+            ctx.load_local_user_identities().unwrap().is_empty(),
+            "the User accessor excludes the masternode"
+        );
+
+        // Add an Evonode and a User.
+        let evo = seed_typed(&ctx, 0xE2, IdentityType::Evonode);
+        let user = seed_typed(&ctx, 0x71, IdentityType::User);
+
+        let user_ids: Vec<Identifier> = ctx
+            .load_local_user_identities()
+            .unwrap()
+            .iter()
+            .map(|qi| qi.identity.id())
+            .collect();
+        assert_eq!(user_ids, vec![user], "User accessor lists only the User id");
+
+        let mn_ids: std::collections::BTreeSet<Identifier> = ctx
+            .load_local_masternode_identities()
+            .unwrap()
+            .iter()
+            .map(|qi| qi.identity.id())
+            .collect();
+        assert_eq!(
+            mn_ids,
+            [mn, evo].into_iter().collect(),
+            "masternode accessor lists MN + Evonode, never the User"
+        );
+
+        // The control: the unfiltered accessor still lists all three (the legacy
+        // Identities table reads this — masternodes stay visible there).
+        assert_eq!(
+            ctx.load_local_qualified_identities().unwrap().len(),
+            3,
+            "the unfiltered accessor keeps MN/Evonode (legacy table control)"
+        );
+
+        // With a User present, resolve falls back to the User, never the MN/Evo.
+        assert_eq!(
+            ctx.resolve_selected_identity().map(|qi| qi.identity.id()),
+            Some(user),
+            "resolve falls back to the first User, never a masternode",
+        );
+    }
+
+    /// TC-NAV-12c — a masternode persisted as `selected_identity_id` in a prior
+    /// session is sanitized to `None` on context load; a User selection is kept.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn fr6_stale_masternode_selection_sanitized_on_restore() {
+        let (_dir, ctx) = offline_ctx().await;
+        let mn = seed_typed(&ctx, 0xA1, IdentityType::Masternode);
+        let user = seed_typed(&ctx, 0x72, IdentityType::User);
+
+        // Persist a masternode as the selection (the pre-FR-6 Hub allowed this).
+        ctx.set_selected_identity(Some(mn));
+        assert_eq!(ctx.selected_identity_id(), Some(mn), "MN persisted");
+
+        // Even before restore, the resolution filter refuses to resolve the MN.
+        assert_eq!(
+            ctx.resolve_selected_identity().map(|qi| qi.identity.id()),
+            Some(user),
+            "resolution filter alone never resolves the persisted masternode",
+        );
+
+        // Context-load sanitization clears the stale MN selection in memory.
+        ctx.restore_selected_identity_from_kv();
+        assert_eq!(
+            ctx.selected_identity_id(),
+            None,
+            "a stale masternode selection is cleared on load",
+        );
+
+        // A User selection survives the same sanitization.
+        ctx.set_selected_identity(Some(user));
+        ctx.restore_selected_identity_from_kv();
+        assert_eq!(
+            ctx.selected_identity_id(),
+            Some(user),
+            "a User selection is kept by the sanitizer",
+        );
     }
 }

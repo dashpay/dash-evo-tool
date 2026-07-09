@@ -634,6 +634,27 @@ impl AppContext {
         })
     }
 
+    /// The masternode/evonode identities for the active network — the
+    /// Masternodes-page card list and the page-scoped masternode pill source.
+    /// The complement of [`Self::load_local_user_identities`] over the FR-6 type
+    /// boundary. Filters the hydrated full load, so each card's top-up history
+    /// is available (unlike the pre-decode [`Self::load_local_voting_identities`],
+    /// which is un-hydrated and named for the DPNS voting flows).
+    pub fn load_local_masternode_identities(
+        &self,
+    ) -> std::result::Result<Vec<QualifiedIdentity>, TaskError> {
+        Ok(self
+            .load_local_qualified_identities()?
+            .into_iter()
+            .filter(|qi| {
+                matches!(
+                    qi.identity_type,
+                    IdentityType::Masternode | IdentityType::Evonode
+                )
+            })
+            .collect())
+    }
+
     /// Internal: read every stored identity via the Global enumeration
     /// index, decode it, rehydrate the metadata kept outside the bincode
     /// blob, and apply `keep` as a pre-decode filter on the wrapper.

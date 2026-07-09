@@ -19,6 +19,7 @@ See [docs/personas/](personas/) for full persona descriptions.
 - [Network and Settings (NET)](#network-and-settings-net)
 - [Programmatic Access (MCP)](#programmatic-access-mcp)
 - [User Experience (UX)](#user-experience-ux)
+- [Masternodes (MN)](#masternodes-mn)
 
 ---
 
@@ -441,12 +442,12 @@ As a power user, I want to load an existing identity by its ID and owner private
 - Enter identity ID and private key.
 - Identity details are fetched and displayed.
 
-### IDN-003: Load evonode/masternode identity [Implemented]
+### IDN-003: Load evonode/masternode identity [Superseded by MN-001]
 **Persona:** Priya
 
 As a masternode operator, I want to load my evonode identity via protx hash so that I can manage it through the GUI.
 
-- Enter protx hash to load the associated identity.
+- Loading now happens on the dedicated [Masternodes tab](#masternodes-mn) (see MN-001); the generic "Load Existing Identity" screen's Identity Type selector offers User only, so this story's original path — loading a Masternode/Evonode from that generic screen — no longer exists.
 
 ### IDN-004: Top up identity credits [Implemented]
 **Persona:** Priya, Jordan
@@ -1205,6 +1206,17 @@ As a user, while the app connects to and syncs the Dash chain on startup or afte
 - The block is scoped to *user-initiated* sync (startup auto-start / Connect): it lowers on its own when the chain becomes usable (Synced) or fails (Error), and an **ambient** reconnect or per-block catch-up afterward does not block a working user. Pressing Connect (or a fresh startup) blocks again.
 - This is the overlay's first real adopter (PR #863). Unlike the unsafe-to-interrupt operations in UX-001, SPV sync is **unbounded but safe to background** — so its C2 "never trap the user" guarantee is met by the always-on escape, not by operation boundedness.
 
+### UX-003: Global wallet/identity switcher across all tabs [Implemented]
+**Persona:** Alex, Priya, Jordan
+
+As any user, I want the same wallet/identity switcher on every page, so that I can see and change who I'm acting as without leaving the current page.
+
+- Every root screen renders a page-aware three-segment switcher (e.g. `Masternodes › wallet › identity`) in the top panel; segment 1 reflects and links to the active tab.
+- Selecting a wallet or identity updates the app-global selection in place, with no forced navigation; pages that already consume that selection stay in sync both ways.
+- The third segment is page-scoped: the app-global User identity on everyday-user pages (Dashpay, Identities, Identity Hub), or the masternode/evonode in view on the Masternodes tab. Picking a masternode there never changes the identity shown on the everyday-user pages (see MN-005's Identity Hub filter).
+- On a page that does not yet consume a given pill, that pill renders dimmed with no caret; a hover tooltip explains how to change the selection elsewhere.
+- A page with no identity/object context (e.g. a Wallet page) shows only the wallet pill.
+
 ## Identities Hub (IDH)
 
 ### IDH-001: First-time identity setup [Implemented]
@@ -1257,3 +1269,82 @@ As any persona, my payments, funding movements, and platform actions all live in
 
 - Activity tab shell ships with filter chips; a reusable row component for rendering timeline entries will be added once the aggregator lands.
 - Full aggregation across DashPay payments, funding, and platform ops depends on a backend aggregator; gated behind the `identity-hub-activity-feed` Cargo feature until implemented.
+
+## Masternodes (MN)
+
+### MN-001: Load a masternode by keys [Implemented]
+**Persona:** Priya
+
+As a masternode operator, I want to load my masternode by its ProTxHash and DIP3 keys on a dedicated Masternodes page, so that I don't have to dig through the generic identity-load advanced options.
+
+- Load form collects a ProTxHash (required, hex or Base58), a Masternode/Evonode toggle, an optional local-only alias, and optional Voting/Owner/Payout private keys.
+- The "Load masternode" button is disabled with an explanatory tooltip until a ProTxHash is entered; a malformed or already-loaded ProTxHash is rejected with a specific message.
+- A non-blocking note explains that entered keys are stored unencrypted at rest unless an encryption password is set (see MN-006).
+- On Testnet, when a local test-node fixture is present, a "Fill Random Masternode/Evonode" button autofills the form for developer testing.
+
+### MN-002: See my masternodes at a glance [Implemented]
+**Persona:** Priya
+
+As a masternode operator, I want a card list of my loaded masternodes showing type, voter readiness, key status, and voting status, so that I can assess each node in seconds.
+
+- Each card shows a shortened ProTxHash (or alias as heading), a Masternode/Evonode type badge, voter-identity readiness ("Voting ready" / "No voting key"), a compact Voting/Owner/Payout key-status indicator, a DPNS-voting status line, and an identity status dot with a text label.
+- An empty state explains what a masternode identity is for and offers a primary "Load a masternode" action when none are loaded.
+- The Masternodes tab and its nav entry are visible only with Expert Mode enabled; turning Expert Mode off while the tab is active falls back to the Identities screen.
+
+### MN-003: Open a masternode and vote [Implemented]
+**Persona:** Priya
+
+As a masternode operator, I want to open a node and vote on the DPNS contests it can vote on, so that I can fulfil my node's governance role.
+
+- Clicking a card opens a detail view with a keys summary, the voter identity, and a collapsible DPNS-voting section (collapsed by default, open-contest count shown in its header).
+- Votes (Abstain, Lock, or a candidate) are cast inline through the existing DPNS voting backend.
+- A node with no voter identity is told a voting key is required, with a way to add one, instead of a raw error.
+
+### MN-004: Remove a masternode [Implemented]
+**Persona:** Priya
+
+As a masternode operator, I want to remove a masternode from DET, so that I can stop tracking a node I no longer operate.
+
+- The detail view's "Remove masternode" action shows a confirmation dialog before proceeding.
+- Confirming forgets the masternode and its associated voter identity, and the card disappears from the list.
+
+### MN-005: Keep the everyday surface clean [Implemented]
+**Persona:** Alex, Priya
+
+As an everyday user, I want my Identity Hub to show only my personal identities, so that I'm never offered node-operator actions that don't apply to me.
+
+- Masternode/Evonode identities are filtered out of the Identity Hub picker; they still appear on the Masternodes tab.
+- The legacy "Load Existing Identity" screen's Identity Type selector now offers User only — Masternode/Evonode loading lives solely on the Masternodes tab (MN-001), removing the earlier duplicate entry point.
+
+### MN-006: Encrypt my node keys at load time [Implemented]
+**Persona:** Priya
+
+As a masternode operator, I want to set an optional password when I load my node, so that its private keys are encrypted at rest immediately instead of only after a separate step.
+
+- Leaving the load form's "Encryption password" field blank loads the node's keys unprotected (Tier-1), same as before; a password can be added later from the Key Info screen or the node's detail view.
+- Entering a password seals the entered voting/owner/payout keys encrypted-at-rest (Tier-2) at load time.
+- The detail view's Keys section shows the current protection tier ("Unprotected" / "Password-protected") and offers "Add password protection…" only while unprotected.
+
+### MN-007: Move a node's credits [Implemented]
+**Persona:** Priya
+
+As a masternode operator, I want to withdraw, top up, and transfer a node's Platform credits from its detail view, so that I can manage its balance without leaving the Masternodes page.
+
+- The detail view's actions row opens the existing Withdraw, Top Up, and Transfer screens scoped to the selected node (Masternode or Evonode).
+- Withdrawing with the owner key forces the destination to the node's registered Core payout address; withdrawing with the transfer/payout key allows any address.
+
+### MN-008: Manage a node's keys [Implemented]
+**Persona:** Priya
+
+As a masternode operator, I want to open the key screen for a node, so that I can view a private key/WIF, sign a message, or add/remove a key.
+
+- The detail view's "Manage keys ›" opens the existing Key Info screen scoped to the node.
+- The add-key purpose selector excludes OWNER and VOTING (Core-registered roles that cannot be added via Platform); TRANSFER/AUTHENTICATION/ENCRYPTION/DECRYPTION remain available.
+
+### MN-009: Claim an evonode's token rewards [Implemented]
+**Persona:** Priya
+
+As an evonode operator, I want to jump to token-reward claiming from the node's detail view, so that I can collect rewards my evonode earned.
+
+- An Evonode's detail view shows "Claim token rewards ›", routing to the existing Claim Tokens screen for that identity.
+- The action is hidden entirely on a plain Masternode's detail view.

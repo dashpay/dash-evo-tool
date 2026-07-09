@@ -10,7 +10,7 @@ use crate::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedId
 use crate::model::wallet::WalletSeedHash;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::{ConfirmationDialog, ConfirmationStatus, island_central_panel};
-use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::components::top_panel::{add_top_panel_with_global_nav, subdued_everyday_spec};
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::helpers::clicked_outside_window;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
@@ -1121,10 +1121,11 @@ impl ScreenLike for IdentitiesScreen {
             ));
         }
 
-        let mut action = add_top_panel(
+        // TODO: wire wallet/identity selection consumption for the Identities page.
+        let mut action = add_top_panel_with_global_nav(
             ui,
             &self.app_context,
-            vec![("Identities", AppAction::None)],
+            subdued_everyday_spec("Identities", RootScreenType::RootScreenIdentities),
             right_buttons,
         );
 

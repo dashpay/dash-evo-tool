@@ -6,6 +6,7 @@
 //! are page-scoped and never leak into the everyday-user surfaces (FR-6, B1).
 
 pub mod card;
+pub mod detail_screen;
 pub mod list_screen;
 pub mod load_form;
 

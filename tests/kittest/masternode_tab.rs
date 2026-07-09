@@ -276,3 +276,75 @@ fn load_form_opens_from_cta_and_cancels() {
         );
     });
 }
+
+/// TC-FR5-01/02/07, TC-FR9-01/02, TC-FR11-01/02, TC-FR7-04 — clicking a card
+/// opens the detail view with the ordered sections (Actions row present with all
+/// three credit actions), the Evonode-only claim cross-link shown for an evonode
+/// but absent for a masternode, a detail Refresh button, and the `‹ All
+/// masternodes` back row returning to the list.
+#[test]
+fn detail_view_opens_from_card_with_sections_and_back() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let mut harness = mount_app(RootScreenType::RootScreenIdentities);
+        let app_context = harness.state().current_app_context().clone();
+        seed_node(&app_context, 0x93, "mn-detail-01", IdentityType::Masternode);
+        seed_node(&app_context, 0x94, "evo-detail-02", IdentityType::Evonode);
+        activate_masternodes_tab(&mut harness, &app_context);
+
+        // Open the masternode's detail view.
+        harness.get_by_label("Open mn-detail-01").click();
+        harness.run_steps(3);
+
+        // Section presence + Actions row (TC-FR5-01, TC-FR9-01).
+        assert!(
+            harness.query_by_label("mn-detail-01").is_some(),
+            "header alias"
+        );
+        assert!(
+            harness.query_by_label("Actions").is_some(),
+            "Actions section"
+        );
+        assert!(
+            harness.query_by_label("Withdraw").is_some(),
+            "Withdraw action"
+        );
+        assert!(harness.query_by_label("Top up").is_some(), "Top up action");
+        assert!(
+            harness.query_by_label("Transfer").is_some(),
+            "Transfer action"
+        );
+        assert!(harness.query_by_label("Keys").is_some(), "Keys section");
+        assert!(
+            harness.query_by_label("Remove masternode").is_some(),
+            "Remove action"
+        );
+        assert!(
+            harness.query_all_by_label("Refresh").count() >= 1,
+            "detail Refresh button (TC-FR7-04)"
+        );
+        // Claim cross-link absent for a plain masternode (TC-FR11-02).
+        assert!(
+            harness.query_by_label("Claim token rewards ›").is_none(),
+            "masternode detail must not show the evonode claim cross-link"
+        );
+
+        // Back row returns to the card list (TC-FR5-07).
+        harness.get_by_label("‹ All masternodes").click();
+        harness.run_steps(3);
+        assert!(
+            harness.query_by_label("mn-detail-01").is_some(),
+            "back row returns to the card grid"
+        );
+
+        // The evonode's detail view shows the claim cross-link (TC-FR11-01).
+        harness.get_by_label("Open evo-detail-02").click();
+        harness.run_steps(3);
+        assert!(
+            harness.query_by_label("Claim token rewards ›").is_some(),
+            "evonode detail must show the claim cross-link"
+        );
+    });
+}

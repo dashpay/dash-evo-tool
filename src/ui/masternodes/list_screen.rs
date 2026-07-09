@@ -29,6 +29,7 @@ use crate::ui::components::top_panel::{add_top_panel_with_global_nav, subdued_wa
 use crate::ui::identity::identity_pill::shorten_id;
 use crate::ui::identity::picker::compute_column_count;
 use crate::ui::masternodes::card::MasternodeCard;
+use crate::ui::masternodes::detail_screen::{DetailOutcome, MasternodeDetailView};
 use crate::ui::masternodes::load_form::{LoadFormOutcome, MasternodeLoadForm};
 use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::{RootScreenType, ScreenLike};
@@ -56,6 +57,8 @@ enum MasternodesView {
     List,
     /// The masternode/evonode load form (FR-4).
     Load(Box<MasternodeLoadForm>),
+    /// A node's detail / voting view (FR-5).
+    Detail(Box<MasternodeDetailView>),
 }
 
 /// Root screen for the Masternodes section.
@@ -64,11 +67,8 @@ pub struct MasternodesScreen {
     /// Cached card data for the active network, refreshed on arrival, on
     /// `refresh`, and on the Refresh button.
     nodes: Vec<NodeCardData>,
-    /// The active sub-view (list vs. load form).
+    /// The active sub-view (list / load / detail).
     view: MasternodesView,
-    /// The node whose detail view should open — consumed by B5a/B7 wiring.
-    #[allow(dead_code, reason = "read by the B5a/B7 detail-view routing")]
-    selected_node: Option<Identifier>,
 }
 
 impl MasternodesScreen {
@@ -80,7 +80,6 @@ impl MasternodesScreen {
             app_context: app_context.clone(),
             nodes: Vec::new(),
             view: MasternodesView::List,
-            selected_node: None,
         };
         screen.reload();
         screen
@@ -200,11 +199,53 @@ impl MasternodesScreen {
         });
 
         if let Some(node_id) = clicked {
-            self.selected_node = Some(node_id);
-            // TODO(B5a/B7): push the node detail view for `selected_node`.
+            self.open_detail(node_id);
         }
 
         AppAction::None
+    }
+
+    /// Open the detail view for `node_id`. Loads the node's full
+    /// `QualifiedIdentity` from the local store; a lookup miss leaves the list
+    /// view unchanged.
+    fn open_detail(&mut self, node_id: Identifier) {
+        let Ok(identities) = self.app_context.load_local_masternode_identities() else {
+            return;
+        };
+        if let Some(identity) = identities
+            .into_iter()
+            .find(|qi| qi.identity.id() == node_id)
+        {
+            self.view = MasternodesView::Detail(Box::new(MasternodeDetailView::new(
+                &self.app_context,
+                identity,
+            )));
+        }
+    }
+
+    /// Render the detail view; map its outcome to navigation / a reused screen.
+    fn render_detail_view(
+        &mut self,
+        ui: &mut egui::Ui,
+        network_accent: egui::Color32,
+    ) -> AppAction {
+        let outcome = match &mut self.view {
+            MasternodesView::Detail(detail) => detail.show(ui, network_accent),
+            _ => return AppAction::None,
+        };
+        match outcome {
+            DetailOutcome::None => AppAction::None,
+            DetailOutcome::Back => {
+                self.view = MasternodesView::List;
+                AppAction::None
+            }
+            DetailOutcome::Removed => {
+                self.view = MasternodesView::List;
+                self.reload();
+                AppAction::None
+            }
+            DetailOutcome::Forward(action) => *action,
+        }
     }
 
     /// Render the list view: toolbar (`+ Load`, `Refresh`) + empty state or grid.
@@ -238,7 +279,7 @@ impl MasternodesScreen {
     fn render_load_view(&mut self, ui: &mut egui::Ui) -> AppAction {
         let outcome = match &mut self.view {
             MasternodesView::Load(form) => form.show(ui),
-            MasternodesView::List => return AppAction::None,
+            _ => return AppAction::None,
         };
         match outcome {
             LoadFormOutcome::None => AppAction::None,
@@ -285,14 +326,13 @@ impl ScreenLike for MasternodesScreen {
 
         let network_accent =
             DashColors::network_accent(self.app_context.network, ui.style().visuals.dark_mode);
-        let is_load = matches!(self.view, MasternodesView::Load(_));
 
         action |= island_central_panel(ui, |ui| {
             ui.set_min_width(ui.available_width());
-            if is_load {
-                self.render_load_view(ui)
-            } else {
-                self.render_list_view(ui, network_accent)
+            match self.view {
+                MasternodesView::Load(_) => self.render_load_view(ui),
+                MasternodesView::Detail(_) => self.render_detail_view(ui, network_accent),
+                MasternodesView::List => self.render_list_view(ui, network_accent),
             }
         });
 

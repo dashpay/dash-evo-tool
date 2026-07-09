@@ -11,8 +11,7 @@
 //!   becomes the `No username yet` prompt with a `Pick a username` link.
 //!
 //! Visual direction is locked by §E:
-//! - Gradient background: `DASH_BLUE` (#008de4) → `PLATFORM_PURPLE` at 14 %
-//!   opacity, laid over `DashColors::surface(dark_mode)`.
+//! - Flat `DashColors::surface(dark_mode)` fill.
 //! - `RADIUS_XL` corners, `Shadow::elevated()`.
 //! - Balance uses tabular numerals (monospace) so digits align across frames.
 //!
@@ -23,8 +22,8 @@ use crate::model::qualified_identity::IdentityType;
 use crate::ui::components::component_trait::ComponentResponse;
 use crate::ui::theme::{DashColors, ResponseExt, Shadow, Shape, Spacing};
 use eframe::egui::{
-    self, Color32, CornerRadius, FontFamily, FontId, Frame, Margin, Rect, Response, RichText,
-    Sense, Shape as EguiShape, Stroke, StrokeKind, TextureHandle, TextureOptions, Ui,
+    self, Color32, CornerRadius, FontFamily, FontId, Frame, Margin, Response, RichText, Sense,
+    Stroke, StrokeKind, TextureHandle, TextureOptions, Ui,
 };
 
 /// One of the three supported identity kinds. Maps 1:1 to the project's
@@ -300,9 +299,6 @@ impl IdentityHeroCard {
     pub fn show(&self, ui: &mut Ui) -> HeroResponse {
         let dark_mode = ui.ctx().global_style().visuals.dark_mode;
 
-        // Outer gradient-surface frame. We paint a solid surface fill and then
-        // overlay a gradient rectangle ourselves because `egui::Frame` does
-        // not support multi-stop gradients directly.
         let frame = Frame::new()
             .fill(DashColors::surface(dark_mode))
             .stroke(Stroke::new(
@@ -314,21 +310,6 @@ impl IdentityHeroCard {
             .inner_margin(Margin::same(Spacing::LG as i8));
 
         let response = frame.show(ui, |ui| {
-            // No fixed minimum height — let the hero size to its content so
-            // the card stays compact and the gradient doesn't produce a large
-            // empty slab (V1 visual fix).
-            //
-            // The gradient band is filled in via a RESERVED shape slot rather
-            // than painted immediately: `ui.max_rect()` at this point is the
-            // *available* space (often far taller than the card itself — e.g.
-            // the rest of a scroll area), not the card's eventual
-            // content-sized bounds. Painting immediately here bled the
-            // gradient down through every sibling widget below the card. The
-            // reserved slot keeps the gradient behind the content in paint
-            // order; it's filled in below using `ui.min_rect()`, taken AFTER
-            // the content closure so it reflects the real card bounds.
-            let gradient_idx = ui.painter().add(EguiShape::Noop);
-
             let mut action: Option<HeroAction> = None;
             ui.horizontal(|ui| {
                 // Left cluster: avatar / monogram + social lines.
@@ -417,45 +398,10 @@ impl IdentityHeroCard {
                 });
             });
 
-            // Content has been laid out — `ui.min_rect()` now reflects the
-            // card's actual bounds. Never substitute `ui.max_rect()` here
-            // (see the reservation comment above): that regresses to the
-            // gradient bleeding into whatever is rendered below the card.
-            let content_rect = ui.min_rect();
-            ui.painter().set(
-                gradient_idx,
-                EguiShape::Vec(Self::gradient_band_shapes(content_rect, 32)),
-            );
-
             action
         });
 
         HeroResponse::new(response.inner)
-    }
-
-    /// Compute the 14 %-opacity diagonal gradient band as a series of narrow
-    /// vertical strips confined to `rect`. Strips are used because egui's
-    /// `Shape::Rect` does not support linear gradients directly. Keeping the
-    /// strip count low keeps overdraw cheap even on large canvases.
-    ///
-    /// `rect` MUST be the card's actual content bounds (e.g. `ui.min_rect()`
-    /// captured after all card content has been added) — never a ui's
-    /// `max_rect()`, which reflects only the available space and can be far
-    /// taller than the card itself, bleeding the band into sibling widgets.
-    fn gradient_band_shapes(rect: Rect, strips: u32) -> Vec<EguiShape> {
-        let alpha: u8 = (0.14 * 255.0) as u8;
-        (0..strips)
-            .map(|i| {
-                let t = i as f32 / (strips as f32 - 1.0);
-                let c = lerp_color(DashColors::DASH_BLUE, DashColors::PLATFORM_PURPLE, t);
-                let a = Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), alpha);
-                let x0 = rect.left() + rect.width() * (i as f32 / strips as f32);
-                let x1 = rect.left() + rect.width() * ((i + 1) as f32 / strips as f32);
-                let strip =
-                    Rect::from_min_max(egui::pos2(x0, rect.top()), egui::pos2(x1, rect.bottom()));
-                EguiShape::rect_filled(strip, 0.0, a)
-            })
-            .collect()
     }
 
     /// Paint the avatar circle (social profile set) or the type-glyph
@@ -627,22 +573,6 @@ fn fnv1a_hash(data: &[u8]) -> u64 {
     h
 }
 
-/// Linear interpolate two [`Color32`] values component-wise.
-fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
-    let clamp = t.clamp(0.0, 1.0);
-    let lerp_u8 = |x: u8, y: u8| -> u8 {
-        let xf = x as f32;
-        let yf = y as f32;
-        (xf + (yf - xf) * clamp).round() as u8
-    };
-    Color32::from_rgba_unmultiplied(
-        lerp_u8(a.r(), b.r()),
-        lerp_u8(a.g(), b.g()),
-        lerp_u8(a.b(), b.b()),
-        255,
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -796,55 +726,5 @@ mod tests {
             !hero.avatar_decode_ok,
             "avatar_decode_ok must be false for undecodable bytes"
         );
-    }
-
-    #[test]
-    fn lerp_color_clamps_and_midpoint() {
-        let mid = lerp_color(Color32::BLACK, Color32::WHITE, 0.5);
-        assert!(mid.r() >= 126 && mid.r() <= 129);
-        let start = lerp_color(Color32::BLACK, Color32::WHITE, -1.0);
-        assert_eq!(start, Color32::from_rgba_unmultiplied(0, 0, 0, 255));
-        let end = lerp_color(Color32::BLACK, Color32::WHITE, 2.0);
-        assert_eq!(end, Color32::from_rgba_unmultiplied(255, 255, 255, 255));
-    }
-
-    // Regression coverage for the hero gradient band bleeding past the card's
-    // own bounds into whatever renders below it (root cause: the band was
-    // painted from `ui.max_rect()` — the *available* space — instead of the
-    // card's actual content-sized bounds). `gradient_band_shapes` takes its
-    // bounding rect as an explicit argument specifically so this contract is
-    // testable without a full render pass: every strip must tile exactly
-    // within the given rect, never beyond it.
-    #[test]
-    fn gradient_band_shapes_stay_confined_to_given_rect() {
-        let rect = Rect::from_min_size(egui::pos2(10.0, 20.0), egui::vec2(300.0, 240.0));
-        let shapes = IdentityHeroCard::gradient_band_shapes(rect, 32);
-        assert_eq!(shapes.len(), 32);
-
-        let mut min_left = f32::MAX;
-        let mut max_right = f32::MIN;
-        for shape in &shapes {
-            let EguiShape::Rect(rect_shape) = shape else {
-                panic!("expected every gradient strip to be a Shape::Rect");
-            };
-            // No strip may extend beyond the card's vertical bounds — this is
-            // exactly the axis that bled into sibling widgets when the band
-            // was sourced from `ui.max_rect()`.
-            assert_eq!(rect_shape.rect.top(), rect.top());
-            assert_eq!(rect_shape.rect.bottom(), rect.bottom());
-            assert!(rect_shape.rect.left() >= rect.left());
-            assert!(rect_shape.rect.right() <= rect.right());
-            min_left = min_left.min(rect_shape.rect.left());
-            max_right = max_right.max(rect_shape.rect.right());
-        }
-        // Strips must also tile the full width with no gap at either edge.
-        assert_eq!(min_left, rect.left());
-        assert_eq!(max_right, rect.right());
-    }
-
-    #[test]
-    fn gradient_band_shapes_empty_for_zero_strips() {
-        let rect = Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(100.0, 50.0));
-        assert!(IdentityHeroCard::gradient_band_shapes(rect, 0).is_empty());
     }
 }

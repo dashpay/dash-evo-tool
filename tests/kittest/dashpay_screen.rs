@@ -17,6 +17,7 @@ use dash_evo_tool::ui::dashpay::add_contact_screen::AddContactScreen;
 use dash_evo_tool::ui::dashpay::contact_requests::ContactRequests;
 use dash_evo_tool::ui::dashpay::contacts_list::ContactsList;
 use dash_evo_tool::ui::dashpay::profile_screen::ProfileScreen;
+use dash_evo_tool::ui::dashpay::profile_search::ProfileSearchScreen;
 use dash_evo_tool::ui::dashpay::qr_code_generator::QRCodeGeneratorScreen;
 use dash_evo_tool::ui::dashpay::qr_scanner::QRScannerScreen;
 use dash_evo_tool::ui::dashpay::send_payment::PaymentHistory;
@@ -369,6 +370,30 @@ fn masternode_never_selectable_in_dashpay_screens() {
                 .selected_identity
                 .is_none(),
             "AddContactScreen must not seed a masternode as the selected identity"
+        );
+        assert!(
+            QRScannerScreen::new(ctx.clone())
+                .selected_identity
+                .is_none(),
+            "QRScannerScreen must not seed a masternode as the selected identity"
+        );
+        assert!(
+            QRCodeGeneratorScreen::new(ctx.clone())
+                .selected_identity
+                .is_none(),
+            "QRCodeGeneratorScreen must not seed a masternode as the selected identity"
+        );
+
+        // ProfileSearchScreen holds no selected identity — it only ever reads
+        // identities through the User-filtered accessor (as its profile-viewing
+        // context), so a masternode can never surface there. Assert that data
+        // source excludes the masternode.
+        let _ = ProfileSearchScreen::new(ctx.clone());
+        assert!(
+            ctx.load_local_user_identities()
+                .expect("user identities")
+                .is_empty(),
+            "the User-filtered accessor ProfileSearchScreen reads must exclude the masternode"
         );
 
         // The FR-6 invariant: no masternode ever reached the app-global identity.

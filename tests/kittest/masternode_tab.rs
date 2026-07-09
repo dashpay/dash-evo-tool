@@ -99,6 +99,40 @@ fn seed_node_with_voter(app_context: &Arc<AppContext>, byte: u8, alias: &str) ->
     voter_id
 }
 
+/// Seed a masternode whose associated voter identity carries one public key,
+/// so the detail view's "Manage keys" list renders a deterministic
+/// "Voting key ›" button (voter-target keys are always labelled "Voting").
+fn seed_node_with_voter_key(app_context: &Arc<AppContext>, byte: u8, alias: &str) {
+    let pv = PlatformVersion::latest();
+    let mut voter_identity =
+        Identity::create_basic_identity(Identifier::from([byte ^ 0xFF; 32]), pv)
+            .expect("voter basic identity");
+    let voter_key = dash_sdk::platform::IdentityPublicKey::random_key(1, Some(1), pv);
+    voter_identity.add_public_key(voter_key.clone());
+
+    let node_identity = Identity::create_basic_identity(Identifier::from([byte; 32]), pv)
+        .expect("node basic identity");
+    let node_qi = QualifiedIdentity {
+        identity: node_identity,
+        associated_voter_identity: Some((voter_identity, voter_key)),
+        associated_operator_identity: None,
+        associated_owner_key_id: None,
+        identity_type: IdentityType::Masternode,
+        alias: Some(alias.to_string()),
+        private_keys: KeyStorage::default(),
+        dpns_names: vec![],
+        associated_wallets: BTreeMap::new(),
+        secret_access: None,
+        wallet_index: None,
+        top_ups: BTreeMap::new(),
+        status: IdentityStatus::PendingCreation,
+        network: app_context.network(),
+    };
+    app_context
+        .insert_local_qualified_identity(&node_qi, &None)
+        .expect("seed node-with-voter-key insert");
+}
+
 /// TC-FR1-01…04 — the Masternodes nav entry is absent when Expert Mode is off
 /// and present when it is on. Toggling `enable_developer_mode` flips the gate;
 /// the nav rail re-evaluates the per-entry `FeatureGate::DeveloperMode` skip
@@ -639,6 +673,60 @@ fn remove_flow_deletes_associated_voter_identity() {
                 .expect("voter read")
                 .is_none(),
             "the associated voter identity must be removed too (TC-US4-05)"
+        );
+    });
+}
+
+/// Execution-level: clicking a per-key "Manage keys" button in the masternode
+/// detail view opens the interactive `KeyInfoScreen` (not the static read-only
+/// `KeysScreen`). Seeds a node whose voter identity carries one key so
+/// a deterministic "Voting key ›" button renders, clicks it, and asserts a
+/// `KeyInfoScreen` is pushed and its "Key Information" heading renders.
+#[test]
+fn manage_keys_button_opens_key_info_screen() {
+    use dash_evo_tool::ui::Screen;
+
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let mut harness = mount_app(RootScreenType::RootScreenIdentities);
+        let app_context = harness.state().current_app_context().clone();
+        seed_node_with_voter_key(&app_context, 0x71, "mn-keys-01");
+        activate_masternodes_tab(&mut harness, &app_context);
+
+        harness.get_by_label("Open mn-keys-01").click();
+        harness.run_steps(3);
+
+        // The per-key "Manage keys" list renders a Voting key button.
+        assert!(
+            harness.query_by_label("Voting key ›").is_some(),
+            "the Keys section must render a per-key 'Voting key ›' button"
+        );
+        // No KeyInfoScreen is on the stack yet.
+        assert!(
+            !harness
+                .state()
+                .screen_stack
+                .iter()
+                .any(|s| matches!(s, Screen::KeyInfoScreen(_))),
+            "no KeyInfoScreen should be open before the click"
+        );
+
+        harness.get_by_label("Voting key ›").click();
+        harness.run_steps(3);
+
+        // Clicking it pushes the interactive KeyInfoScreen.
+        assert!(
+            matches!(
+                harness.state().screen_stack.last(),
+                Some(Screen::KeyInfoScreen(_))
+            ),
+            "clicking a per-key button must push KeyInfoScreen"
+        );
+        assert!(
+            harness.query_by_label("Key Information").is_some(),
+            "the pushed KeyInfoScreen must render its 'Key Information' heading"
         );
     });
 }

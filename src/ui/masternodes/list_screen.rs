@@ -65,6 +65,12 @@ pub struct MasternodesScreen {
     nodes: Vec<NodeCardData>,
     /// The active sub-view (list / load / detail).
     view: MasternodesView,
+    /// True while a node-load task is in flight. Gates the entry points that
+    /// could re-submit a load (the `+ Load` toolbar button and the empty-state
+    /// CTA) so a rapid double-submit of a brand-new ProTxHash cannot race two
+    /// loads past the pre-fetch existence check. Cleared on the task's result
+    /// or error.
+    load_in_flight: bool,
 }
 
 impl MasternodesScreen {
@@ -76,6 +82,7 @@ impl MasternodesScreen {
             app_context: app_context.clone(),
             nodes: Vec::new(),
             view: MasternodesView::List,
+            load_in_flight: false,
         };
         screen.reload();
         screen
@@ -123,6 +130,7 @@ impl MasternodesScreen {
     /// to the List view and reload from the now-active network's local store.
     pub fn reset_for_network_change(&mut self) {
         self.view = MasternodesView::List;
+        self.load_in_flight = false;
         self.reload();
     }
 
@@ -160,7 +168,11 @@ impl MasternodesScreen {
                 .color(DashColors::text_secondary(dark_mode)),
             );
             ui.add_space(20.0);
-            if ComponentStyles::add_primary_button(ui, "Load a masternode").clicked() {
+            // Gate the CTA while a load is in flight.
+            if self.load_in_flight {
+                ui.spinner();
+                ui.add_enabled(false, egui::Button::new("Loading…"));
+            } else if ComponentStyles::add_primary_button(ui, "Load a masternode").clicked() {
                 self.view = MasternodesView::Load(self.new_load_form());
             }
             ui.add_space(12.0);
@@ -280,7 +292,14 @@ impl MasternodesScreen {
                     inner = self.refresh_from_network();
                 }
                 ui.add_space(8.0);
-                if ComponentStyles::add_toolbar_button(ui, "+ Load", network_accent).clicked() {
+                // Gate re-entry into the load form while a load is in flight
+                //, and surface a spinner so the wait is visible.
+                if self.load_in_flight {
+                    ui.spinner();
+                    ui.add_enabled(false, egui::Button::new("Loading…"));
+                } else if ComponentStyles::add_toolbar_button(ui, "+ Load", network_accent)
+                    .clicked()
+                {
                     self.view = MasternodesView::Load(self.new_load_form());
                 }
             });
@@ -295,7 +314,7 @@ impl MasternodesScreen {
         inner
     }
 
-    /// Build the network re-fetch dispatched by the list Refresh button
+    /// Build the network re-fetch dispatched by the list Refresh button:
     /// one `RefreshIdentity` per loaded node, plus a DPNS contests
     /// re-query so vote counts refresh too. Returns `None` when no node is
     /// loaded (nothing to refresh).
@@ -333,6 +352,8 @@ impl MasternodesScreen {
             }
             LoadFormOutcome::Submit(input) => {
                 self.view = MasternodesView::List;
+                // Gate re-submission until this load resolves.
+                self.load_in_flight = true;
                 AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::LoadIdentity(
                     *input,
                 )))
@@ -351,8 +372,9 @@ impl ScreenLike for MasternodesScreen {
     }
 
     fn display_task_result(&mut self, _result: crate::backend_task::BackendTaskSuccessResult) {
-        // A completed load (or any task routed here) may have added a node —
-        // re-read the cached list so the new card appears.
+        // A load (or any task routed here) resolved — re-enable the load entry
+        // points and re-read the cached list so a new card appears.
+        self.load_in_flight = false;
         self.reload();
         // if a detail view is open, its own backend task (voting, an
         // Add-voting-key merge, a RefreshIdentity) just updated the store.
@@ -362,6 +384,13 @@ impl ScreenLike for MasternodesScreen {
             let node_id = detail.node_id();
             self.open_detail(node_id);
         }
+    }
+
+    fn display_task_error(&mut self, _error: &crate::backend_task::error::TaskError) -> bool {
+        // A load failed — re-enable the load entry points. Let the
+        // global banner render the error (return false, do not claim it).
+        self.load_in_flight = false;
+        false
     }
 
     fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
@@ -409,5 +438,120 @@ impl ScreenLike for MasternodesScreen {
         });
 
         action
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::TaskResult;
+    use crate::app_dir::ensure_env_file;
+    use crate::context::connection_status::ConnectionStatus;
+    use crate::database::test_helpers::create_database_at_path;
+    use crate::model::qualified_identity::QualifiedIdentity;
+    use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
+    use crate::utils::egui_mpsc::SenderAsync;
+    use crate::utils::tasks::TaskManager;
+    use dash_sdk::dpp::dashcore::Network;
+    use dash_sdk::dpp::identity::Identity;
+    use dash_sdk::dpp::version::PlatformVersion;
+    use dash_sdk::platform::Identifier;
+    use std::collections::BTreeMap;
+
+    /// Build an offline, wallet-backend-wired `AppContext` (no network I/O).
+    async fn offline_ctx() -> (Arc<AppContext>, tempfile::TempDir) {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = temp_dir.path().to_path_buf();
+        ensure_env_file(&data_dir);
+        let db = Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
+        let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
+        let secret_store = AppContext::open_secret_store(&data_dir).expect("secret store");
+        let ctx = AppContext::new(
+            data_dir,
+            Network::Testnet,
+            db,
+            Arc::new(TaskManager::new()),
+            Arc::new(ConnectionStatus::new()),
+            egui::Context::default(),
+            app_kv,
+            secret_store,
+        )
+        .expect("offline testnet AppContext::new");
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("wire wallet backend offline");
+        (ctx, temp_dir)
+    }
+
+    fn seed_masternode(ctx: &Arc<AppContext>, byte: u8) {
+        let pv = PlatformVersion::latest();
+        let identity = Identity::create_basic_identity(Identifier::from([byte; 32]), pv)
+            .expect("basic identity");
+        let qi = QualifiedIdentity {
+            identity,
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::Masternode,
+            alias: None,
+            private_keys: KeyStorage::default(),
+            dpns_names: vec![],
+            associated_wallets: BTreeMap::new(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: BTreeMap::new(),
+            status: IdentityStatus::PendingCreation,
+            network: ctx.network(),
+        };
+        ctx.insert_local_qualified_identity(&qi, &None)
+            .expect("seed masternode");
+    }
+
+    /// The list Refresh builds one `RefreshIdentity` per loaded node plus a
+    /// single trailing `QueryDPNSContests`, and yields `None` when no node is
+    /// loaded (nothing to refresh).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn refresh_from_network_builds_per_node_refresh_plus_contest_requery() {
+        let (ctx, _tmp) = offline_ctx().await;
+
+        // No nodes loaded → nothing to refresh.
+        let screen = MasternodesScreen::new(&ctx);
+        assert!(
+            matches!(screen.refresh_from_network(), AppAction::None),
+            "an empty node list must produce no refresh task"
+        );
+
+        // Two nodes loaded → two RefreshIdentity + one trailing QueryDPNSContests.
+        seed_masternode(&ctx, 0x11);
+        seed_masternode(&ctx, 0x22);
+        let screen = MasternodesScreen::new(&ctx);
+        let AppAction::BackendTasks(tasks, mode) = screen.refresh_from_network() else {
+            panic!("expected BackendTasks");
+        };
+        assert!(matches!(mode, BackendTasksExecutionMode::Concurrent));
+        assert_eq!(tasks.len(), 3, "two node refreshes + one contest re-query");
+        let refreshes = tasks
+            .iter()
+            .filter(|t| {
+                matches!(
+                    t,
+                    BackendTask::IdentityTask(IdentityTask::RefreshIdentity(_))
+                )
+            })
+            .count();
+        assert_eq!(refreshes, 2, "one RefreshIdentity per loaded node");
+        assert!(
+            matches!(
+                tasks.last(),
+                Some(BackendTask::ContestedResourceTask(
+                    ContestedResourceTask::QueryDPNSContests
+                ))
+            ),
+            "the contest re-query must be the trailing task",
+        );
+
+        ctx.wallet_backend().expect("backend").shutdown().await;
     }
 }

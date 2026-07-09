@@ -193,7 +193,7 @@ impl MasternodeDetailView {
         self.open_contests = Self::load_open_contests(&self.app_context, voter_id);
     }
 
-    /// Build the network re-fetch dispatched by the detail Refresh button
+    /// Build the network re-fetch dispatched by the detail Refresh button:
     /// refresh this node's identity, plus a DPNS contests re-query
     /// when the node has a voter identity that can vote.
     fn refresh_from_network(&self) -> AppAction {
@@ -477,9 +477,9 @@ impl MasternodeDetailView {
         let tier = self.protection_tier();
         ui.label(RichText::new(tier.label()).color(DashColors::text_secondary(dark_mode)));
 
-        // Per-key "Manage keys" list. Each key opens its own `KeyInfoScreen`
-        // — the real, interactive per-key screen with view/sign/seal
-        // actions — not the static read-only `KeysScreen` table. This mirrors
+        // Per-key "Manage keys" list. Each key opens its own `KeyInfoScreen` —
+        // the real, interactive per-key screen with view/sign/seal actions —
+        // not the static read-only `KeysScreen` table. This mirrors
         // `identities_screen.rs`: one button per key, each pushing
         // `Screen::KeyInfoScreen`.
         ui.add_space(4.0);
@@ -858,19 +858,17 @@ mod tests {
         let db = Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
         let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
         let secret_store = AppContext::open_secret_store(&data_dir).expect("secret store");
-        let ctx = Arc::new(
-            AppContext::new(
-                data_dir,
-                Network::Testnet,
-                db,
-                Arc::new(TaskManager::new()),
-                Arc::new(ConnectionStatus::new()),
-                egui::Context::default(),
-                app_kv,
-                secret_store,
-            )
-            .expect("offline testnet AppContext::new"),
-        );
+        let ctx = AppContext::new(
+            data_dir,
+            Network::Testnet,
+            db,
+            Arc::new(TaskManager::new()),
+            Arc::new(ConnectionStatus::new()),
+            egui::Context::default(),
+            app_kv,
+            secret_store,
+        )
+        .expect("offline testnet AppContext::new");
         let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
         let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
         ctx.ensure_wallet_backend(sender)

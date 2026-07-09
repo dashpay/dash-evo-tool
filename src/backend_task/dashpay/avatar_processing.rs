@@ -134,22 +134,6 @@ impl DHashCalculator {
         hash.to_le_bytes()
     }
 
-    /// Convert RGB pixels to grayscale
-    #[allow(dead_code)]
-    fn to_grayscale(&self, rgb: &[u8]) -> Vec<u8> {
-        let mut grayscale = Vec::new();
-        for chunk in rgb.chunks(3) {
-            if chunk.len() == 3 {
-                // Standard grayscale conversion: 0.299*R + 0.587*G + 0.114*B
-                let gray = (0.299 * chunk[0] as f32
-                    + 0.587 * chunk[1] as f32
-                    + 0.114 * chunk[2] as f32) as u8;
-                grayscale.push(gray);
-            }
-        }
-        grayscale
-    }
-
     /// Simple box filter resize (nearest neighbor)
     fn resize(&self, pixels: &[u8], orig_width: usize, orig_height: usize) -> Vec<u8> {
         let mut resized = Vec::with_capacity(self.width * self.height);

@@ -183,9 +183,6 @@ pub struct CoreAddressInput {
 pub struct PlatformAddressInput {
     /// The platform address
     pub platform_address: PlatformAddress,
-    /// The corresponding core address (for lookup/display)
-    #[allow(dead_code)]
-    pub core_address: Address,
     /// Amount to send from this address (as string for input field)
     pub amount: String,
 }
@@ -202,7 +199,6 @@ pub struct AdvancedOutput {
 pub struct WalletSendScreen {
     pub app_context: Arc<AppContext>,
     pub selected_wallet: Option<Arc<RwLock<Wallet>>>,
-    #[allow(dead_code)]
     selected_wallet_seed_hash: Option<WalletSeedHash>,
 
     // Unified send fields (simple mode)
@@ -2989,7 +2985,7 @@ impl WalletSendScreen {
             egui::ComboBox::from_id_salt("add_platform_input")
                 .selected_text("+ Add Platform Address")
                 .show_ui(ui, |ui| {
-                    for (core_addr, platform_addr, balance) in available_addresses {
+                    for (_core_addr, platform_addr, balance) in available_addresses {
                         let addr_str = platform_addr.to_bech32m_string(network);
                         let display = format!(
                             "{}... ({})",
@@ -2999,7 +2995,6 @@ impl WalletSendScreen {
                         if ui.selectable_label(false, display).clicked() {
                             self.platform_inputs.push(PlatformAddressInput {
                                 platform_address: *platform_addr,
-                                core_address: core_addr.clone(),
                                 amount: String::new(),
                             });
                         }

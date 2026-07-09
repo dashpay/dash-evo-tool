@@ -416,7 +416,6 @@ pub struct RegisterDpnsNameInput {
 #[derive(Debug, Clone, PartialEq)]
 pub enum IdentityTask {
     LoadIdentity(IdentityInputToLoad),
-    #[allow(dead_code)] // May be used for finding identities in wallets
     SearchIdentityFromWallet(WalletArcRef, IdentityIndex),
     SearchIdentitiesUpToIndex(WalletArcRef, IdentityIndex),
     /// Search for an identity by its DPNS name (without .dash suffix)
@@ -601,7 +600,9 @@ pub fn build_identity_registration_with_seed(
 ///
 /// Resolves the wallet's HD seed once through the JIT chokepoint and delegates;
 /// callers that can `await` use this and never read the wallet's parked seed.
-#[allow(dead_code)] // Used by backend-e2e tests
+// Exercised by the backend-e2e integration tests (a separate crate the lib
+// build does not see), so it is dead in the lib build itself.
+#[allow(dead_code)]
 pub async fn build_identity_registration(
     app_context: &Arc<AppContext>,
     wallet_arc: &Arc<RwLock<Wallet>>,

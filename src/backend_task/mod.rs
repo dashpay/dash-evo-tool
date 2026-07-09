@@ -28,7 +28,6 @@ use dash_sdk::dpp::prelude::DataContract;
 use dash_sdk::dpp::state_transition::StateTransition;
 use dash_sdk::dpp::tokens::token_pricing_schedule::TokenPricingSchedule;
 use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
-use dash_sdk::dpp::voting::votes::Vote;
 use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::Start;
 use dash_sdk::platform::{Document, Identifier};
 use dash_sdk::query_types::{Documents, IndexMap};
@@ -185,15 +184,11 @@ pub enum BackendTaskSuccessResult {
     },
 
     // Specific results
-    #[allow(dead_code)] // May be used for individual document operations
-    Document(Document),
     Documents(Documents),
     BroadcastedDocument(Document),
     CoreItem(CoreItem),
     RegisteredIdentity(QualifiedIdentity, FeeResult),
     ToppedUpIdentity(QualifiedIdentity, FeeResult),
-    #[allow(dead_code)] // May be used for reporting successful votes
-    SuccessfulVotes(Vec<Vote>),
     DPNSVoteResults(Vec<(String, ResourceVoteChoice, Result<(), Arc<TaskError>>)>),
     CastScheduledVote(ScheduledDPNSVote),
     /// The scheduled votes that the `CastDueScheduledVotes` sweep is about to
@@ -206,8 +201,6 @@ pub enum BackendTaskSuccessResult {
     ),
     FetchedContracts(Vec<Option<DataContract>>),
     PageDocuments(IndexMap<Identifier, Option<Document>>, Option<Start>),
-    #[allow(dead_code)] // May be used for token search results
-    TokensByKeyword(Vec<TokenInfo>, Option<Start>),
     DescriptionsByKeyword(Vec<ContractDescriptionInfo>, Option<Start>),
     TokenEstimatedNonClaimedPerpetualDistributionAmountWithExplanation(
         IdentityTokenIdentifier,
@@ -830,7 +823,7 @@ mod tests {
             WalletTask::GenerateReceiveAddress { seed_hash },
         )));
         assert!(is_wallet_touching(&BackendTask::CoreTask(
-            CoreTask::GetBestChainLock,
+            CoreTask::GetBestChainLocks,
         )));
         assert!(is_wallet_touching(&BackendTask::ShieldedTask(
             shielded::ShieldedTask::ShieldFromBalance {

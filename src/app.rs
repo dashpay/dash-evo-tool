@@ -308,7 +308,6 @@ pub struct AppState {
 #[derive(Debug, Clone, PartialEq)]
 pub enum DesiredAppAction {
     None,
-    #[allow(dead_code)] // May be used in future for explicit refresh actions
     Refresh,
     AddScreenType(Box<ScreenType>),
     BackendTask(Box<BackendTask>),
@@ -1390,7 +1389,7 @@ impl App for AppState {
                             active_context.queue_all_wallets_identity_discovery();
                         }
                         BackendTaskSuccessResult::Message(ref msg) => {
-                            // TODO(RUST-002): Some screens inspect Message text for error
+                            // TODO: Some screens inspect Message text for error
                             // keywords and may override with an Error banner, causing a
                             // brief green-then-red flash. Refactor to pass structured error
                             // types through task results instead of string messages.

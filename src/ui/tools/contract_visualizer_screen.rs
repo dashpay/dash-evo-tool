@@ -30,12 +30,6 @@ pub struct ContractVisualizerScreen {
     // ---- parsed output -------
     parsed_json: Option<String>,
     parse_status: ContractParseStatus,
-
-    // ---- helper for chooser search ----
-    // Allow dead_code: This field provides search functionality for contract selection,
-    // useful for filtering contracts in the visualizer interface
-    #[allow(dead_code)]
-    contract_search_term: String,
 }
 
 impl ContractVisualizerScreen {
@@ -47,8 +41,6 @@ impl ContractVisualizerScreen {
 
             parsed_json: None,
             parse_status: ContractParseStatus::NotStarted,
-
-            contract_search_term: String::new(),
         }
     }
 

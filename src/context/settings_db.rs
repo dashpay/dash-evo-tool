@@ -242,10 +242,10 @@ mod tests {
         .expect("AppContext")
     }
 
-    /// CODE-027 — each `update_app_settings` call observes the state committed
-    /// by the previous call. A closure that reads a field written by an earlier
-    /// update must see it, and independent updates must all accumulate rather
-    /// than the last writer overwriting a stale full-blob snapshot.
+    /// Each `update_app_settings` call observes the state committed by the
+    /// previous call. A closure that reads a field written by an earlier update
+    /// must see it, and independent updates must all accumulate rather than the
+    /// last writer overwriting a stale full-blob snapshot.
     #[test]
     fn update_app_settings_reads_prior_committed_state() {
         use crate::model::settings::UserMode;
@@ -270,7 +270,7 @@ mod tests {
         assert!(got.onboarding_completed, "second update landed");
     }
 
-    /// CODE-027 — concurrent updates to distinct fields must not lose writes.
+    /// Concurrent updates to distinct fields must not lose writes.
     /// Each thread flips its own boolean; under a non-atomic read-modify-write
     /// a thread's stale snapshot would clobber a sibling field written by
     /// another thread. Holding the cache lock across the whole cycle guarantees

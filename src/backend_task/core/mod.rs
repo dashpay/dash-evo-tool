@@ -18,8 +18,6 @@ use std::sync::{Arc, RwLock};
 
 #[derive(Debug, Clone)]
 pub enum CoreTask {
-    #[allow(dead_code)] // May be used for getting single chain lock
-    GetBestChainLock,
     GetBestChainLocks,
     /// Refresh wallet info from Core. The bool controls whether to also sync
     /// Platform address balances (true = sync Platform, false = Core only).
@@ -45,8 +43,7 @@ impl PartialEq for CoreTask {
     fn eq(&self, other: &Self) -> bool {
         matches!(
             (self, other),
-            (CoreTask::GetBestChainLock, CoreTask::GetBestChainLock)
-                | (CoreTask::GetBestChainLocks, CoreTask::GetBestChainLocks)
+            (CoreTask::GetBestChainLocks, CoreTask::GetBestChainLocks)
                 | (
                     CoreTask::RefreshWalletInfo(_, _),
                     CoreTask::RefreshWalletInfo(_, _)
@@ -111,17 +108,6 @@ impl AppContext {
         task: CoreTask,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         match task {
-            CoreTask::GetBestChainLock => self
-                .core_client
-                .read()?
-                .get_best_chain_lock()
-                .map(|chain_lock| {
-                    BackendTaskSuccessResult::CoreItem(CoreItem::ChainLock(
-                        chain_lock,
-                        self.network,
-                    ))
-                })
-                .map_err(|e| self.rpc_error_with_url(e)),
             CoreTask::GetBestChainLocks => {
                 // Load configs
                 let config = Config::load_from(&self.data_dir)?;

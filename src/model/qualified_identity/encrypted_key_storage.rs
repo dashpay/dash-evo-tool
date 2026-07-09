@@ -282,34 +282,6 @@ impl From<BTreeMap<(PrivateKeyTarget, KeyID), (QualifiedIdentityPublicKey, Walle
 }
 
 impl KeyStorage {
-    // Allow dead_code: This method provides direct key access without password resolution,
-    // useful for cases where keys are already decrypted or for debugging purposes
-    #[allow(dead_code)]
-    pub fn get(
-        &self,
-        key: &(PrivateKeyTarget, KeyID),
-    ) -> Result<Option<(&QualifiedIdentityPublicKey, [u8; 32])>, String> {
-        self.private_keys
-            .get(key)
-            .map(
-                |(qualified_identity_public_key_data, private_key_data)| match private_key_data {
-                    PrivateKeyData::AlwaysClear(clear) | PrivateKeyData::Clear(clear) => {
-                        Ok((qualified_identity_public_key_data, *clear))
-                    }
-                    PrivateKeyData::Encrypted(_) => {
-                        Err("Key is encrypted, please enter password".to_string())
-                    }
-                    PrivateKeyData::AtWalletDerivationPath(_) => {
-                        Err("Key is not resolved, please enter password".to_string())
-                    }
-                    PrivateKeyData::InVault => {
-                        Err("Key is stored securely, resolve it through the vault".to_string())
-                    }
-                },
-            )
-            .transpose()
-    }
-
     /// Seed-free resolution for keys that carry their own plaintext
     /// ([`PrivateKeyData::Clear`] / [`PrivateKeyData::AlwaysClear`]).
     ///
@@ -411,32 +383,6 @@ impl KeyStorage {
         }
     }
 
-    // Allow dead_code: This method provides access to raw private key data,
-    // useful for inspecting key states and encryption status
-    #[allow(dead_code)]
-    pub fn get_private_key_data(&self, key: &(PrivateKeyTarget, KeyID)) -> Option<&PrivateKeyData> {
-        self.private_keys
-            .get(key)
-            .map(|(_, private_key_data)| private_key_data)
-    }
-
-    // Allow dead_code: This method provides combined access to private key data and wallet info,
-    // useful for advanced key management and wallet integration scenarios
-    #[allow(dead_code)]
-    pub fn get_private_key_data_and_wallet_info(
-        &self,
-        key: &(PrivateKeyTarget, KeyID),
-    ) -> Option<(&PrivateKeyData, &Option<WalletDerivationPath>)> {
-        self.private_keys
-            .get(key)
-            .map(|(qualified_identity_public_key_data, private_key_data)| {
-                (
-                    private_key_data,
-                    &qualified_identity_public_key_data.in_wallet_at_derivation_path,
-                )
-            })
-    }
-
     pub fn get_cloned_private_key_data_and_wallet_info(
         &self,
         key: &(PrivateKeyTarget, KeyID),
@@ -467,9 +413,7 @@ impl KeyStorage {
         self.private_keys.contains_key(key)
     }
 
-    // Allow dead_code: This method returns all stored key identifiers,
-    // useful for key enumeration and management operations
-    #[allow(dead_code)]
+    /// Returns all stored key identifiers.
     pub fn keys_set(&self) -> BTreeSet<(PrivateKeyTarget, KeyID)> {
         self.private_keys.keys().cloned().collect()
     }

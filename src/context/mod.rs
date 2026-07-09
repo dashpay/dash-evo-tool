@@ -8,7 +8,7 @@ mod settings_db;
 mod wallet_lifecycle;
 
 use crate::app_dir::core_cookie_path;
-use crate::backend_task::error::{TaskError, is_rpc_connection_error};
+use crate::backend_task::error::TaskError;
 use crate::config::{Config, NetworkConfig};
 use crate::context::feature_gate::FeatureGate;
 use crate::context_provider::SpvProvider;
@@ -847,25 +847,6 @@ impl AppContext {
             ),
         )
         .map_err(|e| TaskError::CoreRpc { source: e })
-    }
-
-    /// Convert an RPC error to `TaskError`, enriching connection failures with
-    /// the configured host:port so the user knows which address was unreachable.
-    pub(crate) fn rpc_error_with_url(&self, e: dash_sdk::dashcore_rpc::Error) -> TaskError {
-        if is_rpc_connection_error(&e) {
-            let url = self
-                .config
-                .read()
-                .ok()
-                .map(|c| format!("{}:{}", c.rpc_host(), c.rpc_port(self.network)))
-                .unwrap_or_else(|| "unknown".to_string());
-            TaskError::CoreRpcConnectionFailed {
-                url,
-                source: Some(Box::new(e)),
-            }
-        } else {
-            TaskError::from(e)
-        }
     }
 
     /// Convert an SDK error to a [`TaskError`], with special handling for

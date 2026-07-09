@@ -396,14 +396,9 @@ impl Database {
             }
         }
 
-        // Step 4: asset-lock state lives in the upstream `AssetLockManager`
-        // (queried via `WalletBackend::list_tracked_asset_locks`). The
-        // `asset_lock_transaction` DET module was deleted; existing rows
-        // on legacy installs are inert and migrated via git history.
-
         tracing::trace!(
             network = network_str,
-            "step 8: retrieve identities for wallets"
+            "step 4: retrieve identities for wallets"
         );
         let mut identity_stmt = conn.prepare(
             "SELECT data, wallet, wallet_index FROM identity WHERE network = ? AND wallet IS NOT NULL AND wallet_index IS NOT NULL",
@@ -458,10 +453,6 @@ impl Database {
                 wallet.identities.insert(wallet_index, identity.identity);
             }
         }
-
-        // Platform per-address balances + sync cursor are owned by the upstream
-        // coordinator; DET holds no at-rest copy and warm-starts from the
-        // coordinator's first push.
 
         Ok(wallets_map.into_values().collect())
     }

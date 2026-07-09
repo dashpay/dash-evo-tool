@@ -11,7 +11,7 @@
 //! surfaced as an error banner — the button simply does not appear. The parse
 //! error is logged by *position only* (line/column), never its message, because
 //! a serde error's text can echo the offending line — which here holds a real
-//! private key (SEC-001).
+//! private key.
 
 use crate::model::secret::Secret;
 use serde::Deserialize;
@@ -23,7 +23,7 @@ pub const TESTNET_NODES_FILE: &str = ".testnet_nodes.yml";
 #[derive(Debug, Clone, Deserialize)]
 pub struct KeyInfo {
     /// Parsed as a [`Secret`] so the private key is redacted in `Debug`/logs and
-    /// zeroized on drop, rather than living as a bare `String` (SEC-002).
+    /// zeroized on drop, rather than living as a bare `String`.
     pub private_key: Secret,
 }
 
@@ -60,7 +60,7 @@ pub struct TestnetNodes {
 ///
 /// The parse error is logged by position only (line/column). Its `Display` text
 /// is deliberately NOT logged: serde echoes the offending source line, which in
-/// this file is a real private key (SEC-001).
+/// this file is a real private key.
 pub fn load_testnet_nodes() -> Option<TestnetNodes> {
     let content = std::fs::read_to_string(TESTNET_NODES_FILE).ok()?;
     match serde_yaml_ng::from_str::<TestnetNodes>(&content) {

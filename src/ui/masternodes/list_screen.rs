@@ -368,13 +368,25 @@ impl ScreenLike for MasternodesScreen {
     }
 
     fn refresh_on_arrival(&mut self) {
+        // Backstop for a stranded load gate: if the load result was routed to a
+        // different screen while this tab was away (tab switched mid-load),
+        // `display_task_result` never fired here to clear the gate. Clear it on
+        // return so `+ Load` can never sit at "Loading…" forever.
+        self.load_in_flight = false;
         self.reload();
     }
 
-    fn display_task_result(&mut self, _result: crate::backend_task::BackendTaskSuccessResult) {
-        // A load (or any task routed here) resolved — re-enable the load entry
-        // points and re-read the cached list so a new card appears.
-        self.load_in_flight = false;
+    fn display_task_result(&mut self, result: crate::backend_task::BackendTaskSuccessResult) {
+        // Clear the load gate only on the load task's OWN result variant. This
+        // screen also receives detail-view results (voting, RefreshIdentity) —
+        // clearing on any of those would re-enable `+ Load` while a real load is
+        // still in flight, so match the load's result specifically.
+        if matches!(
+            result,
+            crate::backend_task::BackendTaskSuccessResult::LoadedIdentity(_)
+        ) {
+            self.load_in_flight = false;
+        }
         self.reload();
         // if a detail view is open, its own backend task (voting, an
         // Add-voting-key merge, a RefreshIdentity) just updated the store.

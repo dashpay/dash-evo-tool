@@ -178,9 +178,15 @@ impl AsyncTool<DashMcpService> for MasternodeIdentityLoad {
             // password param and thread it here once MCP secret handling is
             // designed.
             encryption_password: None,
-            // Headless load preserves the overwrite/upsert behaviour (a repeat
-            // load refreshes the stored node); duplicate rejection is a GUI-form
-            // affordance, not a headless contract.
+            // Headless load uses overwrite/upsert semantics: a repeat load
+            // REPLACES the stored node's keys with those supplied in this call.
+            // Keys omitted this time are dropped — this is a full replace, not a
+            // merge, so a partial-key repeat load is destructive. Duplicate
+            // rejection and key-preserving merge are GUI-form affordances, not a
+            // headless contract.
+            // TODO: headless merge parity — expose a load-mode param so callers
+            // can request MergeIntoExisting (key-preserving) once MCP secret
+            // handling for Tier-2 nodes is designed.
             load_mode: crate::backend_task::identity::IdentityLoadMode::Overwrite,
         };
 

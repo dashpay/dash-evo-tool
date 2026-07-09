@@ -105,6 +105,14 @@ impl AppContext {
         {
             Ok(id) => id,
             Err(_e) => {
+                // For masternodes/evonodes the identity id field IS a ProTxHash
+                // (hex) or Base58 identity id — surface the ProTxHash-specific
+                // message so the user is told the exact accepted formats.
+                if identity_type != IdentityType::User {
+                    return Err(TaskError::MalformedProTxHash {
+                        input: identity_id_input,
+                    });
+                }
                 return Err(TaskError::IdentifierParsingError {
                     input: identity_id_input,
                 });
@@ -122,6 +130,28 @@ impl AppContext {
             }
             _ => {}
         }
+
+        // An in-place merge into a password-protected (Tier-2) node must
+        // seal the newly-supplied key Tier-2, or the plaintext key would trip
+        // the insert's fail-closed guard. Verify the node's object password UP
+        // FRONT — before the network fetch — so a wrong or headless password
+        // fails closed with no wasted round-trip and no partial state, mirroring
+        // add_key_to_identity's verify-before-broadcast / seal-after order. The
+        // verified password seals the merged plaintext keys just before insert.
+        let merge_seal_password = match (&load_mode, existing_stored.as_ref()) {
+            (IdentityLoadMode::MergeIntoExisting, Some(existing)) => {
+                match self.protected_identity_verify_scope(existing)? {
+                    Some(verify_scope) => Some(
+                        self.wallet_backend()?
+                            .secret_access()
+                            .verify_identity_object_password(&verify_scope)
+                            .await?,
+                    ),
+                    None => None,
+                }
+            }
+            _ => None,
+        };
 
         // Fetch the identity using the SDK
         let identity = match Identity::fetch_by_identifier(sdk, identity_id).await {
@@ -415,6 +445,15 @@ impl AppContext {
             merge_existing_keys_into(&mut qualified_identity, existing);
         }
 
+        // When merging into a Tier-2 node, seal the newly-merged plaintext
+        // keys Tier-2 under the already-verified password and mark them InVault
+        // BEFORE the insert, so the fail-closed guard sees no resident plaintext
+        // on a protected identity — the same seal-before-persist add_key_to_identity
+        // performs. The password was verified up front, before the network fetch.
+        if let Some(password) = &merge_seal_password {
+            self.seal_merged_plaintext_keys(&mut qualified_identity, password)?;
+        }
+
         let wallet_info = qualified_identity
             .determine_wallet_info()
             .map_err(|e| TaskError::WalletInfoDeterminationFailed { detail: e })?;
@@ -442,6 +481,31 @@ impl AppContext {
         }
 
         Ok(BackendTaskSuccessResult::LoadedIdentity(qualified_identity))
+    }
+
+    /// Seal every resident-plaintext key of `qi` Tier-2 under an
+    /// already-verified identity object `password`, marking each `InVault`.
+    /// Called on the in-place merge path when the target node is
+    /// password-protected, BEFORE the at-rest insert, so the fail-closed guard
+    /// (`encode_identity_blob_vault_first`) never sees a keyless key on a
+    /// protected identity. The one seal fallible write per new key is the
+    /// merge-path twin of `add_key_to_identity`'s post-broadcast seal.
+    pub(super) fn seal_merged_plaintext_keys(
+        &self,
+        qi: &mut QualifiedIdentity,
+        password: &crate::wallet_backend::VerifiedIdentityPassword,
+    ) -> Result<(), TaskError> {
+        let backend = self.wallet_backend()?;
+        let secret_access = backend.secret_access();
+        let id = qi.identity.id().to_buffer();
+        // `take_plaintext_for_vault` flips each Clear/AlwaysClear key to `InVault`
+        // and hands back its raw bytes; sealing each Tier-2 leaves the identity
+        // fully protected with no keyless residue.
+        for ((target, key_id), raw) in qi.private_keys.take_plaintext_for_vault() {
+            secret_access
+                .seal_new_identity_key_with_password(id, &target, key_id, &raw, password)?;
+        }
+        Ok(())
     }
 
     pub(super) async fn match_user_identity_keys_with_wallet(
@@ -933,6 +997,259 @@ mod tests {
                 "key ({t:?}, {k}) of the first node must survive a rejected duplicate load",
             );
         }
+
+        ctx.wallet_backend().expect("backend").shutdown().await;
+    }
+
+    /// Merge×Tier-2 (success path) — merging a new key into a password-protected
+    /// (Tier-2) node seals the new key Tier-2 *before* the at-rest insert, so
+    /// the fail-closed guard (`encode_identity_blob_vault_first`) never rejects
+    /// it. Drives the exact merge-seal step `load_identity` runs: seed a Tier-2
+    /// masternode, add a resident-plaintext voting key (as the merge produces),
+    /// verify the object password through the app prompt, then
+    /// `seal_merged_plaintext_keys`. The new key must flip to `InVault`, insert
+    /// cleanly (no `IdentityKeyProtectionDowngrade`), and read back `Protected`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn merge_into_tier2_node_seals_new_key_and_insert_succeeds() {
+        use crate::wallet_backend::secret_prompt::test_support::{ScriptedAnswer, TestPrompt};
+
+        const PW: &str = "one-identity-password";
+
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = temp_dir.path().to_path_buf();
+        ensure_env_file(&data_dir);
+        let db = Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
+        let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
+        let secret_store = AppContext::open_secret_store(&data_dir).expect("secret store");
+        let ctx = AppContext::new(
+            data_dir,
+            Network::Testnet,
+            db,
+            Arc::new(TaskManager::new()),
+            Arc::new(ConnectionStatus::new()),
+            egui::Context::default(),
+            app_kv,
+            secret_store,
+        )
+        .expect("offline testnet AppContext::new");
+        // The scoped merge prompt asks for the node's object password once.
+        ctx.install_secret_prompt(Arc::new(TestPrompt::new([ScriptedAnswer::once(PW)])));
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("wire wallet backend offline");
+
+        // Seed a masternode and seal all its keys Tier-2.
+        let (qi, _triple) = masternode_shaped_qi();
+        let identity_id = qi.identity.id();
+        ctx.insert_local_qualified_identity(&qi, &None)
+            .expect("insert masternode identity");
+        ctx.protect_identity_keys(identity_id, Secret::new(PW), None)
+            .expect("seal Tier-2");
+
+        // Reload the sealed node: every key is now InVault.
+        let mut existing = ctx
+            .get_local_qualified_identity(&identity_id)
+            .expect("read stored identity")
+            .expect("node stored");
+
+        // Simulate the merge product: a freshly-supplied resident-plaintext
+        // voting key on a new key id (what `merge_existing_keys_into` yields).
+        let pv = PlatformVersion::latest();
+        let new_voter = IdentityPublicKey::random_key(9, Some(9), pv);
+        let new_voter_id = new_voter.id();
+        let new_key = (V, new_voter_id);
+        existing.private_keys.private_keys.insert(
+            new_key.clone(),
+            (
+                QualifiedIdentityPublicKey::from(new_voter),
+                PrivateKeyData::Clear([0xDD; 32]),
+            ),
+        );
+
+        // Verify the node's object password up front (as the load path does),
+        // then seal the merged plaintext key Tier-2 before insert.
+        let verify_scope = ctx
+            .protected_identity_verify_scope(&existing)
+            .expect("verify scope lookup")
+            .expect("node is Tier-2, so a verify scope exists");
+        let password = ctx
+            .wallet_backend()
+            .expect("backend wired")
+            .secret_access()
+            .verify_identity_object_password(&verify_scope)
+            .await
+            .expect("scripted password verifies");
+        ctx.seal_merged_plaintext_keys(&mut existing, &password)
+            .expect("seal merged plaintext key");
+
+        // The new key flipped to InVault in the in-memory identity...
+        assert!(
+            matches!(
+                existing.private_keys.private_keys.get(&new_key),
+                Some((_, PrivateKeyData::InVault)),
+            ),
+            "the merged voting key must be marked InVault after sealing",
+        );
+
+        // ...the at-rest insert now passes the fail-closed guard...
+        ctx.insert_local_qualified_identity(&existing, &None)
+            .expect("insert of a Tier-2 node with a sealed new key must succeed");
+
+        // ...and the new key reads back as a Tier-2 (Protected) sealed secret.
+        let backend = ctx.wallet_backend().expect("backend wired");
+        let view = IdentityKeyView::new(backend.secret_store(), identity_id.to_buffer());
+        assert_eq!(
+            view.scheme(&V, new_voter_id).expect("scheme"),
+            SecretScheme::Protected,
+            "the merged voting key must be sealed Tier-2",
+        );
+        assert!(
+            view.get_protected(&V, new_voter_id, &SecretString::new(PW))
+                .expect("get_protected")
+                .is_some(),
+            "the sealed voting key must round-trip under the object password",
+        );
+
+        backend.shutdown().await;
+    }
+
+    /// Merge×Tier-2 (headless fail-closed) — a `MergeIntoExisting` load into a Tier-2
+    /// node with no interactive prompt (the default `NullSecretPrompt`) fails
+    /// closed with [`TaskError::SecretPromptUnavailable`] and — critically —
+    /// BEFORE the network fetch, because the object password is verified up
+    /// front. No prompt means no way to seal the merged key, so the load is
+    /// rejected rather than silently dropping to a keyless downgrade.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn merge_into_tier2_node_headless_fails_closed_before_fetch() {
+        const PW: &str = "one-identity-password";
+
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = temp_dir.path().to_path_buf();
+        ensure_env_file(&data_dir);
+        let db = Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
+        let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
+        let secret_store = AppContext::open_secret_store(&data_dir).expect("secret store");
+        let ctx = AppContext::new(
+            data_dir,
+            Network::Testnet,
+            db,
+            Arc::new(TaskManager::new()),
+            Arc::new(ConnectionStatus::new()),
+            egui::Context::default(),
+            app_kv,
+            secret_store,
+        )
+        .expect("offline testnet AppContext::new");
+        // No prompt installed: the default NullSecretPrompt fails closed.
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("wire wallet backend offline");
+
+        // Seed a Tier-2 masternode.
+        let (qi, _triple) = masternode_shaped_qi();
+        let identity_id = qi.identity.id();
+        ctx.insert_local_qualified_identity(&qi, &None)
+            .expect("insert masternode identity");
+        ctx.protect_identity_keys(identity_id, Secret::new(PW), None)
+            .expect("seal Tier-2");
+
+        let input = IdentityInputToLoad {
+            identity_id_input: identity_id.to_string(Encoding::Hex),
+            identity_type: IdentityType::Masternode,
+            alias_input: String::new(),
+            voting_private_key_input: Secret::new(""),
+            owner_private_key_input: Secret::new(""),
+            payout_address_private_key_input: Secret::new(""),
+            keys_input: vec![],
+            derive_keys_from_wallets: false,
+            selected_wallet_seed_hash: None,
+            encryption_password: None,
+            load_mode: IdentityLoadMode::MergeIntoExisting,
+        };
+
+        // The verify happens before the SDK fetch, so this resolves offline.
+        let sdk = ctx.sdk();
+        let result = ctx.load_identity(&sdk, input).await;
+        assert!(
+            matches!(result, Err(TaskError::SecretPromptUnavailable)),
+            "a headless merge into a Tier-2 node must fail closed, got {result:?}",
+        );
+
+        // The stored node is untouched — still fully Tier-2.
+        let backend = ctx.wallet_backend().expect("backend wired");
+        let view = IdentityKeyView::new(backend.secret_store(), identity_id.to_buffer());
+        assert_eq!(
+            view.scheme(&M, 1).expect("scheme"),
+            SecretScheme::Protected,
+            "a rejected headless merge must leave the node's keys sealed",
+        );
+
+        backend.shutdown().await;
+    }
+
+    /// A malformed identity-id input surfaces the ProTxHash-specific
+    /// [`TaskError::MalformedProTxHash`] for masternode/evonode loads (where the
+    /// field IS a ProTxHash), and the generic [`TaskError::IdentifierParsingError`]
+    /// for User loads — both offline, at the parse arm, before any network fetch.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn malformed_id_routes_to_pro_tx_hash_error_for_nodes_only() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = temp_dir.path().to_path_buf();
+        ensure_env_file(&data_dir);
+        let db = Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
+        let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
+        let secret_store = AppContext::open_secret_store(&data_dir).expect("secret store");
+        let ctx = AppContext::new(
+            data_dir,
+            Network::Testnet,
+            db,
+            Arc::new(TaskManager::new()),
+            Arc::new(ConnectionStatus::new()),
+            egui::Context::default(),
+            app_kv,
+            secret_store,
+        )
+        .expect("offline testnet AppContext::new");
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("wire wallet backend offline");
+
+        let make_input = |identity_type| IdentityInputToLoad {
+            identity_id_input: "not-a-valid-identifier".to_string(),
+            identity_type,
+            alias_input: String::new(),
+            voting_private_key_input: Secret::new(""),
+            owner_private_key_input: Secret::new(""),
+            payout_address_private_key_input: Secret::new(""),
+            keys_input: vec![],
+            derive_keys_from_wallets: false,
+            selected_wallet_seed_hash: None,
+            encryption_password: None,
+            load_mode: IdentityLoadMode::Overwrite,
+        };
+
+        let sdk = ctx.sdk();
+        let node_result = ctx
+            .load_identity(&sdk, make_input(IdentityType::Masternode))
+            .await;
+        assert!(
+            matches!(node_result, Err(TaskError::MalformedProTxHash { .. })),
+            "a masternode load with a malformed id must report MalformedProTxHash, got {node_result:?}",
+        );
+
+        let user_result = ctx
+            .load_identity(&sdk, make_input(IdentityType::User))
+            .await;
+        assert!(
+            matches!(user_result, Err(TaskError::IdentifierParsingError { .. })),
+            "a User load with a malformed id must report IdentifierParsingError, got {user_result:?}",
+        );
 
         ctx.wallet_backend().expect("backend").shutdown().await;
     }

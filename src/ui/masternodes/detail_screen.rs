@@ -564,7 +564,7 @@ impl MasternodeDetailView {
     /// open-contest count in the header). Inline voting reuses the existing
     /// `vote_on_dpns_name` backend (locked decision #1 — not a deep-link).
     fn render_dpns_section(&mut self, ui: &mut Ui, dark_mode: bool) -> Option<AppAction> {
-        // Diziet-F3: when the node has no voter key, the "Add voting key" CTA is
+        // When the node has no voter key, the "Add voting key" CTA is
         // the primary next step — render it above, outside the collapsed-by-
         // default DPNS section, so it is visible without expanding anything.
         // The empty DPNS section (no contests possible without a voter) is

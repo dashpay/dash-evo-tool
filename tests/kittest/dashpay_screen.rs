@@ -315,7 +315,7 @@ fn seed_dp_masternode(app_context: &Arc<AppContext>, byte: u8, alias: &str) -> I
     id
 }
 
-/// SEC-005 / FR-6 boundary through a DashPay screen: a masternode/evonode must
+/// FR-6 boundary through a DashPay screen: a masternode/evonode must
 /// never become selectable in a DashPay identity selector, and so can never be
 /// written to the app-global identity via the selector's `syncing_global`
 /// write-back. The DashPay selectors source their list from the User-filtered

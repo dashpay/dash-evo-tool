@@ -459,7 +459,7 @@ fn dpns_section_missing_voter_scoped_prompt() {
         harness.get_by_label("Open mn-vote-01").click();
         harness.run_steps(3);
 
-        // Diziet-F3: with no voter key the "Add voting key" CTA and its
+        // With no voter key the "Add voting key" CTA and its
         // actionable message are rendered ABOVE, outside the collapsed-by-default
         // DPNS section, so they are visible immediately without expanding
         // anything. The empty DPNS header is omitted in this state (no contests

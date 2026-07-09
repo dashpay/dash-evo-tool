@@ -499,11 +499,23 @@ impl AppContext {
         let (wallet_hash, wallet_index) = match wallet_and_identity_id_info {
             Some((seed, idx)) => (Some(*seed), Some(*idx)),
             None => {
-                tracing::warn!(
-                    identity_id = %qualified_identity.identity.id(),
-                    alias = ?qualified_identity.alias,
-                    "saving identity without wallet; this needs investigating",
-                );
+                // Masternodes and evonodes are loaded by ProTxHash and have no
+                // associated HD wallet by design, so a missing wallet is normal
+                // for them — only a wallet-less User identity is worth flagging.
+                if qualified_identity.identity_type == IdentityType::User {
+                    tracing::warn!(
+                        identity_id = %qualified_identity.identity.id(),
+                        alias = ?qualified_identity.alias,
+                        "saving identity without wallet; this needs investigating",
+                    );
+                } else {
+                    tracing::debug!(
+                        identity_id = %qualified_identity.identity.id(),
+                        alias = ?qualified_identity.alias,
+                        identity_type = ?qualified_identity.identity_type,
+                        "saving masternode/evonode identity without wallet (expected)",
+                    );
+                }
                 (None, None)
             }
         };
@@ -1894,9 +1906,9 @@ mod tests {
     }
 
     /// The at-rest encode path REFUSES to write a new keyless
-    /// key onto a password-protected identity (the silent-plaintext leak Smythe
-    /// found). The encode fails closed and the new key lands NOWHERE — not
-    /// keyless, not Tier-2.
+    /// key onto a password-protected identity (a silent-plaintext leak). The
+    /// encode fails closed and the new key lands NOWHERE — not keyless, not
+    /// Tier-2.
     #[test]
     fn encode_refuses_keyless_key_on_protected_identity() {
         use crate::wallet_backend::secret_seam::SecretScheme;

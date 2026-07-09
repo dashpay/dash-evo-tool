@@ -29,10 +29,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Existing Identity → Show Advanced Options*, which no longer offers those
   identity types.
 
-- **Wallet/identity switcher on every screen**: the wallet and identity
-  picker previously shown only at the top of the Identity Hub now appears at
-  the top of every main screen, so you can see and change which wallet or
-  identity you're acting as without leaving the page you're on.
+- **Wallet/identity indicator on more screens (rollout in progress)**: the
+  wallet and identity picker previously shown only at the top of the Identity
+  Hub now also appears at the top of the Identities, DashPay, DPNS, and
+  Wallets screens. On the Identity Hub and the new Masternodes tab it's fully
+  interactive — you can change which wallet or identity you're acting as
+  right there. On the other four it's currently a read-only preview of your
+  active wallet/identity, with a tooltip on where to change it; making it
+  interactive there, and adding it to the remaining screens, is tracked as a
+  follow-up.
 
 ### Changed
 

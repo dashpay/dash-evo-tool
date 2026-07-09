@@ -121,6 +121,17 @@ impl MasternodesScreen {
             .collect();
     }
 
+    /// Build a fresh load form, attaching the Testnet Fill-Random fixture only
+    /// on Testnet (loaded once here, not per frame).
+    fn new_load_form(&self) -> Box<MasternodeLoadForm> {
+        let fixture = if self.app_context.network == dash_sdk::dpp::dashcore::Network::Testnet {
+            crate::ui::masternodes::testnet_fixture::load_testnet_nodes()
+        } else {
+            None
+        };
+        Box::new(MasternodeLoadForm::new().with_testnet_fixture(fixture))
+    }
+
     /// Render the centered empty state (FR-2). Returns the action produced by
     /// the primary CTA.
     fn render_empty_state(&mut self, ui: &mut egui::Ui) -> AppAction {
@@ -145,7 +156,7 @@ impl MasternodesScreen {
             );
             ui.add_space(20.0);
             if ComponentStyles::add_primary_button(ui, "Load a masternode").clicked() {
-                self.view = MasternodesView::Load(Box::default());
+                self.view = MasternodesView::Load(self.new_load_form());
             }
             ui.add_space(12.0);
             ui.label(
@@ -260,7 +271,7 @@ impl MasternodesScreen {
                 }
                 ui.add_space(8.0);
                 if ComponentStyles::add_toolbar_button(ui, "+ Load", network_accent).clicked() {
-                    self.view = MasternodesView::Load(Box::default());
+                    self.view = MasternodesView::Load(self.new_load_form());
                 }
             });
         });
@@ -277,8 +288,9 @@ impl MasternodesScreen {
     /// Render the load form; map its outcome to a backend load task and return
     /// to the list on cancel or submit.
     fn render_load_view(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let dev_mode = self.app_context.is_developer_mode();
         let outcome = match &mut self.view {
-            MasternodesView::Load(form) => form.show(ui),
+            MasternodesView::Load(form) => form.show(ui, dev_mode),
             _ => return AppAction::None,
         };
         match outcome {

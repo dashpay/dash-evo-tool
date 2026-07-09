@@ -12,10 +12,14 @@
 //! on-blur shape check; the backend load task performs the authoritative
 //! existence and duplicate checks and surfaces a typed error.
 
+use bip39::rand::prelude::IteratorRandom;
+use bip39::rand::thread_rng;
+
 use crate::backend_task::identity::IdentityInputToLoad;
 use crate::model::masternode_input::is_valid_pro_tx_hash;
 use crate::model::qualified_identity::IdentityType;
 use crate::ui::components::password_input::PasswordInput;
+use crate::ui::masternodes::testnet_fixture::TestnetNodes;
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use eframe::egui::{self, RichText, Ui};
 
@@ -51,6 +55,9 @@ pub struct MasternodeLoadForm {
     owner_key: PasswordInput,
     payout_key: PasswordInput,
     encryption_password: PasswordInput,
+    /// Testnet-only Fill-Random fixture (FR-12). `None` off Testnet or when the
+    /// `.testnet_nodes.yml` file is missing/malformed — the button never shows.
+    testnet_nodes: Option<TestnetNodes>,
 }
 
 impl Default for MasternodeLoadForm {
@@ -77,7 +84,14 @@ impl MasternodeLoadForm {
                 .with_monospace(),
             encryption_password: PasswordInput::new()
                 .with_hint_text("Password to encrypt these keys"),
+            testnet_nodes: None,
         }
+    }
+
+    /// Attach the Testnet Fill-Random fixture (FR-12). Pass `None` off Testnet.
+    pub fn with_testnet_fixture(mut self, testnet_nodes: Option<TestnetNodes>) -> Self {
+        self.testnet_nodes = testnet_nodes;
+        self
     }
 
     /// The active node type — exposed for the B6 Fill-Random label + tests.
@@ -99,6 +113,46 @@ impl MasternodeLoadForm {
         self.voting_key.clear();
         self.owner_key.clear();
         self.payout_key.clear();
+    }
+
+    /// The Fill-Random button label, following the node-type toggle (FR-12).
+    fn fill_random_label(&self) -> &'static str {
+        match self.node_type {
+            IdentityType::Evonode => "🎲 Fill Random Evonode",
+            _ => "🎲 Fill Random Masternode",
+        }
+    }
+
+    /// Populate the form from a random fixture entry matching the current node
+    /// type (TC-FR12-07/08): Masternode pulls from `masternodes` (Voting + Owner
+    /// only — the fixture has no payout key); Evonode pulls from `hp_masternodes`
+    /// (all three keys). A no-op when the fixture is absent or the list is empty.
+    fn fill_random(&mut self) {
+        let Some(nodes) = self.testnet_nodes.as_ref() else {
+            return;
+        };
+        match self.node_type {
+            IdentityType::Evonode => {
+                if let Some((name, node)) = nodes.hp_masternodes.iter().choose(&mut thread_rng()) {
+                    self.pro_tx_hash_input = node.protx_tx_hash.clone();
+                    self.alias_input = name.clone();
+                    self.voting_key.set_text(node.voter.private_key.clone());
+                    self.owner_key.set_text(node.owner.private_key.clone());
+                    self.payout_key.set_text(node.payout.private_key.clone());
+                    self.pro_tx_hash_touched = false;
+                }
+            }
+            _ => {
+                if let Some((name, node)) = nodes.masternodes.iter().choose(&mut thread_rng()) {
+                    self.pro_tx_hash_input = node.pro_tx_hash.clone();
+                    self.alias_input = name.clone();
+                    self.voting_key.set_text(node.voter.private_key.clone());
+                    self.owner_key.set_text(node.owner.private_key.clone());
+                    // MasternodeInfo has no payout key — leave Payout blank.
+                    self.pro_tx_hash_touched = false;
+                }
+            }
+        }
     }
 
     /// Whether the Load button is enabled: a non-empty ProTxHash. Shape and
@@ -127,7 +181,11 @@ impl MasternodeLoadForm {
         }
     }
 
-    pub fn show(&mut self, ui: &mut Ui) -> LoadFormOutcome {
+    /// Render the form. `dev_mode` gates the Testnet-only Fill-Random button as
+    /// a defense-in-depth check (FR-12 / TC-FR12-09): the whole tab is already
+    /// Expert-gated, but a plaintext-key-reading dev tool stays inside the
+    /// Expert-Mode envelope regardless of any future non-nav entry point.
+    pub fn show(&mut self, ui: &mut Ui, dev_mode: bool) -> LoadFormOutcome {
         let dark_mode = ui.style().visuals.dark_mode;
         let mut outcome = LoadFormOutcome::None;
 
@@ -164,6 +222,23 @@ impl MasternodeLoadForm {
                 }
             });
             ui.add_space(12.0);
+
+            // Fill-Random dev convenience (FR-12): Testnet + fixture present +
+            // Expert Mode. Entire row is absent otherwise — never shown-disabled.
+            if dev_mode && self.testnet_nodes.is_some() {
+                if ui.button(self.fill_random_label()).clicked() {
+                    self.fill_random();
+                }
+                ui.label(
+                    RichText::new(
+                        "Testnet-only dev convenience — visible only when a local test-node \
+                         fixture is found.",
+                    )
+                    .size(12.0)
+                    .color(DashColors::text_secondary(dark_mode)),
+                );
+                ui.add_space(12.0);
+            }
 
             // ProTxHash (required) with inline on-blur shape validation.
             ui.label(
@@ -284,6 +359,83 @@ impl MasternodeLoadForm {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::masternodes::testnet_fixture::{HpMasternodeInfo, KeyInfo, MasternodeInfo};
+    use std::collections::HashMap;
+
+    fn fixture() -> TestnetNodes {
+        let mut masternodes = HashMap::new();
+        masternodes.insert(
+            "mn-fixture".to_string(),
+            MasternodeInfo {
+                pro_tx_hash: "aa".repeat(32),
+                owner: KeyInfo {
+                    private_key: "owner-wif".to_string(),
+                },
+                voter: KeyInfo {
+                    private_key: "voter-wif".to_string(),
+                },
+            },
+        );
+        let mut hp_masternodes = HashMap::new();
+        hp_masternodes.insert(
+            "evo-fixture".to_string(),
+            HpMasternodeInfo {
+                protx_tx_hash: "bb".repeat(32),
+                owner: KeyInfo {
+                    private_key: "hp-owner-wif".to_string(),
+                },
+                voter: KeyInfo {
+                    private_key: "hp-voter-wif".to_string(),
+                },
+                payout: KeyInfo {
+                    private_key: "hp-payout-wif".to_string(),
+                },
+            },
+        );
+        TestnetNodes {
+            masternodes,
+            hp_masternodes,
+        }
+    }
+
+    #[test]
+    fn tc_fr12_01_02_label_follows_node_type() {
+        let mut form = MasternodeLoadForm::new();
+        assert_eq!(form.fill_random_label(), "🎲 Fill Random Masternode");
+        form.set_node_type(IdentityType::Evonode);
+        assert_eq!(form.fill_random_label(), "🎲 Fill Random Evonode");
+    }
+
+    #[test]
+    fn tc_fr12_07_masternode_fill_populates_voting_and_owner_only() {
+        let mut form = MasternodeLoadForm::new().with_testnet_fixture(Some(fixture()));
+        form.fill_random();
+        assert_eq!(form.pro_tx_hash_input, "aa".repeat(32));
+        assert_eq!(form.alias_input, "mn-fixture");
+        assert_eq!(form.voting_key.text(), "voter-wif");
+        assert_eq!(form.owner_key.text(), "owner-wif");
+        // MasternodeInfo has no payout key — Payout stays blank (PROJ-003).
+        assert!(form.payout_key.is_empty());
+    }
+
+    #[test]
+    fn tc_fr12_08_evonode_fill_populates_all_three_keys() {
+        let mut form = MasternodeLoadForm::new().with_testnet_fixture(Some(fixture()));
+        form.set_node_type(IdentityType::Evonode);
+        form.fill_random();
+        assert_eq!(form.pro_tx_hash_input, "bb".repeat(32));
+        assert_eq!(form.alias_input, "evo-fixture");
+        assert_eq!(form.voting_key.text(), "hp-voter-wif");
+        assert_eq!(form.owner_key.text(), "hp-owner-wif");
+        assert_eq!(form.payout_key.text(), "hp-payout-wif");
+    }
+
+    #[test]
+    fn fill_random_without_fixture_is_a_noop() {
+        let mut form = MasternodeLoadForm::new();
+        form.fill_random();
+        assert!(form.pro_tx_hash_input.is_empty());
+    }
 
     #[test]
     fn tc_fr4_02_defaults_to_masternode() {

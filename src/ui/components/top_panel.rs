@@ -377,13 +377,13 @@ pub fn apply_global_nav_effect(
     match effect {
         GlobalNavEffect::None => AppAction::None,
         GlobalNavEffect::NavigateToRoot(target) => AppAction::SetMainScreen(target),
-        // Silent app-scoped write, NO forced navigation (rule 1). Note
-        // (PROJ-010): `set_selected_hd_wallet` also reconciles the app-global
-        // *identity* to the new wallet's identities as a side effect
-        // (keep-if-owned → first → None). On a non-Hub page this cross-axis
-        // mutation is real and intentional; combined with B1's resolution-layer
-        // filter it must never reconcile onto a masternode/evonode identity —
-        // the FR-6 boundary is enforced there, not re-checked here.
+        // Silent app-scoped write, NO forced navigation (FR-GLOBAL-NAV-2 rule
+        // 1). `set_selected_hd_wallet` also reconciles the app-global *identity*
+        // to the new wallet's identities as a side effect (keep-if-owned →
+        // first → None). On a non-Hub page this cross-axis mutation is real and
+        // intentional; combined with the resolution-layer MN/Evonode filter it
+        // must never reconcile onto a masternode/evonode identity — the FR-6
+        // boundary is enforced there, not re-checked here.
         GlobalNavEffect::SwitchWallet(hash) => {
             app_context.set_selected_hd_wallet(Some(hash));
             AppAction::None

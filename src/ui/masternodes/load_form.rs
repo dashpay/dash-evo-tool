@@ -1,16 +1,6 @@
-//! Masternode/evonode load form (FR-4).
-//!
-//! A dedicated, masternode-only load flow — carved out of the generic
-//! `add_existing_identity_screen` Advanced-Options path (whose Masternode/
-//! Evonode options are removed in the same change, §10.2). The form collects a
-//! ProTxHash, a Masternode/Evonode type toggle, an optional alias, the three
-//! optional V/O/P private keys, and an optional at-load encryption password
-//! (FR-8). There is **no auto-derive affordance** — masternode keys are Core-
-//! side keys never present in a wallet's HD tree (US-6 retired, §Locked-#4).
-//!
-//! Validation delegates to the model: [`is_valid_pro_tx_hash`] drives the inline
-//! on-blur shape check; the backend load task performs the authoritative
-//! existence and duplicate checks and surfaces a typed error.
+//! Masternode/evonode load form (FR-4) — ProTxHash, type toggle, alias, the
+//! three optional V/O/P keys, and an optional at-load encryption password
+//! (FR-8). No auto-derive: masternode keys never live in a wallet's HD tree.
 
 use bip39::rand::prelude::IteratorRandom;
 use bip39::rand::thread_rng;

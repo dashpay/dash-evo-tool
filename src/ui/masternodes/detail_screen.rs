@@ -1,23 +1,8 @@
-//! Masternode/evonode detail view (FR-5, reuse-heavy).
+//! Masternode/evonode detail view (FR-5).
 //!
-//! Composition order is fixed (TC-FR5-01, human-requested late correction):
-//!
-//! 1. **Header** — conditional alias, shortened ProTxHash + copy-full-value,
-//!    type badge, `IdentityStatus` dot + label.
-//! 2. **Actions row** (FR-9) — `Withdraw` / `Top up` / `Transfer` entry points
-//!    that push the *existing* credit screens scoped to this node's
-//!    `QualifiedIdentity` (both node types). Evonode-only `Claim token
-//!    rewards ›` cross-link (FR-11), absent for a plain masternode.
-//! 3. **Keys section** (FR-10) — V/O/P presence, copyable voter-identity id,
-//!    protection tier, `Add password protection…` (Tier-1 only), `Manage keys ›`
-//!    into the existing key screens.
-//! 4. **DPNS voting** — collapsible, count in the header. Populated in B5b.
-//! 5. **Remove** — danger `ConfirmationDialog`; removes the node and its
-//!    associated voter identity.
-//!
-//! The `‹ All masternodes` back row lives in the content panel, not the global
-//! header. Every reused screen is pushed by type — no parallel MN-specific
-//! reimplementation (NFR-1).
+//! Section order (header, actions, keys, DPNS voting, remove) is fixed by
+//! design; each action pushes an existing screen — no parallel MN-specific
+//! reimplementation (NFR-1). See `docs/ai-design/2026-07-09-masternode-page-design/`.
 
 use std::sync::Arc;
 

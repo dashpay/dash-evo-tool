@@ -1,17 +1,6 @@
-//! Masternode/evonode card — one card per loaded node in the Masternodes grid.
-//!
-//! Reuses the identity picker's visual language (`identity_picker_card.rs`):
-//! rounded `surface` card (`RADIUS_LG` = 16), monogram, type-badge pill, hover
-//! elevation, and a single `WidgetInfo::labeled` click target (NFR-6). The body
-//! is extended with masternode-specific rows the picker card does not carry:
-//!
-//! * Voter readiness (`Voting ready` / `No voting key`) with a status dot.
-//! * A compact `Keys: V O P` indicator — present roles emphasised, absent roles
-//!   rendered as `·` (glyph difference, never colour-only — NFR-6).
-//! * A DPNS status line with count-first precedence (requirements §10.1).
-//! * The identity-status dot + label (all five `IdentityStatus` values).
-//!
-//! Every status pairs colour with text, so nothing is conveyed by colour alone.
+//! Masternode/evonode card for the Masternodes grid — reuses
+//! `identity_picker_card.rs`'s visual language, adding voter-readiness,
+//! key-presence, and DPNS-status rows (colour always paired with text, NFR-6).
 
 use crate::model::contested_name::MasternodeContestSummary;
 use crate::model::qualified_identity::{IdentityStatus, IdentityType, MasternodeKeyPresence};

@@ -1,14 +1,7 @@
-//! The Masternodes list root screen.
-//!
-//! B3 lands the empty state (FR-2) and the card grid (FR-3) on top of the B2
-//! scaffold: the global-nav header, the left nav rail, and an island content
-//! panel. The empty state reuses the identity onboarding card pattern; the grid
-//! reuses the identity-picker card visual language via [`MasternodeCard`]. A
-//! top-right Refresh button (FR-7) re-reads the local node list and its DPNS
-//! contest summaries.
-//!
-//! The page-scoped masternode pill is wired in B7; card clicks open the detail
-//! view built in B5a.
+//! The Masternodes list root screen (FR-2 empty state, FR-3 card grid, FR-7
+//! refresh). Reuses the identity onboarding empty-state pattern and the
+//! identity-picker card visual language via [`MasternodeCard`]; a card click
+//! opens the detail view.
 
 use std::sync::Arc;
 

@@ -23,6 +23,7 @@ Concise catalog of all reusable UI components. Consult before creating new UI el
 | Component | File | DomainType | Description |
 |-----------|------|------------|-------------|
 | `BreadcrumbPill` | `breadcrumb_pill.rs` | `String` | Label + optional icon + chevron. Three modes: Interactive / Subdued / Placeholder. Reusable anywhere a breadcrumb pill is needed (Identities hub breadcrumb, future wallet breadcrumbs). |
+| `global_nav_switcher::render()` | `global_nav_switcher.rs` | `GlobalNavEffect` | Page-aware three-segment switcher (`segment-1 › 💼 wallet › 👤 identity/object`) rendered on every root page via `top_panel::add_top_panel_with_global_nav`. Composes per page from a `PageNavSpec` (`ui/state/global_nav.rs`) and reuses `BreadcrumbPill`/`IdentityPill`. |
 
 ## Display Components
 
@@ -76,6 +77,7 @@ directory.
 |-----------------|------|-------------|
 | `island_central_panel()` | `styled.rs` | Responsive central panel, renders global MessageBanners |
 | `add_location_view()` | `top_panel.rs` | Breadcrumb navigation + connection status |
+| `add_top_panel_with_global_nav()` | `top_panel.rs` | Top panel wired to `global_nav_switcher::render()`; every root screen uses this (or the identity-aware capturing variant) instead of the plain breadcrumb |
 | `add_left_panel()` | `left_panel.rs` | Main icon navigation sidebar |
 | `load_icon()` / `load_svg_icon()` | `icons.rs` | Load & cache embedded raster/SVG icons from `icons/` |
 | Subscreen panels | `*_subscreen_chooser_panel.rs` | Tab navigation for DPNS, DashPay, Tokens, Tools |

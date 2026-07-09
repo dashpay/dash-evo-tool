@@ -891,17 +891,7 @@ impl AppContext {
         // No `is_open()` gate: the chokepoint resolves an unprotected or
         // session-cached wallet without a prompt, and prompts a locked protected
         // one — returning `WalletLocked` only if the seed is truly unavailable.
-        let wallet_snapshot = {
-            let wallet = {
-                let wallets = self.wallets.read()?;
-                wallets
-                    .get(&wallet_seed_hash)
-                    .cloned()
-                    .ok_or(TaskError::WalletNotFound)?
-            };
-            let wallet_guard = wallet.read()?;
-            wallet_guard.clone()
-        };
+        let wallet_snapshot = self.wallet_arc(&wallet_seed_hash)?.read()?.clone();
 
         tracing::info!("Wallet loaded, calling top_up_from_addresses...");
 

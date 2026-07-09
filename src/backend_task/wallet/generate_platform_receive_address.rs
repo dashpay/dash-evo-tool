@@ -21,13 +21,7 @@ impl AppContext {
         self: &Arc<Self>,
         seed_hash: WalletSeedHash,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
-        let wallet_arc = {
-            let wallets = self.wallets.read()?;
-            wallets
-                .get(&seed_hash)
-                .cloned()
-                .ok_or(TaskError::WalletNotFound)?
-        };
+        let wallet_arc = self.wallet_arc(&seed_hash)?;
 
         let network = self.network;
         let backend = self.wallet_backend()?;

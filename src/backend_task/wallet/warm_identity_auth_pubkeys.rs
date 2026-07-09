@@ -31,13 +31,7 @@ impl AppContext {
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         let network = self.network;
 
-        let wallet = {
-            let wallets = self.wallets.read()?;
-            wallets
-                .get(&seed_hash)
-                .cloned()
-                .ok_or(TaskError::WalletNotFound)?
-        };
+        let wallet = self.wallet_arc(&seed_hash)?;
 
         let backend = self.wallet_backend()?;
         let view = backend.auth_pubkey_cache();

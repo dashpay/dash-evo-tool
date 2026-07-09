@@ -103,15 +103,17 @@ pub(crate) fn wallet(ctx: &AppContext, wallet_id: &str) -> Result<WalletSeedHash
 }
 
 /// Get the `Arc<RwLock<Wallet>>` for a given seed hash.
+///
+/// Delegates the lookup + poison recovery to [`AppContext::wallet_arc`] (the
+/// single source of truth) and re-wraps its only failure —
+/// [`TaskError::WalletNotFound`] — as the id-bearing [`McpToolError`] MCP
+/// clients expect.
 pub(crate) fn wallet_arc(
     ctx: &AppContext,
     seed_hash: WalletSeedHash,
 ) -> Result<Arc<RwLock<crate::model::wallet::Wallet>>, McpToolError> {
-    let wallets = ctx.wallets.read().unwrap_or_else(|e| e.into_inner());
-    wallets
-        .get(&seed_hash)
-        .cloned()
-        .ok_or_else(|| McpToolError::WalletNotFound {
+    ctx.wallet_arc(&seed_hash)
+        .map_err(|_| McpToolError::WalletNotFound {
             id: hex::encode(seed_hash),
         })
 }

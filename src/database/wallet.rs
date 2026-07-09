@@ -347,10 +347,11 @@ impl Database {
         })?;
 
         tracing::trace!("step 3: add addresses, balances, and known addresses to wallets");
-        for row in address_rows {
-            if row.is_err() {
-                continue;
-            }
+        for (index, row) in address_rows.enumerate() {
+            // A single corrupt address row must not abort loading the whole
+            // wallet, but skipping silently could hide a missing address and
+            // lead to lost funds — so log loudly and continue, matching the
+            // wallet_backend hydration skip-logging discipline.
             let (
                 seed_array,
                 address,
@@ -359,7 +360,17 @@ impl Database {
                 path_reference,
                 path_type,
                 _total_received,
-            ) = row?;
+            ) = match row {
+                Ok(parsed) => parsed,
+                Err(e) => {
+                    tracing::warn!(
+                        address_row_index = index,
+                        error = ?e,
+                        "Skipping corrupt wallet address row while loading wallets from the database"
+                    );
+                    continue;
+                }
+            };
             if let Some(wallet) = wallets_map.get_mut(&seed_array) {
                 // Canonicalize Platform addresses to avoid duplicate representations
                 let canonical_address = Wallet::canonical_address(&address, *network);

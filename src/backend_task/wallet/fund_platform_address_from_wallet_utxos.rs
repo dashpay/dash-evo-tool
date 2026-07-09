@@ -154,13 +154,7 @@ impl AppContext {
         destination: &PlatformAddress,
     ) -> Result<Option<PlatformAddress>, TaskError> {
         let candidates: Vec<PlatformAddress> = {
-            let wallet_arc = {
-                let wallets = self.wallets.read()?;
-                wallets
-                    .get(seed_hash)
-                    .cloned()
-                    .ok_or(TaskError::WalletNotFound)?
-            };
+            let wallet_arc = self.wallet_arc(seed_hash)?;
             let wallet = wallet_arc.read()?;
             wallet
                 .platform_addresses(self.network)
@@ -202,13 +196,7 @@ impl AppContext {
         use crate::wallet_backend::PlatformPathIndex;
         use platform_wallet::wallet::asset_lock::AssetLockFunding;
 
-        let wallet_arc = {
-            let wallets = self.wallets.read()?;
-            wallets
-                .get(&seed_hash)
-                .cloned()
-                .ok_or(TaskError::WalletNotFound)?
-        };
+        let wallet_arc = self.wallet_arc(&seed_hash)?;
         let network = self.network;
 
         let mut outputs: FundingOutputs = BTreeMap::new();
@@ -261,13 +249,7 @@ impl AppContext {
         use crate::wallet_backend::PlatformPathIndex;
         use platform_wallet::wallet::asset_lock::AssetLockFunding;
 
-        let wallet_arc = {
-            let wallets = self.wallets.read()?;
-            wallets
-                .get(&seed_hash)
-                .cloned()
-                .ok_or(TaskError::WalletNotFound)?
-        };
+        let wallet_arc = self.wallet_arc(&seed_hash)?;
         let network = self.network;
 
         let (outputs, fee_strategy) = build_fee_from_wallet_outputs(amount, destination, change)?;
@@ -341,13 +323,7 @@ impl AppContext {
             )
             .await?;
 
-        let wallet_arc = {
-            let wallets = self.wallets.read()?;
-            wallets
-                .get(&seed_hash)
-                .cloned()
-                .ok_or(TaskError::WalletNotFound)?
-        };
+        let wallet_arc = self.wallet_arc(&seed_hash)?;
         let sdk = self.sdk.load().as_ref().clone();
 
         // Derive the change address, build the outputs, and sign — all inside

@@ -184,13 +184,7 @@ impl AppContext {
         &self,
         seed_hash: &WalletSeedHash,
     ) -> Result<PlatformPathIndex, TaskError> {
-        let wallet_arc = {
-            let wallets = self.wallets.read()?;
-            wallets
-                .get(seed_hash)
-                .cloned()
-                .ok_or(TaskError::WalletNotFound)?
-        };
+        let wallet_arc = self.wallet_arc(seed_hash)?;
         let wallet = wallet_arc.read()?;
         Ok(PlatformPathIndex::from_wallet(&wallet, self.network))
     }

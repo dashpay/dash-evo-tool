@@ -62,16 +62,7 @@ impl AppContext {
         derivation_failed: TaskError,
         f: impl FnOnce(PrivateKey) -> Result<T, TaskError>,
     ) -> Result<T, TaskError> {
-        let wallet = {
-            let wallet_arc = {
-                let wallets = self.wallets.read()?;
-                wallets
-                    .get(&seed_hash)
-                    .cloned()
-                    .ok_or(TaskError::WalletNotFound)?
-            };
-            wallet_arc.read()?.clone()
-        };
+        let wallet = self.wallet_arc(&seed_hash)?.read()?.clone();
 
         let network = self.network;
         let backend = self.wallet_backend()?;

@@ -82,13 +82,7 @@ impl AppContext {
         use dash_sdk::dpp::address_funds::AddressFundsFeeStrategyStep;
         use platform_wallet::wallet::asset_lock::AssetLockFunding;
 
-        let wallet_arc = {
-            let wallets = self.wallets.read()?;
-            wallets
-                .get(&seed_hash)
-                .cloned()
-                .ok_or(TaskError::WalletNotFound)?
-        };
+        let wallet_arc = self.wallet_arc(&seed_hash)?;
         let network = self.network;
         let path_index = {
             let wallet = wallet_arc.read()?;
@@ -160,14 +154,7 @@ impl AppContext {
             .map_err(|_| TaskError::AssetLockAddressNotFound)?;
 
         let (wallet, sdk) = {
-            let wallet_arc = {
-                let wallets = self.wallets.read()?;
-                wallets
-                    .get(&seed_hash)
-                    .cloned()
-                    .ok_or(TaskError::WalletNotFound)?
-            };
-            let wallet = wallet_arc.read()?.clone();
+            let wallet = self.wallet_arc(&seed_hash)?.read()?.clone();
             let sdk = self.sdk.load().as_ref().clone();
             (wallet, sdk)
         };

@@ -79,6 +79,23 @@ fn clear_spv_chain_storage(spv_dir: &Path) -> Result<(), TaskError> {
 }
 
 impl AppContext {
+    /// Resolve a loaded HD wallet by its seed hash, cloning the shared handle.
+    ///
+    /// The single source of truth for the "look up a wallet arc or
+    /// [`TaskError::WalletNotFound`]" pattern every backend task needs. The
+    /// in-memory wallet map is rebuildable (hydrated from the DB and vault), so
+    /// a poisoned lock is recovered rather than surfaced as an error — matching
+    /// the poison-recovery discipline used elsewhere for rebuildable state.
+    pub(crate) fn wallet_arc(
+        &self,
+        seed_hash: &WalletSeedHash,
+    ) -> Result<Arc<RwLock<Wallet>>, TaskError> {
+        crate::wallet_backend::poison::read_recover(&self.wallets)
+            .get(seed_hash)
+            .cloned()
+            .ok_or(TaskError::WalletNotFound)
+    }
+
     /// Delete the cached chain-sync data (headers, filters, blocks, masternode
     /// state, peers) for this network so the next connection re-syncs from
     /// scratch.
@@ -1369,13 +1386,7 @@ impl AppContext {
         seed_hash: WalletSeedHash,
         address_infos: &dash_sdk::query_types::AddressInfos,
     ) -> Result<(), TaskError> {
-        let wallet_arc = {
-            let wallets = self.wallets.read()?;
-            wallets
-                .get(&seed_hash)
-                .cloned()
-                .ok_or(TaskError::WalletNotFound)?
-        };
+        let wallet_arc = self.wallet_arc(&seed_hash)?;
 
         let mut wallet = wallet_arc.write()?;
 

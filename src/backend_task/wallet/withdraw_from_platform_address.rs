@@ -25,13 +25,7 @@ impl AppContext {
 
         // Resolve the shared wallet handle and SDK before the async operation.
         let network = self.network;
-        let wallet_arc = {
-            let wallets = self.wallets.read()?;
-            wallets
-                .get(&seed_hash)
-                .cloned()
-                .ok_or(crate::backend_task::error::TaskError::WalletNotFound)?
-        };
+        let wallet_arc = self.wallet_arc(&seed_hash)?;
         let sdk = self.sdk.load().as_ref().clone();
 
         // Deduct fee from the specified input (should be the one with highest balance)

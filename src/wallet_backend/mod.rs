@@ -93,7 +93,7 @@ pub use contact_profile_cache::{CachedContactProfile, ContactProfileCacheView};
 pub use event_bridge::EventBridge;
 pub(crate) use kv::network_prefix;
 pub use kv::{DetKv, DetScope, KvAdapterError, SCHEMA_VERSION as KV_SCHEMA_VERSION};
-pub use loader::{LoadedWallets, PersistedLoadSkip};
+pub use loader::LoadedWallets;
 pub use single_key::SingleKeyView;
 use snapshot::SnapshotStore;
 pub use snapshot::{DetUtxo, DetWalletBalance, WalletSnapshot};
@@ -123,8 +123,6 @@ use crate::context::connection_status::ConnectionStatus;
 use crate::model::selected_identity::SelectedIdentity;
 use crate::model::selected_wallet::SelectedWallet;
 use crate::model::wallet::{PlatformAddressEntry, WalletSeedHash};
-use crate::ui::MessageType;
-use crate::ui::components::message_banner::{BannerHandle, OptionBannerExt};
 use crate::utils::egui_mpsc::SenderAsync;
 
 /// The upstream persister DET consumes. Authored upstream (PR #3625) — DET
@@ -237,13 +235,6 @@ struct Inner {
     /// dispatch is user-initiated and rare relative to lock acquisition
     /// cost.
     dashpay_address_index_lock: std::sync::Mutex<()>,
-    /// Handle to the warning banner raised when persisted wallets are skipped
-    /// on load. A re-entrant load pass (via [`WalletBackend::ensure_wallets_registered`])
-    /// supersedes this banner rather than stacking a second, possibly
-    /// contradictory one. Interior mutability because the backend is
-    /// `Arc`-shared and `register_persisted_wallets` runs on `&self`. See
-    /// [`raise_skipped_wallets_banner`].
-    skipped_wallets_banner: std::sync::Mutex<Option<BannerHandle>>,
     /// Encrypted secret vault. Holds imported single-key WIFs
     /// (`single_key_priv.*` labels, see [`single_key`]) and HD-wallet
     /// BIP-39 seeds (`envelope.v1` labels under `WalletId(seed_hash)`, see
@@ -389,7 +380,6 @@ impl WalletBackend {
                 network,
                 spv_storage_dir,
                 dashpay_address_index_lock: std::sync::Mutex::new(()),
-                skipped_wallets_banner: std::sync::Mutex::new(None),
                 secret_store,
                 single_key_index: std::sync::RwLock::new(std::collections::BTreeMap::new()),
                 app_kv,
@@ -476,24 +466,8 @@ impl WalletBackend {
         let outcome = self.load_from_persistor_seedless(ctx).await?;
         tracing::info!(
             loaded = outcome.loaded.len(),
-            skipped = outcome.skipped.len(),
             "Persisted-wallet load pass complete"
         );
-        for (seed_hash, reason) in &outcome.skipped {
-            tracing::warn!(
-                wallet = ?seed_hash.map(hex::encode),
-                ?reason,
-                "Skipped a corrupt persisted wallet row on load"
-            );
-        }
-        {
-            let mut handle = self
-                .inner
-                .skipped_wallets_banner
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            raise_skipped_wallets_banner(ctx.egui_ctx(), outcome.skipped.len(), &mut handle);
-        }
 
         // `load()` rebuilds `IdentityRegistration` from the manifest, but
         // per-index `IdentityTopUp{registration_index}` enters the manifest
@@ -554,25 +528,20 @@ impl WalletBackend {
             .map(|(seed_hash, meta)| (meta.xpub_encoded, seed_hash))
             .collect();
 
-        // 2. One persister load pass, only when the manager is empty.
-        //    A non-empty `skipped` is success; `Err` is reserved for
-        //    whole-load failures. On a re-run the manager already holds
-        //    the wallets, so the upstream load (which rejects duplicates)
-        //    is skipped and only the resolution below runs.
-        let skipped = if self.inner.pwm.wallet_ids().await.is_empty() {
-            let outcome = self.inner.pwm.load_from_persistor().await.map_err(|e| {
-                TaskError::WalletBackend {
+        // 2. One persister load pass, only when the manager is empty. Any
+        //    load failure is fatal: the upstream API returns `Result<(), _>`,
+        //    so `Err` is the only failure signal. On a re-run the manager
+        //    already holds the wallets, so the upstream load (which rejects
+        //    duplicates) is skipped and only the resolution below runs.
+        if self.inner.pwm.wallet_ids().await.is_empty() {
+            self.inner
+                .pwm
+                .load_from_persistor()
+                .await
+                .map_err(|e| TaskError::WalletBackend {
                     source: Box::new(e),
-                }
-            })?;
-            outcome
-                .skipped()
-                .iter()
-                .map(|(_wallet_id, reason)| (None, persisted_load_skip_from_upstream(reason)))
-                .collect()
-        } else {
-            Vec::new()
-        };
+                })?;
+        }
 
         // 3. Resolve every currently-registered wallet to its DET seed
         //    hash via the fund-routing gate, registering it in the
@@ -615,7 +584,7 @@ impl WalletBackend {
             loaded.push(seed_hash);
         }
 
-        Ok(LoadedWallets { loaded, skipped })
+        Ok(LoadedWallets { loaded })
     }
 
     /// `ExtendedPubKey::encode()` bytes of the loaded watch-only wallet's
@@ -1183,16 +1152,22 @@ impl WalletBackend {
         }
         // `pwm.shutdown()` quiesces the periodic coordinators — draining any
         // in-flight pass and its persister / host-callback fan-out — then drains
-        // the wallet-event adapter task. Best-effort: a non-clean report flags a
-        // still-live worker or orphan, which teardown proceeds past regardless —
-        // log it rather than surface it.
-        let report = self.inner.pwm.shutdown().await;
-        if !report.all_clean() {
-            tracing::warn!(
-                ?report,
-                "Wallet manager shutdown did not complete cleanly; continuing teardown"
-            );
-        }
+        // the wallet-event adapter task. Best-effort: a non-clean report used to
+        // flag a still-live worker or orphan, which teardown proceeds past
+        // regardless — log it rather than surface it.
+        //
+        // TODO(platform-pr3968): `shutdown()` returns `()` at this rev (no
+        // clean-shutdown report type yet) — the report check below is
+        // commented out rather than dropped outright; restore once platform
+        // re-adds the report type. User-confirmed removal of the
+        // shutdown-failure warning log for this rev.
+        self.inner.pwm.shutdown().await;
+        // if !report.all_clean() {
+        //     tracing::warn!(
+        //         ?report,
+        //         "Wallet manager shutdown did not complete cleanly; continuing teardown"
+        //     );
+        // }
     }
 
     /// Stop chain sync **in place**, keeping this backend (and its
@@ -1880,8 +1855,15 @@ impl WalletBackend {
                         managed.add_incoming_contact_request(contact_request, &persister)
                     }
                 };
+                // TODO(platform-pr3968): `From<PersistenceError> for
+                // PlatformWalletError` doesn't exist at this rev — wrap via
+                // the generic `Persistence(String)` variant instead of
+                // `.into()`. Restore the typed conversion once platform
+                // re-adds it.
                 recorded.map_err(|e| TaskError::WalletBackend {
-                    source: Box::new(e.into()),
+                    source: Box::new(platform_wallet::error::PlatformWalletError::Persistence(
+                        e.to_string(),
+                    )),
                 })?;
             }
             None => match direction {
@@ -2301,8 +2283,15 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
         },
 
         // Every remaining variant → generic WalletBackend wrapper.
+        //
+        // TODO(platform-pr3968): `RehydrationTopologyUnsupported`,
+        // `RehydrationPoolMismatch`, `RehydrationPoolTypeMismatch`,
+        // `PersisterLoad`, `AddressNonceMismatch`, and
+        // `ShieldedShutdownIncomplete` don't exist on `PlatformWalletError` at
+        // this rev — all six already mapped to this same generic wrapper, so
+        // removing their arms changes no behavior for variants that still
+        // exist. Restore once platform re-adds them.
         other @ (P::WalletCreation(_)
-        | P::RehydrationTopologyUnsupported { .. }
         | P::WalletNotFound(_)
         | P::WalletAlreadyExists(_)
         | P::IdentityAlreadyExists(_)
@@ -2327,9 +2316,6 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
         | P::InputSumOverflow
         | P::AddressNotFound(_)
         | P::KeyDerivation(_)
-        | P::RehydrationPoolMismatch { .. }
-        | P::RehydrationPoolTypeMismatch { .. }
-        | P::PersisterLoad(_)
         | P::Persistence(_)
         | P::SeedMismatch { .. }
         | P::WalletLocked
@@ -2347,9 +2333,7 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
         | P::ShieldedTreeUpdateFailed(_)
         | P::ShieldedStoreError(_)
         | P::ShieldedMerkleWitnessUnavailable(_)
-        | P::ShieldedKeyDerivation(_)
-        | P::AddressNonceMismatch { .. }
-        | P::ShieldedShutdownIncomplete { .. }) => TaskError::WalletBackend {
+        | P::ShieldedKeyDerivation(_)) => TaskError::WalletBackend {
             source: Box::new(other),
         },
     }
@@ -2446,64 +2430,6 @@ fn map_platform_address_fund_error(e: platform_wallet::error::PlatformWalletErro
     }
 }
 
-/// Map an upstream load-skip reason to its DET-opaque equivalent,
-/// dropping any row-derived string so no upstream detail crosses the
-/// seam.
-fn persisted_load_skip_from_upstream(
-    reason: &platform_wallet::manager::load_outcome::SkipReason,
-) -> PersistedLoadSkip {
-    use platform_wallet::manager::load_outcome::{CorruptKind, SkipReason};
-    match reason {
-        SkipReason::CorruptPersistedRow { kind } => match kind {
-            CorruptKind::MissingManifest => PersistedLoadSkip::MissingManifest,
-            CorruptKind::MalformedXpub => PersistedLoadSkip::MalformedXpub,
-            CorruptKind::DecodeError(_) => PersistedLoadSkip::DecodeError,
-            // `CorruptKind` is `#[non_exhaustive]`: a future structural
-            // family folds into the generic decode-failure bucket so no
-            // upstream detail crosses the seam.
-            _ => PersistedLoadSkip::DecodeError,
-        },
-        // `SkipReason` is `#[non_exhaustive]`: any future skip reason
-        // surfaces as a generic decode failure rather than breaking the
-        // build or leaking row-derived detail across the seam.
-        _ => PersistedLoadSkip::DecodeError,
-    }
-}
-
-/// Builds the calm, user-facing banner text for wallets skipped on
-/// persisted load, or `None` if nothing was skipped. Never includes
-/// row-derived detail (seed hashes, upstream reason strings) — those
-/// stay in the logs.
-pub fn skipped_wallets_banner_text(skipped: usize) -> Option<String> {
-    match skipped {
-        0 => None,
-        1 => Some(
-            "1 saved wallet couldn't be opened. Re-add it from its recovery phrase to restore it."
-                .to_string(),
-        ),
-        n => Some(format!(
-            "{n} saved wallets couldn't be opened. Re-add them from their recovery phrases to restore them."
-        )),
-    }
-}
-
-/// Raise the skipped-persisted-wallets warning banner for this load pass,
-/// superseding any banner a previous pass left behind so a re-entrant call
-/// (e.g. via [`WalletBackend::ensure_wallets_registered`]) with a different
-/// skip count never stacks a second, contradictory banner alongside the
-/// first. A pass with zero skips clears a stale banner from an earlier pass
-/// rather than leaving it stuck.
-fn raise_skipped_wallets_banner(
-    ctx: &egui::Context,
-    skipped_count: usize,
-    banner_handle: &mut Option<BannerHandle>,
-) {
-    match skipped_wallets_banner_text(skipped_count) {
-        Some(text) => banner_handle.raise_persistent(ctx, text, MessageType::Warning),
-        None => banner_handle.take_and_clear(),
-    }
-}
-
 /// Bucket for `PlatformWalletError`s coming out of identity register / top-up.
 enum IdentityOpErrorKind {
     /// Network or broadcast rejected the submission (SDK error or asset-lock
@@ -2577,7 +2503,6 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
         | P::ShieldedKeyDerivation(_)
         | P::ShieldedNoRecordedAnchor(_)
         | P::ShieldedNotBound
-        | P::PersisterLoad(_)
         | P::Persistence(_)
         | P::SeedMismatch { .. }
         // Broadcast was accepted but its execution result is unconfirmed — the
@@ -2586,17 +2511,13 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
         // caller must not re-submit (the next sync reconciles).
         | P::TransactionBroadcastUnconfirmed(_)
         | P::ShieldedBroadcastUnconfirmed { .. }
-        | P::ShieldedSpendUnconfirmed { .. }
-        | P::RehydrationTopologyUnsupported { .. }
-        | P::RehydrationPoolMismatch { .. }
-        // A rehydration structural invariant broke (a discovery probe and its
-        // real address pool disagreed on chain order); fail-closed as a
-        // precondition, unrelated to identity registration. Bucket as Other.
-        | P::RehydrationPoolTypeMismatch { .. }
-        // Address nonce desync and an incomplete shielded-worker shutdown are
-        // both precondition/state faults unrelated to identity registration.
-        | P::AddressNonceMismatch { .. }
-        | P::ShieldedShutdownIncomplete { .. } => IdentityOpErrorKind::Other,
+        | P::ShieldedSpendUnconfirmed { .. } => IdentityOpErrorKind::Other,
+        // TODO(platform-pr3968): `PersisterLoad`, `RehydrationTopologyUnsupported`,
+        // `RehydrationPoolMismatch`, `RehydrationPoolTypeMismatch`,
+        // `AddressNonceMismatch`, and `ShieldedShutdownIncomplete` don't exist
+        // on `PlatformWalletError` at this rev — all six already bucketed as
+        // `Other` here, so removing their arms changes no behavior for
+        // variants that still exist. Restore once platform re-adds them.
     }
 }
 
@@ -2958,107 +2879,6 @@ mod tests {
             !account.contains_platform_address(&foreign),
             "a foreign address must not be recognised as in-pool"
         );
-    }
-
-    /// No skips yields no banner; one or many skips yields singular/plural
-    /// text with no row-derived detail.
-    #[test]
-    fn skipped_wallets_banner_text_singular_plural_and_none() {
-        assert_eq!(skipped_wallets_banner_text(0), None);
-        assert_eq!(
-            skipped_wallets_banner_text(1),
-            Some(
-                "1 saved wallet couldn't be opened. Re-add it from its recovery phrase to restore it."
-                    .to_string()
-            )
-        );
-        assert_eq!(
-            skipped_wallets_banner_text(3),
-            Some(
-                "3 saved wallets couldn't be opened. Re-add them from their recovery phrases to restore them."
-                    .to_string()
-            )
-        );
-    }
-
-    /// A re-entrant load pass supersedes the previous skipped-wallets banner
-    /// instead of stacking a second one, and a zero-skip pass clears it. Drives
-    /// [`raise_skipped_wallets_banner`] directly (no `WalletBackend`/`AppContext`)
-    /// and asserts against the rendered banner so a regression that drops the
-    /// call, swaps the Warning type, reads the wrong count, or stacks banners
-    /// fails here.
-    #[test]
-    fn raise_skipped_wallets_banner_replaces_and_clears() {
-        use crate::ui::components::MessageBanner;
-        use egui_kittest::Harness;
-        use egui_kittest::kittest::Queryable;
-
-        let singular = skipped_wallets_banner_text(1).expect("one skip yields text");
-        let plural = skipped_wallets_banner_text(3).expect("three skips yield text");
-        let mut handle: Option<BannerHandle> = None;
-
-        let mut harness = Harness::builder()
-            .with_size(egui::vec2(600.0, 200.0))
-            .build_ui(MessageBanner::show_global);
-
-        // Pass 1: one skip → singular copy under the Warning icon.
-        raise_skipped_wallets_banner(&harness.ctx, 1, &mut handle);
-        harness.run();
-        assert!(
-            harness.query_by_label(singular.as_str()).is_some(),
-            "first pass must render the singular skip copy",
-        );
-        assert!(
-            harness.query_by_label("\u{26A0}").is_some(),
-            "skip banner must carry the Warning icon, not another type",
-        );
-
-        // Pass 2: re-entrant call with a different count must replace, not stack.
-        raise_skipped_wallets_banner(&harness.ctx, 3, &mut handle);
-        harness.run();
-        assert!(
-            harness.query_by_label(plural.as_str()).is_some(),
-            "second pass must render the new plural copy",
-        );
-        assert!(
-            harness.query_by_label(singular.as_str()).is_none(),
-            "the superseded singular banner must be gone, not stacked",
-        );
-
-        // Pass 3: zero skips clears the banner.
-        raise_skipped_wallets_banner(&harness.ctx, 0, &mut handle);
-        harness.run();
-        assert!(
-            harness.query_by_label(plural.as_str()).is_none(),
-            "a zero-skip pass must clear the banner",
-        );
-        assert!(
-            harness.query_by_label("\u{26A0}").is_none(),
-            "no Warning icon must remain after clearing",
-        );
-    }
-
-    /// The upstream load-skip families map 1:1 onto the DET-opaque
-    /// [`PersistedLoadSkip`] and drop the row-derived string so no
-    /// upstream detail crosses the seam.
-    #[test]
-    fn skip_reason_maps_to_det_opaque_variants() {
-        use platform_wallet::manager::load_outcome::{CorruptKind, SkipReason};
-        let cases = [
-            (
-                CorruptKind::MissingManifest,
-                PersistedLoadSkip::MissingManifest,
-            ),
-            (CorruptKind::MalformedXpub, PersistedLoadSkip::MalformedXpub),
-            (
-                CorruptKind::DecodeError("secret-ish detail".into()),
-                PersistedLoadSkip::DecodeError,
-            ),
-        ];
-        for (kind, expected) in cases {
-            let reason = SkipReason::CorruptPersistedRow { kind };
-            assert_eq!(persisted_load_skip_from_upstream(&reason), expected);
-        }
     }
 
     /// The seedless bridge keys off the BIP44 account xpub. The DET

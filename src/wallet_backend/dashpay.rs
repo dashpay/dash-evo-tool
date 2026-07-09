@@ -814,7 +814,15 @@ impl WalletBackend {
         managed
             .record_dashpay_payment(tx_id, entry, &persister)
             .map_err(|e| TaskError::WalletBackend {
-                source: Box::new(e.into()),
+                // TODO(platform-pr3968): `From<PersistenceError> for
+                // PlatformWalletError` doesn't exist at this rev (no typed
+                // `PersisterLoad(#[from] PersistenceError)` variant yet) —
+                // wrap via the generic `Persistence(String)` variant instead
+                // of `.into()`. Restore the typed conversion once platform
+                // re-adds it.
+                source: Box::new(platform_wallet::error::PlatformWalletError::Persistence(
+                    e.to_string(),
+                )),
             })?;
         Ok(())
     }

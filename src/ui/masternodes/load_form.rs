@@ -187,6 +187,17 @@ impl MasternodeLoadForm {
         let dark_mode = ui.style().visuals.dark_mode;
         let mut outcome = LoadFormOutcome::None;
 
+        // Back row (content-panel, not the global header) — matches the detail
+        // view's `‹ All masternodes` link so both views return to the card list
+        // the same way. Emits `Cancel`, the existing "return to list" outcome.
+        if ui
+            .selectable_label(false, RichText::new("‹ All masternodes"))
+            .clicked()
+        {
+            outcome = LoadFormOutcome::Cancel;
+        }
+        ui.separator();
+
         egui::ScrollArea::vertical().show(ui, |ui| {
             ui.label(
                 RichText::new("Load a masternode")

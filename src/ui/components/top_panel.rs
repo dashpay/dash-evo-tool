@@ -435,9 +435,11 @@ pub fn add_top_panel_with_global_nav(
 }
 
 /// Like [`add_top_panel_with_global_nav`], but also returns the page-scoped
-/// object the user picked from an interactive page-scoped pill (the masternode
-/// pill on the Masternodes page), if any. All other effects (segment-1 nav,
-/// wallet switch) are applied here as usual; `SelectPageObject` is **only**
+/// object the user picked from an interactive page-scoped-object pill, if any.
+/// This is the documented consumer of the page-scoped-object boundary pattern
+/// (`IdentityPillScope::PageScopedObject` → `SelectPageObject`) for a page whose
+/// breadcrumb carries an object pill: all other effects (segment-1 nav, wallet
+/// switch) are applied here as usual, while `SelectPageObject` is **only**
 /// surfaced to the caller — never written to `AppContext::selected_identity_id`
 /// (the FR-6 boundary). Returns `(action, picked_page_object)`.
 pub fn add_top_panel_with_global_nav_capturing(

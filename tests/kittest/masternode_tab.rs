@@ -358,12 +358,54 @@ fn load_form_opens_from_cta_and_cancels() {
             "the always-visible Warning-tone key-storage note must render verbatim"
         );
 
-        // Cancel returns to the list / empty state (TC-FR4-21).
+        // Cancel returns to the list / empty state (TC-FR4-21). The Cancel
+        // button sits at the bottom of the scrollable form; give the harness a
+        // taller window so the whole form (back link + fields + actions row)
+        // fits and the button is reachable in this headless viewport.
+        harness.set_size(egui::vec2(1280.0, 1200.0));
+        harness.run_steps(2);
         harness.get_by_label("Cancel").click();
         harness.run_steps(3);
         assert!(
             harness.query_by_label("No masternodes loaded").is_some(),
             "Cancel must return to the list without loading"
+        );
+    });
+}
+
+/// The load form carries the same `‹ All masternodes` back link as the detail
+/// view (wireframe C): it renders at the top of the form and returns to the list
+/// without loading anything. This is the always-visible navigation affordance,
+/// distinct from the bottom Cancel button.
+#[test]
+fn load_form_back_link_returns_to_list() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let mut harness = mount_app(RootScreenType::RootScreenIdentities);
+        let app_context = harness.state().current_app_context().clone();
+        activate_masternodes_tab(&mut harness, &app_context);
+
+        // Open the load form from the empty-state primary CTA.
+        harness.get_by_label("Load a masternode").click();
+        harness.run_steps(3);
+        assert!(
+            harness.query_by_label("No masternodes loaded").is_none(),
+            "empty state must be replaced by the load form"
+        );
+
+        // The back link is present at the top of the form and returns to the
+        // list (empty state) without loading.
+        assert!(
+            harness.query_by_label("‹ All masternodes").is_some(),
+            "the load form must render the `‹ All masternodes` back link"
+        );
+        harness.get_by_label("‹ All masternodes").click();
+        harness.run_steps(3);
+        assert!(
+            harness.query_by_label("No masternodes loaded").is_some(),
+            "the back link must return to the list without loading"
         );
     });
 }
@@ -499,8 +541,8 @@ fn dpns_section_missing_voter_scoped_prompt() {
 }
 
 /// TC-NAV-12 / TC-FR6-07 (release-blocking) — selecting a masternode on the
-/// Masternodes page (opening its detail sets the page-scoped pill) must NEVER
-/// write the app-global identity selection. With no User identity loaded, the
+/// Masternodes page (opening its detail via a card click) must NEVER write the
+/// app-global identity selection. With no User identity loaded, the
 /// app-global selection must stay `None` even after a masternode is in view, and
 /// stay `None` after navigating away to Identities/Identity Hub.
 #[test]

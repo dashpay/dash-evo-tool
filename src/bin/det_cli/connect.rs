@@ -89,7 +89,10 @@ pub(super) async fn connect_http(
 
     let mut config = StreamableHttpClientTransportConfig::with_uri(addr);
     if let Some(token) = bearer {
-        config = config.auth_header(format!("Bearer {token}"));
+        // rmcp's `auth_header` takes the raw token and prepends `Bearer ` itself
+        // (via reqwest's `bearer_auth`). Passing a pre-prefixed value would put
+        // `Bearer Bearer <token>` on the wire and fail server-side auth.
+        config = config.auth_header(token.to_string());
     }
     let transport = StreamableHttpClientTransport::from_config(config);
     let client = ().serve(transport).await?;

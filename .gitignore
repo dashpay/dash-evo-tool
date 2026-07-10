@@ -35,3 +35,4 @@ test_db*
 explorer.log
 .gitaipconfig
 .claude/worktrees
+.codex/

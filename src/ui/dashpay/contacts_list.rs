@@ -2,6 +2,7 @@ use crate::app::AppAction;
 use crate::backend_task::dashpay::DashPayTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
+use crate::context::feature_gate::ExperimentalFeature;
 
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::components::avatar::Avatar;
@@ -839,8 +840,10 @@ impl ContactsList {
                                             }
                                         }
 
-                                        // Pay button - requires SPV which is dev mode only
-                                        if self.app_context.is_developer_mode()
+                                        // Pay is an experimental DashPay feature.
+                                        if self
+                                            .app_context
+                                            .experimental_enabled(ExperimentalFeature::DashPay)
                                             && ui.button("Pay").clicked()
                                         {
                                             if let Some(identity) = self.selected_identity.clone() {

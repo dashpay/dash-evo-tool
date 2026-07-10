@@ -5,6 +5,7 @@
 
 use crate::app::AppAction;
 use crate::context::AppContext;
+use crate::model::user_role::UserRole;
 use crate::ui::ScreenType;
 use crate::ui::identity::avatar::paint_abstract_avatar;
 use crate::ui::theme::{DashColors, ResponseExt};
@@ -92,7 +93,7 @@ pub fn render(ui: &mut Ui, app_context: &Arc<AppContext>) -> AppAction {
                 );
             }
 
-            if app_context.is_developer_mode() {
+            if app_context.user_role().at_least(UserRole::Power) {
                 ui.add_space(32.0);
                 ui.separator();
                 ui.add_space(8.0);

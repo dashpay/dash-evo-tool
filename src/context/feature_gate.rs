@@ -49,10 +49,17 @@ impl Capability {
 /// for every role — misfiling it as a role gate would permanently hide the
 /// stabilised feature from ordinary users.
 ///
-/// Empty until Phase 2 reclassifies the "dev-mode as a stability flag"
-/// callsites; the type exists now so [`Check::Experimental`] compiles.
+/// Availability is resolved through [`AppContext::experimental_enabled`], which
+/// today tracks the retired dev-mode gating (`>= Power`) so behaviour is
+/// unchanged; stabilising a feature later is a one-line flip that unlocks it for
+/// every role.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ExperimentalFeature {}
+pub enum ExperimentalFeature {
+    /// Shielded (ZK) send and shielded-tab surfaces — not stable yet.
+    Shielded,
+    /// DashPay payments and payment-history surfaces — not stable yet.
+    DashPay,
+}
 
 /// One predicate contributing to a feature's availability. A feature is
 /// available iff ALL of its checks are met (AND semantics).
@@ -105,10 +112,14 @@ pub enum FeatureGate {
     Shielded,
     /// DashPay social features — always available (placeholder for future restriction)
     DashPay,
-    /// Expert/developer mode — unlocks advanced UI elements. Temporarily mapped
-    /// to "at least Power" during the compat-shim window; the callsites behind
-    /// it are reclassified per persona in a later pass.
-    DeveloperMode,
+    /// Masternode operation — a Power User activity (the operator persona), so
+    /// gated at [`UserRole::Power`]. Backs the Masternodes nav entry.
+    Masternodes,
+    /// The Developer-tools tier itself — features reserved for the Platform
+    /// Developer role (raw protocol inspection, bulk operations, Devnet config).
+    /// Gated at [`UserRole::Developer`]; the successor to the old overloaded
+    /// developer-mode flag, which conflated this tier with Power-role disclosure.
+    DeveloperTools,
 }
 
 impl FeatureGate {
@@ -118,7 +129,8 @@ impl FeatureGate {
         match self {
             FeatureGate::Shielded => &[Check::Capability(Capability::ShieldedProtocol)],
             FeatureGate::DashPay => &[],
-            FeatureGate::DeveloperMode => &[Check::MinRole(UserRole::Power)],
+            FeatureGate::Masternodes => &[Check::MinRole(UserRole::Power)],
+            FeatureGate::DeveloperTools => &[Check::MinRole(UserRole::Developer)],
         }
     }
 

@@ -3,7 +3,7 @@ use crate::backend_task::dashpay::DashPayTask;
 use crate::backend_task::error::TaskError;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
-use crate::context::feature_gate::FeatureGate;
+use crate::context::feature_gate::ExperimentalFeature;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::components::avatar::Avatar;
 use crate::ui::components::dashpay_subscreen_chooser_panel::add_dashpay_subscreen_chooser_panel;
@@ -120,9 +120,12 @@ impl ContactProfileViewerScreen {
         AppAction::BackendTask(task)
     }
 
-    /// Render a "Pay" button gated behind developer mode.
+    /// Render a "Pay" button gated behind the experimental DashPay feature.
     fn pay_button(&self, ui: &mut egui::Ui) -> AppAction {
-        if !FeatureGate::DeveloperMode.is_available(&self.app_context) {
+        if !self
+            .app_context
+            .experimental_enabled(ExperimentalFeature::DashPay)
+        {
             return AppAction::None;
         }
         let pay_button = egui::Button::new(RichText::new("Pay").color(egui::Color32::WHITE))

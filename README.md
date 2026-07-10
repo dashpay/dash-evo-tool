@@ -106,6 +106,7 @@ When the application runs for the first time, it creates an application director
 | Variable | Values | Default | Description |
 | - | - | - | - |
 | `DASH_EVO_TOOL_ACCESSIBILITY` | `1` / unset | unset | Force-enable accessibility support. Activates AccessKit eagerly so the UI element tree is populated every frame and (on macOS) forces the platform accessibility adapter to initialize. Without this flag, accessibility still works normally — VoiceOver and other assistive technologies trigger AccessKit's lazy activation automatically. This flag is needed for tools that query the accessibility tree without registering as assistive technology clients (e.g. AXUIElement-based automation like Peekaboo). |
+| `DEVELOPER_MODE` | `true` / `false` | `false` | One-time starting point for the interface mode (Default view / Detailed view / Developer tools) on first launch only — not a live toggle. See [docs/user-roles.md](docs/user-roles.md). |
 
 ## Contributing
 

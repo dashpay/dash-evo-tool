@@ -64,6 +64,18 @@ impl AppContext {
         Ok(())
     }
 
+    /// Set the app-global user role and persist it as the canonical string in
+    /// [`AppSettings`] — the single source of truth the runtime atomic is seeded
+    /// from at the next boot. Both role-setting UI surfaces (Settings selector,
+    /// onboarding row) go through here so the runtime atomic and the persisted
+    /// value never diverge.
+    pub fn set_and_persist_user_role(&self, role: UserRole) {
+        self.set_user_role(role);
+        if let Err(e) = self.update_app_settings(|s| s.user_role = Some(role)) {
+            tracing::warn!(error = ?e, "Failed to persist the selected user role");
+        }
+    }
+
     /// Invalidates the settings cache and returns a guard.
     ///
     /// The cache is invalidated immediately and the guard prevents concurrent access
@@ -120,7 +132,24 @@ impl AppContext {
                 AppSettings::default()
             }
         };
-        self.seed_user_role_from_env(settings)
+        let seeded_role = settings.user_role.is_none();
+        let settings = self.seed_user_role_from_env(settings);
+        if seeded_role {
+            // Persist the one-time `.env` reconciliation so the sentinel slot is
+            // consumed exactly once: later loads read the canonical role string
+            // and never consult `.env` again. (The `.env DEVELOPER_MODE` parser
+            // itself stays — the v34 SPV migration still reads it.)
+            if let Err(e) = self
+                .app_kv
+                .put(DetScope::Global, AppSettings::KV_KEY, &settings)
+            {
+                tracing::warn!(
+                    error = ?e,
+                    "Failed to persist the seeded user role; it will be re-seeded on the next load"
+                );
+            }
+        }
+        settings
     }
 
     /// Seeds `user_role` from the legacy `.env DEVELOPER_MODE` flag when the
@@ -417,6 +446,31 @@ mod tests {
             got.user_role,
             Some(UserRole::Everyday),
             "an explicit role must survive; the .env seed only fills a role-less blob"
+        );
+    }
+
+    /// The `.env` seed is consumed exactly once: the first `get_app_settings`
+    /// that resolves a role-less blob persists the canonical role, so a later
+    /// change to `.env DEVELOPER_MODE` no longer moves the role.
+    #[test]
+    fn env_seed_is_persisted_and_consulted_only_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = test_app_context(tmp.path());
+        let env_path = tmp.path().join(".env");
+
+        // First resolution: DEVELOPER_MODE=true seeds Power and persists it.
+        std::fs::write(&env_path, "DEVELOPER_MODE=true\n").unwrap();
+        drop(ctx.invalidate_settings_cache());
+        assert_eq!(ctx.get_app_settings().user_role, Some(UserRole::Power));
+
+        // Flip `.env` to false and drop the cache. The persisted Power role must
+        // win — the seed is not consulted a second time.
+        std::fs::write(&env_path, "DEVELOPER_MODE=false\n").unwrap();
+        drop(ctx.invalidate_settings_cache());
+        assert_eq!(
+            ctx.get_app_settings().user_role,
+            Some(UserRole::Power),
+            "the seeded role must be persisted and survive a later .env change"
         );
     }
 }

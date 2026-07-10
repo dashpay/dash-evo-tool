@@ -675,7 +675,7 @@ impl AppContext {
         &self,
         id: &Identifier,
     ) -> std::result::Result<Option<QualifiedIdentity>, TaskError> {
-        let kv = self.identity_kv()?;
+        let kv = self.det_kv()?;
         let id_buf = id.to_buffer();
         let Some(stored) = kv
             .get::<StoredQualifiedIdentity>(DetScope::Identity(&id_buf), IDENTITY_KEY)

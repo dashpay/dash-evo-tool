@@ -176,18 +176,24 @@ fn ghost_transfer_key_shows_no_keys_empty_state_not_a_form() {
     });
 }
 
-/// Regression surfaced BY the fix: constructing `WithdrawalScreen` for a
-/// ghost-key-only identity leaks a raw, technical error banner
+/// Regression lock for a bug this fix (default_withdrawal_key) briefly
+/// introduced and a follow-up fix (2edbc18e, "skip wallet resolution when no
+/// signable key exists") closed: constructing `WithdrawalScreen` for a
+/// ghost-key-only identity used to leak a raw, technical error banner
 /// ("No key provided when getting selected wallet") from
-/// `get_selected_wallet()`. Before the fix `selected_key` was almost always
-/// `Some(..)` (unfiltered on-chain scan), so this `Err` branch in
-/// `get_selected_wallet` was rarely reached; now that `selected_key` correctly
-/// becomes `None` whenever no locally-signable key exists, every such
-/// identity trips this internal-string leak on screen open — violating this
+/// `get_selected_wallet()`. Before the original fix `selected_key` was almost
+/// always `Some(..)` (unfiltered on-chain scan), so that `Err` branch in
+/// `get_selected_wallet` was rarely reached; once `selected_key` correctly
+/// started becoming `None` whenever no locally-signable key exists, every such
+/// identity tripped this internal-string leak on screen open — violating this
 /// project's own error-message conventions (CLAUDE.md "Error messages": no
 /// raw/internal strings in user-facing banners, must be actionable).
+/// `WithdrawalScreen::new()` now only calls `get_selected_wallet` when
+/// `selected_key` is `Some`, making that `Err` path structurally unreachable
+/// here rather than merely avoided by luck — and the no-keys empty state must
+/// still render correctly for the same identity.
 #[test]
-fn ghost_key_construction_leaks_raw_error_banner() {
+fn ghost_key_construction_does_not_leak_raw_error_banner() {
     with_isolated_data_dir(|| {
         let (_rt, app_context) = fresh_context();
         // Bootstrap (AppState::new + a few settle frames) can itself raise
@@ -208,13 +214,30 @@ fn ghost_key_construction_leaks_raw_error_banner() {
             "precondition: no banner before construction"
         );
 
-        let _screen = WithdrawalScreen::new(identity, &app_context);
+        let screen = WithdrawalScreen::new(identity, &app_context);
 
         assert!(
-            MessageBanner::has_global(app_context.egui_ctx()),
+            !MessageBanner::has_global(app_context.egui_ctx()),
             "WithdrawalScreen::new() must not leak get_selected_wallet's raw \
              \"No key provided...\" error as a global banner just from opening \
-             the screen for an identity with no signable key"
+             the screen for an identity with no signable key (regression: \
+             2edbc18e guards the call on selected_key being Some)"
+        );
+
+        // The no-keys empty state must still render correctly for this identity
+        // — the fix must not have traded the banner leak for a broken empty state.
+        let harness = mount_withdrawal_screen(screen);
+        assert!(
+            harness
+                .query_by_label_contains("You do not have any withdrawal keys loaded")
+                .is_some(),
+            "the no-keys empty state must still render after the banner-leak fix"
+        );
+        assert!(
+            harness
+                .query_by_label_contains("Amount to withdraw")
+                .is_none(),
+            "the withdraw form must still not render for a ghost-key-only identity"
         );
     });
 }

@@ -26,9 +26,9 @@ use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
 use crate::ui::identities::funding_common::{
-    FundingMethod, WalletFundedScreenStep, default_funding_state, deposit_step_after_utxo,
-    funding_method_after_switch, max_amount_after_fee_reserve, spendable_covers_minimum,
-    wallet_selection_combo,
+    FundingMethod, WalletFundedScreenStep, default_funding_state, deposit_event_outcome,
+    deposit_matches, funding_method_after_switch, max_amount_after_fee_reserve,
+    spendable_covers_minimum, wallet_selection_combo,
 };
 use crate::ui::state::TrackedAssetLockCache;
 use crate::ui::theme::DashColors;
@@ -83,6 +83,13 @@ pub struct AddNewIdentityScreen {
     /// Set when a derived deposit address could not be parsed, so the QR view
     /// stops auto-retrying and offers a manual retry instead of spinning forever.
     funding_address_request_failed: bool,
+    /// Duffs received so far at `funding_address` (accumulated per deposit
+    /// event), for the "received so far" line — a per-address running total, not
+    /// whole-wallet balance.
+    received_at_funding_address_duffs: u64,
+    /// Set on the transition to `FundsReceived` so the amount field pre-fills
+    /// the fee-reserve-capped received balance on the next render.
+    prefill_funding_amount: bool,
     funding_method: Arc<RwLock<FundingMethod>>,
     /// Whether the user has explicitly picked a funding method (as opposed to
     /// the screen's own default pre-selection). Once true, a wallet switch
@@ -175,6 +182,8 @@ impl AddNewIdentityScreen {
             funding_address: None,
             pending_funding_address_request: None,
             funding_address_request_failed: false,
+            received_at_funding_address_duffs: 0,
+            prefill_funding_amount: false,
             funding_method: Arc::new(RwLock::new(FundingMethod::NoSelection)),
             user_chose_funding_method: false,
             funding_amount: None,
@@ -437,6 +446,8 @@ impl AddNewIdentityScreen {
             self.funding_address = None;
             self.pending_funding_address_request = None;
             self.funding_address_request_failed = false;
+            self.received_at_funding_address_duffs = 0;
+            self.prefill_funding_amount = false;
             self.funding_asset_lock = None;
             self.copied_to_clipboard = None;
             self.update_wallet(wallet);
@@ -646,6 +657,8 @@ impl AddNewIdentityScreen {
                     self.funding_address = None;
                     self.pending_funding_address_request = None;
                     self.funding_address_request_failed = false;
+                    self.received_at_funding_address_duffs = 0;
+                    self.prefill_funding_amount = false;
                     self.funding_amount = None;
                     self.funding_amount_input = None;
                 }
@@ -667,6 +680,8 @@ impl AddNewIdentityScreen {
         self.funding_address = None;
         self.pending_funding_address_request = None;
         self.funding_address_request_failed = false;
+        self.received_at_funding_address_duffs = 0;
+        self.prefill_funding_amount = false;
         self.funding_amount = None;
         self.funding_amount_input = None;
     }
@@ -1144,6 +1159,7 @@ impl AddNewIdentityScreen {
             (None, false, None)
         };
 
+        let should_prefill = self.prefill_funding_amount;
         let amount_input = self.funding_amount_input.get_or_insert_with(|| {
             AmountInput::new(Amount::new_dash(0.0))
                 .with_label("Amount (DASH):")
@@ -1158,8 +1174,18 @@ impl AddNewIdentityScreen {
             .set_show_max_button(show_max_button)
             .set_max_exceeded_hint(fee_hint);
 
+        // Pre-fill (once) with the fee-reserve-capped maximum when a deposit just
+        // arrived, so the amount and Create button are populated but still editable.
+        if should_prefill && let Some(max) = max_amount_credits {
+            amount_input.set_value(Amount::dash_from_credits(max));
+        }
+
         let response = amount_input.show(ui);
         response.inner.update(&mut self.funding_amount);
+
+        if should_prefill {
+            self.prefill_funding_amount = false;
+        }
 
         ui.add_space(10.0);
     }
@@ -1354,6 +1380,13 @@ impl ScreenLike for AddNewIdentityScreen {
                     CoreItem::ReceivedAvailableUTXOTransaction(_, outputs),
                 ) = &backend_task_success_result
                 {
+                    // Accumulate what this deposit added at the shown address, so
+                    // the "received so far" line tracks the deposit itself, not
+                    // whole-wallet balance.
+                    self.received_at_funding_address_duffs = self
+                        .received_at_funding_address_duffs
+                        .saturating_add(deposit_matches(self.funding_address.as_ref(), outputs));
+
                     let spendable_duffs = self
                         .selected_wallet
                         .as_ref()
@@ -1369,13 +1402,19 @@ impl ScreenLike for AddNewIdentityScreen {
                         .app_context
                         .fee_estimator()
                         .estimate_identity_create(key_count);
-                    *step = deposit_step_after_utxo(
+                    let (next, prefill) = deposit_event_outcome(
                         current_step,
                         self.funding_address.as_ref(),
                         outputs,
                         spendable_duffs,
                         minimum_credits,
                     );
+                    // Pre-fill the amount with the fee-reserve-capped balance when
+                    // the deposit lands, so the field and Create button populate.
+                    if prefill.is_some() {
+                        self.prefill_funding_amount = true;
+                    }
+                    *step = next;
                 }
             }
             WalletFundedScreenStep::FundsReceived => {}

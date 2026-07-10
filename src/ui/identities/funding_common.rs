@@ -168,6 +168,31 @@ pub fn deposit_step_after_utxo(
     }
 }
 
+/// The next step plus the amount, in credits, to pre-fill into the funding field
+/// when a deposit advances the wizard to [`WalletFundedScreenStep::FundsReceived`].
+/// The pre-fill is the fee-reserve-capped balance (`Some` only on the advancing
+/// event), so the amount and the confirm button are populated on arrival instead
+/// of left at zero. Layers the pre-fill decision over [`deposit_step_after_utxo`]
+/// so both live in one unit-tested place.
+pub fn deposit_event_outcome(
+    current_step: WalletFundedScreenStep,
+    funding_address: Option<&Address>,
+    outputs: &[(OutPoint, TxOut, Address)],
+    spendable_duffs: u64,
+    fee_credits: u64,
+) -> (WalletFundedScreenStep, Option<u64>) {
+    let next_step = deposit_step_after_utxo(
+        current_step,
+        funding_address,
+        outputs,
+        spendable_duffs,
+        fee_credits,
+    );
+    let prefill_credits = (next_step == WalletFundedScreenStep::FundsReceived)
+        .then(|| max_amount_after_fee_reserve(spendable_duffs, fee_credits));
+    (next_step, prefill_credits)
+}
+
 #[derive(Debug, Eq, PartialEq, Ord, PartialOrd, Copy, Clone)]
 pub enum WalletFundedScreenStep {
     ChooseFundingMethod,
@@ -686,5 +711,68 @@ mod tests {
                 "guard must not change step {step:?}"
             );
         }
+    }
+
+    /// Bug 1 regression: when a sufficient deposit advances the wizard to
+    /// `FundsReceived`, the amount to pre-fill is the fee-reserve-capped balance
+    /// and is NON-zero — the bug left the field empty (no Create button until the
+    /// user typed or clicked Max). Guards the pre-fill on the advancing event.
+    #[test]
+    fn advancing_deposit_yields_a_nonzero_prefill_amount() {
+        let shown = addr(1);
+        let outputs = [output(100_000, &shown)];
+        let fee_credits = 100 * CREDITS_PER_DUFF;
+        let (next, prefill) = deposit_event_outcome(
+            WalletFundedScreenStep::WaitingOnFunds,
+            Some(&shown),
+            &outputs,
+            100_000, // spendable duffs, well above the fee
+            fee_credits,
+        );
+        assert_eq!(next, WalletFundedScreenStep::FundsReceived);
+        assert_eq!(
+            prefill,
+            Some(max_amount_after_fee_reserve(100_000, fee_credits))
+        );
+        assert!(
+            prefill.unwrap() > 0,
+            "the amount must be pre-filled, not left at zero"
+        );
+    }
+
+    /// A sub-minimum deposit neither advances nor pre-fills — the amount is
+    /// populated only once the wizard actually reaches `FundsReceived`.
+    #[test]
+    fn below_minimum_deposit_yields_no_prefill() {
+        let shown = addr(1);
+        let outputs = [output(40_000, &shown)];
+        let fee_credits = 100 * CREDITS_PER_DUFF;
+        let (next, prefill) = deposit_event_outcome(
+            WalletFundedScreenStep::WaitingOnFunds,
+            Some(&shown),
+            &outputs,
+            40, // below the 100-duff minimum
+            fee_credits,
+        );
+        assert_eq!(next, WalletFundedScreenStep::WaitingOnFunds);
+        assert_eq!(prefill, None);
+    }
+
+    /// A deposit to a different address never advances, so it never pre-fills.
+    #[test]
+    fn deposit_to_other_address_yields_no_prefill() {
+        let shown = addr(1);
+        let other = addr(2);
+        let outputs = [output(100_000, &other)];
+        let fee_credits = 100 * CREDITS_PER_DUFF;
+        let (next, prefill) = deposit_event_outcome(
+            WalletFundedScreenStep::WaitingOnFunds,
+            Some(&shown),
+            &outputs,
+            100_000,
+            fee_credits,
+        );
+        assert_eq!(next, WalletFundedScreenStep::WaitingOnFunds);
+        assert_eq!(prefill, None);
     }
 }

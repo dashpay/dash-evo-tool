@@ -21,20 +21,6 @@ impl AddNewIdentityScreen {
             .estimate_identity_create(key_count)
     }
 
-    /// The wallet's cumulative spendable balance, in duffs, or `0` when no
-    /// wallet is selected or its lock is momentarily busy.
-    fn selected_wallet_spendable_duffs(&self) -> u64 {
-        self.selected_wallet
-            .as_ref()
-            .and_then(|w| w.read().ok())
-            .map(|w| {
-                self.app_context
-                    .snapshot_balance(&w.seed_hash())
-                    .spendable()
-            })
-            .unwrap_or(0)
-    }
-
     /// Queue a deposit-address derivation unless one is already shown, in
     /// flight, or a prior derivation failed. Idempotent, so it is safe to call
     /// every frame from the QR view.
@@ -102,11 +88,15 @@ impl AddNewIdentityScreen {
         });
 
         ui.add_space(8.0);
-        let spendable_duffs = self.selected_wallet_spendable_duffs();
-        if spendable_duffs > 0 {
+        // Show what has arrived at THIS address specifically (accumulated per
+        // deposit), never whole-wallet balance — leftover change elsewhere must
+        // not read as progress toward this deposit.
+        let received = self.received_at_funding_address_duffs;
+        if received > 0 {
             ui.label(format!(
-                "Received {received} so far. Waiting for at least {minimum_amount}.",
-                received = Amount::dash_from_duffs(spendable_duffs),
+                "Received {received_amount} at this address so far. Waiting for at least \
+                 {minimum_amount}.",
+                received_amount = Amount::dash_from_duffs(received),
             ));
         } else {
             ui.label(
@@ -143,15 +133,20 @@ impl AddNewIdentityScreen {
             "{step_number}. Deposit received. Choose how much to use, then continue."
         ));
         ui.add_space(10.0);
-        self.render_funding_amount_input(ui);
 
-        let has_valid_amount = self
-            .funding_amount
-            .as_ref()
-            .map(|a| a.value() > 0)
-            .unwrap_or(false);
-
+        // Only render the amount input while choosing the amount. Once funding is
+        // dispatched (WaitingForAssetLock onward) the spendable balance is
+        // committed to the pending transaction, so the input's max recomputes to
+        // 0 and would show a stale "exceeds maximum" error over a succeeding op.
         if step == WalletFundedScreenStep::FundsReceived {
+            self.render_funding_amount_input(ui);
+
+            let has_valid_amount = self
+                .funding_amount
+                .as_ref()
+                .map(|a| a.value() > 0)
+                .unwrap_or(false);
+
             if has_valid_amount {
                 self.render_alias_input(ui, step_number + 1);
                 let button =

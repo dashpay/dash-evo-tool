@@ -494,6 +494,7 @@ As a user, I want to view all keys associated with my identity so that I can aud
 
 As a power user, I want to add a password to an identity's signing keys so that they cannot be used to sign on this device without that password.
 
+- Applies only to identities with vault-stored keys (standalone-imported identities). HD-wallet-backed identity keys are derived on demand from that wallet's own seed and are already covered by the wallet's own password; the "Key Protection" section is hidden entirely for such identities since there is no separate vault key to protect.
 - Identity keys default to keyless: they sign automatically and headless/MCP signing keeps working — this is unchanged for any identity the user does not opt in.
 - From the Key Info screen, a collapsible "Key Protection" section (closed by default) shows whether this identity's keys are protected and offers "Add password protection…" or "Remove password protection…".
 - Opting in shows a danger warning (a forgotten password makes the keys unrecoverable for standalone-imported identities; automatic tools can no longer sign this identity), then asks for a new password, a confirmation, and an optional plain-text hint.

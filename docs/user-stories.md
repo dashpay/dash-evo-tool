@@ -1050,20 +1050,21 @@ As a user, I want to choose between light, dark, or auto theme so that the app m
 - Light, dark, and system-auto options.
 - Theme change applied immediately.
 
-### NET-005: Toggle developer mode [Implemented]
+### NET-005: Unlock advanced features by interface mode [Implemented]
 **Persona:** Priya, Jordan
 
-As a user, I want to enable developer mode so that I can access advanced features like address tables, refresh controls, and debug tools.
+As a user, I want a higher interface mode to reveal advanced features like address tables, refresh controls, and debug tools, so that complexity stays out of my way until I ask for it.
 
-- Toggles visibility of advanced UI elements.
+- Detailed view and Developer tools each add capabilities on top of the mode below them.
+- Feature availability is monotonic: anything a lower mode can do, a higher mode can too.
 
-### NET-006: Select user mode [Gap]
-**Persona:** Alex, Priya
+### NET-006: Select interface mode [Implemented]
+**Persona:** Alex, Priya, Jordan
 
-As a user, I want to choose between Beginner and Advanced mode so that the interface matches my experience level.
+As a user, I want to choose between Default view, Detailed view, and Developer tools so that the interface matches my experience level.
 
-- Beginner mode hides complexity; Advanced mode shows full detail.
-- `UserMode` enum and database persistence exist but no UI control is implemented.
+- Same three choices and descriptions on the Network Settings "Interface mode" card and the Welcome screen onboarding row.
+- Choice persists and applies immediately, and can be changed again at any time.
 
 ### NET-007: Granular refresh controls [Implemented]
 **Persona:** Priya
@@ -1136,7 +1137,7 @@ As an everyday user, I want to install and use Dash Evo Tool without having to r
 
 - Fresh install connects to the Dash network via the built-in SPV light client with zero configuration.
 - The user sees sync progress and status clearly; the default everyday-user UI avoids mentions of SPV, RPC, or nodes.
-- Technical/protocol terminology may appear in Expert mode or advanced settings, where Dash Core RPC remains available as an opt-in for users who do run a local node.
+- Technical/protocol terminology may appear in Detailed view, Developer tools, or advanced settings, where Dash Core RPC remains available as an opt-in for users who do run a local node.
 
 ---
 
@@ -1289,7 +1290,7 @@ As a masternode operator, I want a card list of my loaded masternodes showing ty
 
 - Each card shows a shortened ProTxHash (or alias as heading), a Masternode/Evonode type badge, voter-identity readiness ("Voting ready" / "No voting key"), a compact Voting/Owner/Payout key-status indicator, a DPNS-voting status line, and an identity status dot with a text label.
 - An empty state explains what a masternode identity is for and offers a primary "Load a masternode" action when none are loaded.
-- The Masternodes tab and its nav entry are visible only with Expert Mode enabled; turning Expert Mode off while the tab is active falls back to the Identities screen.
+- The Masternodes tab and its nav entry are visible only at the Detailed view interface mode or above; dropping below Detailed view while the tab is active falls back to the Identities screen.
 
 ### MN-003: Open a masternode and vote [Implemented]
 **Persona:** Priya

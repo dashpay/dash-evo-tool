@@ -67,7 +67,7 @@ pub struct NetworkChooserScreen {
     dashmate_password_input: PasswordInput,
     pub current_network: Network,
     pub recheck_time: Option<TimestampMillis>,
-    developer_mode: bool,
+    selected_role: UserRole,
     theme_preference: ThemeMode,
     should_reset_collapsing_states: bool,
     spv_progress_network: Option<Network>,
@@ -109,7 +109,7 @@ impl NetworkChooserScreen {
         }
 
         let current_context = contexts.get(&current_network).unwrap_or(any_context);
-        let developer_mode = current_context.user_role().at_least(UserRole::Power);
+        let selected_role = current_context.user_role();
 
         let settings = current_context.get_app_settings();
         let theme_preference = settings.theme_mode;
@@ -121,7 +121,7 @@ impl NetworkChooserScreen {
             dashmate_password_input,
             current_network,
             recheck_time: None,
-            developer_mode,
+            selected_role,
             theme_preference,
             should_reset_collapsing_states: true, // Start with collapsed state
             spv_progress_network: None,
@@ -220,7 +220,7 @@ impl NetworkChooserScreen {
                                 {
                                     app_action = AppAction::SwitchNetwork(Network::Testnet);
                                 }
-                                if self.developer_mode
+                                if self.selected_role.at_least(UserRole::Power)
                                     && ui
                                         .selectable_value(
                                             &mut self.current_network,
@@ -231,7 +231,7 @@ impl NetworkChooserScreen {
                                 {
                                     app_action = AppAction::SwitchNetwork(Network::Devnet);
                                 }
-                                if self.developer_mode
+                                if self.selected_role.at_least(UserRole::Power)
                                     && ui
                                         .selectable_value(
                                             &mut self.current_network,
@@ -464,6 +464,44 @@ impl NetworkChooserScreen {
             }
         });
 
+        // Interface mode — rendered above Advanced Settings (which force-collapses
+        // on every arrival) so the role selector is always discoverable.
+        ui.add_space(16.0);
+        StyledCard::new().padding(20.0).show(ui, |ui| {
+            ui.label(
+                egui::RichText::new("Interface mode")
+                    .strong()
+                    .color(DashColors::text_primary(dark_mode)),
+            );
+            ui.add_space(4.0);
+
+            let previous_role = self.selected_role;
+            ui.horizontal(|ui| {
+                for role in [UserRole::Everyday, UserRole::Power, UserRole::Developer] {
+                    ui.radio_value(&mut self.selected_role, role, role.label());
+                }
+            });
+
+            ui.add_space(2.0);
+            ui.label(
+                egui::RichText::new(self.selected_role.description())
+                    .color(DashColors::text_secondary(dark_mode))
+                    .italics(),
+            );
+
+            if self.selected_role != previous_role {
+                // The role is app-global and shared by every per-network context;
+                // persist it as the canonical AppSettings value and publish it to
+                // the shared runtime atomic in one call.
+                self.current_app_context()
+                    .set_and_persist_user_role(self.selected_role);
+                // Raising the role also disables animations, which stops the
+                // continuous repaints, so request one so newly-gated nav entries
+                // (e.g. Masternodes) appear immediately.
+                ui.ctx().request_repaint();
+            }
+        });
+
         // Advanced Settings section with clean dropdown
         ui.add_space(16.0);
 
@@ -602,48 +640,8 @@ impl NetworkChooserScreen {
                     });
                 });
 
-                ui.add_space(8.0);
-
-                ui.horizontal(|ui| {
-                    if StyledCheckbox::new(&mut self.developer_mode, "Expert mode")
-                        .show(ui)
-                        .clickable_tooltip(
-                            "Show advanced options for experienced users, including \
-                             Dash Core RPC, developer tools, and signing overrides.",
-                        )
-                        .clicked()
-                    {
-                        // Expert Mode is the app-global user role shared by every
-                        // per-network context, so setting it on one updates all.
-                        // The binary checkbox maps to Power; a three-way selector
-                        // replaces it in a later phase.
-                        self.current_app_context().set_user_role(if self.developer_mode {
-                            UserRole::Power
-                        } else {
-                            UserRole::Everyday
-                        });
-                        // Re-render the nav immediately: enabling Expert Mode also
-                        // disables animations, which stops continuous repaints, so
-                        // request one so the Masternodes nav entry appears now.
-                        ui.ctx().request_repaint();
-
-                        // Persist to config file (non-blocking for UI)
-                        if let Ok(mut config) = Config::load_from(&self.data_dir) {
-                            config.developer_mode = Some(self.developer_mode);
-                            if let Err(e) = config.save(&self.data_dir) {
-                                tracing::error!("Failed to save config: {e}");
-                            }
-                        }
-                    }
-                    ui.label(
-                        egui::RichText::new("Enable advanced features")
-                            .color(DashColors::TEXT_SECONDARY)
-                            .italics(),
-                    );
-                });
-
-                // Developer-only tools
-                if self.developer_mode {
+                // Developer-tools sub-panel — Developer role only.
+                if self.selected_role.at_least(UserRole::Developer) {
                     ui.add_space(12.0);
                     ui.label(
                         egui::RichText::new("Developer Tools")
@@ -714,7 +712,7 @@ impl NetworkChooserScreen {
 
                 // Advanced SPV peer source configuration is Expert-only —
                 // fresh-install users get auto-discovery, which is the correct default.
-                if self.developer_mode {
+                if self.selected_role.at_least(UserRole::Power) {
                     // Auto-start SPV on startup
                     ui.add_space(12.0);
                     ui.separator();
@@ -828,7 +826,7 @@ impl NetworkChooserScreen {
                 // SPV maintenance (clear data, rescan) is Expert-only — these are
                 // diagnostic tools that can destroy wallet sync state and should not
                 // be exposed to fresh-install users.
-                if self.developer_mode {
+                if self.selected_role.at_least(UserRole::Power) {
                     // Chain sync is owned by upstream platform-wallet; the
                     // EventBridge feeds live status into ConnectionStatus.
                     let snapshot = self
@@ -1422,6 +1420,10 @@ impl ScreenLike for NetworkChooserScreen {
         // Reload settings from the shared app k/v store to ensure we have the latest values
         let settings = self.current_app_context().get_app_settings();
         self.theme_preference = settings.theme_mode;
+        // Re-sync the role selector with the app-global role, which may have
+        // changed on another surface (e.g. the onboarding row) since this cached
+        // root screen was constructed.
+        self.selected_role = self.current_app_context().user_role();
     }
 
     fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {

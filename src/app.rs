@@ -564,21 +564,15 @@ impl AppState {
 
         let saved_network = settings.network;
 
-        // App-global user role: seeded once from the legacy `.env DEVELOPER_MODE`
-        // flag (true → Power, else Everyday — today's dev mode is power-user
-        // mode) and shared into every per-network context (including any created
-        // later by a network switch), so a live change is observed everywhere
-        // without a restart.
-        let seeded_role = if crate::config::Config::load_from(&data_dir)
-            .ok()
-            .and_then(|c| c.developer_mode)
-            .unwrap_or(false)
-        {
-            crate::model::user_role::UserRole::Power
-        } else {
-            crate::model::user_role::UserRole::Everyday
-        };
-        let user_role = Arc::new(std::sync::atomic::AtomicU8::new(seeded_role as u8));
+        // App-global user role, shared into every per-network context (including
+        // any created later by a network switch) so a live change is observed
+        // everywhere without a restart. Seeded below from `get_app_settings()`
+        // once the active context exists — the single persisted source of truth,
+        // which resolves a role-less blob via the one-time `.env DEVELOPER_MODE`
+        // reconciliation and persists the result.
+        let user_role = Arc::new(std::sync::atomic::AtomicU8::new(
+            crate::model::user_role::UserRole::default() as u8,
+        ));
 
         // Build a helper to create AppContext for a given network.
         let make_context = |network: Network| -> Option<Arc<AppContext>> {
@@ -642,6 +636,18 @@ impl AppState {
             .get(&chosen_network)
             .expect("invariant: chosen_network was just taken from network_contexts")
             .clone();
+
+        // Seed the shared role atomic from AppSettings — the single source of
+        // truth. `get_app_settings` resolves a role-less blob via the one-time
+        // `.env DEVELOPER_MODE` seed and persists the canonical string, so `.env`
+        // is consulted at most once ever. `set_user_role` publishes the value to
+        // the shared atomic (visible to every context) and syncs animation gating.
+        active_context.set_user_role(
+            active_context
+                .get_app_settings()
+                .user_role
+                .unwrap_or_default(),
+        );
 
         // load fonts
         ctx.set_fonts(crate::bundled::fonts().expect("failed to load fonts"));

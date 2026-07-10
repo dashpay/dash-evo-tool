@@ -60,6 +60,28 @@ impl UserRole {
         }
     }
 
+    /// Short UI label for the interface-mode selectors (Settings and the
+    /// onboarding row share this vocabulary so a role picked in one is findable
+    /// by name in the other). Distinct from [`as_str`](Self::as_str), which is
+    /// the persisted wire string and must stay stable.
+    pub fn label(self) -> &'static str {
+        match self {
+            UserRole::Everyday => "Default view",
+            UserRole::Power => "Detailed view",
+            UserRole::Developer => "Developer tools",
+        }
+    }
+
+    /// One-line description of what this interface mode reveals, shown under the
+    /// selectors on both surfaces.
+    pub fn description(self) -> &'static str {
+        match self {
+            UserRole::Everyday => "Shows your balance, send and receive, and usernames.",
+            UserRole::Power => "Adds account details, address tables, and masternode tools.",
+            UserRole::Developer => "Adds raw protocol data, Devnet, and signing overrides.",
+        }
+    }
+
     /// Whether this role is at least `min` — the monotonic availability check
     /// (Invariant I1). Anything a lower role can do, a higher role can too.
     pub fn at_least(self, min: UserRole) -> bool {
@@ -121,6 +143,20 @@ mod tests {
                 None,
                 "'{s}' must be treated as a legacy sentinel, not a role"
             );
+        }
+    }
+
+    #[test]
+    fn labels_and_descriptions_are_distinct_per_role() {
+        let roles = [UserRole::Everyday, UserRole::Power, UserRole::Developer];
+        let labels: Vec<_> = roles.iter().map(|r| r.label()).collect();
+        assert_eq!(labels, ["Default view", "Detailed view", "Developer tools"]);
+        // Every role has a non-empty description and no two share one.
+        for (i, a) in roles.iter().enumerate() {
+            assert!(!a.description().is_empty());
+            for b in &roles[i + 1..] {
+                assert_ne!(a.description(), b.description());
+            }
         }
     }
 

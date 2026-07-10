@@ -1,11 +1,10 @@
 use crate::app::AppAction;
 use crate::model::amount::Amount;
-use crate::model::fee_estimation::format_credits_as_dash;
 use crate::ui::MessageType;
 use crate::ui::components::MessageBanner;
 use crate::ui::identities::add_new_identity_screen::AddNewIdentityScreen;
 use crate::ui::identities::funding_common::{
-    FundingMethod, WalletFundedScreenStep, generate_qr_code_image,
+    FundingMethod, WalletFundedScreenStep, generate_qr_code_image, round_up_dash_4dp,
 };
 use crate::ui::theme::DashColors;
 use crate::wallet_backend::poison::RwLockRecover;
@@ -36,10 +35,14 @@ impl AddNewIdentityScreen {
             .unwrap_or(0)
     }
 
-    /// Queue a deposit-address derivation unless one is already shown or in
-    /// flight. Idempotent, so it is safe to call every frame from the QR view.
+    /// Queue a deposit-address derivation unless one is already shown, in
+    /// flight, or a prior derivation failed. Idempotent, so it is safe to call
+    /// every frame from the QR view.
     fn queue_funding_address_request(&mut self) {
-        if self.funding_address.is_some() || self.pending_funding_address_request.is_some() {
+        if self.funding_address.is_some()
+            || self.pending_funding_address_request.is_some()
+            || self.funding_address_request_failed
+        {
             return;
         }
         if let Some(wallet) = &self.selected_wallet
@@ -51,14 +54,23 @@ impl AddNewIdentityScreen {
 
     fn render_deposit_qr(&mut self, ui: &mut Ui) {
         let Some(address) = self.funding_address.clone() else {
-            self.queue_funding_address_request();
-            ui.label("Generating a deposit address…");
+            if self.funding_address_request_failed {
+                ui.label("Could not prepare a deposit address.");
+                if ui.button("Try again").clicked() {
+                    self.funding_address_request_failed = false;
+                }
+            } else {
+                self.queue_funding_address_request();
+                ui.label("Generating a deposit address…");
+            }
             return;
         };
 
+        // The QR URI encodes the amount at 4 decimals; show that same rounded-up
+        // figure in the hint so the two never disagree or understate the minimum.
         let minimum_credits = self.deposit_minimum_credits();
-        let minimum_amount = format_credits_as_dash(minimum_credits);
-        let minimum_dash = Amount::dash_from_credits(minimum_credits).to_f64();
+        let minimum_dash = round_up_dash_4dp(Amount::dash_from_credits(minimum_credits).to_f64());
+        let minimum_amount = format!("{minimum_dash:.4} DASH");
         let dash_uri = format!("dash:{address}?amount={minimum_dash:.4}");
 
         if let Ok(qr_image) = generate_qr_code_image(&dash_uri) {

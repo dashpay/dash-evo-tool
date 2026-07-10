@@ -26,8 +26,9 @@ use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
 use crate::ui::identities::funding_common::{
-    FundingMethod, WalletFundedScreenStep, deposit_step_after_utxo, funding_method_after_switch,
-    max_amount_after_fee_reserve, spendable_covers_minimum, wallet_selection_combo,
+    FundingMethod, WalletFundedScreenStep, default_funding_state, deposit_step_after_utxo,
+    funding_method_after_switch, max_amount_after_fee_reserve, spendable_covers_minimum,
+    wallet_selection_combo,
 };
 use crate::ui::state::TrackedAssetLockCache;
 use crate::ui::theme::DashColors;
@@ -79,6 +80,9 @@ pub struct AddNewIdentityScreen {
     /// method. Set when the QR view needs an address; drained at the end of
     /// `ui()` into a [`WalletTask::GenerateReceiveAddress`] task.
     pending_funding_address_request: Option<WalletSeedHash>,
+    /// Set when a derived deposit address could not be parsed, so the QR view
+    /// stops auto-retrying and offers a manual retry instead of spinning forever.
+    funding_address_request_failed: bool,
     funding_method: Arc<RwLock<FundingMethod>>,
     /// Whether the user has explicitly picked a funding method (as opposed to
     /// the screen's own default pre-selection). Once true, a wallet switch
@@ -170,6 +174,7 @@ impl AddNewIdentityScreen {
             selected_wallet: None, // updated later
             funding_address: None,
             pending_funding_address_request: None,
+            funding_address_request_failed: false,
             funding_method: Arc::new(RwLock::new(FundingMethod::NoSelection)),
             user_chose_funding_method: false,
             funding_amount: None,
@@ -431,6 +436,7 @@ impl AddNewIdentityScreen {
             // wallet; `update_wallet` re-derives the funding method/step.
             self.funding_address = None;
             self.pending_funding_address_request = None;
+            self.funding_address_request_failed = false;
             self.funding_asset_lock = None;
             self.copied_to_clipboard = None;
             self.update_wallet(wallet);
@@ -639,6 +645,7 @@ impl AddNewIdentityScreen {
                     }
                     self.funding_address = None;
                     self.pending_funding_address_request = None;
+                    self.funding_address_request_failed = false;
                     self.funding_amount = None;
                     self.funding_amount_input = None;
                 }
@@ -649,15 +656,17 @@ impl AddNewIdentityScreen {
     /// trapped in the waiting/received sub-steps. Clears the shown address and
     /// any pending derivation; the wallet keeps any deposit already received.
     fn reset_to_choose_funding(&mut self) {
-        if let Ok(mut method) = self.funding_method.write() {
-            *method = FundingMethod::NoSelection;
+        let (method, step) = default_funding_state(false);
+        if let Ok(mut m) = self.funding_method.write() {
+            *m = method;
         }
-        if let Ok(mut step) = self.step.write() {
-            *step = WalletFundedScreenStep::ChooseFundingMethod;
+        if let Ok(mut s) = self.step.write() {
+            *s = step;
         }
         self.user_chose_funding_method = false;
         self.funding_address = None;
         self.pending_funding_address_request = None;
+        self.funding_address_request_failed = false;
         self.funding_amount = None;
         self.funding_amount_input = None;
     }
@@ -1303,8 +1312,23 @@ impl ScreenLike for AddNewIdentityScreen {
                     .and_then(|w| w.read().ok())
                     .map(|w| w.seed_hash() == *seed_hash)
                     .unwrap_or(false);
-                if is_ours && let Ok(addr) = address.parse::<Address<_>>() {
-                    self.funding_address = Some(addr.assume_checked());
+                if is_ours {
+                    match address.parse::<Address<_>>() {
+                        Ok(addr) => {
+                            self.funding_address = Some(addr.assume_checked());
+                            self.funding_address_request_failed = false;
+                        }
+                        Err(e) => {
+                            self.funding_address_request_failed = true;
+                            MessageBanner::set_global(
+                                self.app_context.egui_ctx(),
+                                "Could not prepare a deposit address. Choose a different \
+                                 funding method, or try again.",
+                                MessageType::Error,
+                            )
+                            .with_details(e);
+                        }
+                    }
                 }
                 return;
             }

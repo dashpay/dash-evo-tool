@@ -58,6 +58,9 @@ pub struct TopUpIdentityScreen {
     /// method. Set when the QR view needs an address; drained at the end of
     /// `ui()` into a [`WalletTask::GenerateReceiveAddress`] task.
     pending_funding_address_request: Option<WalletSeedHash>,
+    /// Set when a derived deposit address could not be parsed, so the QR view
+    /// stops auto-retrying and offers a manual retry instead of spinning forever.
+    funding_address_request_failed: bool,
     funding_method: Arc<RwLock<FundingMethod>>,
     funding_amount: String,
     funding_amount_exact: Option<Duffs>,
@@ -88,6 +91,7 @@ impl TopUpIdentityScreen {
             wallet: None,
             funding_address: None,
             pending_funding_address_request: None,
+            funding_address_request_failed: false,
             funding_method: Arc::new(RwLock::new(FundingMethod::NoSelection)),
             funding_amount: "".to_string(),
             funding_amount_exact: None,
@@ -233,6 +237,7 @@ impl TopUpIdentityScreen {
             self.wallet_open_attempted = false;
             self.funding_address = None;
             self.pending_funding_address_request = None;
+            self.funding_address_request_failed = false;
             self.funding_asset_lock = None;
             self.funding_amount_input = None;
             self.copied_to_clipboard = None;
@@ -262,12 +267,14 @@ impl TopUpIdentityScreen {
     /// trapped in the waiting/received sub-steps. Clears the shown address and
     /// any pending derivation; the wallet keeps any deposit already received.
     fn reset_to_choose_funding(&mut self) {
-        if let Ok(mut method) = self.funding_method.write() {
-            *method = FundingMethod::NoSelection;
+        let (method, step) = default_funding_state(false);
+        if let Ok(mut m) = self.funding_method.write() {
+            *m = method;
         }
-        self.set_step(WalletFundedScreenStep::ChooseFundingMethod);
+        self.set_step(step);
         self.funding_address = None;
         self.pending_funding_address_request = None;
+        self.funding_address_request_failed = false;
         self.funding_amount_input = None;
         self.funding_amount_exact = None;
         self.funding_amount.clear();
@@ -375,6 +382,7 @@ impl TopUpIdentityScreen {
                     self.set_step(WalletFundedScreenStep::WaitingOnFunds);
                     self.funding_address = None;
                     self.pending_funding_address_request = None;
+                    self.funding_address_request_failed = false;
                     self.funding_amount_input = None;
                     self.funding_amount_exact = None;
                     self.funding_amount.clear();
@@ -550,8 +558,23 @@ impl ScreenLike for TopUpIdentityScreen {
                 .and_then(|w| w.read().ok())
                 .map(|w| w.seed_hash() == *seed_hash)
                 .unwrap_or(false);
-            if is_ours && let Ok(addr) = address.parse::<Address<_>>() {
-                self.funding_address = Some(addr.assume_checked());
+            if is_ours {
+                match address.parse::<Address<_>>() {
+                    Ok(addr) => {
+                        self.funding_address = Some(addr.assume_checked());
+                        self.funding_address_request_failed = false;
+                    }
+                    Err(e) => {
+                        self.funding_address_request_failed = true;
+                        MessageBanner::set_global(
+                            self.app_context.egui_ctx(),
+                            "Could not prepare a deposit address. Choose a different \
+                             funding method, or try again.",
+                            MessageType::Error,
+                        )
+                        .with_details(e);
+                    }
+                }
             }
             return;
         }

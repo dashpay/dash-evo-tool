@@ -116,6 +116,13 @@ pub fn max_amount_after_fee_reserve(spendable_duffs: u64, fee_credits: u64) -> u
         .saturating_sub(fee_credits)
 }
 
+/// Round a DASH amount up to 4 decimal places — the precision of the `dash:`
+/// payment URI. Rounding up (never to nearest) guarantees the amount shown in
+/// the hint and encoded in the QR never understates the true minimum needed.
+pub fn round_up_dash_4dp(dash: f64) -> f64 {
+    (dash * 10_000.0).ceil() / 10_000.0
+}
+
 /// Duffs received, in this event, by the one address shown to the user as their
 /// deposit target. Sums the value of every output paying exactly `funding_address`
 /// (single-address equality, not wallet-membership), so a deposit to any other
@@ -128,11 +135,12 @@ pub fn deposit_matches(
     funding_address: Option<&Address>,
     outputs: &[(OutPoint, TxOut, Address)],
 ) -> u64 {
+    // Saturating fold: output values come from attacker-influenced Core tx data,
+    // so a crafted overflow can never wrap the running total.
     outputs
         .iter()
         .filter(|(_, _, address)| Some(address) == funding_address)
-        .map(|(_, tx_out, _)| tx_out.value)
-        .sum()
+        .fold(0u64, |acc, (_, tx_out, _)| acc.saturating_add(tx_out.value))
 }
 
 /// Next funding step after a received-UTXO event arrives while awaiting a
@@ -349,6 +357,17 @@ mod tests {
                 "label must not leak enum jargon: {label}"
             );
         }
+    }
+
+    /// DOC-2: the hint and the QR URI must agree, and never ask for less than
+    /// the true minimum — so a value with a 5th decimal digit rounds up, and one
+    /// already at 4dp is left unchanged.
+    #[test]
+    fn round_up_dash_4dp_never_understates_the_minimum() {
+        assert_eq!(format!("{:.4}", round_up_dash_4dp(0.00011)), "0.0002");
+        assert_eq!(format!("{:.4}", round_up_dash_4dp(0.00019)), "0.0002");
+        assert_eq!(format!("{:.4}", round_up_dash_4dp(0.0001)), "0.0001");
+        assert_eq!(format!("{:.4}", round_up_dash_4dp(0.0)), "0.0000");
     }
 
     #[test]

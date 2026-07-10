@@ -62,7 +62,13 @@ pub(crate) type SettingsCacheGuard<'a> = RwLockWriteGuard<'a, Option<AppSettings
 pub struct AppContext {
     pub(crate) data_dir: PathBuf,
     pub(crate) network: Network,
-    developer_mode: AtomicBool,
+    /// App-global Expert Mode flag. A single `Arc<AtomicBool>` is created once by
+    /// `AppState` and shared into every per-network `AppContext`, so toggling it
+    /// on any context is observed by all of them (present and lazily created on a
+    /// later network switch). Never a per-context `AtomicBool` — that would let
+    /// the left-nav feature gate read a stale value on whichever context the app
+    /// renders from.
+    developer_mode: Arc<AtomicBool>,
     pub(crate) db: Arc<Database>,
     pub(crate) sdk: ArcSwap<Sdk>,
     // SDK context provider (quorum keys via DAPI). Chain sync is SPV-only,
@@ -220,6 +226,7 @@ impl AppContext {
         egui_ctx: egui::Context,
         app_kv: Arc<DetKv>,
         secret_store: Arc<SecretStore>,
+        developer_mode: Arc<AtomicBool>,
     ) -> Option<Arc<Self>> {
         let config = match Config::load_from(&data_dir) {
             Ok(config) => config,
@@ -310,7 +317,7 @@ impl AppContext {
         let single_key_wallets: BTreeMap<SingleKeyHash, Arc<RwLock<SingleKeyWallet>>> =
             BTreeMap::new();
 
-        let developer_mode_enabled = config.developer_mode.unwrap_or(false);
+        let developer_mode_enabled = developer_mode.load(Ordering::Relaxed);
 
         let animate = match developer_mode_enabled {
             true => {
@@ -331,7 +338,7 @@ impl AppContext {
         let app_context = AppContext {
             data_dir,
             network,
-            developer_mode: AtomicBool::new(developer_mode_enabled),
+            developer_mode,
             db,
             sdk: ArcSwap::from_pointee(sdk),
             spv_context_provider: spv_provider.into(),
@@ -737,6 +744,12 @@ impl AppContext {
 
     pub fn is_developer_mode(&self) -> bool {
         self.developer_mode.load(Ordering::Relaxed)
+    }
+
+    /// A clone of the shared app-global Expert Mode flag, for wiring a
+    /// newly-created per-network context to the same flag (see the field docs).
+    pub fn developer_mode_handle(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.developer_mode)
     }
 
     /// Repaints the UI if animations are enabled.
@@ -1375,6 +1388,7 @@ mod tests {
             egui::Context::default(),
             app_kv,
             secret_store,
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         )
         .expect("offline testnet AppContext::new");
         let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
@@ -1383,6 +1397,76 @@ mod tests {
             .await
             .expect("wire wallet backend offline");
         (temp_dir, ctx)
+    }
+
+    /// Regression (mn-live-qa Bug 1): `developer_mode` is a single app-global
+    /// flag shared by every per-network `AppContext`. Toggling it on the context
+    /// for one network must be observable from the context for another —
+    /// otherwise the left-nav feature gate (`FeatureGate::DeveloperMode`) reads a
+    /// stale value on whichever per-network context the app renders from, and the
+    /// Expert-Mode-gated Masternodes tab never appears until an app restart
+    /// re-reads the persisted flag from config.
+    #[test]
+    fn developer_mode_is_shared_across_network_contexts() {
+        use crate::app_dir::ensure_env_file;
+        use crate::context::connection_status::ConnectionStatus;
+        use crate::database::test_helpers::create_database_at_path;
+        use crate::utils::tasks::TaskManager;
+        use dash_sdk::dpp::dashcore::Network;
+
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = temp_dir.path().to_path_buf();
+        ensure_env_file(&data_dir);
+        let db =
+            std::sync::Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
+        let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
+        let secret_store = AppContext::open_secret_store(&data_dir).expect("secret store");
+        let subtasks = std::sync::Arc::new(TaskManager::new());
+        let connection_status = std::sync::Arc::new(ConnectionStatus::new());
+        let egui_ctx = egui::Context::default();
+        // A single app-global developer-mode flag, owned by `AppState` and shared
+        // into every per-network context (mirrors the real construction path).
+        let developer_mode = std::sync::Arc::new(AtomicBool::new(false));
+
+        // The startup context (Mainnet) and a second context (Testnet) built the
+        // way `AppState` builds one on a live network switch — reusing the shared
+        // db / kv / secret store / developer-mode flag.
+        let mainnet = AppContext::new(
+            data_dir.clone(),
+            Network::Mainnet,
+            db.clone(),
+            subtasks.clone(),
+            connection_status.clone(),
+            egui_ctx.clone(),
+            app_kv.clone(),
+            secret_store.clone(),
+            developer_mode.clone(),
+        )
+        .expect("mainnet AppContext::new");
+        let testnet = AppContext::new(
+            data_dir,
+            Network::Testnet,
+            db,
+            subtasks,
+            connection_status,
+            egui_ctx,
+            app_kv,
+            secret_store,
+            developer_mode,
+        )
+        .expect("testnet AppContext::new");
+
+        assert!(!mainnet.is_developer_mode());
+        assert!(!testnet.is_developer_mode());
+
+        // Toggle Expert Mode on ONE context, exactly as the Settings checkbox does.
+        mainnet.enable_developer_mode(true);
+
+        assert!(
+            testnet.is_developer_mode(),
+            "developer mode toggled on one network's context must be visible on \
+             another network's context"
+        );
     }
 
     /// Seed one wallet-less identity of `identity_type` into the live identity

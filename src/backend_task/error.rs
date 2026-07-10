@@ -1087,6 +1087,16 @@ pub enum TaskError {
     )]
     MalformedProTxHash { input: String },
 
+    /// A syntactically valid ProTxHash resolved to no masternode or evonode on
+    /// the network. Carries the resolved identity id so the user can double-check
+    /// which value was looked up. Distinct from `IdentityNotFound` so the message
+    /// speaks about a masternode, matching the load form the user is in.
+    #[error(
+        "No masternode or evonode was found on the network for this ProTxHash. Check the \
+         ProTxHash and try again, or confirm the node is registered on this network."
+    )]
+    MasternodeNotFound { identity_id: Identifier },
+
     /// The identity could not be constructed from the given parameters.
     #[error("Could not create the identity. Please check your input and try again.")]
     IdentityCreationError {
@@ -3824,6 +3834,30 @@ mod tests {
         assert!(
             msg.contains("does not exist"),
             "Expected existence message, got: {msg}"
+        );
+    }
+
+    /// mn-live-qa Bug 2: a masternode load that resolves to no node on chain must
+    /// surface a node-specific message — never the generic identity-not-found
+    /// copy, whose "ID or name" wording is wrong for a ProTxHash load form.
+    #[test]
+    fn masternode_not_found_message_is_node_specific() {
+        let node_msg = TaskError::MasternodeNotFound {
+            identity_id: Identifier::random(),
+        }
+        .to_string();
+        assert!(
+            node_msg.contains("masternode"),
+            "Expected a masternode-specific message, got: {node_msg}"
+        );
+        let generic_msg = TaskError::IdentityNotFound.to_string();
+        assert!(
+            !node_msg.contains("ID or name"),
+            "The node message must not reuse the generic identity 'ID or name' copy: {node_msg}"
+        );
+        assert_ne!(
+            node_msg, generic_msg,
+            "MasternodeNotFound must not reuse the IdentityNotFound message"
         );
     }
 

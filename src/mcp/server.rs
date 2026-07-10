@@ -380,6 +380,9 @@ pub async fn init_app_context() -> Result<Arc<AppContext>, McpError> {
         egui::Context::default(),
         app_kv,
         secret_store,
+        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+            config.developer_mode.unwrap_or(false),
+        )),
     )
     .ok_or_else(|| {
         McpError::internal_error(

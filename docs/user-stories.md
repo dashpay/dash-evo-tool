@@ -1348,3 +1348,12 @@ As an evonode operator, I want to jump to token-reward claiming from the node's 
 
 - An Evonode's detail view shows "Claim token rewards ›", routing to the existing Claim Tokens screen for that identity.
 - The action is hidden entirely on a plain Masternode's detail view.
+
+### MN-010: Keep the Masternodes tab consistent across a network switch [Implemented]
+**Persona:** Priya
+
+As a masternode operator, I want the Masternodes tab to reset to a clean state when I switch the active network, so that I never act on a node, form, or error that belonged to the network I just left.
+
+- Switching networks while the Masternodes tab is on the List view (including with a filled-but-unsubmitted Load form) returns to the empty List view for the newly active network — no leftover ProTxHash/alias/key input from the previous network's form.
+- Error and status banners raised on the previous network (e.g. a failed load, a disconnect notice) are cleared by the switch rather than lingering over the new network's view.
+- Verified by manual walkthrough switching Testnet → Mainnet → Testnet from a dirty Load form; each switch landed cleanly on the empty List with no stale data or banners.

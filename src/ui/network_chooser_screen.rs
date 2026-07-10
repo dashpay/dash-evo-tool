@@ -39,16 +39,6 @@ enum DatabaseClearMessage {
     Error(String),
 }
 
-/// One-line description of what each interface mode reveals, shown under the
-/// role selector.
-fn role_description(role: UserRole) -> &'static str {
-    match role {
-        UserRole::Everyday => "Balances, send and receive, and usernames.",
-        UserRole::Power => "Adds account details, address tables, and masternode tools.",
-        UserRole::Developer => "Adds raw protocol data, Devnet, and signing overrides.",
-    }
-}
-
 /// Renders DAPI endpoint status with appropriate color coding.
 fn add_dapi_status_label(
     ui: &mut Ui,
@@ -474,6 +464,44 @@ impl NetworkChooserScreen {
             }
         });
 
+        // Interface mode — rendered above Advanced Settings (which force-collapses
+        // on every arrival) so the role selector is always discoverable.
+        ui.add_space(16.0);
+        StyledCard::new().padding(20.0).show(ui, |ui| {
+            ui.label(
+                egui::RichText::new("Interface mode")
+                    .strong()
+                    .color(DashColors::text_primary(dark_mode)),
+            );
+            ui.add_space(4.0);
+
+            let previous_role = self.selected_role;
+            ui.horizontal(|ui| {
+                for role in [UserRole::Everyday, UserRole::Power, UserRole::Developer] {
+                    ui.radio_value(&mut self.selected_role, role, role.label());
+                }
+            });
+
+            ui.add_space(2.0);
+            ui.label(
+                egui::RichText::new(self.selected_role.description())
+                    .color(DashColors::text_secondary(dark_mode))
+                    .italics(),
+            );
+
+            if self.selected_role != previous_role {
+                // The role is app-global and shared by every per-network context;
+                // persist it as the canonical AppSettings value and publish it to
+                // the shared runtime atomic in one call.
+                self.current_app_context()
+                    .set_and_persist_user_role(self.selected_role);
+                // Raising the role also disables animations, which stops the
+                // continuous repaints, so request one so newly-gated nav entries
+                // (e.g. Masternodes) appear immediately.
+                ui.ctx().request_repaint();
+            }
+        });
+
         // Advanced Settings section with clean dropdown
         ui.add_space(16.0);
 
@@ -611,53 +639,6 @@ impl NetworkChooserScreen {
                             });
                     });
                 });
-
-                ui.add_space(8.0);
-
-                ui.label(
-                    egui::RichText::new("Interface mode")
-                        .strong()
-                        .color(DashColors::text_primary(dark_mode)),
-                );
-                ui.add_space(4.0);
-
-                let previous_role = self.selected_role;
-                ui.horizontal(|ui| {
-                    ui.radio_value(
-                        &mut self.selected_role,
-                        UserRole::Everyday,
-                        "Default view",
-                    );
-                    ui.radio_value(
-                        &mut self.selected_role,
-                        UserRole::Power,
-                        "Detailed view",
-                    );
-                    ui.radio_value(
-                        &mut self.selected_role,
-                        UserRole::Developer,
-                        "Developer tools",
-                    );
-                });
-
-                ui.add_space(2.0);
-                ui.label(
-                    egui::RichText::new(role_description(self.selected_role))
-                        .color(DashColors::TEXT_SECONDARY)
-                        .italics(),
-                );
-
-                if self.selected_role != previous_role {
-                    // The role is app-global and shared by every per-network
-                    // context; persist it as the canonical AppSettings value and
-                    // publish it to the shared runtime atomic in one call.
-                    self.current_app_context()
-                        .set_and_persist_user_role(self.selected_role);
-                    // Raising the role also disables animations, which stops the
-                    // continuous repaints, so request one so newly-gated nav
-                    // entries (e.g. Masternodes) appear immediately.
-                    ui.ctx().request_repaint();
-                }
 
                 // Developer-tools sub-panel — Developer role only.
                 if self.selected_role.at_least(UserRole::Developer) {
@@ -1439,6 +1420,10 @@ impl ScreenLike for NetworkChooserScreen {
         // Reload settings from the shared app k/v store to ensure we have the latest values
         let settings = self.current_app_context().get_app_settings();
         self.theme_preference = settings.theme_mode;
+        // Re-sync the role selector with the app-global role, which may have
+        // changed on another surface (e.g. the onboarding row) since this cached
+        // root screen was constructed.
+        self.selected_role = self.current_app_context().user_role();
     }
 
     fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {

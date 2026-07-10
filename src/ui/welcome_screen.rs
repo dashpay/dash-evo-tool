@@ -109,9 +109,9 @@ impl WelcomeScreen {
         let mut role = self.app_context.user_role();
         let previous = role;
         ui.horizontal(|ui| {
-            ui.radio_value(&mut role, UserRole::Everyday, "Everyday");
-            ui.radio_value(&mut role, UserRole::Power, "Power");
-            ui.radio_value(&mut role, UserRole::Developer, "Developer");
+            for option in [UserRole::Everyday, UserRole::Power, UserRole::Developer] {
+                ui.radio_value(&mut role, option, option.label());
+            }
         });
 
         if role != previous {
@@ -120,6 +120,13 @@ impl WelcomeScreen {
         }
 
         ui.add_space(6.0);
+        // Description of the selected mode, then a reversibility hint.
+        ui.label(
+            RichText::new(role.description())
+                .size(12.0)
+                .color(DashColors::text_secondary(dark_mode)),
+        );
+        ui.add_space(2.0);
         ui.label(
             RichText::new("You can change this later in Network Settings.")
                 .size(11.0)

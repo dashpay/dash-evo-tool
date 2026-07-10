@@ -18,7 +18,10 @@ pub fn clicked_outside_window(ctx: &egui::Context, window_rect: egui::Rect) -> b
 use crate::{
     app::AppAction,
     context::AppContext,
-    model::{qualified_contract::QualifiedContract, qualified_identity::QualifiedIdentity},
+    model::{
+        qualified_contract::QualifiedContract, qualified_identity::QualifiedIdentity,
+        user_role::UserRole,
+    },
     ui::contracts_documents::group_actions_screen::GroupActionsScreen,
     ui::theme::DashColors,
     ui::{RootScreenType, Screen, identities::keys::add_key_screen::AddKeyScreen},
@@ -517,7 +520,7 @@ pub fn add_key_chooser_with_doc_type(
     transaction_type: TransactionType,
     document_type: Option<&DocumentType>,
 ) -> AppAction {
-    let is_dev_mode = app_context.is_developer_mode();
+    let is_dev_mode = app_context.user_role().at_least(UserRole::Developer);
     let mut action = AppAction::None;
 
     let allowed_purposes = transaction_type.allowed_purposes();
@@ -592,7 +595,7 @@ pub fn add_identity_key_chooser_with_doc_type<'a, T>(
 where
     T: Iterator<Item = &'a QualifiedIdentity>,
 {
-    let is_dev_mode = app_context.is_developer_mode();
+    let is_dev_mode = app_context.user_role().at_least(UserRole::Developer);
     let mut action = AppAction::None;
 
     egui::Grid::new("identity_key_chooser_grid")

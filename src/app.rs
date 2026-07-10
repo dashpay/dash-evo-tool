@@ -13,6 +13,7 @@ use crate::backend_task::error::TaskError;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::context::connection_status::{ConnectionStatus, OverallConnectionState};
+use crate::context::feature_gate::FeatureGate;
 use crate::context::migration_status::MigrationStep;
 use crate::database::Database;
 use crate::model::settings::AppSettings;
@@ -1063,12 +1064,12 @@ impl AppState {
     }
 
     pub fn active_root_screen_mut(&mut self) -> &mut Screen {
-        // Live de-gating (§10.11): if Expert Mode flipped off while the
+        // Live de-gating (§10.11): if the role dropped below Power while the
         // Masternodes tab was active, fall back to the neutral Identities tab so
-        // the Expert-gated screen is never shown without its gate. Identities is
-        // always registered, so the subsequent lookup cannot fail.
+        // the gated screen is never shown without its gate. Identities is always
+        // registered, so the subsequent lookup cannot fail.
         if self.selected_main_screen == RootScreenType::RootScreenMasternodes
-            && !self.current_app_context().is_developer_mode()
+            && !FeatureGate::Masternodes.is_available(self.current_app_context())
         {
             self.selected_main_screen = RootScreenType::RootScreenIdentities;
         }

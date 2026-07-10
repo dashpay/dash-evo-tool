@@ -2,6 +2,7 @@ use crate::app::AppAction;
 use crate::backend_task::BackendTask;
 use crate::backend_task::tokens::TokenTask;
 use crate::model::amount::Amount;
+use crate::model::user_role::UserRole;
 use crate::ui::components::MessageBanner;
 use crate::ui::helpers::clicked_outside_window;
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
@@ -331,7 +332,7 @@ impl TokensScreen {
 
         let mut detail_list: Vec<IdentityTokenMaybeBalanceWithActions> = vec![];
 
-        let in_dev_mode = self.app_context.is_developer_mode();
+        let in_dev_mode = self.app_context.user_role().at_least(UserRole::Power);
 
         for (identity_id, identity) in identities {
             let record = if let Some(known_token_balance) =
@@ -379,7 +380,7 @@ impl TokensScreen {
 
         // Space allocation for UI elements is handled by the layout system
 
-        let in_dev_mode = self.app_context.is_developer_mode();
+        let in_dev_mode = self.app_context.user_role().at_least(UserRole::Power);
 
         let shows_estimation_column = in_dev_mode
             || token_info

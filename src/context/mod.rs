@@ -427,16 +427,6 @@ impl AppContext {
         self.user_role().at_least(UserRole::Power)
     }
 
-    /// Compat shim for the retired binary Expert Mode toggle: `true` sets the
-    /// Power role, `false` returns to Everyday. Prefer [`set_user_role`](Self::set_user_role).
-    pub fn enable_developer_mode(&self, enable: bool) {
-        self.set_user_role(if enable {
-            UserRole::Power
-        } else {
-            UserRole::Everyday
-        });
-    }
-
     pub fn data_dir(&self) -> &std::path::Path {
         &self.data_dir
     }
@@ -771,13 +761,6 @@ impl AppContext {
         PlatformFeeEstimator::with_fee_multiplier(self.fee_multiplier_permille())
     }
 
-    /// Compat shim for the retired binary Expert Mode flag: true iff the role
-    /// is at least Power. Prefer [`user_role`](Self::user_role) with
-    /// [`UserRole::at_least`].
-    pub fn is_developer_mode(&self) -> bool {
-        self.user_role().at_least(UserRole::Power)
-    }
-
     /// A clone of the shared app-global role atomic, for wiring a newly-created
     /// per-network context to the same value (see the field docs).
     pub fn user_role_handle(&self) -> Arc<AtomicU8> {
@@ -799,7 +782,9 @@ impl AppContext {
     }
 
     pub fn state_transition_options(&self) -> Option<StateTransitionCreationOptions> {
-        if self.is_developer_mode() {
+        // Signing override: only the Developer role may relax the security-level
+        // and purpose checks when signing a state transition.
+        if self.user_role().at_least(UserRole::Developer) {
             Some(StateTransitionCreationOptions {
                 signing_options: StateTransitionSigningOptions {
                     allow_signing_with_any_security_level: true,
@@ -1431,15 +1416,15 @@ mod tests {
         (temp_dir, ctx)
     }
 
-    /// Regression (mn-live-qa Bug 1): `developer_mode` is a single app-global
-    /// flag shared by every per-network `AppContext`. Toggling it on the context
-    /// for one network must be observable from the context for another —
-    /// otherwise the left-nav feature gate (`FeatureGate::DeveloperMode`) reads a
-    /// stale value on whichever per-network context the app renders from, and the
-    /// Expert-Mode-gated Masternodes tab never appears until an app restart
-    /// re-reads the persisted flag from config.
+    /// Regression (mn-live-qa Bug 1): the user role is a single app-global value
+    /// shared by every per-network `AppContext`. Setting it on the context for
+    /// one network must be observable from the context for another — otherwise
+    /// the left-nav feature gate (`FeatureGate::Masternodes`) reads a stale value
+    /// on whichever per-network context the app renders from, and the
+    /// Power-gated Masternodes tab never appears until an app restart re-reads
+    /// the persisted role.
     #[test]
-    fn developer_mode_is_shared_across_network_contexts() {
+    fn user_role_is_shared_across_network_contexts() {
         use crate::app_dir::ensure_env_file;
         use crate::context::connection_status::ConnectionStatus;
         use crate::database::test_helpers::create_database_at_path;
@@ -1488,16 +1473,17 @@ mod tests {
         )
         .expect("testnet AppContext::new");
 
-        assert!(!mainnet.is_developer_mode());
-        assert!(!testnet.is_developer_mode());
+        assert_eq!(mainnet.user_role(), UserRole::Everyday);
+        assert_eq!(testnet.user_role(), UserRole::Everyday);
 
-        // Toggle Expert Mode on ONE context, exactly as the Settings checkbox does.
-        mainnet.enable_developer_mode(true);
+        // Raise the role on ONE context, exactly as the Settings selector does.
+        mainnet.set_user_role(UserRole::Power);
 
-        assert!(
-            testnet.is_developer_mode(),
-            "developer mode toggled on one network's context must be visible on \
-             another network's context"
+        assert_eq!(
+            testnet.user_role(),
+            UserRole::Power,
+            "a role set on one network's context must be visible on another \
+             network's context"
         );
     }
 

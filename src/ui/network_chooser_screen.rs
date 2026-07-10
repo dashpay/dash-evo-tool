@@ -6,6 +6,7 @@ use crate::config::Config;
 use crate::context::AppContext;
 use crate::context::connection_status::OverallConnectionState;
 use crate::model::spv_status::{SpvStatus, SpvStatusSnapshot};
+use crate::model::user_role::UserRole;
 use crate::model::wallet::DerivationPathHelpers;
 use crate::ui::components::MessageBanner;
 use crate::ui::components::component_trait::Component;
@@ -108,7 +109,7 @@ impl NetworkChooserScreen {
         }
 
         let current_context = contexts.get(&current_network).unwrap_or(any_context);
-        let developer_mode = current_context.is_developer_mode();
+        let developer_mode = current_context.user_role().at_least(UserRole::Power);
 
         let settings = current_context.get_app_settings();
         let theme_preference = settings.theme_mode;
@@ -612,10 +613,15 @@ impl NetworkChooserScreen {
                         )
                         .clicked()
                     {
-                        // Expert Mode is a single app-global flag shared by every
-                        // per-network context, so toggling it on one updates all.
-                        self.current_app_context()
-                            .enable_developer_mode(self.developer_mode);
+                        // Expert Mode is the app-global user role shared by every
+                        // per-network context, so setting it on one updates all.
+                        // The binary checkbox maps to Power; a three-way selector
+                        // replaces it in a later phase.
+                        self.current_app_context().set_user_role(if self.developer_mode {
+                            UserRole::Power
+                        } else {
+                            UserRole::Everyday
+                        });
                         // Re-render the nav immediately: enabling Expert Mode also
                         // disables animations, which stops continuous repaints, so
                         // request one so the Masternodes nav entry appears now.

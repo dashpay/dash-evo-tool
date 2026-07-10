@@ -55,12 +55,12 @@ fn it_onboard_01_renders_heading_and_both_ctas() {
             "onboarding must render the 'I already have an identity — load it' secondary button"
         );
 
-        // Developer Mode footer must be absent on the Alex persona default.
-        // The label `Developer tools:` is rendered only when
-        // `AppContext::is_developer_mode()` returns `true`.
+        // Developer-tools footer must be absent on the Alex persona default.
+        // The label `Developer tools:` is rendered only at the Power role or
+        // above (`user_role().at_least(UserRole::Power)`).
         assert!(
             harness.query_by_label("Developer tools:").is_none(),
-            "Developer Mode footer must be hidden when developer mode is off"
+            "Developer-tools footer must be hidden at the Everyday role"
         );
     });
 }

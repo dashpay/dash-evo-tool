@@ -1,6 +1,6 @@
 use crate::app::AppAction;
 use crate::context::AppContext;
-use crate::context::feature_gate::FeatureGate;
+use crate::context::feature_gate::ExperimentalFeature;
 use crate::ui::RootScreenType;
 use crate::ui::components::subscreen_chooser_panel::{
     SubscreenNavItem, add_subscreen_chooser_panel,
@@ -14,9 +14,9 @@ pub fn add_dashpay_subscreen_chooser_panel(
     app_context: &Arc<AppContext>,
     current_subscreen: DashPaySubscreen,
 ) -> AppAction {
-    // Payment History is experimental (developer mode only).
+    // Payment History is an experimental DashPay feature.
     let mut subscreens = vec![DashPaySubscreen::Profile, DashPaySubscreen::Contacts];
-    if FeatureGate::DeveloperMode.is_available(app_context) {
+    if app_context.experimental_enabled(ExperimentalFeature::DashPay) {
         subscreens.push(DashPaySubscreen::Payments);
     }
     subscreens.push(DashPaySubscreen::ProfileSearch);

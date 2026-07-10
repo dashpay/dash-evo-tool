@@ -61,6 +61,7 @@ use crate::app::{AppAction, DesiredAppAction};
 use crate::context::AppContext;
 use crate::model::amount::Amount;
 use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
+use crate::model::user_role::UserRole;
 use crate::model::wallet::Wallet;
 use crate::ui::components::MessageBanner;
 use crate::ui::components::amount_input::AmountInput;
@@ -1321,7 +1322,7 @@ fn my_tokens(
         Option<dash_sdk::dpp::tokens::token_pricing_schedule::TokenPricingSchedule>,
     >,
 ) -> IndexMap<IdentityTokenIdentifier, IdentityTokenBalanceWithActions> {
-    let in_dev_mode = app_context.is_developer_mode();
+    let in_dev_mode = app_context.user_role().at_least(UserRole::Power);
 
     app_context
         .identity_token_balances()

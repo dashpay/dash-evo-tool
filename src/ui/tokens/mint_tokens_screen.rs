@@ -6,6 +6,7 @@ use crate::backend_task::{BackendTask, BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::amount::Amount;
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::user_role::UserRole;
 use crate::ui::MessageType;
 use crate::ui::components::MessageBanner;
 use crate::ui::components::amount_input::AmountInput;
@@ -107,7 +108,7 @@ impl TokenAction for MintAction {
 
         let distribution_rules = ctx.info.token_config.distribution_rules();
         if distribution_rules.minting_allow_choosing_destination()
-            || ctx.app_context.is_developer_mode()
+            || ctx.app_context.user_role().at_least(UserRole::Power)
         {
             let destination_optional = distribution_rules
                 .new_tokens_destination_identity()

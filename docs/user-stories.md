@@ -204,12 +204,12 @@ As a user, I want to see clear tabs for Dash Core, Platform, and Shielded so tha
 - Empty accounts display "(empty)" indicator.
 - Switching tabs is instant with no data reload.
 
-### WAL-022: View system accounts in developer mode [Implemented]
-**Persona:** Jordan
+### WAL-022: View system accounts in the Detailed view [Implemented]
+**Persona:** Priya, Jordan
 
-As a developer, I want a System tab that reveals all internal account categories (Identity Registration, CoinJoin, Provider keys, etc.) so that I can inspect low-level wallet structure without cluttering the default view.
+As a power user, I want a System tab that reveals all internal account categories (Identity Registration, CoinJoin, Provider keys, etc.) so that I can inspect low-level wallet structure without cluttering the default view.
 
-- System tab appears only when developer mode is enabled.
+- System tab appears only at the Power role (Detailed view) or above.
 - Each system account category is shown as a collapsible section.
 - Section headers display address count and balance.
 

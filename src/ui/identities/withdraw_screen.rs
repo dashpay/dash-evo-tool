@@ -89,9 +89,14 @@ impl WithdrawalScreen {
                     .flatten()
                     .cloned()
             });
-        let selected_wallet = get_selected_wallet(&identity, None, selected_key.as_ref())
-            .or_show_error(app_context.egui_ctx())
-            .unwrap_or(None);
+        // With no key there is nothing to resolve a wallet from; skip the call so
+        // get_selected_wallet's "no key provided" Err path stays unreachable here.
+        let selected_wallet = match selected_key.as_ref() {
+            Some(key) => get_selected_wallet(&identity, None, Some(key))
+                .or_show_error(app_context.egui_ctx())
+                .unwrap_or(None),
+            None => None,
+        };
         Self {
             identity,
             selected_key,

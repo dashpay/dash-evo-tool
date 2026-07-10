@@ -1855,15 +1855,8 @@ impl WalletBackend {
                         managed.add_incoming_contact_request(contact_request, &persister)
                     }
                 };
-                // TODO(platform-pr3968): `From<PersistenceError> for
-                // PlatformWalletError` doesn't exist at this rev — wrap via
-                // the generic `Persistence(String)` variant instead of
-                // `.into()`. Restore the typed conversion once platform
-                // re-adds it.
                 recorded.map_err(|e| TaskError::WalletBackend {
-                    source: Box::new(platform_wallet::error::PlatformWalletError::Persistence(
-                        e.to_string(),
-                    )),
+                    source: Box::new(e.into()),
                 })?;
             }
             None => match direction {
@@ -2285,13 +2278,12 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
         // Every remaining variant → generic WalletBackend wrapper.
         //
         // TODO(platform-pr3968): `RehydrationTopologyUnsupported`,
-        // `RehydrationPoolMismatch`, `RehydrationPoolTypeMismatch`,
-        // `PersisterLoad`, `AddressNonceMismatch`, and
+        // `RehydrationPoolMismatch`, `RehydrationPoolTypeMismatch`, and
         // `ShieldedShutdownIncomplete` don't exist on `PlatformWalletError` at
-        // this rev — all six already mapped to this same generic wrapper, so
-        // removing their arms changes no behavior for variants that still
-        // exist. Restore once platform re-adds them.
+        // this rev; they belong in this bucket once platform re-adds them.
         other @ (P::WalletCreation(_)
+        | P::PersisterLoad(_)
+        | P::AddressNonceMismatch { .. }
         | P::WalletNotFound(_)
         | P::WalletAlreadyExists(_)
         | P::IdentityAlreadyExists(_)
@@ -2503,8 +2495,12 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
         | P::ShieldedKeyDerivation(_)
         | P::ShieldedNoRecordedAnchor(_)
         | P::ShieldedNotBound
+        | P::PersisterLoad(_)
         | P::Persistence(_)
         | P::SeedMismatch { .. }
+        // Address nonce desync is a precondition/state fault unrelated to
+        // identity registration; bucket as Other.
+        | P::AddressNonceMismatch { .. }
         // Broadcast was accepted but its execution result is unconfirmed — the
         // op may already be on chain, so it is neither a rejection nor a
         // finality timeout. Bucket as Other; the upstream contract says the
@@ -2512,12 +2508,10 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
         | P::TransactionBroadcastUnconfirmed(_)
         | P::ShieldedBroadcastUnconfirmed { .. }
         | P::ShieldedSpendUnconfirmed { .. } => IdentityOpErrorKind::Other,
-        // TODO(platform-pr3968): `PersisterLoad`, `RehydrationTopologyUnsupported`,
-        // `RehydrationPoolMismatch`, `RehydrationPoolTypeMismatch`,
-        // `AddressNonceMismatch`, and `ShieldedShutdownIncomplete` don't exist
-        // on `PlatformWalletError` at this rev — all six already bucketed as
-        // `Other` here, so removing their arms changes no behavior for
-        // variants that still exist. Restore once platform re-adds them.
+        // TODO(platform-pr3968): `RehydrationTopologyUnsupported`,
+        // `RehydrationPoolMismatch`, `RehydrationPoolTypeMismatch`, and
+        // `ShieldedShutdownIncomplete` don't exist on `PlatformWalletError` at
+        // this rev; they belong in the `Other` bucket once platform re-adds them.
     }
 }
 

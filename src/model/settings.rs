@@ -90,6 +90,11 @@ pub enum RootScreenType {
     /// screens are still wired. Distinct variant so user selection, persistence, and
     /// left-nav highlighting stay independent.
     RootScreenIdentityHub,
+    /// Masternodes section (Expert-Mode gated). Node-operator surface for
+    /// loading masternode/evonode identities, DPNS-contest voting, and
+    /// owner/voting/payout key management. Distinct variant so its nav gating,
+    /// selection, and persistence stay independent of the everyday-user tabs.
+    RootScreenMasternodes,
 }
 
 impl RootScreenType {
@@ -123,6 +128,7 @@ impl RootScreenType {
             RootScreenType::RootScreenToolsGroveSTARKScreen => 25,
             RootScreenType::RootScreenToolsAddressBalanceScreen => 26,
             RootScreenType::RootScreenIdentityHub => 27,
+            RootScreenType::RootScreenMasternodes => 28,
         }
     }
 
@@ -156,6 +162,7 @@ impl RootScreenType {
             25 => Some(RootScreenType::RootScreenToolsGroveSTARKScreen),
             26 => Some(RootScreenType::RootScreenToolsAddressBalanceScreen),
             27 => Some(RootScreenType::RootScreenIdentityHub),
+            28 => Some(RootScreenType::RootScreenMasternodes),
             _ => None,
         }
     }
@@ -176,6 +183,18 @@ mod root_screen_type_tests {
         // existing user settings continue to round-trip correctly as new
         // variants are added.
         assert_eq!(encoded, 27);
+    }
+
+    #[test]
+    fn masternodes_round_trips() {
+        let rt = RootScreenType::RootScreenMasternodes;
+        let encoded = rt.to_int();
+        let decoded = RootScreenType::from_int(encoded)
+            .expect("new masternodes variant must round-trip through from_int");
+        assert_eq!(rt, decoded);
+        // Value 28 is the canonical on-disk encoding — keep it stable so
+        // persisted user settings continue to round-trip as variants are added.
+        assert_eq!(encoded, 28);
     }
 
     #[test]

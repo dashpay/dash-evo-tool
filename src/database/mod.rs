@@ -53,8 +53,22 @@ impl Database {
         self.path.clone()
     }
 
+    /// Lock the connection mutex, recovering a poisoned guard instead of
+    /// panicking.
+    ///
+    /// The mutex is poisoned only when a thread panics while holding the DB
+    /// lock. A `rusqlite::Connection` is a plain handle with no cross-call
+    /// invariant that a panic can break — SQLite manages statement/transaction
+    /// state internally — so the guard is safe to recover. Panicking here would
+    /// turn one unrelated panic into a permanent, cascading failure of every
+    /// subsequent database call, so recovery (matching the wallet-backend
+    /// poison discipline for rebuildable state) is the correct behavior.
+    pub(crate) fn locked_conn(&self) -> std::sync::MutexGuard<'_, Connection> {
+        self.conn.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     pub fn execute<P: Params>(&self, sql: &str, params: P) -> rusqlite::Result<usize> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.locked_conn();
         conn.execute(sql, params)
     }
 
@@ -63,7 +77,7 @@ impl Database {
         let network_str = network.to_string();
 
         {
-            let mut conn = self.conn.lock().unwrap();
+            let mut conn = self.locked_conn();
             let tx = conn.transaction()?;
 
             // DashPay tables (dashpay_profiles, dashpay_contacts,

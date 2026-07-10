@@ -19,6 +19,7 @@
 //! path reuses the same backend and gate instead; it calls
 //! [`CoordinatorGate::reset`] to re-arm the gate for the next `start()`.
 
+use super::poison::MutexRecover;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -73,10 +74,7 @@ impl CoordinatorGate {
     /// action slot is write-once.
     pub(super) fn arm(&self, action: StartAction) {
         {
-            let mut slot = self
-                .action
-                .lock()
-                .expect("coordinator gate action mutex poisoned");
+            let mut slot = self.action.lock_recover();
             if slot.is_some() {
                 tracing::debug!("CoordinatorGate already armed; ignoring second arm");
                 return;
@@ -107,10 +105,7 @@ impl CoordinatorGate {
         if self.fired.swap(true, Ordering::SeqCst) {
             return;
         }
-        let slot = self
-            .action
-            .lock()
-            .expect("coordinator gate action mutex poisoned");
+        let slot = self.action.lock_recover();
         if let Some(action) = slot.as_ref() {
             tracing::info!("Masternode list synced; starting Platform sync coordinators");
             action();
@@ -120,9 +115,7 @@ impl CoordinatorGate {
     /// Pure decision: the action may fire when masternodes are ready, an action
     /// is armed, and it has not fired yet. Side-effect-free, unit-testable.
     fn should_fire(&self) -> bool {
-        self.masternodes_ready()
-            && self.action.lock().is_ok_and(|a| a.is_some())
-            && !self.has_fired()
+        self.masternodes_ready() && self.action.lock_recover().is_some() && !self.has_fired()
     }
 
     /// Clear the gate so a restart-in-place reconnect can re-arm it.
@@ -134,10 +127,7 @@ impl CoordinatorGate {
     /// before firing — starting them against a not-yet-synced masternode list
     /// fires proof-verifying DAPI calls that get every queried node banned.
     pub(super) fn reset(&self) {
-        *self
-            .action
-            .lock()
-            .expect("coordinator gate action mutex poisoned") = None;
+        *self.action.lock_recover() = None;
         self.fired.store(false, Ordering::SeqCst);
         self.masternodes_ready.store(false, Ordering::SeqCst);
     }

@@ -94,7 +94,7 @@ impl ContactRequests {
         };
 
         // Seed from the app-scoped selected identity (W3 SYNC); fall back to first.
-        if let Ok(identities) = app_context.load_local_qualified_identities()
+        if let Ok(identities) = app_context.load_local_user_identities()
             && !identities.is_empty()
         {
             use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -273,7 +273,7 @@ impl ContactRequests {
 
         // Seed from the app-scoped selected identity if none yet selected (W3 SYNC).
         if self.selected_identity.is_none()
-            && let Ok(identities) = self.app_context.load_local_qualified_identities()
+            && let Ok(identities) = self.app_context.load_local_user_identities()
             && !identities.is_empty()
         {
             use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -362,7 +362,7 @@ impl ContactRequests {
         // Identity selector or no identities message
         let identities = self
             .app_context
-            .load_local_qualified_identities()
+            .load_local_user_identities()
             .unwrap_or_default();
 
         // Header with identity selector on the right (only shown when not embedded)
@@ -372,7 +372,8 @@ impl ContactRequests {
 
                 if !identities.is_empty() {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        // SYNC: write-back via syncing_global on user pick.
+                        // SYNC: write-back via syncing_global on user pick (FR-6: the source list is
+                        // User-only, so a masternode/evonode can never leak to the app-global identity).
                         let response = ui.add(
                             IdentitySelector::new(
                                 "requests_identity_selector",
@@ -895,7 +896,13 @@ impl ScreenLike for ContactRequests {
                 self.has_fetched_requests = true;
 
                 // Get current identity for saving to database
-                let current_identity_id = self.selected_identity.as_ref().unwrap().identity.id();
+                let Some(selected_identity) = self.selected_identity.as_ref() else {
+                    tracing::warn!(
+                        "Contact requests arrived with no selected identity; skipping save"
+                    );
+                    return;
+                };
+                let current_identity_id = selected_identity.identity.id();
 
                 // Process incoming requests
                 for (id, doc) in incoming.iter() {

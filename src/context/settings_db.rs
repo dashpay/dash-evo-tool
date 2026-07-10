@@ -10,6 +10,7 @@ use super::{AppContext, SettingsCacheGuard};
 use crate::model::settings::{AppSettings, detect_dash_qt_path};
 use crate::ui::RootScreenType;
 use crate::ui::theme::ThemeMode;
+use crate::wallet_backend::poison::RwLockRecover;
 use crate::wallet_backend::{DetScope, KvAdapterError};
 
 impl AppContext {
@@ -68,7 +69,7 @@ impl AppContext {
     /// until the underlying k/v operation completes. This ensures atomicity and
     /// prevents race conditions regardless of whether the write succeeds.
     pub fn invalidate_settings_cache(&'_ self) -> SettingsCacheGuard<'_> {
-        let mut guard = self.cached_settings.write().unwrap();
+        let mut guard = self.cached_settings.write_recover();
         *guard = None;
         guard
     }
@@ -80,7 +81,7 @@ impl AppContext {
     /// in-memory between updates.
     pub fn get_app_settings(&self) -> AppSettings {
         // Fast path: cache hit under a read lock.
-        if let Some(cached) = self.cached_settings.read().unwrap().clone() {
+        if let Some(cached) = self.cached_settings.read_recover().clone() {
             return cached;
         }
 
@@ -88,7 +89,7 @@ impl AppContext {
         // concurrent `set_app_settings` (which also holds this write lock for
         // its whole duration) cannot slip a fresh value in between our read and
         // write and then be clobbered by our stale load.
-        let mut guard = self.cached_settings.write().unwrap();
+        let mut guard = self.cached_settings.write_recover();
         // Double-check: a racer may have populated the cache while we waited.
         if let Some(cached) = guard.clone() {
             return cached;
@@ -237,14 +238,15 @@ mod tests {
             egui::Context::default(),
             app_kv,
             secret_store,
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         )
         .expect("AppContext")
     }
 
-    /// CODE-027 — each `update_app_settings` call observes the state committed
-    /// by the previous call. A closure that reads a field written by an earlier
-    /// update must see it, and independent updates must all accumulate rather
-    /// than the last writer overwriting a stale full-blob snapshot.
+    /// Each `update_app_settings` call observes the state committed by the
+    /// previous call. A closure that reads a field written by an earlier update
+    /// must see it, and independent updates must all accumulate rather than the
+    /// last writer overwriting a stale full-blob snapshot.
     #[test]
     fn update_app_settings_reads_prior_committed_state() {
         use crate::model::settings::UserMode;
@@ -269,7 +271,7 @@ mod tests {
         assert!(got.onboarding_completed, "second update landed");
     }
 
-    /// CODE-027 — concurrent updates to distinct fields must not lose writes.
+    /// Concurrent updates to distinct fields must not lose writes.
     /// Each thread flips its own boolean; under a non-atomic read-modify-write
     /// a thread's stale snapshot would clobber a sibling field written by
     /// another thread. Holding the cache lock across the whole cycle guarantees

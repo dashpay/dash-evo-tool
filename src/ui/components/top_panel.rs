@@ -1,8 +1,11 @@
 use crate::app::{AppAction, DesiredAppAction};
 use crate::context::AppContext;
 use crate::context::connection_status::OverallConnectionState;
-use crate::ui::ScreenType;
+use crate::ui::components::global_nav_switcher::{self, GlobalNavEffect};
+use crate::ui::state::global_nav::{PageNavSpec, PillConsumption};
+use crate::ui::state::hub_selection::HubSelection;
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt, Shadow, Shape};
+use crate::ui::{RootScreenType, ScreenType};
 use egui::{Align2, FontId, Frame, Margin, Panel, RichText, Ui};
 use std::sync::Arc;
 
@@ -337,4 +340,129 @@ pub fn add_top_panel_with_breadcrumb(
     right_buttons: Vec<(&str, DesiredAppAction)>,
 ) -> AppAction {
     render_top_island(ui, app_context, breadcrumb, right_buttons)
+}
+
+/// Standard how-to-change tooltip for an unwired wallet pill (FR-GLOBAL-NAV-2
+/// rule 3). A single translation unit; keep it a complete sentence.
+const TT_WALLET_UNWIRED: &str = "Change the active wallet from the Wallets tab.";
+/// Standard how-to-change tooltip for an unwired identity pill.
+const TT_IDENTITY_UNWIRED: &str = "Change the active identity from the Identity Hub.";
+
+/// An everyday-page global-nav spec with both pills subdued (unwired) — the
+/// Phase-A rollout default. Segment-1 links to the page's own root.
+pub fn subdued_everyday_spec(label: impl Into<String>, target: RootScreenType) -> PageNavSpec {
+    PageNavSpec::unwired_everyday(label, target, TT_WALLET_UNWIRED, TT_IDENTITY_UNWIRED)
+}
+
+/// A wallet-only global-nav spec (no identity/object pill) with the wallet pill
+/// subdued (unwired). For pages with no identity context (e.g. Wallets) —
+/// FR-GLOBAL-NAV-2 rule 4.
+pub fn subdued_wallet_only_spec(label: impl Into<String>, target: RootScreenType) -> PageNavSpec {
+    PageNavSpec::new(label, target).with_wallet_pill(PillConsumption::Unwired {
+        tooltip: TT_WALLET_UNWIRED.to_string(),
+    })
+}
+
+/// Apply a generalized global-nav effect: wallet/identity selection updates the
+/// **app-global** selection silently (no forced navigation — FR-GLOBAL-NAV-2
+/// rule 1); segment-1 navigation and add-flows route to the existing screens.
+///
+/// The shared successor to the hub's `apply_breadcrumb_effect`. The hub keeps
+/// its own richer applier (it also resets identity-scoped caches and opens the
+/// picker); every other root page uses this one.
+pub fn apply_global_nav_effect(
+    app_context: &Arc<AppContext>,
+    effect: GlobalNavEffect,
+) -> AppAction {
+    match effect {
+        GlobalNavEffect::None => AppAction::None,
+        GlobalNavEffect::NavigateToRoot(target) => AppAction::SetMainScreen(target),
+        // Silent app-scoped write, NO forced navigation (FR-GLOBAL-NAV-2 rule
+        // 1). `set_selected_hd_wallet` also reconciles the app-global *identity*
+        // to the new wallet's identities as a side effect (keep-if-owned →
+        // first → None). On a non-Hub page this cross-axis mutation is real and
+        // intentional; combined with the resolution-layer MN/Evonode filter it
+        // must never reconcile onto a masternode/evonode identity — the FR-6
+        // boundary is enforced there, not re-checked here.
+        GlobalNavEffect::SwitchWallet(hash) => {
+            app_context.set_selected_hd_wallet(Some(hash));
+            AppAction::None
+        }
+        GlobalNavEffect::SelectIdentity(id) => {
+            app_context.set_selected_identity(Some(id));
+            AppAction::None
+        }
+        // The page-scoped object selection is owned by its page (B7) and never
+        // writes `AppContext::selected_identity_id`. Unwired pages never emit it.
+        GlobalNavEffect::SelectPageObject(_) => AppAction::None,
+        GlobalNavEffect::AddWallet => {
+            AppAction::SetMainScreen(RootScreenType::RootScreenWalletsBalances)
+        }
+        GlobalNavEffect::AddIdentityCreate | GlobalNavEffect::CreateTestIdentities => {
+            AppAction::AddScreen(ScreenType::AddNewIdentity.create_screen(app_context))
+        }
+        GlobalNavEffect::AddIdentityLoad => {
+            AppAction::AddScreen(ScreenType::AddExistingIdentity.create_screen(app_context))
+        }
+    }
+}
+
+/// Render the top panel with the global-nav switcher for `spec`, then apply its
+/// effect. The one-call entry point every non-Hub root screen uses in place of
+/// [`add_top_panel`]. Unwired specs compose no interactive dropdown, so a
+/// throwaway per-frame search buffer suffices; interactive pages (the Hub,
+/// later Masternodes) own a persistent [`HubSelection`] and wire the effect
+/// themselves.
+pub fn add_top_panel_with_global_nav(
+    ui: &mut Ui,
+    app_context: &Arc<AppContext>,
+    spec: PageNavSpec,
+    right_buttons: Vec<(&str, DesiredAppAction)>,
+) -> AppAction {
+    let mut effect = GlobalNavEffect::None;
+    let mut selection = HubSelection::default();
+    let mut action = render_top_island(
+        ui,
+        app_context,
+        |ui| {
+            effect = global_nav_switcher::render(ui, app_context, &spec, &mut selection);
+            AppAction::None
+        },
+        right_buttons,
+    );
+    action |= apply_global_nav_effect(app_context, effect);
+    action
+}
+
+/// Like [`add_top_panel_with_global_nav`], but also returns the page-scoped
+/// object the user picked from an interactive page-scoped-object pill, if any.
+/// This is the documented consumer of the page-scoped-object boundary pattern
+/// (`IdentityPillScope::PageScopedObject` → `SelectPageObject`) for a page whose
+/// breadcrumb carries an object pill: all other effects (segment-1 nav, wallet
+/// switch) are applied here as usual, while `SelectPageObject` is **only**
+/// surfaced to the caller — never written to `AppContext::selected_identity_id`
+/// (the FR-6 boundary). Returns `(action, picked_page_object)`.
+pub fn add_top_panel_with_global_nav_capturing(
+    ui: &mut Ui,
+    app_context: &Arc<AppContext>,
+    spec: PageNavSpec,
+    right_buttons: Vec<(&str, DesiredAppAction)>,
+) -> (AppAction, Option<dash_sdk::platform::Identifier>) {
+    let mut effect = GlobalNavEffect::None;
+    let mut selection = HubSelection::default();
+    let mut action = render_top_island(
+        ui,
+        app_context,
+        |ui| {
+            effect = global_nav_switcher::render(ui, app_context, &spec, &mut selection);
+            AppAction::None
+        },
+        right_buttons,
+    );
+    let picked = match effect {
+        GlobalNavEffect::SelectPageObject(id) => Some(id),
+        _ => None,
+    };
+    action |= apply_global_nav_effect(app_context, effect);
+    (action, picked)
 }

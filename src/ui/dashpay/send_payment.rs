@@ -490,7 +490,7 @@ impl PaymentHistory {
         };
 
         // Seed from the app-scoped selected identity (W3 SYNC); fall back to first.
-        if let Ok(identities) = app_context.load_local_qualified_identities()
+        if let Ok(identities) = app_context.load_local_user_identities()
             && !identities.is_empty()
         {
             use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -531,7 +531,7 @@ impl PaymentHistory {
 
         // Seed from the app-scoped selected identity if none yet selected (W3 SYNC).
         if self.selected_identity.is_none()
-            && let Ok(identities) = self.app_context.load_local_qualified_identities()
+            && let Ok(identities) = self.app_context.load_local_user_identities()
             && !identities.is_empty()
         {
             use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -561,7 +561,7 @@ impl PaymentHistory {
         // Identity selector or no identities message
         let identities = self
             .app_context
-            .load_local_qualified_identities()
+            .load_local_user_identities()
             .unwrap_or_default();
 
         // Header with identity selector on the right
@@ -570,7 +570,8 @@ impl PaymentHistory {
 
             if !identities.is_empty() {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    // SYNC: write-back via syncing_global on user pick.
+                    // SYNC: write-back via syncing_global on user pick (FR-6: the source list is
+                    // User-only, so a masternode/evonode can never leak to the app-global identity).
                     let response = ui.add(
                         IdentitySelector::new(
                             "payment_history_identity_selector",
@@ -762,8 +763,13 @@ impl PaymentHistory {
                         let contact_id = if contact_name.contains("(") && contact_name.contains(")")
                         {
                             // Extract ID from format "Unknown (abcd1234)"
-                            let start = contact_name.find('(').unwrap() + 1;
-                            let end = contact_name.find(')').unwrap();
+                            let start = contact_name
+                                .find('(')
+                                .expect("invariant: '(' present per the contains check above")
+                                + 1;
+                            let end = contact_name
+                                .find(')')
+                                .expect("invariant: ')' present per the contains check above");
                             let _id_str = &contact_name[start..end];
                             // This is likely a partial base58 ID, we'd need the full ID
                             // For now, we'll use a placeholder

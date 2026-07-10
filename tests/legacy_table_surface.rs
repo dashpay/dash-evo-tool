@@ -46,10 +46,14 @@ const ALLOW_LIST: &[&str] = &[
     "src/database/wallet.rs",
     "src/database/single_key_wallet.rs",
     "src/database/utxo.rs",
-    // T-DEV-02 transitional bridge: import path still writes the legacy
-    // `wallet` row so older builds (in-process migration replay) have
-    // something to read.
-    "src/context/wallet_lifecycle.rs",
+    // T-DEV-02 transitional bridge (tethered per `42b88a15`): the
+    // wallet-lifecycle test fixtures construct legacy-schema `wallet` /
+    // `single_key_wallet` rows to exercise the migration/read paths. These
+    // fixtures moved from the monolithic `wallet_lifecycle.rs` into the
+    // split module's `tests.rs` (Wave-6 god-file split); the production
+    // submodules contain no legacy-table SQL, so only the test file is
+    // allow-listed here — the exemption is unchanged, only the path.
+    "src/context/wallet_lifecycle/tests.rs",
     // Migration orchestrator — reads legacy data exactly so it can
     // copy it forward to the new sidecars and then never touch the
     // legacy tables again.

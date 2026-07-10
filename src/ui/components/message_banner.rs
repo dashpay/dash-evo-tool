@@ -336,6 +336,8 @@ impl MessageBanner {
 
     /// Override the auto-dismiss duration for the current message.
     /// Resets the countdown timer. No-op if no message is set.
+    // Exercised by the `kittest` integration tests (a separate crate the lib
+    // build does not see), so it is dead in a plain lib build.
     #[allow(dead_code)]
     pub fn set_auto_dismiss(&mut self, duration: Duration) -> &mut Self {
         if let Some(state) = &mut self.state {
@@ -519,6 +521,8 @@ impl MessageBanner {
     }
 
     /// Returns whether any global banner messages exist.
+    // Exercised by the `kittest` integration tests (a separate crate the lib
+    // build does not see), so it is dead in a plain lib build.
     #[allow(dead_code)]
     pub fn has_global(ctx: &egui::Context) -> bool {
         !get_banners(ctx).is_empty()

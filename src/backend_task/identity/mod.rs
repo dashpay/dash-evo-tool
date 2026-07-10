@@ -22,7 +22,7 @@ use crate::model::qualified_identity::{IdentityType, PrivateKeyTarget, Qualified
 use crate::model::secret::Secret;
 use crate::model::wallet::{Wallet, WalletArcRef, WalletSeedHash};
 use dash_sdk::Sdk;
-use dash_sdk::dashcore_rpc::dashcore::{Address, PrivateKey};
+use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dpp::ProtocolError;
 use dash_sdk::dpp::balances::credits::Duffs;
 use dash_sdk::dpp::dashcore::hashes::Hash;
@@ -39,6 +39,29 @@ use dash_sdk::platform::{Identifier, Identity, IdentityPublicKey};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
+/// How a load resolves against an already-stored identity of the same id.
+///
+/// The storage layer (`insert_local_qualified_identity`) is `INSERT OR REPLACE`,
+/// so a load with no guard silently overwrites an existing record and its keys.
+/// This enum lets each entry point declare its intent so the two masternode
+/// paths — a *new* load (must reject a duplicate ProTxHash, §10.9) and an
+/// *in-place* voter-key update (must merge, not clobber, §10.8) — never share
+/// one blind-overwrite path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum IdentityLoadMode {
+    /// Overwrite any existing stored identity (legacy behaviour; the User
+    /// re-load and headless flows that always resubmit their full key set).
+    #[default]
+    Overwrite,
+    /// A fresh load: reject with [`TaskError::DuplicateProTxHash`] when an
+    /// identity with this id is already stored (§10.9 / TC-EDGE-07).
+    RejectIfExists,
+    /// An in-place update: merge the newly-supplied keys into the existing
+    /// stored identity's keys, preserving keys the caller did not resupply
+    /// (§10.8 / the "Add voting key" fix-up). Exempt from duplicate rejection.
+    MergeIntoExisting,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct IdentityInputToLoad {
     pub identity_id_input: String,
@@ -50,6 +73,14 @@ pub struct IdentityInputToLoad {
     pub keys_input: Vec<Secret>,
     pub derive_keys_from_wallets: bool,
     pub selected_wallet_seed_hash: Option<WalletSeedHash>,
+    /// Optional load-time key encryption (FR-8). When `Some`, the loaded
+    /// voting/owner/payout and identity keys are sealed Tier-2 under this
+    /// password at load time through the existing per-identity protect
+    /// envelope (Argon2id + XChaCha20-Poly1305) — no new crypto, no second
+    /// persistence path. When `None`, the keyless Tier-1 path is unchanged.
+    pub encryption_password: Option<Secret>,
+    /// How this load resolves against an already-stored identity of the same id.
+    pub load_mode: IdentityLoadMode,
 }
 
 /// One chosen identity key, public-only.
@@ -416,7 +447,6 @@ pub struct RegisterDpnsNameInput {
 #[derive(Debug, Clone, PartialEq)]
 pub enum IdentityTask {
     LoadIdentity(IdentityInputToLoad),
-    #[allow(dead_code)] // May be used for finding identities in wallets
     SearchIdentityFromWallet(WalletArcRef, IdentityIndex),
     SearchIdentitiesUpToIndex(WalletArcRef, IdentityIndex),
     /// Search for an identity by its DPNS name (without .dash suffix)
@@ -472,37 +502,6 @@ pub enum IdentityTask {
     RegisterDpnsName(RegisterDpnsNameInput),
     RefreshIdentity(QualifiedIdentity),
     RefreshLoadedIdentitiesOwnedDPNSNames,
-}
-
-fn verify_key_input(
-    untrimmed_private_key: Secret,
-    type_key: &str,
-) -> Result<Option<[u8; 32]>, String> {
-    let private_key = untrimmed_private_key.expose_secret().trim();
-    match private_key.len() {
-        64 => {
-            // hex
-            match hex::decode(private_key) {
-                Ok(decoded) => Ok(Some(decoded.try_into().unwrap())),
-                Err(_) => Err(format!(
-                    "{} key is the size of a hex key but isn't hex",
-                    type_key
-                )),
-            }
-        }
-        51 | 52 => {
-            // wif
-            match PrivateKey::from_wif(private_key) {
-                Ok(key) => Ok(Some(key.inner.secret_bytes())),
-                Err(_) => Err(format!(
-                    "{} key is the length of a WIF key but is invalid",
-                    type_key
-                )),
-            }
-        }
-        0 => Ok(None),
-        _ => Err(format!("{} key is of incorrect size", type_key)),
-    }
 }
 
 /// Returns the default key specifications for a new identity.
@@ -632,7 +631,9 @@ pub fn build_identity_registration_with_seed(
 ///
 /// Resolves the wallet's HD seed once through the JIT chokepoint and delegates;
 /// callers that can `await` use this and never read the wallet's parked seed.
-#[allow(dead_code)] // Used by backend-e2e tests
+// Exercised by the backend-e2e integration tests (a separate crate the lib
+// build does not see), so it is dead in the lib build itself.
+#[allow(dead_code)]
 pub async fn build_identity_registration(
     app_context: &Arc<AppContext>,
     wallet_arc: &Arc<RwLock<Wallet>>,
@@ -922,17 +923,7 @@ impl AppContext {
         // No `is_open()` gate: the chokepoint resolves an unprotected or
         // session-cached wallet without a prompt, and prompts a locked protected
         // one — returning `WalletLocked` only if the seed is truly unavailable.
-        let wallet_snapshot = {
-            let wallet = {
-                let wallets = self.wallets.read()?;
-                wallets
-                    .get(&wallet_seed_hash)
-                    .cloned()
-                    .ok_or(TaskError::WalletNotFound)?
-            };
-            let wallet_guard = wallet.read()?;
-            wallet_guard.clone()
-        };
+        let wallet_snapshot = self.wallet_arc(&wallet_seed_hash)?.read()?.clone();
 
         tracing::info!("Wallet loaded, calling top_up_from_addresses...");
 

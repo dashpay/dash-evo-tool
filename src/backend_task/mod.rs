@@ -28,7 +28,6 @@ use dash_sdk::dpp::prelude::DataContract;
 use dash_sdk::dpp::state_transition::StateTransition;
 use dash_sdk::dpp::tokens::token_pricing_schedule::TokenPricingSchedule;
 use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
-use dash_sdk::dpp::voting::votes::Vote;
 use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::Start;
 use dash_sdk::platform::{Document, Identifier};
 use dash_sdk::query_types::{Documents, IndexMap};
@@ -185,15 +184,11 @@ pub enum BackendTaskSuccessResult {
     },
 
     // Specific results
-    #[allow(dead_code)] // May be used for individual document operations
-    Document(Document),
     Documents(Documents),
     BroadcastedDocument(Document),
     CoreItem(CoreItem),
     RegisteredIdentity(QualifiedIdentity, FeeResult),
     ToppedUpIdentity(QualifiedIdentity, FeeResult),
-    #[allow(dead_code)] // May be used for reporting successful votes
-    SuccessfulVotes(Vec<Vote>),
     DPNSVoteResults(Vec<(String, ResourceVoteChoice, Result<(), Arc<TaskError>>)>),
     CastScheduledVote(ScheduledDPNSVote),
     /// The scheduled votes that the `CastDueScheduledVotes` sweep is about to
@@ -206,8 +201,6 @@ pub enum BackendTaskSuccessResult {
     ),
     FetchedContracts(Vec<Option<DataContract>>),
     PageDocuments(IndexMap<Identifier, Option<Document>>, Option<Start>),
-    #[allow(dead_code)] // May be used for token search results
-    TokensByKeyword(Vec<TokenInfo>, Option<Start>),
     DescriptionsByKeyword(Vec<ContractDescriptionInfo>, Option<Start>),
     TokenEstimatedNonClaimedPerpetualDistributionAmountWithExplanation(
         IdentityTokenIdentifier,
@@ -631,6 +624,10 @@ impl AppContext {
                 let egui_ctx = self.egui_ctx().clone();
                 let app_kv = self.app_kv();
                 let secret_store = self.secret_store();
+                // Share the app-global Expert Mode flag so the freshly-switched
+                // context observes the same value (and live toggles) as the rest
+                // of the app — never a fresh per-context flag.
+                let developer_mode = self.developer_mode_handle();
                 let new_ctx = tokio::task::block_in_place(|| {
                     AppContext::new(
                         data_dir,
@@ -641,12 +638,10 @@ impl AppContext {
                         egui_ctx,
                         app_kv,
                         secret_store,
+                        developer_mode,
                     )
                 })
-                .ok_or(TaskError::NetworkContextCreationFailed {
-                    network,
-                    detail: "AppContext::new() returned None".into(),
-                })?;
+                .ok_or(TaskError::NetworkContextCreationFailed { network })?;
 
                 // Wire the freshly-built context's wallet backend and then start
                 // chain sync. The old code called `start_spv()` on an unwired
@@ -833,7 +828,7 @@ mod tests {
             WalletTask::GenerateReceiveAddress { seed_hash },
         )));
         assert!(is_wallet_touching(&BackendTask::CoreTask(
-            CoreTask::GetBestChainLock,
+            CoreTask::GetBestChainLocks,
         )));
         assert!(is_wallet_touching(&BackendTask::ShieldedTask(
             shielded::ShieldedTask::ShieldFromBalance {

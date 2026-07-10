@@ -499,11 +499,23 @@ impl AppContext {
         let (wallet_hash, wallet_index) = match wallet_and_identity_id_info {
             Some((seed, idx)) => (Some(*seed), Some(*idx)),
             None => {
-                tracing::warn!(
-                    identity_id = %qualified_identity.identity.id(),
-                    alias = ?qualified_identity.alias,
-                    "saving identity without wallet; this needs investigating",
-                );
+                // Masternodes and evonodes are loaded by ProTxHash and have no
+                // associated HD wallet by design, so a missing wallet is normal
+                // for them — only a wallet-less User identity is worth flagging.
+                if qualified_identity.identity_type == IdentityType::User {
+                    tracing::warn!(
+                        identity_id = %qualified_identity.identity.id(),
+                        alias = ?qualified_identity.alias,
+                        "saving identity without wallet; this needs investigating",
+                    );
+                } else {
+                    tracing::debug!(
+                        identity_id = %qualified_identity.identity.id(),
+                        alias = ?qualified_identity.alias,
+                        identity_type = ?qualified_identity.identity_type,
+                        "saving masternode/evonode identity without wallet (expected)",
+                    );
+                }
                 (None, None)
             }
         };
@@ -632,6 +644,55 @@ impl AppContext {
         self.load_identities_filtered(&wallets, |s| {
             s.wallet_index.is_some() && s.wallet_hash == target
         })
+    }
+
+    /// The masternode/evonode identities for the active network — the
+    /// Masternodes-page card list and the page-scoped masternode pill source.
+    /// The complement of [`Self::load_local_user_identities`] over the FR-6 type
+    /// boundary. Filters the hydrated full load, so each card's top-up history
+    /// is available (unlike the pre-decode [`Self::load_local_voting_identities`],
+    /// which is un-hydrated and named for the DPNS voting flows).
+    pub fn load_local_masternode_identities(
+        &self,
+    ) -> std::result::Result<Vec<QualifiedIdentity>, TaskError> {
+        Ok(self
+            .load_local_qualified_identities()?
+            .into_iter()
+            .filter(|qi| {
+                matches!(
+                    qi.identity_type,
+                    IdentityType::Masternode | IdentityType::Evonode
+                )
+            })
+            .collect())
+    }
+
+    /// Read one stored qualified identity by id, hydrated like the list loads
+    /// (status, wallet index, network, wallets, secret access). `None` when no
+    /// identity with `id` is stored. Backs the load-path existence check
+    /// (duplicate-ProTxHash rejection) and the in-place voter-key merge.
+    pub fn get_local_qualified_identity(
+        &self,
+        id: &Identifier,
+    ) -> std::result::Result<Option<QualifiedIdentity>, TaskError> {
+        let kv = self.det_kv()?;
+        let id_buf = id.to_buffer();
+        let Some(stored) = kv
+            .get::<StoredQualifiedIdentity>(DetScope::Identity(&id_buf), IDENTITY_KEY)
+            .map_err(|source| TaskError::IdentityStorage { source })?
+        else {
+            return Ok(None);
+        };
+        let wallets = self.wallets.read().unwrap_or_else(|e| e.into_inner());
+        let mut qi = decode_stored_identity(&stored.qi_bytes, self.network)?;
+        qi.status = IdentityStatus::from_u8(stored.status);
+        qi.wallet_index = stored.wallet_index;
+        qi.network = self.network;
+        qi.associated_wallets = wallets.clone();
+        qi.secret_access = self.wallet_backend().ok().map(|b| b.secret_access());
+        qi.top_ups = BTreeMap::new();
+        self.migrate_identity_keys_to_vault(&kv, &id_buf, &mut qi);
+        Ok(Some(qi))
     }
 
     /// Internal: read every stored identity via the Global enumeration
@@ -1716,6 +1777,7 @@ mod tests {
             egui::Context::default(),
             app_kv,
             secret_store,
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         )
         .expect("offline testnet AppContext::new");
         let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
@@ -1845,9 +1907,9 @@ mod tests {
     }
 
     /// The at-rest encode path REFUSES to write a new keyless
-    /// key onto a password-protected identity (the silent-plaintext leak Smythe
-    /// found). The encode fails closed and the new key lands NOWHERE — not
-    /// keyless, not Tier-2.
+    /// key onto a password-protected identity (a silent-plaintext leak). The
+    /// encode fails closed and the new key lands NOWHERE — not keyless, not
+    /// Tier-2.
     #[test]
     fn encode_refuses_keyless_key_on_protected_identity() {
         use crate::wallet_backend::secret_seam::SecretScheme;

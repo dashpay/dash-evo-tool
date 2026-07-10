@@ -19,11 +19,11 @@ use platform_wallet_storage::secrets::SecretString;
 use super::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
+use crate::model::identity_key_protection::validate_protection_password;
 use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
 use crate::model::qualified_identity::identity_meta::IdentityMeta;
 use crate::model::qualified_identity::{PrivateKeyTarget, QualifiedIdentity};
 use crate::model::secret::Secret;
-use crate::model::wallet::passphrase::validate_single_key_passphrase;
 use crate::wallet_backend::IdentityKeyView;
 use crate::wallet_backend::secret_seam::SecretScheme;
 
@@ -146,16 +146,6 @@ impl AppContext {
         );
         Ok(BackendTaskSuccessResult::IdentityKeysUnprotected { identity_id })
     }
-}
-
-/// Backend-authoritative password policy for identity-key protection.
-/// Re-uses the single-key passphrase validator (the same minimum length the UI
-/// shows) so the rule lives in one place and a non-UI caller cannot bypass it.
-/// The confirmation match is a UI concern, so the password is passed as its own
-/// confirmation here — only the length check is meaningful at this layer.
-fn validate_protection_password(password: &Secret) -> Result<(), TaskError> {
-    let pw = password.expose_secret();
-    validate_single_key_passphrase(pw, pw).map_err(TaskError::from)
 }
 
 /// Fail-closed guard for the protect boundary: reject an identity that
@@ -731,6 +721,7 @@ mod tests {
             egui::Context::default(),
             app_kv,
             secret_store,
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         )
         .expect("offline testnet AppContext::new");
         let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
@@ -801,6 +792,7 @@ mod tests {
             egui::Context::default(),
             app_kv,
             secret_store,
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         )
         .expect("offline testnet AppContext::new");
         let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);

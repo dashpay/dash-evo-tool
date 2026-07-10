@@ -11,8 +11,7 @@
 //!   becomes the `No username yet` prompt with a `Pick a username` link.
 //!
 //! Visual direction is locked by §E:
-//! - Gradient background: `DASH_BLUE` (#008de4) → `PLATFORM_PURPLE` at 14 %
-//!   opacity, laid over `DashColors::surface(dark_mode)`.
+//! - Flat `DashColors::surface(dark_mode)` fill.
 //! - `RADIUS_XL` corners, `Shadow::elevated()`.
 //! - Balance uses tabular numerals (monospace) so digits align across frames.
 //!
@@ -23,8 +22,8 @@ use crate::model::qualified_identity::IdentityType;
 use crate::ui::components::component_trait::ComponentResponse;
 use crate::ui::theme::{DashColors, ResponseExt, Shadow, Shape, Spacing};
 use eframe::egui::{
-    self, Color32, CornerRadius, FontFamily, FontId, Frame, Margin, Rect, Response, RichText,
-    Sense, Shape as EguiShape, Stroke, StrokeKind, TextureHandle, TextureOptions, Ui,
+    self, Color32, CornerRadius, FontFamily, FontId, Frame, Margin, Response, RichText, Sense,
+    Stroke, StrokeKind, TextureHandle, TextureOptions, Ui,
 };
 
 /// One of the three supported identity kinds. Maps 1:1 to the project's
@@ -300,9 +299,6 @@ impl IdentityHeroCard {
     pub fn show(&self, ui: &mut Ui) -> HeroResponse {
         let dark_mode = ui.ctx().global_style().visuals.dark_mode;
 
-        // Outer gradient-surface frame. We paint a solid surface fill and then
-        // overlay a gradient rectangle ourselves because `egui::Frame` does
-        // not support multi-stop gradients directly.
         let frame = Frame::new()
             .fill(DashColors::surface(dark_mode))
             .stroke(Stroke::new(
@@ -314,14 +310,6 @@ impl IdentityHeroCard {
             .inner_margin(Margin::same(Spacing::LG as i8));
 
         let response = frame.show(ui, |ui| {
-            // No fixed minimum height — let the hero size to its content so
-            // the card stays compact and the gradient doesn't produce a large
-            // empty slab (V1 visual fix).
-            //
-            // Paint the gradient band before any widgets so the labels sit on
-            // top. Two horizontal stops at 14 % opacity.
-            self.paint_gradient_band(ui);
-
             let mut action: Option<HeroAction> = None;
             ui.horizontal(|ui| {
                 // Left cluster: avatar / monogram + social lines.
@@ -414,28 +402,6 @@ impl IdentityHeroCard {
         });
 
         HeroResponse::new(response.inner)
-    }
-
-    /// Paint the 14 %-opacity diagonal gradient band across the card.
-    ///
-    /// Uses a series of narrow vertical strips because egui's `Shape::Rect`
-    /// does not support linear gradients. Keeping the strip count low keeps
-    /// overdraw cheap even on large canvases.
-    fn paint_gradient_band(&self, ui: &mut Ui) {
-        let rect = ui.max_rect();
-        let strips = 32u32;
-        let alpha: u8 = (0.14 * 255.0) as u8;
-        let painter = ui.painter();
-        for i in 0..strips {
-            let t = i as f32 / (strips as f32 - 1.0);
-            let c = lerp_color(DashColors::DASH_BLUE, DashColors::PLATFORM_PURPLE, t);
-            let a = Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), alpha);
-            let x0 = rect.left() + rect.width() * (i as f32 / strips as f32);
-            let x1 = rect.left() + rect.width() * ((i + 1) as f32 / strips as f32);
-            let strip =
-                Rect::from_min_max(egui::pos2(x0, rect.top()), egui::pos2(x1, rect.bottom()));
-            painter.rect_filled(strip, 0.0, a);
-        }
     }
 
     /// Paint the avatar circle (social profile set) or the type-glyph
@@ -587,8 +553,6 @@ impl IdentityHeroCard {
             Stroke::new(1.0, stroke_color),
             StrokeKind::Outside,
         );
-        // Suppress the unused-shape lint by explicitly dropping it.
-        let _ = EguiShape::Noop;
         if let Some(text) = tooltip {
             inner.response.info_tooltip(text)
         } else {
@@ -607,22 +571,6 @@ fn fnv1a_hash(data: &[u8]) -> u64 {
         h = h.wrapping_mul(0x0000_0100_0000_01b3); // FNV prime
     }
     h
-}
-
-/// Linear interpolate two [`Color32`] values component-wise.
-fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
-    let clamp = t.clamp(0.0, 1.0);
-    let lerp_u8 = |x: u8, y: u8| -> u8 {
-        let xf = x as f32;
-        let yf = y as f32;
-        (xf + (yf - xf) * clamp).round() as u8
-    };
-    Color32::from_rgba_unmultiplied(
-        lerp_u8(a.r(), b.r()),
-        lerp_u8(a.g(), b.g()),
-        lerp_u8(a.b(), b.b()),
-        255,
-    )
 }
 
 #[cfg(test)]
@@ -778,15 +726,5 @@ mod tests {
             !hero.avatar_decode_ok,
             "avatar_decode_ok must be false for undecodable bytes"
         );
-    }
-
-    #[test]
-    fn lerp_color_clamps_and_midpoint() {
-        let mid = lerp_color(Color32::BLACK, Color32::WHITE, 0.5);
-        assert!(mid.r() >= 126 && mid.r() <= 129);
-        let start = lerp_color(Color32::BLACK, Color32::WHITE, -1.0);
-        assert_eq!(start, Color32::from_rgba_unmultiplied(0, 0, 0, 255));
-        let end = lerp_color(Color32::BLACK, Color32::WHITE, 2.0);
-        assert_eq!(end, Color32::from_rgba_unmultiplied(255, 255, 255, 255));
     }
 }

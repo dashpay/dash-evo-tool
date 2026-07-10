@@ -180,7 +180,7 @@ impl Database {
         // created with an older schema. This must happen before any queries that
         // depend on these columns (like db_schema_version which needs database_version).
         {
-            let conn = self.conn.lock().unwrap();
+            let conn = self.locked_conn();
             // Check if settings table exists before trying to ensure columns
             let settings_exists: bool = conn.query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='settings'",
@@ -202,7 +202,7 @@ impl Database {
             // possible recovery shape) still get the legacy tables so the
             // migration ladder has something to upgrade.
             let include_legacy = {
-                let conn = self.conn.lock().unwrap();
+                let conn = self.locked_conn();
                 legacy_detected(&conn)
             };
             self.create_tables(include_legacy)?;
@@ -615,10 +615,7 @@ impl Database {
                 source: rusqlite::Error::InvalidQuery,
             }),
             std::cmp::Ordering::Less => {
-                let mut conn = self
-                    .conn
-                    .lock()
-                    .expect("Failed to lock database connection");
+                let mut conn = self.locked_conn();
 
                 for version in (original_version + 1)..=to_version {
                     tracing::debug!("Applying migration v{version}");
@@ -660,7 +657,7 @@ impl Database {
 
     /// Checks if the `settings` table is empty or missing, indicating a first-time setup.
     fn is_first_time_setup(&self) -> rusqlite::Result<bool> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.locked_conn();
 
         // Check if the `settings` table exists by querying `sqlite_master`
         let table_exists: bool = conn.query_row(
@@ -688,7 +685,7 @@ impl Database {
     /// This is to allow the app to detect when database version is too high and to prevent
     /// the app from running with an unsupported database version.
     fn db_schema_version(&self) -> rusqlite::Result<u16> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.locked_conn();
         let result: rusqlite::Result<u16> = conn.query_row(
             "SELECT database_version FROM settings WHERE id = 1",
             [],
@@ -743,7 +740,7 @@ impl Database {
     /// tables (`settings`, `identity`, `platform_address_balances`) are
     /// created regardless.
     pub(crate) fn create_tables(&self, include_legacy: bool) -> rusqlite::Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.locked_conn();
         // Create the settings table.
         //
         // User-preference columns (network, theme, ZMQ, evonode tools, …)
@@ -1756,7 +1753,7 @@ impl Database {
     fn run_consistency_checks(&self) {
         const MAX_ISSUES_TO_LOG: usize = 20;
 
-        let conn = self.conn.lock().unwrap();
+        let conn = self.locked_conn();
 
         // PRAGMA quick_check can return multiple rows (one per issue).
         match conn.prepare("PRAGMA quick_check") {

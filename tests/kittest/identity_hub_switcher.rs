@@ -38,6 +38,17 @@ const PICKER_HEADING: &str = "Pick an identity";
 /// Seed one wallet-less basic identity (alias = `alias`, id = `[byte; 32]`)
 /// into the live per-network identity DB, and return its `Identifier`.
 fn seed_identity(app_context: &Arc<AppContext>, byte: u8, alias: &str) -> Identifier {
+    seed_identity_typed(app_context, byte, alias, IdentityType::User)
+}
+
+/// Seed one wallet-less identity of `identity_type` (alias = `alias`,
+/// id = `[byte; 32]`) into the live per-network identity DB.
+fn seed_identity_typed(
+    app_context: &Arc<AppContext>,
+    byte: u8,
+    alias: &str,
+    identity_type: IdentityType,
+) -> Identifier {
     let pv = PlatformVersion::latest();
     let identity =
         Identity::create_basic_identity(Identifier::from([byte; 32]), pv).expect("basic identity");
@@ -47,7 +58,7 @@ fn seed_identity(app_context: &Arc<AppContext>, byte: u8, alias: &str) -> Identi
         associated_voter_identity: None,
         associated_operator_identity: None,
         associated_owner_key_id: None,
-        identity_type: IdentityType::User,
+        identity_type,
         alias: Some(alias.to_string()),
         private_keys: KeyStorage::default(),
         dpns_names: vec![],
@@ -240,6 +251,63 @@ fn qa_001_wallet_less_selection_clears_derived_wallet() {
         assert!(
             harness.query_by_label_contains("Lonely Identity").is_some(),
             "the breadcrumb must display the selected wallet-less identity"
+        );
+    });
+}
+
+/// TC-FR6-01/02 + TC-NAV-17 — the Identity Hub is an everyday-user surface:
+/// its picker and identity-pill sources list User identities only. A seeded
+/// Masternode + Evonode never appear; the User identity does. Exactly one User
+/// is seeded so the hub lands on that identity's Home (not the picker), which is
+/// itself the assertion that the two node identities did not inflate the
+/// everyday-user identity count.
+#[test]
+fn fr6_hub_excludes_masternode_and_evonode() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let mut harness = mount_app(RootScreenType::RootScreenIdentityHub);
+        let app_context = harness.state().current_app_context().clone();
+
+        seed_identity_typed(
+            &app_context,
+            0x91,
+            "Node Masternode",
+            IdentityType::Masternode,
+        );
+        seed_identity_typed(&app_context, 0xE2, "Node Evonode", IdentityType::Evonode);
+        let user = seed_identity(&app_context, 0x71, "Real User");
+        harness.run_steps(5);
+
+        // The everyday-user accessor lists only the User identity.
+        let user_only = app_context
+            .load_local_user_identities()
+            .expect("load user identities");
+        assert_eq!(
+            user_only.len(),
+            1,
+            "hub sources list only the User identity"
+        );
+        assert_eq!(user_only[0].identity.id(), user);
+
+        // The node identities are absent from the hub surface by alias.
+        assert!(
+            harness.query_by_label_contains("Node Masternode").is_none(),
+            "a masternode must not appear on the Identity Hub"
+        );
+        assert!(
+            harness.query_by_label_contains("Node Evonode").is_none(),
+            "an evonode must not appear on the Identity Hub"
+        );
+        // But both remain in the masternode accessor (Masternodes-page source).
+        assert_eq!(
+            app_context
+                .load_local_masternode_identities()
+                .expect("load masternode identities")
+                .len(),
+            2,
+            "MN + Evonode remain available to the Masternodes page"
         );
     });
 }

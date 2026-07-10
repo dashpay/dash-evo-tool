@@ -9,6 +9,7 @@ pub mod single_key;
 use crate::database::WalletError;
 use crate::model::secret::Secret;
 use crate::model::wallet::auth_pubkey_cache::AuthPubkeyCache;
+use crate::wallet_backend::poison::RwLockRecover;
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::async_trait::async_trait;
 use dash_sdk::dpp::key_wallet::account::AccountType;
@@ -431,8 +432,15 @@ impl Wallet {
         // Encrypt seed or store plaintext
         let (encrypted_seed, salt, nonce, uses_password) = match password {
             Some(pw) if !pw.is_empty() => {
-                let envelope = ClosedKeyItem::encrypt_seed(&seed, pw.expose_secret())
-                    .map_err(|e| WalletCreationError::Encryption { detail: e })?;
+                // `encrypt_seed` is fully typed; `WalletCreationError::Encryption`
+                // still carries a `String` (pre-existing debt tracked for a later
+                // type-through), so the typed error is rendered via `Display` here.
+                let envelope =
+                    ClosedKeyItem::encrypt_seed(&seed, pw.expose_secret()).map_err(|e| {
+                        WalletCreationError::Encryption {
+                            detail: e.to_string(),
+                        }
+                    })?;
                 (envelope.ciphertext, envelope.salt, envelope.nonce, true)
             }
             _ => (seed.to_vec(), vec![], vec![], false),
@@ -758,8 +766,13 @@ impl WalletSeed {
             }
             WalletSeed::Closed(closed_seed) => {
                 // Decrypt to PROVE the password is correct, then drop the
-                // plaintext (`Zeroizing`) without parking it.
-                let _verified = Zeroizing::new(closed_seed.decrypt_seed(password)?);
+                // plaintext (`Zeroizing`) without parking it. `decrypt_seed` is
+                // fully typed; this method's `String` return is pre-existing
+                // model/wallet debt tracked for a later type-through, so the
+                // typed error is rendered through its `Display` here.
+                let _verified = closed_seed
+                    .decrypt_seed(password)
+                    .map_err(|e| e.to_string())?;
                 let open_wallet_seed = OpenWalletSeed {
                     wallet_info: closed_seed.clone(),
                 };
@@ -919,7 +932,7 @@ impl Wallet {
     ) -> Option<Arc<RwLock<Wallet>>> {
         for wallet in slice {
             // Attempt to read the wallet from the RwLock
-            let wallet_ref = wallet.read().unwrap();
+            let wallet_ref = wallet.read_recover();
             // Check if the wallet's seed hash matches the provided wallet_seed_hash
             if wallet_ref.seed_hash() == wallet_seed_hash {
                 // Return a clone of the Arc<RwLock<Wallet>> that matches
@@ -942,7 +955,7 @@ impl Wallet {
         network: Network,
     ) -> Result<Option<Zeroizing<[u8; 32]>>, WalletError> {
         for wallet in slice {
-            let wallet_ref = wallet.read().unwrap();
+            let wallet_ref = wallet.read_recover();
             if wallet_ref.seed_hash() == wallet_seed_hash {
                 // SECURITY: `ExtendedPrivKey` is a `Copy` BIP-32 type from
                 // key_wallet with no `Drop`, so its inner SecretKey + ChainCode

@@ -308,7 +308,6 @@ pub struct AppState {
 #[derive(Debug, Clone, PartialEq)]
 pub enum DesiredAppAction {
     None,
-    #[allow(dead_code)] // May be used in future for explicit refresh actions
     Refresh,
     AddScreenType(Box<ScreenType>),
     BackendTask(Box<BackendTask>),
@@ -564,6 +563,16 @@ impl AppState {
 
         let saved_network = settings.network;
 
+        // App-global Expert Mode flag: read once from config and shared into
+        // every per-network context (including any created later by a network
+        // switch), so a live toggle is observed everywhere without a restart.
+        let developer_mode = Arc::new(std::sync::atomic::AtomicBool::new(
+            crate::config::Config::load_from(&data_dir)
+                .ok()
+                .and_then(|c| c.developer_mode)
+                .unwrap_or(false),
+        ));
+
         // Build a helper to create AppContext for a given network.
         let make_context = |network: Network| -> Option<Arc<AppContext>> {
             AppContext::new(
@@ -575,6 +584,7 @@ impl AppState {
                 ctx.clone(),
                 Arc::clone(&app_kv),
                 Arc::clone(&secret_store),
+                Arc::clone(&developer_mode),
             )
         };
 
@@ -617,8 +627,14 @@ impl AppState {
                     .into(),
             );
         }
-        let chosen_network = *network_contexts.keys().next().unwrap();
-        let active_context = network_contexts.get(&chosen_network).unwrap().clone();
+        let chosen_network = *network_contexts
+            .keys()
+            .next()
+            .expect("invariant: network_contexts is non-empty after the emptiness check above");
+        let active_context = network_contexts
+            .get(&chosen_network)
+            .expect("invariant: chosen_network was just taken from network_contexts")
+            .clone();
 
         // load fonts
         ctx.set_fonts(crate::bundled::fonts().expect("failed to load fonts"));
@@ -837,6 +853,16 @@ impl AppState {
                 RootScreenType::RootScreenDashPayProfileSearch,
                 Screen::DashPayProfileSearchScreen(dashpay_profile_search_screen),
             ),
+            (
+                // Always registered — the Masternodes tab is gated at runtime by
+                // Expert Mode (the nav entry + route), not by a Cargo feature, so
+                // the screen must always exist to switch into when Expert Mode
+                // is on. Live de-gating falls back to Identities (see below).
+                RootScreenType::RootScreenMasternodes,
+                Screen::MasternodesScreen(crate::ui::masternodes::MasternodesScreen::new(
+                    &active_context,
+                )),
+            ),
         ]
         .into_iter()
         .chain({
@@ -1031,6 +1057,15 @@ impl AppState {
     }
 
     pub fn active_root_screen_mut(&mut self) -> &mut Screen {
+        // Live de-gating (§10.11): if Expert Mode flipped off while the
+        // Masternodes tab was active, fall back to the neutral Identities tab so
+        // the Expert-gated screen is never shown without its gate. Identities is
+        // always registered, so the subsequent lookup cannot fail.
+        if self.selected_main_screen == RootScreenType::RootScreenMasternodes
+            && !self.current_app_context().is_developer_mode()
+        {
+            self.selected_main_screen = RootScreenType::RootScreenIdentities;
+        }
         self.main_screens
             .get_mut(&self.selected_main_screen)
             .expect("expected to get screen")
@@ -1218,7 +1253,9 @@ impl AppState {
         if self.screen_stack.is_empty() {
             self.active_root_screen_mut()
         } else {
-            self.screen_stack.last_mut().unwrap()
+            self.screen_stack
+                .last_mut()
+                .expect("invariant: screen_stack is non-empty in this branch")
         }
     }
 
@@ -1382,7 +1419,7 @@ impl App for AppState {
                             active_context.queue_all_wallets_identity_discovery();
                         }
                         BackendTaskSuccessResult::Message(ref msg) => {
-                            // TODO(RUST-002): Some screens inspect Message text for error
+                            // TODO: Some screens inspect Message text for error
                             // keywords and may override with an Error banner, causing a
                             // brief green-then-red flash. Refactor to pass structured error
                             // types through task results instead of string messages.

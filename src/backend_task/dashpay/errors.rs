@@ -23,14 +23,6 @@ pub enum DashPayError {
     MissingDecryptionKey,
 
     // Document/Platform Errors
-    #[error("Could not send this request to the network. Please retry.")]
-    BroadcastFailed { reason: String },
-
-    #[error(
-        "Could not retrieve the requested information. Please check your connection and retry."
-    )]
-    QueryFailed { reason: String },
-
     #[error("The received data has an unexpected format. Please retry or update the application.")]
     InvalidDocument { reason: String },
 
@@ -46,11 +38,8 @@ pub enum DashPayError {
     QrCodeExpired { expired_at: u64, current_time: u64 },
 
     // Network/SDK Errors
-    #[error("Could not reach the network. Please check your connection and retry.")]
-    PlatformError { reason: String },
-
     #[error("Network connection failed. Please check your internet connection and retry.")]
-    NetworkError { reason: String },
+    NetworkError,
 
     #[error("An unexpected error occurred while communicating with the network. Please retry.")]
     SdkError {
@@ -70,10 +59,6 @@ pub enum DashPayError {
 
     #[error("A required field is missing. Please fill in all fields and try again.")]
     MissingField { field: String },
-
-    // General Errors
-    #[error("Too many requests. Please wait a moment and try again.")]
-    RateLimited { operation: String },
 
     /// Failed to build a document query (schema / configuration error).
     #[error("Could not prepare the data request. Please retry or update the application.")]
@@ -131,14 +116,7 @@ pub enum DashPayError {
 impl DashPayError {
     /// Check if error is recoverable (user can retry)
     pub fn is_recoverable(&self) -> bool {
-        matches!(
-            self,
-            DashPayError::NetworkError { .. }
-                | DashPayError::PlatformError { .. }
-                | DashPayError::RateLimited { .. }
-                | DashPayError::BroadcastFailed { .. }
-                | DashPayError::QueryFailed { .. }
-        )
+        matches!(self, DashPayError::NetworkError)
     }
 
     /// Check if error requires user action (not a system error)

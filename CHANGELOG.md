@@ -14,7 +14,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   before. Each suggestion now shows a small label for its wallet and its
   type, and the field shows a hint listing the tags you can use when it's
   empty.
+
+- **Masternodes tab**: a new "Masternodes" entry in the left nav (visible when
+  Expert mode is on) for loading and managing masternode and evonode (HP
+  masternode) identities by ProTxHash. Loaded nodes appear as a card list
+  showing type, voter-key readiness, key status, and DPNS-voting status;
+  opening a card shows a detail view with inline DPNS contested-name voting,
+  Withdraw / Top up / Transfer actions, key management, and — for evonodes
+  only — a link to claim token rewards. The load form accepts an optional
+  password to encrypt the entered voting/owner/payout keys immediately
+  instead of only after a separate step; leaving it blank keeps today's
+  behavior, and protection can always be added later from the key screen.
+  This replaces loading a masternode or evonode from *Identities → Load
+  Existing Identity → Show Advanced Options*, which no longer offers those
+  identity types.
+
+- **Wallet/identity indicator on more screens (rollout in progress)**: the
+  wallet and identity picker previously shown only at the top of the Identity
+  Hub now also appears at the top of the Identities, DashPay, DPNS, and
+  Wallets screens. On the Identity Hub and the new Masternodes tab it's fully
+  interactive — you can change which wallet or identity you're acting as
+  right there. On the other four it's currently a read-only preview of your
+  active wallet/identity, with a tooltip on where to change it; making it
+  interactive there, and adding it to the remaining screens, is tracked as a
+  follow-up.
+
 ### Changed
+
+- **Masternode and evonode identities no longer appear in the Identity Hub or
+  Identities picker**: they now live exclusively on the new Masternodes tab,
+  so you're never offered actions (like registering a username) that don't
+  apply to a node's collateral/voting identity.
 
 - **Wallet balance breakdown is single-sourced**: the per-account tabs and the
   wallet header now derive every balance from one place. The Core header total
@@ -108,6 +138,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Expert mode now reveals the Masternodes tab without a restart**: turning on
+  Expert mode in Settings immediately shows the "Masternodes" entry in the left
+  nav. Previously the Expert-mode flag was stored separately per network, so the
+  nav entry could stay hidden (reading a stale value on whichever network context
+  the app was showing) until the app was restarted. Expert mode is now a single
+  app-wide flag shared across all networks.
+
+- **Clearer error when loading a masternode by an unknown ProTxHash**: entering a
+  valid-looking but unregistered ProTxHash in the masternode load form now says no
+  masternode or evonode was found for that ProTxHash, instead of the misleading
+  generic "Identity not found — check the ID or name" message.
+
+- **Withdrawal key selection**: the Withdraw screen now pre-selects only a key
+  whose private key you actually hold (a payout/Transfer key preferred, Owner as
+  fallback). Previously it could pick a key that exists on the identity but whose
+  private key isn't loaded locally — common on loaded masternode/evonode
+  identities where only the Owner key was supplied — which made the withdrawal
+  fail at signing with an unhelpful technical error. When no usable key is
+  loaded, the screen guides you to add one instead of failing mid-withdrawal.
 - `WalletBackend` is now initialised eagerly at `AppState` start, eliminating a
   retry-loop spam on the SDK connection during cold boot.
 - Wallet store is rehydrated on cold start, resolving a regression where wallets

@@ -173,38 +173,6 @@ impl IdentityTokenInfo {
             token_position: *token_position,
         })
     }
-    // Allow dead_code: This constructor creates token info from identity balances with lookup,
-    // useful for token management screens requiring detailed context resolution
-    #[allow(dead_code)]
-    pub fn try_from_identity_token_balance_with_actions_with_lookup(
-        identity_token_balance: &IdentityTokenBalanceWithActions,
-        app_context: &AppContext,
-    ) -> Result<Self, TaskError> {
-        let IdentityTokenBalanceWithActions {
-            token_id,
-            token_alias,
-            token_config,
-            identity_id,
-            data_contract_id,
-            token_position,
-            ..
-        } = identity_token_balance;
-        let identity = app_context
-            .get_identity_by_id(identity_id)?
-            .ok_or(TaskError::IdentityNotFoundLocally)?;
-        let data_contract = app_context
-            .get_contract_by_id(data_contract_id)?
-            .ok_or(TaskError::DataContractNotFound)?;
-        Ok(Self {
-            token_id: *token_id,
-            token_alias: token_alias.clone(),
-            identity,
-            data_contract,
-            token_config: token_config.clone(),
-            token_position: *token_position,
-        })
-    }
-
     pub fn try_from_identity_token_maybe_balance_with_actions_with_lookup(
         identity_token_balance: &IdentityTokenMaybeBalanceWithActions,
         app_context: &AppContext,

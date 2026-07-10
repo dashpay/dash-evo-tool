@@ -21,14 +21,7 @@ impl AppContext {
 
         // Clone wallet and SDK before the async operation to avoid holding guards across await
         let (wallet, sdk) = {
-            let wallet_arc = {
-                let wallets = self.wallets.read()?;
-                wallets
-                    .get(&seed_hash)
-                    .cloned()
-                    .ok_or(crate::backend_task::error::TaskError::WalletNotFound)?
-            };
-            let wallet = wallet_arc.read()?.clone();
+            let wallet = self.wallet_arc(&seed_hash)?.read()?.clone();
             let sdk = self.sdk.load().as_ref().clone();
             (wallet, sdk)
         };
@@ -38,15 +31,15 @@ impl AppContext {
             fee_payer_index,
         )];
 
+        // Per-input address/amount detail is intentionally not logged: the
+        // summary line carries the aggregate counts, and per-input financial
+        // detail does not belong in plaintext logs at the default level.
         tracing::info!(
             "transfer_platform_credits: fee_payer_index={}, inputs={}, outputs={}",
             fee_payer_index,
             inputs.len(),
             outputs.len()
         );
-        for (idx, (addr, amount)) in inputs.iter().enumerate() {
-            tracing::info!("  Input {}: {:?} -> {}", idx, addr, amount);
-        }
 
         // Build the pure address→path index before entering the secret scope,
         // then sign each input through a JIT platform signer that borrows the

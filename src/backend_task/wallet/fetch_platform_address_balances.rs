@@ -16,13 +16,7 @@ impl AppContext {
         tracing::info!("Platform address sync start");
         let start_time = std::time::Instant::now();
 
-        let wallet_arc = {
-            let wallets = self.wallets.read()?;
-            wallets
-                .get(&seed_hash)
-                .cloned()
-                .ok_or(crate::backend_task::error::TaskError::WalletNotFound)?
-        };
+        let wallet_arc = self.wallet_arc(&seed_hash)?;
 
         // Create provider. Address derivation needs the DIP-17 account-level
         // xpub, which is derived once from the HD seed fetched just-in-time
@@ -101,19 +95,9 @@ impl AppContext {
             result.new_sync_timestamp,
         );
 
-        // Log the found balances from provider
-        for (addr, funds) in provider.found_balances() {
-            use dash_sdk::dpp::address_funds::PlatformAddress;
-            let platform_addr_str = PlatformAddress::try_from(addr.clone())
-                .map(|p| p.to_bech32m_string(self.network))
-                .unwrap_or_else(|_| addr.to_string());
-            tracing::info!(
-                "Sync found address: {} with balance: {}, nonce: {}",
-                platform_addr_str,
-                funds.balance,
-                funds.nonce
-            );
-        }
+        // Per-address balances/nonces are intentionally not logged: the summary
+        // line above carries the aggregate counts, and per-address financial
+        // detail does not belong in plaintext logs at the default level.
 
         // Apply results to the in-memory wallet. Persistence is the upstream
         // coordinator's job: it owns the `platform_addresses` rows and re-pushes

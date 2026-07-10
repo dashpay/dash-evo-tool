@@ -30,6 +30,7 @@ use crate::model::wallet::single_key::{
     ClosedSingleKey, OpenSingleKey, SingleKeyData, SingleKeyHash, SingleKeyWallet,
 };
 use crate::wallet_backend::kv::network_prefix;
+use crate::wallet_backend::poison::{read_recover, write_recover};
 use crate::wallet_backend::secret_seam::{SecretScheme, SecretSeam};
 use crate::wallet_backend::single_key_entry::SingleKeyEntry;
 use crate::wallet_backend::{DetKv, DetScope};
@@ -230,15 +231,11 @@ impl<'a> SingleKeyView<'a> {
                     (true, passphrase.hint.clone())
                 }
                 _ => {
-                    self.secret_store
-                        .set(
-                            &single_key_namespace_id(),
-                            &label,
-                            &SecretBytes::from_slice(&*raw),
-                        )
-                        .map_err(|source| TaskError::SecretStore {
-                            source: Box::new(source),
-                        })?;
+                    SecretSeam::new(self.secret_store).put_secret(
+                        &single_key_namespace_id(),
+                        &label,
+                        &SecretBytes::from_slice(&*raw),
+                    )?;
                     (false, None)
                 }
             };
@@ -260,10 +257,7 @@ impl<'a> SingleKeyView<'a> {
                 })?;
         }
 
-        self.index
-            .write()
-            .map_err(|_| TaskError::ImportedKeyNotFound)?
-            .insert(address_str, imported.clone());
+        write_recover(self.index).insert(address_str, imported.clone());
         Ok(imported)
     }
 
@@ -278,10 +272,7 @@ impl<'a> SingleKeyView<'a> {
     /// construction path) — the in-memory index is still updated so the
     /// rename is visible in-session.
     pub fn set_alias(&self, address: &str, alias: Option<String>) -> Result<(), TaskError> {
-        let mut idx = self
-            .index
-            .write()
-            .map_err(|_| TaskError::ImportedKeyNotFound)?;
+        let mut idx = write_recover(self.index);
         let entry = idx.get_mut(address).ok_or(TaskError::ImportedKeyNotFound)?;
         entry.alias = alias;
         let updated = entry.clone();
@@ -320,13 +311,17 @@ impl<'a> SingleKeyView<'a> {
             // correct one confirms without re-parking plaintext. No re-wrap.
             SecretScheme::Protected => {
                 let pw = SecretString::new(passphrase);
-                self.secret_store
-                    .get_secret(&single_key_namespace_id(), &label, Some(&pw))
-                    .map_err(|source| match source {
-                        SecretStoreError::WrongPassword => TaskError::SingleKeyPassphraseIncorrect,
-                        other => TaskError::SecretStore {
-                            source: Box::new(other),
-                        },
+                SecretSeam::new(self.secret_store)
+                    .get_secret_protected(&single_key_namespace_id(), &label, &pw)
+                    // A wrong password maps to the generic incorrect signal (no
+                    // oracle), matched structurally on the seam's typed source.
+                    .map_err(|e| match &e {
+                        TaskError::SecretSeam { source }
+                            if matches!(**source, SecretStoreError::WrongPassword) =>
+                        {
+                            TaskError::SingleKeyPassphraseIncorrect
+                        }
+                        _ => e,
                     })?
                     .ok_or(TaskError::ImportedKeyNotFound)?;
                 Ok(())
@@ -336,12 +331,8 @@ impl<'a> SingleKeyView<'a> {
             // to verify, then lazily re-wrap a protected entry to Tier-2 under the
             // SAME password. An unprotected entry ignores the passphrase.
             SecretScheme::Unprotected => {
-                let payload = self
-                    .secret_store
-                    .get(&single_key_namespace_id(), &label)
-                    .map_err(|source| TaskError::SecretStore {
-                        source: Box::new(source),
-                    })?
+                let payload = SecretSeam::new(self.secret_store)
+                    .get_secret(&single_key_namespace_id(), &label)?
                     .ok_or(TaskError::ImportedKeyNotFound)?;
                 let entry = SingleKeyEntry::decode(payload.expose_secret())?;
                 // Decrypt to verify, then drop immediately — the binding is wiped
@@ -349,16 +340,12 @@ impl<'a> SingleKeyView<'a> {
                 let verified: Zeroizing<[u8; 32]> = entry.decrypt(Some(passphrase))?;
                 if entry.has_passphrase {
                     let pw = SecretString::new(passphrase);
-                    self.secret_store
-                        .set_secret(
-                            &single_key_namespace_id(),
-                            &label,
-                            &SecretBytes::from_slice(&*verified),
-                            Some(&pw),
-                        )
-                        .map_err(|source| TaskError::SecretStore {
-                            source: Box::new(source),
-                        })?;
+                    SecretSeam::new(self.secret_store).put_secret_protected(
+                        &single_key_namespace_id(),
+                        &label,
+                        &SecretBytes::from_slice(&*verified),
+                        &pw,
+                    )?;
                 }
                 Ok(())
             }
@@ -369,10 +356,7 @@ impl<'a> SingleKeyView<'a> {
     /// address. Reads the in-memory index only — does not touch the
     /// secret vault.
     pub fn list(&self) -> Vec<ImportedKey> {
-        match self.index.read() {
-            Ok(map) => map.values().cloned().collect(),
-            Err(_) => Vec::new(),
-        }
+        read_recover(self.index).values().cloned().collect()
     }
 
     /// Forget the imported key at `address`: drop its index entry, delete
@@ -380,11 +364,7 @@ impl<'a> SingleKeyView<'a> {
     /// — absent addresses are an `Ok(())`.
     pub fn forget(&self, address: &str) -> Result<(), TaskError> {
         let label = label_for_address(address);
-        self.secret_store
-            .delete(&single_key_namespace_id(), &label)
-            .map_err(|source| TaskError::SecretStore {
-                source: Box::new(source),
-            })?;
+        SecretSeam::new(self.secret_store).delete_secret(&single_key_namespace_id(), &label)?;
         if let Some(kv) = self.app_kv {
             let key = meta_key_for(self.network, address);
             kv.delete(DetScope::Global, &key).map_err(|source| {
@@ -393,10 +373,7 @@ impl<'a> SingleKeyView<'a> {
                 }
             })?;
         }
-        self.index
-            .write()
-            .map_err(|_| TaskError::ImportedKeyNotFound)?
-            .remove(address);
+        write_recover(self.index).remove(address);
         Ok(())
     }
 
@@ -534,10 +511,7 @@ impl<'a> SingleKeyView<'a> {
         if metas.is_empty() {
             return Ok(());
         }
-        let mut idx = self
-            .index
-            .write()
-            .map_err(|_| TaskError::ImportedKeyNotFound)?;
+        let mut idx = write_recover(self.index);
         for meta in metas {
             idx.entry(meta.address.clone()).or_insert(meta);
         }
@@ -558,12 +532,9 @@ impl<'a> SingleKeyView<'a> {
         ) {
             return Ok(self.rebuild_closed_tier2_wallet(meta));
         }
-        let secret = match self
-            .secret_store
-            .get(&single_key_namespace_id(), &label)
-            .map_err(|source| TaskError::SecretStore {
-                source: Box::new(source),
-            })? {
+        let secret = match SecretSeam::new(self.secret_store)
+            .get_secret(&single_key_namespace_id(), &label)?
+        {
             Some(s) => s,
             None => {
                 tracing::warn!(
@@ -910,12 +881,8 @@ impl<'a> SingleKeyView<'a> {
                 addr: address.to_string(),
             });
         }
-        let payload = self
-            .secret_store
-            .get(&single_key_namespace_id(), &label)
-            .map_err(|source| TaskError::SecretStore {
-                source: Box::new(source),
-            })?
+        let payload = SecretSeam::new(self.secret_store)
+            .get_secret(&single_key_namespace_id(), &label)?
             .ok_or(TaskError::ImportedKeyNotFound)?;
         let entry = SingleKeyEntry::decode(payload.expose_secret())?;
         if entry.has_passphrase {

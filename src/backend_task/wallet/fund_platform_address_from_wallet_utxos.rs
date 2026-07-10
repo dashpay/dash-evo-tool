@@ -15,20 +15,6 @@ use std::sync::Arc;
 /// explicit credit amount, or `None` to absorb the remainder after fees.
 type FundingOutputs = BTreeMap<PlatformAddress, Option<u64>>;
 
-/// Whether `candidate` can serve as the fee-from-wallet change recipient — i.e.
-/// it is distinct from `destination`.
-///
-/// The orchestrator needs two distinct recipients (one `Some` amount, one `None`
-/// remainder), so the destination can never be its own change. This is the only
-/// rule the caller delegates here; ordering across candidates and the async
-/// in-pool membership gate both live in the calling loop.
-fn is_distinct_change_candidate(
-    destination: &PlatformAddress,
-    candidate: &PlatformAddress,
-) -> bool {
-    candidate != destination
-}
-
 /// Build the output map and fee strategy for the fee-from-wallet funding branch.
 ///
 /// The `destination` receives exactly `amount` converted to credits, and a
@@ -154,13 +140,7 @@ impl AppContext {
         destination: &PlatformAddress,
     ) -> Result<Option<PlatformAddress>, TaskError> {
         let candidates: Vec<PlatformAddress> = {
-            let wallet_arc = {
-                let wallets = self.wallets.read()?;
-                wallets
-                    .get(seed_hash)
-                    .cloned()
-                    .ok_or(TaskError::WalletNotFound)?
-            };
+            let wallet_arc = self.wallet_arc(seed_hash)?;
             let wallet = wallet_arc.read()?;
             wallet
                 .platform_addresses(self.network)
@@ -171,11 +151,11 @@ impl AppContext {
 
         // This loop owns ordering and the async in-pool membership gate: it walks
         // candidates in order and returns the first that is both distinct from the
-        // destination and confirmed in-pool. The predicate only excludes the
-        // destination.
+        // destination and confirmed in-pool. The orchestrator needs two distinct
+        // recipients, so the destination can never be its own change.
         let backend = self.wallet_backend()?;
         for candidate in candidates {
-            if !is_distinct_change_candidate(destination, &candidate) {
+            if &candidate == destination {
                 continue;
             }
             if backend
@@ -202,13 +182,7 @@ impl AppContext {
         use crate::wallet_backend::PlatformPathIndex;
         use platform_wallet::wallet::asset_lock::AssetLockFunding;
 
-        let wallet_arc = {
-            let wallets = self.wallets.read()?;
-            wallets
-                .get(&seed_hash)
-                .cloned()
-                .ok_or(TaskError::WalletNotFound)?
-        };
+        let wallet_arc = self.wallet_arc(&seed_hash)?;
         let network = self.network;
 
         let mut outputs: FundingOutputs = BTreeMap::new();
@@ -261,13 +235,7 @@ impl AppContext {
         use crate::wallet_backend::PlatformPathIndex;
         use platform_wallet::wallet::asset_lock::AssetLockFunding;
 
-        let wallet_arc = {
-            let wallets = self.wallets.read()?;
-            wallets
-                .get(&seed_hash)
-                .cloned()
-                .ok_or(TaskError::WalletNotFound)?
-        };
+        let wallet_arc = self.wallet_arc(&seed_hash)?;
         let network = self.network;
 
         let (outputs, fee_strategy) = build_fee_from_wallet_outputs(amount, destination, change)?;
@@ -322,13 +290,13 @@ impl AppContext {
 
         // When fees are paid from the wallet (not the output), the asset lock
         // must be large enough to also cover the estimated Platform fee.
-        let (asset_lock_amount, _allow_take_fee_from_amount) = if fee_deduct_from_output {
-            (amount, true)
+        let asset_lock_amount = if fee_deduct_from_output {
+            amount
         } else {
             let estimated_platform_fee_duffs = self
                 .fee_estimator()
                 .estimate_address_funding_from_asset_lock_duffs(2);
-            (amount.saturating_add(estimated_platform_fee_duffs), false)
+            amount.saturating_add(estimated_platform_fee_duffs)
         };
 
         let backend = self.wallet_backend()?;
@@ -341,13 +309,7 @@ impl AppContext {
             )
             .await?;
 
-        let wallet_arc = {
-            let wallets = self.wallets.read()?;
-            wallets
-                .get(&seed_hash)
-                .cloned()
-                .ok_or(TaskError::WalletNotFound)?
-        };
+        let wallet_arc = self.wallet_arc(&seed_hash)?;
         let sdk = self.sdk.load().as_ref().clone();
 
         // Derive the change address, build the outputs, and sign — all inside
@@ -469,27 +431,5 @@ mod tests {
         let err = build_fee_from_wallet_outputs(u64::MAX, p2pkh(0x01), p2pkh(0x02))
             .expect_err("overflows");
         assert!(matches!(err, TaskError::CreditCalculationOverflow { .. }));
-    }
-
-    /// A candidate distinct from the destination qualifies as change — the
-    /// orchestrator needs two distinct recipients (one `Some` amount, one `None`
-    /// remainder).
-    #[test]
-    fn change_predicate_accepts_a_distinct_candidate() {
-        let destination = p2pkh(0x01);
-        assert!(
-            is_distinct_change_candidate(&destination, &p2pkh(0x02)),
-            "a candidate that differs from the destination is valid change"
-        );
-    }
-
-    /// The destination is never its own change.
-    #[test]
-    fn change_predicate_rejects_the_destination() {
-        let destination = p2pkh(0x01);
-        assert!(
-            !is_distinct_change_candidate(&destination, &p2pkh(0x01)),
-            "the destination cannot absorb its own change"
-        );
     }
 }

@@ -795,17 +795,16 @@ impl UpdateTokenConfigScreen {
                         );
 
                         if !id_str.is_empty() {
-                            let is_valid =
-                                Identifier::from_string(id_str, Encoding::Base58).is_ok();
-                            let (symbol, color) = if is_valid {
+                            let parsed = Identifier::from_string(id_str, Encoding::Base58);
+                            let (symbol, color) = if parsed.is_ok() {
                                 ("✔", Color32::DARK_GREEN)
                             } else {
                                 ("×", Color32::RED)
                             };
                             ui.label(RichText::new(symbol).color(color).strong());
 
-                            if is_valid {
-                                *id = Identifier::from_string(id_str, Encoding::Base58).unwrap();
+                            if let Ok(parsed_id) = parsed {
+                                *id = parsed_id;
                             }
                         }
                     });

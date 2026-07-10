@@ -5,7 +5,8 @@ use crate::framework::harness::ctx;
 use crate::framework::identity_helpers::build_identity_registration;
 use crate::framework::task_runner::{run_on_large_stack, run_task, run_task_with_nonce_retry};
 use dash_evo_tool::backend_task::identity::{
-    IdentityInputToLoad, IdentityTask, IdentityTopUpInfo, TopUpIdentityFundingMethod,
+    IdentityInputToLoad, IdentityLoadMode, IdentityTask, IdentityTopUpInfo,
+    TopUpIdentityFundingMethod,
 };
 use dash_evo_tool::backend_task::wallet::WalletTask;
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
@@ -428,6 +429,8 @@ async fn tc_027_load_identity() {
         keys_input: vec![],
         derive_keys_from_wallets: true,
         selected_wallet_seed_hash: Some(si.wallet_seed_hash),
+        encryption_password: None,
+        load_mode: IdentityLoadMode::Overwrite,
     };
 
     let result = run_task(
@@ -533,6 +536,8 @@ async fn tc_030_load_nonexistent_identity() {
         keys_input: vec![],
         derive_keys_from_wallets: false,
         selected_wallet_seed_hash: None,
+        encryption_password: None,
+        load_mode: IdentityLoadMode::Overwrite,
     };
 
     let result = run_task(

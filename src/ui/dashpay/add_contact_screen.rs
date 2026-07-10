@@ -59,9 +59,7 @@ pub struct AddContactScreen {
 impl AddContactScreen {
     pub fn new(app_context: Arc<AppContext>) -> Self {
         // Seed from the app-scoped selected identity (W3 SYNC); fall back to first.
-        let identities = app_context
-            .load_local_qualified_identities()
-            .unwrap_or_default();
+        let identities = app_context.load_local_user_identities().unwrap_or_default();
         let selected_identity = app_context
             .selected_identity_id()
             .and_then(|id| identities.iter().find(|qi| qi.identity.id() == id).cloned())
@@ -93,9 +91,7 @@ impl AddContactScreen {
 
     pub fn new_with_identity_id(app_context: Arc<AppContext>, identity_id: String) -> Self {
         // Seed from the app-scoped selected identity (W3 SYNC); fall back to first.
-        let identities = app_context
-            .load_local_qualified_identities()
-            .unwrap_or_default();
+        let identities = app_context.load_local_user_identities().unwrap_or_default();
         let selected_identity = app_context
             .selected_identity_id()
             .and_then(|id| identities.iter().find(|qi| qi.identity.id() == id).cloned())
@@ -271,7 +267,7 @@ impl ScreenLike for AddContactScreen {
             // Identity and Key selector
             let identities = self
                 .app_context
-                .load_local_qualified_identities()
+                .load_local_user_identities()
                 .unwrap_or_default();
 
             if identities.is_empty() {
@@ -288,7 +284,8 @@ impl ScreenLike for AddContactScreen {
                 );
                 ui.separator();
 
-                // Identity selector — SYNC: write-back via syncing_global on user pick.
+                // Identity selector — SYNC: write-back via syncing_global on user pick (FR-6:
+                // User-only source, so no masternode can leak to the app-global identity).
                 let response = ui.add(
                     IdentitySelector::new(
                         "contact_sender_identity_selector",
@@ -715,21 +712,7 @@ fn classify_send_error(error: &TaskError, username_or_id: &str) -> Option<DashPa
             DashPayError::ContactRequestAlreadySent { to } => {
                 Some(DashPayError::ContactRequestAlreadySent { to: to.clone() })
             }
-            DashPayError::RateLimited { operation } => Some(DashPayError::RateLimited {
-                operation: operation.clone(),
-            }),
-            DashPayError::NetworkError { reason } => Some(DashPayError::NetworkError {
-                reason: reason.clone(),
-            }),
-            DashPayError::PlatformError { reason } => Some(DashPayError::PlatformError {
-                reason: reason.clone(),
-            }),
-            DashPayError::BroadcastFailed { reason } => Some(DashPayError::BroadcastFailed {
-                reason: reason.clone(),
-            }),
-            DashPayError::QueryFailed { reason } => Some(DashPayError::QueryFailed {
-                reason: reason.clone(),
-            }),
+            DashPayError::NetworkError => Some(DashPayError::NetworkError),
             _ => None,
         },
         _ => None,
@@ -772,9 +755,7 @@ mod tests {
     #[test]
     fn recoverable_errors_map_through_so_retry_is_offered() {
         let mapped = classify_send_error(
-            &TaskError::DashPay(DashPayError::NetworkError {
-                reason: "timeout".to_string(),
-            }),
+            &TaskError::DashPay(DashPayError::NetworkError),
             "alice.dash",
         );
         let mapped = mapped.expect("network errors should be classified");

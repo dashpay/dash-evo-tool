@@ -1,0 +1,2861 @@
+use super::*;
+use crate::app::TaskResult;
+use crate::app_dir::ensure_env_file;
+use crate::context::AppContext;
+use crate::context::connection_status::ConnectionStatus;
+use crate::database::test_helpers::create_database_at_path;
+use crate::utils::egui_mpsc::SenderAsync;
+use crate::utils::tasks::TaskManager;
+
+/// Build an offline `AppContext` for testnet in an isolated temp dir. No
+/// network I/O happens at construction: the SDK and Core client are built
+/// from bundled `.env` addresses but connect lazily. The `TempDir` must
+/// outlive the context — its drop deletes the data dir.
+fn offline_testnet_context() -> (Arc<AppContext>, SenderAsync<TaskResult>, tempfile::TempDir) {
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let (ctx, sender) = offline_testnet_context_at(temp_dir.path());
+    (ctx, sender, temp_dir)
+}
+
+/// Build an offline testnet `AppContext` rooted at an existing `data_dir`.
+/// Splitting this out lets a test build a second, independent context over
+/// the *same* on-disk sidecars to simulate a process restart (cold boot).
+fn offline_testnet_context_at(
+    data_dir: &std::path::Path,
+) -> (Arc<AppContext>, SenderAsync<TaskResult>) {
+    let db =
+        Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("create test database"));
+    offline_testnet_context_with_db(data_dir, db)
+}
+
+/// Build an offline testnet `AppContext` whose `data.db` went through the
+/// **real** `Database::initialize` fresh-install path (the path production
+/// uses at `app.rs:322`), which gates the legacy `wallet`/`wallet_addresses`
+/// tables OUT. Use this for fresh-install regression tests; the default
+/// helper force-creates those tables via `create_tables(true)`.
+fn offline_testnet_context_fresh_init(
+    data_dir: &std::path::Path,
+) -> (Arc<AppContext>, SenderAsync<TaskResult>) {
+    let db_file = data_dir.join("data.db");
+    let db = crate::database::Database::new(&db_file).expect("create fresh test database");
+    db.initialize(&db_file)
+        .expect("fresh Database::initialize should succeed");
+    offline_testnet_context_with_db(data_dir, Arc::new(db))
+}
+
+fn offline_testnet_context_with_db(
+    data_dir: &std::path::Path,
+    db: Arc<crate::database::Database>,
+) -> (Arc<AppContext>, SenderAsync<TaskResult>) {
+    let data_dir = data_dir.to_path_buf();
+    ensure_env_file(&data_dir);
+
+    let subtasks = Arc::new(TaskManager::new());
+    let connection_status = Arc::new(ConnectionStatus::new());
+    let egui_ctx = egui::Context::default();
+    let app_kv = AppContext::open_app_kv(&data_dir).expect("open app k/v");
+    let secret_store = AppContext::open_secret_store(&data_dir).expect("open secret store");
+
+    let ctx = AppContext::new(
+        data_dir,
+        Network::Testnet,
+        db,
+        subtasks,
+        connection_status,
+        egui_ctx,
+        app_kv,
+        secret_store,
+        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+    )
+    .expect("AppContext::new should succeed offline with bundled testnet config");
+
+    let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+    let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
+    (ctx, sender)
+}
+
+/// Recursively copy a directory tree. Cold-boot tests reopen wallet state
+/// over a fresh path (identical on-disk bytes) to sidestep the persister's
+/// single-open advisory lock a lingering subtask may still hold.
+fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) {
+    std::fs::create_dir_all(dst).expect("mkdir dst");
+    for entry in std::fs::read_dir(src).expect("read_dir") {
+        let entry = entry.expect("dir entry");
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if from.is_dir() {
+            copy_dir_recursive(&from, &to);
+        } else {
+            std::fs::copy(&from, &to).expect("copy file");
+        }
+    }
+}
+
+/// Process-global serialization lock for tests that tear a wallet backend
+/// down and immediately rebuild it over the *same* on-disk path. The
+/// upstream persister enforces a single open per `platform-wallet.sqlite`
+/// (`WalletStorageError::AlreadyOpen`); a bootstrap subtask spawned by
+/// `ensure_wallet_backend` may keep its `Arc<WalletBackend>` — and that
+/// open's advisory lock — alive a beat past `stop_spv`, so under parallel
+/// scheduling the reopen can lose the race. Serializing these reopen tests
+/// removes the scheduler pressure so the lingering subtask drops the old
+/// handle before the reopen. Mirrors `support::data_dir_lock` in the
+/// kittest suite. Held across awaits, hence a `tokio::sync::Mutex`.
+async fn backend_reopen_lock() -> tokio::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await
+}
+
+/// Before the wallet seam is wired, the `wallet_backend()` gate must fail
+/// fast with the typed `WalletBackendNotYetWired` rather than handing back a
+/// half-built backend. This is the gate the speculative pre-wire callers
+/// were tripping.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn wallet_backend_gate_errors_when_not_wired() {
+    let (ctx, _sender, _tmp) = offline_testnet_context();
+
+    let err = ctx
+        .wallet_backend()
+        .expect_err("wallet_backend() must fail before the backend is wired");
+    assert!(
+        matches!(err, TaskError::WalletBackendNotYetWired),
+        "expected WalletBackendNotYetWired, got: {err:?}"
+    );
+}
+
+/// Wiring the backend must not start chain sync: `ensure_wallet_backend`
+/// builds the seam but leaves the upstream run loop unstarted, so the start
+/// latch stays low until the chokepoint (or a manual Connect) starts it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn wiring_does_not_start_chain_sync() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    let backend = ctx
+        .wallet_backend()
+        .expect("backend must be wired after ensure_wallet_backend");
+    assert!(
+        !backend.is_started(),
+        "wiring alone must not start chain sync"
+    );
+
+    backend.shutdown().await;
+}
+
+/// The async chokepoint wires the backend and starts chain sync in one call,
+/// so a caller need not have wired the backend beforehand. Pins the
+/// "ensure-then-start" sequencing the GUI/MCP/network-switch paths share.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ensure_wallet_backend_and_start_spv_wires_then_starts() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+
+    assert!(
+        ctx.wallet_backend().is_err(),
+        "precondition: backend unwired before the chokepoint"
+    );
+
+    ctx.ensure_wallet_backend_and_start_spv(sender)
+        .await
+        .expect("chokepoint should wire then start offline");
+
+    let backend = ctx
+        .wallet_backend()
+        .expect("backend must be wired after the chokepoint");
+    assert!(
+        backend.is_started(),
+        "chokepoint must have started chain sync"
+    );
+
+    backend.shutdown().await;
+}
+
+/// The Disconnect chokepoint must produce a *visible* state change: after a
+/// successful start, `stop_spv` stops chain sync IN PLACE — keeping the
+/// backend wired for a restart — and settles the indicator on `Stopped` /
+/// `Disconnected`. Regression guard ensuring the Disconnect button drives
+/// the overall state out of its active value while preserving the backend.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stop_spv_in_place_keeps_backend_and_disconnects_indicator() {
+    use crate::context::connection_status::OverallConnectionState;
+
+    let (ctx, sender, _tmp) = offline_testnet_context();
+
+    ctx.ensure_wallet_backend_and_start_spv(sender)
+        .await
+        .expect("chokepoint should wire then start offline");
+    assert!(
+        ctx.wallet_backend().is_ok(),
+        "precondition: backend wired after start"
+    );
+    // Simulate a session that reached quorum readiness, so the disconnect
+    // has a flag to re-arm.
+    ctx.connection_status().set_masternodes_ready(true);
+
+    ctx.stop_spv().await;
+
+    let backend = ctx
+        .wallet_backend()
+        .expect("stop_spv must KEEP the backend wired for restart-in-place (NOT unwire it)");
+    assert!(
+        !backend.is_started(),
+        "stop_spv must re-arm the start latch so the next Connect can restart"
+    );
+    assert!(
+        !ctx.connection_status().masternodes_ready(),
+        "stop_spv must re-arm the quorum gate so the next reconnect waits for masternode re-sync"
+    );
+    assert_eq!(
+        ctx.connection_status().spv_status(),
+        SpvStatus::Stopped,
+        "stop_spv must leave the SPV indicator Stopped"
+    );
+    assert_eq!(
+        ctx.connection_status().overall_state(),
+        OverallConnectionState::Disconnected,
+        "stop_spv must leave the overall state Disconnected"
+    );
+    assert_eq!(
+        ctx.connection_status().spv_connected_peers(),
+        0,
+        "stop_spv must clear the live peer count"
+    );
+}
+
+/// `stop_spv` is idempotent: calling it with no wired backend must not panic
+/// and must still settle the indicator on `Stopped` / `Disconnected`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stop_spv_is_idempotent_without_a_wired_backend() {
+    use crate::context::connection_status::OverallConnectionState;
+
+    let (ctx, _sender, _tmp) = offline_testnet_context();
+    assert!(
+        ctx.wallet_backend().is_err(),
+        "precondition: backend unwired"
+    );
+
+    ctx.stop_spv().await;
+
+    assert_eq!(ctx.connection_status().spv_status(), SpvStatus::Stopped);
+    assert_eq!(
+        ctx.connection_status().overall_state(),
+        OverallConnectionState::Disconnected
+    );
+}
+
+/// Restart-in-place reconnect: a same-network Disconnect → Connect keeps the
+/// SAME `WalletBackend` (and its `Arc<SqlitePersister>`) wired, so the
+/// persister DB is never closed/reopened and `AlreadyOpen` is impossible by
+/// construction — no release barrier needed. Drives the real production
+/// path: `stop_spv()` (in-place) then `ensure_wallet_backend_and_start_spv()`.
+///
+/// Validated offline (passes now): the backend pointer is identical across
+/// disconnect→connect (reuse, not rebuild); `is_started()` is cleared by
+/// `stop_spv` and re-set by the reconnect (latch + gate re-armed); the
+/// reconnect returns `Ok` with no `AlreadyOpen`.
+///
+/// Upstream Q3 race protection now lives in the pinned platform rev: all
+/// three coordinators (incl. `platform_address_sync` since b4506492) gate
+/// their cancel-slot clear on `background_generation`, so a rapid restart of
+/// the SAME instance cannot leak an uncancellable / duplicate loop. This
+/// offline test asserts the DET-level reuse/restart contract; it does not
+/// itself force the timing race — full live behavior is covered by the
+/// network-gated (`#[ignore]`d) backend-e2e B-reconnect test.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reconnect_restart_in_place_reuses_backend() {
+    use crate::context::connection_status::OverallConnectionState;
+
+    let _reopen_guard = backend_reopen_lock().await;
+
+    let (ctx, sender, _tmp) = offline_testnet_context();
+
+    ctx.ensure_wallet_backend_and_start_spv(sender.clone())
+        .await
+        .expect("initial start should wire then start offline");
+    let first = ctx.wallet_backend().expect("backend wired after start");
+    assert!(first.is_started(), "initial start must latch the backend");
+    let first_ptr = Arc::as_ptr(&first);
+    drop(first);
+
+    // Disconnect IN PLACE via the production chokepoint: the backend stays
+    // wired (slot not taken), the start latch is re-armed, the indicator
+    // settles on Disconnected.
+    ctx.stop_spv().await;
+    let after_stop = ctx
+        .wallet_backend()
+        .expect("stop_spv must KEEP the backend wired for restart-in-place");
+    assert!(
+        !after_stop.is_started(),
+        "stop_spv must re-arm the start latch (is_started == false)"
+    );
+    assert_eq!(
+        ctx.connection_status().overall_state(),
+        OverallConnectionState::Disconnected,
+        "stop_spv must settle the indicator on Disconnected"
+    );
+    assert!(
+        !ctx.connection_status().masternodes_ready(),
+        "stop_spv must re-arm the quorum gate (masternodes_ready == false)"
+    );
+    drop(after_stop);
+
+    // Reconnect: `ensure_wallet_backend` fast-paths on the populated slot
+    // (no `WalletBackend::new`, no `SqlitePersister::open`), so the SAME
+    // instance restarts — structurally immune to `AlreadyOpen`.
+    ctx.ensure_wallet_backend_and_start_spv(sender)
+        .await
+        .expect("reconnect should restart the SAME backend in place");
+    let second = ctx
+        .wallet_backend()
+        .expect("backend still wired after reconnect");
+    assert_eq!(
+        first_ptr,
+        Arc::as_ptr(&second),
+        "restart-in-place must REUSE the same backend, not rebuild it"
+    );
+    assert!(
+        second.is_started(),
+        "reconnect must restart chain sync on the reused backend's re-armed latch"
+    );
+
+    second.shutdown().await;
+}
+
+/// Two genuinely-parallel first-open attempts on the SAME never-wired context
+/// must NOT race into a double `WalletBackend::new` / `SqlitePersister::open`.
+/// The upstream persister is single-open-per-path, so a concurrent double-open
+/// errors — `WalletStorageError::AlreadyOpen` against a live persister (the
+/// reported production symptom) or a DB-init race on a fresh file.
+///
+/// This guards the GUI's `finalize_network_switch` fast path, which spawns a
+/// `wallet-backend-eager-init` subtask on every switch with no re-entrancy
+/// guard: a rapid switch-away-and-back to the same (already-cached) network
+/// fires a second eager-init for the same context before the first finishes
+/// wiring. `ensure_wallet_backend` serializes them behind the per-context
+/// `wallet_backend_build` mutex with a double-checked slot — the first builds
+/// and stores, the second re-checks under the guard, sees the populated slot,
+/// and no-ops. One open, one shared backend, no error. The eager-init entry
+/// `ensure_wallet_backend_and_start_spv` delegates its open to exactly this
+/// function, so guarding the open here covers that path too.
+///
+/// Deleting the guard (fast-path recheck + build mutex + post-guard recheck)
+/// makes both racers reach `WalletBackend::new` and the second's open fails —
+/// verified: the test then panics on the `must succeed` expectation.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_ensure_wallet_backend_does_not_double_open() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    assert!(
+        ctx.wallet_backend().is_err(),
+        "precondition: backend must be unwired before the concurrent race"
+    );
+
+    let ctx_a = Arc::clone(&ctx);
+    let ctx_b = Arc::clone(&ctx);
+    let sender_a = sender.clone();
+    let sender_b = sender.clone();
+    let a = tokio::spawn(async move { ctx_a.ensure_wallet_backend(sender_a).await });
+    let b = tokio::spawn(async move { ctx_b.ensure_wallet_backend(sender_b).await });
+    let (ra, rb) = tokio::join!(a, b);
+
+    ra.expect("first-open task A must not panic")
+        .expect("concurrent first-open A must succeed — a double-open would error");
+    rb.expect("first-open task B must not panic")
+        .expect("concurrent first-open B must succeed — a double-open would error");
+
+    // Exactly one backend was built and both racers converged on it (first
+    // writer wins; the second no-ops on the populated slot).
+    let backend = ctx
+        .wallet_backend()
+        .expect("backend must be wired after the concurrent open");
+
+    backend.shutdown().await;
+}
+
+/// A failure at the (fallible) wiring step must surface — the
+/// chokepoint returns `Err` AND flips the SPV indicator to `Error`, so the
+/// user does not silently fall back to `Disconnected` with no feedback.
+///
+/// Induces the wiring failure offline by planting a regular file where the
+/// per-network SPV storage directory would be created: `WalletBackend::new`
+/// calls `create_dir_all(data_dir/spv/testnet)`, which cannot succeed when a
+/// path component (`spv`) is a file rather than a directory.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn chokepoint_wiring_failure_flips_indicator_to_error() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+
+    // Block the SPV storage dir creation: a file at `data_dir/spv` makes
+    // `create_dir_all(.../spv/testnet)` fail deterministically (no reliance
+    // on filesystem permissions, which root can bypass in CI).
+    std::fs::write(ctx.data_dir().join("spv"), b"not a directory")
+        .expect("plant blocking file at the spv path");
+
+    assert_ne!(
+        ctx.connection_status.spv_status(),
+        SpvStatus::Error,
+        "precondition: indicator must not already be in the Error state"
+    );
+
+    let err = ctx
+        .ensure_wallet_backend_and_start_spv(sender)
+        .await
+        .expect_err("wiring must fail when the spv path is blocked by a file");
+    assert!(
+        matches!(err, TaskError::FileSystem { .. }),
+        "expected a FileSystem wiring error, got: {err:?}"
+    );
+
+    assert_eq!(
+        ctx.connection_status.spv_status(),
+        SpvStatus::Error,
+        "wiring failure must flip the SPV indicator to Error"
+    );
+}
+
+/// Cold-boot signability regression, adapted to the JIT secret model: a
+/// no-password wallet must remain signable after a cold-boot hydration
+/// without any seed ever being parked in a long-lived cache.
+///
+/// Under the JIT chokepoint there is no `inner.seeds` cache to fill or
+/// clear; signing decrypts the seed just-in-time from the encrypted vault
+/// envelope. For a no-password wallet (`uses_password = false`) the
+/// chokepoint's unprotected fast-path decrypts with **no passphrase and no
+/// prompt** — so the wallet signs whether or not the session cache holds
+/// it. This test proves that:
+///   1. a freshly-registered no-password wallet signs in-process; and
+///   2. after `forget_all_secrets()` wipes the session cache (the exact
+///      state a real cold-boot leaves: watch-only, nothing remembered) the
+///      wallet STILL signs — the seed is pulled from the vault on demand.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn no_password_wallet_resignable_via_unlock_chokepoint() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+
+    let seed = [0x24u8; 64];
+    let wallet = crate::model::wallet::Wallet::new_from_seed(
+        seed,
+        Network::Testnet,
+        Some("cold-boot".to_string()),
+        None, // no password
+    )
+    .expect("build no-password wallet");
+    assert!(wallet.is_open(), "a no-password wallet is open on creation");
+
+    let (seed_hash, wallet_arc) = ctx
+        .register_wallet(wallet, &seed, WalletOrigin::Fresh)
+        .expect("register wallet");
+    let backend = ctx.wallet_backend().expect("backend wired");
+
+    // Live (same-process) state: registration wrote the seed envelope to
+    // the vault, so the chokepoint can decrypt the no-password seed.
+    backend
+        .assert_can_sign(&seed_hash)
+        .await
+        .expect("freshly-registered no-password wallet must sign in-process");
+
+    // Simulate the seedless cold-boot state: wipe the session cache so
+    // nothing is remembered (what hydration leaves behind). The wallet is
+    // still `Open` for display, but no plaintext seed is cached anywhere.
+    backend.forget_all_secrets();
+    assert!(
+        wallet_arc.read_recover().is_open(),
+        "the wallet is still Open after the session cache is dropped"
+    );
+
+    // The JIT guarantee: a no-password wallet signs from the vault with no
+    // prompt and no cache — the unprotected fast-path covers it.
+    backend
+        .assert_can_sign(&seed_hash)
+        .await
+        .expect("no-password wallet must sign after cold-boot via the JIT fast-path");
+
+    backend.shutdown().await;
+}
+
+/// Leaving a network must not strand session-cached secrets on the
+/// outgoing context. `finalize_network_switch` funnels through
+/// [`WalletBackend::forget_all_secrets`]; this exercises that exact call
+/// against a populated session cache and asserts it is emptied — the JIT
+/// design's eager "no secrets linger across a network change" guarantee.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn network_switch_path_clears_outgoing_session_cache() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+
+    let seed = [0x31u8; 64];
+    let wallet = crate::model::wallet::Wallet::new_from_seed(
+        seed,
+        Network::Testnet,
+        Some("switching".to_string()),
+        None,
+    )
+    .expect("build wallet");
+    let (seed_hash, _wallet_arc) = ctx
+        .register_wallet(wallet, &seed, WalletOrigin::Fresh)
+        .expect("register wallet");
+
+    let backend = ctx.wallet_backend().expect("backend wired");
+    let scope = crate::wallet_backend::SecretScope::HdSeed { seed_hash };
+
+    // Promote the seed into the session cache (what the unlock gesture or a
+    // remembered op leaves behind).
+    let held = zeroize::Zeroizing::new(seed);
+    backend.secret_access().remember_session(
+        &scope,
+        crate::wallet_backend::SecretPlaintext::HdSeed(&held),
+        crate::wallet_backend::RememberPolicy::UntilAppClose,
+    );
+    assert!(
+        backend.secret_access().is_session_cached(&scope),
+        "precondition: the seed is session-cached before the switch"
+    );
+
+    // The exact call `finalize_network_switch` makes on the outgoing
+    // context before leaving it.
+    backend.forget_all_secrets();
+
+    assert!(
+        !backend.secret_access().is_session_cached(&scope),
+        "the outgoing context's session cache must be empty after the switch path runs"
+    );
+
+    backend.shutdown().await;
+}
+
+/// W1 idempotency: registering the same wallet twice with the
+/// upstream backend is a no-op the second time — the wallet is watched once,
+/// never double-watched. The pre-fix bug was the *opposite* (a never-watched
+/// wallet); this pins that the new writer is also safe to call repeatedly,
+/// as both W1 (create/import) and W2 (cold-boot) may fire for one wallet in
+/// a single session.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn register_wallet_from_seed_is_idempotent() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    let backend = ctx.wallet_backend().expect("backend wired");
+
+    let seed = [0x5Au8; 64];
+    let wallet = crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
+        .expect("build wallet");
+    let seed_hash = wallet.seed_hash();
+
+    assert!(
+        !backend.is_wallet_registered(&seed_hash),
+        "precondition: wallet must not be registered before the first call"
+    );
+
+    backend
+        .register_wallet_from_seed(&seed_hash, &seed, Some(0))
+        .await
+        .expect("first registration must succeed");
+    assert!(
+        backend.is_wallet_registered(&seed_hash),
+        "the wallet must be registered after the first call"
+    );
+    assert_eq!(
+        backend.wallet_count().await,
+        1,
+        "exactly one wallet is watched after the first registration"
+    );
+
+    // Second call: idempotent no-op, no double-watch.
+    backend
+        .register_wallet_from_seed(&seed_hash, &seed, Some(0))
+        .await
+        .expect("second registration must be a no-op, not an error");
+    assert_eq!(
+        backend.wallet_count().await,
+        1,
+        "a repeat registration must not double-watch the wallet"
+    );
+
+    backend.shutdown().await;
+}
+
+/// Regression guard for issue #7 (now PASSES — was the bug reproducer).
+///
+/// Before the upstream fix (platform PR #3828), `WalletAccountCreationOptions::Default`
+/// created BOTH a BIP32 account-0 (`m/0'`, depth-1) and a BIP44 account-0
+/// (`m/44'/coin'/0'`, depth-3), but the persistor collapsed both
+/// `StandardAccountType` variants to the single `account_type` label
+/// `"standard"`. They shared the `account_registrations` primary key
+/// `(wallet_id, account_type, account_index)`, so the BIP32 row overwrote the
+/// BIP44 row via `ON CONFLICT DO UPDATE`. The seedless cold-boot reload then
+/// read back the depth-1 xpub, it matched no DET sidecar bridge entry, and the
+/// fund-routing gate rejected every wallet -> systematic WalletNotLoaded.
+///
+/// The fix distinguishes the two standard accounts in the persistor key:
+/// the label is now `"standard_bip44"` vs `"standard_bip32"`, so both rows
+/// coexist and the BIP44 depth-3 xpub survives alongside the BIP32 one.
+/// This guard asserts the post-fix invariant: a current-binary wallet
+/// survives create -> persist -> real `load_from_persistor_seedless` -> gate,
+/// BOTH standard rows persist, and the stored BIP44 xpub matches the bridge.
+///
+/// It inspects the persistor `account_registrations` directly (a read-only
+/// rusqlite connection) rather than reopening an AppContext, because the
+/// offline harness can't release the shared `app_kv` advisory lock to reopen.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn issue7_fresh_persistor_bip44_xpub_matches_det_bridge() {
+    let _serialize = backend_reopen_lock().await;
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+
+    let seed = [0x71u8; 64];
+    let (seed_hash, meta_xpub) = {
+        // ---- First boot: create + register through the full W1 path ----
+        let (ctx, sender) = offline_testnet_context_at(temp_dir.path());
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("ensure_wallet_backend (first boot)");
+        let backend = ctx.wallet_backend().expect("backend wired (first boot)");
+
+        let wallet =
+            crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
+                .expect("build wallet");
+        let seed_hash = wallet.seed_hash();
+        let det_master_bip44 = wallet.master_bip44_ecdsa_extended_public_key;
+
+        // Write the wallet-meta sidecar (the seedless bridge key) DIRECTLY —
+        // avoid `register_wallet`, which spawns an upstream-registration
+        // subtask that keeps an `Arc<WalletBackend>` (and the shared app_kv
+        // handle) alive and blocks the cold-boot reopen below.
+        backend
+            .wallet_meta()
+            .set(
+                Network::Testnet,
+                &seed_hash,
+                &crate::model::wallet::meta::WalletMeta {
+                    alias: String::new(),
+                    is_main: false,
+                    core_wallet_name: None,
+                    xpub_encoded: det_master_bip44.encode().to_vec(),
+                    uses_password: false,
+                    password_hint: None,
+                },
+            )
+            .expect("write wallet-meta sidecar");
+
+        // W1 upstream registration via the REAL create_wallet_from_seed_bytes
+        // writer (awaited, no spawn). Confirms the FRESH in-memory create
+        // resolves through the gate.
+        backend
+            .register_wallet_from_seed(&seed_hash, &seed, Some(0))
+            .await
+            .expect("W1 upstream registration must succeed on first boot");
+        assert!(
+            backend.is_wallet_registered(&seed_hash),
+            "precondition: a fresh in-memory create must resolve through the gate"
+        );
+        let meta_xpub = det_master_bip44.encode().to_vec();
+
+        backend.shutdown().await;
+        // Drain ctx1's subtasks + drop everything so the persistor + app_kv
+        // advisory locks release before the cold-boot reopen.
+        let _ = ctx.subtasks.shutdown_async().await;
+        drop(backend);
+        drop(ctx);
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        (seed_hash, meta_xpub)
+    };
+
+    // Cold boot over a COPY of the on-disk state: the first context's
+    // app_kv/persistor advisory locks can linger in-process, so cold-booting
+    // over an identical-bytes copy drives the genuine
+    // `load_from_persistor_seedless` inside `WalletBackend::new` without a
+    // lock conflict.
+    let cold_dir = tempfile::tempdir().expect("cold tempdir");
+    copy_dir_recursive(temp_dir.path(), cold_dir.path());
+
+    let cold_boot_registered = {
+        let data_dir = cold_dir.path().to_path_buf();
+        let app_kv = AppContext::open_app_kv(&data_dir).expect("cold-boot open app k/v");
+        let secret_store =
+            AppContext::open_secret_store(&data_dir).expect("cold-boot open secret store");
+        let db = Arc::new(
+            create_database_at_path(&data_dir.join("data.db")).expect("reopen test database"),
+        );
+        let ctx2 = AppContext::new(
+            data_dir,
+            Network::Testnet,
+            db,
+            Arc::new(TaskManager::new()),
+            Arc::new(ConnectionStatus::new()),
+            egui::Context::default(),
+            app_kv,
+            secret_store,
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        )
+        .expect("cold-boot AppContext::new");
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let sender2 = SenderAsync::new(tx, ctx2.egui_ctx().clone());
+        // ensure_wallet_backend -> WalletBackend::new runs the real
+        // load_from_persistor_seedless pass (builds the bridge from the
+        // sidecar, loads the persistor, resolves via the fund-routing gate).
+        ctx2.ensure_wallet_backend(sender2)
+            .await
+            .expect("ensure_wallet_backend (cold boot)");
+        let backend2 = ctx2.wallet_backend().expect("backend wired (cold boot)");
+        let registered = backend2.is_wallet_registered(&seed_hash);
+        backend2.shutdown().await;
+        let _ = ctx2.subtasks.shutdown_async().await;
+        registered
+    };
+    let _ = seed_hash;
+
+    // Inspect the persistor on disk directly (a fresh read-only rusqlite
+    // connection; SQLite allows concurrent readers, so the lingering app_kv
+    // handle on the *other* file does not block this). This shows exactly
+    // what the seedless reload would read back for the BIP44 account-0 row —
+    // the gate's "loaded" side — without needing a second AppContext.
+    let persistor_path = temp_dir
+        .path()
+        .join("spv")
+        .join("testnet")
+        .join("platform-wallet.sqlite");
+    let conn = rusqlite::Connection::open_with_flags(
+        &persistor_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .expect("open persistor read-only");
+    let rows: Vec<(String, i64, Vec<u8>)> = conn
+        .prepare(
+            "SELECT account_type, account_index, account_xpub_bytes FROM account_registrations",
+        )
+        .expect("prepare")
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .expect("query")
+        .map(|r| r.expect("row"))
+        .collect();
+
+    // The seedless reload needs a BIP44 account-0 ("standard_bip44", 0) row
+    // to rebuild the watch-only account the gate reads. If it's absent or
+    // under a different key, the gate rejects every wallet on a fresh DB.
+    // The label is "standard_bip44" (not the pre-fix "standard"): the fix
+    // distinguishes the two StandardAccountType variants so the BIP44 row no
+    // longer shares a primary key with — and is no longer overwritten by —
+    // the BIP32 account-0 row.
+    let bip44_0_blob = rows
+        .iter()
+        .find(|(at, idx, _)| at == "standard_bip44" && *idx == 0)
+        .map(|(_, _, blob)| blob.clone());
+    assert!(
+        bip44_0_blob.is_some(),
+        "persistor has no BIP44 account-0 (standard_bip44,0) row after W1. rows={rows:?}"
+    );
+
+    // Coexistence guarantee (the heart of the fix): the BIP32 account-0 row
+    // must ALSO survive — the collision used to drop one of the two. People
+    // hold funds on the BIP32 m/0' account, so it must never be clobbered.
+    let bip32_0_present = rows
+        .iter()
+        .any(|(at, idx, _)| at == "standard_bip32" && *idx == 0);
+    assert!(
+        bip32_0_present,
+        "persistor lost the BIP32 account-0 (standard_bip32,0) row — the collision fix must keep BOTH standard accounts. rows={rows:?}"
+    );
+
+    // The gate invariant: the persisted BIP44 account-0 xpub, decoded exactly
+    // as the seedless reload does, must equal DET's sidecar bridge xpub —
+    // that equality is what the fund-routing gate checks on a cold boot.
+    // Before the fix the stored row was the depth-1 BIP32 xpub, which
+    // differed and rejected every wallet.
+    {
+        use platform_wallet::changeset::AccountRegistrationEntry;
+        let blob = bip44_0_blob.unwrap();
+        let cfg = bincode::config::standard();
+        let (entry, _): (AccountRegistrationEntry, usize) =
+            bincode::serde::decode_from_slice(&blob, cfg).expect("decode stored entry");
+        let stored_xpub_encoded = entry.account_xpub.encode().to_vec();
+        assert_eq!(
+            stored_xpub_encoded, meta_xpub,
+            "stored BIP44 account-0 xpub must match the DET bridge xpub — the fund-routing gate rejects the wallet otherwise"
+        );
+    }
+
+    // Primary invariant: a current-binary wallet must survive
+    // create -> persist -> real load_from_persistor_seedless -> gate. A
+    // failure here means the persistor regressed to storing the depth-1
+    // BIP32 row, which would resurrect the systematic WalletNotLoaded.
+    assert!(
+        cold_boot_registered,
+        "a current-binary wallet must resolve after cold-boot seedless reload; \
+         a failure here resurrects the systematic WalletNotLoaded on a fresh DB"
+    );
+}
+
+/// `WalletTask::ListTrackedAssetLocks` reads tracked locks off the UI thread
+/// through the App Task System. This drives the production dispatch path
+/// (`run_backend_task`) for a registered wallet and asserts it returns the
+/// typed `TrackedAssetLocks` result — the route the egui frame loop now uses
+/// instead of the deleted in-runtime blocking read. A freshly-registered
+/// wallet has no locks, so an empty list is the expected, panic-free result.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn list_tracked_asset_locks_task_returns_typed_result() {
+    use crate::backend_task::BackendTask;
+    use crate::backend_task::BackendTaskSuccessResult;
+    use crate::backend_task::wallet::WalletTask;
+
+    let (ctx, sender, _tmp) = offline_testnet_context();
+
+    let seed = [0x9Eu8; 64];
+    let wallet = crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
+        .expect("build wallet");
+    let seed_hash = wallet.seed_hash();
+    ctx.register_wallet(wallet, &seed, WalletOrigin::Fresh)
+        .expect("register wallet");
+
+    // `run_backend_task` wires the backend on first wallet task and
+    // registers the wallet with the upstream manager.
+    let result = ctx
+        .run_backend_task(
+            BackendTask::WalletTask(WalletTask::ListTrackedAssetLocks { seed_hash }),
+            sender,
+        )
+        .await
+        .expect("listing tracked asset locks must succeed");
+
+    match result {
+        BackendTaskSuccessResult::TrackedAssetLocks {
+            seed_hash: got_hash,
+            locks,
+        } => {
+            assert_eq!(
+                got_hash, seed_hash,
+                "result must carry the requested wallet"
+            );
+            assert!(
+                locks.is_empty(),
+                "a freshly-registered wallet has no tracked asset locks"
+            );
+        }
+        other => panic!("expected TrackedAssetLocks, got: {other:?}"),
+    }
+
+    ctx.wallet_backend()
+        .expect("backend wired")
+        .shutdown()
+        .await;
+}
+
+/// W2 reconciliation (idempotency across the two writers): once a
+/// wallet is registered, the W2 `ensure_upstream_registered` path is a
+/// no-op — it never re-registers or double-watches. This is the cold-boot
+/// bridge's safety property: an already-watched wallet is left untouched
+/// while a missing one is filled exactly once.
+///
+/// The full cross-process cold-boot reload (a fresh `AppContext` over the
+/// same persistor re-watching the wallet) and the live below-tip funding
+/// repro both require process isolation — DET's `SpvProvider` holds a
+/// strong `Arc<AppContext>`, so a second in-process context cannot open the
+/// same secret-store vault. Those assertions live in the `#[ignore]`
+/// backend-e2e lane (`tests/backend-e2e/wallet_reregistration.rs`), which
+/// runs each context in its own workdir slot.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ensure_upstream_registered_is_noop_when_already_registered() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    let backend = ctx.wallet_backend().expect("backend wired");
+
+    let seed = [0x6Bu8; 64];
+    let wallet = crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
+        .expect("build wallet");
+    let seed_hash = wallet.seed_hash();
+
+    // W1 registers it once.
+    backend
+        .register_wallet_from_seed(&seed_hash, &seed, None)
+        .await
+        .expect("initial registration must succeed");
+    assert_eq!(backend.wallet_count().await, 1);
+
+    // W2 over the same, already-registered wallet is a no-op.
+    backend
+        .ensure_upstream_registered(&seed_hash, &seed)
+        .await
+        .expect("W2 must be a no-op, not an error, for a registered wallet");
+    assert_eq!(
+        backend.wallet_count().await,
+        1,
+        "W2 must not double-watch an already-registered wallet"
+    );
+
+    backend.shutdown().await;
+}
+
+/// Root-cause regression: `register_wallet` persists the
+/// seed-envelope sidecar **before** the wallet backend is wired.
+///
+/// This is the exact ordering the backend-e2e harness uses — register the
+/// framework wallet first, wire the backend second. The pre-fix bug was that
+/// `write_wallet_sidecars` required `self.wallet_backend()`, so the envelope
+/// was never written and the W2 cold-boot bridge could not find a seed to
+/// register from. With the vault handle owned by `AppContext`, the write
+/// succeeds regardless of wiring order. Reading the envelope back through the
+/// shared handle is the assertion that would have failed before the fix.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn register_wallet_persists_seed_envelope_before_backend_wired() {
+    let (ctx, _sender, _tmp) = offline_testnet_context();
+
+    assert!(
+        ctx.wallet_backend().is_err(),
+        "precondition: the backend must be unwired so we exercise the pre-wire path"
+    );
+
+    let seed = [0x7Cu8; 64];
+    let wallet = crate::model::wallet::Wallet::new_from_seed(
+        seed,
+        Network::Testnet,
+        Some("pre-wire".to_string()),
+        None,
+    )
+    .expect("build no-password wallet");
+    let (seed_hash, _wallet_arc) = ctx
+        .register_wallet(wallet, &seed, WalletOrigin::Imported)
+        .expect("register wallet before the backend is wired");
+
+    // A no-password wallet persists the RAW seed via the seam (no legacy
+    // envelope), and the xpub rides in the WalletMeta sidecar.
+    let raw = WalletSeedView::new(&ctx.secret_store())
+        .get_raw(&seed_hash)
+        .expect("vault read must not error")
+        .expect("the raw seed must be persisted at register time, even unwired");
+    assert_eq!(
+        &*raw, &seed,
+        "persisted raw seed must equal the wallet seed"
+    );
+    assert!(
+        WalletSeedView::new(&ctx.secret_store())
+            .legacy_envelope_get(&seed_hash)
+            .unwrap()
+            .is_none(),
+        "no legacy envelope is written for a no-password wallet"
+    );
+    let meta = WalletMetaView::new(&ctx.app_kv())
+        .get(Network::Testnet, &seed_hash)
+        .expect("wallet-meta sidecar persisted at register time");
+    assert!(!meta.uses_password, "no-password wallet meta flag");
+    assert_eq!(
+        meta.xpub_encoded,
+        ctx.wallets
+            .read()
+            .unwrap()
+            .get(&seed_hash)
+            .unwrap()
+            .read()
+            .unwrap()
+            .master_bip44_ecdsa_extended_public_key
+            .encode()
+            .to_vec(),
+        "the persisted xpub must match the registered wallet's BIP44 account xpub"
+    );
+}
+
+/// End-to-end on the harness ordering: a wallet registered
+/// **before** the backend is wired is registered with the upstream SPV
+/// manager once the backend comes up — the W2 cold-boot bridge fires from
+/// the seed envelope persisted at register time.
+///
+/// This is the in-process half of the live repro: it proves the chain from
+/// the persisted envelope through `bootstrap_loaded_wallets` →
+/// `bootstrap_wallet_addresses_jit` → `ensure_upstream_registered` without a
+/// launch-time prompt (the wallet is unprotected, so the chokepoint's
+/// no-passphrase fast-path resolves the seed). The funded below-tip balance
+/// assertion needs a live testnet and lives in the `#[ignore]` backend-e2e
+/// lane.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn wallet_registered_before_wiring_is_upstream_registered_on_cold_boot() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+
+    let seed = [0x8Du8; 64];
+    let wallet = crate::model::wallet::Wallet::new_from_seed(
+        seed,
+        Network::Testnet,
+        Some("cold-boot-bridge".to_string()),
+        None,
+    )
+    .expect("build no-password wallet");
+    let (seed_hash, _wallet_arc) = ctx
+        .register_wallet(wallet, &seed, WalletOrigin::Imported)
+        .expect("register wallet before wiring");
+
+    // Wiring runs hydration + the cold-boot bootstrap, which drives the W2
+    // bridge from the now-persisted seed envelope.
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    let backend = ctx.wallet_backend().expect("backend wired");
+
+    assert!(
+        backend.is_wallet_registered(&seed_hash),
+        "the wallet must be upstream-registered by the W2 bridge after wiring"
+    );
+    assert_eq!(
+        backend.wallet_count().await,
+        1,
+        "exactly one wallet must be watched after the cold-boot bridge runs"
+    );
+
+    backend.shutdown().await;
+}
+
+/// `unregistered_open_wallet_count` must count a wallet whose
+/// `RwLock` is poisoned, so a prior panic can never let a premature
+/// "completed" sentinel through. The previous implementation counted over
+/// the `open_wallets()` snapshot, which drops a poisoned-lock wallet
+/// (`read().ok()...unwrap_or(false)`) before the fail-safe could see it —
+/// that version returns 0 here and fails this test.
+#[tokio::test]
+async fn unregistered_count_fails_safe_on_poisoned_wallet_lock() {
+    let (ctx, _sender, _tmp) = offline_testnet_context();
+
+    // One wallet, inserted straight into the map (no backend wired).
+    let wallet =
+        crate::model::wallet::Wallet::new_from_seed([0x42u8; 64], Network::Testnet, None, None)
+            .expect("build wallet");
+    let seed_hash = wallet.seed_hash();
+    let arc = Arc::new(std::sync::RwLock::new(wallet));
+    ctx.wallets
+        .write()
+        .expect("wallets map lock")
+        .insert(seed_hash, Arc::clone(&arc));
+
+    // Poison the wallet's lock by panicking while holding its write guard.
+    let poisoner = Arc::clone(&arc);
+    let _ = std::thread::spawn(move || {
+        let _guard = poisoner.write().expect("acquire write lock");
+        panic!("intentional poison for the fail-safe test");
+    })
+    .join();
+    assert!(
+        arc.read().is_err(),
+        "precondition: the wallet lock must be poisoned",
+    );
+
+    assert_eq!(
+        ctx.unregistered_open_wallet_count(),
+        1,
+        "a poisoned wallet lock must fail safe (counted), not be silently dropped",
+    );
+}
+
+/// Fresh-install regression: on a truly-fresh install the real
+/// `Database::initialize` path gates the legacy `wallet`/`wallet_addresses`
+/// tables OUT, so `register_wallet` must not depend on them. The pre-fix
+/// `store_wallet_with_addresses` ran an unguarded `INSERT INTO wallet` that
+/// failed with `no such table: wallet`, so `register_wallet` returned `Err`
+/// before any in-memory registration — fresh installs could never create or
+/// import a wallet. This drives the exact production path and asserts success
+/// plus in-memory registration.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn register_wallet_succeeds_on_fresh_install_without_legacy_tables() {
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let (ctx, _sender) = offline_testnet_context_fresh_init(temp_dir.path());
+
+    // Precondition: the fresh-install schema must NOT carry the legacy
+    // wallet table — this is the state that exposed the bug. Querying it
+    // surfaces sqlite's "no such table: wallet" error.
+    let probe = ctx.db.get_wallets(&Network::Testnet);
+    assert!(
+        probe.is_err(),
+        "precondition: fresh install must not create the legacy `wallet` table"
+    );
+
+    let seed = [0x9Eu8; 64];
+    let wallet = crate::model::wallet::Wallet::new_from_seed(
+        seed,
+        Network::Testnet,
+        Some("fresh-install".to_string()),
+        None,
+    )
+    .expect("build no-password wallet");
+    let seed_hash = wallet.seed_hash();
+
+    let (returned_hash, _wallet_arc) = ctx
+        .register_wallet(wallet, &seed, WalletOrigin::Fresh)
+        .expect("register_wallet must succeed on a fresh install");
+    assert_eq!(returned_hash, seed_hash);
+
+    assert!(
+        ctx.wallets.read_recover().contains_key(&seed_hash),
+        "the wallet must be registered in-memory after register_wallet"
+    );
+    assert!(
+        ctx.has_wallet.load(Ordering::Relaxed),
+        "the has_wallet flag must flip true after a successful registration"
+    );
+}
+
+/// Removing a wallet wipes its secret-bearing state: the encrypted
+/// seed-envelope vault entry. Orchard state lives in the upstream
+/// coordinator and is detached on removal.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remove_wallet_wipes_seed_envelope() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+
+    let seed = [0xA1u8; 64];
+    let wallet = crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
+        .expect("build wallet");
+    let seed_hash = wallet.seed_hash();
+    ctx.register_wallet(wallet, &seed, WalletOrigin::Fresh)
+        .expect("register wallet");
+
+    let backend = ctx.wallet_backend().expect("backend wired");
+
+    // Precondition: the raw seed is present (no-password wallet stores raw).
+    assert!(
+        WalletSeedView::new(&ctx.secret_store())
+            .get_raw(&seed_hash)
+            .expect("vault read")
+            .is_some(),
+        "precondition: the raw seed must exist before removal"
+    );
+
+    ctx.remove_wallet(&seed_hash).expect("remove wallet");
+
+    // The seed (the JIT decrypt source) is gone in BOTH forms.
+    let store = ctx.secret_store();
+    let view = WalletSeedView::new(&store);
+    assert!(
+        view.get_raw(&seed_hash)
+            .expect("raw read after removal")
+            .is_none(),
+        "the raw seed must be deleted from the vault on removal"
+    );
+    assert!(
+        view.legacy_envelope_get(&seed_hash)
+            .expect("legacy read after removal")
+            .is_none(),
+        "any legacy envelope must also be gone on removal"
+    );
+
+    backend.shutdown().await;
+}
+
+/// Removing a wallet evicts its shielded balance snapshot from
+/// `AppContext::shielded_balances`. The seed hash is deterministic from the
+/// seed, so without eviction a re-import of the same recovery phrase would
+/// surface the removed wallet's stale shielded balance until the next sync
+/// overwrote it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remove_wallet_evicts_shielded_balance_snapshot() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+
+    let seed = [0xB2u8; 64];
+    let wallet = crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
+        .expect("build wallet");
+    let seed_hash = wallet.seed_hash();
+    ctx.register_wallet(wallet, &seed, WalletOrigin::Fresh)
+        .expect("register wallet");
+
+    let backend = ctx.wallet_backend().expect("backend wired");
+
+    // Seed a snapshot entry as the sync-completed push writer would.
+    ctx.shielded_balances
+        .lock()
+        .expect("lock shielded_balances")
+        .insert(seed_hash, 123_456);
+    assert_eq!(
+        ctx.shielded_balance_credits(&seed_hash),
+        123_456,
+        "precondition: the snapshot entry must exist before removal"
+    );
+
+    ctx.remove_wallet(&seed_hash).expect("remove wallet");
+
+    assert!(
+        ctx.shielded_balances
+            .lock()
+            .expect("lock shielded_balances")
+            .get(&seed_hash)
+            .is_none(),
+        "the shielded balance snapshot must be evicted on removal"
+    );
+
+    backend.shutdown().await;
+}
+
+/// F17/F20 (fresh-install regression): removing a wallet must still wipe
+/// its secret-bearing state on a truly-fresh install where the legacy
+/// `wallet`/`wallet_addresses`/`utxos` tables are gated OUT of the schema.
+///
+/// The sibling `remove_wallet_wipes_seed_envelope`
+/// builds its context with `create_tables(true)`, which force-creates
+/// those legacy tables and therefore masks this path. Here the real
+/// `Database::initialize` fresh path runs, so the unguarded
+/// `SELECT address FROM wallet_addresses` in `Database::remove_wallet`
+/// errored with `no such table` and propagated through
+/// `AppContext::remove_wallet` BEFORE the secret wipe — leaving the seed
+/// envelope on disk. The existence-guarded
+/// statements now no-op cleanly so the caller reaches the wipe.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remove_wallet_wipes_secrets_on_fresh_install_without_legacy_tables() {
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let (ctx, sender) = offline_testnet_context_fresh_init(temp_dir.path());
+
+    // Precondition: the fresh-install schema must NOT carry the legacy
+    // `wallet_addresses` table — querying it surfaces sqlite's
+    // "no such table: wallet" error from `get_wallets`. This is the state
+    // under which the unguarded `remove_wallet` aborted before the wipe.
+    assert!(
+        ctx.db.get_wallets(&Network::Testnet).is_err(),
+        "precondition: fresh install must not create the legacy wallet tables"
+    );
+
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+
+    let seed = [0xF6u8; 64];
+    let wallet = crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
+        .expect("build wallet");
+    let seed_hash = wallet.seed_hash();
+    ctx.register_wallet(wallet, &seed, WalletOrigin::Fresh)
+        .expect("register wallet");
+
+    let backend = ctx.wallet_backend().expect("backend wired");
+
+    // Precondition: the raw seed exists.
+    assert!(
+        WalletSeedView::new(&ctx.secret_store())
+            .get_raw(&seed_hash)
+            .expect("vault read")
+            .is_some(),
+        "precondition: the raw seed must exist before removal"
+    );
+
+    // Pre-fix this returned `Err(no such table: wallet_addresses)` and the
+    // wipe below never ran.
+    ctx.remove_wallet(&seed_hash)
+        .expect("remove_wallet must succeed on a fresh install");
+
+    let store = ctx.secret_store();
+    let view = WalletSeedView::new(&store);
+    assert!(
+        view.get_raw(&seed_hash)
+            .expect("raw read after removal")
+            .is_none(),
+        "the raw seed must be deleted from the vault on a fresh install"
+    );
+    assert!(
+        view.legacy_envelope_get(&seed_hash)
+            .expect("legacy read after removal")
+            .is_none(),
+        "no legacy envelope must survive removal on a fresh install"
+    );
+
+    backend.shutdown().await;
+}
+
+/// F60 — "delete all local data" must leave no wallet recoverable: the
+/// wallet-meta sidecar (which the cold-boot picker reads) and the
+/// seed-envelope vault (which holds the encrypted seed) must both be
+/// empty. Before the fix, `clear_network_database` cleared only legacy
+/// data.db + the in-memory maps, so wallets rehydrated on next launch and
+/// encrypted seeds persisted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn clear_network_database_wipes_wallet_meta_and_seed_envelope() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+
+    let seed = [0xB2u8; 64];
+    let wallet = crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
+        .expect("build wallet");
+    let seed_hash = wallet.seed_hash();
+    ctx.register_wallet(wallet, &seed, WalletOrigin::Fresh)
+        .expect("register wallet");
+
+    // Preconditions: both the meta sidecar and the seed envelope exist.
+    assert!(
+        WalletMetaView::new(&ctx.app_kv())
+            .get(Network::Testnet, &seed_hash)
+            .is_some(),
+        "precondition: wallet-meta sidecar must exist before clear"
+    );
+    assert!(
+        WalletSeedView::new(&ctx.secret_store())
+            .get_raw(&seed_hash)
+            .expect("vault read")
+            .is_some(),
+        "precondition: raw seed must exist before clear"
+    );
+
+    ctx.clear_network_database()
+        .expect("clear_network_database should succeed");
+
+    // The wallet must not rehydrate: its meta and seed (both forms) are gone.
+    assert!(
+        WalletMetaView::new(&ctx.app_kv())
+            .get(Network::Testnet, &seed_hash)
+            .is_none(),
+        "wallet-meta sidecar must be empty after clear (no rehydration)"
+    );
+    let store = ctx.secret_store();
+    let view = WalletSeedView::new(&store);
+    assert!(
+        view.get_raw(&seed_hash)
+            .expect("raw read after clear")
+            .is_none(),
+        "raw seed must be deleted from the vault after clear"
+    );
+    assert!(
+        view.legacy_envelope_get(&seed_hash)
+            .expect("legacy read after clear")
+            .is_none(),
+        "no legacy envelope must survive clear"
+    );
+    assert!(
+        ctx.wallets.read_recover().is_empty(),
+        "the in-memory wallet map must be empty after clear"
+    );
+
+    ctx.wallet_backend()
+        .expect("backend wired")
+        .shutdown()
+        .await;
+}
+
+/// F131 — locking a wallet must wipe the session-cached seed. Before the
+/// fix `handle_wallet_locked` was an empty no-op, so after an
+/// `UntilAppClose` unlock the plaintext seed stayed resident and the wallet
+/// kept signing with no prompt despite being "locked".
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn lock_wipes_session_cached_seed() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+
+    let seed = [0xC3u8; 64];
+    let wallet = crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
+        .expect("build wallet");
+    let seed_hash = wallet.seed_hash();
+    let (_seed_hash, wallet_arc) = ctx
+        .register_wallet(wallet, &seed, WalletOrigin::Fresh)
+        .expect("register wallet");
+
+    let backend = ctx.wallet_backend().expect("backend wired");
+    let scope = crate::wallet_backend::SecretScope::HdSeed { seed_hash };
+
+    // Promote the seed into the session cache (what an UntilAppClose unlock
+    // leaves behind).
+    let held = zeroize::Zeroizing::new(seed);
+    backend.secret_access().remember_session(
+        &scope,
+        crate::wallet_backend::SecretPlaintext::HdSeed(&held),
+        crate::wallet_backend::RememberPolicy::UntilAppClose,
+    );
+    assert!(
+        backend.secret_access().is_session_cached(&scope),
+        "precondition: the seed is session-cached before the lock"
+    );
+
+    ctx.handle_wallet_locked(&wallet_arc);
+
+    assert!(
+        !backend.secret_access().is_session_cached(&scope),
+        "locking must wipe the session-cached seed"
+    );
+
+    backend.shutdown().await;
+}
+
+/// F62 — when the seed-envelope vault write fails, `register_wallet` must
+/// FAIL CLOSED: return `Err` and NOT keep the wallet. The envelope is the
+/// encrypted seed the W2 cold-boot bridge re-registers from, so silently
+/// keeping an in-session wallet whose seed was never saved would lose the
+/// wallet and its funds at the next launch. Before the fix the envelope
+/// write was best-effort (warn + Ok), so the wallet was kept regardless.
+///
+/// Induces the write failure permission-free by replacing the vault file
+/// with a directory: the store's atomic `persist` rename onto a directory
+/// path fails deterministically (root cannot bypass this).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn register_wallet_fails_closed_when_seed_envelope_write_fails() {
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let (ctx, _sender) = offline_testnet_context_at(temp_dir.path());
+
+    // Replace the resident vault file with a directory so the next vault
+    // write (the atomic persist rename) fails.
+    let vault_path = temp_dir.path().join("secrets").join("det-secrets.pwsvault");
+    std::fs::remove_file(&vault_path).expect("remove vault file");
+    std::fs::create_dir(&vault_path).expect("plant directory at vault path");
+
+    let seed = [0xD4u8; 64];
+    let wallet = crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
+        .expect("build wallet");
+    let seed_hash = wallet.seed_hash();
+
+    let result = ctx.register_wallet(wallet, &seed, WalletOrigin::Fresh);
+    assert!(
+        result.is_err(),
+        "register_wallet must fail closed when the seed envelope cannot be saved"
+    );
+    assert!(
+        !ctx.wallets.read_recover().contains_key(&seed_hash),
+        "a wallet whose seed was not saved must not be kept in memory"
+    );
+    assert!(
+        !ctx.has_wallet.load(Ordering::Relaxed),
+        "has_wallet must not flip true when registration fails closed"
+    );
+}
+
+/// When the wallet-meta sidecar write fails, `register_wallet`
+/// must FAIL CLOSED: return `Err` and NOT keep the wallet. Cold-boot
+/// hydration (`hydrate_wallets_for_network`) enumerates ONLY the meta
+/// sidecar — `ctx.wallets` is rebuilt solely from `WalletMetaView::list`.
+/// A wallet whose seed envelope was saved but whose meta row is missing is
+/// never hydrated, so its funds become unreachable with no self-heal (there
+/// is no upstream→meta reconstruction path). Both sidecars are required, so
+/// the meta write must be fail-closed just like the seed-envelope write.
+///
+/// Induces the meta-write failure permission-free by dropping the
+/// `meta_global` table from `det-app.sqlite` (which backs `app_kv`) through
+/// a second connection: the next `WalletMetaView::set` upsert errors with
+/// "no such table", deterministically, with no filesystem race.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn register_wallet_fails_closed_when_wallet_meta_write_fails() {
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let (ctx, _sender) = offline_testnet_context_at(temp_dir.path());
+
+    // Drop the table the wallet-meta sidecar upserts into, so the next
+    // `WalletMetaView::set` fails. The persister holds its own connection;
+    // a second connection to the same file is enough to drop the shared
+    // schema object.
+    {
+        let meta_db = temp_dir.path().join("det-app.sqlite");
+        let conn = rusqlite::Connection::open(&meta_db).expect("open det-app.sqlite second handle");
+        conn.execute("DROP TABLE meta_global", [])
+            .expect("drop meta_global to force the wallet-meta write to fail");
+    }
+
+    let seed = [0x17u8; 64];
+    let wallet = crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
+        .expect("build wallet");
+    let seed_hash = wallet.seed_hash();
+
+    let result = ctx.register_wallet(wallet, &seed, WalletOrigin::Fresh);
+    assert!(
+        result.is_err(),
+        "register_wallet must fail closed when the wallet-meta sidecar cannot be saved"
+    );
+    assert!(
+        !ctx.wallets.read_recover().contains_key(&seed_hash),
+        "a wallet with no meta row must not be kept in memory (it would never hydrate)"
+    );
+    assert!(
+        !ctx.has_wallet.load(Ordering::Relaxed),
+        "has_wallet must not flip true when registration fails closed"
+    );
+}
+
+/// Build a valid BIP44 account-0 master xpub for a legacy wallet row.
+fn legacy_master_epk_bytes(seed: &[u8; 64]) -> Vec<u8> {
+    use dash_sdk::dpp::dashcore::secp256k1::Secp256k1;
+    use dash_sdk::dpp::key_wallet::bip32::{
+        ChildNumber, DerivationPath, ExtendedPrivKey, ExtendedPubKey,
+    };
+    let secp = Secp256k1::new();
+    let master = ExtendedPrivKey::new_master(Network::Testnet, seed).expect("master key");
+    let path = DerivationPath::from(vec![
+        ChildNumber::Hardened { index: 44 },
+        ChildNumber::Hardened { index: 1 },
+        ChildNumber::Hardened { index: 0 },
+    ]);
+    let account = master.derive_priv(&secp, &path).expect("derive account");
+    ExtendedPubKey::from_priv(&secp, &account).encode().to_vec()
+}
+
+/// F140 — a wallet migrated from legacy `data.db` must be visible right
+/// after the migration completes, NOT only after a second restart. The bug:
+/// `WalletBackend::new` runs `hydrate_context_wallets` against the still-
+/// empty sidecars at first boot; migration then populates the sidecars but
+/// never re-hydrates `ctx.wallets`, so the in-memory map stays empty until
+/// the next launch reads the now-populated sidecars. The fix re-hydrates at
+/// the end of a successful migration.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn migrated_wallet_is_visible_without_second_restart() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+
+    // Seed a legacy `wallet` row with a valid xpub so the migration's
+    // seed + meta passes produce a hydratable wallet.
+    use crate::database::test_helpers::seed_legacy_unprotected_hd_wallet_row;
+    let seed = [0xE5u8; 64];
+    let seed_hash: WalletSeedHash = crate::model::wallet::ClosedKeyItem::compute_seed_hash(&seed);
+    let epk = legacy_master_epk_bytes(&seed);
+    seed_legacy_unprotected_hd_wallet_row(
+        &ctx.db,
+        &seed_hash,
+        &seed,
+        &epk,
+        "migrated-wallet",
+        Network::Testnet,
+    )
+    .expect("insert legacy wallet row");
+
+    // Wire the backend: hydration runs now, against the EMPTY sidecars
+    // (migration has not run yet), so ctx.wallets is empty.
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    assert!(
+        !ctx.wallets.read_recover().contains_key(&seed_hash),
+        "precondition: the migrated wallet is not yet hydrated (sidecars empty at wiring)"
+    );
+
+    // Run the migration. It populates the sidecars AND now re-hydrates.
+    crate::backend_task::migration::finish_unwire::run(&ctx)
+        .await
+        .expect("migration should succeed");
+
+    // The migrated wallet must be visible WITHOUT a second backend build.
+    assert!(
+        ctx.wallets.read_recover().contains_key(&seed_hash),
+        "the migrated wallet must be in ctx.wallets right after migration (no second restart)"
+    );
+    assert!(
+        ctx.has_wallet.load(Ordering::Relaxed),
+        "has_wallet must be true after a migrated wallet is hydrated"
+    );
+
+    ctx.wallet_backend()
+        .expect("backend wired")
+        .shutdown()
+        .await;
+}
+
+/// F140 (resolve half) — a wallet migrated from legacy `data.db` at cold
+/// start must be RESOLVABLE through the wallet backend right after the
+/// migration completes, NOT only after a second restart. The bug: the
+/// post-migration re-hydration (`hydrate_context_wallets`) refills
+/// `ctx.wallets` (so the wallet shows in the picker and addresses resolve),
+/// but it never re-runs the W2 cold-boot reconciliation
+/// (`bootstrap_loaded_wallets` → `ensure_upstream_registered`). So the
+/// upstream `id_map` stays empty and every seed-keyed operation
+/// (`resolve_wallet`) returns `WalletNotLoaded` until the next launch —
+/// exactly the "wallet still loading" banner that repeats forever in the
+/// field report. The companion F140 test above only proves `ctx.wallets`
+/// visibility; this one proves upstream registration, which is what
+/// `resolve_wallet` keys off.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn migrated_wallet_is_upstream_registered_without_second_restart() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+
+    // Seed a legacy unprotected `wallet` row whose verbatim seed and
+    // published xpub agree, so the migration's seed + meta passes produce a
+    // wallet the W2 fund-routing gate will accept.
+    use crate::database::test_helpers::seed_legacy_unprotected_hd_wallet_row;
+    let seed = [0xD7u8; 64];
+    let seed_hash: WalletSeedHash = crate::model::wallet::ClosedKeyItem::compute_seed_hash(&seed);
+    let epk = legacy_master_epk_bytes(&seed);
+    seed_legacy_unprotected_hd_wallet_row(
+        &ctx.db,
+        &seed_hash,
+        &seed,
+        &epk,
+        "migrated-wallet",
+        Network::Testnet,
+    )
+    .expect("insert legacy wallet row");
+
+    // Wire the backend: hydration + the cold-boot bootstrap run NOW, against
+    // the EMPTY sidecars (the migration has not run yet), so the upstream
+    // persistor is empty and nothing is registered.
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    let backend = ctx.wallet_backend().expect("backend wired");
+    assert!(
+        !backend.is_wallet_registered(&seed_hash),
+        "precondition: the migrated wallet is not yet upstream-registered (sidecars empty at wiring)"
+    );
+
+    // Run the cold-start migration. It populates the sidecars, re-hydrates
+    // `ctx.wallets`, AND must re-run the W2 cold-boot reconciliation so the
+    // just-migrated wallet is registered upstream.
+    crate::backend_task::migration::finish_unwire::run(&ctx)
+        .await
+        .expect("migration should succeed");
+
+    // The migrated wallet must be RESOLVABLE WITHOUT a second backend build:
+    // `is_wallet_registered` reads the same `id_map` that `resolve_wallet`
+    // consults, so this is a deterministic proxy for "`resolve_wallet`
+    // succeeds".
+    assert!(
+        backend.is_wallet_registered(&seed_hash),
+        "the migrated wallet must be upstream-registered right after migration (no second restart)"
+    );
+
+    backend.shutdown().await;
+}
+
+/// Protected cold-start hydration — a *password-protected* wallet migrated
+/// from legacy `data.db` at cold start must hydrate into `ctx.wallets` but
+/// must NOT be upstream-registered until the user unlocks it. The cold-start
+/// migration re-runs the W2 cold-boot bridge
+/// (`bootstrap_loaded_wallets` → `bootstrap_wallet_addresses_jit`), but that
+/// bridge gates on `Wallet::is_open()`: a protected wallet hydrates as
+/// `WalletSeed::Closed`, so `is_open()` is `false` and the bridge returns
+/// early — before any `with_secret_session` (no passphrase prompt) and
+/// before `ensure_upstream_registered` (no registration). The companion
+/// unprotected test above proves eager registration of unprotected wallets;
+/// this one locks in the deferral for protected wallets so it can't
+/// silently regress into a surprise startup prompt or a `WalletLocked`
+/// failure mid-migration.
+///
+/// It would FAIL if someone dropped the `is_open()` gate and made the
+/// bridge enter the seed scope for a locked protected wallet: the chokepoint
+/// would request a passphrase prompt during migration (the recording prompt
+/// double below would see a non-zero call count), which is exactly the
+/// surprise startup prompt the deferral exists to prevent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn migrated_protected_wallet_registration_is_deferred_until_unlock() {
+    use crate::database::test_helpers::seed_legacy_protected_hd_wallet_row;
+    use crate::model::wallet::encryption::encrypt_message;
+    use crate::wallet_backend::{
+        SecretPrompt, SecretPromptCancelled, SecretPromptReply, SecretPromptRequest,
+    };
+    use std::sync::atomic::AtomicUsize;
+
+    /// A `SecretPrompt` double that records how many times the chokepoint
+    /// asked the host to unlock a wallet, then declines like a headless
+    /// host. A still-locked protected wallet must NOT trigger any request
+    /// during cold-start migration — the count must stay zero.
+    #[derive(Default)]
+    struct RecordingPrompt {
+        requests: AtomicUsize,
+    }
+    #[async_trait::async_trait]
+    impl SecretPrompt for RecordingPrompt {
+        async fn request(
+            &self,
+            _request: SecretPromptRequest,
+        ) -> Result<SecretPromptReply, SecretPromptCancelled> {
+            self.requests.fetch_add(1, Ordering::Relaxed);
+            Err(SecretPromptCancelled)
+        }
+        fn is_interactive(&self) -> bool {
+            // Interactive on purpose: a non-interactive host would let the
+            // chokepoint short-circuit before requesting. We want any
+            // attempt to reach `request` so a dropped gate is observable.
+            true
+        }
+    }
+
+    let (ctx, sender, _tmp) = offline_testnet_context();
+
+    // Install the recording prompt BEFORE the backend is built — that is
+    // when the chokepoint reads the host (see `install_secret_prompt`).
+    let prompt = Arc::new(RecordingPrompt::default());
+    ctx.install_secret_prompt(prompt.clone() as Arc<dyn SecretPrompt>);
+
+    // Stage a legacy PROTECTED `wallet` row: the seed is AES-GCM-encrypted
+    // under a passphrase the test never feeds back in, so the wallet stays
+    // locked across the whole migration. The published BIP44 xpub agrees
+    // with the seed so the W2 fund-routing gate would accept it *if* the
+    // gate were reached — it must not be.
+    let seed = [0x42u8; 64];
+    let passphrase = "correct-horse-battery-staple";
+    let seed_hash: WalletSeedHash = crate::model::wallet::ClosedKeyItem::compute_seed_hash(&seed);
+    let epk = legacy_master_epk_bytes(&seed);
+    let crate::model::wallet::encryption::EncryptedEnvelope {
+        ciphertext: encrypted_seed,
+        salt,
+        nonce,
+    } = encrypt_message(&seed, passphrase).expect("encrypt legacy seed");
+    seed_legacy_protected_hd_wallet_row(
+        &ctx.db,
+        &seed_hash,
+        &encrypted_seed,
+        &salt,
+        &nonce,
+        &epk,
+        "protected-wallet",
+        Some("the usual passphrase"),
+        Network::Testnet,
+    )
+    .expect("insert legacy protected wallet row");
+
+    // Wire the backend: hydration + the cold-boot bootstrap run now against
+    // the EMPTY sidecars (migration has not run), so nothing is registered.
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    let backend = ctx.wallet_backend().expect("backend wired");
+
+    // (a) The cold-start migration must complete with NO error and NO panic.
+    // A passphrase prompt is impossible here (offline, headless) — if the
+    // deferral broke and the bridge entered the seed scope, the locked
+    // envelope would surface `WalletLocked` inside `bootstrap_*`. That path
+    // is best-effort/logged (it does not fail the migration), so the strong
+    // assertion is the deferred-registration check in (b).
+    crate::backend_task::migration::finish_unwire::run(&ctx)
+        .await
+        .expect("migration must succeed for a protected wallet (no error, no prompt)");
+
+    // (b) The protected wallet is hydrated into `ctx.wallets` (visible in
+    // the picker, name preserved) but stays LOCKED — `is_open()` is false.
+    let wallet_arc = ctx
+        .wallets
+        .read()
+        .unwrap()
+        .get(&seed_hash)
+        .cloned()
+        .expect("protected wallet must be hydrated into ctx.wallets after migration");
+    assert!(
+        !wallet_arc.read_recover().is_open(),
+        "a migrated protected wallet must hydrate locked (WalletSeed::Closed)"
+    );
+    assert!(
+        wallet_arc.read_recover().uses_password,
+        "the hydrated wallet must carry the password flag"
+    );
+
+    // (b cont.) Registration is DEFERRED: the wallet is present in
+    // `ctx.wallets` but NOT yet in the upstream `id_map` that
+    // `resolve_wallet` keys off. This is the regression trap — eager
+    // registration would flip this `true`.
+    assert!(
+        !backend.is_wallet_registered(&seed_hash),
+        "a still-locked protected wallet must NOT be upstream-registered by the migration (deferred to unlock)"
+    );
+
+    // (c) The migration itself must not register any wallet at all: with a
+    // single locked protected wallet, the watched-wallet set stays empty.
+    assert_eq!(
+        backend.wallet_count().await,
+        0,
+        "the migration must register no wallets while the only wallet is locked"
+    );
+
+    // (a, strong form) The deferral is prompt-free: the cold-boot bridge
+    // must never have asked the host to unlock the wallet. This is the
+    // regression trap — dropping the `is_open()` gate would make the bridge
+    // enter the seed scope and request a prompt, flipping this above zero.
+    assert_eq!(
+        prompt.requests.load(Ordering::Relaxed),
+        0,
+        "the migration must never prompt for a passphrase while a protected wallet is locked"
+    );
+
+    backend.shutdown().await;
+}
+
+/// Protected-unlock reconciliation (the delete-DB + re-import
+/// acceptance flow): a password-protected wallet that hydrates LOCKED at cold
+/// boot, and is therefore deferred by the W2 bridge (proven by
+/// [`migrated_protected_wallet_registration_is_deferred_until_unlock`]), MUST
+/// become upstream-registered on the unlock gesture — without a second app
+/// restart.
+///
+/// The gap this guards: before the fix, the unlock path
+/// ([`AppContext::handle_wallet_unlocked`]) only promoted the just-verified
+/// seed into the session cache; it never re-drove
+/// [`AppContext::bootstrap_wallet_addresses_jit`], so the wallet stayed out
+/// of the upstream `id_map` that `resolve_wallet` keys off and every
+/// seed-keyed operation kept failing with `WalletNotLoaded` for the rest of
+/// the session. The fix re-drives the JIT bootstrap from
+/// `handle_wallet_unlocked` once the seed is in the session cache; this test
+/// asserts the post-unlock registration that fix enables.
+///
+/// Staging mirrors the deferral test: a legacy PROTECTED `wallet` row is
+/// migrated so the wallet hydrates `Closed` (locked) with EMPTY persistor and
+/// is NOT registered. Then the wallet is opened with the real passphrase and
+/// `handle_wallet_unlocked` is invoked exactly as the unlock popup does
+/// (`src/ui/components/wallet_unlock_popup.rs`), passing the passphrase so the
+/// seed resolves prompt-free from the session cache.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn protected_wallet_registers_upstream_on_unlock_without_restart() {
+    use crate::database::test_helpers::seed_legacy_protected_hd_wallet_row;
+    use crate::model::wallet::encryption::encrypt_message;
+
+    let (ctx, sender, _tmp) = offline_testnet_context();
+
+    // Stage a legacy PROTECTED `wallet` row whose published BIP44 xpub agrees
+    // with the seed, so the W2 fund-routing gate accepts it once reached. The
+    // passphrase is the one the test feeds back in at unlock time.
+    let seed = [0x42u8; 64];
+    let passphrase = "correct-horse-battery-staple";
+    let seed_hash: WalletSeedHash = crate::model::wallet::ClosedKeyItem::compute_seed_hash(&seed);
+    let epk = legacy_master_epk_bytes(&seed);
+    let crate::model::wallet::encryption::EncryptedEnvelope {
+        ciphertext: encrypted_seed,
+        salt,
+        nonce,
+    } = encrypt_message(&seed, passphrase).expect("encrypt legacy seed");
+    seed_legacy_protected_hd_wallet_row(
+        &ctx.db,
+        &seed_hash,
+        &encrypted_seed,
+        &salt,
+        &nonce,
+        &epk,
+        "protected-wallet",
+        Some("the usual passphrase"),
+        Network::Testnet,
+    )
+    .expect("insert legacy protected wallet row");
+
+    // Wire the backend, then run the cold-start migration. This reproduces
+    // the boot state of the acceptance flow: the protected wallet hydrates
+    // into `ctx.wallets` but stays LOCKED, and the W2 bridge defers it.
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    let backend = ctx.wallet_backend().expect("backend wired");
+    crate::backend_task::migration::finish_unwire::run(&ctx)
+        .await
+        .expect("migration must succeed for a protected wallet");
+
+    let wallet_arc = ctx
+        .wallets
+        .read()
+        .unwrap()
+        .get(&seed_hash)
+        .cloned()
+        .expect("protected wallet must be hydrated into ctx.wallets after migration");
+
+    // Precondition: the locked protected wallet is NOT yet registered — the
+    // exact `WalletNotLoaded`-producing state the unlock must clear.
+    assert!(
+        !wallet_arc.read_recover().is_open(),
+        "precondition: the protected wallet hydrates locked"
+    );
+    assert!(
+        !backend.is_wallet_registered(&seed_hash),
+        "precondition: a still-locked protected wallet is not upstream-registered"
+    );
+
+    // The unlock gesture, exactly as the unlock popup performs it: open the
+    // in-memory wallet by verifying the passphrase, then notify the context
+    // with that passphrase so the seed is promoted to the session cache and
+    // (with the fix) the JIT bootstrap is re-driven.
+    wallet_arc
+        .write()
+        .unwrap()
+        .wallet_seed
+        .open(passphrase)
+        .expect("correct passphrase opens the wallet");
+    ctx.handle_wallet_unlocked(&wallet_arc, passphrase);
+
+    // `handle_wallet_unlocked` spawns the registration on a tracked subtask,
+    // so poll the `id_map` (what `resolve_wallet` consults) with a bounded
+    // deadline rather than racing it. The deadline is generous because the
+    // unlock reconciliation uses the genesis-floored `Imported` birth height
+    // (`ensure_upstream_registered`), and the upstream
+    // `create_wallet_from_seed_bytes` scan-window setup over the empty
+    // offline persistor takes several seconds with no chain to read.
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !backend.is_wallet_registered(&seed_hash) {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the protected wallet must be upstream-registered after unlock (no second restart)"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+
+    // The wallet is now watched exactly once — the unlock reconciliation does
+    // not double-watch.
+    assert_eq!(
+        backend.wallet_count().await,
+        1,
+        "exactly one wallet must be watched after the unlock reconciliation"
+    );
+
+    // Tier-2 keep-protection migration post-conditions. The
+    // unlock decrypted the legacy AES-GCM envelope and RE-WRAPPED the seed
+    // as a Tier-2 object-password envelope (protection KEPT, not downgraded
+    // to a raw secret), then dropped the legacy envelope.
+    let store = ctx.secret_store();
+    let seed_view = WalletSeedView::new(&store);
+    // Steady state is Tier-2 protected.
+    assert_eq!(
+        seed_view.scheme(&seed_hash).expect("scheme"),
+        crate::wallet_backend::secret_seam::SecretScheme::Protected,
+        "the seed must be re-wrapped to Tier-2, never downgraded to raw"
+    );
+    // A raw (password-free) read of a protected seed must fail — never strip.
+    assert!(
+        seed_view.get_raw(&seed_hash).is_err(),
+        "a raw read of a Tier-2-protected seed must fail"
+    );
+    // It reads back only WITH the object password, byte-for-byte.
+    let pw = platform_wallet_storage::secrets::SecretString::new(passphrase);
+    let protected = seed_view
+        .get_protected(&seed_hash, &pw)
+        .expect("protected read")
+        .expect("the seed must be re-stored as Tier-2 after the migrating unlock");
+    assert_eq!(
+        &*protected, &seed,
+        "Tier-2 seed must equal the true 64-byte seed"
+    );
+    assert!(
+        seed_view
+            .legacy_envelope_get(&seed_hash)
+            .expect("legacy read")
+            .is_none(),
+        "the legacy envelope must be deleted after migration"
+    );
+    // The sidecar password flag STAYS true — protection was kept, so the
+    // metadata stays accurate (no downgrade flip).
+    let meta = WalletMetaView::new(&ctx.app_kv())
+        .get(Network::Testnet, &seed_hash)
+        .expect("wallet meta present");
+    assert!(
+        meta.uses_password,
+        "WalletMeta.uses_password must stay true — Tier-2 keeps protection"
+    );
+
+    // A SECOND secret resolve still requires the object password (Tier-2 is
+    // not prompt-free): a scripted prompt that supplies it resolves the seed.
+    use crate::wallet_backend::secret_prompt::test_support::{ScriptedAnswer, TestPrompt};
+    use crate::wallet_backend::{SecretAccess, SecretScope};
+    let prompt = std::sync::Arc::new(TestPrompt::new([ScriptedAnswer::once(passphrase)]));
+    let sa = SecretAccess::new(ctx.secret_store(), prompt.clone(), Network::Testnet);
+    let resolved = sa
+        .with_secret(&SecretScope::HdSeed { seed_hash }, |pt| {
+            Ok(pt.expose_hd_seed().copied())
+        })
+        .await
+        .expect("second resolve with the password");
+    assert_eq!(resolved, Some(seed), "password resolve returns the seed");
+    assert_eq!(
+        prompt.ask_count(),
+        1,
+        "the protected seed prompts exactly once"
+    );
+
+    backend.shutdown().await;
+}
+
+/// F61 — clearing the SPV chain cache removes every `dash-spv` storage
+/// folder/file (and the storage lock) under the per-network directory while
+/// leaving the wallet (`platform-wallet.sqlite`) and shielded sidecars
+/// intact. The pre-fix `clear_spv_data` was a no-op that still reported
+/// success.
+#[test]
+fn clear_spv_chain_storage_removes_chain_cache_but_keeps_wallet_sidecars() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let spv_dir = spv_storage_dir(tmp.path(), Network::Testnet);
+    std::fs::create_dir_all(&spv_dir).expect("create spv dir");
+
+    // Plant one file inside each chain-storage folder, plus the loose
+    // peers.dat and the sibling storage lock.
+    for entry in [
+        "block_headers",
+        "filter_headers",
+        "filters",
+        "blocks",
+        "metadata",
+        "masternodestate",
+    ] {
+        let folder = spv_dir.join(entry);
+        std::fs::create_dir_all(&folder).expect("create chain folder");
+        std::fs::write(folder.join("segment.dat"), b"x").expect("write chain segment");
+    }
+    std::fs::write(spv_dir.join("peers.dat"), b"peers").expect("write peers");
+    std::fs::write(spv_dir.with_extension("lock"), b"lock").expect("write lock");
+
+    // Plant the wallet + shielded sidecars that must survive the clear.
+    let wallet_sqlite = spv_dir.join("platform-wallet.sqlite");
+    let shielded_tree = spv_dir.join("shielded-commitment-tree.sqlite");
+    std::fs::write(&wallet_sqlite, b"wallet").expect("write wallet sqlite");
+    std::fs::write(&shielded_tree, b"tree").expect("write shielded tree");
+
+    clear_spv_chain_storage(&spv_dir).expect("clear must succeed");
+
+    for entry in SPV_CHAIN_STORAGE_ENTRIES {
+        assert!(
+            !spv_dir.join(entry).exists(),
+            "chain-storage entry {entry} must be deleted"
+        );
+    }
+    assert!(
+        !spv_dir.with_extension("lock").exists(),
+        "the storage lock must be deleted"
+    );
+    assert!(
+        wallet_sqlite.exists(),
+        "platform-wallet.sqlite must survive an SPV-cache clear"
+    );
+    assert!(
+        shielded_tree.exists(),
+        "the shielded commitment tree must survive an SPV-cache clear"
+    );
+}
+
+/// F61 — a never-synced network has no SPV directory at all; clearing it is
+/// a success, not an error.
+#[test]
+fn clear_spv_chain_storage_is_ok_when_directory_absent() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let spv_dir = spv_storage_dir(tmp.path(), Network::Testnet);
+    assert!(
+        !spv_dir.exists(),
+        "precondition: no spv dir on a fresh install"
+    );
+    clear_spv_chain_storage(&spv_dir).expect("clearing an absent cache must succeed");
+}
+
+/// Seed a legacy password-protected `single_key_wallet` row into the
+/// context's `data.db`, encrypted under `password`. Returns the
+/// derived address. The default test DB created `single_key_wallet`
+/// via `create_tables(true)`, so we only INSERT.
+fn seed_legacy_protected_single_key(
+    ctx: &Arc<AppContext>,
+    raw_key: &[u8; 32],
+    password: &str,
+    alias: Option<&str>,
+) -> String {
+    use crate::model::wallet::single_key::ClosedSingleKey;
+    use dash_sdk::dpp::dashcore::secp256k1::Secp256k1;
+    use dash_sdk::dpp::dashcore::{Address, PrivateKey, PublicKey};
+
+    let path = ctx.db.db_file_path().expect("data.db path");
+    let conn = rusqlite::Connection::open(&path).expect("open data.db");
+
+    let crate::model::wallet::encryption::EncryptedEnvelope {
+        ciphertext,
+        salt,
+        nonce,
+    } = ClosedSingleKey::encrypt_private_key(raw_key, password).expect("encrypt");
+    let priv_key = PrivateKey::from_byte_array(raw_key, Network::Testnet).expect("priv");
+    let secp = Secp256k1::new();
+    let pub_key = PublicKey {
+        compressed: priv_key.compressed,
+        inner: priv_key.inner.public_key(&secp),
+    };
+    let address = Address::p2pkh(&pub_key, Network::Testnet).to_string();
+    let key_hash = ClosedSingleKey::compute_key_hash(raw_key);
+    conn.execute(
+        "INSERT INTO single_key_wallet
+            (key_hash, encrypted_private_key, salt, nonce, public_key,
+             address, alias, uses_password, network)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, ?8)",
+        rusqlite::params![
+            key_hash.as_slice(),
+            ciphertext,
+            salt,
+            nonce,
+            pub_key.inner.serialize().to_vec(),
+            address,
+            alias,
+            Network::Testnet.to_string(),
+        ],
+    )
+    .expect("insert legacy protected row");
+    address
+}
+
+/// T-SK-03 end-to-end — a legacy password-protected single-key row is
+/// restored with the correct old password: the key lands in the modern
+/// vault, becomes listable, and drops off the pending list. A wrong
+/// password leaves the legacy row intact and surfaces the generic
+/// failure (no oracle, no corruption).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn restore_protected_single_key_round_trip_and_wrong_password() {
+    use crate::backend_task::migration::single_key_restore::{
+        list_pending_protected_restores, restore_protected_single_key,
+    };
+    use crate::wallet_backend::single_key::ImportPassphrase;
+
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+
+    let mut raw = [0u8; 32];
+    raw[31] = 0x2A;
+    let address =
+        seed_legacy_protected_single_key(&ctx, &raw, "old-legacy-password", Some("savings"));
+
+    // The protected row shows up as pending (still encrypted under the
+    // old password; not in the modern vault yet).
+    let pending = list_pending_protected_restores(&ctx).expect("list pending");
+    assert_eq!(pending.len(), 1, "exactly one protected row awaits restore");
+    assert_eq!(pending[0].address, address);
+
+    // Wrong password: generic failure, nothing restored, row intact.
+    let err = restore_protected_single_key(
+        &ctx,
+        &address,
+        "WRONG-password",
+        ImportPassphrase::default(),
+    )
+    .expect_err("wrong password must fail");
+    assert!(
+        matches!(err, TaskError::SingleKeyPassphraseIncorrect),
+        "wrong password must surface the generic incorrect error, got {err:?}"
+    );
+    let still_pending = list_pending_protected_restores(&ctx).expect("re-list pending");
+    assert_eq!(
+        still_pending.len(),
+        1,
+        "a failed restore must leave the protected row pending and uncorrupted"
+    );
+
+    // Correct password: the key is restored into the modern vault under
+    // a fresh passphrase and becomes listable at the same address (S5).
+    let restored_addr = restore_protected_single_key(
+        &ctx,
+        &address,
+        "old-legacy-password",
+        ImportPassphrase {
+            passphrase: Some(zeroize::Zeroizing::new("a-fresh-strong-passphrase".into())),
+            hint: Some("the new one".into()),
+        },
+    )
+    .expect("correct password must restore the key");
+    assert_eq!(restored_addr, address, "restored address must be stable");
+
+    // It is now in the modern single-key index and no longer pending.
+    let backend = ctx.wallet_backend().expect("backend wired");
+    let listed = backend.single_key().list();
+    assert!(
+        listed
+            .iter()
+            .any(|k| k.address == address && k.has_passphrase),
+        "restored key must be listable and passphrase-protected"
+    );
+    let after = list_pending_protected_restores(&ctx).expect("final pending");
+    assert!(
+        after.is_empty(),
+        "the restored key must drop off the pending list"
+    );
+}
+
+/// A protected key restored WITHOUT choosing a new passphrase
+/// (`has_passphrase == false`) is still fully recovered, so the
+/// data-loss gate must recognize it as restored and permit the future
+/// T7 drop. Before the fix the gate keyed on `has_passphrase` and
+/// would have blocked the drop forever.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gate_recognizes_restore_without_new_passphrase() {
+    use crate::backend_task::migration::finish_unwire::{
+        drop_legacy_single_key_table_when_safe, ensure_legacy_single_key_table_droppable,
+    };
+    use crate::backend_task::migration::single_key_restore::restore_protected_single_key;
+    use crate::wallet_backend::single_key::ImportPassphrase;
+
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+
+    let mut raw = [0u8; 32];
+    raw[31] = 0x5B;
+    let address =
+        seed_legacy_protected_single_key(&ctx, &raw, "old-legacy-password", Some("plain"));
+
+    // While the protected row is un-restored, the gate must block.
+    let blocked = ensure_legacy_single_key_table_droppable(&ctx)
+        .expect_err("gate must block while a protected row is un-restored");
+    assert!(
+        matches!(blocked, TaskError::MigrationFailed { .. }),
+        "blocked drop must wrap the migration error, got {blocked:?}"
+    );
+
+    // Restore WITHOUT a new passphrase → has_passphrase == false.
+    restore_protected_single_key(
+        &ctx,
+        &address,
+        "old-legacy-password",
+        ImportPassphrase::default(),
+    )
+    .expect("restore without a new passphrase must succeed");
+    let backend = ctx.wallet_backend().expect("backend wired");
+    assert!(
+        backend
+            .single_key()
+            .list()
+            .iter()
+            .any(|k| k.address == address && !k.has_passphrase),
+        "the key must be restored unprotected (has_passphrase == false)"
+    );
+
+    // The gate must now recognize the address as restored and permit
+    // the drop — keyed on presence, not the passphrase flag.
+    ensure_legacy_single_key_table_droppable(&ctx)
+        .expect("gate must recognize an unprotected restore as restored");
+    drop_legacy_single_key_table_when_safe(&ctx)
+        .expect("the sanctioned drop must succeed once every key is restored");
+}
+
+/// Build a deterministic compressed testnet WIF from `raw` so the
+/// single-key import tests stay offline and reproducible.
+fn testnet_wif_from_raw(raw: &[u8; 32]) -> String {
+    use dash_sdk::dpp::dashcore::PrivateKey;
+    PrivateKey::from_byte_array(raw, Network::Testnet)
+        .expect("valid private key bytes")
+        .to_wif()
+}
+
+/// Importing a **passphrase-protected** single key must NOT retain the
+/// decrypted private key in the long-lived `single_key_wallets` session
+/// map. The in-memory mirror must come back closed — exactly the shape
+/// cold boot reconstructs — so the per-key passphrase is not silently
+/// defeated by a plaintext copy lingering for the whole session.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn protected_single_key_import_does_not_retain_plaintext_in_session_map() {
+    use crate::wallet_backend::single_key::ImportPassphrase;
+
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+
+    let mut raw = [0u8; 32];
+    raw[31] = 0x77;
+    let wif = testnet_wif_from_raw(&raw);
+
+    let passphrase = ImportPassphrase {
+        passphrase: Some(zeroize::Zeroizing::new("a-strong-passphrase".into())),
+        hint: Some("the test one".into()),
+    };
+    let (imported, wallet_arc) = ctx
+        .import_single_key_wif(&wif, Some("protected".into()), passphrase)
+        .expect("protected import must succeed");
+    assert!(
+        imported.has_passphrase,
+        "the imported metadata must record the per-key passphrase"
+    );
+
+    // The in-memory mirror must be closed: no `is_open`, no plaintext key
+    // obtainable, and the underlying data must be the encrypted variant.
+    let guard = wallet_arc.read().expect("read mirror");
+    assert!(
+        !guard.is_open(),
+        "a protected single key must be mirrored closed, not open with plaintext"
+    );
+    assert!(
+        guard.private_key(Network::Testnet).is_none(),
+        "no plaintext private key may be retrievable from the session-map mirror"
+    );
+    assert!(
+        matches!(
+            guard.private_key_data,
+            crate::model::wallet::single_key::SingleKeyData::Closed(_)
+        ),
+        "the mirrored key data must be the Closed (encrypted) variant"
+    );
+    assert!(
+        guard.uses_password,
+        "the mirror must advertise that it needs a password"
+    );
+
+    // The same closed entry must be the one tracked in the session map.
+    let key_hash = guard.key_hash();
+    drop(guard);
+    let map = ctx.single_key_wallets.read().expect("read map");
+    let in_map = map.get(&key_hash).expect("imported key present in map");
+    assert!(
+        !in_map.read().expect("read map entry").is_open(),
+        "the session-map entry for a protected key must stay closed"
+    );
+}
+
+/// Companion to the protected-key test: an **unprotected** single key
+/// has no passphrase by definition, so plaintext in the session map is
+/// inherent and the mirror is expected to be open. This guards against
+/// over-correcting and breaking the no-passphrase fast path.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unprotected_single_key_import_mirrors_open() {
+    use crate::wallet_backend::single_key::ImportPassphrase;
+
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+
+    let mut raw = [0u8; 32];
+    raw[31] = 0x55;
+    let wif = testnet_wif_from_raw(&raw);
+
+    let (imported, wallet_arc) = ctx
+        .import_single_key_wif(&wif, Some("plain".into()), ImportPassphrase::default())
+        .expect("unprotected import must succeed");
+    assert!(
+        !imported.has_passphrase,
+        "an unprotected import must record no per-key passphrase"
+    );
+
+    let guard = wallet_arc.read().expect("read mirror");
+    assert!(
+        guard.is_open(),
+        "an unprotected single key is mirrored open (plaintext is inherent)"
+    );
+    assert!(
+        guard.private_key(Network::Testnet).is_some(),
+        "an unprotected mirror exposes its private key for signing"
+    );
+    assert!(
+        !guard.uses_password,
+        "an unprotected mirror must not advertise a password requirement"
+    );
+}
+
+/// The "Unlock" gesture for a protected single key must confirm the
+/// passphrase against the vault WITHOUT re-parking the decrypted private
+/// key in the long-lived `single_key_wallets` map. The map entry must stay
+/// closed both before and after a successful unlock; a wrong passphrase
+/// surfaces the generic incorrect error.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn protected_single_key_unlock_verifies_without_reparking_plaintext() {
+    use crate::wallet_backend::single_key::ImportPassphrase;
+
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+
+    let mut raw = [0u8; 32];
+    raw[31] = 0x91;
+    let wif = testnet_wif_from_raw(&raw);
+    let pass = "a-strong-passphrase";
+
+    let passphrase = ImportPassphrase {
+        passphrase: Some(zeroize::Zeroizing::new(pass.into())),
+        hint: None,
+    };
+    let (_imported, wallet_arc) = ctx
+        .import_single_key_wif(&wif, Some("protected".into()), passphrase)
+        .expect("protected import must succeed");
+    let address = wallet_arc.read().expect("read mirror").address.to_string();
+
+    // Closed before the unlock gesture.
+    assert!(
+        !wallet_arc.read().expect("read mirror").is_open(),
+        "a protected key must be closed before unlock"
+    );
+
+    // A wrong passphrase surfaces the generic incorrect error and leaves
+    // the entry closed.
+    let wrong = ctx
+        .verify_single_key_passphrase(&address, "not-the-passphrase")
+        .expect_err("a wrong passphrase must fail");
+    assert!(
+        matches!(wrong, TaskError::SingleKeyPassphraseIncorrect),
+        "wrong passphrase must surface the generic incorrect error, got {wrong:?}"
+    );
+    assert!(
+        !wallet_arc.read().expect("read mirror").is_open(),
+        "a failed unlock must leave the key closed"
+    );
+
+    // The correct passphrase verifies successfully — and the key STILL
+    // stays closed: no plaintext is re-parked in the session map.
+    ctx.verify_single_key_passphrase(&address, pass)
+        .expect("the correct passphrase must verify");
+    let guard = wallet_arc.read().expect("read mirror");
+    assert!(
+        !guard.is_open(),
+        "a successful unlock must NOT open the map entry (no plaintext re-parked)"
+    );
+    assert!(
+        guard.private_key(Network::Testnet).is_none(),
+        "no plaintext private key may be retrievable after unlock"
+    );
+    assert!(
+        matches!(
+            guard.private_key_data,
+            crate::model::wallet::single_key::SingleKeyData::Closed(_)
+        ),
+        "the map entry must remain the Closed (encrypted) variant after unlock"
+    );
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// Automatic identity-discovery trigger / latch / re-arm
+// ──────────────────────────────────────────────────────────────────────
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn all_wallets_discovery_latch_is_one_shot_until_stop_spv() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+
+    assert!(
+        !ctx.identity_autodiscovery_fired.load(Ordering::SeqCst),
+        "latch starts unfired"
+    );
+
+    // First fire latches; a second fire is swallowed (no second sweep).
+    ctx.queue_all_wallets_identity_discovery();
+    assert!(
+        ctx.identity_autodiscovery_fired.load(Ordering::SeqCst),
+        "first call must set the one-shot latch"
+    );
+    ctx.queue_all_wallets_identity_discovery();
+    assert!(
+        ctx.identity_autodiscovery_fired.load(Ordering::SeqCst),
+        "latch stays set; the second call is a no-op"
+    );
+
+    // stop_spv re-arms the latch so the next reconnect runs discovery again.
+    ctx.stop_spv().await;
+    assert!(
+        !ctx.identity_autodiscovery_fired.load(Ordering::SeqCst),
+        "stop_spv must clear the latch to re-arm discovery on reconnect"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn open_wallets_snapshot_excludes_locked_wallets() {
+    use crate::database::test_helpers::seed_legacy_protected_hd_wallet_row;
+    use crate::model::wallet::encryption::encrypt_message;
+
+    let (ctx, sender, _tmp) = offline_testnet_context();
+
+    // A locked, password-protected wallet staged via the legacy migration
+    // row: it hydrates `WalletSeed::Closed` and must be excluded.
+    let locked_seed = [0x77u8; 64];
+    let locked_hash: WalletSeedHash =
+        crate::model::wallet::ClosedKeyItem::compute_seed_hash(&locked_seed);
+    let epk = legacy_master_epk_bytes(&locked_seed);
+    let crate::model::wallet::encryption::EncryptedEnvelope {
+        ciphertext: encrypted_seed,
+        salt,
+        nonce,
+    } = encrypt_message(&locked_seed, "a-passphrase-never-fed-back").expect("encrypt seed");
+    seed_legacy_protected_hd_wallet_row(
+        &ctx.db,
+        &locked_hash,
+        &encrypted_seed,
+        &salt,
+        &nonce,
+        &epk,
+        "locked-wallet",
+        None,
+        Network::Testnet,
+    )
+    .expect("insert legacy protected wallet row");
+
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    let backend = ctx.wallet_backend().expect("backend wired");
+
+    // An open, no-password wallet registered alongside it.
+    let open_seed = [0x66u8; 64];
+    let open_wallet =
+        crate::model::wallet::Wallet::new_from_seed(open_seed, Network::Testnet, None, None)
+            .expect("build open wallet");
+    let open_hash = open_wallet.seed_hash();
+    ctx.register_wallet(open_wallet, &open_seed, WalletOrigin::Fresh)
+        .expect("register open wallet");
+
+    let snapshot: Vec<WalletSeedHash> = ctx
+        .open_wallets()
+        .iter()
+        .map(|w| w.read_recover().seed_hash())
+        .collect();
+
+    assert!(
+        snapshot.contains(&open_hash),
+        "the open wallet must be in the snapshot"
+    );
+    assert!(
+        !snapshot.contains(&locked_hash),
+        "the locked protected wallet must be excluded from the snapshot"
+    );
+
+    backend.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rediscovery_update_preserves_user_alias_and_wallet_binding() {
+    use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
+    use crate::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
+    use dash_sdk::dpp::identity::Identity;
+    use dash_sdk::platform::Identifier;
+    use std::collections::BTreeMap;
+
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    let backend = ctx.wallet_backend().expect("backend wired");
+
+    let identity_id = Identifier::from([7u8; 32]);
+    let make_qi = |alias: Option<&str>| {
+        let identity = Identity::create_basic_identity(identity_id, ctx.platform_version())
+            .expect("basic identity");
+        QualifiedIdentity {
+            identity,
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::User,
+            alias: alias.map(str::to_string),
+            private_keys: KeyStorage {
+                private_keys: BTreeMap::new(),
+            },
+            dpns_names: vec![],
+            associated_wallets: BTreeMap::new(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: BTreeMap::new(),
+            status: IdentityStatus::Active,
+            network: Network::Testnet,
+        }
+    };
+
+    // Initial store with a user alias and a wallet binding.
+    let wallet_hash: WalletSeedHash = [0x09u8; 32];
+    ctx.insert_local_qualified_identity(&make_qi(Some("my-id")), &Some((wallet_hash, 3)))
+        .expect("insert identity with alias");
+
+    // Simulate re-discovery: build a FRESH QI with no alias, carry the
+    // existing alias (the carry-over under test), then update in place.
+    let mut refreshed = make_qi(None);
+    let existing = ctx
+        .get_identity_by_id(&identity_id)
+        .expect("load existing")
+        .expect("identity present");
+    refreshed.alias = existing.alias;
+    ctx.update_local_qualified_identity(&refreshed)
+        .expect("update preserving alias");
+
+    // The alias survives, and the wallet binding is preserved by the update.
+    let reloaded = ctx
+        .get_identity_by_id(&identity_id)
+        .expect("reload identity")
+        .expect("identity present after update");
+    assert_eq!(
+        reloaded.alias.as_deref(),
+        Some("my-id"),
+        "the user alias must survive a re-discovery update (F-1 regression guard)"
+    );
+    assert_eq!(
+        reloaded.wallet_index,
+        Some(3),
+        "the wallet binding index must be preserved across the update"
+    );
+
+    backend.shutdown().await;
+}
+
+/// C.7 regression guard: `ensure_identity_funding_accounts` must succeed on
+/// a cold-booted (watch-only) wallet for a fresh `IdentityTopUp{index}`.
+///
+/// # Background
+///
+/// DET always reloads wallets **seedless** from the upstream persister.
+/// `WalletBackend::new` → `load_from_persistor_seedless` → upstream
+/// `load_from_persistor()` → `Wallet::new_watch_only(…)`.  The wallet has
+/// the BIP44/BIP32 accounts it was persisted with, but **no root private
+/// key**.
+///
+/// `WalletAccountCreationOptions::Default` (used by
+/// `register_wallet_from_seed`) creates `IdentityRegistration` by default
+/// and persists it in the account manifest.  `IdentityTopUp{n}` is NOT
+/// created by default — it is added only after a register/top-up, so on
+/// every cold boot the manifest lacks it.
+///
+/// Before the fix, `provision_identity_funding_account` called
+/// `kw.add_account(account_type, None)`.  On a cold-boot wallet that path
+/// reaches `root_extended_keys.rs:428` and fails:
+///
+///   `WalletBackend { source: AssetLockTransaction("Invalid parameter:
+///    Watch-only wallet has no private key") }`
+///
+/// After the fix it builds a short-lived signable wallet from the provided
+/// seed bytes, derives the account xpub, and calls
+/// `kw.add_account(account_type, Some(xpub))` — succeeds regardless of
+/// private-key availability.
+///
+/// # Why deterministic
+///
+/// The cold-booted wallet unconditionally has no root private key; the
+/// failure path is hit every time regardless of timing or network state.
+///
+/// # Test structure
+///
+/// Two-boot scenario to match production:
+///   1. **Boot 1**: wire backend, write both sidecars (wallet-meta + upstream
+///      persister) from seed.
+///   2. **Boot 2 (cold)**: `WalletBackend::new` over a copy of the same
+///      data dir runs `load_from_persistor_seedless` — the upstream wallet is
+///      loaded watch-only.  Then `ensure_identity_funding_accounts` for a
+///      fresh `IdentityTopUp{3}` must return `Ok`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ensure_identity_funding_accounts_succeeds_on_cold_booted_watch_only_wallet() {
+    // ── Boot 1: write wallet-meta sidecar + upstream persister from seed ──
+
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let seed = [0xC7u8; 64];
+    let seed_hash = {
+        let wallet = crate::model::wallet::Wallet::new_from_seed(
+            seed,
+            Network::Testnet,
+            None,
+            None, // no password
+        )
+        .expect("build wallet");
+        let h = wallet.seed_hash();
+
+        let (ctx, sender) = offline_testnet_context_at(temp_dir.path());
+
+        // Register the wallet BEFORE wiring the backend.  register_wallet
+        // writes the DET sidecars (seed-envelope vault + wallet-meta), but
+        // register_wallet_upstream checks ctx.wallet_backend() and, finding it
+        // not yet wired, returns early without spawning the background
+        // "wallet_upstream_registration" subtask.  This avoids the concurrency
+        // hazard: if the backend were wired first the background subtask would
+        // race with the synchronous register_wallet_from_seed call below —
+        // both call create_wallet_from_seed_bytes for the same wallet.  The
+        // upstream register_wallet inserts into wallet_manager (step A) and into
+        // self.wallets (step B) with async work in between; a concurrent caller
+        // that arrives between A and B sees WalletAlreadyExists but then
+        // get_wallet returns None → WalletNotFound panic.  Under CI load
+        // (1000+ concurrent tests) this window is reliably hit.
+        ctx.register_wallet(wallet, &seed, WalletOrigin::Fresh)
+            .expect("boot 1: ctx.register_wallet");
+
+        // Wire the backend now so the explicit registration below has the
+        // upstream persister available.
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("boot 1: ensure_wallet_backend offline");
+
+        // Write the upstream persister synchronously — no background subtask
+        // is in flight (we didn't wire the backend when register_wallet ran),
+        // so this call is race-free.
+        let backend1 = ctx.wallet_backend().expect("boot 1 backend");
+        backend1
+            .register_wallet_from_seed(&h, &seed, Some(0))
+            .await
+            .expect("boot 1: upstream register");
+        backend1.shutdown().await;
+
+        h
+    };
+    // ctx is dropped here, releasing app_kv / secret_store file handles.
+
+    // ── Cold-boot copy: avoid file-lock conflicts with lingering subtasks ──
+    //
+    // The background registration subtask may still hold an Arc<WalletBackend>
+    // (and thus an open SqlitePersister handle on temp_dir).  We copy the
+    // on-disk state to a fresh path so Boot 2's SqlitePersister::open does
+    // not collide with the old one.  Identical on-disk bytes — the fund-
+    // routing gate and the persisted manifest are preserved.
+    let cold_dir = tempfile::tempdir().expect("cold tempdir");
+    copy_dir_recursive(temp_dir.path(), cold_dir.path());
+
+    // ── Boot 2 (cold): load from persister → watch-only upstream wallet ──
+
+    let (ctx2, sender2) = offline_testnet_context_at(cold_dir.path());
+    ctx2.ensure_wallet_backend(sender2)
+        .await
+        .expect("boot 2 (cold): ensure_wallet_backend offline");
+    let backend2 = ctx2.wallet_backend().expect("boot 2 backend");
+
+    assert!(
+        backend2.is_wallet_registered(&seed_hash),
+        "cold boot must load the wallet from the persisted sidecars"
+    );
+
+    // `IdentityTopUp{3}` is absent from the account manifest (it is never
+    // created by WalletAccountCreationOptions::Default) — so the cold-booted
+    // watch-only wallet triggers the provisioning branch.
+    //
+    // Before the fix: kw.add_account(IdentityTopUp{3}, None)
+    //   → "Watch-only wallet has no private key" → Err
+    // After the fix: builds a seed wallet, derives the account xpub,
+    //   calls kw.add_account(IdentityTopUp{3}, Some(xpub)) → Ok
+    let registration_index = 3u32;
+    backend2
+        .ensure_identity_funding_accounts(&seed_hash, &seed, registration_index)
+        .await
+        .expect(
+            "cold-booted watch-only wallet: IdentityTopUp{3} provisioning must succeed; \
+             if 'Watch-only wallet has no private key' appears the fix has been reverted",
+        );
+
+    // Idempotent: both accounts now present — second call is a no-op.
+    backend2
+        .ensure_identity_funding_accounts(&seed_hash, &seed, registration_index)
+        .await
+        .expect("second call must be idempotent (both accounts already present)");
+
+    backend2.shutdown().await;
+}
+
+/// Build a minimal basic identity for manager-reconcile tests — only its
+/// id() and (empty) public_keys() are read by `add_identity`.
+fn basic_test_identity() -> dash_sdk::dpp::identity::Identity {
+    use dash_sdk::dpp::identity::Identity;
+    use dash_sdk::dpp::version::PlatformVersion;
+    use dash_sdk::platform::Identifier;
+    Identity::create_basic_identity(Identifier::random(), PlatformVersion::latest())
+        .expect("basic identity")
+}
+
+/// Wrap a basic identity in a minimal wallet-owned `QualifiedIdentity` for
+/// sidecar-reconcile tests.
+fn wallet_owned_qualified_identity(
+    wallet_index: Option<u32>,
+) -> crate::model::qualified_identity::QualifiedIdentity {
+    use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
+    use crate::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
+    QualifiedIdentity {
+        identity: basic_test_identity(),
+        associated_voter_identity: None,
+        associated_operator_identity: None,
+        associated_owner_key_id: None,
+        identity_type: IdentityType::User,
+        alias: None,
+        private_keys: KeyStorage::default(),
+        dpns_names: vec![],
+        associated_wallets: std::collections::BTreeMap::new(),
+        secret_access: None,
+        wallet_index,
+        top_ups: std::collections::BTreeMap::new(),
+        status: IdentityStatus::Active,
+        network: Network::Testnet,
+    }
+}
+
+/// `ensure_identity_managed` on a wallet that is not upstream-registered
+/// fails with `WalletNotLoaded` (and the reconcile driver logs-and-skips it
+/// rather than aborting).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ensure_identity_managed_unregistered_wallet_is_wallet_not_loaded() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    let backend = ctx.wallet_backend().expect("backend wired");
+
+    let unknown_seed: WalletSeedHash = [0x5Au8; 32];
+    let identity = basic_test_identity();
+    let err = backend
+        .ensure_identity_managed(&unknown_seed, &identity, 0)
+        .await
+        .expect_err("an unregistered wallet must not resolve");
+    assert!(
+        matches!(err, TaskError::WalletNotLoaded),
+        "expected WalletNotLoaded, got: {err:?}"
+    );
+
+    backend.shutdown().await;
+}
+
+/// `ensure_identity_managed` registers a previously-unknown identity (→
+/// `true`), then a second call is a no-op (→ `false`). Runs with no secret
+/// session promoted, proving the reconcile is seed-free / locked-safe.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ensure_identity_managed_registers_then_noops_while_locked() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    let backend = ctx.wallet_backend().expect("backend wired");
+
+    let seed = [0x2Cu8; 64];
+    let wallet = crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
+        .expect("build wallet");
+    let seed_hash = wallet.seed_hash();
+    backend
+        .register_wallet_from_seed(&seed_hash, &seed, None)
+        .await
+        .expect("register wallet with upstream manager");
+
+    let identity = basic_test_identity();
+
+    // No secret session is open here — the wallet is effectively locked.
+    let first = backend
+        .ensure_identity_managed(&seed_hash, &identity, 0)
+        .await
+        .expect("registering a new identity must succeed while locked");
+    assert!(first, "first call newly registers the identity");
+
+    let second = backend
+        .ensure_identity_managed(&seed_hash, &identity, 0)
+        .await
+        .expect("second call must be idempotent");
+    assert!(!second, "second call is a no-op (already managed)");
+
+    backend.shutdown().await;
+}
+
+/// `reconcile_managed_identities` registers exactly the wallet-owned
+/// identities (`wallet_index.is_some()` and matching `seed_hash`) and leaves
+/// index-less sidecar entries alone — proven via the idempotent
+/// `ensure_identity_managed` (already-managed → `false`, never-managed →
+/// `true`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reconcile_managed_identities_registers_only_wallet_owned() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    let backend = ctx.wallet_backend().expect("backend wired");
+
+    let seed = [0x3Du8; 64];
+    let wallet = crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
+        .expect("build wallet");
+    let seed_hash = wallet.seed_hash();
+    backend
+        .register_wallet_from_seed(&seed_hash, &seed, None)
+        .await
+        .expect("register wallet with upstream manager");
+
+    // Two wallet-owned identities (should be reconciled) and one index-less
+    // identity (should be skipped by the `wallet_index.is_some()` filter).
+    let owned_a = wallet_owned_qualified_identity(Some(0));
+    let owned_b = wallet_owned_qualified_identity(Some(1));
+    let detached = wallet_owned_qualified_identity(None);
+    ctx.insert_local_qualified_identity(&owned_a, &Some((seed_hash, 0)))
+        .expect("insert owned_a");
+    ctx.insert_local_qualified_identity(&owned_b, &Some((seed_hash, 1)))
+        .expect("insert owned_b");
+    ctx.insert_local_qualified_identity(&detached, &None)
+        .expect("insert detached");
+
+    ctx.reconcile_managed_identities(&backend, &seed_hash).await;
+
+    // The two wallet-owned identities are now managed → ensure is a no-op.
+    assert!(
+        !backend
+            .ensure_identity_managed(&seed_hash, &owned_a.identity, 0)
+            .await
+            .expect("owned_a"),
+        "wallet-owned identity A must already be managed after reconcile"
+    );
+    assert!(
+        !backend
+            .ensure_identity_managed(&seed_hash, &owned_b.identity, 1)
+            .await
+            .expect("owned_b"),
+        "wallet-owned identity B must already be managed after reconcile"
+    );
+    // The index-less identity was skipped → ensure newly registers it.
+    assert!(
+        backend
+            .ensure_identity_managed(&seed_hash, &detached.identity, 0)
+            .await
+            .expect("detached"),
+        "index-less identity must have been skipped by the reconcile filter"
+    );
+
+    backend.shutdown().await;
+}

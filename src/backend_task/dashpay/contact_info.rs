@@ -244,32 +244,6 @@ fn encrypt_private_data(data: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, String> 
     Ok(result)
 }
 
-// Decrypt private data using AES-256-CBC
-#[allow(dead_code)]
-fn decrypt_private_data(encrypted_data: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, String> {
-    use cbc::cipher::BlockDecryptMut;
-    use cbc::cipher::block_padding::Pkcs7;
-    type Aes256CbcDec = cbc::Decryptor<aes_gcm::aes::Aes256>;
-
-    if encrypted_data.len() < 16 {
-        return Err("Encrypted data too short (no IV)".to_string());
-    }
-
-    // Extract IV and ciphertext
-    let iv = &encrypted_data[0..16];
-    let ciphertext = &encrypted_data[16..];
-
-    // Decrypt
-    let cipher = Aes256CbcDec::new(key.into(), iv.into());
-
-    let mut buffer = ciphertext.to_vec();
-    let decrypted = cipher
-        .decrypt_padded_mut::<Pkcs7>(&mut buffer)
-        .map_err(|e| format!("Decryption failed: {:?}", e))?;
-
-    Ok(decrypted.to_vec())
-}
-
 #[allow(clippy::too_many_arguments)]
 pub async fn create_or_update_contact_info(
     app_context: &Arc<AppContext>,

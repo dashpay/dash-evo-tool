@@ -3,6 +3,7 @@ use crate::model::wallet::Wallet;
 use crate::ui::components::passphrase_modal::{
     KEEP_UNLOCKED_LABEL, PassphraseModalConfig, PassphraseModalOutcome, passphrase_modal,
 };
+use crate::wallet_backend::poison::RwLockRecover;
 use egui;
 use std::sync::{Arc, RwLock};
 use zeroize::Zeroizing;
@@ -114,7 +115,7 @@ impl WalletUnlockPopup {
                 WalletUnlockResult::Cancelled
             }
             PassphraseModalOutcome::Submit(text) => {
-                let mut wallet_guard = wallet.write().unwrap();
+                let mut wallet_guard = wallet.write_recover();
                 match wallet_guard.wallet_seed.open(&text) {
                     Ok(_) => {
                         drop(wallet_guard);
@@ -161,7 +162,7 @@ impl WalletUnlockPopup {
 
 /// Helper function to check if a wallet needs unlocking
 pub fn wallet_needs_unlock(wallet: &Arc<RwLock<Wallet>>) -> bool {
-    let wallet_guard = wallet.read().unwrap();
+    let wallet_guard = wallet.read_recover();
     wallet_guard.uses_password && !wallet_guard.is_open()
 }
 
@@ -178,7 +179,7 @@ pub fn try_open_wallet_no_password(
     _app_context: &Arc<AppContext>,
     wallet: &Arc<RwLock<Wallet>>,
 ) -> Result<(), String> {
-    let mut wallet_guard = wallet.write().unwrap();
+    let mut wallet_guard = wallet.write_recover();
     if wallet_guard.uses_password {
         return Ok(());
     }

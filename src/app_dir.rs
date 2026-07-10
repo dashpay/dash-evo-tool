@@ -11,7 +11,7 @@ const QUALIFIER: &str = ""; // Typically empty on macOS and Linux
 const ORGANIZATION: &str = "";
 const APPLICATION: &str = "Dash-Evo-Tool";
 
-#[allow(dead_code)]
+#[cfg(not(target_os = "linux"))]
 const CORE_APPLICATION: &str = "DashCore";
 
 fn user_data_dir_path(app: &str) -> Result<PathBuf, std::io::Error> {

@@ -16,6 +16,7 @@ use dash_sdk::dpp::consensus::state::state_error::StateError;
 use dash_sdk::dpp::dashcore;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+use dash_sdk::platform::Identifier;
 use thiserror::Error;
 
 /// Dash Core RPC error code: wallet file not specified (multi-wallet node).
@@ -703,14 +704,6 @@ pub enum TaskError {
     #[error("Wallet is locked. Please unlock your wallet and try again.")]
     WalletLocked,
 
-    /// Refreshing wallet UTXOs from Dash Core failed.
-    #[error("Could not refresh wallet balance. Please try again.")]
-    WalletUtxoReloadFailed { detail: String },
-
-    /// Recalculating address balances after a transaction failed.
-    #[error("Could not update wallet balances after transaction. Please refresh your wallet.")]
-    WalletBalanceRecalculationFailed { detail: String },
-
     /// The requested document could not be found on the platform.
     #[error("The document could not be found. It may have been deleted or the ID is incorrect.")]
     DocumentNotFound,
@@ -1072,18 +1065,37 @@ pub enum TaskError {
     DataContractNotFound,
 
     // ──────────────────────────────────────────────────────────────────────────
-    // Serialization errors
-    // ──────────────────────────────────────────────────────────────────────────
-    /// A data serialization or deserialization operation failed (e.g. bincode).
-    #[error("Could not process the data. Please retry the operation.")]
-    SerializationError { detail: String },
-
-    // ──────────────────────────────────────────────────────────────────────────
     // Identity creation / parsing errors
     // ──────────────────────────────────────────────────────────────────────────
     /// The provided identifier could not be parsed from the input.
     #[error("The identifier you entered could not be read. Please check the format and try again.")]
     IdentifierParsingError { input: String },
+
+    /// A masternode or evonode with this ProTxHash is already loaded. Carries
+    /// the resolved identity id so the caller can point the user at the
+    /// existing node.
+    #[error(
+        "This masternode is already loaded. Open it from the list instead of loading it again."
+    )]
+    DuplicateProTxHash { identity_id: Identifier },
+
+    /// The ProTxHash could not be read as a hex ProTxHash or a Base58 identity
+    /// id. Carries the offending input (data, not a message).
+    #[error(
+        "The ProTxHash you entered could not be read. Enter a 64-character hex ProTxHash or the \
+         Base58 identity ID."
+    )]
+    MalformedProTxHash { input: String },
+
+    /// A syntactically valid ProTxHash resolved to no masternode or evonode on
+    /// the network. Carries the resolved identity id so the user can double-check
+    /// which value was looked up. Distinct from `IdentityNotFound` so the message
+    /// speaks about a masternode, matching the load form the user is in.
+    #[error(
+        "No masternode or evonode was found on the network for this ProTxHash. Check the \
+         ProTxHash and try again, or confirm the node is registered on this network."
+    )]
+    MasternodeNotFound { identity_id: Identifier },
 
     /// The identity could not be constructed from the given parameters.
     #[error("Could not create the identity. Please check your input and try again.")]
@@ -1094,7 +1106,7 @@ pub enum TaskError {
 
     /// A private key could not be parsed or is invalid.
     #[error("The private key you entered is invalid. Please check the format and try again.")]
-    InvalidPrivateKey { detail: String },
+    InvalidPrivateKey,
 
     /// Fetching DPNS names for an identity failed.
     #[error("Could not look up names for this identity. Please check your connection and retry.")]
@@ -1235,6 +1247,17 @@ pub enum TaskError {
     )]
     MasterKeyNotFound,
 
+    /// No withdrawal-capable key with locally-held private material was available
+    /// to sign the operation (Platform requires a Transfer or Owner key you control).
+    #[error(
+        "This identity does not have a Transfer or Owner key that you can sign with. \
+         Open the Key Info screen for this identity, add a key whose private key you hold, then try again."
+    )]
+    NoWithdrawalSigningKey {
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
     // ──────────────────────────────────────────────────────────────────────────
     // Token query errors
     // ──────────────────────────────────────────────────────────────────────────
@@ -1285,7 +1308,9 @@ pub enum TaskError {
     #[error(
         "Could not read the withdrawal details. The data may be incomplete or in an unexpected format. Please retry."
     )]
-    WithdrawalDocumentParsingError { detail: String },
+    WithdrawalDocumentParsingError(
+        #[from] crate::backend_task::platform_info::WithdrawalParseError,
+    ),
 
     // ──────────────────────────────────────────────────────────────────────────
     // SDK / RPC setup errors
@@ -1297,10 +1322,6 @@ pub enum TaskError {
     )]
     SdkInitializationFailed { detail: String },
 
-    /// An RPC context provider or Core RPC client could not be constructed.
-    #[error("Could not set up the Dash Core connection. Please check your settings and retry.")]
-    RpcProviderCreationFailed { detail: String },
-
     /// The Core wallet name supplied by the user is syntactically invalid.
     #[error("The Core wallet name '{name}' is invalid. Please check your wallet configuration.")]
     InvalidCoreWalletName { name: String },
@@ -1308,21 +1329,6 @@ pub enum TaskError {
     /// Dash Core has no wallets loaded — required for wallet-scoped RPC calls.
     #[error("No wallets are loaded in Dash Core. Please open a wallet in Dash Core and retry.")]
     NoCoreWalletsLoaded,
-
-    // ──────────────────────────────────────────────────────────────────────────
-    // UTXO / asset-lock transaction build errors
-    // ──────────────────────────────────────────────────────────────────────────
-    /// A UTXO reload or removal operation failed.
-    #[error(
-        "Could not update your unspent transaction outputs. Please check your connection and retry."
-    )]
-    UtxoUpdateFailed { detail: String },
-
-    /// An asset lock transaction could not be built from the current wallet state.
-    #[error(
-        "Could not prepare the funding transaction. Please check your wallet balance and retry."
-    )]
-    AssetLockTransactionBuildFailed { detail: String },
 
     // ──────────────────────────────────────────────────────────────────────────
     // Wallet key / address errors
@@ -1412,10 +1418,6 @@ pub enum TaskError {
         source: dashcore::sighash::Error,
     },
 
-    /// A wallet payment operation failed (covers SPV and RPC payment paths).
-    #[error("Could not complete the payment. Please check your wallet balance and retry.")]
-    WalletPaymentFailed { detail: String },
-
     /// Could not access wallet information from the SPV manager.
     #[error("Your wallet is still loading. Please wait a moment and try again.")]
     WalletInfoUnavailable,
@@ -1500,9 +1502,10 @@ pub enum TaskError {
     // ──────────────────────────────────────────────────────────────────────────
     // Key input validation errors
     // ──────────────────────────────────────────────────────────────────────────
-    /// A raw private-key input string failed format validation.
-    #[error("The {key_name} key is invalid: {detail}. Please check the key format and retry.")]
-    KeyInputValidationFailed { key_name: String, detail: String },
+    /// A raw private-key input string failed format validation. The model
+    /// validator's `Display` is already a complete, actionable user sentence.
+    #[error(transparent)]
+    KeyInputValidationFailed(#[from] crate::model::key_input::KeyInputError),
 
     /// A supplied private key could not be verified against the identity's keys.
     #[error("{0} Please check the key and retry.")]
@@ -1575,10 +1578,6 @@ pub enum TaskError {
     /// The platform address was not found in the wallet's platform address info.
     #[error("The platform address could not be found in your wallet. Please refresh and retry.")]
     PlatformAddressNotFound,
-
-    /// A Merkle witness could not be obtained for a shielded note.
-    #[error("Could not prepare the shielded transaction. Please sync your notes and retry.")]
-    ShieldedMerkleWitnessUnavailable { detail: String },
 
     /// Failed to build a shielded state transition (shield, transfer, unshield, withdrawal).
     #[error("Could not build the shielded transaction. Please retry.")]
@@ -1742,13 +1741,7 @@ pub enum TaskError {
     #[error(
         "Could not sync shielded notes from the platform. Please check your connection and retry."
     )]
-    ShieldedSyncFailed { detail: String },
-
-    /// Failed to append or checkpoint the shielded commitment tree.
-    #[error(
-        "Could not update the local shielded data. Please check available disk space and retry."
-    )]
-    ShieldedTreeUpdateFailed { detail: String },
+    ShieldedSyncFailed(#[source] Box<SdkError>),
 
     /// Failed to persist a decrypted shielded note to the local sidecar.
     ///
@@ -1762,10 +1755,6 @@ pub enum TaskError {
         #[source]
         source: rusqlite::Error,
     },
-
-    /// Nullifier sync failed.
-    #[error("Could not check for spent shielded notes. Please check your connection and retry.")]
-    ShieldedNullifierSyncFailed { detail: String },
 
     /// The shielded transition fee could not be computed for the active
     /// protocol version.
@@ -1791,7 +1780,7 @@ pub enum TaskError {
     // ──────────────────────────────────────────────────────────────────────────
     /// Creating a network context failed during a network switch.
     #[error("Could not connect to {network}. Check your network configuration and retry.")]
-    NetworkContextCreationFailed { network: Network, detail: String },
+    NetworkContextCreationFailed { network: Network },
 
     // ──────────────────────────────────────────────────────────────────────────
     // Migration errors
@@ -2528,6 +2517,13 @@ impl From<SdkError> for TaskError {
             SdkError::IdentityNonceNotFound(_) => TaskError::IdentityNonceNotFound {
                 source_error: boxed,
             },
+            // Raised when a withdrawal/transfer is signed with (or falls back to)
+            // a key whose private material the signer does not hold.
+            SdkError::Protocol(ProtocolError::DesiredKeyWithTypePurposeSecurityLevelMissing(_)) => {
+                TaskError::NoWithdrawalSigningKey {
+                    source_error: boxed,
+                }
+            }
             _ => TaskError::SdkError {
                 source_error: boxed,
             },
@@ -2711,6 +2707,52 @@ mod tests {
             err,
             TaskError::DuplicateIdentityPublicKeyId { .. }
         ));
+    }
+
+    #[test]
+    fn from_sdk_error_missing_signing_key_maps_to_no_withdrawal_signing_key() {
+        let sdk_err = SdkError::Protocol(
+            ProtocolError::DesiredKeyWithTypePurposeSecurityLevelMissing(
+                "specified withdrawal public key cannot be used for signing".to_string(),
+            ),
+        );
+        let err = TaskError::from(sdk_err);
+        assert!(
+            matches!(err, TaskError::NoWithdrawalSigningKey { .. }),
+            "Expected NoWithdrawalSigningKey, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn no_withdrawal_signing_key_display_is_user_friendly() {
+        let sdk_err = SdkError::Protocol(
+            ProtocolError::DesiredKeyWithTypePurposeSecurityLevelMissing(
+                "specified withdrawal public key cannot be used for signing".to_string(),
+            ),
+        );
+        let msg = TaskError::from(sdk_err).to_string();
+        // Includes a concrete, self-serviceable next step.
+        assert!(msg.contains("Key Info screen"), "no action in: {msg}");
+        assert!(msg.contains("try again"), "no retry cue in: {msg}");
+        // No jargon and no raw SDK/protocol text leaked into the user message.
+        let lower = msg.to_lowercase();
+        for jargon in [
+            "consensus",
+            "sdk",
+            "nonce",
+            "rpc",
+            "protocol",
+            "securitylevel",
+        ] {
+            assert!(
+                !lower.contains(jargon),
+                "jargon '{jargon}' leaked in: {msg}"
+            );
+        }
+        assert!(
+            !msg.contains("cannot be used for signing"),
+            "raw SDK text leaked in: {msg}"
+        );
     }
 
     #[test]
@@ -3792,6 +3834,30 @@ mod tests {
         assert!(
             msg.contains("does not exist"),
             "Expected existence message, got: {msg}"
+        );
+    }
+
+    /// mn-live-qa Bug 2: a masternode load that resolves to no node on chain must
+    /// surface a node-specific message — never the generic identity-not-found
+    /// copy, whose "ID or name" wording is wrong for a ProTxHash load form.
+    #[test]
+    fn masternode_not_found_message_is_node_specific() {
+        let node_msg = TaskError::MasternodeNotFound {
+            identity_id: Identifier::random(),
+        }
+        .to_string();
+        assert!(
+            node_msg.contains("masternode"),
+            "Expected a masternode-specific message, got: {node_msg}"
+        );
+        let generic_msg = TaskError::IdentityNotFound.to_string();
+        assert!(
+            !node_msg.contains("ID or name"),
+            "The node message must not reuse the generic identity 'ID or name' copy: {node_msg}"
+        );
+        assert_ne!(
+            node_msg, generic_msg,
+            "MasternodeNotFound must not reuse the IdentityNotFound message"
         );
     }
 

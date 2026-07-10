@@ -22,11 +22,45 @@ pub(crate) struct EncryptedEnvelope {
     pub nonce: Vec<u8>,
 }
 
-/// Derive a key from the password and salt using Argon2.
-pub fn derive_password_key(password: &str, salt: &[u8]) -> Result<Vec<u8>, String> {
+/// A failure encrypting or decrypting wallet secret material with AES-256-GCM.
+///
+/// `Display` is a complete, jargon-free sentence for the Everyday User; the
+/// variant preserves which class of failure occurred so callers can branch
+/// (e.g. wrong password vs a corrupt at-rest blob) without parsing strings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum EncryptionError {
+    /// The AEAD tag did not verify — wrong password or tampered ciphertext.
+    #[error("The password is incorrect. Please check it and try again.")]
+    WrongPassword,
+    /// The stored data is structurally invalid (bad key/nonce length or a
+    /// corrupt at-rest blob).
+    #[error(
+        "This wallet's saved data appears to be damaged and could not be read. Re-add it from its recovery phrase to restore it."
+    )]
+    Malformed,
+    /// The Argon2 key-derivation step failed.
+    #[error("The encryption key could not be prepared. Please try again.")]
+    KeyDerivation,
+    /// The AES-256-GCM cipher failed to encrypt the data.
+    #[error("The data could not be encrypted. Please try again.")]
+    Encryption,
+}
+
+/// Derive a 32-byte AES-256 key from the password and salt using Argon2.
+///
+/// The key is returned in a [`Zeroizing`] buffer so the derived secret wipes on
+/// drop instead of lingering in a plain `Vec<u8>` after the caller is done.
+///
+/// # Errors
+///
+/// Returns [`EncryptionError::KeyDerivation`] if Argon2 hashing fails.
+pub fn derive_password_key(
+    password: &str,
+    salt: &[u8],
+) -> Result<Zeroizing<Vec<u8>>, EncryptionError> {
     let key_length = 32; // For AES-256, we use a 256-bit key (32 bytes)
 
-    let mut key = vec![0u8; key_length];
+    let mut key = Zeroizing::new(vec![0u8; key_length]);
 
     // Using Argon2 with default parameters
     let argon2 = Argon2::default();
@@ -34,7 +68,7 @@ pub fn derive_password_key(password: &str, salt: &[u8]) -> Result<Vec<u8>, Strin
     // Deriving the key
     argon2
         .hash_password_into(password.as_bytes(), salt, &mut key)
-        .map_err(|e| e.to_string())?;
+        .map_err(|_| EncryptionError::KeyDerivation)?;
 
     Ok(key)
 }
@@ -42,7 +76,10 @@ pub fn derive_password_key(password: &str, salt: &[u8]) -> Result<Vec<u8>, Strin
 /// Encrypt `message` under `password` with AES-256-GCM, returning the
 /// [`EncryptedEnvelope`] (ciphertext, salt, nonce).
 #[allow(deprecated)]
-pub(crate) fn encrypt_message(message: &[u8], password: &str) -> Result<EncryptedEnvelope, String> {
+pub(crate) fn encrypt_message(
+    message: &[u8],
+    password: &str,
+) -> Result<EncryptedEnvelope, EncryptionError> {
     // Generate a random salt
     let mut salt = vec![0u8; SALT_SIZE];
     OsRng.fill_bytes(&mut salt);
@@ -55,13 +92,13 @@ pub(crate) fn encrypt_message(message: &[u8], password: &str) -> Result<Encrypte
     OsRng.fill_bytes(&mut nonce);
 
     // Create cipher instance
-    let cipher = Aes256Gcm::new_from_slice(&key).map_err(|e| e.to_string())?;
+    let cipher = Aes256Gcm::new_from_slice(&key).map_err(|_| EncryptionError::Encryption)?;
 
     // Encrypt the seed
     let nonce_arr = Nonce::from_slice(&nonce);
     let ciphertext = cipher
         .encrypt(nonce_arr, message)
-        .map_err(|e| e.to_string())?;
+        .map_err(|_| EncryptionError::Encryption)?;
 
     Ok(EncryptedEnvelope {
         ciphertext,
@@ -103,15 +140,15 @@ pub(crate) fn decrypt_message(
     password: &str,
     site: &'static str,
 ) -> Result<Zeroizing<Vec<u8>>, DecryptError> {
-    let key = Zeroizing::new(derive_password_key(password, salt).map_err(|detail| {
+    let key = derive_password_key(password, salt).map_err(|error| {
         tracing::warn!(
             target = "model::wallet::encryption",
             site,
-            %detail,
+            %error,
             "Argon2 key derivation failed during decrypt",
         );
         DecryptError::Malformed
-    })?);
+    })?;
     let cipher = Aes256Gcm::new_from_slice(&key).map_err(|error| {
         tracing::warn!(
             target = "model::wallet::encryption",
@@ -150,13 +187,20 @@ impl ClosedKeyItem {
     }
 
     /// Encrypt the seed using AES-256-GCM.
-    pub(crate) fn encrypt_seed(seed: &[u8], password: &str) -> Result<EncryptedEnvelope, String> {
+    pub(crate) fn encrypt_seed(
+        seed: &[u8],
+        password: &str,
+    ) -> Result<EncryptedEnvelope, EncryptionError> {
         encrypt_message(seed, password)
     }
 
     /// Decrypt the seed using AES-256-GCM via the shared [`decrypt_message`]
     /// reader.
-    pub fn decrypt_seed(&self, password: &str) -> Result<[u8; 64], String> {
+    ///
+    /// The 64-byte seed is returned in a [`Zeroizing`] buffer so it wipes on
+    /// drop, matching every other seed reader. The bytes are copied straight
+    /// into the zeroizing array — no plain `[u8; 64]` stack copy is left behind.
+    pub fn decrypt_seed(&self, password: &str) -> Result<Zeroizing<[u8; 64]>, EncryptionError> {
         let seed = decrypt_message(
             &self.encrypted_seed,
             &self.salt,
@@ -165,16 +209,17 @@ impl ClosedKeyItem {
             "closed_key_item::decrypt_seed",
         )
         .map_err(|e| match e {
-            DecryptError::WrongPassword => "incorrect password".to_string(),
-            DecryptError::Malformed => "failed to decrypt the wallet seed".to_string(),
+            DecryptError::WrongPassword => EncryptionError::WrongPassword,
+            DecryptError::Malformed => EncryptionError::Malformed,
         })?;
 
-        seed.as_slice().try_into().map_err(|_| {
-            format!(
-                "invalid seed length, expected 64 bytes, got {} bytes",
-                seed.len()
-            )
-        })
+        // A decrypted seed of the wrong length is a corrupt at-rest blob.
+        if seed.len() != 64 {
+            return Err(EncryptionError::Malformed);
+        }
+        let mut out = Zeroizing::new([0u8; 64]);
+        out.copy_from_slice(&seed);
+        Ok(out)
     }
 }
 #[cfg(test)]
@@ -207,7 +252,7 @@ mod tests {
             .expect("Decryption failed");
 
         // Verify that the decrypted seed matches the original seed
-        assert_eq!(seed, decrypted_seed);
+        assert_eq!(seed, *decrypted_seed);
     }
 
     #[test]
@@ -234,7 +279,55 @@ mod tests {
         // Attempt to decrypt with the wrong password
         let result = closed_wallet_seed.decrypt_seed(wrong_password);
 
-        // Verify that decryption fails
-        assert!(result.is_err());
+        // Verify that decryption fails with the typed wrong-password variant.
+        assert_eq!(result.unwrap_err(), EncryptionError::WrongPassword);
+    }
+
+    #[test]
+    fn wrong_password_is_typed_variant() {
+        let envelope = encrypt_message(b"payload", "right").expect("encrypt");
+        let err = decrypt_message(
+            &envelope.ciphertext,
+            &envelope.salt,
+            &envelope.nonce,
+            "wrong",
+            "test",
+        )
+        .unwrap_err();
+        assert_eq!(err, DecryptError::WrongPassword);
+    }
+
+    #[test]
+    fn malformed_envelope_is_typed_variant() {
+        let envelope = encrypt_message(b"payload", "pw").expect("encrypt");
+        // A nonce of the wrong length is a structurally corrupt blob, not a
+        // wrong password — it must surface as Malformed, never panic.
+        let err = decrypt_message(
+            &envelope.ciphertext,
+            &envelope.salt,
+            &[0u8; 4],
+            "pw",
+            "test",
+        )
+        .unwrap_err();
+        assert_eq!(err, DecryptError::Malformed);
+    }
+
+    #[test]
+    fn decrypt_seed_wrong_length_blob_is_malformed() {
+        // Encrypt a 10-byte payload, then decrypt_seed it: the plaintext is not
+        // 64 bytes, so it is a corrupt seed blob → Malformed (no panic).
+        let envelope = encrypt_message(&[9u8; 10], "pw").expect("encrypt");
+        let item = ClosedKeyItem {
+            seed_hash: [0u8; 32],
+            encrypted_seed: envelope.ciphertext,
+            salt: envelope.salt,
+            nonce: envelope.nonce,
+            password_hint: None,
+        };
+        assert_eq!(
+            item.decrypt_seed("pw").unwrap_err(),
+            EncryptionError::Malformed
+        );
     }
 }

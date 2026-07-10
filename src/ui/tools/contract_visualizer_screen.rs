@@ -30,12 +30,6 @@ pub struct ContractVisualizerScreen {
     // ---- parsed output -------
     parsed_json: Option<String>,
     parse_status: ContractParseStatus,
-
-    // ---- helper for chooser search ----
-    // Allow dead_code: This field provides search functionality for contract selection,
-    // useful for filtering contracts in the visualizer interface
-    #[allow(dead_code)]
-    contract_search_term: String,
 }
 
 impl ContractVisualizerScreen {
@@ -47,8 +41,6 @@ impl ContractVisualizerScreen {
 
             parsed_json: None,
             parse_status: ContractParseStatus::NotStarted,
-
-            contract_search_term: String::new(),
         }
     }
 
@@ -142,7 +134,7 @@ impl ContractVisualizerScreen {
 
         ScrollArea::vertical().show(ui, |ui| match &self.parse_status {
             ContractParseStatus::Complete => {
-                ui.monospace(self.parsed_json.as_ref().unwrap());
+                ui.monospace(self.parsed_json.as_deref().unwrap_or_default());
             }
             ContractParseStatus::Error(msg) => {
                 let error_color = DashColors::ERROR;

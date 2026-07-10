@@ -156,6 +156,12 @@ impl AppContext {
         // Fetch the identity using the SDK
         let identity = match Identity::fetch_by_identifier(sdk, identity_id).await {
             Ok(Some(identity)) => identity,
+            // For masternode/evonode loads the input is a ProTxHash, so surface a
+            // node-specific message instead of the generic identity-not-found copy
+            // (which talks about an "ID or name" the user never entered here).
+            Ok(None) if identity_type != IdentityType::User => {
+                return Err(TaskError::MasternodeNotFound { identity_id });
+            }
             Ok(None) => return Err(TaskError::IdentityNotFound),
             Err(e) => return Err(TaskError::from(e)),
         };
@@ -821,6 +827,7 @@ mod tests {
             egui::Context::default(),
             app_kv,
             secret_store,
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         )
         .expect("offline testnet AppContext::new");
         let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
@@ -947,6 +954,7 @@ mod tests {
             egui::Context::default(),
             app_kv,
             secret_store,
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         )
         .expect("offline testnet AppContext::new");
         let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
@@ -1030,6 +1038,7 @@ mod tests {
             egui::Context::default(),
             app_kv,
             secret_store,
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         )
         .expect("offline testnet AppContext::new");
         // The scoped merge prompt asks for the node's object password once.
@@ -1140,6 +1149,7 @@ mod tests {
             egui::Context::default(),
             app_kv,
             secret_store,
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         )
         .expect("offline testnet AppContext::new");
         // No prompt installed: the default NullSecretPrompt fails closed.
@@ -1212,6 +1222,7 @@ mod tests {
             egui::Context::default(),
             app_kv,
             secret_store,
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         )
         .expect("offline testnet AppContext::new");
         let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);

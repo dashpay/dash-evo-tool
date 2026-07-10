@@ -563,6 +563,16 @@ impl AppState {
 
         let saved_network = settings.network;
 
+        // App-global Expert Mode flag: read once from config and shared into
+        // every per-network context (including any created later by a network
+        // switch), so a live toggle is observed everywhere without a restart.
+        let developer_mode = Arc::new(std::sync::atomic::AtomicBool::new(
+            crate::config::Config::load_from(&data_dir)
+                .ok()
+                .and_then(|c| c.developer_mode)
+                .unwrap_or(false),
+        ));
+
         // Build a helper to create AppContext for a given network.
         let make_context = |network: Network| -> Option<Arc<AppContext>> {
             AppContext::new(
@@ -574,6 +584,7 @@ impl AppState {
                 ctx.clone(),
                 Arc::clone(&app_kv),
                 Arc::clone(&secret_store),
+                Arc::clone(&developer_mode),
             )
         };
 

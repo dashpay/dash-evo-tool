@@ -138,6 +138,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Expert mode now reveals the Masternodes tab without a restart**: turning on
+  Expert mode in Settings immediately shows the "Masternodes" entry in the left
+  nav. Previously the Expert-mode flag was stored separately per network, so the
+  nav entry could stay hidden (reading a stale value on whichever network context
+  the app was showing) until the app was restarted. Expert mode is now a single
+  app-wide flag shared across all networks.
+
+- **Clearer error when loading a masternode by an unknown ProTxHash**: entering a
+  valid-looking but unregistered ProTxHash in the masternode load form now says no
+  masternode or evonode was found for that ProTxHash, instead of the misleading
+  generic "Identity not found — check the ID or name" message.
+
 - **Withdrawal key selection**: the Withdraw screen now pre-selects only a key
   whose private key you actually hold (a payout/Transfer key preferred, Owner as
   fallback). Previously it could pick a key that exists on the identity but whose

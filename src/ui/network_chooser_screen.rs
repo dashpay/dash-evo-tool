@@ -612,9 +612,14 @@ impl NetworkChooserScreen {
                         )
                         .clicked()
                     {
-                        for ctx in self.network_contexts.values() {
-                            ctx.enable_developer_mode(self.developer_mode);
-                        }
+                        // Expert Mode is a single app-global flag shared by every
+                        // per-network context, so toggling it on one updates all.
+                        self.current_app_context()
+                            .enable_developer_mode(self.developer_mode);
+                        // Re-render the nav immediately: enabling Expert Mode also
+                        // disables animations, which stops continuous repaints, so
+                        // request one so the Masternodes nav entry appears now.
+                        ui.ctx().request_repaint();
 
                         // Persist to config file (non-blocking for UI)
                         if let Ok(mut config) = Config::load_from(&self.data_dir) {

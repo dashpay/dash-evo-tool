@@ -354,15 +354,6 @@ pub fn subdued_everyday_spec(label: impl Into<String>, target: RootScreenType) -
     PageNavSpec::unwired_everyday(label, target, TT_WALLET_UNWIRED, TT_IDENTITY_UNWIRED)
 }
 
-/// A wallet-only global-nav spec (no identity/object pill) with the wallet pill
-/// subdued (unwired). For pages with no identity context (e.g. Wallets) —
-/// FR-GLOBAL-NAV-2 rule 4.
-pub fn subdued_wallet_only_spec(label: impl Into<String>, target: RootScreenType) -> PageNavSpec {
-    PageNavSpec::new(label, target).with_wallet_pill(PillConsumption::Unwired {
-        tooltip: TT_WALLET_UNWIRED.to_string(),
-    })
-}
-
 /// A wallet-only global-nav spec with the wallet pill **interactive**
 /// (`Consumed`): picking a wallet from it drives the app-global selection via
 /// [`apply_global_nav_effect`]. For pages that own the wallet-selection surface
@@ -496,18 +487,5 @@ mod tests {
             spec.identity_pill().is_none(),
             "the Wallets page is wallet-only, with no identity pill"
         );
-    }
-
-    /// Guard the contrast: the subdued constructor stays `Unwired` with a how-to
-    /// tooltip, so the two variants remain distinct.
-    #[test]
-    fn subdued_wallet_only_spec_stays_unwired_with_tooltip() {
-        let spec = subdued_wallet_only_spec("Wallets", RootScreenType::RootScreenWalletsBalances);
-        let pill = spec.wallet_pill().expect("wallet pill present");
-        assert!(
-            !pill.is_consumed(),
-            "the subdued pill must not be interactive"
-        );
-        assert_eq!(pill.tooltip(), Some(TT_WALLET_UNWIRED));
     }
 }

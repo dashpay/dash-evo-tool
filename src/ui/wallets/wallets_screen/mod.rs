@@ -258,17 +258,11 @@ type ResolvedWalletSelection = (
     Option<Arc<RwLock<SingleKeyWallet>>>,
 );
 
-/// Resolve the shared store's per-network wallet selection
-/// (`selected_wallet_hash` / `selected_single_key_hash`) into concrete wallet
-/// handles. Prefers a single-key selection, then an HD selection; returns
-/// `(None, None)` when the store names no currently-loaded wallet, leaving any
-/// first-wallet fallback to the caller.
-///
-/// The setter-symmetry invariant — an explicit HD pick clears the single-key
-/// hash and vice versa — keeps at most one hash set, so the preference order
-/// never has to arbitrate a genuine conflict. Both construction and
-/// `refresh_on_arrival` resolve through this one path so the pill and the in-tab
-/// picker never disagree.
+/// Resolve the shared store's per-network selection into wallet handles,
+/// single-key preferred then HD; `(None, None)` when the store names no loaded
+/// wallet (the caller applies any first-wallet fallback). The setter-symmetry
+/// invariant keeps at most one hash set, so the preference never arbitrates a
+/// real conflict — construction and `refresh_on_arrival` share this one path.
 fn resolve_selection_from_store(app_context: &Arc<AppContext>) -> ResolvedWalletSelection {
     let selected_hd_hash = app_context
         .selected_wallet_hash
@@ -420,12 +414,10 @@ impl WalletsBalancesScreen {
         self.persist_selected_wallet_hash(None);
     }
 
-    /// Adopt a wallet selection read back from the shared store into the screen
-    /// cache and its dependent view state. Skips the switch when the cache
-    /// already holds the same wallet, so re-arriving never spuriously resets the
-    /// account tab or view (idempotent). Routes through the existing selection
-    /// setters so dependent state (shielded view, account, cached indices) stays
-    /// consistent.
+    /// Adopt a store-resolved selection into the screen cache, routing through
+    /// the existing selection setters so dependent view state stays consistent.
+    /// Skips when the cache already holds the same wallet, so re-arriving is
+    /// idempotent (no spurious account-tab reset).
     fn adopt_store_selection(
         &mut self,
         store_hd: Option<Arc<RwLock<Wallet>>>,
@@ -3435,6 +3427,61 @@ mod tests {
             assert!(
                 hd.as_ref().is_some_and(|w| Arc::ptr_eq(w, &hd_arc)),
                 "the HD wallet the user picked is shown, not the stale single-key one"
+            );
+        }
+
+        /// Mirror of TC-WALLETLINK-07 for the single-key setter: an explicit
+        /// single-key pick at the context layer supersedes a prior HD selection,
+        /// so the invariant is self-enforcing regardless of caller (not just via
+        /// the screen path that clears HD itself).
+        #[test]
+        fn single_key_pick_supersedes_a_prior_hd_selection() {
+            let tmp = tempfile::tempdir().unwrap();
+            let ctx = test_app_context(tmp.path());
+            let (hd_hash, _hd_arc) = seed_hd(&ctx, 5);
+            let (sk_hash, sk_arc) = seed_sk(&ctx, 7);
+
+            ctx.set_selected_hd_wallet(Some(hd_hash));
+            ctx.set_selected_single_key_wallet(Some(sk_hash));
+            let (hd, sk) = resolve_selection_from_store(&ctx);
+            assert!(
+                hd.is_none(),
+                "an explicit single-key pick clears the stale HD selection"
+            );
+            assert!(sk.as_ref().is_some_and(|w| Arc::ptr_eq(w, &sk_arc)));
+        }
+
+        /// The store never holds both an HD and a single-key hash: neither setter
+        /// leaves the ambiguous `(Some, Some)` state, so resolution is always
+        /// unambiguous. Guards fixes to `set_selected_hd_wallet`,
+        /// `set_selected_single_key_wallet`, and `set_selected_identity`.
+        #[test]
+        fn setters_never_leave_both_hashes_set() {
+            use dash_sdk::platform::Identifier;
+            let tmp = tempfile::tempdir().unwrap();
+            let ctx = test_app_context(tmp.path());
+            let (hd_hash, _hd) = seed_hd(&ctx, 5);
+            let (sk_hash, _sk) = seed_sk(&ctx, 7);
+
+            let both_set = |ctx: &Arc<AppContext>| {
+                ctx.selected_wallet_hash().is_some()
+                    && ctx.selected_single_key_hash.lock().unwrap().is_some()
+            };
+
+            ctx.set_selected_hd_wallet(Some(hd_hash));
+            ctx.set_selected_single_key_wallet(Some(sk_hash));
+            assert!(!both_set(&ctx), "single-key set clears HD");
+
+            ctx.set_selected_hd_wallet(Some(hd_hash));
+            assert!(!both_set(&ctx), "HD set clears single-key");
+
+            // Selecting a single-key wallet, then an identity, must not resurrect
+            // the HD hash alongside the live single-key one.
+            ctx.set_selected_single_key_wallet(Some(sk_hash));
+            ctx.set_selected_identity(Some(Identifier::from([9u8; 32])));
+            assert!(
+                !both_set(&ctx),
+                "identity select never leaves both hashes set"
             );
         }
 

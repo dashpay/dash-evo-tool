@@ -1153,6 +1153,14 @@ impl AppContext {
             if let Ok(mut g) = self.selected_wallet_hash.lock() {
                 *g = owner;
             }
+            // Setting an HD owner makes that HD wallet active; clear any
+            // single-key selection so the store never holds both (SK-first
+            // resolution would otherwise show the single-key wallet).
+            if owner.is_some()
+                && let Ok(mut g) = self.selected_single_key_hash.lock()
+            {
+                *g = None;
+            }
         }
         self.persist_selected_identity_kv(id);
         self.persist_selected_wallet_kv(
@@ -1169,11 +1177,9 @@ impl AppContext {
         if let Ok(mut g) = self.selected_wallet_hash.lock() {
             *g = hash;
         }
-        // An explicit HD pick (`Some`) makes that HD wallet the single active
-        // wallet: clear any single-key selection so the store never holds both
-        // (which would resolve ambiguously, single-key-first). Clearing the HD
-        // wallet (`None`) leaves a single-key selection intact — that axis is the
-        // single-key setter's, and the single-key select path clears HD itself.
+        // An explicit HD pick makes that HD wallet the sole active wallet: clear
+        // any single-key selection so the store never holds both (resolution is
+        // single-key-first). A `None` (clear-HD) call leaves single-key intact.
         let single_key = if hash.is_some() {
             if let Ok(mut g) = self.selected_single_key_hash.lock() {
                 *g = None;
@@ -1214,7 +1220,18 @@ impl AppContext {
         if let Ok(mut g) = self.selected_single_key_hash.lock() {
             *g = hash;
         }
-        self.persist_selected_wallet_kv(self.selected_wallet_hash(), hash);
+        // Mirror of `set_selected_hd_wallet`: an explicit single-key pick clears
+        // the HD hash so the store never holds both; clearing (`None`) leaves HD
+        // intact. Keeps the invariant self-enforcing regardless of caller.
+        let hd = if hash.is_some() {
+            if let Ok(mut g) = self.selected_wallet_hash.lock() {
+                *g = None;
+            }
+            None
+        } else {
+            self.selected_wallet_hash()
+        };
+        self.persist_selected_wallet_kv(hd, hash);
     }
 
     /// Stage an identity to become active when the hub is next shown — set

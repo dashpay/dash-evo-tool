@@ -380,8 +380,12 @@ pub async fn init_app_context() -> Result<Arc<AppContext>, McpError> {
         egui::Context::default(),
         app_kv,
         secret_store,
-        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
-            config.developer_mode.unwrap_or(false),
+        std::sync::Arc::new(std::sync::atomic::AtomicU8::new(
+            if config.developer_mode.unwrap_or(false) {
+                crate::model::user_role::UserRole::Power as u8
+            } else {
+                crate::model::user_role::UserRole::Everyday as u8
+            },
         )),
     )
     .ok_or_else(|| {

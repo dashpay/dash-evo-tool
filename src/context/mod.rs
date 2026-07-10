@@ -10,7 +10,7 @@ mod wallet_lifecycle;
 use crate::app_dir::core_cookie_path;
 use crate::backend_task::error::TaskError;
 use crate::config::{Config, NetworkConfig};
-use crate::context::feature_gate::FeatureGate;
+use crate::context::feature_gate::{ExperimentalFeature, FeatureGate};
 use crate::context_provider::SpvProvider;
 use crate::database::Database;
 use crate::model::fee_estimation::PlatformFeeEstimator;
@@ -45,10 +45,11 @@ use platform_wallet_storage::secrets::SecretStore;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::str::FromStr as _;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock, RwLockWriteGuard};
 
 use crate::model::settings::AppSettings;
+use crate::model::user_role::UserRole;
 
 const ANIMATION_REFRESH_TIME: std::time::Duration = std::time::Duration::from_millis(100);
 
@@ -62,13 +63,14 @@ pub(crate) type SettingsCacheGuard<'a> = RwLockWriteGuard<'a, Option<AppSettings
 pub struct AppContext {
     pub(crate) data_dir: PathBuf,
     pub(crate) network: Network,
-    /// App-global Expert Mode flag. A single `Arc<AtomicBool>` is created once by
-    /// `AppState` and shared into every per-network `AppContext`, so toggling it
-    /// on any context is observed by all of them (present and lazily created on a
-    /// later network switch). Never a per-context `AtomicBool` — that would let
-    /// the left-nav feature gate read a stale value on whichever context the app
+    /// App-global user role (the persona / disclosure axis), stored as the
+    /// [`UserRole`] discriminant. A single `Arc<AtomicU8>` is created once by
+    /// `AppState` and shared into every per-network `AppContext`, so setting it
+    /// on any context is observed by all of them (present and lazily created on
+    /// a later network switch). Never a per-context atomic — that would let the
+    /// left-nav feature gate read a stale value on whichever context the app
     /// renders from.
-    developer_mode: Arc<AtomicBool>,
+    user_role: Arc<AtomicU8>,
     pub(crate) db: Arc<Database>,
     pub(crate) sdk: ArcSwap<Sdk>,
     // SDK context provider (quorum keys via DAPI). Chain sync is SPV-only,
@@ -226,7 +228,7 @@ impl AppContext {
         egui_ctx: egui::Context,
         app_kv: Arc<DetKv>,
         secret_store: Arc<SecretStore>,
-        developer_mode: Arc<AtomicBool>,
+        user_role: Arc<AtomicU8>,
     ) -> Option<Arc<Self>> {
         let config = match Config::load_from(&data_dir) {
             Ok(config) => config,
@@ -317,11 +319,12 @@ impl AppContext {
         let single_key_wallets: BTreeMap<SingleKeyHash, Arc<RwLock<SingleKeyWallet>>> =
             BTreeMap::new();
 
-        let developer_mode_enabled = developer_mode.load(Ordering::Relaxed);
+        let advanced_role =
+            UserRole::from_u8(user_role.load(Ordering::Relaxed)).at_least(UserRole::Power);
 
-        let animate = match developer_mode_enabled {
+        let animate = match advanced_role {
             true => {
-                tracing::debug!("developer_mode is enabled, disabling animations");
+                tracing::debug!("power/developer role active, disabling animations");
                 AtomicBool::new(false)
             }
             false => AtomicBool::new(true), // Animations are enabled by default
@@ -338,7 +341,7 @@ impl AppContext {
         let app_context = AppContext {
             data_dir,
             network,
-            developer_mode,
+            user_role,
             db,
             sdk: ArcSwap::from_pointee(sdk),
             spv_context_provider: spv_provider.into(),
@@ -402,10 +405,36 @@ impl AppContext {
         self.animate.store(animate, Ordering::Relaxed);
     }
 
+    /// The app-global user role (shared across every per-network context).
+    pub fn user_role(&self) -> UserRole {
+        UserRole::from_u8(self.user_role.load(Ordering::Relaxed))
+    }
+
+    /// Set the app-global user role. Animations are disabled for Power and
+    /// Developer roles (they clutter an operator/developer workflow).
+    pub fn set_user_role(&self, role: UserRole) {
+        self.user_role.store(role as u8, Ordering::Relaxed);
+        self.enable_animations(!role.at_least(UserRole::Power));
+    }
+
+    /// Whether an experimental feature is currently exposed.
+    ///
+    /// Compat shim: during the migration window this tracks the old dev-mode
+    /// gating (`>= Power`). Once a feature stabilises, its callsite drops the
+    /// [`Check::Experimental`](crate::context::feature_gate::Check) check
+    /// entirely and it unlocks for every role.
+    pub fn experimental_enabled(&self, _feature: ExperimentalFeature) -> bool {
+        self.user_role().at_least(UserRole::Power)
+    }
+
+    /// Compat shim for the retired binary Expert Mode toggle: `true` sets the
+    /// Power role, `false` returns to Everyday. Prefer [`set_user_role`](Self::set_user_role).
     pub fn enable_developer_mode(&self, enable: bool) {
-        self.developer_mode.store(enable, Ordering::Relaxed);
-        // Animations are reverse of developer mode
-        self.enable_animations(!enable);
+        self.set_user_role(if enable {
+            UserRole::Power
+        } else {
+            UserRole::Everyday
+        });
     }
 
     pub fn data_dir(&self) -> &std::path::Path {
@@ -742,14 +771,17 @@ impl AppContext {
         PlatformFeeEstimator::with_fee_multiplier(self.fee_multiplier_permille())
     }
 
+    /// Compat shim for the retired binary Expert Mode flag: true iff the role
+    /// is at least Power. Prefer [`user_role`](Self::user_role) with
+    /// [`UserRole::at_least`].
     pub fn is_developer_mode(&self) -> bool {
-        self.developer_mode.load(Ordering::Relaxed)
+        self.user_role().at_least(UserRole::Power)
     }
 
-    /// A clone of the shared app-global Expert Mode flag, for wiring a
-    /// newly-created per-network context to the same flag (see the field docs).
-    pub fn developer_mode_handle(&self) -> Arc<AtomicBool> {
-        Arc::clone(&self.developer_mode)
+    /// A clone of the shared app-global role atomic, for wiring a newly-created
+    /// per-network context to the same value (see the field docs).
+    pub fn user_role_handle(&self) -> Arc<AtomicU8> {
+        Arc::clone(&self.user_role)
     }
 
     /// Repaints the UI if animations are enabled.
@@ -1388,7 +1420,7 @@ mod tests {
             egui::Context::default(),
             app_kv,
             secret_store,
-            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0)),
         )
         .expect("offline testnet AppContext::new");
         let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
@@ -1424,13 +1456,13 @@ mod tests {
         let subtasks = std::sync::Arc::new(TaskManager::new());
         let connection_status = std::sync::Arc::new(ConnectionStatus::new());
         let egui_ctx = egui::Context::default();
-        // A single app-global developer-mode flag, owned by `AppState` and shared
-        // into every per-network context (mirrors the real construction path).
-        let developer_mode = std::sync::Arc::new(AtomicBool::new(false));
+        // A single app-global role atomic, owned by `AppState` and shared into
+        // every per-network context (mirrors the real construction path).
+        let user_role = std::sync::Arc::new(AtomicU8::new(UserRole::Everyday as u8));
 
         // The startup context (Mainnet) and a second context (Testnet) built the
         // way `AppState` builds one on a live network switch — reusing the shared
-        // db / kv / secret store / developer-mode flag.
+        // db / kv / secret store / role atomic.
         let mainnet = AppContext::new(
             data_dir.clone(),
             Network::Mainnet,
@@ -1440,7 +1472,7 @@ mod tests {
             egui_ctx.clone(),
             app_kv.clone(),
             secret_store.clone(),
-            developer_mode.clone(),
+            user_role.clone(),
         )
         .expect("mainnet AppContext::new");
         let testnet = AppContext::new(
@@ -1452,7 +1484,7 @@ mod tests {
             egui_ctx,
             app_kv,
             secret_store,
-            developer_mode,
+            user_role,
         )
         .expect("testnet AppContext::new");
 

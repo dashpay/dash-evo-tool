@@ -8,6 +8,7 @@
 
 use super::{AppContext, SettingsCacheGuard};
 use crate::model::settings::{AppSettings, detect_dash_qt_path};
+use crate::model::user_role::UserRole;
 use crate::ui::RootScreenType;
 use crate::ui::theme::ThemeMode;
 use crate::wallet_backend::poison::RwLockRecover;
@@ -105,7 +106,7 @@ impl AppContext {
     /// the `cached_settings` write lock. A missing or undecodable blob falls
     /// back to defaults.
     fn load_app_settings_uncached(&self) -> AppSettings {
-        match self
+        let settings = match self
             .app_kv
             .get::<AppSettings>(DetScope::Global, AppSettings::KV_KEY)
         {
@@ -118,7 +119,29 @@ impl AppContext {
                 );
                 AppSettings::default()
             }
+        };
+        self.seed_user_role_from_env(settings)
+    }
+
+    /// Seeds `user_role` from the legacy `.env DEVELOPER_MODE` flag when the
+    /// persisted blob recorded no explicit role (`None`) — every pre-migration
+    /// user and every fresh install. `DEVELOPER_MODE=true` maps to Power
+    /// (today's "developer mode" is power-user mode); anything else maps to
+    /// Everyday. Mirrors the impure dash-qt autodetect fallback: decoding stays
+    /// pure, the one-time `.env` read happens here at the load site.
+    fn seed_user_role_from_env(&self, mut settings: AppSettings) -> AppSettings {
+        if settings.user_role.is_none() {
+            let developer = crate::config::Config::load_from(&self.data_dir)
+                .ok()
+                .and_then(|c| c.developer_mode)
+                .unwrap_or(false);
+            settings.user_role = Some(if developer {
+                UserRole::Power
+            } else {
+                UserRole::Everyday
+            });
         }
+        settings
     }
 
     /// Write the [`AppSettings`] blob to the shared app k/v store.
@@ -170,13 +193,15 @@ mod tests {
         );
 
         // A non-default value must round-trip field-for-field.
-        let mut settings = AppSettings::default();
-        settings.network = Network::Testnet;
-        settings.theme_mode = ThemeMode::Dark;
-        settings.user_mode = crate::model::settings::UserMode::Beginner;
-        settings.auto_start_spv = true;
-        settings.disable_zmq = true;
-        settings.onboarding_completed = true;
+        let settings = AppSettings {
+            network: Network::Testnet,
+            theme_mode: ThemeMode::Dark,
+            user_role: Some(crate::model::user_role::UserRole::Power),
+            auto_start_spv: true,
+            disable_zmq: true,
+            onboarding_completed: true,
+            ..AppSettings::default()
+        };
 
         kv.put(DetScope::Global, AppSettings::KV_KEY, &settings)
             .unwrap();
@@ -187,7 +212,10 @@ mod tests {
 
         assert_eq!(got.network, Network::Testnet);
         assert_eq!(got.theme_mode, ThemeMode::Dark);
-        assert_eq!(got.user_mode, crate::model::settings::UserMode::Beginner);
+        assert_eq!(
+            got.user_role,
+            Some(crate::model::user_role::UserRole::Power)
+        );
         assert!(got.auto_start_spv);
         assert!(got.disable_zmq);
         assert!(got.onboarding_completed);
@@ -238,7 +266,7 @@ mod tests {
             egui::Context::default(),
             app_kv,
             secret_store,
-            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0)),
         )
         .expect("AppContext")
     }
@@ -249,17 +277,17 @@ mod tests {
     /// last writer overwriting a stale full-blob snapshot.
     #[test]
     fn update_app_settings_reads_prior_committed_state() {
-        use crate::model::settings::UserMode;
+        use crate::model::user_role::UserRole;
         let tmp = tempfile::tempdir().unwrap();
         let ctx = test_app_context(tmp.path());
 
-        ctx.update_app_settings(|s| s.user_mode = UserMode::Beginner)
+        ctx.update_app_settings(|s| s.user_role = Some(UserRole::Power))
             .unwrap();
         ctx.update_app_settings(|s| {
             // The RMW must hand us the value the previous update committed.
             assert_eq!(
-                s.user_mode,
-                UserMode::Beginner,
+                s.user_role,
+                Some(UserRole::Power),
                 "read-modify-write must observe the prior committed write"
             );
             s.onboarding_completed = true;
@@ -267,7 +295,11 @@ mod tests {
         .unwrap();
 
         let got = ctx.get_app_settings();
-        assert_eq!(got.user_mode, UserMode::Beginner, "first update survived");
+        assert_eq!(
+            got.user_role,
+            Some(UserRole::Power),
+            "first update survived"
+        );
         assert!(got.onboarding_completed, "second update landed");
     }
 
@@ -328,5 +360,63 @@ mod tests {
         assert!(got.show_evonode_tools);
         assert!(got.close_dash_qt_on_exit);
         assert!(got.auto_start_spv, "no concurrent field update may be lost");
+    }
+
+    /// A role-less blob (fresh install, or a pre-migration blob whose legacy
+    /// `"Advanced"` sentinel decoded to `None`) is seeded from the legacy `.env`
+    /// flag: `DEVELOPER_MODE=true` → Power. This is the one-time reconciliation
+    /// that keeps expert users on their level after migration.
+    #[test]
+    fn role_less_blob_seeds_power_when_env_developer_mode_true() {
+        use std::io::Write;
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = test_app_context(tmp.path());
+
+        let env_path = tmp.path().join(".env");
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&env_path)
+            .unwrap();
+        writeln!(f, "DEVELOPER_MODE=true").unwrap();
+        // Drop the guard immediately: it clears the cache, and holding it would
+        // deadlock the `get_app_settings` read below.
+        drop(ctx.invalidate_settings_cache());
+
+        let got = ctx.get_app_settings();
+        assert_eq!(
+            got.user_role,
+            Some(UserRole::Power),
+            "DEVELOPER_MODE=true must seed the Power role for a role-less blob"
+        );
+    }
+
+    /// An explicit persisted role is authoritative: the `.env` seed only fills a
+    /// role-less (`None`) blob, so it must never override a choice already
+    /// recorded — even when `DEVELOPER_MODE=true` would otherwise seed Power.
+    #[test]
+    fn explicit_persisted_role_is_not_reseeded_from_env() {
+        use std::io::Write;
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = test_app_context(tmp.path());
+
+        ctx.update_app_settings(|s| s.user_role = Some(UserRole::Everyday))
+            .unwrap();
+
+        let env_path = tmp.path().join(".env");
+        let mut f = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&env_path)
+            .unwrap();
+        writeln!(f, "DEVELOPER_MODE=true").unwrap();
+        // Drop the guard immediately: it clears the cache, and holding it would
+        // deadlock the `get_app_settings` read below.
+        drop(ctx.invalidate_settings_cache());
+
+        let got = ctx.get_app_settings();
+        assert_eq!(
+            got.user_role,
+            Some(UserRole::Everyday),
+            "an explicit role must survive; the .env seed only fills a role-less blob"
+        );
     }
 }

@@ -75,11 +75,14 @@ impl WithdrawalScreen {
             .default_withdrawal_key()
             .map(|qk| qk.identity_public_key.clone())
             .or_else(|| {
-                // The Power role may sign with any on-chain key; keep the
-                // operator escape hatch instead of leaving the form blank.
+                // Only the Developer role can actually sign with an on-chain-only
+                // key (the signing override in `state_transition_options` plus the
+                // Developer branch of the `has_keys` gate below). Pre-selecting one
+                // for any lower role gives a key the signer cannot use, so this
+                // fallback matches that Developer gate.
                 app_context
                     .user_role()
-                    .at_least(UserRole::Power)
+                    .at_least(UserRole::Developer)
                     .then(|| {
                         identity.identity.get_first_public_key_matching(
                             Purpose::TRANSFER,

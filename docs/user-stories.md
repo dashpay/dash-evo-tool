@@ -1254,13 +1254,13 @@ As Alex, setting up a social profile to unlock DashPay contacts is clearly optio
 - Settings tab hosts the social-profile block where display name and avatar can be edited; identities without a profile continue to use payments and usernames untouched.
 - Home tab renders a `Set up your social profile` entry in the onboarding checklist with a skip affordance — opting in is never forced.
 
-### IDH-005: Developer bulk identity creation [Gap]
-**Persona:** Jordan
+### IDH-005: Bulk identity creation [Gap]
+**Persona:** Priya, Jordan
 
-As Jordan in Developer Mode, I have a single entry point to create many test identities without leaving the Identities section.
+As a power user, I have a single entry point to create many test identities without leaving the Identities section.
 
-- Onboarding screen surfaces a Developer-mode footer mentioning `Create multiple test identities` / `Load identity by ID` as plain text.
-- Planned (follow-up): wire those footer items to the existing `AddNewIdentityScreen` bulk path and dev-mode identity-picker dropdown entries.
+- Onboarding screen surfaces a footer, shown at the Power role or above, mentioning `Create multiple test identities` / `Load identity by ID` as plain text.
+- Planned (follow-up): wire those footer items to the existing `AddNewIdentityScreen` bulk path and the Power-role identity-picker dropdown entries.
 
 ### IDH-006: Unified activity timeline [Gap]
 **Persona:** All

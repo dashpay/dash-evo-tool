@@ -1487,6 +1487,55 @@ mod tests {
         );
     }
 
+    /// The signing override in `state_transition_options` is gated strictly at
+    /// the Developer role: only `Developer` relaxes the security-level and
+    /// purpose signing checks. Everyday and Power must receive `None`.
+    #[test]
+    fn state_transition_options_signing_override_is_developer_only() {
+        use crate::app_dir::ensure_env_file;
+        use crate::context::connection_status::ConnectionStatus;
+        use crate::database::test_helpers::create_database_at_path;
+        use crate::utils::tasks::TaskManager;
+        use dash_sdk::dpp::dashcore::Network;
+
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = temp_dir.path().to_path_buf();
+        ensure_env_file(&data_dir);
+        let db =
+            std::sync::Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
+        let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
+        let secret_store = AppContext::open_secret_store(&data_dir).expect("secret store");
+        let ctx = AppContext::new(
+            data_dir,
+            Network::Testnet,
+            db,
+            std::sync::Arc::new(TaskManager::new()),
+            std::sync::Arc::new(ConnectionStatus::new()),
+            egui::Context::default(),
+            app_kv,
+            secret_store,
+            std::sync::Arc::new(AtomicU8::new(UserRole::Everyday as u8)),
+        )
+        .expect("testnet AppContext::new");
+
+        // Below Developer: no signing override.
+        for role in [UserRole::Everyday, UserRole::Power] {
+            ctx.set_user_role(role);
+            assert!(
+                ctx.state_transition_options().is_none(),
+                "{role:?} must not receive the signing override"
+            );
+        }
+
+        // Developer: override present with both relaxations enabled.
+        ctx.set_user_role(UserRole::Developer);
+        let opts = ctx
+            .state_transition_options()
+            .expect("Developer role must receive the signing override");
+        assert!(opts.signing_options.allow_signing_with_any_security_level);
+        assert!(opts.signing_options.allow_signing_with_any_purpose);
+    }
+
     /// Seed one wallet-less identity of `identity_type` into the live identity
     /// DB and return its id.
     fn seed_typed(ctx: &AppContext, byte: u8, identity_type: IdentityType) -> Identifier {

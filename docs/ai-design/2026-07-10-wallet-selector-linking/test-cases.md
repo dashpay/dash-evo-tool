@@ -26,10 +26,9 @@ Descriptions/expected only — no test code.
   FR-6 masternode/evonode exclusion. Any pill-driven wallet switch on the Wallets
   page inherits this — regression-worthy.
 - **Automatability is HIGH — much higher than QR-funding.** Pure in-memory state,
-  no async/network/deposit detection. `AppContext` setters/getters and the new
-  re-sync helper are directly **unit**-testable; `tests/kittest/identity_hub_switcher.rs`
-  already proves wallets/identities can be seeded into a harness and the pill
-  driven. Say so: kittest reaches the full flow here.
+  no async/network. `AppContext` setters/getters and the new re-sync helper are
+  directly **unit**-testable; `tests/kittest/identity_hub_switcher.rs` already
+  proves wallets/identities can be seeded and the pill driven in a harness.
 
 ## 1. D1 — Pill interactive on Wallets page
 
@@ -114,11 +113,9 @@ clears `refreshing`. Trace: req 6. *Automatable (unit).*
 
 ## Automation summary
 
-- **Unit (`AppContext` setters/getters + `refresh_on_arrival` + spec fn):** 02,
-  03, 04, 06, 07, 09(invariant), 11, 12, 13 — the core state-sync coverage,
-  including the dual-hash trap (07).
-- **kittest (pill click / nav / render / secret gate):** 01, 05, 08, 10; nav legs
-  of 03/06.
-- **Manual GUI only:** 06 (visual cross-network), 08 (lock UX), 09 (dialog audit).
-  Far fewer than QR-funding — no async deposit/network means kittest+unit cover
-  nearly everything.
+- **Unit** (`AppContext` setters/getters + `refresh_on_arrival` + spec fn): 02,
+  03, 04, 06, 07, 09(invariant), 11, 12, 13 — core state-sync, incl. the dual-hash
+  trap (07).
+- **kittest** (pill click / nav / render / secret gate): 01, 05, 08, 10.
+- **Manual GUI only:** 06, 08, 09. Far fewer than QR-funding — no async means
+  kittest+unit cover nearly everything.

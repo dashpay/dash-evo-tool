@@ -543,15 +543,17 @@ As a user, I want to top up identity credits from a Platform address so that I c
 - Available as funding method in top-up screen.
 - Uses Platform address credits directly.
 
-### IDN-014: Fund identity directly from scanned external payment [Removed — upstream-only funding]
+### IDN-014: Fund identity by receiving a deposit to a shown QR/address [Implemented]
 **Persona:** Priya, Jordan
 
-As a user, I want to register or top up an identity by scanning a QR code or supplying an external outpoint directly, so that I can fund an identity without first receiving the payment into my wallet.
+As an everyday user, I can fund a new identity or a top-up by receiving a Dash deposit to an address the tool shows me as a QR code, so I can pay from any wallet or exchange without first moving funds into this tool.
 
-- `RegisterIdentityFundingMethod::FundWithUtxo` and `TopUpIdentityFundingMethod::FundWithUtxo` variants removed.
-- QR-direct-fund UI removed.
+- Choosing "Receive a new deposit" shows a scannable deposit address (QR + copyable text) and the minimum amount to send.
+- Once enough arrives the amount field pre-fills (capped at the received balance, fee reserved) and I confirm to create/top-up.
+- I can switch funding methods at any time from the waiting and received sub-steps — the flow is never a dead end.
+- A build/broadcast failure leaves my deposit safe in the wallet, reusable via the existing wallet-balance and recover-unfinished-funding methods.
 
-**Rationale:** No upstream funding-outpoint API exists in `platform-wallet` at PR #3625 head. The capability cannot be preserved or emulated; all asset-lock funding is upstream-authoritative wallet-managed selection. Superseded by funding from wallet balance (`WalletBackend::create_asset_lock_proof`). Disclosed via the one-time post-migration informational notice shown to all migrated users.
+**Note:** The deposit lands in the wallet balance and then funds through the existing `FundWithWallet` → `AssetLockFunding::FromWalletBalance` path — no external funding-outpoint API is required. This restores the removed scan-to-fund capability using the address the tool derives from the SPV-watched receive pool.
 
 ### IDN-015: Automatic identity discovery after sync [Implemented]
 **Persona:** Alex, Priya

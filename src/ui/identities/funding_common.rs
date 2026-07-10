@@ -4,6 +4,7 @@ use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dashcore_rpc::dashcore::Network;
 use dash_sdk::dashcore_rpc::dashcore::transaction::special_transaction::TransactionPayload;
 use dash_sdk::dpp::balances::credits::CREDITS_PER_DUFF;
+use dash_sdk::dpp::dashcore::{OutPoint, TxOut};
 use eframe::epaint::{Color32, ColorImage};
 use egui::{ComboBox, Ui, Vec2};
 use image::Luma;
@@ -22,6 +23,8 @@ pub enum FundingMethod {
     UseWalletBalance,
     /// Use Platform Address credits.
     UsePlatformAddress,
+    /// Receive a fresh Dash deposit to a shown address/QR, then fund from it.
+    ReceiveDeposit,
 }
 
 impl fmt::Display for FundingMethod {
@@ -34,6 +37,7 @@ impl fmt::Display for FundingMethod {
             FundingMethod::UseWalletBalance => "From your wallet (recommended)",
             FundingMethod::UseUnusedAssetLock => "Recover an unfinished funding",
             FundingMethod::UsePlatformAddress => "Use a Platform address",
+            FundingMethod::ReceiveDeposit => "Receive a new deposit",
         };
         write!(f, "{}", output)
     }
@@ -50,6 +54,7 @@ impl FundingMethod {
             FundingMethod::UseWalletBalance => "From your wallet (recommended)",
             FundingMethod::UseUnusedAssetLock => "Use an existing funding transaction",
             FundingMethod::UsePlatformAddress => "Use a Platform address",
+            FundingMethod::ReceiveDeposit => "Receive a new deposit",
         }
     }
 }
@@ -109,6 +114,50 @@ pub fn max_amount_after_fee_reserve(spendable_duffs: u64, fee_credits: u64) -> u
     spendable_duffs
         .saturating_mul(CREDITS_PER_DUFF)
         .saturating_sub(fee_credits)
+}
+
+/// Duffs received, in this event, by the one address shown to the user as their
+/// deposit target. Sums the value of every output paying exactly `funding_address`
+/// (single-address equality, not wallet-membership), so a deposit to any other
+/// address contributes nothing. Returns `0` when no address is shown yet.
+///
+/// This decides only whether *this* event touched the shown address; the
+/// cumulative "received so far" figure comes from the wallet's spendable
+/// snapshot, since deposits across separate events accumulate there.
+pub fn deposit_matches(
+    funding_address: Option<&Address>,
+    outputs: &[(OutPoint, TxOut, Address)],
+) -> u64 {
+    outputs
+        .iter()
+        .filter(|(_, _, address)| Some(address) == funding_address)
+        .map(|(_, tx_out, _)| tx_out.value)
+        .sum()
+}
+
+/// Next funding step after a received-UTXO event arrives while awaiting a
+/// deposit. Advances to [`WalletFundedScreenStep::FundsReceived`] only when the
+/// deposit landed on the shown `funding_address` AND the wallet's cumulative
+/// `spendable_duffs` now covers `minimum_credits`; otherwise the step is left
+/// unchanged. The step guard means a matching deposit seen while another method
+/// is active never forces an advance.
+pub fn deposit_step_after_utxo(
+    current_step: WalletFundedScreenStep,
+    funding_address: Option<&Address>,
+    outputs: &[(OutPoint, TxOut, Address)],
+    spendable_duffs: u64,
+    minimum_credits: u64,
+) -> WalletFundedScreenStep {
+    if current_step != WalletFundedScreenStep::WaitingOnFunds {
+        return current_step;
+    }
+    if deposit_matches(funding_address, outputs) > 0
+        && spendable_covers_minimum(spendable_duffs, minimum_credits)
+    {
+        WalletFundedScreenStep::FundsReceived
+    } else {
+        current_step
+    }
 }
 
 #[derive(Debug, Eq, PartialEq, Ord, PartialOrd, Copy, Clone)]
@@ -386,6 +435,7 @@ mod tests {
             FundingMethod::UseUnusedAssetLock,
             FundingMethod::UseWalletBalance,
             FundingMethod::UsePlatformAddress,
+            FundingMethod::ReceiveDeposit,
         ] {
             let label = format!("{method}");
             let debug = format!("{method:?}");
@@ -423,6 +473,7 @@ mod tests {
             FundingMethod::NoSelection,
             FundingMethod::UseWalletBalance,
             FundingMethod::UsePlatformAddress,
+            FundingMethod::ReceiveDeposit,
         ] {
             assert_eq!(method.top_up_label(), format!("{method}"));
         }
@@ -474,5 +525,147 @@ mod tests {
         );
         assert_eq!(funding_method_after_switch(true, chosen, true), chosen);
         assert_eq!(funding_method_after_switch(true, chosen, false), chosen);
+    }
+
+    use dash_sdk::dpp::dashcore::PublicKey;
+    use dash_sdk::dpp::dashcore::secp256k1::{Secp256k1, SecretKey};
+
+    /// A distinct testnet p2pkh address keyed off `n` (derived from a valid
+    /// secret key so the pubkey is a real curve point).
+    fn addr(n: u8) -> Address {
+        let mut sk_bytes = [1u8; 32];
+        sk_bytes[31] = n.max(1);
+        let secp = Secp256k1::new();
+        let sk = SecretKey::from_slice(&sk_bytes).expect("valid secret key");
+        let pubkey = PublicKey::new(sk.public_key(&secp));
+        Address::p2pkh(&pubkey, Network::Testnet)
+    }
+
+    /// One received output of `value` duffs paying `address`, with a placeholder
+    /// outpoint (the helpers ignore the outpoint).
+    fn output(value: u64, address: &Address) -> (OutPoint, TxOut, Address) {
+        (
+            OutPoint::null(),
+            TxOut {
+                value,
+                script_pubkey: address.script_pubkey(),
+            },
+            address.clone(),
+        )
+    }
+
+    /// TC-QRFUND-04: a single output to the shown address is credited in full.
+    #[test]
+    fn deposit_matches_sums_outputs_to_the_shown_address() {
+        let shown = addr(1);
+        let outputs = [output(100_000, &shown)];
+        assert_eq!(deposit_matches(Some(&shown), &outputs), 100_000);
+    }
+
+    /// TC-QRFUND-05: several outputs to the shown address in one event accumulate.
+    /// Cross-event accumulation is the wallet snapshot's job, not this helper's.
+    #[test]
+    fn deposit_matches_accumulates_multiple_matching_outputs() {
+        let shown = addr(1);
+        let outputs = [output(40_000, &shown), output(60_000, &shown)];
+        assert_eq!(deposit_matches(Some(&shown), &outputs), 100_000);
+    }
+
+    /// TC-QRFUND-06: a deposit to a different address is not credited — detection
+    /// is single-address equality, never wallet-membership.
+    #[test]
+    fn deposit_matches_ignores_other_addresses() {
+        let shown = addr(1);
+        let other = addr(2);
+        let outputs = [output(100_000, &other)];
+        assert_eq!(deposit_matches(Some(&shown), &outputs), 0);
+    }
+
+    /// With no address shown yet (address request still in flight), nothing matches.
+    #[test]
+    fn deposit_matches_returns_zero_without_a_shown_address() {
+        let other = addr(2);
+        let outputs = [output(100_000, &other)];
+        assert_eq!(deposit_matches(None, &outputs), 0);
+    }
+
+    /// TC-QRFUND-04: a matching deposit that lifts spendable to the minimum
+    /// advances the wizard to the amount step.
+    #[test]
+    fn deposit_step_advances_when_matched_and_minimum_covered() {
+        let shown = addr(1);
+        let outputs = [output(100_000, &shown)];
+        let minimum_credits = 100 * CREDITS_PER_DUFF;
+        assert_eq!(
+            deposit_step_after_utxo(
+                WalletFundedScreenStep::WaitingOnFunds,
+                Some(&shown),
+                &outputs,
+                100, // spendable duffs
+                minimum_credits,
+            ),
+            WalletFundedScreenStep::FundsReceived
+        );
+    }
+
+    /// TC-QRFUND-05: a matching but still-sub-minimum deposit keeps the wizard
+    /// waiting; only crossing the minimum advances it.
+    #[test]
+    fn deposit_step_stays_waiting_below_minimum() {
+        let shown = addr(1);
+        let outputs = [output(40_000, &shown)];
+        let minimum_credits = 100 * CREDITS_PER_DUFF;
+        assert_eq!(
+            deposit_step_after_utxo(
+                WalletFundedScreenStep::WaitingOnFunds,
+                Some(&shown),
+                &outputs,
+                40, // spendable duffs, below the 100-duff minimum
+                minimum_credits,
+            ),
+            WalletFundedScreenStep::WaitingOnFunds
+        );
+    }
+
+    /// TC-QRFUND-06: a deposit to a different address never advances the wizard,
+    /// even when spendable happens to cover the minimum.
+    #[test]
+    fn deposit_step_stays_waiting_for_other_address() {
+        let shown = addr(1);
+        let other = addr(2);
+        let outputs = [output(100_000, &other)];
+        let minimum_credits = 100 * CREDITS_PER_DUFF;
+        assert_eq!(
+            deposit_step_after_utxo(
+                WalletFundedScreenStep::WaitingOnFunds,
+                Some(&shown),
+                &outputs,
+                100,
+                minimum_credits,
+            ),
+            WalletFundedScreenStep::WaitingOnFunds
+        );
+    }
+
+    /// TC-QRFUND-07: the deposit guard is scoped to the waiting state — a
+    /// matching deposit arriving while another method is active (here
+    /// `ReadyToCreate`) never spuriously advances to `FundsReceived`.
+    #[test]
+    fn deposit_step_ignores_events_outside_waiting_state() {
+        let shown = addr(1);
+        let outputs = [output(100_000, &shown)];
+        let minimum_credits = 100 * CREDITS_PER_DUFF;
+        for step in [
+            WalletFundedScreenStep::ChooseFundingMethod,
+            WalletFundedScreenStep::ReadyToCreate,
+            WalletFundedScreenStep::FundsReceived,
+            WalletFundedScreenStep::WaitingForAssetLock,
+        ] {
+            assert_eq!(
+                deposit_step_after_utxo(step, Some(&shown), &outputs, 100, minimum_credits),
+                step,
+                "guard must not change step {step:?}"
+            );
+        }
     }
 }

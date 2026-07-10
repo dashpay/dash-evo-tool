@@ -85,6 +85,25 @@ impl Display for IdentityType {
     }
 }
 
+/// Presence of the three masternode/evonode key roles on a loaded node.
+///
+/// A node loads read-only without any keys; each role can be present or absent
+/// independently. Used by the Masternodes card grid to render the compact
+/// `V O P` key-status indicator (present roles emphasised, absent roles dimmed)
+/// — never colour-only (NFR-6).
+///
+/// Role → purpose mapping (see `verify_*_key_exists_on_identity` in
+/// `backend_task/identity/mod.rs`):
+/// * Voting  → a `PrivateKeyOnVoterIdentity` key / `associated_voter_identity`
+/// * Owner   → a main-identity key with [`Purpose::OWNER`]
+/// * Payout  → a main-identity key with [`Purpose::TRANSFER`]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct MasternodeKeyPresence {
+    pub voting: bool,
+    pub owner: bool,
+    pub payout: bool,
+}
+
 #[derive(Debug, Encode, Decode, Clone, Hash, Ord, PartialOrd, Eq, PartialEq)]
 #[allow(clippy::enum_variant_names)]
 pub enum PrivateKeyTarget {
@@ -506,6 +525,31 @@ impl QualifiedIdentity {
             .map_err(|e| format!("Failed to decode QualifiedIdentity: {}", e))
     }
 
+    /// Which masternode/evonode key roles are loaded for this identity.
+    ///
+    /// Voting presence is signalled by a loaded voter identity
+    /// (`associated_voter_identity`) OR any [`Purpose::VOTING`] key; owner by a
+    /// [`Purpose::OWNER`] key; payout by a [`Purpose::TRANSFER`] key. Intended
+    /// for masternode/evonode identities — a `User` identity may carry a
+    /// `TRANSFER` key for withdrawals, which this method would report as
+    /// `payout`, so callers must scope it to the Masternodes surface.
+    pub fn masternode_key_presence(&self) -> MasternodeKeyPresence {
+        let mut presence = MasternodeKeyPresence {
+            voting: self.associated_voter_identity.is_some(),
+            owner: false,
+            payout: false,
+        };
+        for (public_key, _) in self.private_keys.private_keys.values() {
+            match public_key.identity_public_key.purpose() {
+                Purpose::VOTING => presence.voting = true,
+                Purpose::OWNER => presence.owner = true,
+                Purpose::TRANSFER => presence.payout = true,
+                _ => {}
+            }
+        }
+        presence
+    }
+
     /// Resolve the 32-byte private key for `(target, key_id)` without ever
     /// reading a wallet's parked seed.
     ///
@@ -794,6 +838,25 @@ impl QualifiedIdentity {
         keys
     }
 
+    /// Returns the key to pre-select for signing a withdrawal.
+    ///
+    /// Only keys whose private material is held locally are considered (via
+    /// [`available_withdrawal_keys`](Self::available_withdrawal_keys)). A
+    /// `TRANSFER` key is preferred, falling back to an `OWNER` key — mirroring
+    /// Platform's `TransferPreferred` signing-key selection. Returns `None` when
+    /// no locally-signable withdrawal key exists, so callers never pre-select an
+    /// on-chain key the signer cannot actually use.
+    pub fn default_withdrawal_key(&self) -> Option<&QualifiedIdentityPublicKey> {
+        let keys = self.available_withdrawal_keys();
+        keys.iter()
+            .find(|qk| qk.identity_public_key.purpose() == Purpose::TRANSFER)
+            .or_else(|| {
+                keys.iter()
+                    .find(|qk| qk.identity_public_key.purpose() == Purpose::OWNER)
+            })
+            .copied()
+    }
+
     pub fn available_transfer_keys(&self) -> Vec<&QualifiedIdentityPublicKey> {
         let mut keys = vec![];
 
@@ -884,5 +947,225 @@ impl QualifiedIdentity {
             .next();
 
         Ok(wallet_info)
+    }
+}
+
+#[cfg(test)]
+mod masternode_key_presence_tests {
+    use super::*;
+    use crate::model::qualified_identity::encrypted_key_storage::PrivateKeyData;
+    use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
+    use dash_sdk::dpp::platform_value::BinaryData;
+    use dash_sdk::dpp::version::PlatformVersion;
+    use dash_sdk::platform::Identifier;
+
+    /// Build a main-identity public key with an explicit purpose. Only the
+    /// purpose is read by [`QualifiedIdentity::masternode_key_presence`]; the
+    /// key type and data are inert placeholders.
+    fn key_with_purpose(id: KeyID, purpose: Purpose) -> IdentityPublicKey {
+        IdentityPublicKey::V0(IdentityPublicKeyV0 {
+            id,
+            purpose,
+            security_level: SecurityLevel::HIGH,
+            contract_bounds: None,
+            key_type: KeyType::ECDSA_HASH160,
+            read_only: false,
+            data: BinaryData::new(vec![0u8; 20]),
+            disabled_at: None,
+        })
+    }
+
+    /// Assemble a masternode-shaped `QualifiedIdentity`: `voting` attaches a
+    /// voter identity; each purpose in `main_key_purposes` becomes a
+    /// main-identity key.
+    fn qi_with(voting: bool, main_key_purposes: &[Purpose]) -> QualifiedIdentity {
+        let pv = PlatformVersion::latest();
+        let identity =
+            Identity::create_basic_identity(Identifier::from([1u8; 32]), pv).expect("identity");
+
+        let mut ks = KeyStorage::default();
+        for (i, purpose) in main_key_purposes.iter().enumerate() {
+            let key = key_with_purpose(i as KeyID, *purpose);
+            ks.private_keys.insert(
+                (PrivateKeyTarget::PrivateKeyOnMainIdentity, key.id()),
+                (
+                    QualifiedIdentityPublicKey::from(key),
+                    PrivateKeyData::Clear([0u8; 32]),
+                ),
+            );
+        }
+
+        let associated_voter_identity = voting.then(|| {
+            let voter = Identity::create_basic_identity(Identifier::from([2u8; 32]), pv)
+                .expect("voter identity");
+            let voting_key = key_with_purpose(0, Purpose::VOTING);
+            (voter, voting_key)
+        });
+
+        QualifiedIdentity {
+            identity,
+            associated_voter_identity,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::Masternode,
+            alias: None,
+            private_keys: ks,
+            dpns_names: vec![],
+            associated_wallets: BTreeMap::new(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: BTreeMap::new(),
+            status: IdentityStatus::Active,
+            network: Network::Testnet,
+        }
+    }
+
+    /// TC-FR3-08 — all eight bit-combinations of {Voting, Owner, Payout} are
+    /// reported exactly, with all-off and all-on distinct from partial states.
+    #[test]
+    fn tc_fr3_08_all_vop_combinations() {
+        for mask in 0u8..8 {
+            let voting = mask & 0b100 != 0;
+            let owner = mask & 0b010 != 0;
+            let payout = mask & 0b001 != 0;
+
+            let mut purposes = Vec::new();
+            if owner {
+                purposes.push(Purpose::OWNER);
+            }
+            if payout {
+                purposes.push(Purpose::TRANSFER);
+            }
+
+            let presence = qi_with(voting, &purposes).masternode_key_presence();
+            assert_eq!(
+                presence,
+                MasternodeKeyPresence {
+                    voting,
+                    owner,
+                    payout,
+                },
+                "mask {mask:03b} (V={voting} O={owner} P={payout}) misreported"
+            );
+        }
+    }
+
+    /// A `Purpose::VOTING` key on the main identity signals voting readiness
+    /// even without a separately loaded voter identity.
+    #[test]
+    fn voting_purpose_key_counts_as_voting_present() {
+        let presence = qi_with(false, &[Purpose::VOTING]).masternode_key_presence();
+        assert!(presence.voting);
+        assert!(!presence.owner);
+        assert!(!presence.payout);
+    }
+
+    /// A node loaded read-only (no keys, no voter identity) reports every role
+    /// absent.
+    #[test]
+    fn read_only_node_has_no_keys() {
+        let presence = qi_with(false, &[]).masternode_key_presence();
+        assert_eq!(presence, MasternodeKeyPresence::default());
+    }
+}
+
+#[cfg(test)]
+mod withdrawal_key_tests {
+    use super::*;
+    use crate::model::qualified_identity::encrypted_key_storage::{KeyStorage, PrivateKeyData};
+    use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeySettersV0;
+    use dash_sdk::dpp::version::PlatformVersion;
+    use dash_sdk::platform::Identifier;
+
+    fn key(id: KeyID, purpose: Purpose) -> IdentityPublicKey {
+        let mut k = IdentityPublicKey::random_key(id, Some(id as u64), PlatformVersion::latest());
+        k.set_id(id);
+        k.set_purpose(purpose);
+        k.set_security_level(SecurityLevel::CRITICAL);
+        k
+    }
+
+    fn build_identity(
+        identity_type: IdentityType,
+        on_chain: Vec<IdentityPublicKey>,
+        with_private: Vec<IdentityPublicKey>,
+    ) -> QualifiedIdentity {
+        let public_keys: BTreeMap<KeyID, IdentityPublicKey> =
+            on_chain.into_iter().map(|k| (k.id(), k)).collect();
+        let identity = Identity::new_with_id_and_keys(
+            Identifier::random(),
+            public_keys,
+            PlatformVersion::latest(),
+        )
+        .expect("identity");
+
+        let mut private_keys = BTreeMap::new();
+        for k in with_private {
+            private_keys.insert(
+                (PrivateKeyTarget::PrivateKeyOnMainIdentity, k.id()),
+                (
+                    QualifiedIdentityPublicKey::from(k),
+                    PrivateKeyData::Clear([0u8; 32]),
+                ),
+            );
+        }
+
+        QualifiedIdentity {
+            identity,
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type,
+            alias: None,
+            private_keys: KeyStorage { private_keys },
+            dpns_names: vec![],
+            associated_wallets: BTreeMap::new(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: BTreeMap::new(),
+            status: IdentityStatus::Active,
+            network: Network::Testnet,
+        }
+    }
+
+    /// Repro for the withdraw key-selection bug: a TRANSFER key that exists
+    /// on-chain but whose private material is not held locally must never be
+    /// pre-selected — the signer cannot use it.
+    #[test]
+    fn ghost_transfer_key_is_not_selected() {
+        let transfer = key(1, Purpose::TRANSFER);
+        let qi = build_identity(IdentityType::User, vec![transfer], vec![]);
+        assert!(qi.default_withdrawal_key().is_none());
+    }
+
+    #[test]
+    fn private_backed_transfer_key_is_selected() {
+        let transfer = key(1, Purpose::TRANSFER);
+        let qi = build_identity(IdentityType::User, vec![transfer.clone()], vec![transfer]);
+        let selected = qi.default_withdrawal_key().expect("a key");
+        assert_eq!(selected.identity_public_key.id(), 1);
+        assert_eq!(selected.identity_public_key.purpose(), Purpose::TRANSFER);
+    }
+
+    #[test]
+    fn owner_key_is_used_as_fallback_when_no_transfer() {
+        let owner = key(2, Purpose::OWNER);
+        let qi = build_identity(IdentityType::Masternode, vec![owner.clone()], vec![owner]);
+        let selected = qi.default_withdrawal_key().expect("a key");
+        assert_eq!(selected.identity_public_key.id(), 2);
+        assert_eq!(selected.identity_public_key.purpose(), Purpose::OWNER);
+    }
+
+    #[test]
+    fn transfer_key_is_preferred_over_owner() {
+        let owner = key(2, Purpose::OWNER);
+        let transfer = key(1, Purpose::TRANSFER);
+        let qi = build_identity(
+            IdentityType::Masternode,
+            vec![owner.clone(), transfer.clone()],
+            vec![owner, transfer],
+        );
+        let selected = qi.default_withdrawal_key().expect("a key");
+        assert_eq!(selected.identity_public_key.purpose(), Purpose::TRANSFER);
     }
 }

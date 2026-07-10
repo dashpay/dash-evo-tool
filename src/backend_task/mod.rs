@@ -624,6 +624,10 @@ impl AppContext {
                 let egui_ctx = self.egui_ctx().clone();
                 let app_kv = self.app_kv();
                 let secret_store = self.secret_store();
+                // Share the app-global Expert Mode flag so the freshly-switched
+                // context observes the same value (and live toggles) as the rest
+                // of the app — never a fresh per-context flag.
+                let developer_mode = self.developer_mode_handle();
                 let new_ctx = tokio::task::block_in_place(|| {
                     AppContext::new(
                         data_dir,
@@ -634,6 +638,7 @@ impl AppContext {
                         egui_ctx,
                         app_kv,
                         secret_store,
+                        developer_mode,
                     )
                 })
                 .ok_or(TaskError::NetworkContextCreationFailed { network })?;

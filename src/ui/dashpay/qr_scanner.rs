@@ -38,9 +38,7 @@ pub struct QRScannerScreen {
 impl QRScannerScreen {
     pub fn new(app_context: Arc<AppContext>) -> Self {
         // Seed from the app-scoped selected identity (W3 SYNC); fall back to first.
-        let identities = app_context
-            .load_local_qualified_identities()
-            .unwrap_or_default();
+        let identities = app_context.load_local_user_identities().unwrap_or_default();
         let selected_identity = {
             use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
             app_context
@@ -171,7 +169,7 @@ impl QRScannerScreen {
         // Identity selector
         let identities = self
             .app_context
-            .load_local_qualified_identities()
+            .load_local_user_identities()
             .unwrap_or_default();
 
         if identities.is_empty() {
@@ -190,7 +188,8 @@ impl QRScannerScreen {
 
                 ui.horizontal(|ui| {
                     ui.label("Identity:");
-                    // SYNC: write-back via syncing_global on user pick.
+                    // SYNC: write-back via syncing_global on user pick (FR-6: the source list is
+                    // User-only, so a masternode/evonode can never leak to the app-global identity).
                     ui.add(
                         IdentitySelector::new(
                             "qr_scanner_identity_selector",

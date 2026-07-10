@@ -7,9 +7,12 @@ pub mod dpns;
 pub mod fee_estimation;
 pub mod grovestark_prover;
 pub mod identity_discovery;
+pub mod identity_key_protection;
 pub mod key_input;
-/// Stateless input parsing for the headless masternode/evonode MCP tools.
-#[cfg(any(feature = "mcp", feature = "cli"))]
+/// Stateless masternode/evonode input parsing and validation (ProTxHash,
+/// node type). Pure logic with no mcp/cli dependency — used by both the
+/// always-compiled GUI load form and the headless MCP tools, so it must never
+/// be feature-gated.
 pub mod masternode_input;
 pub mod qualified_contract;
 pub mod qualified_identity;

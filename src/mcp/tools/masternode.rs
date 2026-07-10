@@ -171,6 +171,23 @@ impl AsyncTool<DashMcpService> for MasternodeIdentityLoad {
             keys_input: vec![],
             derive_keys_from_wallets: false,
             selected_wallet_seed_hash: None,
+            // FR-8 load-time key encryption is GUI-only this iteration
+            // (requirements §2.3): this tool is a confirmed keyless (Tier-1)
+            // entry point, so it loads unprotected.
+            // TODO: headless password parity — accept an optional encryption
+            // password param and thread it here once MCP secret handling is
+            // designed.
+            encryption_password: None,
+            // Headless load uses overwrite/upsert semantics: a repeat load
+            // REPLACES the stored node's keys with those supplied in this call.
+            // Keys omitted this time are dropped — this is a full replace, not a
+            // merge, so a partial-key repeat load is destructive. Duplicate
+            // rejection and key-preserving merge are GUI-form affordances, not a
+            // headless contract.
+            // TODO: headless merge parity — expose a load-mode param so callers
+            // can request MergeIntoExisting (key-preserving) once MCP secret
+            // handling for Tier-2 nodes is designed.
+            load_mode: crate::backend_task::identity::IdentityLoadMode::Overwrite,
         };
 
         let task = BackendTask::IdentityTask(IdentityTask::LoadIdentity(input));

@@ -23,7 +23,7 @@ use crate::ui::components::dpns_subscreen_chooser_panel::add_dpns_subscreen_choo
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::{StyledButton, island_central_panel};
 use crate::ui::components::tools_subscreen_chooser_panel::add_tools_subscreen_chooser_panel;
-use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::components::top_panel::{add_top_panel_with_global_nav, subdued_everyday_spec};
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::identities::register_dpns_name_screen::RegisterDpnsNameSource;
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
@@ -2011,10 +2011,11 @@ impl ScreenLike for DPNSScreen {
             );
         }
 
-        let mut action = add_top_panel(
+        // TODO: wire wallet/identity selection consumption for the DPNS page.
+        let mut action = add_top_panel_with_global_nav(
             ui,
             &self.app_context,
-            vec![("DPNS", AppAction::None)],
+            subdued_everyday_spec("DPNS", RootScreenType::RootScreenDPNSActiveContests),
             right_buttons,
         );
 

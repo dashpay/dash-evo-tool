@@ -5,7 +5,7 @@ use crate::context::AppContext;
 use crate::ui::components::dashpay_subscreen_chooser_panel::add_dashpay_subscreen_chooser_panel;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
-use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::components::top_panel::{add_top_panel_with_global_nav, subdued_everyday_spec};
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
 use egui::Ui;
 use std::sync::Arc;
@@ -107,10 +107,11 @@ impl ScreenLike for DashPayScreen {
             DashPaySubscreen::ProfileSearch => vec![],
         };
 
-        action |= add_top_panel(
+        // TODO: wire wallet/identity selection consumption for the DashPay page.
+        action |= add_top_panel_with_global_nav(
             ui,
             &self.app_context,
-            vec![("DashPay", AppAction::None)],
+            subdued_everyday_spec("DashPay", RootScreenType::RootScreenDashpay),
             right_buttons,
         );
 

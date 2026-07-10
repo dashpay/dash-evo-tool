@@ -16,6 +16,7 @@ use dash_sdk::dpp::consensus::state::state_error::StateError;
 use dash_sdk::dpp::dashcore;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+use dash_sdk::platform::Identifier;
 use thiserror::Error;
 
 /// Dash Core RPC error code: wallet file not specified (multi-wallet node).
@@ -1070,6 +1071,32 @@ pub enum TaskError {
     #[error("The identifier you entered could not be read. Please check the format and try again.")]
     IdentifierParsingError { input: String },
 
+    /// A masternode or evonode with this ProTxHash is already loaded. Carries
+    /// the resolved identity id so the caller can point the user at the
+    /// existing node.
+    #[error(
+        "This masternode is already loaded. Open it from the list instead of loading it again."
+    )]
+    DuplicateProTxHash { identity_id: Identifier },
+
+    /// The ProTxHash could not be read as a hex ProTxHash or a Base58 identity
+    /// id. Carries the offending input (data, not a message).
+    #[error(
+        "The ProTxHash you entered could not be read. Enter a 64-character hex ProTxHash or the \
+         Base58 identity ID."
+    )]
+    MalformedProTxHash { input: String },
+
+    /// A syntactically valid ProTxHash resolved to no masternode or evonode on
+    /// the network. Carries the resolved identity id so the user can double-check
+    /// which value was looked up. Distinct from `IdentityNotFound` so the message
+    /// speaks about a masternode, matching the load form the user is in.
+    #[error(
+        "No masternode or evonode was found on the network for this ProTxHash. Check the \
+         ProTxHash and try again, or confirm the node is registered on this network."
+    )]
+    MasternodeNotFound { identity_id: Identifier },
+
     /// The identity could not be constructed from the given parameters.
     #[error("Could not create the identity. Please check your input and try again.")]
     IdentityCreationError {
@@ -1219,6 +1246,17 @@ pub enum TaskError {
         "The master key for this identity could not be found. Make sure the identity was created from this wallet."
     )]
     MasterKeyNotFound,
+
+    /// No withdrawal-capable key with locally-held private material was available
+    /// to sign the operation (Platform requires a Transfer or Owner key you control).
+    #[error(
+        "This identity does not have a Transfer or Owner key that you can sign with. \
+         Open the Key Info screen for this identity, add a key whose private key you hold, then try again."
+    )]
+    NoWithdrawalSigningKey {
+        #[source]
+        source_error: Box<SdkError>,
+    },
 
     // ──────────────────────────────────────────────────────────────────────────
     // Token query errors
@@ -2479,6 +2517,13 @@ impl From<SdkError> for TaskError {
             SdkError::IdentityNonceNotFound(_) => TaskError::IdentityNonceNotFound {
                 source_error: boxed,
             },
+            // Raised when a withdrawal/transfer is signed with (or falls back to)
+            // a key whose private material the signer does not hold.
+            SdkError::Protocol(ProtocolError::DesiredKeyWithTypePurposeSecurityLevelMissing(_)) => {
+                TaskError::NoWithdrawalSigningKey {
+                    source_error: boxed,
+                }
+            }
             _ => TaskError::SdkError {
                 source_error: boxed,
             },
@@ -2662,6 +2707,52 @@ mod tests {
             err,
             TaskError::DuplicateIdentityPublicKeyId { .. }
         ));
+    }
+
+    #[test]
+    fn from_sdk_error_missing_signing_key_maps_to_no_withdrawal_signing_key() {
+        let sdk_err = SdkError::Protocol(
+            ProtocolError::DesiredKeyWithTypePurposeSecurityLevelMissing(
+                "specified withdrawal public key cannot be used for signing".to_string(),
+            ),
+        );
+        let err = TaskError::from(sdk_err);
+        assert!(
+            matches!(err, TaskError::NoWithdrawalSigningKey { .. }),
+            "Expected NoWithdrawalSigningKey, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn no_withdrawal_signing_key_display_is_user_friendly() {
+        let sdk_err = SdkError::Protocol(
+            ProtocolError::DesiredKeyWithTypePurposeSecurityLevelMissing(
+                "specified withdrawal public key cannot be used for signing".to_string(),
+            ),
+        );
+        let msg = TaskError::from(sdk_err).to_string();
+        // Includes a concrete, self-serviceable next step.
+        assert!(msg.contains("Key Info screen"), "no action in: {msg}");
+        assert!(msg.contains("try again"), "no retry cue in: {msg}");
+        // No jargon and no raw SDK/protocol text leaked into the user message.
+        let lower = msg.to_lowercase();
+        for jargon in [
+            "consensus",
+            "sdk",
+            "nonce",
+            "rpc",
+            "protocol",
+            "securitylevel",
+        ] {
+            assert!(
+                !lower.contains(jargon),
+                "jargon '{jargon}' leaked in: {msg}"
+            );
+        }
+        assert!(
+            !msg.contains("cannot be used for signing"),
+            "raw SDK text leaked in: {msg}"
+        );
     }
 
     #[test]
@@ -3743,6 +3834,30 @@ mod tests {
         assert!(
             msg.contains("does not exist"),
             "Expected existence message, got: {msg}"
+        );
+    }
+
+    /// mn-live-qa Bug 2: a masternode load that resolves to no node on chain must
+    /// surface a node-specific message — never the generic identity-not-found
+    /// copy, whose "ID or name" wording is wrong for a ProTxHash load form.
+    #[test]
+    fn masternode_not_found_message_is_node_specific() {
+        let node_msg = TaskError::MasternodeNotFound {
+            identity_id: Identifier::random(),
+        }
+        .to_string();
+        assert!(
+            node_msg.contains("masternode"),
+            "Expected a masternode-specific message, got: {node_msg}"
+        );
+        let generic_msg = TaskError::IdentityNotFound.to_string();
+        assert!(
+            !node_msg.contains("ID or name"),
+            "The node message must not reuse the generic identity 'ID or name' copy: {node_msg}"
+        );
+        assert_ne!(
+            node_msg, generic_msg,
+            "MasternodeNotFound must not reuse the IdentityNotFound message"
         );
     }
 

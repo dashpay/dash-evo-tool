@@ -21,7 +21,7 @@ use crate::ui::components::confirmation_dialog::{ConfirmationDialog, Confirmatio
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::password_input::PasswordInput;
 use crate::ui::components::styled::island_central_panel;
-use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::components::top_panel::{add_top_panel_with_global_nav, subdued_wallet_only_spec};
 use crate::ui::components::wallet_unlock_popup::{WalletUnlockPopup, WalletUnlockResult};
 use crate::ui::helpers::clicked_outside_window;
 use crate::ui::helpers::copy_text_to_clipboard;
@@ -2423,10 +2423,11 @@ impl ScreenLike for WalletsBalancesScreen {
                 DesiredAppAction::Custom("RefreshSKWallet".to_string()),
             ));
         }
-        let mut action = add_top_panel(
+        // TODO: wire wallet selection consumption for the Wallets page.
+        let mut action = add_top_panel_with_global_nav(
             ui,
             &self.app_context,
-            vec![("Wallets", AppAction::None)],
+            subdued_wallet_only_spec("Wallets", RootScreenType::RootScreenWalletsBalances),
             right_buttons,
         );
 

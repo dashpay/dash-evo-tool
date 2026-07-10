@@ -192,6 +192,39 @@ impl AppContext {
         Ok(out)
     }
 
+    /// Summarise a masternode/evonode node's DPNS voting position for its card.
+    ///
+    /// `voter_id` is the node's voter-identity id (`associated_voter_identity`);
+    /// pass `None` for a node with no voting key loaded — it can vote on
+    /// nothing, so the summary is empty. The open count reads the ongoing
+    /// contest cache and the scheduled-vote flag reuses the existing DPNS
+    /// Scheduled Votes state (no new backend concept — §10.1).
+    pub fn masternode_contest_summary(
+        &self,
+        voter_id: Option<Identifier>,
+    ) -> std::result::Result<crate::model::contested_name::MasternodeContestSummary, TaskError>
+    {
+        let Some(voter_id) = voter_id else {
+            return Ok(crate::model::contested_name::MasternodeContestSummary::default());
+        };
+
+        let open_contest_count = self
+            .ongoing_contested_names()?
+            .iter()
+            .filter(|contest| contest.is_open_for_voter(&voter_id))
+            .count();
+
+        let has_scheduled_vote = self
+            .get_scheduled_votes()?
+            .iter()
+            .any(|vote| vote.voter_id == voter_id && !vote.executed_successfully);
+
+        Ok(crate::model::contested_name::MasternodeContestSummary {
+            open_contest_count,
+            has_scheduled_vote,
+        })
+    }
+
     /// Apply a batch of newly-seen normalized names. New names are stored
     /// as empty contest skeletons; existing names whose `last_updated` is
     /// older than 30 s are returned alongside new names for the caller to

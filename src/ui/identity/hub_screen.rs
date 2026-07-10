@@ -88,7 +88,9 @@ impl IdentityHubScreen {
     /// attached separately) and reuse the last-known-good landing instead of
     /// silently routing the user to onboarding.
     pub(crate) fn landing(&mut self, ctx: &Context) -> HubLanding {
-        match self.app_context.load_local_qualified_identities() {
+        // FR-6: the Identities hub is an everyday-user surface — its landing
+        // count and picker list User identities only, never masternode/evonode.
+        match self.app_context.load_local_user_identities() {
             Ok(identities) => {
                 // Clear any previously-shown error banner now that loading works.
                 self.load_error_banner.take_and_clear();
@@ -211,8 +213,9 @@ impl ScreenLike for IdentityHubScreen {
         let frame_identities = if matches!(landing, HubLanding::Onboarding) {
             Vec::new()
         } else {
+            // FR-6: User identities only — the picker grid never lists MN/Evonode.
             self.app_context
-                .load_local_qualified_identities()
+                .load_local_user_identities()
                 .unwrap_or_default()
         };
         let view = if matches!(landing, HubLanding::Onboarding) {

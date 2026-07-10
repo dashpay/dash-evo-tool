@@ -360,7 +360,10 @@ impl IdentityPickerCard {
 
 /// Paint a simple circular monogram as a lightweight avatar stand-in. Real
 /// avatar assets land in a follow-up task (see design-spec §B.14).
-fn draw_monogram(ui: &mut Ui, heading: &str, has_social_profile: bool, dark_mode: bool) {
+///
+/// Shared with the Masternodes card grid (`ui/masternodes/card.rs`), which
+/// reuses the picker's visual language.
+pub(crate) fn draw_monogram(ui: &mut Ui, heading: &str, has_social_profile: bool, dark_mode: bool) {
     let (rect, _response) =
         ui.allocate_exact_size(Vec2::new(AVATAR_SIZE, AVATAR_SIZE), Sense::hover());
     let painter = ui.painter();
@@ -402,7 +405,10 @@ fn draw_monogram(ui: &mut Ui, heading: &str, has_social_profile: bool, dark_mode
 }
 
 /// Paint an identity-type badge pill. Color follows the identity-type.
-fn draw_type_badge(ui: &mut Ui, label: &str, dark_mode: bool) {
+///
+/// Shared with the Masternodes card grid (`ui/masternodes/card.rs`):
+/// `Masternode` → `PLATFORM_PURPLE`, `Evonode` → `DASH_BLUE`, white text.
+pub(crate) fn draw_type_badge(ui: &mut Ui, label: &str, dark_mode: bool) {
     let (fill, stroke_color) = match label {
         "Masternode" => (DashColors::PLATFORM_PURPLE, DashColors::PLATFORM_PURPLE),
         "Evonode" => (DashColors::DASH_BLUE, DashColors::DASH_BLUE),

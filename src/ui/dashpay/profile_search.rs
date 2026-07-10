@@ -78,7 +78,7 @@ impl ProfileSearchScreen {
         // Use any available identity for viewing (just needed for context)
         let identities = self
             .app_context
-            .load_local_qualified_identities()
+            .load_local_user_identities()
             .unwrap_or_default();
         if identities.is_empty() {
             crate::ui::components::MessageBanner::set_global(

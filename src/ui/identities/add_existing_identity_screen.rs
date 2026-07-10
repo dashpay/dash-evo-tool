@@ -18,59 +18,11 @@ use crate::ui::identities::funding_common::wallet_selection_combo;
 use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::{MessageType, ScreenLike};
 use crate::wallet_backend::poison::RwLockRecover;
-use bip39::rand::{prelude::IteratorRandom, thread_rng};
-use dash_sdk::dashcore_rpc::dashcore::Network;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::Identifier;
 use egui::{Color32, ComboBox, RichText, Ui};
-use serde::Deserialize;
-use std::fs;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
-
-#[derive(Debug, Clone, Deserialize)]
-struct MasternodeInfo {
-    #[serde(rename = "pro-tx-hash")]
-    pro_tx_hash: String,
-    owner: KeyInfo,
-    voter: KeyInfo,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct HPMasternodeInfo {
-    #[serde(rename = "protx-tx-hash")]
-    protx_tx_hash: String,
-    owner: KeyInfo,
-    voter: KeyInfo,
-    payout: KeyInfo,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct KeyInfo {
-    #[serde(rename = "private_key")]
-    private_key: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct TestnetNodes {
-    masternodes: std::collections::HashMap<String, MasternodeInfo>,
-    hp_masternodes: std::collections::HashMap<String, HPMasternodeInfo>,
-}
-
-fn load_testnet_nodes_from_yml(file_path: &str) -> Result<Option<TestnetNodes>, String> {
-    let file_content = match fs::read_to_string(file_path) {
-        Ok(content) => content,
-        Err(_) => return Ok(None),
-    };
-    serde_yaml_ng::from_str::<TestnetNodes>(&file_content)
-        .map(Some)
-        .map_err(|e| {
-            format!(
-                "Failed to parse YAML file '{}': {}. Please check the file format.",
-                file_path, e
-            )
-        })
-}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum LoadIdentityMode {
@@ -130,7 +82,6 @@ pub struct AddExistingIdentityScreen {
     payout_address_private_key_input: PasswordInput,
     keys_input: Vec<PasswordInput>,
     add_identity_status: AddIdentityStatus,
-    testnet_loaded_nodes: Option<TestnetNodes>,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     identity_associated_with_wallet: bool,
     wallet_unlock_popup: WalletUnlockPopup,
@@ -150,17 +101,6 @@ pub struct AddExistingIdentityScreen {
 impl AddExistingIdentityScreen {
     pub fn new(app_context: &Arc<AppContext>) -> Self {
         let selected_wallet = app_context.wallets.read_recover().values().next().cloned();
-        let (testnet_loaded_nodes, init_error) = if app_context.network == Network::Testnet {
-            match load_testnet_nodes_from_yml(".testnet_nodes.yml") {
-                Ok(nodes) => (nodes, None),
-                Err(e) => (None, Some(e)),
-            }
-        } else {
-            (None, None)
-        };
-        if let Some(err) = init_error {
-            MessageBanner::set_global(app_context.egui_ctx(), &err, MessageType::Error);
-        }
         Self {
             identity_id_input: String::new(),
             identity_type: IdentityType::User,
@@ -176,7 +116,6 @@ impl AddExistingIdentityScreen {
                 .with_monospace(),
             keys_input: vec![],
             add_identity_status: AddIdentityStatus::NotStarted,
-            testnet_loaded_nodes,
             selected_wallet,
             identity_associated_with_wallet: true,
             wallet_unlock_popup: WalletUnlockPopup::new(),
@@ -195,22 +134,6 @@ impl AddExistingIdentityScreen {
 
     fn render_by_identity(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
-
-        // Advanced: Testnet quick-fill buttons
-        if self.show_advanced_options
-            && self.app_context.network == Network::Testnet
-            && self.testnet_loaded_nodes.is_some()
-        {
-            ui.horizontal(|ui| {
-                if ui.button("Fill Random HPMN").clicked() {
-                    self.fill_random_hpmn();
-                }
-                if ui.button("Fill Random Masternode").clicked() {
-                    self.fill_random_masternode();
-                }
-            });
-            ui.add_space(10.0);
-        }
 
         let wallets_snapshot: Vec<(String, Arc<RwLock<Wallet>>)> = {
             let wallets_guard = self.app_context.wallets.read_recover();
@@ -379,21 +302,20 @@ impl AddExistingIdentityScreen {
 
                 // Advanced: Identity Type selector
                 if self.show_advanced_options {
+                    // This generic screen loads User identities only. Masternode
+                    // and Evonode identities have a dedicated flow on the
+                    // Masternodes tab (`ui/masternodes/load_form.rs`), so the old
+                    // Masternode/Evonode options are removed here to avoid a
+                    // second, competing entry point (§10.2 / TC-FR4-22, FR-6).
                     ui.label("Identity Type:");
                     ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
                         egui::ComboBox::from_id_salt("identity_type_selector")
                             .selected_text(format!("{:?}", self.identity_type))
                             .show_ui(ui, |ui| {
-                                ui.selectable_value(&mut self.identity_type, IdentityType::User, "User");
                                 ui.selectable_value(
                                     &mut self.identity_type,
-                                    IdentityType::Masternode,
-                                    "Masternode",
-                                );
-                                ui.selectable_value(
-                                    &mut self.identity_type,
-                                    IdentityType::Evonode,
-                                    "Evonode",
+                                    IdentityType::User,
+                                    "User",
                                 );
                             });
                     });
@@ -944,44 +866,17 @@ impl AddExistingIdentityScreen {
                 .collect(),
             derive_keys_from_wallets: self.identity_associated_with_wallet,
             selected_wallet_seed_hash,
+            // Legacy load screen has no password field; the optional load-time
+            // encryption (FR-8) is exposed on the new Masternodes load form (B4).
+            encryption_password: None,
+            // Legacy User re-load: preserve the historical overwrite/upsert
+            // behaviour (re-loading to add keys is a supported User workflow).
+            load_mode: crate::backend_task::identity::IdentityLoadMode::Overwrite,
         };
 
         AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::LoadIdentity(
             identity_input,
         )))
-    }
-    fn fill_random_hpmn(&mut self) {
-        if let Some((name, hpmn)) = self
-            .testnet_loaded_nodes
-            .as_ref()
-            .and_then(|nodes| nodes.hp_masternodes.iter().choose(&mut thread_rng()))
-        {
-            self.identity_id_input = hpmn.protx_tx_hash.clone();
-            self.identity_type = IdentityType::Evonode;
-            self.alias_input = name.clone();
-            self.voting_private_key_input
-                .set_text(hpmn.voter.private_key.clone());
-            self.owner_private_key_input
-                .set_text(hpmn.owner.private_key.clone());
-            self.payout_address_private_key_input
-                .set_text(hpmn.payout.private_key.clone());
-        }
-    }
-
-    fn fill_random_masternode(&mut self) {
-        if let Some((name, masternode)) = self
-            .testnet_loaded_nodes
-            .as_ref()
-            .and_then(|nodes| nodes.masternodes.iter().choose(&mut thread_rng()))
-        {
-            self.identity_id_input = masternode.pro_tx_hash.clone();
-            self.identity_type = IdentityType::Masternode;
-            self.alias_input = name.clone();
-            self.voting_private_key_input
-                .set_text(masternode.voter.private_key.clone());
-            self.owner_private_key_input
-                .set_text(masternode.owner.private_key.clone());
-        }
     }
 
     pub fn show_success(&mut self, ui: &mut Ui) -> AppAction {

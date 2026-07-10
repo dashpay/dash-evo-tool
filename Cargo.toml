@@ -132,6 +132,11 @@ name = "backend-e2e"
 path = "tests/backend-e2e/main.rs"
 required-features = ["testing"]
 
+[[test]]
+name = "mcp_http_auth"
+path = "tests/mcp_http_auth.rs"
+required-features = ["mcp"]
+
 [[bench]]
 name = "wallet_hydration"
 harness = false

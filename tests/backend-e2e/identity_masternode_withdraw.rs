@@ -25,7 +25,7 @@
 use crate::framework::harness::ctx;
 use crate::framework::task_runner::run_task;
 use dash_evo_tool::backend_task::error::TaskError;
-use dash_evo_tool::backend_task::identity::{IdentityInputToLoad, IdentityTask};
+use dash_evo_tool::backend_task::identity::{IdentityInputToLoad, IdentityLoadMode, IdentityTask};
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
 use dash_evo_tool::mcp::server::DashMcpService;
 use dash_evo_tool::mcp::tools::masternode::{
@@ -93,6 +93,8 @@ fn load_task(
         keys_input: vec![],
         derive_keys_from_wallets: false,
         selected_wallet_seed_hash: None,
+        encryption_password: None,
+        load_mode: IdentityLoadMode::Overwrite,
     };
     BackendTask::IdentityTask(IdentityTask::LoadIdentity(input))
 }

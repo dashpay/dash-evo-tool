@@ -363,6 +363,14 @@ pub fn subdued_wallet_only_spec(label: impl Into<String>, target: RootScreenType
     })
 }
 
+/// A wallet-only global-nav spec with the wallet pill **interactive**
+/// (`Consumed`): picking a wallet from it drives the app-global selection via
+/// [`apply_global_nav_effect`]. For pages that own the wallet-selection surface
+/// (e.g. Wallets), mirroring the Masternodes page's interactive wallet pill.
+pub fn wallet_only_spec(label: impl Into<String>, target: RootScreenType) -> PageNavSpec {
+    PageNavSpec::new(label, target).with_wallet_pill(PillConsumption::Consumed)
+}
+
 /// Apply a generalized global-nav effect: wallet/identity selection updates the
 /// **app-global** selection silently (no forced navigation — FR-GLOBAL-NAV-2
 /// rule 1); segment-1 navigation and add-flows route to the existing screens.
@@ -465,4 +473,41 @@ pub fn add_top_panel_with_global_nav_capturing(
     };
     action |= apply_global_nav_effect(app_context, effect);
     (action, picked)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// TC-WALLETLINK-02: the Wallets page's spec exposes an **interactive**
+    /// (`Consumed`) wallet pill with no how-to tooltip — the pill drives the
+    /// selection here rather than pointing elsewhere.
+    #[test]
+    fn wallet_only_spec_pill_is_consumed_without_tooltip() {
+        let spec = wallet_only_spec("Wallets", RootScreenType::RootScreenWalletsBalances);
+        let pill = spec.wallet_pill().expect("wallet pill present");
+        assert!(pill.is_consumed(), "the Wallets pill must be interactive");
+        assert_eq!(
+            pill.tooltip(),
+            None,
+            "an interactive pill shows no how-to tooltip"
+        );
+        assert!(
+            spec.identity_pill().is_none(),
+            "the Wallets page is wallet-only, with no identity pill"
+        );
+    }
+
+    /// Guard the contrast: the subdued constructor stays `Unwired` with a how-to
+    /// tooltip, so the two variants remain distinct.
+    #[test]
+    fn subdued_wallet_only_spec_stays_unwired_with_tooltip() {
+        let spec = subdued_wallet_only_spec("Wallets", RootScreenType::RootScreenWalletsBalances);
+        let pill = spec.wallet_pill().expect("wallet pill present");
+        assert!(
+            !pill.is_consumed(),
+            "the subdued pill must not be interactive"
+        );
+        assert_eq!(pill.tooltip(), Some(TT_WALLET_UNWIRED));
+    }
 }

@@ -1169,6 +1169,19 @@ impl AppContext {
         if let Ok(mut g) = self.selected_wallet_hash.lock() {
             *g = hash;
         }
+        // An explicit HD pick (`Some`) makes that HD wallet the single active
+        // wallet: clear any single-key selection so the store never holds both
+        // (which would resolve ambiguously, single-key-first). Clearing the HD
+        // wallet (`None`) leaves a single-key selection intact — that axis is the
+        // single-key setter's, and the single-key select path clears HD itself.
+        let single_key = if hash.is_some() {
+            if let Ok(mut g) = self.selected_single_key_hash.lock() {
+                *g = None;
+            }
+            None
+        } else {
+            self.current_single_key_hash()
+        };
         let reconciled = match hash {
             Some(h) => {
                 // FR-6 boundary: reconcile only over the wallet's User identities
@@ -1190,7 +1203,7 @@ impl AppContext {
         if let Ok(mut g) = self.selected_identity_id.lock() {
             *g = reconciled;
         }
-        self.persist_selected_wallet_kv(hash, self.current_single_key_hash());
+        self.persist_selected_wallet_kv(hash, single_key);
         self.persist_selected_identity_kv(reconciled);
     }
 

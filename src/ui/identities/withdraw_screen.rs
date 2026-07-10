@@ -67,19 +67,34 @@ pub struct WithdrawalScreen {
 impl WithdrawalScreen {
     pub fn new(identity: QualifiedIdentity, app_context: &Arc<AppContext>) -> Self {
         let max_amount = identity.identity.balance();
-        let identity_clone = identity.identity.clone();
-        let selected_key = identity_clone.get_first_public_key_matching(
-            Purpose::TRANSFER,
-            SecurityLevel::full_range().into(),
-            KeyType::all_key_types().into(),
-            false,
-        );
-        let selected_wallet = get_selected_wallet(&identity, None, selected_key)
+        // Only pre-select a withdrawal key whose private material is held locally
+        // (TRANSFER preferred, OWNER fallback). Pre-selecting an on-chain-only key
+        // the signer cannot use is what surfaced the raw signing error.
+        let selected_key: Option<IdentityPublicKey> = identity
+            .default_withdrawal_key()
+            .map(|qk| qk.identity_public_key.clone())
+            .or_else(|| {
+                // Developer mode may sign with any on-chain key; keep the
+                // power-user escape hatch instead of leaving the form blank.
+                app_context
+                    .is_developer_mode()
+                    .then(|| {
+                        identity.identity.get_first_public_key_matching(
+                            Purpose::TRANSFER,
+                            SecurityLevel::full_range().into(),
+                            KeyType::all_key_types().into(),
+                            false,
+                        )
+                    })
+                    .flatten()
+                    .cloned()
+            });
+        let selected_wallet = get_selected_wallet(&identity, None, selected_key.as_ref())
             .or_show_error(app_context.egui_ctx())
             .unwrap_or(None);
         Self {
             identity,
-            selected_key: selected_key.cloned(),
+            selected_key,
             withdrawal_address: String::new(),
             withdrawal_address_error: None,
             withdrawal_amount: None,

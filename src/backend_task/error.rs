@@ -1237,6 +1237,17 @@ pub enum TaskError {
     )]
     MasterKeyNotFound,
 
+    /// No withdrawal-capable key with locally-held private material was available
+    /// to sign the operation (Platform requires a Transfer or Owner key you control).
+    #[error(
+        "This identity does not have a Transfer or Owner key that you can sign with. \
+         Open the Key Info screen for this identity, add a key whose private key you hold, then try again."
+    )]
+    NoWithdrawalSigningKey {
+        #[source]
+        source_error: Box<SdkError>,
+    },
+
     // ──────────────────────────────────────────────────────────────────────────
     // Token query errors
     // ──────────────────────────────────────────────────────────────────────────
@@ -2496,6 +2507,13 @@ impl From<SdkError> for TaskError {
             SdkError::IdentityNonceNotFound(_) => TaskError::IdentityNonceNotFound {
                 source_error: boxed,
             },
+            // Raised when a withdrawal/transfer is signed with (or falls back to)
+            // a key whose private material the signer does not hold.
+            SdkError::Protocol(ProtocolError::DesiredKeyWithTypePurposeSecurityLevelMissing(_)) => {
+                TaskError::NoWithdrawalSigningKey {
+                    source_error: boxed,
+                }
+            }
             _ => TaskError::SdkError {
                 source_error: boxed,
             },
@@ -2679,6 +2697,52 @@ mod tests {
             err,
             TaskError::DuplicateIdentityPublicKeyId { .. }
         ));
+    }
+
+    #[test]
+    fn from_sdk_error_missing_signing_key_maps_to_no_withdrawal_signing_key() {
+        let sdk_err = SdkError::Protocol(
+            ProtocolError::DesiredKeyWithTypePurposeSecurityLevelMissing(
+                "specified withdrawal public key cannot be used for signing".to_string(),
+            ),
+        );
+        let err = TaskError::from(sdk_err);
+        assert!(
+            matches!(err, TaskError::NoWithdrawalSigningKey { .. }),
+            "Expected NoWithdrawalSigningKey, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn no_withdrawal_signing_key_display_is_user_friendly() {
+        let sdk_err = SdkError::Protocol(
+            ProtocolError::DesiredKeyWithTypePurposeSecurityLevelMissing(
+                "specified withdrawal public key cannot be used for signing".to_string(),
+            ),
+        );
+        let msg = TaskError::from(sdk_err).to_string();
+        // Includes a concrete, self-serviceable next step.
+        assert!(msg.contains("Key Info screen"), "no action in: {msg}");
+        assert!(msg.contains("try again"), "no retry cue in: {msg}");
+        // No jargon and no raw SDK/protocol text leaked into the user message.
+        let lower = msg.to_lowercase();
+        for jargon in [
+            "consensus",
+            "sdk",
+            "nonce",
+            "rpc",
+            "protocol",
+            "securitylevel",
+        ] {
+            assert!(
+                !lower.contains(jargon),
+                "jargon '{jargon}' leaked in: {msg}"
+            );
+        }
+        assert!(
+            !msg.contains("cannot be used for signing"),
+            "raw SDK text leaked in: {msg}"
+        );
     }
 
     #[test]

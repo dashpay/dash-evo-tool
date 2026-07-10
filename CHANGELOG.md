@@ -138,6 +138,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Withdrawal key selection**: the Withdraw screen now pre-selects only a key
+  whose private key you actually hold (a payout/Transfer key preferred, Owner as
+  fallback). Previously it could pick a key that exists on the identity but whose
+  private key isn't loaded locally — common on loaded masternode/evonode
+  identities where only the Owner key was supplied — which made the withdrawal
+  fail at signing with an unhelpful technical error. When no usable key is
+  loaded, the screen guides you to add one instead of failing mid-withdrawal.
 - `WalletBackend` is now initialised eagerly at `AppState` start, eliminating a
   retry-loop spam on the SDK connection during cold boot.
 - Wallet store is rehydrated on cold start, resolving a regression where wallets

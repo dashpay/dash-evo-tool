@@ -2278,10 +2278,9 @@ fn map_shielded_op_error(e: platform_wallet::error::PlatformWalletError) -> Task
 
         // Every remaining variant → generic WalletBackend wrapper.
         //
-        // TODO(platform-pr3968): `RehydrationTopologyUnsupported`,
-        // `RehydrationPoolMismatch`, `RehydrationPoolTypeMismatch`, and
-        // `ShieldedShutdownIncomplete` don't exist on `PlatformWalletError` at
-        // this rev; they belong in this bucket once platform re-adds them.
+        // TODO(platform-pr3968): `ShieldedShutdownIncomplete` doesn't exist on
+        // `PlatformWalletError` at this rev; it belongs in this bucket once
+        // platform re-adds it.
         other @ (P::WalletCreation(_)
         | P::PersisterLoad(_)
         | P::AddressNonceMismatch { .. }
@@ -2509,10 +2508,9 @@ fn identity_op_error_kind(e: &platform_wallet::error::PlatformWalletError) -> Id
         | P::TransactionBroadcastUnconfirmed(_)
         | P::ShieldedBroadcastUnconfirmed { .. }
         | P::ShieldedSpendUnconfirmed { .. } => IdentityOpErrorKind::Other,
-        // TODO(platform-pr3968): `RehydrationTopologyUnsupported`,
-        // `RehydrationPoolMismatch`, `RehydrationPoolTypeMismatch`, and
-        // `ShieldedShutdownIncomplete` don't exist on `PlatformWalletError` at
-        // this rev; they belong in the `Other` bucket once platform re-adds them.
+        // TODO(platform-pr3968): `ShieldedShutdownIncomplete` doesn't exist on
+        // `PlatformWalletError` at this rev; it belongs in the `Other` bucket
+        // once platform re-adds it.
     }
 }
 

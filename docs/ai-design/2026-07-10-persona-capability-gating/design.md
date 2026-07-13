@@ -93,14 +93,21 @@ Per the refined brief: a single mechanism, called with a feature identifier, eva
 **R5 — Extensible without speculative machinery (YAGNI).**
 Adding a new *kind* of check later (e.g. a context predicate) must cost one new check variant plus its evaluator — no redesign. But no context-predicate variants are added now, because source review (§1, §6) shows the app needs exactly these check kinds today: user role, platform capability, and — surfaced by review — an experimental/stability flag (§1.3 bucket 4). Generality lives in the composition primitive, not in a pre-built catalogue.
 
-**R6 — Backward-compatible persistence.**
+**R6 — Backward-compatible persistence.** *(partly superseded — see the Round 2 addendum below.)*
 Existing users' saved settings must not break — both the positional bincode `AppSettings` blob (`settings.rs:267` — field order *is* the on-disk format) and the `.env DEVELOPER_MODE` key. The migration must not silently change any existing user's effective role (`[REVIEW PROJ-001]`).
 
 **R7 — Single source of truth.**
 The user role must have one authoritative persisted home and one runtime accessor. Today it has two persisted homes (`.env` live, `AppSettings.user_mode` dead) and the wrong one wins.
 
-**R8 — Default to the simplest role.**
+**R8 — Default to the simplest role.** *(superseded — see the Round 2 addendum below.)*
 Fresh installs default to Everyday (progressive disclosure's baseline). This matches today's behaviour (`developer_mode` defaults to `false`, `mod.rs:313`), so no existing user regresses.
+
+> **Round 2 addendum — what shipped instead (supersedes R6's `DEVELOPER_MODE` clause and R8).**
+>
+> - **`DEVELOPER_MODE` was dropped from role resolution entirely**, not migrated. The `.env` key no longer feeds the role on any path; `AppSettings.user_role` is the sole persisted home (R7 as written, with one home rather than a migrated second). The remaining `DEVELOPER_MODE` parser in `database/initialization.rs` serves the v34 schema migration and is unrelated to roles.
+> - **`UserRole::WHEN_UNSET` resolves to `Power`, uniformly** — for fresh installs *and* for legacy blobs that never recorded a role, superseding R8's "fresh installs default to Everyday". A deliberate later product decision: accounts arriving from builds that exposed the power surface unconditionally would read a lower start as lost functionality, and Everyday is a choice the user opts into. Canonical statements of the behaviour live in `src/model/user_role.rs` (`WHEN_UNSET` docs), `CHANGELOG.md`, and `docs/user-roles.md`.
+> - A role that cannot be **read** is a separate case, and resolves *down* to `UserRole::LEAST_PRIVILEGED` (Everyday), so a transient settings-store failure can never over-grant capability.
+> - R3's shielded capability check keeps its behaviour (unmet on every released protocol version) but no longer infers activation from `FeatureVersionBounds::max_version > 0`, which cannot distinguish a v0 feature from an absent one; it compares the network's protocol version against a named activation constant instead.
 
 **R9 — Role may drive layout, not only visibility (`[USER rev4]`).**
 Role-based UI is *not* limited to hiding/showing the same widgets. A screen may present a **different arrangement** per role — e.g. a Power user's account screen laid out differently, not merely "the same screen with more rows revealed." This does not change the gating *mechanism* (`FeatureGate`/`Check` remain an availability predicate); it means a second, legitimate consumption pattern exists: screens read `ctx.user_role()` and branch on it for **layout selection**, not just conditional inclusion. The design must not imply "gating = hiding rows" is the only pattern. (See §6.)

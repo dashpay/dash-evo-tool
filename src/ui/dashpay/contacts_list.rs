@@ -810,10 +810,7 @@ impl ContactsList {
                                             }
                                         }
 
-                                        // Pay button - requires SPV which is dev mode only
-                                        if self.app_context.is_developer_mode()
-                                            && ui.button("Pay").clicked()
-                                        {
+                                        if ui.button("Pay").clicked() {
                                             if let Some(identity) = self.selected_identity.clone() {
                                                 action = AppAction::AddScreen(
                                                     ScreenType::DashPaySendPayment(

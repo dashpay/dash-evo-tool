@@ -294,10 +294,7 @@ impl ContactDetailsScreen {
                         });
 
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
-                            // Send Payment requires SPV which is dev mode only
-                            if self.app_context.is_developer_mode()
-                                && ui.button("Send Payment").clicked()
-                            {
+                            if ui.button("Send Payment").clicked() {
                                 action = AppAction::AddScreen(
                                     ScreenType::DashPaySendPayment(
                                         self.identity.clone(),

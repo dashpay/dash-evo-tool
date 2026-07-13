@@ -213,6 +213,10 @@ pub enum ScreenType {
     DashPayAddContactWithId(String), // Pre-populated identity ID
     DashPayContactDetails(QualifiedIdentity, Identifier),
     DashPayContactProfileViewer(QualifiedIdentity, Identifier),
+    /// Reached from the Identity Hub, the contacts list, contact details and the
+    /// profile viewer — all four ungated. TODO: classify these entry points
+    /// explicitly when the `UserRole`/`FeatureGate` rework (#879) lands, so a
+    /// rebase cannot silently default them open or closed.
     DashPaySendPayment(QualifiedIdentity, Identifier),
     DashPayQRGenerator,
     DashPayProfileSearch,

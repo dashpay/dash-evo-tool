@@ -12,6 +12,7 @@
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
+use crate::ui::tokens::tokens_screen::IdentityTokenIdentifier;
 use dash_sdk::Sdk;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::platform::Identifier;
@@ -42,42 +43,40 @@ impl AppContext {
     pub async fn query_token_balance(
         &self,
         _sdk: &Sdk,
-        identity_id: Identifier,
-        token_id: Identifier,
+        pair: IdentityTokenIdentifier,
         sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         // Asking for a balance is intent to track it: undo any earlier "stop
         // tracking" for this pair, otherwise the watch set would omit the very
         // token the caller asked about.
-        self.clear_untracked_token_balance(token_id, identity_id)?;
+        self.clear_untracked_token_balance(pair)?;
 
         // The upstream watch list is per-identity and replaced wholesale, so
         // register the identity's whole watch set rather than a single pair.
-        let watch_sets = self.token_watch_sets(vec![identity_id])?;
+        let watch_sets = self.token_watch_sets(vec![pair.identity_id])?;
         self.refresh_upstream_token_balances(watch_sets, &sender)
             .await?;
 
         Ok(BackendTaskSuccessResult::FetchedTokenBalances)
     }
 
-    /// Stop tracking one `(identity, token)` balance. Un-watches the pair in
-    /// the upstream sync loop so its background pass stops fetching the
-    /// balance and the pair leaves the published snapshot, records the
-    /// dismissal so later refreshes do not re-watch it, then drops it from the
-    /// saved My Tokens ordering and nudges the UI to re-read the snapshot. The
-    /// token stays in DET's registry: re-importing it, or explicitly checking
-    /// that identity's balance, tracks the pair again.
+    /// Stop tracking one identity-token balance. Un-watches the pair in the
+    /// upstream sync loop so its background pass stops fetching the balance and
+    /// the pair leaves the published snapshot, records the dismissal so later
+    /// refreshes do not re-watch it, then drops it from the saved My Tokens
+    /// ordering and nudges the UI to re-read the snapshot. The token stays in
+    /// DET's registry: re-importing it, or explicitly checking that identity's
+    /// balance, tracks the pair again.
     pub async fn stop_tracking_token_balance(
         &self,
-        identity_id: Identifier,
-        token_id: Identifier,
+        pair: IdentityTokenIdentifier,
         sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         self.wallet_backend()?
-            .unwatch_identity_token(identity_id, token_id)
+            .unwatch_identity_token(pair.identity_id, pair.token_id)
             .await;
-        self.mark_token_balance_untracked(token_id, identity_id)?;
-        self.remove_token_balance(token_id, identity_id)?;
+        self.mark_token_balance_untracked(pair)?;
+        self.remove_token_balance(pair)?;
         sender
             .send(TaskResult::Refresh)
             .await
@@ -103,7 +102,12 @@ impl AppContext {
                 let watched = token_ids
                     .iter()
                     .copied()
-                    .filter(|token_id| !untracked.contains(&(*token_id, identity_id)))
+                    .filter(|token_id| {
+                        !untracked.contains(&IdentityTokenIdentifier {
+                            identity_id,
+                            token_id: *token_id,
+                        })
+                    })
                     .collect();
                 (identity_id, watched)
             })
@@ -224,6 +228,13 @@ mod tests {
         (alpha, beta)
     }
 
+    fn pair(identity_id: Identifier, token_id: Identifier) -> IdentityTokenIdentifier {
+        IdentityTokenIdentifier {
+            identity_id,
+            token_id,
+        }
+    }
+
     /// Dismissing a balance must survive "Refresh My Tokens": the pair stays
     /// out of the identity's watch set, and only that identity is affected.
     #[tokio::test]
@@ -233,7 +244,7 @@ mod tests {
         let (identity, other_identity) = (ident(10), ident(11));
 
         f.ctx
-            .stop_tracking_token_balance(identity, alpha, f.sender.clone())
+            .stop_tracking_token_balance(pair(identity, alpha), f.sender.clone())
             .await
             .expect("stop tracking");
 
@@ -249,11 +260,11 @@ mod tests {
         let identity = ident(10);
 
         f.ctx
-            .stop_tracking_token_balance(identity, alpha, f.sender.clone())
+            .stop_tracking_token_balance(pair(identity, alpha), f.sender.clone())
             .await
             .expect("stop tracking");
         f.ctx
-            .clear_untracked_token_balance(alpha, identity)
+            .clear_untracked_token_balance(pair(identity, alpha))
             .expect("re-track pair");
 
         assert_eq!(watched(&f.ctx, identity), vec![alpha, beta]);
@@ -269,7 +280,7 @@ mod tests {
 
         for identity in [first, second] {
             f.ctx
-                .stop_tracking_token_balance(identity, alpha, f.sender.clone())
+                .stop_tracking_token_balance(pair(identity, alpha), f.sender.clone())
                 .await
                 .expect("stop tracking");
         }

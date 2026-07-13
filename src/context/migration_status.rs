@@ -78,6 +78,25 @@ pub enum MigrationState {
     /// from [`Self::SucceededWithUnreadableVotes`] because the remedy differs —
     /// re-import a key, not re-schedule a vote.
     SucceededWithUnreadableIdentities { count: u32 },
+    /// The wallet drain completed, but both DET-owned passes left undecodable
+    /// rows behind on the same launch: `identities` legacy identities and
+    /// `votes` legacy scheduled votes did not come across. Terminal and
+    /// non-fatal — like the two single-signal variants it combines, and for the
+    /// same reason: a corrupt row decodes no better on a retry.
+    ///
+    /// It exists because neither signal may eat the other. The identity import
+    /// leaves its sentinel unwritten while any row fails to decode, so the
+    /// identity outcome is republished on *every* launch — which, with only the
+    /// single-signal variants available, would permanently outrank the vote
+    /// warning and cost the user a vote whose deadline is still live. One banner
+    /// names both remedies: load the identities again, re-schedule the votes.
+    ///
+    /// The acknowledge action retires only the durable vote half (see
+    /// [`acknowledge_unreadable_votes`](crate::backend_task::migration::finish_unwire::acknowledge_unreadable_votes));
+    /// the identity half then keeps arriving as a plain
+    /// [`Self::SucceededWithUnreadableIdentities`] until a build with a fixed
+    /// decoder imports the rows.
+    SucceededWithUnreadableIdentitiesAndVotes { identities: u32, votes: u32 },
     /// Both DET-owned passes are damaged on the same launch: the wallet drain
     /// landed, but `count` legacy identities could not be decoded AND the
     /// app-data import hit a hard failure. Rendered as a single retryable error
@@ -118,6 +137,16 @@ impl PartialEq for MigrationState {
                 MigrationState::SucceededWithUnreadableIdentities { count: a },
                 MigrationState::SucceededWithUnreadableIdentities { count: b },
             ) => a == b,
+            (
+                MigrationState::SucceededWithUnreadableIdentitiesAndVotes {
+                    identities: ia,
+                    votes: va,
+                },
+                MigrationState::SucceededWithUnreadableIdentitiesAndVotes {
+                    identities: ib,
+                    votes: vb,
+                },
+            ) => ia == ib && va == vb,
             (MigrationState::Running { step: a }, MigrationState::Running { step: b }) => a == b,
             (
                 MigrationState::FailedWithUnreadableIdentities {

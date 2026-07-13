@@ -312,7 +312,12 @@ fn app_data_error_chain(error: TaskError) -> Arc<MigrationError> {
 ///
 /// A pending [`UnreadableVotesWarning`] is re-published on every launch — not
 /// only the one that discovered it — until [`acknowledge_unreadable_votes`]
-/// clears it.
+/// clears it. That includes the launches where identities are *also* unreadable:
+/// both counts then ride one
+/// [`MigrationState::SucceededWithUnreadableIdentitiesAndVotes`], because the
+/// identity pass keeps its sentinel unwritten while any row fails to decode, so
+/// a lone identity warning would outrank the vote warning on every launch and
+/// silently cost the user a live vote deadline.
 ///
 /// # Errors
 ///
@@ -415,17 +420,63 @@ pub async fn run(app_context: &Arc<AppContext>) -> Result<bool, TaskError> {
         match app_data {
             Ok(outcome) => {
                 let moved_data = wallet_moved || outcome.moved_data() || identities.moved_data();
-                tracing::warn!(
-                    target = "migration::finish_unwire",
-                    unreadable = identities.unreadable,
-                    imported = identities.imported,
-                    votes_unreadable = outcome.votes_unreadable,
-                    network = ?app_context.network,
-                    "Some legacy identities could not be decoded; they stay in the previous version's data.db and must be loaded again",
-                );
-                status.set_state(MigrationState::SucceededWithUnreadableIdentities {
-                    count: identities.unreadable,
-                });
+
+                // A pending vote warning must ride along, or the identity signal
+                // buries it forever: the identity sentinel stays unwritten while any
+                // row fails to decode, so this branch runs on *every* launch and
+                // would return ahead of the `read_vote_warning` re-publish below.
+                // The count comes from storage, not from `outcome`: after the
+                // discovery run the app-data pass short-circuits on its own sentinel
+                // and honestly reports zero unreadable votes — exactly on the
+                // launches where this branch is the only one the user ever sees.
+                //
+                // A k/v read that itself fails is surfaced as the retryable half of
+                // the combined failure banner rather than dropped: neither signal
+                // may vanish silently.
+                match read_vote_warning(&app_context.app_kv(), app_context.network) {
+                    Ok(Some(warning)) => {
+                        tracing::warn!(
+                            target = "migration::finish_unwire",
+                            unreadable = identities.unreadable,
+                            imported = identities.imported,
+                            votes_unreadable = warning.count,
+                            network = ?app_context.network,
+                            "Some legacy identities and some legacy scheduled votes could not be decoded; they stay in the previous version's data.db and must be loaded / scheduled again",
+                        );
+                        status.set_state(
+                            MigrationState::SucceededWithUnreadableIdentitiesAndVotes {
+                                identities: identities.unreadable,
+                                votes: warning.count,
+                            },
+                        );
+                    }
+                    Ok(None) => {
+                        tracing::warn!(
+                            target = "migration::finish_unwire",
+                            unreadable = identities.unreadable,
+                            imported = identities.imported,
+                            network = ?app_context.network,
+                            "Some legacy identities could not be decoded; they stay in the previous version's data.db and must be loaded again",
+                        );
+                        status.set_state(MigrationState::SucceededWithUnreadableIdentities {
+                            count: identities.unreadable,
+                        });
+                    }
+                    Err(warning_error) => {
+                        tracing::warn!(
+                            target = "migration::finish_unwire",
+                            unreadable = identities.unreadable,
+                            imported = identities.imported,
+                            error = ?warning_error,
+                            network = ?app_context.network,
+                            "Some legacy identities could not be decoded and the pending vote-warning record could not be read; the identity rows stay in the previous version's data.db",
+                        );
+                        status.set_state(MigrationState::FailedWithUnreadableIdentities {
+                            count: identities.unreadable,
+                            error: Arc::new(warning_error),
+                        });
+                    }
+                }
                 return Ok(moved_data);
             }
             Err(app_data_error) => {
@@ -4627,6 +4678,108 @@ mod tests {
         assert!(
             matches!(*ctx.migration_status().state(), MigrationState::Idle),
             "an acknowledged warning must never come back",
+        );
+
+        backend.shutdown().await;
+    }
+
+    /// An unreadable identity must not permanently hide an unreadable *vote*.
+    /// Both damaged on the same launch is the trap: the identity sentinel stays
+    /// unwritten while any row fails to decode, so the identity branch runs again
+    /// on every launch — and before the fix it returned early, ahead of the
+    /// durable vote-warning read, so the vote half was never published once, let
+    /// alone re-published. The user would silently miss a vote whose deadline is
+    /// still live. Both counts now ride one terminal state, the vote half stays
+    /// reachable across restarts, and acknowledging it retires only that half.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn unreadable_identities_do_not_hide_the_unreadable_vote_warning() {
+        use dash_sdk::dpp::dashcore::Network;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = fresh_app_context(tmp.path());
+        let network = Network::Testnet;
+
+        seed_legacy_wallet(&ctx, &[0xE7u8; 64], "funds", network);
+        // One vote decodes, one does not → the app-data pass succeeds AND records
+        // a durable unreadable-vote warning.
+        seed_legacy_votes(
+            &ctx,
+            &[0x55u8; 32],
+            &[("alice", "Lock"), ("corrupt", "Nonsense")],
+            network,
+        );
+        {
+            // A corrupt identity blob → the identity pass counts it unreadable and
+            // leaves its sentinel unwritten, so this launch's branch recurs forever.
+            let conn = Connection::open(tmp.path().join("data.db")).expect("open data.db");
+            conn.execute(
+                "INSERT INTO identity (id, data, status, is_local, network)
+                 VALUES (?1, ?2, 2, 1, 'testnet')",
+                rusqlite::params![[0x66u8; 32].as_slice(), vec![0xFFu8; 8]],
+            )
+            .expect("corrupt identity row");
+        }
+
+        wire_backend(&ctx).await;
+        let backend = ctx.wallet_backend().expect("backend wired");
+
+        run(&ctx).await.expect("neither damaged row is fatal");
+        assert_eq!(
+            *ctx.migration_status().state(),
+            MigrationState::SucceededWithUnreadableIdentitiesAndVotes {
+                identities: 1,
+                votes: 1,
+            },
+            "the discovery run must name BOTH remedies — the identity warning may \
+             not swallow a vote with a live deadline",
+        );
+
+        // The readable vote still came across; only the corrupt one did not.
+        let votes = ctx.get_scheduled_votes().expect("read scheduled votes");
+        assert_eq!(votes.len(), 1, "the readable vote must still be imported");
+
+        // The two sentinels now disagree, which is what makes the next launch a
+        // real test of the durable read: app-data is done (so its pass will
+        // short-circuit and report zero unreadable votes), while the identity
+        // sentinel stays unwritten (so its corrupt row is counted again).
+        assert!(
+            ctx.app_kv()
+                .get::<MigrationCompletion>(DetScope::Global, &app_data_sentinel_key_for(network))
+                .expect("read app-data sentinel")
+                .is_some(),
+            "precondition: the app-data pass completed, so its counters go quiet from now on",
+        );
+        assert!(
+            ctx.app_kv()
+                .get::<MigrationCompletion>(DetScope::Global, &identities_sentinel_key_for(network))
+                .expect("read identity sentinel")
+                .is_none(),
+            "precondition: the identity sentinel stays unwritten, so its branch recurs",
+        );
+
+        // Later launch: the app-data sentinel short-circuits its pass (it reports
+        // zero unreadable votes now), while the identity pass counts its corrupt
+        // row again. The vote half must come from the durable record, not counters.
+        ctx.migration_status().set_state(MigrationState::Idle);
+        run(&ctx).await.expect("second launch");
+        assert_eq!(
+            *ctx.migration_status().state(),
+            MigrationState::SucceededWithUnreadableIdentitiesAndVotes {
+                identities: 1,
+                votes: 1,
+            },
+            "the vote warning must survive a restart even while identities stay unreadable",
+        );
+
+        // Acknowledging retires the vote half only: the identities are still
+        // unreadable, so their warning must keep coming back on its own.
+        acknowledge_unreadable_votes(&ctx).expect("acknowledge");
+        ctx.migration_status().set_state(MigrationState::Idle);
+        run(&ctx).await.expect("third launch");
+        assert_eq!(
+            *ctx.migration_status().state(),
+            MigrationState::SucceededWithUnreadableIdentities { count: 1 },
+            "an acknowledged vote warning must not come back, but the identity one must",
         );
 
         backend.shutdown().await;

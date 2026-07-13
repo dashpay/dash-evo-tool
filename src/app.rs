@@ -171,6 +171,22 @@ pub fn migration_unreadable_identities_text(count: u32) -> String {
     )
 }
 
+/// User-facing banner copy for the launch where both DET-owned passes left rows
+/// behind: `identities` identities and `votes` scheduled votes could not be read.
+/// One sentence per problem, each naming its own remedy — the remedies differ
+/// (load an identity vs re-schedule a vote), and the identity warning recurs on
+/// every launch, so it must never be the reason the deadline-critical vote notice
+/// goes unseen. No "Retry now": neither corrupt row decodes better on a second
+/// pass. Exposed for kittest coverage.
+pub fn migration_unreadable_identities_and_votes_text(identities: u32, votes: u32) -> String {
+    format!(
+        "Some identities ({identities} in total) and some scheduled votes ({votes} in total) from \
+         the previous version could not be read and were not carried over. Your previous data is \
+         untouched. Load these identities again to restore their keys, and schedule the votes \
+         again on the Scheduled Votes screen."
+    )
+}
+
 /// User-facing banner copy for the rare launch where both DET-owned passes broke:
 /// `count` identities could not be read AND updating the rest of the previous
 /// version's data (such as scheduled votes) hit a hard error. Names each problem

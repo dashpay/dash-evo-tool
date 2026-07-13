@@ -41,6 +41,7 @@ fn tc_mig_001_running_banner_shows_step_label() {
 fn tc_mig_014_running_text_covers_every_step_with_sentence() {
     for step in [
         MigrationStep::Detecting,
+        MigrationStep::AppData,
         MigrationStep::SingleKey,
         MigrationStep::Shielded,
         MigrationStep::WalletSeeds,

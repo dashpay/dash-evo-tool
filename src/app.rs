@@ -127,6 +127,7 @@ fn spv_block_step(armed: bool, dismissed: bool, state: OverallConnectionState) -
 pub fn migration_running_text(step: MigrationStep) -> &'static str {
     match step {
         MigrationStep::Detecting => "Checking your wallet data.",
+        MigrationStep::AppData => "Restoring your scheduled votes.",
         MigrationStep::SingleKey => "Updating imported keys.",
         MigrationStep::Shielded => "Verifying shielded balance.",
         MigrationStep::WalletSeeds => "Moving your wallets into the new vault.",
@@ -544,6 +545,23 @@ impl AppState {
         // handed to every per-network `AppContext`. The seed vault was opened
         // by the caller (keyless, or with a recovered legacy passphrase).
         let app_kv = AppContext::open_app_kv(&data_dir)?;
+
+        // Carry an upgrading user's preferences (network, theme, onboarding)
+        // out of legacy `data.db` before they are read below. This has to run
+        // here, ahead of the read: the active network is chosen from the blob
+        // a few lines down, and booting a testnet user onto mainnet is a
+        // safety hazard. A failure is not fatal — the boot continues on
+        // defaults and the (unwritten) sentinel makes the next launch retry.
+        match crate::backend_task::migration::legacy_settings::import_legacy_settings(&app_kv, &db)
+        {
+            Ok(outcome) => tracing::debug!(?outcome, "Legacy settings import"),
+            Err(e) => tracing::warn!(
+                error = ?e,
+                "Could not import preferences from the previous version — using defaults; \
+                 the next launch retries",
+            ),
+        }
+
         let settings = match app_kv.get::<AppSettings>(DetScope::Global, AppSettings::KV_KEY) {
             Ok(Some(s)) => s,
             Ok(None) => AppSettings::default(),
@@ -1804,6 +1822,7 @@ mod migration_banner_tests {
     fn migration_running_text_is_sentence_for_every_step() {
         for step in [
             MigrationStep::Detecting,
+            MigrationStep::AppData,
             MigrationStep::SingleKey,
             MigrationStep::Shielded,
             MigrationStep::WalletSeeds,
@@ -1826,6 +1845,7 @@ mod migration_banner_tests {
     fn migration_running_text_distinct_per_step() {
         let labels = [
             migration_running_text(MigrationStep::Detecting),
+            migration_running_text(MigrationStep::AppData),
             migration_running_text(MigrationStep::SingleKey),
             migration_running_text(MigrationStep::Shielded),
             migration_running_text(MigrationStep::WalletSeeds),

@@ -671,13 +671,13 @@ As a user, I want to assign a friendly alias to an identity behind a username I 
 - Alias set from the "My usernames" table.
 - Alias persists and is applied to the underlying identity.
 
-### DPN-009: Scheduled votes preserved across an app upgrade [Gap]
+### DPN-009: Scheduled votes preserved across an app upgrade [Implemented]
 **Persona:** Priya
 
 As a masternode operator, I want my previously scheduled DPNS votes to survive an app upgrade so that I do not miss a contest's vote window after updating.
 
 - Scheduled votes stored before the upgrade remain visible and executable afterward.
-- Note (PROJ-034): not migrated — legacy scheduled votes start empty after the platform-wallet upgrade, risking missed vote windows for masternode voters.
+- The first launch after the upgrade imports them from the previous version's storage, keeping each vote's choice, timestamp, and already-cast state. A vote that cannot be read is reported in a banner rather than dropped silently.
 
 ---
 
@@ -1239,13 +1239,13 @@ As an expert user, I want to clear the cached SPV headers and filter data for a 
 - Expert-mode "Clear SPV Data" action with confirmation; disabled while SPV is active.
 - The next connection triggers a full resync.
 
-### NET-021: App settings preserved across an app upgrade [Gap]
+### NET-021: App settings preserved across an app upgrade [Implemented]
 **Persona:** Alex, Priya, Jordan
 
 As a user, I want my saved settings — selected network, theme, onboarding state, and paths — to survive an app upgrade so that I do not silently relaunch into the wrong network or a reset configuration.
 
 - Settings stored before the upgrade remain applied afterward.
-- Note (PROJ-034): not migrated — existing users get default AppSettings on first launch after the platform-wallet upgrade (network resets to Mainnet; theme, onboarding, and paths reset); no importer exists (`db.get_settings` has zero callers). Scheduled-vote loss is tracked separately in DPN-009.
+- The first launch after the upgrade imports the saved network, start screen, theme, onboarding state, Dash-Qt path, and the remaining toggles before the network is selected, so a testnet user is never relaunched on Mainnet. Top-up history is imported alongside the scheduled votes of DPN-009.
 
 ---
 

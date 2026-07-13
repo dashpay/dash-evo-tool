@@ -22,6 +22,9 @@ use arc_swap::ArcSwap;
 pub enum MigrationStep {
     /// Sniffing `data.db` for legacy rows.
     Detecting,
+    /// Importing DET-owned rows the wallet drain never touched: scheduled
+    /// DPNS votes and top-up history.
+    AppData,
     /// Copying `single_key_wallet` rows into the upstream `SecretStore`.
     SingleKey,
     /// Mirroring legacy shielded rows + cursor into the per-wallet sidecar.

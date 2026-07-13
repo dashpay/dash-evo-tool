@@ -1,4 +1,5 @@
 mod initialization;
+pub(crate) mod legacy_import;
 mod settings;
 mod single_key_wallet;
 #[cfg(any(test, feature = "testing"))]

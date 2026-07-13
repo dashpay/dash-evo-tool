@@ -34,7 +34,7 @@ impl UserMode {
         }
     }
 
-    fn from_str_or_default(s: &str) -> Self {
+    pub(crate) fn from_str_or_default(s: &str) -> Self {
         match s {
             "Beginner" => UserMode::Beginner,
             _ => UserMode::Advanced,
@@ -325,10 +325,7 @@ impl From<&AppSettings> for AppSettingsWire {
 impl From<AppSettingsWire> for AppSettings {
     fn from(w: AppSettingsWire) -> Self {
         let defaults = AppSettings::default();
-        let network = match w.network.to_lowercase().as_str() {
-            "dash" => Network::Mainnet,
-            other => Network::from_str(other).unwrap_or(defaults.network),
-        };
+        let network = network_from_legacy_str(&w.network).unwrap_or(defaults.network);
         let root_screen_type =
             RootScreenType::from_int(w.root_screen_type).unwrap_or(defaults.root_screen_type);
         let theme_mode = theme_mode_from_str(&w.theme_mode);
@@ -372,11 +369,25 @@ fn theme_mode_to_str(mode: ThemeMode) -> &'static str {
     }
 }
 
-fn theme_mode_from_str(s: &str) -> ThemeMode {
+pub(crate) fn theme_mode_from_str(s: &str) -> ThemeMode {
     match s {
         "Light" => ThemeMode::Light,
         "Dark" => ThemeMode::Dark,
         _ => ThemeMode::System,
+    }
+}
+
+/// Parse a network name as written by DET, accepting the pre-v29 spelling.
+///
+/// `data.db` (and therefore every stored settings blob) wrote mainnet as
+/// `dash` until migration 29 renamed it to `mainnet`. Both spellings must
+/// resolve, or an upgrading user silently lands on the default network.
+/// Returns `None` for an unrecognised name so the caller can keep its own
+/// fallback.
+pub(crate) fn network_from_legacy_str(s: &str) -> Option<Network> {
+    match s.to_lowercase().as_str() {
+        "dash" => Some(Network::Mainnet),
+        other => Network::from_str(other).ok(),
     }
 }
 

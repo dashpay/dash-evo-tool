@@ -29,6 +29,7 @@ use dash_sdk::platform::{
 use dash_sdk::query_types::{CurrentQuorumsInfo, NoParamQuery};
 use platform_wallet::ContactRequest as UpstreamContactRequest;
 use std::collections::{BTreeMap, HashSet};
+use std::future::Future;
 use std::sync::Arc;
 
 pub async fn load_contact_requests(
@@ -900,6 +901,131 @@ pub async fn reject_contact_request(
     ))
 }
 
+/// What a cancellation attempt resolved to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CancelOutcome {
+    /// The request was pending throughout; it is now withdrawn.
+    Withdrawn,
+    /// The recipient had answered — there was nothing left to cancel.
+    AlreadyEstablished,
+}
+
+/// The Platform reads and writes a cancellation performs.
+///
+/// Behind a trait so [`cancel_flow`]'s ordering — and the race window between
+/// the reciprocal check and the hide broadcast — can be driven deterministically
+/// in tests, which is impossible against a live Platform.
+trait CancelOps {
+    /// `true` when the recipient has already sent a contact request back, which
+    /// makes the pending request an established contact instead.
+    fn reciprocal_request_exists(&self) -> impl Future<Output = Result<bool, TaskError>> + Send;
+
+    /// Broadcast a `contactInfo` document carrying `hidden` for the recipient.
+    fn set_contact_hidden(
+        &self,
+        hidden: bool,
+    ) -> impl Future<Output = Result<(), TaskError>> + Send;
+
+    /// Record the withdrawal in the DET sidecar so the request stops being
+    /// listed as pending.
+    fn mark_withdrawn(&self);
+}
+
+/// Check, hide, then re-check and undo the hide if the recipient answered inside
+/// the window.
+///
+/// Platform has no conditional write, so the reciprocal check and the hide
+/// broadcast cannot be one atomic step: they are two round-trips against two
+/// different documents. The check is therefore the last read before the write,
+/// and a second read straight after the write closes the gap retroactively — a
+/// reciprocal request that lands mid-flight is detected and the hide is
+/// reverted, leaving the freshly-established contact visible. That is the same
+/// end state the caller would have reached had the reciprocal arrived a moment
+/// earlier.
+///
+/// Residual risk: a reciprocal request landing *after* the second read still
+/// leaves the contact hidden. It is not detectable from here at any window
+/// width; recovery is the Contacts tab's hidden-contacts section, which can
+/// unhide the contact.
+async fn cancel_flow<O: CancelOps>(ops: &O) -> Result<CancelOutcome, TaskError> {
+    if ops.reciprocal_request_exists().await? {
+        return Ok(CancelOutcome::AlreadyEstablished);
+    }
+
+    ops.set_contact_hidden(true).await?;
+
+    if ops.reciprocal_request_exists().await? {
+        ops.set_contact_hidden(false).await?;
+        return Ok(CancelOutcome::AlreadyEstablished);
+    }
+
+    ops.mark_withdrawn();
+    Ok(CancelOutcome::Withdrawn)
+}
+
+/// [`CancelOps`] against the live Platform, for one sender/recipient pair.
+struct PlatformCancelOps<'a> {
+    app_context: &'a Arc<AppContext>,
+    sdk: &'a Sdk,
+    identity: QualifiedIdentity,
+    /// The cancelling identity — the sender of the request being withdrawn.
+    owner_id: Identifier,
+    /// The recipient of the request being withdrawn.
+    to_identity_id: Identifier,
+}
+
+impl CancelOps for PlatformCancelOps<'_> {
+    async fn reciprocal_request_exists(&self) -> Result<bool, TaskError> {
+        let mut query =
+            DocumentQuery::new(self.app_context.dashpay_contract.clone(), "contactRequest")
+                .map_err(|e| DashPayError::QueryCreation {
+                    query_target: "DashPay contactRequest",
+                    source: Box::new(e),
+                })?;
+        query = query
+            .with_where(WhereClause {
+                field: "$ownerId".to_string(),
+                operator: WhereOperator::Equal,
+                value: Value::Identifier(self.to_identity_id.to_buffer()),
+            })
+            .with_where(WhereClause {
+                field: "toUserId".to_string(),
+                operator: WhereOperator::Equal,
+                value: Value::Identifier(self.owner_id.to_buffer()),
+            });
+        query.limit = 1;
+
+        Ok(!Document::fetch_many(self.sdk, query).await?.is_empty())
+    }
+
+    async fn set_contact_hidden(&self, hidden: bool) -> Result<(), TaskError> {
+        super::contact_info::create_or_update_contact_info(
+            self.app_context,
+            self.sdk,
+            self.identity.clone(),
+            self.to_identity_id,
+            None,       // No nickname
+            None,       // No note
+            hidden,     // display_hidden
+            Vec::new(), // No accepted accounts
+        )
+        .await
+        .map(|_| ())
+    }
+
+    fn mark_withdrawn(&self) {
+        if let Ok(backend) = self.app_context.wallet_backend()
+            && let Err(e) = backend.dashpay_mark_rejected(&self.owner_id, &self.to_identity_id)
+        {
+            tracing::debug!(
+                to = %self.to_identity_id.to_string(Encoding::Base58),
+                error = ?e,
+                "DashPay cancellation sidecar write failed; request will still display as pending"
+            );
+        }
+    }
+}
+
 /// Cancel a contact request this identity sent and that is still pending.
 ///
 /// DashPay `contactRequest` documents are immutable and cannot be deleted
@@ -912,95 +1038,49 @@ pub async fn reject_contact_request(
 ///
 /// State is re-verified against Platform before acting: the request must still
 /// exist, must have been sent by `identity`, and must not have been answered in
-/// the meantime.
+/// the meantime. See [`cancel_flow`] for how the answer race is handled.
 pub async fn cancel_contact_request(
     app_context: &Arc<AppContext>,
     sdk: &Sdk,
     identity: QualifiedIdentity,
     request_id: Identifier,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
-    let dashpay_contract = app_context.dashpay_contract.clone();
     let owner_id = identity.identity.id();
 
-    // Step 1: re-fetch the request rather than trusting the row the user
-    // clicked — the list may be stale by seconds or by an identity switch.
-    let query = DocumentQuery::new(dashpay_contract.clone(), "contactRequest").map_err(|e| {
-        DashPayError::QueryCreation {
+    // Re-fetch the request rather than trusting the row the user clicked — the
+    // list may be stale by seconds or by an identity switch.
+    let query = DocumentQuery::new(app_context.dashpay_contract.clone(), "contactRequest")
+        .map_err(|e| DashPayError::QueryCreation {
             query_target: "DashPay contactRequest",
             source: Box::new(e),
-        }
-    })?;
+        })?;
     let query_with_id = DocumentQuery::with_document_id(query, &request_id);
 
     let doc = Document::fetch(sdk, query_with_id)
         .await?
         .ok_or(TaskError::DocumentNotFound)?;
 
-    // Step 2: verify we sent it, and to whom.
+    // Verify we sent it, and to whom.
     let to_identity_id = recipient_of_sent_request(&doc, &owner_id)?;
 
-    // Step 3: if the recipient already sent one back, the request is no longer
-    // pending — it is an established contact. Cancelling it would be a lie, so
-    // report the real state and let the UI refresh into it.
-    let mut reciprocal_query =
-        DocumentQuery::new(dashpay_contract, "contactRequest").map_err(|e| {
-            DashPayError::QueryCreation {
-                query_target: "DashPay contactRequest",
-                source: Box::new(e),
-            }
-        })?;
-    reciprocal_query = reciprocal_query
-        .with_where(WhereClause {
-            field: "$ownerId".to_string(),
-            operator: WhereOperator::Equal,
-            value: Value::Identifier(to_identity_id.to_buffer()),
-        })
-        .with_where(WhereClause {
-            field: "toUserId".to_string(),
-            operator: WhereOperator::Equal,
-            value: Value::Identifier(owner_id.to_buffer()),
-        });
-    reciprocal_query.limit = 1;
-
-    if !Document::fetch_many(sdk, reciprocal_query)
-        .await?
-        .is_empty()
-    {
-        return Ok(BackendTaskSuccessResult::DashPayContactAlreadyEstablished(
-            to_identity_id,
-        ));
-    }
-
-    // Step 4: broadcast the withdrawal as a hidden contactInfo document. This is
-    // the only part of a cancellation that Platform can carry.
-    super::contact_info::create_or_update_contact_info(
+    let ops = PlatformCancelOps {
         app_context,
         sdk,
         identity,
+        owner_id,
         to_identity_id,
-        None,       // No nickname
-        None,       // No note
-        true,       // display_hidden = true for a withdrawn request
-        Vec::new(), // No accepted accounts
-    )
-    .await?;
+    };
 
-    // Step 5: mirror the withdrawal into the DET sidecar. `load_contact_requests`
-    // consults this, so the row stops being listed even though the document
-    // itself lives on forever.
-    if let Ok(backend) = app_context.wallet_backend()
-        && let Err(e) = backend.dashpay_mark_rejected(&owner_id, &to_identity_id)
-    {
-        tracing::debug!(
-            to = %to_identity_id.to_string(Encoding::Base58),
-            error = ?e,
-            "DashPay cancellation sidecar write failed; request will still display as pending"
-        );
+    match cancel_flow(&ops).await? {
+        CancelOutcome::Withdrawn => Ok(BackendTaskSuccessResult::DashPayContactRequestCancelled(
+            request_id,
+        )),
+        // The recipient answered: the pair is a contact now, so report the real
+        // state and let the UI refresh into it.
+        CancelOutcome::AlreadyEstablished => Ok(
+            BackendTaskSuccessResult::DashPayContactAlreadyEstablished(to_identity_id),
+        ),
     }
-
-    Ok(BackendTaskSuccessResult::DashPayContactRequestCancelled(
-        request_id,
-    ))
 }
 
 #[cfg(test)]
@@ -1099,6 +1179,147 @@ mod tests {
             outgoing.len(),
             1,
             "a request we cannot attribute must stay visible rather than be silently hidden"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // Cancellation flow — the reciprocal check and the hide broadcast are
+    // separate Platform round-trips, so the window between them is where a
+    // reciprocal request can slip in and get a fresh contact hidden.
+    // -----------------------------------------------------------------
+
+    use std::collections::VecDeque;
+    use std::sync::Mutex;
+
+    /// Scriptable [`CancelOps`]. `reciprocal` is consumed one answer per probe,
+    /// which is how a reciprocal request is injected *inside* the window:
+    /// `[false, true]` means "pending when we checked, established by the time
+    /// the hide landed".
+    #[derive(Default)]
+    struct ScriptedOps {
+        reciprocal: Mutex<VecDeque<bool>>,
+        /// Every `set_contact_hidden` argument, in call order.
+        hidden_writes: Mutex<Vec<bool>>,
+        withdrawn: Mutex<bool>,
+        /// When set, the first hide broadcast fails.
+        hide_fails: bool,
+    }
+
+    impl ScriptedOps {
+        fn with_reciprocal(answers: [bool; 2]) -> Self {
+            Self {
+                reciprocal: Mutex::new(answers.into()),
+                ..Default::default()
+            }
+        }
+
+        fn hidden_writes(&self) -> Vec<bool> {
+            self.hidden_writes.lock().expect("not poisoned").clone()
+        }
+
+        fn was_withdrawn(&self) -> bool {
+            *self.withdrawn.lock().expect("not poisoned")
+        }
+    }
+
+    impl CancelOps for ScriptedOps {
+        async fn reciprocal_request_exists(&self) -> Result<bool, TaskError> {
+            Ok(self
+                .reciprocal
+                .lock()
+                .expect("not poisoned")
+                .pop_front()
+                .unwrap_or(false))
+        }
+
+        async fn set_contact_hidden(&self, hidden: bool) -> Result<(), TaskError> {
+            if self.hide_fails {
+                return Err(TaskError::DocumentNotFound);
+            }
+            self.hidden_writes
+                .lock()
+                .expect("not poisoned")
+                .push(hidden);
+            Ok(())
+        }
+
+        fn mark_withdrawn(&self) {
+            *self.withdrawn.lock().expect("not poisoned") = true;
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelling_a_pending_request_hides_it_and_records_the_withdrawal() {
+        let ops = ScriptedOps::with_reciprocal([false, false]);
+
+        let outcome = cancel_flow(&ops).await.expect("cancellation succeeds");
+
+        assert_eq!(outcome, CancelOutcome::Withdrawn);
+        assert_eq!(
+            ops.hidden_writes(),
+            vec![true],
+            "a pending request must be hidden exactly once"
+        );
+        assert!(
+            ops.was_withdrawn(),
+            "the withdrawal must be recorded so the row stops being listed"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelling_an_answered_request_hides_nothing() {
+        // The recipient answered before the user clicked Cancel.
+        let ops = ScriptedOps::with_reciprocal([true, true]);
+
+        let outcome = cancel_flow(&ops).await.expect("cancellation succeeds");
+
+        assert_eq!(outcome, CancelOutcome::AlreadyEstablished);
+        assert!(
+            ops.hidden_writes().is_empty(),
+            "an established contact must never be hidden by a cancellation"
+        );
+        assert!(!ops.was_withdrawn());
+    }
+
+    #[tokio::test]
+    async fn a_reciprocal_request_landing_inside_the_window_leaves_the_contact_visible() {
+        // Pending when checked, established by the time the hide broadcast
+        // landed — the exact race the check-then-write ordering cannot prevent.
+        let ops = ScriptedOps::with_reciprocal([false, true]);
+
+        let outcome = cancel_flow(&ops).await.expect("cancellation succeeds");
+
+        assert_eq!(
+            outcome,
+            CancelOutcome::AlreadyEstablished,
+            "the caller must be told the pair is a contact, not that a request was cancelled"
+        );
+        assert_eq!(
+            ops.hidden_writes(),
+            vec![true, false],
+            "the hide must be undone once the reciprocal request is detected, so the \
+             freshly-established contact does not vanish"
+        );
+        assert!(
+            !ops.was_withdrawn(),
+            "an established contact must not be marked as a withdrawn request"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_hide_broadcast_records_no_withdrawal() {
+        let ops = ScriptedOps {
+            hide_fails: true,
+            ..ScriptedOps::with_reciprocal([false, false])
+        };
+
+        assert!(
+            cancel_flow(&ops).await.is_err(),
+            "a failed broadcast must surface, not be swallowed"
+        );
+        assert!(
+            !ops.was_withdrawn(),
+            "the request is still pending on Platform, so it must keep being listed"
         );
     }
 }

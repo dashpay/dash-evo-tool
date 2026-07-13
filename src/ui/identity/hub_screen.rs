@@ -379,6 +379,17 @@ impl ScreenLike for IdentityHubScreen {
             BackendTaskSuccessResult::DashPayContactRequestCancelled(request_id) => {
                 self.resolve_request(request_id, "Contact request cancelled.");
             }
+            // A confirmed contactInfo write — on this tab that is an unhide.
+            // Re-arm the load so the restored contact comes back from the
+            // authoritative list, not just the optimistic local move.
+            BackendTaskSuccessResult::DashPayContactInfoUpdated(_) => {
+                self.contacts_state.invalidate();
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    "This contact is back in your list.",
+                    MessageType::Success,
+                );
+            }
             // The counterpart answered while the row was on screen. Nothing to
             // withdraw or accept — reload into the truth.
             BackendTaskSuccessResult::DashPayContactAlreadyEstablished(_) => {

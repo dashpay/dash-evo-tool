@@ -18,7 +18,7 @@ use super::request_card::{RequestAction, RequestCard};
 use super::social_profile_gate_card::SocialProfileGateCard;
 use crate::app::AppAction;
 use crate::backend_task::BackendTask;
-use crate::backend_task::dashpay::DashPayTask;
+use crate::backend_task::dashpay::{ContactData, DashPayTask};
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::ScreenType;
@@ -46,6 +46,18 @@ pub const NO_ACTIVE_EMPTY: &str = "You have no contacts yet.";
 pub const NO_SENT_EMPTY: &str = "No outgoing requests.";
 pub const NO_SEARCH_MATCH: &str = "No contact matches your search.";
 pub const SEARCH_PLACEHOLDER: &str = "Search your contacts";
+pub const UNHIDE_LABEL: &str = "Unhide";
+pub const UNHIDE_TOOLTIP: &str = "Show this contact in your contact list again.";
+
+/// Hidden-section toggle. Shown only when at least one contact is hidden, so the
+/// count tells the user there is something to recover.
+pub const SHOW_HIDDEN_LABEL: &str = "Show hidden contacts";
+
+/// Why a contact the user never hid by hand can still be in this section:
+/// declining or cancelling a request hides that person, and a contact that is
+/// later established with them stays hidden until it is unhidden here.
+pub const HIDDEN_EXPLAINER: &str = "Hidden contacts are kept out of your list. Declining or cancelling a request also hides that \
+     person. Unhide anyone you want back.";
 
 /// Sent-section caption. A DashPay contact request cannot be deleted from the
 /// network once sent, so the copy states plainly what Cancel really does
@@ -130,6 +142,22 @@ pub fn request_task(
             identity,
             request_id,
         },
+    }
+}
+
+/// Backend task that makes a hidden contact visible again.
+///
+/// Unhiding is a `contactInfo` broadcast with `display_hidden` cleared — the
+/// same document the decline / cancel paths set it on. The contact's nickname
+/// and note ride along so restoring visibility does not wipe them.
+pub fn unhide_task(identity: QualifiedIdentity, contact: &ContactData) -> DashPayTask {
+    DashPayTask::UpdateContactInfo {
+        identity,
+        contact_id: contact.identity_id,
+        nickname: contact.nickname.clone(),
+        note: contact.note.clone(),
+        is_hidden: false,
+        accepted_accounts: Vec::new(),
     }
 }
 
@@ -399,7 +427,74 @@ fn active_section(
         if add.clicked() {
             action = resolve_contacts_button(ContactsButton::ActiveAddByUsername, app_context);
         }
+
+        action |= hidden_section(ui, identity, state, dark_mode);
     });
+
+    action
+}
+
+/// Hidden contacts — the way back for anyone the user hid, declined, or
+/// cancelled on. Collapsed behind a toggle, and drawn only when there is
+/// something to recover, so it stays out of the way in the common case.
+fn hidden_section(
+    ui: &mut Ui,
+    identity: &QualifiedIdentity,
+    state: &mut ContactsState,
+    dark_mode: bool,
+) -> AppAction {
+    let mut action = AppAction::None;
+    if state.hidden_contacts().is_empty() {
+        return action;
+    }
+
+    ui.add_space(8.0);
+    let label = format!("{SHOW_HIDDEN_LABEL} · {}", state.hidden_contacts().len());
+    ui.checkbox(state.show_hidden_mut(), label);
+    if !state.show_hidden() {
+        return action;
+    }
+
+    ui.add_space(4.0);
+    ui.label(
+        RichText::new(HIDDEN_EXPLAINER)
+            .small()
+            .color(DashColors::text_secondary(dark_mode)),
+    );
+    ui.add_space(8.0);
+
+    // The clicked contact is cloned out of the list so the unhide can mutate
+    // `state` once the read borrow the row loop holds has ended.
+    let mut clicked: Option<ContactData> = None;
+    for contact in state.hidden_contacts() {
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new(contact_label(contact)).color(DashColors::text_secondary(dark_mode)),
+            );
+            ui.with_layout(
+                eframe::egui::Layout::right_to_left(eframe::egui::Align::Center),
+                |ui| {
+                    let unhide = ui
+                        .add(ComponentStyles::secondary_button(UNHIDE_LABEL, dark_mode))
+                        .clickable_tooltip(UNHIDE_TOOLTIP);
+                    if unhide.clicked() {
+                        clicked = Some(contact.clone());
+                    }
+                },
+            );
+        });
+        ui.add_space(4.0);
+    }
+
+    if let Some(contact) = clicked {
+        // Move the row now; the authoritative reload lands when the broadcast
+        // confirms.
+        state.unhide_contact(&contact.identity_id);
+        action = AppAction::BackendTask(BackendTask::DashPayTask(Box::new(unhide_task(
+            identity.clone(),
+            &contact,
+        ))));
+    }
 
     action
 }
@@ -654,6 +749,8 @@ mod tests {
             NO_SENT_EMPTY,
             NO_SEARCH_MATCH,
             CANCEL_EXPLAINER,
+            HIDDEN_EXPLAINER,
+            UNHIDE_TOOLTIP,
         ] {
             assert!(
                 line.ends_with('.'),
@@ -765,6 +862,65 @@ mod tests {
             matches!(task, DashPayTask::CancelContactRequest { request_id, .. } if request_id == id(2)),
             "Cancel must dispatch CancelContactRequest for the clicked request"
         );
+    }
+
+    // ---------------------------------------------------------------
+    // Unhide — the recovery path for a contact that a decline, a cancel,
+    // or a manual hide took off the list.
+    // ---------------------------------------------------------------
+
+    fn hidden_contact(nickname: Option<&str>, note: Option<&str>) -> ContactData {
+        ContactData {
+            identity_id: id(5),
+            nickname: nickname.map(str::to_string),
+            note: note.map(str::to_string),
+            is_hidden: true,
+            account_reference: 0,
+            username: None,
+            display_name: None,
+            avatar_url: None,
+            bio: None,
+        }
+    }
+
+    #[test]
+    fn unhide_clears_the_hidden_flag_for_that_contact() {
+        let task = unhide_task(qualified_identity(id(1)), &hidden_contact(None, None));
+        match task {
+            DashPayTask::UpdateContactInfo {
+                identity,
+                contact_id,
+                is_hidden,
+                ..
+            } => {
+                assert_eq!(identity.identity.id(), id(1));
+                assert_eq!(contact_id, id(5), "the clicked contact must be unhidden");
+                assert!(
+                    !is_hidden,
+                    "unhiding must broadcast contactInfo with the hidden flag cleared"
+                );
+            }
+            other => panic!("Unhide must dispatch UpdateContactInfo, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unhide_preserves_the_nickname_and_note() {
+        let task = unhide_task(
+            qualified_identity(id(1)),
+            &hidden_contact(Some("Bao"), Some("Met at the meetup")),
+        );
+        match task {
+            DashPayTask::UpdateContactInfo { nickname, note, .. } => {
+                assert_eq!(
+                    nickname.as_deref(),
+                    Some("Bao"),
+                    "restoring visibility must not wipe the contact's nickname"
+                );
+                assert_eq!(note.as_deref(), Some("Met at the meetup"));
+            }
+            other => panic!("expected UpdateContactInfo, got {other:?}"),
+        }
     }
 
     #[test]

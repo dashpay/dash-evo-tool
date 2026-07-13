@@ -3431,6 +3431,50 @@ mod tests {
         assert_eq!(screen.selected_wallet_seed_hash(), Some(second));
     }
 
+    /// Why this page uses the *capturing* top-panel variant: the shared applier
+    /// the panel runs on a pill click moves only the **app-global** selection.
+    /// This page caches its own wallet handle, so without mirroring the effect
+    /// back into that cache the pill and the page body would disagree until the
+    /// user navigated away and returned — the arrival re-sync cannot help, since
+    /// a pill click performs no navigation.
+    ///
+    /// Pins the seam between the two halves of the wallet-selector linking: drop
+    /// `apply_nav_effect` from the `ui()` path and the second assertion here is
+    /// what the user would experience — a click that moves the pill but not the
+    /// page.
+    #[test]
+    fn a_pill_click_must_be_mirrored_into_the_page_cache() {
+        let (ctx, _tmp) = offline_ctx();
+        let first = seed_hd_wallet(&ctx, 0xAA);
+        let second = seed_hd_wallet(&ctx, 0xBB);
+        let mut screen = WalletsBalancesScreen::new(&ctx);
+        screen.select_hd_wallet_by_hash(first);
+
+        // Exactly what the top panel does on a pill click, before the page gets
+        // a say: the shared applier writes the app-global selection.
+        let effect = GlobalNavEffect::SwitchWallet(second);
+        crate::ui::components::top_panel::apply_global_nav_effect(&ctx, effect.clone());
+
+        assert_eq!(
+            ctx.selected_wallet_hash(),
+            Some(second),
+            "the applier moves the app-global selection"
+        );
+        assert_eq!(
+            screen.selected_wallet_seed_hash(),
+            Some(first),
+            "...but it does NOT touch this page's cached wallet — the page is still on the old one"
+        );
+
+        // The mirroring step this page owns is what closes that gap, in-frame.
+        screen.apply_nav_effect(effect);
+        assert_eq!(
+            screen.selected_wallet_seed_hash(),
+            Some(second),
+            "the page now shows the wallet the pill shows"
+        );
+    }
+
     /// A wallet switched from another page's nav pill while this screen was away
     /// is adopted on arrival — otherwise the pill and the page would disagree.
     #[test]

@@ -932,7 +932,8 @@ As a user, I want to stop tracking a token balance for one of my identities so t
 
 - "Stop Tracking Balance" removes the chosen identity-token pair from the list.
 - The balance is un-watched so the background sync stops fetching it and the row does not reappear.
-- An explicit "Refresh all my tokens" re-tracks every known token, restoring the row.
+- The dismissal is remembered: "Refresh My Tokens" leaves the row gone, and only that identity-token pair is affected — other identities keep tracking the same token.
+- The row comes back when the user asks for it again: re-importing the token restores it for every identity that dismissed it, and checking that one balance restores just that pair.
 
 ---
 

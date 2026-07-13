@@ -20,6 +20,7 @@ use dash_sdk::dpp::serialization::{
 use dash_sdk::platform::{DataContract, Identifier};
 use dash_sdk::query_types::IndexMap;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 
 /// Key prefix for user-registered contract entries in the per-network
 /// wallet k/v store. The full key is `det:contract:<contract_id_base58>`
@@ -36,6 +37,11 @@ const TOKEN_KEY_PREFIX: &str = "det:token:";
 /// pairs in the My Tokens screen. Per-network (each network has its own
 /// k/v store, so each holds its own ordering).
 const TOKEN_ORDER_KEY: &str = "det:token_order:v1";
+
+/// Versioned key for the `(token_id, identity_id)` pairs the user stopped
+/// tracking. Upstream's token watch set is in-memory only, so the dismissal
+/// is persisted here and re-applied every time DET rebuilds a watch set.
+const TOKEN_UNTRACKED_KEY: &str = "det:token_untracked:v1";
 
 fn contract_key(contract_id: &Identifier) -> String {
     format!(
@@ -374,10 +380,10 @@ impl AppContext {
         Ok(result)
     }
 
-    /// Stop tracking a single `(identity, token)` pair in the My Tokens
-    /// ordering. Balances are owned upstream now, so this only prunes DET's
-    /// saved order list; the upstream sync loop still watches the token, so
-    /// the row reappears on the next balance refresh.
+    /// Drop a single `(identity, token)` pair from the My Tokens ordering.
+    /// Balances are owned upstream, so this only prunes DET's saved order
+    /// list — see [`Self::mark_token_balance_untracked`] for the dismissal
+    /// that keeps the pair out of future watch sets.
     pub fn remove_token_balance(
         &self,
         token_id: Identifier,
@@ -386,6 +392,51 @@ impl AppContext {
         let kv = self.det_kv()?;
         prune_token_order(&kv, |(t, i)| !(*t == token_id && *i == identity_id))?;
         Ok(())
+    }
+
+    /// Every `(token_id, identity_id)` pair the user stopped tracking.
+    pub fn untracked_token_balances(
+        &self,
+    ) -> std::result::Result<BTreeSet<(Identifier, Identifier)>, TaskError> {
+        read_untracked(&self.det_kv()?)
+    }
+
+    /// Record a `(token, identity)` pair as no longer tracked, so balance
+    /// refreshes stop re-watching it upstream. Idempotent.
+    pub fn mark_token_balance_untracked(
+        &self,
+        token_id: Identifier,
+        identity_id: Identifier,
+    ) -> std::result::Result<(), TaskError> {
+        let kv = self.det_kv()?;
+        let mut pairs = read_untracked(&kv)?;
+        if pairs.insert((token_id, identity_id)) {
+            write_untracked(&kv, &pairs)?;
+        }
+        Ok(())
+    }
+
+    /// Track a previously dismissed `(token, identity)` pair again.
+    /// Idempotent — a pair that was never dismissed is left alone.
+    pub fn clear_untracked_token_balance(
+        &self,
+        token_id: Identifier,
+        identity_id: Identifier,
+    ) -> std::result::Result<(), TaskError> {
+        let kv = self.det_kv()?;
+        let mut pairs = read_untracked(&kv)?;
+        if pairs.remove(&(token_id, identity_id)) {
+            write_untracked(&kv, &pairs)?;
+        }
+        Ok(())
+    }
+
+    /// Track a token again for every identity that dismissed it. Idempotent.
+    pub fn clear_untracked_token(
+        &self,
+        token_id: &Identifier,
+    ) -> std::result::Result<(), TaskError> {
+        clear_untracked_token_in(&self.det_kv()?, token_id)
     }
 
     /// Insert (or refresh) a token entry in the local registry. Balances are
@@ -429,14 +480,15 @@ impl AppContext {
         Ok(())
     }
 
-    /// Remove a token from the registry and drop it from the saved order.
-    /// Per-identity balances are owned upstream, so there is nothing local to
-    /// cascade-delete.
+    /// Remove a token from the registry and drop it from the saved order and
+    /// the dismissal list. Per-identity balances are owned upstream, so there
+    /// is nothing local to cascade-delete.
     pub fn remove_token(&self, token_id: &Identifier) -> std::result::Result<(), TaskError> {
         let kv = self.det_kv()?;
         kv.delete(DetScope::Global, &token_key(token_id))
             .map_err(token_err)?;
         prune_token_order(&kv, |(t, _)| t != token_id)?;
+        clear_untracked_token_in(&kv, token_id)?;
         Ok(())
     }
 
@@ -596,8 +648,8 @@ impl AppContext {
             .collect())
     }
 
-    /// Devnet-only sweep: drop the token registry, every balance entry
-    /// and the saved order. No-op on non-devnet networks.
+    /// Devnet-only sweep: drop the token registry, every balance entry,
+    /// the saved order and the dismissal list. No-op on non-devnet networks.
     pub fn delete_all_local_tokens_in_devnet(&self) -> std::result::Result<(), TaskError> {
         if self.network != Network::Devnet {
             return Ok(());
@@ -611,6 +663,8 @@ impl AppContext {
         }
         // Balances are owned upstream now — nothing local to wipe.
         kv.delete(DetScope::Global, TOKEN_ORDER_KEY)
+            .map_err(token_err)?;
+        kv.delete(DetScope::Global, TOKEN_UNTRACKED_KEY)
             .map_err(token_err)?;
         Ok(())
     }
@@ -657,6 +711,50 @@ fn decode_token_config(bytes: &[u8]) -> std::result::Result<TokenConfiguration, 
     bincode::decode_from_slice::<TokenConfiguration, _>(bytes, config::standard())
         .map(|(cfg, _)| cfg)
         .map_err(|source| TaskError::TokenConfigEncoding { source })
+}
+
+/// Read the dismissed `(token_id, identity_id)` pairs. An absent key means
+/// nothing was ever dismissed.
+fn read_untracked(
+    kv: &DetKv,
+) -> std::result::Result<BTreeSet<(Identifier, Identifier)>, TaskError> {
+    let Some(payload): Option<Vec<([u8; 32], [u8; 32])>> = kv
+        .get(DetScope::Global, TOKEN_UNTRACKED_KEY)
+        .map_err(token_err)?
+    else {
+        return Ok(BTreeSet::new());
+    };
+    Ok(payload
+        .into_iter()
+        .map(|(t, i)| (Identifier::from(t), Identifier::from(i)))
+        .collect())
+}
+
+fn write_untracked(
+    kv: &DetKv,
+    pairs: &BTreeSet<(Identifier, Identifier)>,
+) -> std::result::Result<(), TaskError> {
+    let payload: Vec<([u8; 32], [u8; 32])> = pairs
+        .iter()
+        .map(|(t, i)| (t.to_buffer(), i.to_buffer()))
+        .collect();
+    kv.put(DetScope::Global, TOKEN_UNTRACKED_KEY, &payload)
+        .map_err(token_err)
+}
+
+/// Drop every dismissal recorded for `token_id`, whichever identity made it.
+/// Writes back only when the set actually shrinks.
+fn clear_untracked_token_in(
+    kv: &DetKv,
+    token_id: &Identifier,
+) -> std::result::Result<(), TaskError> {
+    let mut pairs = read_untracked(kv)?;
+    let before = pairs.len();
+    pairs.retain(|(t, _)| t != token_id);
+    if pairs.len() != before {
+        write_untracked(kv, &pairs)?;
+    }
+    Ok(())
 }
 
 /// Filter the stored token-order list and write it back when the filter
@@ -817,5 +915,48 @@ mod tests {
         let got: Vec<([u8; 32], [u8; 32])> =
             kv.get(DetScope::Global, TOKEN_ORDER_KEY).unwrap().unwrap();
         assert_eq!(got, payload);
+    }
+
+    // ----------------------------------------------------------------
+    // Untracked pairs: dismissals persist so refreshes stop re-watching.
+    // ----------------------------------------------------------------
+
+    #[test]
+    fn untracked_pairs_read_as_empty_before_anything_is_dismissed() {
+        let kv = empty_kv();
+        assert!(read_untracked(&kv).unwrap().is_empty());
+    }
+
+    #[test]
+    fn untracked_pairs_round_trip_through_the_kv_store() {
+        let kv = empty_kv();
+        let pairs = BTreeSet::from([(ident(1), ident(10)), (ident(2), ident(20))]);
+        write_untracked(&kv, &pairs).unwrap();
+        assert_eq!(read_untracked(&kv).unwrap(), pairs);
+    }
+
+    #[test]
+    fn clearing_a_token_drops_its_dismissals_for_every_identity() {
+        let kv = empty_kv();
+        let cleared = ident(1);
+        let kept = (ident(2), ident(10));
+        write_untracked(
+            &kv,
+            &BTreeSet::from([(cleared, ident(10)), (cleared, ident(11)), kept]),
+        )
+        .unwrap();
+
+        clear_untracked_token_in(&kv, &cleared).unwrap();
+
+        assert_eq!(read_untracked(&kv).unwrap(), BTreeSet::from([kept]));
+    }
+
+    #[test]
+    fn clearing_an_undismissed_token_is_a_noop() {
+        let kv = empty_kv();
+        let pairs = BTreeSet::from([(ident(1), ident(10))]);
+        write_untracked(&kv, &pairs).unwrap();
+        clear_untracked_token_in(&kv, &ident(9)).unwrap();
+        assert_eq!(read_untracked(&kv).unwrap(), pairs);
     }
 }

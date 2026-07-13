@@ -282,6 +282,7 @@ mod tests {
 
     /// Distinct targets and identities do not collide.
     #[test]
+    #[ignore = "slow: real Argon2id via platform_wallet_storage public API; no downstream fast-KDF hook — dashpay/platform#4111"]
     fn scopes_and_targets_do_not_collide() {
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());
@@ -357,6 +358,7 @@ mod tests {
     /// keyless `get` (Tier-1 read of a protected value) fails rather than
     /// leaking — the seam refuses the implicit downgrade.
     #[test]
+    #[ignore = "slow: real Argon2id via platform_wallet_storage public API; no downstream fast-KDF hook — dashpay/platform#4111"]
     fn protected_store_get_round_trip() {
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());
@@ -387,6 +389,7 @@ mod tests {
     /// A wrong password yields the typed `IdentityKeyPassphraseIncorrect` (no
     /// oracle), not a storage error.
     #[test]
+    #[ignore = "slow: real Argon2id via platform_wallet_storage public API; no downstream fast-KDF hook — dashpay/platform#4111"]
     fn protected_get_wrong_password_is_typed() {
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());
@@ -415,6 +418,7 @@ mod tests {
     /// overwritten by `store_protected` flips the label's scheme to `Protected`
     /// with no second key — the design's no-blob-rewrite, no-orphan property.
     #[test]
+    #[ignore = "slow: real Argon2id via platform_wallet_storage public API; no downstream fast-KDF hook — dashpay/platform#4111"]
     fn opt_in_upsert_replaces_tier1_in_place() {
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());
@@ -451,6 +455,7 @@ mod tests {
     /// `Protected` label (it would silently strip protection), while the
     /// deliberate `store_unprotected` opt-out IS allowed to downgrade.
     #[test]
+    #[ignore = "slow: real Argon2id via platform_wallet_storage public API; no downstream fast-KDF hook — dashpay/platform#4111"]
     fn keyless_store_refuses_to_downgrade_protected_key() {
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());

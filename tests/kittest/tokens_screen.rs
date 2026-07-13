@@ -39,8 +39,7 @@ fn build_ctx() -> (
             .expect("AppState builds")
             .with_animations(false)
     });
-    h.run_steps(5);
-    let ctx = h.state().current_app_context().clone();
+    let ctx = crate::support::wait_for_wallet_backend(&mut h);
     (h, ctx)
 }
 

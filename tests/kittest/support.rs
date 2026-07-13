@@ -7,8 +7,43 @@ use dash_evo_tool::context::AppContext;
 use dash_evo_tool::ui::RootScreenType;
 use egui_kittest::Harness;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 pub use data_dir::with_isolated_data_dir;
+
+/// Upper bound a mount helper waits for the wallet backend to finish wiring.
+/// Generous on purpose: the poll runs under whole-suite CPU/swap contention
+/// (dozens of parallel tests), where a fixed frame count races the async init
+/// and intermittently panics `WalletBackendNotYetWired`.
+const WALLET_BACKEND_WIRE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Step `harness` until its live `AppContext` has a wired wallet backend, then
+/// return that context. Panics if the backend is not wired within
+/// [`WALLET_BACKEND_WIRE_TIMEOUT`].
+///
+/// `AppState::new` spawns wallet-backend wiring as a background tokio task, so a
+/// fixed `run_steps(N)` gives no guarantee it has completed. Tests that seed the
+/// DB via `insert_local_qualified_identity` (which reaches through the backend's
+/// k/v store) must gate on this instead of a fixed step count to close the race
+/// deterministically — `wallet_backend().is_ok()` is the exact precondition that
+/// seeding needs.
+pub fn wait_for_wallet_backend(
+    harness: &mut Harness<'static, dash_evo_tool::app::AppState>,
+) -> Arc<AppContext> {
+    let deadline = Instant::now() + WALLET_BACKEND_WIRE_TIMEOUT;
+    loop {
+        harness.step();
+        let ctx = harness.state().current_app_context().clone();
+        if ctx.wallet_backend().is_ok() {
+            return ctx;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "wallet backend was not wired within {WALLET_BACKEND_WIRE_TIMEOUT:?}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
 
 /// Mounts the full `AppState` on `root_screen` and steps the frame loop until
 /// it settles. Skips the app's first-run welcome screen so the requested root
@@ -32,6 +67,7 @@ pub fn mount_app(root_screen: RootScreenType) -> Harness<'static, dash_evo_tool:
             app
         });
     harness.set_size(egui::vec2(1280.0, 800.0));
+    wait_for_wallet_backend(&mut harness);
     harness.run_steps(10);
     harness
 }
@@ -48,8 +84,7 @@ pub fn fresh_app_context() -> (tokio::runtime::Runtime, Arc<AppContext>) {
             .expect("Failed to create AppState")
             .with_animations(false)
     });
-    bootstrap.run_steps(5);
-    let app_context = bootstrap.state().current_app_context().clone();
+    let app_context = wait_for_wallet_backend(&mut bootstrap);
     drop(bootstrap);
     drop(guard);
     (rt, app_context)

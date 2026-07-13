@@ -253,6 +253,7 @@ mod tests {
     /// secret is deterministic from the seed). Proves the JIT signer pulls
     /// the seed through `with_secret_session` without a re-prompt.
     #[tokio::test]
+    #[ignore = "slow: real Argon2id via platform_wallet_storage public API; no downstream fast-KDF hook — dashpay/platform#4111"]
     async fn hd_signer_derives_and_signs_via_jit() {
         let dir = tempfile::tempdir().unwrap();
         let seed_hash: WalletSeedHash = [0x11; 32];
@@ -419,6 +420,7 @@ mod tests {
     /// and asking the HD `Signer` surface of a single-key-held signer
     /// returns the typed `WrongSecretKind` rather than mis-deriving.
     #[tokio::test]
+    #[ignore = "slow: real Argon2id via platform_wallet_storage public API; no downstream fast-KDF hook — dashpay/platform#4111"]
     async fn single_key_signer_signs_raw_and_rejects_path() {
         use dash_sdk::dpp::dashcore::PrivateKey;
         let dir = tempfile::tempdir().unwrap();

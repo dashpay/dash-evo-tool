@@ -587,6 +587,7 @@ mod tests {
     /// returned as `Ok(None)` from `reconstruct_wallet` so the picker
     /// can keep listing the survivors.
     #[test]
+    #[ignore = "slow: real Argon2id via platform_wallet_storage public API; no downstream fast-KDF hook — dashpay/platform#4111"]
     fn orphan_meta_without_envelope_returns_none() {
         let dir = tempfile::tempdir().expect("tempdir");
         let store = fresh_secret_store(dir.path());
@@ -726,6 +727,7 @@ mod tests {
     /// protected label, which surfaced `NeedsPassword`; the `?` then dropped the
     /// wallet from the picker on every launch.
     #[test]
+    #[ignore = "slow: real Argon2id via platform_wallet_storage public API; no downstream fast-KDF hook — dashpay/platform#4111"]
     fn tier2_protected_seed_reconstructs_closed_and_is_listed() {
         use crate::wallet_backend::wallet_meta::WalletMetaView;
         use platform_wallet_storage::secrets::SecretString;

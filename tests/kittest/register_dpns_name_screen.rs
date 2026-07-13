@@ -123,8 +123,7 @@ fn dpns_registration_defaults_to_app_scoped_identity() {
                 .expect("AppState builds")
                 .with_animations(false)
         });
-        harness.run_steps(5);
-        let app_context = harness.state().current_app_context().clone();
+        let app_context = crate::support::wait_for_wallet_backend(&mut harness);
 
         let _first = seed_identity_for_dpns(&app_context, 0x11, "DPNS Alpha");
         let second = seed_identity_for_dpns(&app_context, 0x22, "DPNS Beta");

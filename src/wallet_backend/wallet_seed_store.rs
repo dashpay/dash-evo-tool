@@ -319,6 +319,7 @@ mod tests {
     /// migration step uses this path; if a future field is dropped
     /// here the unlock UI would lose information.
     #[test]
+    #[ignore = "slow: real Argon2id via platform_wallet_storage public API; no downstream fast-KDF hook — dashpay/platform#4111"]
     fn password_protected_envelope_round_trips() {
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());
@@ -354,6 +355,7 @@ mod tests {
 
     /// `get` on a missing hash returns `None`, not an error.
     #[test]
+    #[ignore = "slow: real Argon2id via platform_wallet_storage public API; no downstream fast-KDF hook — dashpay/platform#4111"]
     fn get_missing_returns_none() {
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());

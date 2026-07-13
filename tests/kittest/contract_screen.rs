@@ -48,8 +48,7 @@ fn mount_context() -> (
             .with_animations(false)
     });
     harness.set_size(egui::vec2(1280.0, 800.0));
-    harness.run_steps(5);
-    let ctx = harness.state().current_app_context().clone();
+    let ctx = crate::support::wait_for_wallet_backend(&mut harness);
     (harness, ctx)
 }
 

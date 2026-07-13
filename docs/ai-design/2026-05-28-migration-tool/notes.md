@@ -203,19 +203,27 @@ idempotency is confirmed.
 
 ### `identity` (DET source file: `src/database/identities.rs`)
 
-- **Source:** `identity` in `data.db`
-- **Destination:** `identities.entry_blob` (typed BLOB column) in `platform-wallet-storage`
-- **Mapping:** Deserialize DET's stored identity representation → serialize as
-  bincode-encoded `QualifiedIdentity` with a leading version byte prepended
-- **Per-network split:** Yes
-- **Gotchas:** Upstream schema uses a leading version byte in `entry_blob` for
-  forward/backward compatibility — this byte must be present and set correctly, or upstream
-  deserialization will silently produce garbage. Confirm the byte format with the
-  platform-wallet-storage author before implementing. This is the highest-risk table in the
-  migration.
+> **SUPERSEDED (2026-07-13).** Design and task breakdown now live in
+> `docs/ai-design/2026-07-13-legacy-identity-migration/design.md`. The entry below is kept
+> for context; two of its claims are wrong. The destination is **not** upstream's
+> `identities.entry_blob` — commit `b14bf32c` moved it to DET's own per-network k/v
+> (`det:identity:v1` under `DetScope::Identity`, roster at `det:identity_index:v1`). And the
+> version byte needs no agreement with the platform-wallet-storage author: `DetKv::put`
+> prepends `kv::SCHEMA_VERSION` automatically, so an importer that goes through
+> `AppContext::insert_local_qualified_identity` gets it for free.
+
+- **Source:** `identity` in `data.db` (`is_local = 1 AND data IS NOT NULL`)
+- **Destination:** `StoredQualifiedIdentity` in DET's per-network k/v — see the design doc
+- **Mapping:** `QualifiedIdentity::from_bytes(row.data)` → restore `status` from its column →
+  `AppContext::insert_local_qualified_identity(&qi, &wallet_link)`. The `data` BLOB carries
+  **all identity key material**; there is no second key table in v0.9.3.
+- **Per-network split:** Yes — two-value filter (`mainnet` / legacy `dash`)
+- **Gotchas:** The real risk is cross-version bincode compatibility of the `data` BLOB, not a
+  version byte. Every DET-side and dpp-side struct in the blob was verified unchanged between
+  v0.9.3 and HEAD; only the `bincode` rc.3 → 2.0.1 wire format is unproven, and a golden-blob
+  test closes it. Still the highest-risk table in the migration.
 - **Status:** DONE for new-install path — see commit `b14bf32c` (identities + tokens →
-  per-network k/v). Migration tool still needs to import legacy rows with the version-byte
-  contract correct.
+  per-network k/v). Migration tool still needs to import legacy rows.
 
 ---
 

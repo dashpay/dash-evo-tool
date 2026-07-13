@@ -917,13 +917,24 @@ impl ScreenLike for ContactsList {
                 self.has_loaded = true;
                 self.message = None;
             }
-            BackendTaskSuccessResult::DashPayContactsWithInfo(contacts_data) => {
+            BackendTaskSuccessResult::DashPayContactsWithInfo {
+                identity,
+                contacts: contacts_data,
+            } => {
+                let owner_id_opt = self.selected_identity.as_ref().map(|i| i.identity.id());
+
+                // A load that outlived an identity switch belongs to the
+                // identity we left — it must not repopulate this list.
+                if owner_id_opt != Some(identity) {
+                    tracing::debug!("Discarding contacts for a no-longer-selected identity");
+                    return;
+                }
+
                 // Clear existing contacts and repopulate the in-memory map
                 // from the adapter result. Upstream `ManagedIdentity` is
                 // now the authoritative source for contact rows (D4d), so
                 // the DET-local cache writes are gone.
                 self.contacts.clear();
-                let owner_id_opt = self.selected_identity.as_ref().map(|i| i.identity.id());
                 for contact_data in contacts_data {
                     // Skip self-contacts (where contact is the same as the owner)
                     if owner_id_opt

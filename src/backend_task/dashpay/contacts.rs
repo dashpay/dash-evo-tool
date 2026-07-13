@@ -1,7 +1,9 @@
 use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::dashpay::contact_request_query;
 use crate::backend_task::dashpay::errors::DashPayError;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
+use crate::model::dashpay::contact_request_recipient;
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::Sdk;
 use dash_sdk::dpp::data_contract::DataContract;
@@ -106,7 +108,10 @@ fn decrypt_to_user_id(encrypted: &[u8], key: &[u8; 32]) -> Result<[u8; 32], Stri
 }
 
 // Helper function to decrypt private data using AES-256-CBC
-fn decrypt_private_data(encrypted_data: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, String> {
+pub(super) fn decrypt_private_data(
+    encrypted_data: &[u8],
+    key: &[u8; 32],
+) -> Result<Vec<u8>, String> {
     use cbc::cipher::BlockDecryptMut;
     use cbc::cipher::KeyIvInit;
     use cbc::cipher::block_padding::Pkcs7;
@@ -154,11 +159,7 @@ pub async fn load_contacts(
     let dashpay_contract = app_context.dashpay_contract.clone();
 
     // Query for contact requests where we are the sender (ownerId)
-    let mut outgoing_query = DocumentQuery::new(dashpay_contract.clone(), "contactRequest")
-        .map_err(|e| DashPayError::QueryCreation {
-            query_target: "DashPay contactRequest",
-            source: Box::new(e),
-        })?;
+    let mut outgoing_query = contact_request_query(app_context)?;
 
     outgoing_query = outgoing_query.with_where(WhereClause {
         field: "$ownerId".to_string(),
@@ -168,11 +169,7 @@ pub async fn load_contacts(
     outgoing_query.limit = 100;
 
     // Query for contact requests where we are the recipient (toUserId)
-    let mut incoming_query = DocumentQuery::new(dashpay_contract.clone(), "contactRequest")
-        .map_err(|e| DashPayError::QueryCreation {
-            query_target: "DashPay contactRequest",
-            source: Box::new(e),
-        })?;
+    let mut incoming_query = contact_request_query(app_context)?;
 
     incoming_query = incoming_query.with_where(WhereClause {
         field: "toUserId".to_string(),
@@ -204,29 +201,15 @@ pub async fn load_contacts(
         .collect();
 
     // Find mutual contacts (where both parties have sent requests to each other)
-    let mut contacts = HashSet::new();
-
-    for (_, incoming_doc) in incoming.iter() {
-        let from_id = incoming_doc.owner_id();
-
-        // Check if we also sent a request to this person
-        for (_, outgoing_doc) in outgoing.iter() {
-            if let Some(Value::Identifier(to_id_bytes)) = outgoing_doc.properties().get("toUserId")
-            {
-                let Ok(to_id) = Identifier::from_bytes(to_id_bytes.as_slice()) else {
-                    tracing::warn!(
-                        "Failed to parse contact request toUserId ({} bytes), skipping",
-                        to_id_bytes.len()
-                    );
-                    continue;
-                };
-                if to_id == from_id {
-                    // Mutual contact found
-                    contacts.insert(from_id);
-                }
-            }
-        }
-    }
+    let contacts: HashSet<Identifier> = incoming
+        .iter()
+        .map(|(_, doc)| doc.owner_id())
+        .filter(|from_id| {
+            outgoing
+                .iter()
+                .any(|(_, doc)| contact_request_recipient(doc).as_ref() == Some(from_id))
+        })
+        .collect();
 
     // Now query for contact info documents
     let mut contact_info_query = DocumentQuery::new(dashpay_contract.clone(), "contactInfo")
@@ -464,9 +447,10 @@ pub async fn load_contacts(
     // effort: a cache write miss only costs the offline optimisation.
     cache_contact_profiles(app_context, &contact_list);
 
-    Ok(BackendTaskSuccessResult::DashPayContactsWithInfo(
-        contact_list,
-    ))
+    Ok(BackendTaskSuccessResult::DashPayContactsWithInfo {
+        identity: identity_id,
+        contacts: contact_list,
+    })
 }
 
 /// Read the contact list for `identity` entirely from offline state: contact
@@ -531,9 +515,10 @@ pub async fn load_contacts_offline(
         });
     }
 
-    Ok(BackendTaskSuccessResult::DashPayContactsWithInfo(
-        contact_list,
-    ))
+    Ok(BackendTaskSuccessResult::DashPayContactsWithInfo {
+        identity: owner_id,
+        contacts: contact_list,
+    })
 }
 
 /// Write each contact's fetched display profile into the DET contact-profile

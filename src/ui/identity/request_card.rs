@@ -133,6 +133,10 @@ pub struct RequestCard {
     /// Optional identifier propagated to the response. Useful for routing
     /// clicks without maintaining a parallel index on the caller side.
     id: Option<String>,
+    /// Whether this request's action is already running. Disables the action
+    /// buttons, so the user is not invited to pay for a second state transition
+    /// while the first is still on its way.
+    busy: bool,
 }
 
 impl RequestCard {
@@ -148,6 +152,7 @@ impl RequestCard {
             handle: handle.into(),
             relative_time: relative_time.into(),
             id: None,
+            busy: false,
         }
     }
 
@@ -159,12 +164,22 @@ impl RequestCard {
             handle: handle.into(),
             relative_time: String::new(),
             id: None,
+            busy: false,
         }
     }
 
     /// Attach an identifier echoed back via the response on click.
     pub fn with_id(mut self, id: impl Into<String>) -> Self {
         self.id = Some(id.into());
+        self
+    }
+
+    /// Disable the card's action buttons while its request is in flight.
+    ///
+    /// Accept, Decline, and Cancel each cost a real fee, so a card whose action
+    /// is already running must not take another click.
+    pub fn with_busy(mut self, busy: bool) -> Self {
+        self.busy = busy;
         self
     }
 
@@ -231,31 +246,43 @@ impl RequestCard {
                 // Right-aligned action cluster.
                 ui.with_layout(
                     eframe::egui::Layout::right_to_left(eframe::egui::Align::Center),
-                    |ui| match self.variant {
-                        RequestCardVariant::Received => {
-                            if ui
-                                .add(ComponentStyles::secondary_button(DECLINE_LABEL, dark_mode))
-                                .clicked()
-                            {
-                                response.declined = true;
+                    |ui| {
+                        let actionable = !self.busy;
+                        match self.variant {
+                            RequestCardVariant::Received => {
+                                if ui
+                                    .add_enabled(
+                                        actionable,
+                                        ComponentStyles::secondary_button(DECLINE_LABEL, dark_mode),
+                                    )
+                                    .clicked()
+                                {
+                                    response.declined = true;
+                                }
+                                ui.add_space(8.0);
+                                if ui
+                                    .add_enabled(
+                                        actionable,
+                                        ComponentStyles::primary_button(ACCEPT_LABEL),
+                                    )
+                                    .clicked()
+                                {
+                                    response.accepted = true;
+                                }
                             }
-                            ui.add_space(8.0);
-                            if ui
-                                .add(ComponentStyles::primary_button(ACCEPT_LABEL))
-                                .clicked()
-                            {
-                                response.accepted = true;
+                            RequestCardVariant::Sent => {
+                                if ui
+                                    .add_enabled(
+                                        actionable,
+                                        ComponentStyles::secondary_button(CANCEL_LABEL, dark_mode),
+                                    )
+                                    .clicked()
+                                {
+                                    response.cancelled = true;
+                                }
+                                ui.add_space(8.0);
+                                paint_pending_pill(ui, dark_mode);
                             }
-                        }
-                        RequestCardVariant::Sent => {
-                            if ui
-                                .add(ComponentStyles::secondary_button(CANCEL_LABEL, dark_mode))
-                                .clicked()
-                            {
-                                response.cancelled = true;
-                            }
-                            ui.add_space(8.0);
-                            paint_pending_pill(ui, dark_mode);
                         }
                     },
                 );
@@ -425,6 +452,39 @@ mod tests {
         assert!(!r.declined);
         assert!(!r.cancelled);
         assert!(r.id.is_none());
+    }
+
+    /// The click that reaches a card whose action is already running must not
+    /// produce a second action — the second Accept would sign, broadcast, and
+    /// pay for a second state transition.
+    #[test]
+    fn a_busy_card_does_not_act_on_a_further_click() {
+        use egui_kittest::Harness;
+        use egui_kittest::kittest::Queryable;
+        use std::cell::Cell;
+
+        for busy in [false, true] {
+            let acted = Cell::new(false);
+            let mut harness = Harness::builder()
+                .with_size(eframe::egui::vec2(600.0, 200.0))
+                .build_ui(|ui| {
+                    let response = RequestCard::received("Alex Kim", "alex.dash", "2m ago")
+                        .with_busy(busy)
+                        .show(ui);
+                    if response.action().is_some() {
+                        acted.set(true);
+                    }
+                });
+
+            harness.get_by_label(ACCEPT_LABEL).click();
+            harness.run();
+
+            assert_eq!(
+                acted.get(),
+                !busy,
+                "a card with an action in flight must ignore the click, an idle one must take it"
+            );
+        }
     }
 
     #[test]

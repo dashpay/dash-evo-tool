@@ -320,15 +320,11 @@ fn derive_p2pkh_address(wif: &str, network: Network) -> Result<String, TaskError
     Ok(Address::p2pkh(&pub_key, network).to_string())
 }
 
-/// `SELECT 1 FROM sqlite_master` table-existence probe. Missing table is
-/// not an error — fresh install / already cleaned up.
+/// Table-existence probe. Missing table is not an error — fresh install /
+/// already cleaned up. Wraps the shared probe so a read failure keeps the
+/// typed `single_key_wallet` attribution this module's errors carry.
 fn table_exists(conn: &Connection, name: &str) -> Result<bool, MigrationError> {
-    conn.query_row(
-        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
-        rusqlite::params![name],
-        |row| row.get::<_, i64>(0).map(|c| c > 0),
-    )
-    .map_err(|e| MigrationError::LegacyDbRead {
+    crate::database::table_exists(conn, name).map_err(|e| MigrationError::LegacyDbRead {
         table: "single_key_wallet",
         source: e,
     })

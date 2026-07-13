@@ -20,6 +20,11 @@ pub mod finish_unwire;
 pub mod legacy_settings;
 pub mod single_key_restore;
 
+/// Cross-subsystem upgrade regression from a real v0.9.3 `data.db`: schema
+/// ladder, boot settings import and wallet drain, composed in production order.
+#[cfg(test)]
+mod v093_upgrade;
+
 pub use finish_unwire::MigrationError;
 
 /// Migration orchestrator dispatch enum. Cheap to clone — every
@@ -30,6 +35,11 @@ pub enum MigrationTask {
     /// completion sentinel exists in `det-app.sqlite`, subsequent calls
     /// return `Success` immediately without touching the legacy file.
     FinishUnwire,
+    /// Retire the "some scheduled votes could not be read" warning for the
+    /// active network. The warning is re-raised on every launch until the user
+    /// acknowledges it, so this is the one gesture that stops it — the legacy
+    /// vote rows themselves are never touched.
+    AcknowledgeUnreadableVotes,
 }
 
 impl AppContext {
@@ -67,6 +77,10 @@ impl AppContext {
                     Err(task_error)
                 }
             },
+            MigrationTask::AcknowledgeUnreadableVotes => {
+                finish_unwire::acknowledge_unreadable_votes(self)?;
+                Ok(BackendTaskSuccessResult::Refresh)
+            }
         }
     }
 }

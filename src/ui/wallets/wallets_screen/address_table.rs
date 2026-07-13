@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use crate::app::AppAction;
 use crate::model::wallet::{DerivationPathHelpers, DerivationPathReference};
 use crate::ui::state::account_summary::{AccountCategory, categorize_account_path};
@@ -39,6 +41,44 @@ pub(super) struct AddressData {
     derivation_path: DerivationPath,
     account_category: AccountCategory,
     account_index: Option<u32>,
+}
+
+/// The authoritative set of addresses to list for a wallet, each paired with
+/// its derivation path.
+///
+/// Unions DET's bootstrapped `known_addresses` (a fixed gap-limit window derived
+/// once at load) with every address the display snapshot reports: the generated
+/// `snapshot_address_paths` (addresses upstream derived past DET's bootstrap
+/// window) and any funded address in `snapshot_address_balances` outside both.
+///
+/// Listing from the same snapshot the header total and tab labels read keeps the
+/// per-address rows reconciled with them. Iterating `known_addresses` alone
+/// dropped funds held on addresses derived past the bootstrap window (e.g. BIP44
+/// receive index ≥ 32): they counted in the headline total but never appeared in
+/// the list. Addresses present in both keep their `known_addresses` path (which
+/// equals the snapshot path for the same address).
+pub(super) fn combined_address_paths(
+    known_addresses: &BTreeMap<Address, DerivationPath>,
+    snapshot_address_paths: &BTreeMap<Address, DerivationPath>,
+    snapshot_address_balances: &BTreeMap<Address, u64>,
+) -> BTreeMap<Address, DerivationPath> {
+    let mut combined = known_addresses.clone();
+    for (address, path) in snapshot_address_paths {
+        combined
+            .entry(address.clone())
+            .or_insert_with(|| path.clone());
+    }
+    // Funded addresses the snapshot reports outside both sets carry no known
+    // derivation path; surface them (empty path ⇒ `Other` category) so no real
+    // funds are ever invisible in the list.
+    for (address, &balance) in snapshot_address_balances {
+        if balance > 0 {
+            combined
+                .entry(address.clone())
+                .or_insert_with(|| DerivationPath::from(Vec::new()));
+        }
+    }
+    combined
 }
 
 impl AddressData {
@@ -115,6 +155,9 @@ impl WalletsBalancesScreen {
         let snap_address_balances = seed_hash
             .map(|sh| self.snapshot_address_balances(&sh))
             .unwrap_or_default();
+        let snap_address_paths = seed_hash
+            .map(|sh| self.snapshot_address_paths(&sh))
+            .unwrap_or_default();
         let snap_utxo_counts: std::collections::HashMap<Address, usize> = seed_hash
             .map(|sh| {
                 let mut counts: std::collections::HashMap<Address, usize> =
@@ -137,9 +180,17 @@ impl WalletsBalancesScreen {
         let mut address_data = {
             let wallet = selected_wallet.read_recover();
 
+            // List every address the display snapshot knows about, not just DET's
+            // fixed bootstrap window, so funds derived past it stay visible and the
+            // list reconciles with the header total and tab labels.
+            let listed_addresses = combined_address_paths(
+                &wallet.known_addresses,
+                &snap_address_paths,
+                &snap_address_balances,
+            );
+
             // Prepare data for the table
-            wallet
-                .known_addresses
+            listed_addresses
                 .iter()
                 .map(|(address, derivation_path)| {
                     let utxo_count = snap_utxo_counts.get(address).copied().unwrap_or(0);
@@ -456,5 +507,111 @@ impl WalletsBalancesScreen {
             ));
         }
         action
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dash_sdk::dpp::dashcore::PublicKey;
+    use dash_sdk::dpp::dashcore::secp256k1::{Secp256k1, SecretKey};
+
+    /// A distinct testnet p2pkh address keyed off `n` (derived from a valid
+    /// secret key so the pubkey is a real curve point).
+    fn addr(n: u8) -> Address {
+        let mut sk_bytes = [1u8; 32];
+        sk_bytes[31] = n.max(1);
+        let secp = Secp256k1::new();
+        let sk = SecretKey::from_slice(&sk_bytes).unwrap();
+        let pubkey = PublicKey::new(sk.public_key(&secp));
+        Address::p2pkh(&pubkey, Network::Testnet)
+    }
+
+    /// A BIP-44 external (receive) path `m/44'/1'/0'/0/index` on testnet.
+    fn bip44_external(index: u32) -> DerivationPath {
+        DerivationPath::from(vec![
+            ChildNumber::Hardened { index: 44 },
+            ChildNumber::Hardened { index: 1 },
+            ChildNumber::Hardened { index: 0 },
+            ChildNumber::Normal { index: 0 },
+            ChildNumber::Normal { index },
+        ])
+    }
+
+    /// Regression: funds held on a BIP-44 address derived past DET's fixed
+    /// bootstrap window (index ≥ 32) must still be listed. The header total and
+    /// tab labels read the snapshot, which sees the address; the address table
+    /// used to iterate only `known_addresses` (the 48-address bootstrap window),
+    /// so such funds counted in the total but vanished from the list. The
+    /// authoritative address set must union the snapshot's generated addresses
+    /// in, and the buggy `known_addresses`-only set must NOT contain it.
+    #[test]
+    fn funds_past_bootstrap_window_are_listed() {
+        // `known_addresses`: the bootstrap window — a couple of low indices.
+        let mut known = BTreeMap::new();
+        known.insert(addr(1), bip44_external(0));
+        known.insert(addr(2), bip44_external(3));
+
+        // The snapshot has derived further (index 40, past the window) and it is
+        // funded — this is the address the old list dropped.
+        let past_window = addr(40);
+        let mut snap_paths = BTreeMap::new();
+        snap_paths.insert(addr(1), bip44_external(0));
+        snap_paths.insert(addr(2), bip44_external(3));
+        snap_paths.insert(past_window.clone(), bip44_external(40));
+
+        let mut snap_balances = BTreeMap::new();
+        snap_balances.insert(past_window.clone(), 1_500_000_000u64);
+
+        // The pre-fix source (known_addresses alone) drops the funded address.
+        assert!(
+            !known.contains_key(&past_window),
+            "precondition: the bootstrap window does not cover the past-window address"
+        );
+
+        let combined = combined_address_paths(&known, &snap_paths, &snap_balances);
+
+        assert!(
+            combined.contains_key(&past_window),
+            "a funded address derived past the bootstrap window must be listed"
+        );
+        // It carries the snapshot's real BIP-44 path, so it categorizes into the
+        // Dash Core (BIP44 account 0) tab and reconciles with that tab's label.
+        assert_eq!(combined.get(&past_window), Some(&bip44_external(40)));
+        // The bootstrap-window addresses are still present.
+        assert!(combined.contains_key(&addr(1)));
+        assert!(combined.contains_key(&addr(2)));
+    }
+
+    /// A funded address the snapshot reports but neither `known_addresses` nor
+    /// the snapshot's `address_paths` cover is still surfaced (with an empty
+    /// path ⇒ `Other` category), so no real funds are ever invisible. An
+    /// unfunded such address is not fabricated into a row.
+    #[test]
+    fn stray_funded_address_is_surfaced_unfunded_is_not() {
+        let known = BTreeMap::new();
+        let snap_paths = BTreeMap::new();
+
+        let funded_stray = addr(50);
+        let zero_stray = addr(51);
+        let mut snap_balances = BTreeMap::new();
+        snap_balances.insert(funded_stray.clone(), 7_000_000u64);
+        snap_balances.insert(zero_stray.clone(), 0u64);
+
+        let combined = combined_address_paths(&known, &snap_paths, &snap_balances);
+
+        assert!(
+            combined.contains_key(&funded_stray),
+            "a funded address with no known path must still be listed"
+        );
+        assert_eq!(
+            combined.get(&funded_stray),
+            Some(&DerivationPath::from(Vec::new())),
+            "a pathless funded address carries an empty path (Other category)"
+        );
+        assert!(
+            !combined.contains_key(&zero_stray),
+            "a zero-balance pathless address is not fabricated into a row"
+        );
     }
 }

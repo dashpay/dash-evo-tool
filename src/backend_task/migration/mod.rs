@@ -20,6 +20,11 @@ pub mod finish_unwire;
 pub mod legacy_settings;
 pub mod single_key_restore;
 
+/// Cross-subsystem upgrade regression from a real v0.9.3 `data.db`: schema
+/// ladder, boot settings import and wallet drain, composed in production order.
+#[cfg(test)]
+mod v093_upgrade;
+
 pub use finish_unwire::MigrationError;
 
 /// Migration orchestrator dispatch enum. Cheap to clone — every

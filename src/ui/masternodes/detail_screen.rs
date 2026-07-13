@@ -34,7 +34,7 @@ use crate::ui::components::password_input::PasswordInput;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::identity::identity_picker_card::draw_type_badge;
 use crate::ui::identity::identity_pill::shorten_id;
-use crate::ui::masternodes::{TIP_OWNER_KEY, TIP_PAYOUT_KEY, TIP_VOTING_KEY};
+use crate::ui::masternodes::{TIP_OWNER_KEY, TIP_PAYOUT_KEY, TIP_VOTING_KEY, key_status_tokens};
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::tokens::claim_tokens_screen::ClaimTokensScreen;
 use crate::ui::tokens::tokens_screen::IdentityTokenBasicInfo;
@@ -560,19 +560,18 @@ impl MasternodeDetailView {
                     "Shows which of this node's keys are loaded: V is the voting key, O is the \
                      owner key, and P is the payout address key.",
                 );
-            for (letter, present) in [
-                ("V", self.key_presence.voting),
-                ("O", self.key_presence.owner),
-                ("P", self.key_presence.payout),
-            ] {
-                let text = if present {
-                    RichText::new(letter)
+            // Each letter explains its own role on hover, so a user who hovers `V`
+            // is told about the voting key rather than having to read the whole
+            // legend on the `Roles:` label.
+            for token in key_status_tokens(self.key_presence) {
+                let text = if token.present {
+                    RichText::new(token.letter)
                         .strong()
                         .color(DashColors::text_primary(dark_mode))
                 } else {
                     RichText::new("·").color(DashColors::text_secondary(dark_mode))
                 };
-                ui.label(text);
+                ui.label(text).info_tooltip(token.tooltip);
             }
         });
 

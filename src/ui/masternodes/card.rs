@@ -7,6 +7,7 @@ use crate::model::qualified_identity::{IdentityStatus, IdentityType, MasternodeK
 use crate::ui::identity::identity_picker_card::{
     CARD_HEIGHT, CARD_MIN_WIDTH, draw_monogram, draw_type_badge,
 };
+use crate::ui::masternodes::key_status_tokens;
 use crate::ui::theme::DashColors;
 use eframe::egui::{
     self, Color32, CornerRadius, Frame, Margin, Response, RichText, Sense, Stroke, Ui, Vec2,
@@ -52,16 +53,6 @@ pub fn dpns_status_line(summary: MasternodeContestSummary) -> String {
     } else {
         "No open contests".to_string()
     }
-}
-
-/// The three `Keys:` role tokens in display order, each paired with whether it
-/// is present. Present roles render as their letter, absent roles as `·`.
-pub fn key_status_tokens(presence: MasternodeKeyPresence) -> [(&'static str, bool); 3] {
-    [
-        ("V", presence.voting),
-        ("O", presence.owner),
-        ("P", presence.payout),
-    ]
 }
 
 /// Response from [`MasternodeCard::show`]: whether the card was activated, plus
@@ -197,10 +188,14 @@ impl MasternodeCard {
                             .color(DashColors::text_secondary(dark_mode))
                             .size(13.0),
                     );
-                    for (letter, present) in key_status_tokens(self.key_presence) {
-                        if present {
+                    // The whole card is a `Sense::click()` target, so the letters
+                    // carry no per-letter tooltip here — a Help cursor inside a
+                    // clickable card would fight its PointingHand affordance. The
+                    // role explanations live on the detail screen's `Roles:` row.
+                    for token in key_status_tokens(self.key_presence) {
+                        if token.present {
                             ui.label(
-                                RichText::new(letter)
+                                RichText::new(token.letter)
                                     .color(DashColors::text_primary(dark_mode))
                                     .strong()
                                     .size(13.0),
@@ -336,19 +331,6 @@ mod tests {
             has_scheduled_vote: true,
         };
         assert_eq!(dpns_status_line(summary), "Vote scheduled");
-    }
-
-    #[test]
-    fn tc_fr3_08_key_tokens_reflect_presence() {
-        let presence = MasternodeKeyPresence {
-            voting: true,
-            owner: false,
-            payout: true,
-        };
-        assert_eq!(
-            key_status_tokens(presence),
-            [("V", true), ("O", false), ("P", true)]
-        );
     }
 
     #[test]

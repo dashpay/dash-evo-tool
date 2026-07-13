@@ -233,6 +233,7 @@ pub enum BackendTaskSuccessResult {
     DashPayContactRequestSent(String), // Username or ID of recipient
     DashPayContactRequestAccepted(Identifier), // Request ID that was accepted
     DashPayContactRequestRejected(Identifier), // Request ID that was rejected
+    DashPayContactRequestCancelled(Identifier), // Request ID whose sent request was withdrawn
     DashPayContactAlreadyEstablished(Identifier), // Contact ID that already exists
     DashPayContactInfoUpdated(Identifier), // Contact ID whose info was updated
     DashPayPaymentSent(String, String, u64), // (recipient, address, amount in duffs)

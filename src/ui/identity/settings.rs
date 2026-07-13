@@ -30,9 +30,11 @@ use crate::backend_task::dashpay::DashPayTask;
 use crate::backend_task::identity::IdentityTask;
 use crate::context::AppContext;
 use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
+use crate::ui::MessageType;
 use crate::ui::ScreenType;
 use crate::ui::components::component_trait::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
+use crate::ui::components::message_banner::MessageBanner;
 use crate::ui::identities::register_dpns_name_screen::RegisterDpnsNameSource;
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -60,7 +62,18 @@ const TIP_ADD_KEY: &str =
 const TIP_REFRESH: &str = "Fetch the latest state of this identity from the network.";
 const TIP_UNLOAD: &str = "Remove this identity from this device. It remains on Dash Platform — you can load it \
      again later.";
+const TIP_SAVE_ALIAS: &str = "Save this name on this device.";
 const TIP_ID_COPY: &str = "Copy the full identity ID to your clipboard.";
+
+// Local-alias copy. The alias never leaves the device, so the copy leads with
+// that: users must not think they are publishing a name to the network.
+const ALIAS_HEADING: &str = "Name on this device";
+const ALIAS_EXPLAINER: &str =
+    "Only you see this name. It is stored on this device and never published to Dash Platform.";
+const ALIAS_HINT: &str = "For example: My main identity";
+const ALIAS_SAVED: &str = "Name saved on this device.";
+const ALIAS_SAVE_FAILED: &str =
+    "This name could not be saved on your device. Try again in a moment.";
 const TIP_PROTX_COPY: &str = "Copy the masternode ID to your clipboard.";
 const TIP_BADGE_USER: &str = "A regular identity used for payments, DPNS, and DashPay.";
 const TIP_BADGE_MASTERNODE: &str =
@@ -100,6 +113,11 @@ pub struct SettingsTab {
     edit_display_name: String,
     edit_bio: String,
     edit_avatar_url: String,
+    /// Editable local alias — the device-only name for this identity. Loaded
+    /// from `QualifiedIdentity::alias` on identity change; never published.
+    edit_alias: String,
+    /// Last-saved alias, for dirty tracking. Committed on a successful write.
+    original_alias: String,
     /// Copy of the originals for `has_changes` comparison. Updated only
     /// after a CONFIRMED backend success via `on_profile_saved()`.
     original_display_name: String,
@@ -443,6 +461,10 @@ impl SettingsTab {
 
         ui.add_space(12.0);
 
+        action |= self.render_local_alias(ui, app_context, identity);
+
+        ui.add_space(12.0);
+
         // Aliases block. Each secondary DPNS name appears with Make-primary +
         // Remove actions; both are GATED because the backend variants do not
         // exist yet.
@@ -490,6 +512,75 @@ impl SettingsTab {
         let _ = add;
 
         action
+    }
+
+    /// Local alias block — the device-only name for this identity, and the name
+    /// the hub's breadcrumb and identity pills prefer over the DPNS handle.
+    ///
+    /// The alias is local metadata, not platform state: it is written straight
+    /// through the `AppContext` wrapper (the same call the DPNS and legacy
+    /// identity screens use), so there is no state transition and no fee. On a
+    /// successful write the in-memory identity is updated too, so the pills
+    /// pick the new name up on the next frame.
+    fn render_local_alias(
+        &mut self,
+        ui: &mut Ui,
+        app_context: &Arc<AppContext>,
+        identity: &QualifiedIdentity,
+    ) -> AppAction {
+        let dark_mode = ui.ctx().global_style().visuals.dark_mode;
+
+        section_heading(ui, ALIAS_HEADING, dark_mode);
+        ui.label(
+            RichText::new(ALIAS_EXPLAINER)
+                .small()
+                .color(DashColors::text_secondary(dark_mode)),
+        );
+        ui.add_space(4.0);
+
+        ui.add(
+            TextEdit::singleline(&mut self.edit_alias)
+                .hint_text(ALIAS_HINT)
+                .desired_width(f32::INFINITY),
+        );
+        ui.add_space(6.0);
+
+        let dirty = self.has_alias_changes();
+        let save = ComponentStyles::add_primary_button_enabled(ui, dirty, "Save name");
+        let save = if dirty {
+            save.clickable_tooltip(TIP_SAVE_ALIAS)
+        } else {
+            save.disabled_tooltip(TIP_SAVE_NO_CHANGES)
+        };
+
+        if save.clicked() && dirty {
+            let new_alias = string_if_set(&self.edit_alias);
+            match app_context.set_identity_alias(&identity.identity.id(), new_alias.as_deref()) {
+                Ok(()) => {
+                    // Commit the baseline and mirror onto the cached identity so
+                    // this tab (and the pills reading it) show the saved name
+                    // without waiting for a reload.
+                    self.original_alias = new_alias.clone().unwrap_or_default();
+                    self.edit_alias = self.original_alias.clone();
+                    if let Some(selected) = self.selected_identity.as_mut() {
+                        selected.alias = new_alias;
+                    }
+                    MessageBanner::set_global(ui.ctx(), ALIAS_SAVED, MessageType::Success);
+                }
+                Err(e) => {
+                    MessageBanner::set_global(ui.ctx(), ALIAS_SAVE_FAILED, MessageType::Error)
+                        .with_details(&e);
+                }
+            }
+        }
+
+        AppAction::None
+    }
+
+    /// Whether the alias field differs from the last-saved value, comparing the
+    /// stored (trimmed) form so trailing whitespace alone never enables Save.
+    fn has_alias_changes(&self) -> bool {
+        string_if_set(&self.edit_alias).unwrap_or_default() != self.original_alias
     }
 
     fn render_advanced(
@@ -684,6 +775,13 @@ impl SettingsTab {
         };
 
         if changed {
+            // The local alias lives on the identity record itself, so it is
+            // available immediately — no async profile round-trip needed.
+            self.edit_alias = incoming
+                .as_ref()
+                .and_then(|qi| qi.alias.clone())
+                .unwrap_or_default();
+            self.original_alias = self.edit_alias.clone();
             self.selected_identity = incoming;
             self.profile_loaded = false;
             // Clear the editor to a clean slate; fields repopulate once the
@@ -928,6 +1026,45 @@ mod tests {
         assert_eq!(string_if_set(""), None);
         assert_eq!(string_if_set("   "), None);
         assert_eq!(string_if_set("  alex  "), Some("alex".to_string()));
+    }
+
+    #[test]
+    fn alias_save_is_enabled_only_by_a_real_change() {
+        let mut tab = SettingsTab::new();
+        assert!(!tab.has_alias_changes(), "an untouched alias is not dirty");
+
+        tab.edit_alias = "My main identity".into();
+        assert!(tab.has_alias_changes(), "a new alias must enable Save");
+
+        tab.original_alias = "My main identity".into();
+        assert!(!tab.has_alias_changes(), "a saved alias is no longer dirty");
+    }
+
+    #[test]
+    fn alias_whitespace_alone_is_not_a_change() {
+        let mut tab = SettingsTab::new();
+        tab.original_alias = "Bao".into();
+        tab.edit_alias = "  Bao  ".into();
+        assert!(
+            !tab.has_alias_changes(),
+            "padding an unchanged alias with spaces must not enable Save"
+        );
+    }
+
+    #[test]
+    fn clearing_the_alias_is_a_change_that_stores_none() {
+        let mut tab = SettingsTab::new();
+        tab.original_alias = "Bao".into();
+        tab.edit_alias = "   ".into();
+        assert!(
+            tab.has_alias_changes(),
+            "emptying a set alias must enable Save so the user can remove it"
+        );
+        assert_eq!(
+            string_if_set(&tab.edit_alias),
+            None,
+            "an emptied alias must be stored as None, not as an empty string"
+        );
     }
 
     #[test]

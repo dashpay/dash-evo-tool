@@ -867,6 +867,18 @@ impl WalletBackend {
             .map_err(|e| TaskError::DashpaySidecarStorage { source: e })
     }
 
+    /// Whether `owner` has resolved the contact request from `counterparty_id`
+    /// locally — declined an incoming one, or withdrawn a sent one. Reads the
+    /// same owner-scoped marker [`dashpay_mark_rejected`](Self::dashpay_mark_rejected)
+    /// writes and [`DashpayView`] derives its status from.
+    ///
+    /// A `contactRequest` document is immutable and undeletable on Platform, so
+    /// this marker is the only thing that can retire a resolved request from a
+    /// listing.
+    pub fn dashpay_is_rejected(&self, owner: &Identifier, counterparty_id: &Identifier) -> bool {
+        kv_contains(&self.kv(), owner, KV_PREFIX_REJECTED, counterparty_id)
+    }
+
     /// Write DET-local `(created_at_ms, updated_at_ms)` timestamps for an
     /// entity (contact, request, profile owner) into the k/v sidecar. These
     /// timestamps surface verbatim through the [`DashpayView`] adapter.

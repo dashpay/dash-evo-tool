@@ -125,6 +125,19 @@ impl IdentityHubScreen {
         self.selected_tab = tab;
     }
 
+    /// Retire a request row the backend just resolved (accepted, declined, or
+    /// cancelled), confirm it to the user, and re-arm the Contacts load so the
+    /// authoritative lists replace the local edit.
+    fn resolve_request(&mut self, request_id: &Identifier, confirmation: &str) {
+        self.contacts_state.remove_request(request_id);
+        self.contacts_state.invalidate();
+        MessageBanner::set_global(
+            self.app_context.egui_ctx(),
+            confirmation,
+            MessageType::Success,
+        );
+    }
+
     /// Apply a breadcrumb-switcher effect: wallet / identity switches mutate the
     /// app-scoped selection and reset identity-scoped caches; add-flows route to
     /// the existing screens.
@@ -348,6 +361,33 @@ impl ScreenLike for IdentityHubScreen {
             BackendTaskSuccessResult::DashPayContactRequests { incoming, outgoing } => {
                 self.contacts_state
                     .record_requests(incoming.clone(), outgoing.clone());
+            }
+            // The established-contact list behind the Contacts tab's active
+            // section and its search box.
+            BackendTaskSuccessResult::DashPayContactsWithInfo(contacts) => {
+                self.contacts_state.record_contacts(contacts.clone());
+            }
+            // A resolved request: drop the row now so the list reflects the
+            // action immediately, then re-arm the load so the authoritative
+            // lists (including the new contact, on accept) replace it.
+            BackendTaskSuccessResult::DashPayContactRequestAccepted(request_id) => {
+                self.resolve_request(request_id, "Contact request accepted.");
+            }
+            BackendTaskSuccessResult::DashPayContactRequestRejected(request_id) => {
+                self.resolve_request(request_id, "Contact request declined.");
+            }
+            BackendTaskSuccessResult::DashPayContactRequestCancelled(request_id) => {
+                self.resolve_request(request_id, "Contact request cancelled.");
+            }
+            // The counterpart answered while the row was on screen. Nothing to
+            // withdraw or accept — reload into the truth.
+            BackendTaskSuccessResult::DashPayContactAlreadyEstablished(_) => {
+                self.contacts_state.invalidate();
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    "You are already contacts with this person.",
+                    MessageType::Info,
+                );
             }
             _ => {}
         }

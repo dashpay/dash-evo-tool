@@ -695,6 +695,26 @@ impl AppContext {
         Ok(Some(qi))
     }
 
+    /// `true` when an identity blob is already stored under `id`.
+    ///
+    /// Presence only: the blob is never decoded, so this cannot touch key
+    /// material. Backs the legacy-identity import's skip-if-present rule —
+    /// [`Self::insert_local_qualified_identity`] is INSERT-OR-REPLACE, so a
+    /// retry without this check would overwrite an identity the user has since
+    /// edited with the stale legacy copy. Keys on the blob, not the enumeration
+    /// index, so a dangling index entry still imports.
+    pub(crate) fn has_local_qualified_identity(
+        &self,
+        id: &Identifier,
+    ) -> std::result::Result<bool, TaskError> {
+        let kv = self.det_kv()?;
+        let id_buf = id.to_buffer();
+        Ok(kv
+            .get::<StoredQualifiedIdentity>(DetScope::Identity(&id_buf), IDENTITY_KEY)
+            .map_err(identity_err)?
+            .is_some())
+    }
+
     /// Internal: read every stored identity via the Global enumeration
     /// index, decode it, rehydrate the metadata kept outside the bincode
     /// blob, and apply `keep` as a pre-decode filter on the wrapper.

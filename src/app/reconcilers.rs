@@ -33,7 +33,8 @@ use super::{
     COLD_START_BACKEND_READY_TIMEOUT, COLD_START_STUCK_MESSAGE, MIGRATION_RETRY_ACTION_ID,
     SPV_CONNECTING_DESCRIPTION, SPV_CONTINUE_BACKGROUND_ACTION, SPV_SYNCING_DESCRIPTION,
     SpvBlockStep, cold_start_backend_wait_timed_out, migration_running_text,
-    migration_unreadable_votes_text, should_dispatch_cold_start, spv_block_step,
+    migration_unreadable_identities_text, migration_unreadable_votes_text,
+    should_dispatch_cold_start, spv_block_step,
 };
 
 /// Drives platform-level accessibility (AccessKit) activation on the first
@@ -482,6 +483,19 @@ impl MigrationReconciler {
                 let handle = MessageBanner::set_global(
                     ctx,
                     migration_unreadable_votes_text(count),
+                    MessageType::Warning,
+                );
+                handle.disable_auto_dismiss();
+                self.banner_handle = Some(handle);
+            }
+            MigrationState::SucceededWithUnreadableIdentities { count } => {
+                // Same shape as the vote warning: the drain is done and the rows
+                // are still in the previous version's storage, so no retry action
+                // — but the keys those identities held are not loaded, so the user
+                // must be told even if they stepped away.
+                let handle = MessageBanner::set_global(
+                    ctx,
+                    migration_unreadable_identities_text(count),
                     MessageType::Warning,
                 );
                 handle.disable_auto_dismiss();

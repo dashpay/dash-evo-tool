@@ -38,6 +38,11 @@ pub enum MigrationStep {
     /// / master xpub) into the DET wallet-metadata sidecar in
     /// `det-app.sqlite`.
     WalletMeta,
+    /// Importing legacy `identity` rows — and the owner / voting / payout
+    /// keys they carry — into the modern identity store. Runs after the
+    /// wallet drain so each identity's key lands against a wallet that
+    /// already exists.
+    Identities,
     /// Writing the completion sentinel and cleaning up.
     Finalize,
 }
@@ -65,6 +70,14 @@ pub enum MigrationState {
     /// the legacy rows are never deleted, and a retry cannot decode a corrupt
     /// row, so the user is told once rather than offered a futile retry.
     SucceededWithUnreadableVotes { count: u32 },
+    /// The wallet drain completed, but `count` legacy identities could not be
+    /// decoded and did not come across — so the keys they held (a masternode's
+    /// owner / voting key, say) are not loaded. Terminal and non-fatal: the
+    /// legacy rows are never deleted and the import sentinel stays unwritten,
+    /// so a later build with a fixed decoder retries automatically. Separate
+    /// from [`Self::SucceededWithUnreadableVotes`] because the remedy differs —
+    /// re-import a key, not re-schedule a vote.
+    SucceededWithUnreadableIdentities { count: u32 },
     /// Migration failed. The wrapped error is rendered for the user via
     /// its `Display` impl at banner-render time; the typed chain is
     /// preserved for the details panel and logs.
@@ -88,6 +101,10 @@ impl PartialEq for MigrationState {
             (
                 MigrationState::SucceededWithUnreadableVotes { count: a },
                 MigrationState::SucceededWithUnreadableVotes { count: b },
+            ) => a == b,
+            (
+                MigrationState::SucceededWithUnreadableIdentities { count: a },
+                MigrationState::SucceededWithUnreadableIdentities { count: b },
             ) => a == b,
             (MigrationState::Running { step: a }, MigrationState::Running { step: b }) => a == b,
             (MigrationState::Failed { error: a }, MigrationState::Failed { error: b }) => {
@@ -176,6 +193,7 @@ mod tests {
             MigrationStep::Shielded,
             MigrationStep::WalletSeeds,
             MigrationStep::WalletMeta,
+            MigrationStep::Identities,
             MigrationStep::Finalize,
         ] {
             status.set_state(MigrationState::Running { step });

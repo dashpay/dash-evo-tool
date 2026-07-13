@@ -21,6 +21,7 @@ use rusqlite::Connection;
 
 use crate::backend_task::contested_names::ScheduledDPNSVote;
 use crate::database::{Database, column_exists, table_exists};
+use crate::model::qualified_identity::{IdentityStatus, QualifiedIdentity};
 use crate::model::settings::{
     AppSettings, RootScreenType, UserMode, network_from_legacy_str, theme_mode_from_str,
 };
@@ -48,6 +49,38 @@ pub(crate) struct LegacyScheduledVotes {
 /// [`AppContext::save_top_ups`](crate::context::AppContext::save_top_ups)
 /// persists (`top_up_index -> amount`).
 pub(crate) type LegacyTopUps = Vec<([u8; 32], BTreeMap<u32, u64>)>;
+
+/// One decoded local identity from the legacy `identity` table.
+///
+/// `qi` carries the identity's private keys, so it is moved straight into
+/// [`AppContext::insert_local_qualified_identity`](crate::context::AppContext::insert_local_qualified_identity)
+/// — the only writer that routes key material through the vault seam.
+#[derive(Debug)]
+pub(crate) struct LegacyIdentityRow {
+    /// 32-byte identity id, the k/v scope key.
+    pub id: [u8; 32],
+    /// The decoded identity, with `status` and `network` already restored
+    /// from their columns — the bincode blob carries neither.
+    pub qi: QualifiedIdentity,
+    /// `(wallet seed hash, account index)` of the owning wallet. `None` for a
+    /// wallet-less identity (a masternode loaded by ProTxHash). Both-or-neither,
+    /// enforced by the legacy `CHECK` constraint.
+    pub wallet: Option<([u8; 32], u32)>,
+}
+
+/// Outcome of one legacy identity read.
+///
+/// `unreadable` counts rows whose blob could not be decoded. The caller
+/// withholds the completion sentinel while it is non-zero, so a later build
+/// with a fixed decoder can still pick those rows up — unlike a corrupt vote,
+/// an undecodable identity blob may be a decoder defect, not data rot.
+#[derive(Debug, Default)]
+pub(crate) struct LegacyIdentities {
+    /// Rows decoded into the modern domain type.
+    pub identities: Vec<LegacyIdentityRow>,
+    /// Rows that failed to decode. Never silently dropped by the caller.
+    pub unreadable: u32,
+}
 
 /// Read the user preferences held in the legacy `settings` row.
 ///
@@ -217,6 +250,103 @@ pub(crate) fn read_scheduled_votes(
             unix_timestamp,
             executed_successfully: executed != 0,
         });
+    }
+
+    Ok(out)
+}
+
+/// Read the local identities — and the private keys they hold — for `network`.
+///
+/// Only `is_local = 1` rows with a non-NULL `data` blob are user identities.
+/// v0.9.3 also cached observed identities (`is_local = 0`, often a NULL blob);
+/// every one of its own read paths filtered those out, and so does this one —
+/// they are a lookup cache, not the user's data.
+///
+/// A row whose blob will not decode is counted in
+/// [`LegacyIdentities::unreadable`] and skipped, so one bad blob never blocks
+/// the identities around it. Nothing about the blob — or the decoded identity —
+/// is ever logged: it carries private keys.
+pub(crate) fn read_identities(
+    conn: &Connection,
+    network: Network,
+) -> rusqlite::Result<LegacyIdentities> {
+    if !table_exists(conn, "identity")? {
+        return Ok(LegacyIdentities::default());
+    }
+
+    let mut stmt = conn.prepare(
+        "SELECT id, data, status, wallet, wallet_index FROM identity \
+         WHERE is_local = 1 AND data IS NOT NULL AND network IN (?1, ?2)",
+    )?;
+    let mut rows = stmt.query(rusqlite::params![
+        network.to_string(),
+        mainnet_alias_for(network)
+    ])?;
+
+    let mut out = LegacyIdentities::default();
+    while let Some(row) = rows.next()? {
+        let id: Vec<u8> = row.get(0)?;
+        let data: Vec<u8> = row.get(1)?;
+        let status: u8 = row.get(2)?;
+        let wallet: Option<Vec<u8>> = row.get(3)?;
+        let wallet_index: Option<u32> = row.get(4)?;
+
+        let Ok(id) = <[u8; 32]>::try_from(id.as_slice()) else {
+            tracing::warn!(
+                target = "database::legacy_import",
+                blob_len = id.len(),
+                "Skipping legacy identity with a non-32-byte id",
+            );
+            out.unreadable = out.unreadable.saturating_add(1);
+            continue;
+        };
+
+        // Both-or-neither: the legacy `CHECK` guarantees it, so a half-filled
+        // link is corruption. Dropping just the link would silently orphan the
+        // identity from the wallet that owns its keys, so the row is reported
+        // instead — the sentinel stays open and a later build can retry it.
+        let wallet = match (wallet, wallet_index) {
+            (None, None) => None,
+            (Some(seed_hash), Some(index)) => match <[u8; 32]>::try_from(seed_hash.as_slice()) {
+                Ok(seed_hash) => Some((seed_hash, index)),
+                Err(_) => {
+                    tracing::warn!(
+                        target = "database::legacy_import",
+                        identity = %hex::encode(id),
+                        "Skipping legacy identity whose wallet link is not a 32-byte seed hash",
+                    );
+                    out.unreadable = out.unreadable.saturating_add(1);
+                    continue;
+                }
+            },
+            _ => {
+                tracing::warn!(
+                    target = "database::legacy_import",
+                    identity = %hex::encode(id),
+                    "Skipping legacy identity with a half-filled wallet link",
+                );
+                out.unreadable = out.unreadable.saturating_add(1);
+                continue;
+            }
+        };
+
+        let Ok(mut qi) = QualifiedIdentity::from_bytes(&data) else {
+            tracing::warn!(
+                target = "database::legacy_import",
+                identity = %hex::encode(id),
+                "Skipping legacy identity whose stored data could not be decoded",
+            );
+            out.unreadable = out.unreadable.saturating_add(1);
+            continue;
+        };
+
+        // Neither field is in the bincode blob — the legacy encoder skipped both
+        // and kept them in columns. Without this, every imported identity reads
+        // back as `Unknown` status on mainnet.
+        qi.status = IdentityStatus::from(status);
+        qi.network = network;
+
+        out.identities.push(LegacyIdentityRow { id, qi, wallet });
     }
 
     Ok(out)
@@ -687,5 +817,244 @@ mod tests {
     fn top_ups_absent_table_reads_empty() {
         let conn = Connection::open_in_memory().unwrap();
         assert!(read_top_ups(&conn, Network::Testnet).unwrap().is_empty());
+    }
+
+    // ── Identities ───────────────────────────────────────────────────
+
+    fn create_identity_table(conn: &Connection) {
+        conn.execute_batch(
+            "CREATE TABLE identity (
+                id BLOB PRIMARY KEY,
+                data BLOB,
+                status INTEGER NOT NULL DEFAULT 0,
+                is_local INTEGER NOT NULL,
+                alias TEXT,
+                info TEXT,
+                wallet BLOB,
+                wallet_index INTEGER,
+                identity_type TEXT,
+                network TEXT NOT NULL
+            );",
+        )
+        .unwrap();
+    }
+
+    /// A genuinely-encodable identity blob, in the legacy `to_bytes()` shape.
+    fn identity_blob(id: [u8; 32]) -> Vec<u8> {
+        use crate::model::qualified_identity::IdentityType;
+        use dash_sdk::dpp::version::PlatformVersion;
+
+        let identity = dash_sdk::dpp::identity::Identity::create_basic_identity(
+            Identifier::from(id),
+            PlatformVersion::latest(),
+        )
+        .unwrap();
+        QualifiedIdentity {
+            identity,
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::User,
+            alias: Some("alias".to_string()),
+            private_keys: Default::default(),
+            dpns_names: vec![],
+            associated_wallets: BTreeMap::new(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: Default::default(),
+            status: Default::default(),
+            network: Network::Testnet,
+        }
+        .to_bytes()
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn insert_identity(
+        conn: &Connection,
+        id: [u8; 32],
+        data: Option<Vec<u8>>,
+        status: u8,
+        is_local: bool,
+        wallet: Option<(Vec<u8>, u32)>,
+        network: &str,
+    ) {
+        conn.execute(
+            "INSERT INTO identity (id, data, status, is_local, wallet, wallet_index, network)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params![
+                id.as_slice(),
+                data,
+                status,
+                i64::from(is_local),
+                wallet.as_ref().map(|(hash, _)| hash.clone()),
+                wallet.as_ref().map(|(_, index)| *index),
+                network,
+            ],
+        )
+        .unwrap();
+    }
+
+    /// The status column is the only source of an identity's status — the
+    /// bincode blob does not carry it. Losing it relabels every migrated
+    /// identity as "Unknown, refresh required".
+    #[test]
+    fn identities_restore_status_from_its_column() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_identity_table(&conn);
+        let id = [0xAA; 32];
+        insert_identity(&conn, id, Some(identity_blob(id)), 2, true, None, "testnet");
+
+        let read = read_identities(&conn, Network::Testnet).unwrap();
+
+        assert_eq!(read.identities.len(), 1);
+        assert_eq!(read.identities[0].qi.status, IdentityStatus::Active);
+        assert_eq!(read.identities[0].qi.network, Network::Testnet);
+        assert_eq!(read.identities[0].id, id);
+        assert_eq!(read.unreadable, 0);
+    }
+
+    /// v0.9.3 cached observed identities with `is_local = 0` and often a NULL
+    /// blob. They are a lookup cache, not the user's own identities — every
+    /// v0.9.3 read path filtered them out and so must this one.
+    #[test]
+    fn identities_skip_observed_and_null_blob_rows() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_identity_table(&conn);
+        let mine = [0xAA; 32];
+        let observed = [0xBB; 32];
+        let null_blob = [0xCC; 32];
+        insert_identity(
+            &conn,
+            mine,
+            Some(identity_blob(mine)),
+            2,
+            true,
+            None,
+            "testnet",
+        );
+        insert_identity(
+            &conn,
+            observed,
+            Some(identity_blob(observed)),
+            2,
+            false,
+            None,
+            "testnet",
+        );
+        insert_identity(&conn, null_blob, None, 2, true, None, "testnet");
+
+        let read = read_identities(&conn, Network::Testnet).unwrap();
+
+        assert_eq!(read.identities.len(), 1, "only the local, non-null row");
+        assert_eq!(read.identities[0].id, mine);
+        assert_eq!(
+            read.unreadable, 0,
+            "a skipped cache row is not a failure — counting it would withhold the \
+             sentinel forever",
+        );
+    }
+
+    /// The wallet link is what re-attaches an identity to the wallet holding its
+    /// keys. It must survive the read exactly as stored.
+    #[test]
+    fn identities_carry_their_wallet_link() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_identity_table(&conn);
+        let id = [0xAA; 32];
+        let seed_hash = [0x77; 32];
+        insert_identity(
+            &conn,
+            id,
+            Some(identity_blob(id)),
+            2,
+            true,
+            Some((seed_hash.to_vec(), 3)),
+            "testnet",
+        );
+
+        let read = read_identities(&conn, Network::Testnet).unwrap();
+        assert_eq!(read.identities[0].wallet, Some((seed_hash, 3)));
+    }
+
+    /// A corrupt blob is counted, never silently dropped, and never blocks the
+    /// identities around it.
+    #[test]
+    fn identities_count_unreadable_rows() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_identity_table(&conn);
+        let good = [0xAA; 32];
+        let corrupt = [0xBB; 32];
+        insert_identity(
+            &conn,
+            good,
+            Some(identity_blob(good)),
+            2,
+            true,
+            None,
+            "testnet",
+        );
+        insert_identity(
+            &conn,
+            corrupt,
+            Some(vec![0xFF; 8]),
+            2,
+            true,
+            None,
+            "testnet",
+        );
+
+        let read = read_identities(&conn, Network::Testnet).unwrap();
+
+        assert_eq!(read.identities.len(), 1, "the readable identity survives");
+        assert_eq!(read.identities[0].id, good);
+        assert_eq!(read.unreadable, 1);
+    }
+
+    /// Identities on another network must not leak into this network's import.
+    /// A pre-v29 `data.db` still spells mainnet `dash`.
+    #[test]
+    fn identities_filter_by_network_including_the_legacy_mainnet_spelling() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_identity_table(&conn);
+        let testnet_id = [0xAA; 32];
+        let legacy_mainnet_id = [0xBB; 32];
+        insert_identity(
+            &conn,
+            testnet_id,
+            Some(identity_blob(testnet_id)),
+            2,
+            true,
+            None,
+            "testnet",
+        );
+        insert_identity(
+            &conn,
+            legacy_mainnet_id,
+            Some(identity_blob(legacy_mainnet_id)),
+            2,
+            true,
+            None,
+            LEGACY_MAINNET_ALIAS,
+        );
+
+        let testnet = read_identities(&conn, Network::Testnet).unwrap();
+        assert_eq!(testnet.identities.len(), 1);
+        assert_eq!(testnet.identities[0].id, testnet_id);
+
+        let mainnet = read_identities(&conn, Network::Mainnet).unwrap();
+        assert_eq!(
+            mainnet.identities.len(),
+            1,
+            "a pre-v29 mainnet identity must still be found on mainnet",
+        );
+        assert_eq!(mainnet.identities[0].id, legacy_mainnet_id);
+    }
+
+    #[test]
+    fn identities_absent_table_reads_empty() {
+        let conn = Connection::open_in_memory().unwrap();
+        let read = read_identities(&conn, Network::Testnet).unwrap();
+        assert!(read.identities.is_empty());
+        assert_eq!(read.unreadable, 0);
     }
 }

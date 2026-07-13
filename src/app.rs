@@ -132,6 +132,7 @@ pub fn migration_running_text(step: MigrationStep) -> &'static str {
         MigrationStep::Shielded => "Verifying shielded balance.",
         MigrationStep::WalletSeeds => "Moving your wallets into the new vault.",
         MigrationStep::WalletMeta => "Updating wallet names.",
+        MigrationStep::Identities => "Restoring your identities and their keys.",
         MigrationStep::Finalize => "Finishing storage update.",
     }
 }
@@ -146,6 +147,20 @@ pub fn migration_unreadable_votes_text(count: u32) -> String {
     format!(
         "Some scheduled votes from the previous version could not be read and were not carried \
          over ({count} in total). Schedule them again on the Scheduled Votes screen."
+    )
+}
+
+/// User-facing banner copy for a migration that finished the wallet drain but
+/// could not decode `count` identities. Their keys are therefore not loaded, so
+/// the sentence names the action that restores them. Kept separate from the
+/// scheduled-votes copy because the remedy is different — load an identity, not
+/// re-schedule a vote. The previous version's data is never deleted, so the
+/// re-import is always possible. Exposed for kittest coverage.
+pub fn migration_unreadable_identities_text(count: u32) -> String {
+    format!(
+        "Some identities from the previous version could not be read and were not carried over \
+         ({count} in total). Your previous data is untouched. Load these identities again to \
+         restore their keys."
     )
 }
 
@@ -1840,6 +1855,7 @@ mod migration_banner_tests {
             MigrationStep::Shielded,
             MigrationStep::WalletSeeds,
             MigrationStep::WalletMeta,
+            MigrationStep::Identities,
             MigrationStep::Finalize,
         ] {
             let text = migration_running_text(step);
@@ -1863,6 +1879,7 @@ mod migration_banner_tests {
             migration_running_text(MigrationStep::Shielded),
             migration_running_text(MigrationStep::WalletSeeds),
             migration_running_text(MigrationStep::WalletMeta),
+            migration_running_text(MigrationStep::Identities),
             migration_running_text(MigrationStep::Finalize),
         ];
         let unique: std::collections::HashSet<&str> = labels.iter().copied().collect();

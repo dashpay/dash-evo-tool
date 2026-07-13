@@ -18,23 +18,42 @@
 //! no `core_wallet_name` column, no `onboarding_completed` column, and seeds
 //! stored raw with empty salt/nonce.
 
+use std::collections::BTreeMap;
+use std::str::FromStr;
 use std::sync::Arc;
 
 use dash_sdk::dpp::dashcore::Network;
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
+use dash_sdk::dpp::identity::v0::IdentityV0;
+use dash_sdk::dpp::identity::{
+    Identity, IdentityPublicKey, KeyID, KeyType, Purpose, SecurityLevel,
+};
+use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
+use dash_sdk::dpp::platform_value::BinaryData;
 use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
 use dash_sdk::platform::Identifier;
 use rusqlite::{Connection, params};
 
-use crate::backend_task::migration::finish_unwire::{self, MigrationCompletion, sentinel_key_for};
+use crate::backend_task::migration::finish_unwire::{
+    self, MigrationCompletion, identities_sentinel_key_for, sentinel_key_for,
+};
 use crate::backend_task::migration::legacy_settings::{SettingsImport, import_legacy_settings};
 use crate::context::AppContext;
 use crate::database::Database;
 use crate::database::test_helpers::{create_database_at_path, legacy_master_epk_bytes};
+use crate::model::qualified_identity::encrypted_key_storage::{
+    KeyStorage, PrivateKeyData, WalletDerivationPath,
+};
+use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
+use crate::model::qualified_identity::{
+    IdentityStatus, IdentityType, PrivateKeyTarget, QualifiedIdentity,
+};
 use crate::model::settings::{AppSettings, RootScreenType, ThemeMode};
 use crate::model::wallet::encryption::encrypt_message;
 use crate::model::wallet::{ClosedKeyItem, WalletSeedHash};
 use crate::wallet_backend::secret_seam::SecretScheme;
-use crate::wallet_backend::{DetScope, WalletBackend};
+use crate::wallet_backend::{DetScope, IdentityKeyView, WalletBackend};
 
 /// `DEFAULT_DB_VERSION` as shipped by v0.9.3. Every upgrading user's `data.db`
 /// enters the ladder here.
@@ -47,9 +66,132 @@ const USER_NETWORK: Network = Network::Testnet;
 const UNPROTECTED_SEED: [u8; 64] = [0xA9; 64];
 const PROTECTED_SEED: [u8; 64] = [0xC7; 64];
 const PROTECTED_PASSWORD: &str = "correct horse battery staple";
-const IDENTITY_ID: [u8; 32] = [0xBB; 32];
 const TOP_UP_AMOUNT: u64 = 123_456;
 const CONTESTED_NAME: &str = "quantum";
+
+/// Row A — the masternode identity whose owner + voting keys are the whole
+/// point of the identity import. Its `data` blob is [`V093_MASTERNODE_BLOB_HEX`].
+const IDENTITY_ID: [u8; 32] = [0xBB; 32];
+/// The voter identity associated with row A (`associated_voter_identity`).
+const VOTER_IDENTITY_ID: [u8; 32] = [0xBC; 32];
+/// Row B — a wallet-derived `User` identity on the unprotected wallet.
+const USER_IDENTITY_ID: [u8; 32] = [0xCC; 32];
+/// Row C — an `Evonode` identity with no wallet at all (loaded by ProTxHash).
+const EVONODE_IDENTITY_ID: [u8; 32] = [0xDD; 32];
+/// Row D — an observed (`is_local = 0`) identity: lookup cache, not user data.
+const OBSERVED_IDENTITY_ID: [u8; 32] = [0xEE; 32];
+/// Row E — a `User` identity on the password-protected (locked) wallet.
+const PROTECTED_IDENTITY_ID: [u8; 32] = [0xCD; 32];
+/// Row F — a local row whose `data` blob is NULL (v0.9.3 allowed it).
+const NULL_BLOB_IDENTITY_ID: [u8; 32] = [0xEF; 32];
+
+/// The masternode owner key held `Clear` in row A's legacy blob. After the
+/// import it must exist only in the vault — never in `det-app.sqlite`.
+const OWNER_PRIVATE_KEY: [u8; 32] = [0x11; 32];
+/// The masternode voting key held `Clear` in row A's legacy blob.
+const VOTING_PRIVATE_KEY: [u8; 32] = [0x22; 32];
+/// The `Clear` key held by the wallet-less evonode identity (row C).
+const EVONODE_PRIVATE_KEY: [u8; 32] = [0x33; 32];
+
+/// Legacy `identity.status` column values. The bincode blob does **not** carry
+/// status, so these are what prove the column is restored on import rather than
+/// every identity reading back as `Unknown`.
+const STATUS_ACTIVE: u8 = 2;
+const STATUS_PENDING_CREATION: u8 = 1;
+const STATUS_NOT_FOUND: u8 = 3;
+
+/// A **genuine v0.9.3** `QualifiedIdentity::to_bytes()` — the masternode
+/// identity of row A, carrying `Clear` owner and voting keys.
+///
+/// This is the wire-format contract between the two builds. v0.9.3 encodes with
+/// bincode `2.0.0-rc.3`; this tree decodes with `2.0.1`. Everything else about
+/// the import is reasoning about struct layout — this constant is the only proof
+/// that the actual bytes a real user has on disk still decode here.
+///
+/// To regenerate: build a throwaway crate (not a workspace member) depending on
+/// `dash-evo-tool` tag `v0.9.3`, construct the identity below — id
+/// [`IDENTITY_ID`], voter id [`VOTER_IDENTITY_ID`], type `Masternode`, alias
+/// `my-masternode`, `associated_owner_key_id = Some(0)`, an `OWNER` key (id 0,
+/// `Clear`([`OWNER_PRIVATE_KEY`]), `ECDSA_HASH160`) on
+/// `PrivateKeyOnMainIdentity` and a `VOTING` key (id 1,
+/// `Clear`([`VOTING_PRIVATE_KEY`]), `ECDSA_HASH160`) on
+/// `PrivateKeyOnVoterIdentity` — and print `hex::encode(qi.to_bytes())`.
+const V093_MASTERNODE_BLOB_HEX: &str = "00bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb02000000060000020014fc7250a211deddc70ee5a2738de5f07817351cef00010001050000020014531260aa2a199e228c537dfa42c82bea2c7c1f4d00fc40420f00010100bcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbc01010001050000020014531260aa2a199e228c537dfa42c82bea2c7c1f4d00fc40420f00010001050000020014531260aa2a199e228c537dfa42c82bea2c7c1f4d0000010001010d6d792d6d61737465726e6f64650200000000060000020014fc7250a211deddc70ee5a2738de5f07817351cef000001111111111111111111111111111111111111111111111111111111111111111101010001050000020014531260aa2a199e228c537dfa42c82bea2c7c1f4d000001222222222222222222222222222222222222222222222222222222222222222200";
+
+/// The legacy blob of row A, exactly as a v0.9.3 install holds it on disk.
+fn v093_masternode_blob() -> Vec<u8> {
+    hex::decode(V093_MASTERNODE_BLOB_HEX).expect("the golden blob is valid hex")
+}
+
+fn identity_public_key(id: KeyID, purpose: Purpose) -> IdentityPublicKey {
+    IdentityPublicKey::V0(IdentityPublicKeyV0 {
+        id,
+        purpose,
+        security_level: SecurityLevel::MASTER,
+        contract_bounds: None,
+        key_type: KeyType::ECDSA_HASH160,
+        read_only: false,
+        // 20 bytes: the shape of a hash160 key. The import never checks a key
+        // against its public data, so a stand-in value is enough here — row A's
+        // keys, the ones that matter, come from the real v0.9.3 blob instead.
+        data: BinaryData::new(vec![id as u8; 20]),
+        disabled_at: None,
+    })
+}
+
+/// Encode a `QualifiedIdentity` the way v0.9.3 did — same manual `Encode`, same
+/// bincode config. Used for the fixture rows whose exact bytes do not matter;
+/// row A instead carries the real v0.9.3 blob, which is what pins the wire format.
+fn legacy_identity_blob(
+    id: [u8; 32],
+    identity_type: IdentityType,
+    alias: &str,
+    keys: Vec<(PrivateKeyTarget, KeyID, Purpose, PrivateKeyData)>,
+) -> Vec<u8> {
+    let mut private_keys = BTreeMap::new();
+    let mut public_keys = BTreeMap::new();
+    for (target, key_id, purpose, data) in keys {
+        let public_key = identity_public_key(key_id, purpose);
+        public_keys.insert(key_id, public_key.clone());
+        private_keys.insert(
+            (target, key_id),
+            (QualifiedIdentityPublicKey::from(public_key), data),
+        );
+    }
+
+    QualifiedIdentity {
+        identity: Identity::V0(IdentityV0 {
+            id: Identifier::from(id),
+            public_keys,
+            balance: 1_000_000,
+            revision: 1,
+        }),
+        associated_voter_identity: None,
+        associated_operator_identity: None,
+        associated_owner_key_id: None,
+        identity_type,
+        alias: Some(alias.to_string()),
+        private_keys: KeyStorage::from(private_keys),
+        dpns_names: vec![],
+        associated_wallets: BTreeMap::new(),
+        secret_access: None,
+        wallet_index: None,
+        top_ups: BTreeMap::new(),
+        // Never encoded — the legacy `status` column is the only source, which is
+        // exactly what the import has to restore.
+        status: IdentityStatus::Unknown,
+        network: USER_NETWORK,
+    }
+    .to_bytes()
+}
+
+/// A key the wallet derives on demand — no secret bytes in the blob at all.
+fn wallet_derived_key(seed_hash: WalletSeedHash) -> PrivateKeyData {
+    PrivateKeyData::AtWalletDerivationPath(WalletDerivationPath {
+        wallet_seed_hash: seed_hash,
+        derivation_path: DerivationPath::from_str("m/9'/1'/5'/0'/0'").expect("derivation path"),
+    })
+}
 
 /// The seed vault + metadata sidecar state of the two migrated wallets, plus
 /// the envelope bytes the fixture wrote, so a test can assert the protected
@@ -62,6 +204,37 @@ struct Fixture {
     protected_ciphertext: Vec<u8>,
     protected_salt: Vec<u8>,
     protected_nonce: Vec<u8>,
+}
+
+/// Insert one row into the legacy `identity` table, in v0.9.3's column shape.
+#[allow(clippy::too_many_arguments)]
+fn insert_identity(
+    conn: &Connection,
+    id: [u8; 32],
+    data: Option<Vec<u8>>,
+    status: u8,
+    is_local: bool,
+    alias: &str,
+    wallet: Option<(WalletSeedHash, u32)>,
+    identity_type: &str,
+) {
+    conn.execute(
+        "INSERT INTO identity
+            (id, data, status, is_local, alias, wallet, wallet_index, identity_type, network)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        params![
+            id.as_slice(),
+            data,
+            status,
+            i64::from(is_local),
+            alias,
+            wallet.map(|(seed_hash, _)| seed_hash.to_vec()),
+            wallet.map(|(_, index)| index),
+            identity_type,
+            USER_NETWORK.to_string(),
+        ],
+    )
+    .expect("insert identity row");
 }
 
 /// Write a `data.db` in the exact shape v0.9.3 left on disk, then hand back the
@@ -313,21 +486,120 @@ fn write_v093_database(dir: &std::path::Path) -> Fixture {
     )
     .expect("insert protected wallet row");
 
-    // A masternode identity owned by the unprotected wallet. `data` is the opaque
-    // bincode blob v0.9.3 wrote (`QualifiedIdentity::to_bytes`); no current code
-    // path decodes it — see the module note on the identity-import gap.
-    conn.execute(
-        "INSERT INTO identity
-            (id, data, status, is_local, alias, wallet, wallet_index, identity_type, network)
-         VALUES (?1, ?2, 0, 1, 'my-masternode', ?3, 0, 'Masternode', ?4)",
-        params![
-            IDENTITY_ID.as_slice(),
-            vec![0u8; 16],
-            unprotected.as_slice(),
-            USER_NETWORK.to_string(),
-        ],
-    )
-    .expect("insert identity row");
+    // Row A — the masternode identity owned by the unprotected wallet, holding
+    // the user's owner + voting keys `Clear`. `data` is a REAL v0.9.3 blob, so
+    // this row also pins the cross-version bincode wire format.
+    insert_identity(
+        &conn,
+        IDENTITY_ID,
+        Some(v093_masternode_blob()),
+        STATUS_ACTIVE,
+        true,
+        "my-masternode",
+        Some((unprotected, 0)),
+        "Masternode",
+    );
+
+    // Row B — a `User` identity whose key is wallet-derived: nothing secret in
+    // the blob, but the wallet link must survive or the key cannot be derived.
+    insert_identity(
+        &conn,
+        USER_IDENTITY_ID,
+        Some(legacy_identity_blob(
+            USER_IDENTITY_ID,
+            IdentityType::User,
+            "my-username",
+            vec![(
+                PrivateKeyTarget::PrivateKeyOnMainIdentity,
+                0,
+                Purpose::AUTHENTICATION,
+                wallet_derived_key(unprotected),
+            )],
+        )),
+        STATUS_PENDING_CREATION,
+        true,
+        "my-username",
+        Some((unprotected, 1)),
+        "User",
+    );
+
+    // Row C — an evonode identity with no wallet at all (loaded by ProTxHash),
+    // holding a `Clear` key. A wallet-less identity must still import.
+    insert_identity(
+        &conn,
+        EVONODE_IDENTITY_ID,
+        Some(legacy_identity_blob(
+            EVONODE_IDENTITY_ID,
+            IdentityType::Evonode,
+            "my-evonode",
+            vec![(
+                PrivateKeyTarget::PrivateKeyOnMainIdentity,
+                0,
+                Purpose::OWNER,
+                PrivateKeyData::Clear(EVONODE_PRIVATE_KEY),
+            )],
+        )),
+        STATUS_NOT_FOUND,
+        true,
+        "my-evonode",
+        None,
+        "Evonode",
+    );
+
+    // Row D — an observed identity: v0.9.3's lookup cache, not the user's own.
+    // Importing it would put a stranger's identity on the Identities screen.
+    insert_identity(
+        &conn,
+        OBSERVED_IDENTITY_ID,
+        Some(legacy_identity_blob(
+            OBSERVED_IDENTITY_ID,
+            IdentityType::User,
+            "someone-else",
+            vec![],
+        )),
+        STATUS_ACTIVE,
+        false,
+        "someone-else",
+        None,
+        "User",
+    );
+
+    // Row E — a `User` identity on the password-protected wallet. That wallet is
+    // still locked after the drain, so this is the row that proves a locked
+    // wallet does not cost the user the identity, nor its link to that wallet.
+    insert_identity(
+        &conn,
+        PROTECTED_IDENTITY_ID,
+        Some(legacy_identity_blob(
+            PROTECTED_IDENTITY_ID,
+            IdentityType::User,
+            "cold-username",
+            vec![(
+                PrivateKeyTarget::PrivateKeyOnMainIdentity,
+                0,
+                Purpose::AUTHENTICATION,
+                wallet_derived_key(protected),
+            )],
+        )),
+        STATUS_ACTIVE,
+        true,
+        "cold-username",
+        Some((protected, 0)),
+        "User",
+    );
+
+    // Row F — v0.9.3 allowed a local row with no blob. Nothing to import; it must
+    // be skipped silently, not counted as a failure.
+    insert_identity(
+        &conn,
+        NULL_BLOB_IDENTITY_ID,
+        None,
+        STATUS_ACTIVE,
+        true,
+        "no-data",
+        None,
+        "User",
+    );
 
     conn.execute(
         "INSERT INTO scheduled_votes
@@ -439,6 +711,45 @@ fn fresh_install_schema_version() -> u16 {
     let db_file = dir.path().join("fresh.db");
     create_database_at_path(&db_file).expect("fresh install database");
     schema_version_at(&db_file)
+}
+
+/// The persisted shape of an identity entry, mirroring the private
+/// `context::identity_db::StoredQualifiedIdentity`. Lets the test read what
+/// actually landed **on disk** rather than trusting the in-memory struct — the
+/// only way to prove no plaintext key survived the import. Field order is the
+/// bincode contract; a drift in the real struct surfaces here as a decode error.
+#[derive(serde::Deserialize)]
+struct StoredIdentityOnDisk {
+    qi_bytes: Vec<u8>,
+    status: u8,
+    identity_type: String,
+    wallet_hash: Option<[u8; 32]>,
+    wallet_index: Option<u32>,
+}
+
+/// Read the raw stored entry for one identity out of the per-network k/v store.
+fn stored_identity(ctx: &Arc<AppContext>, id: [u8; 32]) -> StoredIdentityOnDisk {
+    ctx.det_kv()
+        .expect("per-network k/v")
+        .get::<StoredIdentityOnDisk>(DetScope::Identity(&id), "det:identity:v1")
+        .expect("read stored identity")
+        .expect("the identity must be stored after the import")
+}
+
+/// Every private key in a stored blob, as it sits on disk.
+fn stored_key_data(stored: &StoredIdentityOnDisk) -> Vec<PrivateKeyData> {
+    QualifiedIdentity::from_bytes(&stored.qi_bytes)
+        .expect("the stored blob must decode")
+        .private_keys
+        .private_keys
+        .values()
+        .map(|(_, data)| data.clone())
+        .collect()
+}
+
+/// `true` if `needle` appears anywhere in `haystack`.
+fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack.windows(needle.len()).any(|w| w == needle)
 }
 
 fn top_up_history(ctx: &Arc<AppContext>) -> Option<std::collections::BTreeMap<u32, u64>> {
@@ -631,10 +942,9 @@ async fn v093_install_upgrades_with_wallets_settings_votes_and_history_intact() 
         "the top-up audit trail must come across, scoped by its identity's network",
     );
 
-    // ── Identity ─────────────────────────────────────────────────────
-    // The identity row survives the ladder with its wallet link intact. It is the
-    // join the top-up import scopes on, and the source a future identity importer
-    // reads (see the module note): the ladder must not drop or orphan it.
+    // ── Identity: the legacy row survives the ladder ─────────────────
+    // The precondition the import consumes: the ladder must not drop or orphan
+    // the row it reads from.
     let conn = Connection::open(tmp.path().join("data.db")).expect("open data.db");
     let (alias, wallet, wallet_index, identity_type, network): (
         String,
@@ -663,7 +973,170 @@ async fn v093_install_upgrades_with_wallets_settings_votes_and_history_intact() 
         "a testnet identity must not be swept into mainnet by the v33 network rename",
     );
 
+    // ── Identity import: the user's identities and their keys ────────
+    let identities = ctx
+        .load_local_qualified_identities()
+        .expect("load imported identities");
+    let ids: Vec<[u8; 32]> = identities
+        .iter()
+        .map(|qi| qi.identity.id().to_buffer())
+        .collect();
+    // Sorted by identity id — the documented order of `load_identities_filtered`.
+    assert_eq!(
+        ids,
+        vec![
+            IDENTITY_ID,
+            USER_IDENTITY_ID,
+            PROTECTED_IDENTITY_ID,
+            EVONODE_IDENTITY_ID
+        ],
+        "every local identity must come across — and only those: an observed \
+         (is_local = 0) row is a lookup cache, and a NULL-blob row has nothing to import",
+    );
+
+    let masternode = identities
+        .iter()
+        .find(|qi| qi.identity.id().to_buffer() == IDENTITY_ID)
+        .expect("the masternode identity must be imported");
+    assert_eq!(masternode.alias.as_deref(), Some("my-masternode"));
+    assert_eq!(masternode.identity_type, IdentityType::Masternode);
+    assert_eq!(masternode.wallet_index, Some(0));
+    assert_eq!(
+        masternode.status,
+        IdentityStatus::Active,
+        "status lives in a column, not the blob — dropping it would relabel every \
+         imported identity as `Unknown, refresh required`",
+    );
+
+    // The whole point of the import: the masternode owner still controls the node.
+    let presence = masternode.masternode_key_presence();
+    assert!(
+        presence.owner && presence.voting,
+        "the owner and voting keys the user had loaded must come across, not be lost \
+         to a manual re-import: got {presence:?}",
+    );
+
+    // Type-filtered views — the Masternodes and Identities screens read these.
+    let masternode_ids: Vec<[u8; 32]> = ctx
+        .load_local_masternode_identities()
+        .expect("load masternode identities")
+        .iter()
+        .map(|qi| qi.identity.id().to_buffer())
+        .collect();
+    assert_eq!(
+        masternode_ids,
+        vec![IDENTITY_ID, EVONODE_IDENTITY_ID],
+        "the Masternodes screen must show the masternode and the evonode",
+    );
+    let user_ids: Vec<[u8; 32]> = ctx
+        .load_local_user_identities()
+        .expect("load user identities")
+        .iter()
+        .map(|qi| qi.identity.id().to_buffer())
+        .collect();
+    assert_eq!(
+        user_ids,
+        vec![USER_IDENTITY_ID, PROTECTED_IDENTITY_ID],
+        "the Identities screen must show both user identities",
+    );
+
+    // ── Wallet links survive, including to a still-locked wallet ─────
+    let stored_masternode = stored_identity(&ctx, IDENTITY_ID);
+    let stored_protected = stored_identity(&ctx, PROTECTED_IDENTITY_ID);
+    assert_eq!(
+        (stored_protected.wallet_hash, stored_protected.wallet_index),
+        (Some(fixture.protected), Some(0)),
+        "an identity on a locked wallet keeps its link — that link is what re-attaches \
+         it when the user unlocks the wallet",
+    );
+    assert_eq!(
+        (
+            stored_masternode.wallet_hash,
+            stored_masternode.wallet_index
+        ),
+        (Some(fixture.unprotected), Some(0)),
+    );
+    assert_eq!(
+        stored_masternode.identity_type, "Masternode",
+        "the type tag backs the filtered loads without a full blob decode",
+    );
+    let stored_evonode = stored_identity(&ctx, EVONODE_IDENTITY_ID);
+    assert_eq!(
+        (stored_evonode.wallet_hash, stored_evonode.wallet_index),
+        (None, None),
+        "a wallet-less identity must not acquire a wallet link",
+    );
+    assert_eq!(
+        stored_evonode.status, STATUS_NOT_FOUND,
+        "each identity keeps its own status",
+    );
+    assert_eq!(
+        stored_identity(&ctx, USER_IDENTITY_ID).status,
+        STATUS_PENDING_CREATION,
+    );
+
+    // The top-up history already imported under the same identity scope must
+    // still resolve — the two entries share a scope and must not collide.
+    assert_eq!(
+        top_up_history(&ctx),
+        Some(std::collections::BTreeMap::from([(0, TOP_UP_AMOUNT)])),
+        "the identity blob must not displace the top-up entry in the same scope",
+    );
+
     backend.shutdown().await;
+}
+
+/// The cross-version wire contract, in isolation: a `QualifiedIdentity` encoded
+/// by the **real v0.9.3 binary** (bincode `2.0.0-rc.3`) still decodes on this
+/// tree (bincode `2.0.1`).
+///
+/// Everything else about the identity import is reasoning about struct layout.
+/// This is the one test that reads bytes a real user actually has on disk. If
+/// bincode's wire format had drifted between the two versions, this fails — and
+/// the import would be dropping masternode keys on the floor.
+#[test]
+fn a_real_v093_identity_blob_still_decodes() {
+    let qi = QualifiedIdentity::from_bytes(&v093_masternode_blob())
+        .expect("a genuine v0.9.3 identity blob must decode on the current bincode");
+
+    assert_eq!(qi.identity.id().to_buffer(), IDENTITY_ID);
+    assert_eq!(qi.identity_type, IdentityType::Masternode);
+    assert_eq!(qi.alias.as_deref(), Some("my-masternode"));
+    assert_eq!(qi.associated_owner_key_id, Some(0));
+    assert_eq!(
+        qi.associated_voter_identity
+            .as_ref()
+            .map(|(identity, _)| identity.id().to_buffer()),
+        Some(VOTER_IDENTITY_ID),
+        "the associated voter identity must survive the decode",
+    );
+
+    // The keys are the payload. v0.9.3 held them `Clear`, and they must decode
+    // to exactly the bytes it wrote — a shifted field or a changed varint would
+    // corrupt them silently.
+    let keys = &qi.private_keys.private_keys;
+    assert_eq!(keys.len(), 2, "both private keys must decode");
+    assert_eq!(
+        keys.get(&(PrivateKeyTarget::PrivateKeyOnMainIdentity, 0))
+            .map(|(_, data)| data.clone()),
+        Some(PrivateKeyData::Clear(OWNER_PRIVATE_KEY)),
+        "the masternode owner key must decode byte-for-byte",
+    );
+    assert_eq!(
+        keys.get(&(PrivateKeyTarget::PrivateKeyOnVoterIdentity, 1))
+            .map(|(_, data)| data.clone()),
+        Some(PrivateKeyData::Clear(VOTING_PRIVATE_KEY)),
+        "the masternode voting key must decode byte-for-byte",
+    );
+
+    // Status is not in the blob — the legacy column is its only source. This is
+    // the default the import has to overwrite.
+    assert_eq!(
+        qi.status,
+        IdentityStatus::Unknown,
+        "status is not encoded; a decoded blob must come back `Unknown` so the \
+         importer's column restore is load-bearing",
+    );
 }
 
 /// The second launch after an upgrade. Every step must short-circuit on its
@@ -698,6 +1171,13 @@ async fn second_launch_after_a_v093_upgrade_changes_nothing() {
         .expect("user switches network");
     ctx.clear_all_scheduled_votes()
         .expect("user casts the vote");
+
+    // …and renames the imported masternode identity. On this (clean) path the
+    // identity sentinel is what must protect the edit; the skip-if-present rule
+    // is exercised by `a_retry_after_an_unreadable_identity_preserves_user_edits`,
+    // where the sentinel is deliberately withheld.
+    ctx.set_identity_alias(&Identifier::from(IDENTITY_ID), Some("my-renamed-node"))
+        .expect("user renames the identity");
 
     // Second launch: the boot import runs again, then the migration.
     assert_eq!(
@@ -736,6 +1216,23 @@ async fn second_launch_after_a_v093_upgrade_changes_nothing() {
         "the migrated wallet must stay reachable across launches",
     );
 
+    // The skip-if-present rule: a re-run must not push the legacy blob back over
+    // an identity the user has since edited.
+    assert_eq!(
+        ctx.get_identity_alias(&Identifier::from(IDENTITY_ID))
+            .expect("read alias")
+            .as_deref(),
+        Some("my-renamed-node"),
+        "a re-run must not overwrite the user's edit with the stale legacy identity",
+    );
+    assert_eq!(
+        ctx.load_local_qualified_identities()
+            .expect("load identities")
+            .len(),
+        4,
+        "a second launch must not duplicate or drop an identity",
+    );
+
     // The migration never deletes its source, so a later build can re-read it.
     let conn = Connection::open(tmp.path().join("data.db")).expect("open data.db");
     let wallets: i64 = conn
@@ -744,11 +1241,190 @@ async fn second_launch_after_a_v093_upgrade_changes_nothing() {
     let votes: i64 = conn
         .query_row("SELECT COUNT(*) FROM scheduled_votes", [], |r| r.get(0))
         .expect("count vote rows");
+    let identities: i64 = conn
+        .query_row("SELECT COUNT(*) FROM identity", [], |r| r.get(0))
+        .expect("count identity rows");
     assert_eq!(
-        (wallets, votes),
-        (2, 1),
+        (wallets, votes, identities),
+        (2, 1, 6),
         "legacy rows must survive untouched"
     );
 
     backend.shutdown().await;
+}
+
+/// The security contract: the import itself must never write a plaintext private
+/// key to disk.
+///
+/// v0.9.3 stored masternode owner / voting keys as `Clear` — plaintext, inside
+/// the identity blob. The import has to route them through the vault seam, so
+/// the at-rest blob keeps only `InVault` placeholders.
+///
+/// This reads the stored bytes **immediately after the migration, before any
+/// load path runs**, and that ordering is the whole point: reading them after a
+/// `load_local_qualified_identities()` would prove nothing, because the eager
+/// load-path repair (`migrate_identity_keys_to_vault`) vaults resident plaintext
+/// on read and would mask an importer that had written it. "Repaired on next
+/// read" is not a security property — the bytes must never hit the disk at all.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_import_never_writes_a_plaintext_key_to_disk() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    write_v093_database(tmp.path());
+
+    let (ctx, _) = boot(tmp.path());
+    let backend = wire_backend(&ctx).await;
+    finish_unwire::run(&ctx).await.expect("migration");
+
+    // Deliberately no `load_*` call before these reads.
+    for (id, label) in [
+        (IDENTITY_ID, "the masternode's owner + voting keys"),
+        (EVONODE_IDENTITY_ID, "the wallet-less evonode's key"),
+    ] {
+        let stored = stored_identity(&ctx, id);
+        let key_data = stored_key_data(&stored);
+        assert!(
+            !key_data.is_empty(),
+            "{label}: the keys must be stored, not dropped",
+        );
+        assert!(
+            key_data
+                .iter()
+                .all(|data| matches!(data, PrivateKeyData::InVault)),
+            "{label}: a `Clear`/`AlwaysClear` key must never survive the import to disk — \
+             it must be vaulted: got {key_data:?}",
+        );
+        for key in [OWNER_PRIVATE_KEY, VOTING_PRIVATE_KEY, EVONODE_PRIVATE_KEY] {
+            assert!(
+                !contains_bytes(&stored.qi_bytes, &key),
+                "{label}: raw private-key bytes must appear nowhere in the stored blob",
+            );
+        }
+    }
+
+    // Vaulted, not destroyed: the keys are readable back, byte-for-byte, so the
+    // masternode owner can still sign. Silently losing them would be as bad as
+    // leaking them.
+    let secret_store = ctx.secret_store();
+    let vault = IdentityKeyView::new(&secret_store, IDENTITY_ID);
+    assert_eq!(
+        vault
+            .get(&PrivateKeyTarget::PrivateKeyOnMainIdentity, 0)
+            .expect("read owner key from the vault")
+            .expect("the owner key must be in the vault")
+            .as_slice(),
+        OWNER_PRIVATE_KEY.as_slice(),
+        "the owner key must arrive in the vault intact",
+    );
+    assert_eq!(
+        vault
+            .get(&PrivateKeyTarget::PrivateKeyOnVoterIdentity, 1)
+            .expect("read voting key from the vault")
+            .expect("the voting key must be in the vault")
+            .as_slice(),
+        VOTING_PRIVATE_KEY.as_slice(),
+        "the voting key must arrive in the vault intact",
+    );
+
+    backend.shutdown().await;
+}
+
+/// The retry path, which is the only path where skip-if-present is load-bearing.
+///
+/// An undecodable identity blob withholds the identity sentinel, so the **next**
+/// launch runs the import again over identities that already landed. Without a
+/// skip-if-present check, that re-run would push the stale legacy blob back over
+/// them with `insert_local_qualified_identity`'s INSERT-OR-REPLACE — silently
+/// undoing anything the user changed in between.
+///
+/// (`second_launch_after_a_v093_upgrade_changes_nothing` cannot prove this: on a
+/// clean upgrade the sentinel short-circuits the pass before the check is
+/// reached.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_retry_after_an_unreadable_identity_preserves_user_edits() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    write_v093_database(tmp.path());
+
+    // One corrupt blob is enough to withhold the sentinel for the whole pass.
+    let corrupt_id = [0x0C; 32];
+    let conn = Connection::open(tmp.path().join("data.db")).expect("open data.db");
+    insert_identity(
+        &conn,
+        corrupt_id,
+        Some(vec![0xFF; 16]),
+        STATUS_ACTIVE,
+        true,
+        "corrupt",
+        None,
+        "User",
+    );
+    drop(conn);
+
+    let (ctx, _) = boot(tmp.path());
+    let backend = wire_backend(&ctx).await;
+    finish_unwire::run(&ctx).await.expect("first migration");
+
+    // The readable identities landed regardless of the corrupt row…
+    assert_eq!(
+        ctx.load_local_qualified_identities()
+            .expect("load identities")
+            .len(),
+        4,
+        "an undecodable blob must not block the identities that do decode",
+    );
+    // …the user is told…
+    assert_eq!(
+        *ctx.migration_status().state(),
+        crate::context::migration_status::MigrationState::SucceededWithUnreadableIdentities {
+            count: 1
+        },
+        "the user must learn that an identity did not come across",
+    );
+    // …and the sentinel stays unwritten, so the next launch retries.
+    assert!(
+        ctx.app_kv()
+            .get::<MigrationCompletion>(
+                DetScope::Global,
+                &identities_sentinel_key_for(USER_NETWORK)
+            )
+            .expect("read identity sentinel")
+            .is_none(),
+        "an unreadable row must withhold the sentinel, keeping the retry door open for \
+         a later build with a fixed decoder",
+    );
+
+    // The user renames the imported masternode before the next launch.
+    ctx.set_identity_alias(&Identifier::from(IDENTITY_ID), Some("my-renamed-node"))
+        .expect("rename identity");
+
+    // Second launch: with no sentinel, the identity import genuinely runs again.
+    finish_unwire::run(&ctx).await.expect("retry migration");
+
+    assert_eq!(
+        ctx.get_identity_alias(&Identifier::from(IDENTITY_ID))
+            .expect("read alias")
+            .as_deref(),
+        Some("my-renamed-node"),
+        "the retry must skip identities already imported — re-inserting would overwrite \
+         the user's edit with the stale legacy blob",
+    );
+    assert_eq!(
+        ctx.load_local_qualified_identities()
+            .expect("load identities")
+            .len(),
+        4,
+        "the retry must not duplicate the identities it already imported",
+    );
+
+    backend.shutdown().await;
+}
+
+/// The identity import carries its own sentinel. Reusing the wallet drain's
+/// would silently skip the import for every install that already drained its
+/// wallets under a build that had no identity importer — i.e. exactly the
+/// installs this feature exists for.
+#[test]
+fn the_identity_sentinel_is_per_network_and_distinct_from_the_wallet_sentinel() {
+    let testnet = identities_sentinel_key_for(USER_NETWORK);
+    assert_ne!(testnet, identities_sentinel_key_for(Network::Mainnet));
+    assert_ne!(testnet, sentinel_key_for(USER_NETWORK));
 }

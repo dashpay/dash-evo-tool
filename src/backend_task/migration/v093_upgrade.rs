@@ -1328,6 +1328,68 @@ async fn the_import_never_writes_a_plaintext_key_to_disk() {
     backend.shutdown().await;
 }
 
+/// A corrupt vote queue must never cost the user their identity keys.
+///
+/// The app-data pass (scheduled votes, top-up history) can fail hard — one
+/// malformed `det:scheduled_vote_voters:v1` blob is enough. That failure is
+/// deterministic: it recurs on every launch, and the app-data sentinel is never
+/// written. So if the identity import waited on the app-data result, a masternode
+/// owner's owner/voting keys would never reach the vault — not on this launch,
+/// not on any retry — because of a broken vote queue they cannot even see.
+///
+/// The two DET-owned passes are independent; neither may gate the other.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_corrupt_vote_index_never_strands_the_identity_keys() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    write_v093_database(tmp.path());
+
+    let (ctx, _) = boot(tmp.path());
+    let backend = wire_backend(&ctx).await;
+
+    // Poison the scheduled-vote roster with a blob that cannot decode into the
+    // voter list, so the app-data pass fails hard the way a corrupted entry would.
+    // (`det:scheduled_vote_voters:v1` is private to `context::identity_db`; a key
+    // rename surfaces here as an un-poisoned index, not a silent pass.)
+    ctx.det_kv()
+        .expect("per-network k/v")
+        .put(
+            DetScope::Global,
+            "det:scheduled_vote_voters:v1",
+            &vec![0xFFu8; 3],
+        )
+        .expect("poison the vote index");
+
+    // The failure still reaches the user — it is not swallowed…
+    assert!(
+        finish_unwire::run(&ctx).await.is_err(),
+        "a hard app-data failure must still surface, so the user gets a retry",
+    );
+
+    // …but it must not have taken the identities down with it.
+    assert_eq!(
+        ctx.load_local_qualified_identities()
+            .expect("load identities")
+            .len(),
+        4,
+        "a corrupt vote queue must not strand the user's identities",
+    );
+
+    let secret_store = ctx.secret_store();
+    let vault = IdentityKeyView::new(&secret_store, IDENTITY_ID);
+    assert_eq!(
+        vault
+            .get(&PrivateKeyTarget::PrivateKeyOnMainIdentity, 0)
+            .expect("read owner key from the vault")
+            .expect("the owner key must be in the vault")
+            .as_slice(),
+        OWNER_PRIVATE_KEY.as_slice(),
+        "the masternode owner key must reach the vault even when the vote import fails — \
+         otherwise a broken vote queue permanently costs the user control of their node",
+    );
+
+    backend.shutdown().await;
+}
+
 /// The retry path, which is the only path where skip-if-present is load-bearing.
 ///
 /// An undecodable identity blob withholds the identity sentinel, so the **next**

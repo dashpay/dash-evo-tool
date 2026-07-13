@@ -256,9 +256,13 @@ impl MigrationError {
 ///    needs the drain's output: a wired backend, a reachable vault, and a
 ///    hydrated `ctx.wallets` for wallet-derived identity keys to attach to.
 ///
-/// The wallet drain runs **regardless of the app-data outcome**. They are only
-/// coupled at the end, when the terminal state is published: a legacy vote row
-/// that cannot be imported must never stand between the user and their seeds.
+/// **No pass gates another.** The wallet drain runs regardless of the app-data
+/// outcome, and the identity import runs regardless of *both* — its result is
+/// judged only at the end, alongside theirs. A legacy vote row that cannot be
+/// imported must never stand between the user and their seeds, nor between the
+/// user and their identity keys: an app-data failure is deterministic, so
+/// letting it short-circuit the identity import would strand those keys outside
+/// the vault on every launch, not just this one.
 ///
 /// # Errors
 ///
@@ -301,19 +305,41 @@ pub async fn run(app_context: &Arc<AppContext>) -> Result<bool, TaskError> {
         }
     };
 
-    // Funds are reachable from here on, so the app-data outcome can now decide
-    // the terminal state. A hard failure leaves the app-data sentinel unwritten
-    // and reaches the user's "Retry now" banner; that retry re-runs the import
-    // alone, since the wallet drain short-circuits on its own sentinel.
-    let app_data = app_data?;
-
-    // Identities import last: it needs the drain's output — the backend wired,
-    // the vault reachable, and `ctx.wallets` hydrated — so that a wallet-derived
-    // identity key lands against a wallet that actually exists.
+    // Funds are reachable from here on. The identity import runs next, and its
+    // result — like the app-data one — is held rather than propagated, because
+    // the two DET-owned passes must not gate each other.
+    //
+    // The identity pass needs the drain's output (backend wired, vault reachable,
+    // `ctx.wallets` hydrated) so a wallet-derived key lands against a wallet that
+    // exists. It must NOT wait on the app-data result: a hard app-data failure —
+    // one malformed vote-index blob is enough — is deterministic, so unwrapping
+    // it first would skip the identity import on this launch *and every retry*
+    // (the app-data sentinel is never written, so the failure recurs forever).
+    // That would strand a masternode owner's private keys outside the vault
+    // permanently, over a corrupt vote queue.
     status.set_state(MigrationState::Running {
         step: MigrationStep::Identities,
     });
-    let identities = migrate_identities(app_context)?;
+    let identities = migrate_identities(app_context);
+
+    // Both DET-owned passes have now run. A hard failure in either still reaches
+    // the user's "Retry now" banner, but only after neither could block the
+    // other. The identity failure takes precedence when both fail: keys outrank
+    // votes.
+    let identities = match identities {
+        Ok(outcome) => outcome,
+        Err(identity_error) => {
+            if let Err(app_data_error) = &app_data {
+                tracing::warn!(
+                    target = "migration::finish_unwire",
+                    error = ?app_data_error,
+                    "App-data import failed on the same launch as the identity import; both retry on the next launch",
+                );
+            }
+            return Err(identity_error);
+        }
+    };
+    let app_data = app_data?;
 
     let moved_data = wallet_moved || app_data.moved_data() || identities.moved_data();
 

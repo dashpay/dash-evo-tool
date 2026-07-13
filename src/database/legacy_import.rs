@@ -287,9 +287,15 @@ pub(crate) fn read_identities(
     while let Some(row) = rows.next()? {
         let id: Vec<u8> = row.get(0)?;
         let data: Vec<u8> = row.get(1)?;
-        let status: u8 = row.get(2)?;
+        // SQLite stores both of these as signed 64-bit integers and the legacy
+        // schema puts no `CHECK` on either, so a corrupted row can hold a value
+        // that does not fit. Widen the read and convert explicitly: a narrow
+        // `row.get::<u8>` would raise `IntegralValueOutOfRange` through `?` and
+        // take the whole identity read down — every other row-level corruption
+        // here is counted and skipped, and this one must behave the same.
+        let status: i64 = row.get(2)?;
         let wallet: Option<Vec<u8>> = row.get(3)?;
-        let wallet_index: Option<u32> = row.get(4)?;
+        let wallet_index: Option<i64> = row.get(4)?;
 
         let Ok(id) = <[u8; 32]>::try_from(id.as_slice()) else {
             tracing::warn!(
@@ -299,6 +305,30 @@ pub(crate) fn read_identities(
             );
             out.unreadable = out.unreadable.saturating_add(1);
             continue;
+        };
+
+        let Ok(status) = u8::try_from(status) else {
+            tracing::warn!(
+                target = "database::legacy_import",
+                identity = %hex::encode(id),
+                "Skipping legacy identity with an out-of-range status value",
+            );
+            out.unreadable = out.unreadable.saturating_add(1);
+            continue;
+        };
+
+        let wallet_index = match wallet_index.map(u32::try_from) {
+            None => None,
+            Some(Ok(index)) => Some(index),
+            Some(Err(_)) => {
+                tracing::warn!(
+                    target = "database::legacy_import",
+                    identity = %hex::encode(id),
+                    "Skipping legacy identity with an out-of-range wallet index",
+                );
+                out.unreadable = out.unreadable.saturating_add(1);
+                continue;
+            }
         };
 
         // Both-or-neither: the legacy `CHECK` guarantees it, so a half-filled
@@ -1048,6 +1078,60 @@ mod tests {
             "a pre-v29 mainnet identity must still be found on mainnet",
         );
         assert_eq!(mainnet.identities[0].id, legacy_mainnet_id);
+    }
+
+    /// An out-of-range `status` / `wallet_index` is row-level corruption like
+    /// any other: counted, skipped, and never allowed to take down the whole
+    /// read. SQLite puts no `CHECK` on either column, so a corrupted value
+    /// (300 does not fit a `u8`) is storable — and a narrow `row.get` would
+    /// raise `IntegralValueOutOfRange` through `?`, losing every readable
+    /// identity alongside it, keys included.
+    #[test]
+    fn identities_skip_out_of_range_column_values_without_failing_the_read() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_identity_table(&conn);
+        let good = [0xAA; 32];
+        let bad_status = [0xBB; 32];
+        let bad_index = [0xCC; 32];
+
+        insert_identity(
+            &conn,
+            good,
+            Some(identity_blob(good)),
+            2,
+            true,
+            None,
+            "testnet",
+        );
+        // `status` and `wallet_index` are bound as raw integers, past the u8/u32
+        // range the modern types accept.
+        conn.execute(
+            "INSERT INTO identity (id, data, status, is_local, network)
+             VALUES (?1, ?2, 300, 1, 'testnet')",
+            rusqlite::params![bad_status.as_slice(), identity_blob(bad_status)],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO identity (id, data, status, is_local, wallet, wallet_index, network)
+             VALUES (?1, ?2, 2, 1, ?3, 4294967296, 'testnet')",
+            rusqlite::params![
+                bad_index.as_slice(),
+                identity_blob(bad_index),
+                [0x77u8; 32].as_slice()
+            ],
+        )
+        .unwrap();
+
+        let read = read_identities(&conn, Network::Testnet)
+            .expect("an out-of-range column must not fail the whole read");
+
+        assert_eq!(
+            read.identities.len(),
+            1,
+            "the readable identity must still come across",
+        );
+        assert_eq!(read.identities[0].id, good);
+        assert_eq!(read.unreadable, 2, "both corrupt rows are reported");
     }
 
     #[test]

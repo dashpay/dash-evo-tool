@@ -6,6 +6,9 @@
 
 use std::sync::Arc;
 
+use chrono::{LocalResult, TimeZone, Utc};
+use chrono_humanize::HumanTime;
+use dash_sdk::dpp::identity::TimestampMillis;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
@@ -49,6 +52,61 @@ const NO_OPEN_CONTESTS_MESSAGE: &str =
 /// The collapsible DPNS section header, with the open-contest count (TC-DPNS-02).
 fn dpns_section_header(open_contest_count: usize) -> String {
     format!("DPNS name contests to vote on ({open_contest_count})")
+}
+
+/// Framing shown once above the per-contest vote controls, so a masternode
+/// owner unfamiliar with DPNS contested voting understands what is being
+/// decided.
+const CONTEST_INTRO_MESSAGE: &str = "Several identities want the same name. Cast this node's vote to help decide who receives it, or to lock the name so no one gets it.";
+/// Nudge shown under a contest that still has no vote picked, so the user knows
+/// why the Cast votes button stays disabled.
+const NO_SELECTION_HINT: &str =
+    "No vote picked yet. Choose Abstain, Lock, or a candidate above to set this node's vote.";
+/// Tooltip on an enabled Cast votes button.
+const CAST_ENABLED_HINT: &str = "Submit this node's vote for every name you picked.";
+/// Tooltip on a disabled Cast votes button, explaining what unlocks it.
+const CAST_DISABLED_HINT: &str =
+    "Pick Abstain, Lock, or a candidate for at least one name to enable this.";
+
+/// The full DPNS domain a contest is fighting over: DPNS names register under
+/// `.dash`, so append it to the normalized label (shown bare elsewhere) to make
+/// clear this is a real domain registration.
+fn contest_display_name(normalized_name: &str) -> String {
+    format!("{normalized_name}.dash")
+}
+
+/// A candidate choice label carrying the candidate's current vote tally, so the
+/// voter sees the standing before picking. Phrased to avoid singular/plural
+/// verb agreement for later translation.
+fn candidate_choice_label(candidate_name: &str, votes: u32) -> String {
+    format!("Vote for {candidate_name} (votes so far: {votes})")
+}
+
+/// Render data for one open contest, snapshotted before the choice-writing
+/// loop so it does not borrow `open_contests` while `vote_selections` mutates.
+struct ContestVoteRow {
+    name: String,
+    end_time: Option<TimestampMillis>,
+    /// `(candidate id, candidate name, votes so far)` for each contestant.
+    candidates: Vec<(dash_sdk::platform::Identifier, String, u32)>,
+}
+
+/// A one-line status for a contest: how many identities are competing and when
+/// voting closes. Keeps the deadline absolute (ISO) plus a relative hint, and
+/// degrades cleanly when the end time has not loaded yet.
+fn contest_status_line(candidate_count: usize, end_time: Option<TimestampMillis>) -> String {
+    let count = format!("Identities competing for this name: {candidate_count}.");
+    match end_time {
+        Some(end_time) => match Utc.timestamp_millis_opt(end_time as i64) {
+            LocalResult::Single(dt) => {
+                let iso = dt.format("%Y-%m-%d %H:%M:%S");
+                let relative = HumanTime::from(dt);
+                format!("{count} Voting ends {iso} UTC ({relative}).")
+            }
+            _ => format!("{count} The voting deadline is unavailable."),
+        },
+        None => format!("{count} The voting deadline is still loading."),
+    }
 }
 
 /// The fixed top→bottom section order. Actions must precede Keys (TC-FR5-01).
@@ -731,68 +789,92 @@ impl MasternodeDetailView {
         let mut action = None;
         // Collect the render data up front so the choice-writing loop does not
         // borrow `self.open_contests` while mutating `self.vote_selections`.
-        let contests: Vec<(String, Vec<(dash_sdk::platform::Identifier, String)>)> = self
+        let contests: Vec<ContestVoteRow> = self
             .open_contests
             .iter()
             .map(|contest| {
                 let candidates = contest
                     .contestants
                     .as_ref()
-                    .map(|list| list.iter().map(|c| (c.id, c.name.clone())).collect())
+                    .map(|list| {
+                        list.iter()
+                            .map(|c| (c.id, c.name.clone(), c.votes))
+                            .collect()
+                    })
                     .unwrap_or_default();
-                (contest.normalized_contested_name.clone(), candidates)
+                ContestVoteRow {
+                    name: contest.normalized_contested_name.clone(),
+                    end_time: contest.end_time,
+                    candidates,
+                }
             })
             .collect();
 
-        for (name, candidates) in &contests {
+        ui.label(RichText::new(CONTEST_INTRO_MESSAGE).color(DashColors::text_secondary(dark_mode)));
+
+        for contest in &contests {
             ui.separator();
             ui.label(
-                RichText::new(name)
+                RichText::new(contest_display_name(&contest.name))
                     .strong()
                     .color(DashColors::text_primary(dark_mode)),
             );
-            let selected = self.vote_selections.get(name).copied();
+            ui.label(
+                RichText::new(contest_status_line(
+                    contest.candidates.len(),
+                    contest.end_time,
+                ))
+                .color(DashColors::text_secondary(dark_mode)),
+            );
+            let selected = self.vote_selections.get(&contest.name).copied();
             ui.horizontal_wrapped(|ui| {
                 if ui
                     .selectable_label(selected == Some(ResourceVoteChoice::Abstain), "Abstain")
                     .clicked()
                 {
                     self.vote_selections
-                        .insert(name.clone(), ResourceVoteChoice::Abstain);
+                        .insert(contest.name.clone(), ResourceVoteChoice::Abstain);
                 }
                 if ui
                     .selectable_label(selected == Some(ResourceVoteChoice::Lock), "Lock")
                     .clicked()
                 {
                     self.vote_selections
-                        .insert(name.clone(), ResourceVoteChoice::Lock);
+                        .insert(contest.name.clone(), ResourceVoteChoice::Lock);
                 }
                 // Candidate choices are scoped to THIS contest's contestants.
-                for (candidate_id, candidate_name) in candidates {
+                for (candidate_id, candidate_name, votes) in &contest.candidates {
                     let choice = ResourceVoteChoice::TowardsIdentity(*candidate_id);
                     if ui
                         .selectable_label(
                             selected == Some(choice),
-                            format!("Vote for {candidate_name}"),
+                            candidate_choice_label(candidate_name, *votes),
                         )
                         .clicked()
                     {
-                        self.vote_selections.insert(name.clone(), choice);
+                        self.vote_selections.insert(contest.name.clone(), choice);
                     }
                 }
             });
+            if selected.is_none() {
+                ui.label(
+                    RichText::new(NO_SELECTION_HINT).color(DashColors::text_secondary(dark_mode)),
+                );
+            }
         }
 
         ui.separator();
         let votes: Vec<(String, ResourceVoteChoice)> = self
             .vote_selections
             .iter()
-            .filter(|(name, _)| contests.iter().any(|(n, _)| n == *name))
+            .filter(|(name, _)| contests.iter().any(|c| &c.name == *name))
             .map(|(name, choice)| (name.clone(), *choice))
             .collect();
         let has_votes = !votes.is_empty();
         if ui
             .add_enabled(has_votes, egui::Button::new("Cast votes"))
+            .on_hover_text(CAST_ENABLED_HINT)
+            .on_disabled_hover_text(CAST_DISABLED_HINT)
             .clicked()
         {
             action = Some(AppAction::BackendTask(BackendTask::ContestedResourceTask(
@@ -1018,6 +1100,50 @@ mod tests {
     fn tc_dpns_02_header_shows_open_contest_count() {
         assert_eq!(dpns_section_header(3), "DPNS name contests to vote on (3)");
         assert_eq!(dpns_section_header(0), "DPNS name contests to vote on (0)");
+    }
+
+    #[test]
+    fn contest_name_gets_dash_suffix() {
+        // The normalized label is shown bare elsewhere; the vote section spells
+        // out the full `.dash` domain so the user knows it is a registration.
+        assert_eq!(contest_display_name("det"), "det.dash");
+    }
+
+    #[test]
+    fn candidate_label_carries_current_tally() {
+        let label = candidate_choice_label("alice", 5);
+        assert!(
+            label.contains("Vote for alice"),
+            "names the candidate: {label}"
+        );
+        assert!(label.contains('5'), "shows the running tally: {label}");
+    }
+
+    #[test]
+    fn status_line_reports_candidate_count() {
+        let line = contest_status_line(2, None);
+        assert!(
+            line.contains("Identities competing for this name: 2."),
+            "counts contestants: {line}"
+        );
+        assert!(
+            line.contains("still loading"),
+            "degrades when the deadline is absent: {line}"
+        );
+    }
+
+    #[test]
+    fn status_line_renders_absolute_deadline() {
+        // 2021-01-01T00:00:00Z in milliseconds.
+        let line = contest_status_line(3, Some(1_609_459_200_000));
+        assert!(
+            line.contains("Identities competing for this name: 3."),
+            "counts contestants: {line}"
+        );
+        assert!(
+            line.contains("2021-01-01 00:00:00 UTC"),
+            "shows the absolute ISO deadline: {line}"
+        );
     }
 
     #[test]

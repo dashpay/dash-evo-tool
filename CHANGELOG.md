@@ -151,6 +151,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Your settings and scheduled votes now survive an upgrade**: upgrading from an
+  earlier version no longer starts the app with a blank configuration. The first
+  launch after the upgrade brings across your selected network, start screen,
+  theme, onboarding state, Dash-Qt path and the remaining toggles — so a testnet
+  user is no longer relaunched on Mainnet — along with your scheduled DPNS votes
+  (choice, time and already-cast state) and your identities' top-up history.
+  Scheduled votes are imported even on an install whose wallets were already
+  moved by a previous launch. If a scheduled vote cannot be read, the app says so
+  in a banner with a "Retry now" action instead of dropping it silently; the
+  original data is never deleted from the previous version's storage.
+
 - **Expert mode now reveals the Masternodes tab without a restart**: turning on
   Expert mode in Settings immediately shows the "Masternodes" entry in the left
   nav. Previously the Expert-mode flag was stored separately per network, so the

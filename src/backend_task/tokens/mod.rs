@@ -108,8 +108,9 @@ pub enum TokenTask {
     QueryMyTokenBalances,
     QueryIdentityTokenBalance(IdentityTokenIdentifier),
     /// Stop tracking one `(identity, token)` balance: un-watch it upstream so
-    /// the background sync stops fetching it, then drop it from the My Tokens
-    /// ordering so the row disappears.
+    /// the background sync stops fetching it, drop it from the My Tokens
+    /// ordering so the row disappears, and record the dismissal so later
+    /// refreshes do not re-watch the pair.
     StopTrackingTokenBalance(IdentityTokenIdentifier),
     QueryDescriptionsByKeyword(String, Option<Start>),
     FetchTokenByContractId(Identifier),
@@ -538,13 +539,17 @@ impl AppContext {
                 }
             }
             TokenTask::SaveTokenLocally(token_info) => {
+                let token_id = token_info.token_id;
                 self.insert_token(
-                    &token_info.token_id,
+                    &token_id,
                     &token_info.token_name,
                     token_info.token_configuration,
                     &token_info.data_contract_id,
                     token_info.token_position,
                 )?;
+                // Importing a token is intent to track it, so it overrides an
+                // earlier "stop tracking" of the same token.
+                self.clear_untracked_token(&token_id)?;
 
                 Ok(BackendTaskSuccessResult::SavedToken)
             }

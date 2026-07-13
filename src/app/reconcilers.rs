@@ -34,8 +34,8 @@ use super::{
     MIGRATION_VOTES_ACK_ACTION_ID, SPV_CONNECTING_DESCRIPTION, SPV_CONTINUE_BACKGROUND_ACTION,
     SPV_SYNCING_DESCRIPTION, SpvBlockStep, cold_start_backend_wait_timed_out,
     migration_failed_with_unreadable_identities_text, migration_running_text,
-    migration_unreadable_identities_text, migration_unreadable_votes_text,
-    should_dispatch_cold_start, spv_block_step,
+    migration_unreadable_identities_and_votes_text, migration_unreadable_identities_text,
+    migration_unreadable_votes_text, should_dispatch_cold_start, spv_block_step,
 };
 
 /// Drives platform-level accessibility (AccessKit) activation on the first
@@ -503,6 +503,22 @@ impl MigrationReconciler {
                     MessageType::Warning,
                 );
                 handle.disable_auto_dismiss();
+                self.banner_handle = Some(handle);
+            }
+            MigrationState::SucceededWithUnreadableIdentitiesAndVotes { identities, votes } => {
+                // Both kinds of row were left behind. One Warning banner names both
+                // remedies — no retry, since neither corrupt row decodes better on a
+                // second pass. Sticky and acknowledgeable: the "Got it" action
+                // retires the durable vote warning (the deadline-critical half the
+                // user must not miss), after which the identity half keeps arriving
+                // on its own until a build with a fixed decoder imports the rows.
+                let handle = MessageBanner::set_global(
+                    ctx,
+                    migration_unreadable_identities_and_votes_text(identities, votes),
+                    MessageType::Warning,
+                );
+                handle.disable_auto_dismiss();
+                handle.with_action("Got it", MIGRATION_VOTES_ACK_ACTION_ID);
                 self.banner_handle = Some(handle);
             }
             MigrationState::FailedWithUnreadableIdentities { count, error } => {

@@ -82,6 +82,7 @@ pub fn derive_shielded_indicator(state: &MigrationState, skipped: bool) -> Shiel
         MigrationState::Success
         | MigrationState::SucceededWithUnreadableVotes { .. }
         | MigrationState::SucceededWithUnreadableIdentities { .. }
+        | MigrationState::SucceededWithUnreadableIdentitiesAndVotes { .. }
         | MigrationState::FailedWithUnreadableIdentities { .. } => ShieldedIndicator::Verified,
         // Idle / non-shielded running step → no badge.
         MigrationState::Idle | MigrationState::Running { .. } => ShieldedIndicator::Hidden,

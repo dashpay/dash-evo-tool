@@ -280,13 +280,13 @@ As a developer, I want to see the individual notes in my shielded pool — their
 - The Shielded tab lists each note with value, block height, and spent/unspent state, plus a synced-index and note-count summary.
 - Currently a gap: the Shielded Notes section renders only a placeholder ("Note history is managed by the upstream platform-wallet coordinator and will be surfaced here in a future update") — no per-note table, status, or count is shown.
 
-### WAL-030: Refresh a single-key wallet's balance and UTXOs [Gap]
+### WAL-030: Single-key wallet balance and UTXOs update automatically [Gap]
 **Persona:** Priya, Jordan
 
-As a user with an imported single-key wallet, I want to refresh its balance and UTXO list so that I can see funds that arrived at the imported address.
+As a user with an imported single-key wallet, I want its balance and UTXO list to update on their own as funds arrive and are spent, so that I can see my funds without hunting for a refresh control.
 
-- A refresh action updates the single-key wallet's balance and UTXO set from the chain.
-- Currently a gap (Decision #7): `RefreshSingleKeyWalletInfo` returns a "not supported in this version" result; single-key balance/UTXO refresh is re-enabled when single-key moves onto the upstream wallet runtime that provides UTXO discovery. Key data and receive still work.
+- The imported address is monitored automatically, the same way recovery-phrase wallet addresses are. No manual refresh action is offered.
+- Currently blocked upstream: monitoring requires registering the imported address as a watch-only wallet, but `platform-wallet` exposes no seedless wallet-registration entry point (`register_wallet` is private; the public constructors all require a recovery-phrase seed). Unblocked by a public `register_watch_only_wallet`. Key data and receive still work.
 
 ---
 
@@ -305,7 +305,8 @@ As a user, I want to send Dash to a recipient address so that I can make payment
 
 As a user with an imported private key, I want to send Dash from that single-key wallet so that I can move funds to another address.
 
-- Temporarily unavailable in this version (Decision #7): single-key send returns a clear, calm "not supported in this version — your data is preserved; use an HD recovery-phrase wallet" message. Single-key wallet data and its UTXOs are retained on disk and load correctly; only the spend action is gated. Re-enabled when single-key moves onto the upstream wallet runtime.
+- Temporarily unavailable in this version: the Send control for a single-key wallet is disabled and the app states the limitation and the workaround in place ("You can still receive funds at this address. To send these funds, import them into a recovery-phrase wallet."). A send that reaches the backend is refused with a typed error carrying the same message.
+- Currently blocked upstream, on the same gap as WAL-030: signing and raw-transaction broadcast are both already available, but coin selection needs the imported address's UTXOs, which cannot be discovered until the address can be registered as a watch-only wallet. Single-key wallet data is retained on disk and loads correctly; only the spend action is gated.
 
 ### SND-003: Receive Dash with QR code [Implemented]
 **Persona:** Alex, Priya

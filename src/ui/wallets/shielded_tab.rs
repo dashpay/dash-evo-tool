@@ -3,10 +3,12 @@ use crate::backend_task::BackendTask;
 use crate::backend_task::migration::MigrationTask;
 use crate::context::AppContext;
 use crate::context::migration_status::{MigrationState, MigrationStep};
+use crate::model::address::truncate_address;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::wallet::WalletSeedHash;
 use crate::ui::ScreenType;
 use crate::ui::components::wallet_unlock_popup::wallet_needs_unlock;
+use crate::ui::helpers::copy_text_to_clipboard;
 use crate::ui::theme::DashColors;
 use crate::ui::wallets::send_screen::SendFlow;
 use eframe::egui::{self, Ui};
@@ -26,6 +28,17 @@ pub const SHIELDED_LOCK_ICON: &str = "\u{1F512}"; // 🔒
 pub const SHIELDED_VERIFIED_ICON: &str = "\u{2714}"; // ✔
 pub const SHIELDED_RETRY_MIGRATION_LABEL: &str = "Retry shielded migration";
 pub const SHIELDED_SKIP_MIGRATION_LABEL: &str = "Skip for now";
+/// Receive-address section copy. Each is a complete sentence or a standalone
+/// label so the i18n pass extracts it as one translation unit; `pub` so the
+/// tests assert against the exact strings the UI renders.
+pub const SHIELDED_ADDRESS_HEADING: &str = "Shielded Address";
+pub const SHIELDED_ADDRESS_HINT: &str = "Share this address to receive a private transfer.";
+pub const SHIELDED_ADDRESS_PENDING_LABEL: &str =
+    "Your shielded address appears here once the wallet is unlocked.";
+pub const SHIELDED_ADDRESS_COPY_LABEL: &str = "Copy";
+pub const SHIELDED_ADDRESS_COPIED_LABEL: &str = "Shielded address copied to the clipboard.";
+pub const SHIELDED_ADDRESS_COPY_FAILED_LABEL: &str =
+    "The address could not be copied. Select the address text and copy it manually.";
 pub const SHIELDED_MIGRATION_ERROR_LABEL: &str =
     "Shielded data could not be migrated. Try again, or skip and use the rest of your wallet.";
 pub const SHIELDED_TAB_SKIPPED_LABEL: &str =
@@ -82,8 +95,10 @@ pub struct ShieldedTabView {
     tree_synced: bool,
     /// Pending backend task to dispatch on next ui() call (e.g., sync after Resync).
     pending_task: Option<BackendTask>,
-    /// Number of diversified addresses generated (always >= 1).
-    address_count: u32,
+    /// The wallet's shielded receive address (Bech32m), mirrored each frame from
+    /// the frame-safe [`AppContext`] snapshot. `None` until the wallet's Orchard
+    /// keys are bound.
+    shielded_address: Option<String>,
     /// J-3: session-local flag set when the user clicks "Skip for now"
     /// on the sidecar-failure banner. Suppresses the retry banner and
     /// locks the tab until the app restarts.
@@ -103,7 +118,7 @@ impl ShieldedTabView {
             is_initialized: false,
             tree_synced: false,
             pending_task: None,
-            address_count: 1,
+            shielded_address: None,
             sidecar_skipped: false,
         }
     }
@@ -145,7 +160,9 @@ impl ShieldedTabView {
             self.initializing = false;
             self.syncing = false;
             self.pending_task = None;
-            self.address_count = 1;
+            // Drop the previous wallet's address immediately rather than
+            // letting it linger for a frame — it is a payment destination.
+            self.shielded_address = None;
             // Skip-for-now is session-scoped to the wallet; a new
             // wallet starts with the retry banner re-enabled.
             self.sidecar_skipped = false;
@@ -168,17 +185,20 @@ impl ShieldedTabView {
             .unwrap_or(AppAction::None)
     }
 
-    /// Sync local display state from the push balance snapshot and the
-    /// upstream coordinator.
+    /// Sync local display state from the push snapshots and the upstream
+    /// coordinator.
     ///
     /// The upstream `platform-wallet` coordinator owns all Orchard state (keys,
-    /// sync progress, note tree). Balance is read from the frame-safe push
-    /// snapshot; `is_initialized` / `tree_synced` are set true whenever the
-    /// wallet backend is wired so spend buttons are enabled. Fine-grained sync
-    /// progress arrives through the push-based [`ConnectionStatus`].
+    /// sync progress, note tree). Balance and receive address are read from the
+    /// frame-safe push snapshots; `is_initialized` / `tree_synced` are set true
+    /// whenever the wallet backend is wired so spend buttons are enabled.
+    /// Fine-grained sync progress arrives through the push-based
+    /// [`ConnectionStatus`](crate::context::connection_status::ConnectionStatus).
     fn refresh_from_backend_state(&mut self) {
-        // Balance: use the frame-safe push snapshot (no lock in frame loop).
+        // Balance and address: frame-safe push snapshots, no async in the frame
+        // loop. Both are written on the backend side once Orchard keys bind.
         self.shielded_balance = self.app_context.shielded_balance_credits(&self.seed_hash);
+        self.shielded_address = self.app_context.shielded_receive_address(&self.seed_hash);
 
         // Treat the wallet as initialized and the tree as synced whenever the
         // backend is available — the coordinator resyncs Orchard state from
@@ -190,29 +210,79 @@ impl ShieldedTabView {
         }
     }
 
-    /// Render the collapsible shielded addresses section with a table of all
-    /// diversified addresses.
+    /// Render the shielded receive-address section: the address, a hint, and a
+    /// copy control. Open by default — receiving a private transfer is the
+    /// reason to visit this tab, so the address must not be a click away.
+    ///
+    /// Shows Orchard account 0, the only account DET binds and the only one its
+    /// spend path can spend from. Displaying any other account would offer a
+    /// destination whose funds the app could not move.
+    ///
+    // TODO: offer additional diversified addresses ("+") once upstream
+    // platform-wallet exposes a per-index accessor. At the pinned revision the
+    // only shielded address APIs are `shielded_default_address(account)` /
+    // `shielded_default_addresses()`; `OrchardKeySet::address_at(index)` is
+    // reachable only through the crate-private `shielded_keys` slot. Deriving
+    // them DET-side would duplicate Orchard key handling outside the coordinator
+    // seam, and mapping "+" onto a new ZIP-32 account would strand funds in an
+    // account the single-account spend path cannot spend from.
     fn render_address_section(&mut self, ui: &mut Ui, dark_mode: bool) {
-        let dev_mode = self.app_context.is_developer_mode();
-
         let header = egui::CollapsingHeader::new(
-            RichText::new("Shielded Addresses")
+            RichText::new(SHIELDED_ADDRESS_HEADING)
                 .size(16.0)
                 .color(DashColors::text_primary(dark_mode)),
         )
         .id_salt("shielded_addresses")
-        .default_open(dev_mode);
+        .default_open(true);
 
         header.show(ui, |ui| {
-            // Shielded addresses are derived by the upstream platform-wallet
-            // coordinator; the default address is available via the async
-            // WalletBackend::shielded_default_address API.
-            // TODO: render the default address here once a synchronous read is
-            // exposed through the push snapshot.
+            let Some(address) = self.shielded_address.clone() else {
+                ui.label(
+                    RichText::new(SHIELDED_ADDRESS_PENDING_LABEL)
+                        .color(DashColors::text_secondary(dark_mode)),
+                );
+                return;
+            };
+
             ui.label(
-                RichText::new("Shielded address available after wallet unlock and sync.")
+                RichText::new(SHIELDED_ADDRESS_HINT)
+                    .size(12.0)
                     .color(DashColors::text_secondary(dark_mode)),
             );
+            ui.add_space(4.0);
+
+            let copy_requested = ui
+                .horizontal(|ui| {
+                    // Truncated for layout; the full address is always one hover
+                    // away and the clipboard always receives the full string.
+                    let shown = truncate_address(&address, 20, 12);
+                    let clicked_address = ui
+                        .add(
+                            egui::Label::new(
+                                RichText::new(shown)
+                                    .monospace()
+                                    .color(DashColors::text_primary(dark_mode)),
+                            )
+                            .sense(egui::Sense::click()),
+                        )
+                        .on_hover_text(&address)
+                        .clicked();
+                    let clicked_button = ui.button(SHIELDED_ADDRESS_COPY_LABEL).clicked();
+                    clicked_address || clicked_button
+                })
+                .inner;
+
+            if copy_requested {
+                match copy_text_to_clipboard(&address) {
+                    Ok(()) => {
+                        self.success_message = Some(SHIELDED_ADDRESS_COPIED_LABEL.to_string());
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "Shielded address clipboard copy failed");
+                        self.error_message = Some(SHIELDED_ADDRESS_COPY_FAILED_LABEL.to_string());
+                    }
+                }
+            }
         });
     }
 
@@ -692,6 +762,54 @@ mod tests {
             ),
             ShieldedIndicator::Verifying,
             "Verifying gates the spending-paused lock — must stay wired",
+        );
+    }
+
+    /// WAL-028 — the receive-address copy is i18n-clean: complete sentences for
+    /// the prose, a bare label for the button. The pending copy is what a
+    /// locked / not-yet-bound wallet shows in place of an address, so it must
+    /// never read as if an address were present.
+    #[test]
+    fn shielded_address_section_copy_is_i18n_clean() {
+        for sentence in [
+            SHIELDED_ADDRESS_HINT,
+            SHIELDED_ADDRESS_PENDING_LABEL,
+            SHIELDED_ADDRESS_COPIED_LABEL,
+            SHIELDED_ADDRESS_COPY_FAILED_LABEL,
+        ] {
+            assert!(
+                sentence.ends_with('.'),
+                "user-facing copy must be a complete sentence: {sentence}"
+            );
+        }
+        assert!(!SHIELDED_ADDRESS_HEADING.is_empty());
+        assert!(!SHIELDED_ADDRESS_COPY_LABEL.is_empty());
+        // The failure copy must give the user a way out on their own — no
+        // dead end, no "contact support".
+        assert!(
+            SHIELDED_ADDRESS_COPY_FAILED_LABEL.contains("manually"),
+            "the copy-failure message must offer a self-service fallback",
+        );
+    }
+
+    /// The address the tab renders is the one the clipboard receives — the
+    /// truncation is display-only. A user who copies must get a payable
+    /// address, never the ellipsised form.
+    #[test]
+    fn displayed_address_is_truncated_but_copy_uses_the_full_string() {
+        let address = "tdash1z".to_string() + &"q".repeat(70);
+        let shown = truncate_address(&address, 20, 12);
+
+        assert!(
+            shown.contains("..."),
+            "long addresses are truncated on screen"
+        );
+        assert!(shown.len() < address.len());
+        // The full string stays intact for the clipboard and the hover text.
+        assert!(address.starts_with("tdash1z"));
+        assert_eq!(
+            crate::model::address::AddressKind::detect(&address),
+            Some(crate::model::address::AddressKind::Shielded),
         );
     }
 

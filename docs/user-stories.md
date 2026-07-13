@@ -262,14 +262,15 @@ As a user, I want the app to tell me when a wallet's totals don't add up after s
 - The banner is not repeated on every later sync while the same difference persists, and it clears on its own once the totals agree again.
 - The check runs for all loaded wallets, not just the one currently on screen.
 
-### WAL-028: View and copy my shielded receive address [Gap]
+### WAL-028: View and copy my shielded receive address [Implemented]
 **Persona:** Jordan
 
-As a developer, I want to view and copy my own shielded receive address (and generate additional diversified addresses) so that I can give it to another party to receive a private transfer.
+As a developer, I want to view and copy my own shielded receive address so that I can give it to another party to receive a private transfer.
 
-- The Shielded tab shows the wallet's default shielded address once the wallet is unlocked and synced.
-- A copy-to-clipboard control is available, and additional diversified addresses can be generated on demand.
-- Currently a gap: the Shielded tab renders only a placeholder ("Shielded address available after wallet unlock and sync"); the underlying `WalletBackend::shielded_default_address` read is async-only and not surfaced synchronously to the UI, so no address, copy control, or diversified-address generator is shown.
+- The Shielded tab shows the wallet's shielded address (Orchard account 0) once the wallet's shielded keys are bound at unlock; until then it says the address appears after unlock.
+- The address is copied to the clipboard by clicking either the address itself or the Copy button; the full address is copied even though the display is truncated.
+- The address is published to the UI through a frame-safe snapshot written on the backend side after `ensure_shielded_bound`, sourced from the upstream key slot the shielded coordinator scans with — never re-derived in DET.
+- Generating additional diversified addresses remains a gap: upstream `platform-wallet` exposes no per-diversifier-index accessor (only `shielded_default_address` / `shielded_default_addresses`), so a "+" control cannot be wired without either duplicating Orchard key derivation outside the coordinator seam or stranding funds in a ZIP-32 account the single-account spend path cannot spend from.
 
 ### WAL-029: Inspect shielded note details [Gap]
 **Persona:** Jordan

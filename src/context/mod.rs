@@ -147,6 +147,23 @@ pub struct AppContext {
     /// first completed sync delivers a balance.  Must never be written from the frame
     /// loop (Nagatha ruling: no `block_in_place`/`block_on` on the UI thread).
     pub(crate) shielded_balances: Arc<Mutex<std::collections::HashMap<WalletSeedHash, u64>>>,
+    /// Frame-safe shielded receive-address snapshot (Bech32m, Orchard account 0).
+    ///
+    /// The read side of the receive-address bridge: written on the async backend
+    /// side by [`Self::cache_shielded_receive_address`] right after the wallet's
+    /// Orchard keys are bound, read synchronously in the frame loop via
+    /// [`Self::shielded_receive_address`]. Starts empty — the Shielded tab shows
+    /// its "not ready yet" copy until a bind completes.
+    ///
+    /// **Funds safety:** the address is produced by the upstream-owned key slot
+    /// (`PlatformWallet::shielded_default_address`), i.e. the same `OrchardKeySet`
+    /// that `bind_shielded` registered with the `NetworkShieldedCoordinator` as
+    /// the viewing keys it scans with. It is never re-derived DET-side, so a
+    /// displayed address is always one the wallet can actually detect notes for.
+    /// Evicted on wallet removal so a re-imported seed can never surface a
+    /// removed wallet's address. Must never be written from the frame loop
+    /// (Nagatha ruling: no `block_in_place`/`block_on` on the UI thread).
+    pub(crate) shielded_addresses: Arc<Mutex<std::collections::HashMap<WalletSeedHash, String>>>,
     /// Frame-safe platform-address balance snapshot (duffs, summed across owned addresses).
     ///
     /// Written by `on_platform_address_sync_completed` in [`EventBridge`] after each
@@ -370,6 +387,7 @@ impl AppContext {
             ),
             platform_protocol_version: AtomicU32::new(0),
             shielded_balances: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            shielded_addresses: Arc::new(Mutex::new(std::collections::HashMap::new())),
             platform_balances: Arc::new(Mutex::new(std::collections::HashMap::new())),
             platform_sync_cursors: Arc::new(Mutex::new(std::collections::HashMap::new())),
             egui_ctx,
@@ -575,6 +593,21 @@ impl AppContext {
             .ok()
             .and_then(|map| map.get(seed_hash).copied())
             .unwrap_or(0)
+    }
+
+    /// Synchronous, frame-safe reader for the wallet's shielded receive address
+    /// (Bech32m, Orchard account 0). Returns `None` until the wallet's shielded
+    /// keys are bound — the Shielded tab renders its "not ready yet" copy then.
+    ///
+    /// The read side of the push snapshot; the write side is
+    /// [`Self::cache_shielded_receive_address`], driven from the JIT bootstrap
+    /// once `ensure_shielded_bound` succeeds. Safe to call from the egui frame
+    /// loop — no blocking I/O, no async.
+    pub fn shielded_receive_address(&self, seed_hash: &WalletSeedHash) -> Option<String> {
+        self.shielded_addresses
+            .lock()
+            .ok()
+            .and_then(|map| map.get(seed_hash).cloned())
     }
 
     /// Synchronous read of the frame-safe platform-address balance for `seed_hash`.

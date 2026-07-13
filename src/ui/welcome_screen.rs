@@ -1,9 +1,11 @@
 use crate::app::AppAction;
 use crate::context::AppContext;
+use crate::model::user_role::UserRole;
 use crate::ui::components::icons::load_svg_icon;
+use crate::ui::components::message_banner::MessageBanner;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::theme::{DashColors, Shadow, Shape, Spacing};
-use crate::ui::{RootScreenType, ScreenType};
+use crate::ui::{MessageType, RootScreenType, ScreenType};
 use egui::{RichText, ScrollArea, Vec2};
 use std::sync::Arc;
 
@@ -65,7 +67,13 @@ impl WelcomeScreen {
                                 .color(DashColors::text_secondary(dark_mode)),
                         );
 
-                        ui.add_space(50.0);
+                        ui.add_space(40.0);
+
+                        // Experience-level selector — sets the app-global role
+                        // before the user picks an onboarding path.
+                        self.render_role_selector(ui, dark_mode);
+
+                        ui.add_space(32.0);
 
                         // Instructional text
                         ui.label(
@@ -85,6 +93,57 @@ impl WelcomeScreen {
         });
 
         action
+    }
+
+    /// Experience-level selector shown during onboarding. Writes the app-global
+    /// role (runtime cell + persisted `AppSettings.user_role`) the moment the
+    /// user changes it; the same value backs the Settings selector.
+    fn render_role_selector(&self, ui: &mut egui::Ui, dark_mode: bool) {
+        ui.label(
+            RichText::new("Choose your experience level:")
+                .size(14.0)
+                .color(DashColors::text_secondary(dark_mode)),
+        );
+
+        ui.add_space(8.0);
+
+        let mut role = self.app_context.user_role();
+        let previous = role;
+        ui.horizontal(|ui| {
+            for option in [UserRole::Everyday, UserRole::Power, UserRole::Developer] {
+                ui.radio_value(&mut role, option, option.label());
+            }
+        });
+
+        if role != previous {
+            match self.app_context.set_and_persist_user_role(role) {
+                // `role` is re-read from the context every frame, so a failed
+                // selection reverts on its own — only the banner is needed.
+                Ok(()) => ui.ctx().request_repaint(),
+                Err(e) => {
+                    MessageBanner::set_global(
+                        ui.ctx(),
+                        "Could not save your experience level. Select it again, or restart the application if the problem continues.",
+                        MessageType::Error,
+                    )
+                    .with_details(e);
+                }
+            }
+        }
+
+        ui.add_space(6.0);
+        // Description of the selected mode, then a reversibility hint.
+        ui.label(
+            RichText::new(role.description())
+                .size(12.0)
+                .color(DashColors::text_secondary(dark_mode)),
+        );
+        ui.add_space(2.0);
+        ui.label(
+            RichText::new("You can change this later in Network Settings.")
+                .size(11.0)
+                .color(DashColors::text_secondary(dark_mode)),
+        );
     }
 
     fn render_getting_started_section(&mut self, ui: &mut egui::Ui, dark_mode: bool) -> AppAction {

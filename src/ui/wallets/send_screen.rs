@@ -4,6 +4,7 @@ use crate::backend_task::core::{CoreTask, PaymentRecipient, WalletPaymentRequest
 use crate::backend_task::identity::{IdentityTask, IdentityTopUpInfo, TopUpIdentityFundingMethod};
 use crate::backend_task::wallet::WalletTask;
 use crate::context::AppContext;
+use crate::context::feature_gate::FeatureGate;
 use crate::model::address::{AddressKind, ValidatedAddress};
 use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
 use crate::model::fee_estimation::{
@@ -14,6 +15,7 @@ use crate::model::fee_estimation::{
     shield_from_balance_fee_headroom,
 };
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::user_role::UserRole;
 use crate::model::wallet::{Wallet, WalletSeedHash};
 use crate::ui::components::address_input::AddressInput;
 use crate::ui::components::amount_input::AmountInput;
@@ -1908,7 +1910,7 @@ impl WalletSendScreen {
         {
             self.selected_identity = Some(qi.clone());
         }
-        if !identities.is_empty() || self.app_context.is_developer_mode() {
+        if !identities.is_empty() || self.app_context.user_role().at_least(UserRole::Power) {
             ui.add_space(5.0);
 
             let is_identity_selected =
@@ -2050,9 +2052,10 @@ impl WalletSendScreen {
                 });
         }
 
-        // Shielded balance option (developer mode only)
+        // Shielded balance option (experimental, and only where the network
+        // defines the shielded state transitions).
         let shielded_balance = self.get_shielded_balance();
-        if self.app_context.is_developer_mode()
+        if FeatureGate::ShieldedOperations.is_available(&self.app_context)
             && let Some((seed_hash, balance)) = shielded_balance
             && balance > 0
         {
@@ -2101,13 +2104,14 @@ impl WalletSendScreen {
     }
 
     /// Destination address kinds for the free-form (General) send, derived from
-    /// the selected source. Shielded destinations are developer-mode only here.
+    /// the selected source. Shielded destinations are offered only where the
+    /// network can settle them and the feature is unlocked.
     fn general_destination_kinds(&self) -> Vec<AddressKind> {
-        let developer_mode = self.app_context.is_developer_mode();
+        let shielded_enabled = FeatureGate::ShieldedOperations.is_available(&self.app_context);
         match &self.selected_source {
             Some(SourceSelection::CoreWallet) => {
                 let mut kinds = vec![AddressKind::Core, AddressKind::Platform];
-                if developer_mode {
+                if shielded_enabled {
                     kinds.push(AddressKind::Shielded);
                 }
                 kinds.push(AddressKind::Identity);
@@ -2115,7 +2119,7 @@ impl WalletSendScreen {
             }
             Some(SourceSelection::PlatformAddresses(_)) => {
                 let mut kinds = vec![AddressKind::Platform, AddressKind::Core];
-                if developer_mode {
+                if shielded_enabled {
                     kinds.push(AddressKind::Shielded);
                 }
                 kinds.push(AddressKind::Identity);

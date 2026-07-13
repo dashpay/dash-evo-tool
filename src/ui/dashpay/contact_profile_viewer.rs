@@ -120,9 +120,9 @@ impl ContactProfileViewerScreen {
         AppAction::BackendTask(task)
     }
 
-    /// Render a "Pay" button gated behind developer mode.
+    /// Render a "Pay" button gated behind the experimental DashPay feature.
     fn pay_button(&self, ui: &mut egui::Ui) -> AppAction {
-        if !FeatureGate::DeveloperMode.is_available(&self.app_context) {
+        if !FeatureGate::DashPayOperations.is_available(&self.app_context) {
             return AppAction::None;
         }
         let pay_button = egui::Button::new(RichText::new("Pay").color(egui::Color32::WHITE))

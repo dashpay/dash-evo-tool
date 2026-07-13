@@ -14,8 +14,6 @@ pub struct Config {
     pub testnet_config: Option<NetworkConfig>,
     pub devnet_config: Option<NetworkConfig>,
     pub local_config: Option<NetworkConfig>,
-    /// Global developer mode setting
-    pub developer_mode: Option<bool>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -207,12 +205,6 @@ impl Config {
             write_network_config("LOCAL_", local_config)?;
         }
 
-        // Save global developer mode
-        if let Some(developer_mode) = self.developer_mode {
-            writeln!(env_file, "DEVELOPER_MODE={}", developer_mode)
-                .map_err(|e| ConfigError::SaveError { source: e })?;
-        }
-
         // Sync all data to disk before renaming to ensure crash-safety
         env_file
             .as_file()
@@ -292,17 +284,11 @@ impl Config {
             return Err(ConfigError::NoValidConfigs);
         }
 
-        // Load global developer mode
-        let developer_mode = std::env::var("DEVELOPER_MODE")
-            .ok()
-            .and_then(|s| s.parse::<bool>().ok());
-
         Ok(Config {
             mainnet_config,
             testnet_config,
             devnet_config,
             local_config,
-            developer_mode,
         })
     }
 
@@ -411,7 +397,6 @@ mod tests {
             testnet_config: None,
             devnet_config: None,
             local_config: None,
-            developer_mode: None,
         };
         assert!(config.config_for_network(Network::Mainnet).is_some());
         assert!(config.config_for_network(Network::Testnet).is_none());
@@ -426,7 +411,6 @@ mod tests {
             testnet_config: Some(make_network_config("https://2.2.2.2:1443", 19998)),
             devnet_config: Some(make_network_config("http://3.3.3.3:1443", 29998)),
             local_config: Some(make_network_config("http://127.0.0.1:2443", 20302)),
-            developer_mode: Some(true),
         };
         let main = config
             .config_for_network(Network::Mainnet)
@@ -456,7 +440,6 @@ mod tests {
             testnet_config: None,
             devnet_config: None,
             local_config: None,
-            developer_mode: None,
         };
         assert!(config.mainnet_config.is_none());
         let new_cfg = make_network_config("https://1.1.1.1:443", 9998);
@@ -475,7 +458,6 @@ mod tests {
             testnet_config: None,
             devnet_config: None,
             local_config: None,
-            developer_mode: None,
         };
         let new_cfg = make_network_config("https://new.example.com:443", 2222);
         config.update_config_for_network(Network::Mainnet, new_cfg);
@@ -494,7 +476,6 @@ mod tests {
             testnet_config: None,
             devnet_config: None,
             local_config: None,
-            developer_mode: None,
         };
         config.update_config_for_network(
             Network::Testnet,
@@ -544,7 +525,6 @@ mod tests {
             testnet_config: Some(make_network_config("https://2.2.2.2:1443", 19998)),
             devnet_config: None,
             local_config: None,
-            developer_mode: Some(true),
         };
 
         // Simulate what save() writes by formatting env lines
@@ -680,38 +660,6 @@ mod tests {
         assert!(result.is_err());
     }
 
-    // ── Config developer_mode ───────────────────────────────────────
-
-    #[test]
-    fn test_config_developer_mode() {
-        let config = Config {
-            mainnet_config: Some(make_network_config("https://1.1.1.1:443", 9998)),
-            testnet_config: None,
-            devnet_config: None,
-            local_config: None,
-            developer_mode: Some(true),
-        };
-        assert_eq!(config.developer_mode, Some(true));
-
-        let config_off = Config {
-            mainnet_config: Some(make_network_config("https://1.1.1.1:443", 9998)),
-            testnet_config: None,
-            devnet_config: None,
-            local_config: None,
-            developer_mode: Some(false),
-        };
-        assert_eq!(config_off.developer_mode, Some(false));
-
-        let config_none = Config {
-            mainnet_config: Some(make_network_config("https://1.1.1.1:443", 9998)),
-            testnet_config: None,
-            devnet_config: None,
-            local_config: None,
-            developer_mode: None,
-        };
-        assert_eq!(config_none.developer_mode, None);
-    }
-
     // ── Config clone ────────────────────────────────────────────────
 
     #[test]
@@ -721,13 +669,11 @@ mod tests {
             testnet_config: None,
             devnet_config: None,
             local_config: None,
-            developer_mode: Some(true),
         };
         let cloned = config.clone();
         assert_eq!(
             cloned.mainnet_config.as_ref().unwrap().core_rpc_port,
             config.mainnet_config.as_ref().unwrap().core_rpc_port,
         );
-        assert_eq!(cloned.developer_mode, config.developer_mode);
     }
 }

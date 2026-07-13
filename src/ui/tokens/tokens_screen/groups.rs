@@ -1,4 +1,5 @@
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::user_role::UserRole;
 use crate::ui::components::identity_selector::IdentitySelector;
 use crate::ui::theme::DashColors;
 use crate::ui::tokens::tokens_screen::TokensScreen;
@@ -185,7 +186,7 @@ impl TokensScreen {
                                 ui.label(format!("Member {}:", j + 1));
 
                                 // Collect other member identities to exclude duplicates
-                                let exclude_identities: Vec<_> = if !self.app_context.is_developer_mode() {
+                                let exclude_identities: Vec<_> = if !self.app_context.user_role().at_least(UserRole::Power) {
                                     group_ui
                                         .members
                                         .iter()
@@ -215,7 +216,7 @@ impl TokensScreen {
                                 ui.text_edit_singleline(&mut member.power_str);
 
                                 // Show red warning if someone else already used this identity
-                                if self.app_context.is_developer_mode()
+                                if self.app_context.user_role().at_least(UserRole::Power)
                                     && !group_ui.members[j].identity_str.is_empty()
                                     && group_ui.members.iter().enumerate().any(|(i, m)| {
                                     i > j && m.identity_str == group_ui.members[j].identity_str

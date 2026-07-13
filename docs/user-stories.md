@@ -1516,10 +1516,11 @@ As a masternode operator, I want a Refresh control on the Masternodes tab, so th
 - The card-list toolbar and a node's detail view each expose a Refresh action that re-reads the local cache immediately and dispatches a network re-fetch — one identity refresh per loaded node (or the single open node on the detail view) plus a DPNS-contest re-query so vote counts update too.
 - Refresh is a no-op when no node is loaded, and the detail-view re-query is skipped for a node that has no voter identity.
 
-### MN-012: Switch wallet/identity from the Masternodes header [Gap]
+### MN-012: Switch wallet/identity from the Masternodes header [Implemented]
 **Persona:** Priya
 
 As a masternode operator, I want the same page-scoped switcher on the Masternodes header as on other tabs, so that I can see and change the active wallet and the node in view without leaving the page.
 
 - The Masternodes header renders the page-aware breadcrumb with an interactive wallet pill (the funding source for Top Up), which two-way binds with the page's wallet context.
-- **Gap:** the page-scoped masternode object pill (an interactive `Ⓜ node ▾` dropdown, two-way bound with the card grid and detail view) required by the global-nav design is not built — only the wallet pill is present. Node selection currently works via card-click → detail and the "‹ All masternodes" back link. This is a deferred slice of the cross-cutting global-navigation app-shell work, tracked separately from the Masternodes page.
+- The third segment is a page-scoped node pill listing every loaded masternode/evonode, two-way bound with the page: opening a card names that node on the pill, and picking a node from the pill opens its detail view. It reads `(no masternode yet)` when none is loaded and `(choose a masternode)` while the grid is open.
+- Picking a node there never changes the identity shown on the everyday-user pages (see MN-005's Identity Hub filter) — the node selection is page-scoped, never the app-global identity.

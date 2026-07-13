@@ -380,52 +380,51 @@ impl AppContext {
         Ok(result)
     }
 
-    /// Drop a single `(identity, token)` pair from the My Tokens ordering.
+    /// Drop a single identity-token pair from the My Tokens ordering.
     /// Balances are owned upstream, so this only prunes DET's saved order
     /// list — see [`Self::mark_token_balance_untracked`] for the dismissal
     /// that keeps the pair out of future watch sets.
     pub fn remove_token_balance(
         &self,
-        token_id: Identifier,
-        identity_id: Identifier,
+        pair: IdentityTokenIdentifier,
     ) -> std::result::Result<(), TaskError> {
         let kv = self.det_kv()?;
-        prune_token_order(&kv, |(t, i)| !(*t == token_id && *i == identity_id))?;
+        prune_token_order(&kv, |(t, i)| {
+            !(*t == pair.token_id && *i == pair.identity_id)
+        })?;
         Ok(())
     }
 
-    /// Every `(token_id, identity_id)` pair the user stopped tracking.
+    /// Every identity-token pair the user stopped tracking.
     pub fn untracked_token_balances(
         &self,
-    ) -> std::result::Result<BTreeSet<(Identifier, Identifier)>, TaskError> {
+    ) -> std::result::Result<BTreeSet<IdentityTokenIdentifier>, TaskError> {
         read_untracked(&self.det_kv()?)
     }
 
-    /// Record a `(token, identity)` pair as no longer tracked, so balance
+    /// Record an identity-token pair as no longer tracked, so balance
     /// refreshes stop re-watching it upstream. Idempotent.
     pub fn mark_token_balance_untracked(
         &self,
-        token_id: Identifier,
-        identity_id: Identifier,
+        pair: IdentityTokenIdentifier,
     ) -> std::result::Result<(), TaskError> {
         let kv = self.det_kv()?;
         let mut pairs = read_untracked(&kv)?;
-        if pairs.insert((token_id, identity_id)) {
+        if pairs.insert(pair) {
             write_untracked(&kv, &pairs)?;
         }
         Ok(())
     }
 
-    /// Track a previously dismissed `(token, identity)` pair again.
+    /// Track a previously dismissed identity-token pair again.
     /// Idempotent — a pair that was never dismissed is left alone.
     pub fn clear_untracked_token_balance(
         &self,
-        token_id: Identifier,
-        identity_id: Identifier,
+        pair: IdentityTokenIdentifier,
     ) -> std::result::Result<(), TaskError> {
         let kv = self.det_kv()?;
         let mut pairs = read_untracked(&kv)?;
-        if pairs.remove(&(token_id, identity_id)) {
+        if pairs.remove(&pair) {
             write_untracked(&kv, &pairs)?;
         }
         Ok(())
@@ -713,11 +712,11 @@ fn decode_token_config(bytes: &[u8]) -> std::result::Result<TokenConfiguration, 
         .map_err(|source| TaskError::TokenConfigEncoding { source })
 }
 
-/// Read the dismissed `(token_id, identity_id)` pairs. An absent key means
-/// nothing was ever dismissed.
-fn read_untracked(
-    kv: &DetKv,
-) -> std::result::Result<BTreeSet<(Identifier, Identifier)>, TaskError> {
+/// Read the dismissed pairs. An absent key means nothing was ever dismissed.
+/// The stored payload is `(token_id, identity_id)`-ordered; that on-disk layout
+/// is fixed by already-written user data, so the mapping to the named fields
+/// happens here and nowhere else.
+fn read_untracked(kv: &DetKv) -> std::result::Result<BTreeSet<IdentityTokenIdentifier>, TaskError> {
     let Some(payload): Option<Vec<([u8; 32], [u8; 32])>> = kv
         .get(DetScope::Global, TOKEN_UNTRACKED_KEY)
         .map_err(token_err)?
@@ -726,17 +725,20 @@ fn read_untracked(
     };
     Ok(payload
         .into_iter()
-        .map(|(t, i)| (Identifier::from(t), Identifier::from(i)))
+        .map(|(token, identity)| IdentityTokenIdentifier {
+            token_id: Identifier::from(token),
+            identity_id: Identifier::from(identity),
+        })
         .collect())
 }
 
 fn write_untracked(
     kv: &DetKv,
-    pairs: &BTreeSet<(Identifier, Identifier)>,
+    pairs: &BTreeSet<IdentityTokenIdentifier>,
 ) -> std::result::Result<(), TaskError> {
     let payload: Vec<([u8; 32], [u8; 32])> = pairs
         .iter()
-        .map(|(t, i)| (t.to_buffer(), i.to_buffer()))
+        .map(|pair| (pair.token_id.to_buffer(), pair.identity_id.to_buffer()))
         .collect();
     kv.put(DetScope::Global, TOKEN_UNTRACKED_KEY, &payload)
         .map_err(token_err)
@@ -750,7 +752,7 @@ fn clear_untracked_token_in(
 ) -> std::result::Result<(), TaskError> {
     let mut pairs = read_untracked(kv)?;
     let before = pairs.len();
-    pairs.retain(|(t, _)| t != token_id);
+    pairs.retain(|pair| pair.token_id != *token_id);
     if pairs.len() != before {
         write_untracked(kv, &pairs)?;
     }
@@ -921,6 +923,13 @@ mod tests {
     // Untracked pairs: dismissals persist so refreshes stop re-watching.
     // ----------------------------------------------------------------
 
+    fn pair(token: u8, identity: u8) -> IdentityTokenIdentifier {
+        IdentityTokenIdentifier {
+            token_id: ident(token),
+            identity_id: ident(identity),
+        }
+    }
+
     #[test]
     fn untracked_pairs_read_as_empty_before_anything_is_dismissed() {
         let kv = empty_kv();
@@ -930,21 +939,37 @@ mod tests {
     #[test]
     fn untracked_pairs_round_trip_through_the_kv_store() {
         let kv = empty_kv();
-        let pairs = BTreeSet::from([(ident(1), ident(10)), (ident(2), ident(20))]);
+        let pairs = BTreeSet::from([pair(1, 10), pair(2, 20)]);
         write_untracked(&kv, &pairs).unwrap();
         assert_eq!(read_untracked(&kv).unwrap(), pairs);
+    }
+
+    /// The stored layout is `(token_id, identity_id)` and is fixed by
+    /// already-written user data: reading it back as the wrong field would
+    /// silently un-track a pair nobody dismissed.
+    #[test]
+    fn untracked_pairs_persist_in_token_then_identity_order() {
+        let kv = empty_kv();
+        write_untracked(&kv, &BTreeSet::from([pair(1, 10)])).unwrap();
+
+        let payload: Vec<([u8; 32], [u8; 32])> = kv
+            .get(DetScope::Global, TOKEN_UNTRACKED_KEY)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            payload,
+            vec![(ident(1).to_buffer(), ident(10).to_buffer())],
+            "token_id is stored first, identity_id second"
+        );
     }
 
     #[test]
     fn clearing_a_token_drops_its_dismissals_for_every_identity() {
         let kv = empty_kv();
         let cleared = ident(1);
-        let kept = (ident(2), ident(10));
-        write_untracked(
-            &kv,
-            &BTreeSet::from([(cleared, ident(10)), (cleared, ident(11)), kept]),
-        )
-        .unwrap();
+        let kept = pair(2, 10);
+        write_untracked(&kv, &BTreeSet::from([pair(1, 10), pair(1, 11), kept])).unwrap();
 
         clear_untracked_token_in(&kv, &cleared).unwrap();
 
@@ -954,7 +979,7 @@ mod tests {
     #[test]
     fn clearing_an_undismissed_token_is_a_noop() {
         let kv = empty_kv();
-        let pairs = BTreeSet::from([(ident(1), ident(10))]);
+        let pairs = BTreeSet::from([pair(1, 10)]);
         write_untracked(&kv, &pairs).unwrap();
         clear_untracked_token_in(&kv, &ident(9)).unwrap();
         assert_eq!(read_untracked(&kv).unwrap(), pairs);

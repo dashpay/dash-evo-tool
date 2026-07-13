@@ -483,21 +483,12 @@ impl AppContext {
                 .await
             }
             TokenTask::QueryIdentityTokenBalance(identity_token_pair) => {
-                self.query_token_balance(
-                    sdk,
-                    identity_token_pair.identity_id,
-                    identity_token_pair.token_id,
-                    sender,
-                )
-                .await
+                self.query_token_balance(sdk, identity_token_pair, sender)
+                    .await
             }
             TokenTask::StopTrackingTokenBalance(identity_token_pair) => {
-                self.stop_tracking_token_balance(
-                    identity_token_pair.identity_id,
-                    identity_token_pair.token_id,
-                    sender,
-                )
-                .await
+                self.stop_tracking_token_balance(identity_token_pair, sender)
+                    .await
             }
             TokenTask::FetchTokenByContractId(contract_id) => {
                 match DataContract::fetch_by_identifier(sdk, contract_id).await {

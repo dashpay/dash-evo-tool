@@ -28,6 +28,13 @@ impl AppContext {
             balances.remove(seed_hash);
         }
 
+        // Evict the receive-address snapshot for the same reason, and with a
+        // sharper edge: a stale address left behind here is one a user could
+        // copy and be paid at, so it must not outlive the wallet that owns it.
+        if let Ok(mut addresses) = self.shielded_addresses.lock() {
+            addresses.remove(seed_hash);
+        }
+
         // Permanently wipe the wallet's secret-bearing state so removal is not
         // recoverable: the encrypted seed-envelope vault, the session secret
         // cache, the wallet-meta sidecar, and the plaintext shielded-note rows

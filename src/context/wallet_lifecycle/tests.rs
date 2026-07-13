@@ -1143,6 +1143,134 @@ async fn remove_wallet_wipes_seed_envelope() {
     backend.shutdown().await;
 }
 
+/// The receive-address snapshot is empty until a bind publishes into it, so a
+/// wallet that is locked or not yet bound reports `None` and the Shielded tab
+/// falls back to its "not ready yet" copy instead of rendering a wrong address.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shielded_receive_address_is_none_before_bind() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+
+    let seed = [0xC4u8; 64];
+    let wallet = crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
+        .expect("build wallet");
+    let seed_hash = wallet.seed_hash();
+    let backend = ctx.wallet_backend().expect("backend wired");
+
+    assert_eq!(
+        ctx.shielded_receive_address(&seed_hash),
+        None,
+        "an unregistered, unbound wallet must not surface any receive address"
+    );
+
+    backend.shutdown().await;
+}
+
+/// The published receive address is the Orchard **account-0 external** address
+/// of the wallet's own seed — the exact key material `bind_shielded` hands the
+/// coordinator to scan with, and the only account DET's spend path can spend
+/// from.
+///
+/// This is the funds-safety contract of the whole bridge: we assert the cached
+/// string against an independently ZIP-32-derived expectation, so a future
+/// change that publishes some *other* account, scope, or diversifier — an
+/// address the wallet could be paid at but never detect or spend — fails here
+/// rather than silently costing a user their money.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cache_shielded_receive_address_publishes_bound_account_zero_address() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+
+    let seed = [0xD7u8; 64];
+    let wallet = crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
+        .expect("build wallet");
+    let seed_hash = wallet.seed_hash();
+    ctx.register_wallet(wallet, &seed, WalletOrigin::Fresh)
+        .expect("register wallet");
+
+    let backend = ctx.wallet_backend().expect("backend wired");
+    // Mirror `bootstrap_wallet_addresses_jit`'s ordering: a wallet must be
+    // registered upstream before its Orchard keys can bind.
+    backend
+        .ensure_upstream_registered(&seed_hash, &seed)
+        .await
+        .expect("register wallet upstream");
+    backend
+        .ensure_shielded_bound(&seed_hash, &seed)
+        .await
+        .expect("bind Orchard keys offline");
+
+    ctx.cache_shielded_receive_address(&backend, &seed_hash)
+        .await;
+
+    let expected_raw =
+        platform_wallet::wallet::shielded::OrchardKeySet::from_seed(&seed, Network::Testnet, 0)
+            .expect("ZIP-32 derivation")
+            .address_at(0)
+            .to_raw_address_bytes();
+    let expected = crate::model::address::encode_shielded_address(&expected_raw, Network::Testnet)
+        .expect("encode expected address");
+
+    assert_eq!(
+        ctx.shielded_receive_address(&seed_hash),
+        Some(expected),
+        "the receive address must be account 0's external address, derived from the bound keys"
+    );
+
+    backend.shutdown().await;
+}
+
+/// Removing a wallet evicts its shielded receive address. The seed hash is
+/// deterministic, so without eviction a re-import of the same phrase — or any
+/// later read — could surface a removed wallet's address as a live payment
+/// destination.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn remove_wallet_evicts_shielded_receive_address() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+
+    let seed = [0xE9u8; 64];
+    let wallet = crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
+        .expect("build wallet");
+    let seed_hash = wallet.seed_hash();
+    ctx.register_wallet(wallet, &seed, WalletOrigin::Fresh)
+        .expect("register wallet");
+
+    let backend = ctx.wallet_backend().expect("backend wired");
+    // Mirror `bootstrap_wallet_addresses_jit`'s ordering: a wallet must be
+    // registered upstream before its Orchard keys can bind.
+    backend
+        .ensure_upstream_registered(&seed_hash, &seed)
+        .await
+        .expect("register wallet upstream");
+    backend
+        .ensure_shielded_bound(&seed_hash, &seed)
+        .await
+        .expect("bind Orchard keys offline");
+    ctx.cache_shielded_receive_address(&backend, &seed_hash)
+        .await;
+    assert!(
+        ctx.shielded_receive_address(&seed_hash).is_some(),
+        "precondition: the address must be published before removal"
+    );
+
+    ctx.remove_wallet(&seed_hash).expect("remove wallet");
+
+    assert_eq!(
+        ctx.shielded_receive_address(&seed_hash),
+        None,
+        "the receive address must be evicted on wallet removal"
+    );
+
+    backend.shutdown().await;
+}
+
 /// Removing a wallet evicts its shielded balance snapshot from
 /// `AppContext::shielded_balances`. The seed hash is deterministic from the
 /// seed, so without eviction a re-import of the same recovery phrase would

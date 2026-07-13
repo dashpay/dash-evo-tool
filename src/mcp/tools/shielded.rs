@@ -753,9 +753,8 @@ impl AsyncTool<DashMcpService> for ShieldedAddressGet {
                     .to_owned(),
             })?;
 
-        let address = dash_sdk::dpp::address_funds::OrchardAddress::from_raw_bytes(&raw)
-            .map_err(|e| McpToolError::Internal(format!("Failed to encode shielded address: {e}")))?
-            .to_bech32m_string(ctx.network());
+        let address = crate::model::address::encode_shielded_address(&raw, ctx.network())
+            .map_err(|e| McpToolError::Internal(e.to_string()))?;
 
         Ok(ShieldedAddressGetOutput { address })
     }

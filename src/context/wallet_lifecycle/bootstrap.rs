@@ -399,16 +399,6 @@ impl AppContext {
         }
     }
 
-    pub(crate) fn init_missing_shielded_wallets(self: &Arc<Self>) {
-        for wallet in self.open_wallets() {
-            let ctx = Arc::clone(self);
-            self.subtasks
-                .spawn_sync("shielded_bind_after_protocol_update", async move {
-                    ctx.bootstrap_wallet_addresses_jit(&wallet).await;
-                });
-        }
-    }
-
     /// Queue automatic, gap-limited identity discovery for every open wallet,
     /// once per SPV session.
     ///

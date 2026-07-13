@@ -12,7 +12,7 @@ mod wallet_lifecycle;
 use crate::app_dir::core_cookie_path;
 use crate::backend_task::error::TaskError;
 use crate::config::{Config, NetworkConfig};
-use crate::context::feature_gate::{ExperimentalFeature, FeatureGate};
+use crate::context::feature_gate::ExperimentalFeature;
 use crate::context_provider::SpvProvider;
 use crate::database::Database;
 use crate::model::fee_estimation::PlatformFeeEstimator;
@@ -568,20 +568,14 @@ impl AppContext {
         self.platform_protocol_version.load(Ordering::Relaxed)
     }
 
-    /// Update the cached platform protocol version from epoch info.
+    /// Cache the platform protocol version fetched from the connected network.
     ///
-    /// When the version crosses the shielded threshold for the first time,
-    /// retroactively initializes shielded wallets that were unlocked before
-    /// the protocol version was known.
-    pub fn set_platform_protocol_version(self: &Arc<Self>, version: u32) {
-        let was_shielded = FeatureGate::Shielded.is_available(self);
-
+    /// Read by the shielded-operations capability check to decide whether the
+    /// network can settle shielded state transitions. `0` means "not fetched
+    /// yet", which reads as below any activation version.
+    pub fn set_platform_protocol_version(&self, version: u32) {
         self.platform_protocol_version
-            .swap(version, Ordering::Relaxed);
-
-        if !was_shielded && FeatureGate::Shielded.is_available(self) {
-            self.init_missing_shielded_wallets();
-        }
+            .store(version, Ordering::Relaxed);
     }
 
     /// Synchronous read of the frame-safe shielded balance for `seed_hash`.

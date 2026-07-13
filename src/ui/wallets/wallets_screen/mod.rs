@@ -3365,6 +3365,25 @@ mod tests {
         assert!(tabs.contains(&AccountTab::System));
     }
 
+    /// The Shielded tab appears whenever the shielded pool is available, so a
+    /// wallet that tracks a shielded balance always has a tab to view it.
+    /// Regression guard for the bug where the balance breakdown showed shielded
+    /// funds but the tab bar offered no Shielded tab.
+    #[test]
+    fn shielded_tab_present_when_available() {
+        let tabs = plan_account_tabs(&[], false, true, true);
+        assert!(
+            tabs.contains(&AccountTab::Shielded),
+            "Shielded tab must appear when shielded is available"
+        );
+
+        let tabs = plan_account_tabs(&[], false, false, true);
+        assert!(
+            !tabs.contains(&AccountTab::Shielded),
+            "no Shielded tab when shielded is unavailable"
+        );
+    }
+
     /// Build an offline `AppContext` (no network I/O, throwaway data dir).
     fn offline_ctx() -> (Arc<AppContext>, tempfile::TempDir) {
         use crate::app_dir::ensure_env_file;

@@ -39,13 +39,13 @@ fn interface_mode_selector_sets_and_persists_role() {
         // An account that never chose a role starts at the unset default.
         assert_eq!(app_context.user_role(), UserRole::WHEN_UNSET);
 
-        harness.get_by_label("Developer tools").click();
+        harness.get_by_label("Developer view").click();
         harness.run_steps(3);
 
         assert_eq!(
             app_context.user_role(),
             UserRole::Developer,
-            "selecting 'Developer tools' must raise the app-global role"
+            "selecting 'Developer view' must raise the app-global role"
         );
         assert_eq!(
             app_context.get_app_settings().user_role,

@@ -315,13 +315,22 @@ pub fn add_left_panel(
                                             );
                                         }
 
-                                        // Expert label (below network label if present)
-                                        if app_context.user_role().at_least(UserRole::Power) {
+                                        // Interface-mode indicator (below network label if
+                                        // present). Hidden for the default role; each raised
+                                        // role shows its own compact label so switching between
+                                        // them is visible here.
+                                        let role = app_context.user_role();
+                                        if let Some(indicator) = role.indicator_label() {
                                             ui.add_space(5.0);
-                                            let dev_label = egui::RichText::new("🔧 Expert")
-                                                .color(DashColors::GRADIENT_PURPLE)
-                                                .size(12.0);
-                                            if ui.label(dev_label).clickable_tooltip("Expert mode is enabled — shows advanced options").clicked() {
+                                            let mode_label =
+                                                egui::RichText::new(format!("🔧 {indicator}"))
+                                                    .color(DashColors::GRADIENT_PURPLE)
+                                                    .size(12.0);
+                                            let tooltip = format!(
+                                                "{mode} is on. Click to change your interface mode.",
+                                                mode = role.label()
+                                            );
+                                            if ui.label(mode_label).clickable_tooltip(tooltip).clicked() {
                                                 action = AppAction::SetMainScreenThenGoToMainScreen(
                                                     RootScreenType::RootScreenNetworkChooser,
                                                 );

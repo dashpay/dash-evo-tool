@@ -40,8 +40,15 @@ pub struct ContactsState {
     incoming: Vec<ContactRequestEntry>,
     /// Requests this identity has sent and that are still pending.
     outgoing: Vec<ContactRequestEntry>,
-    /// Established contacts, from `DashPayTask::LoadContacts`.
+    /// Established contacts the user has not hidden.
     contacts: Vec<ContactData>,
+    /// Established contacts flagged `display_hidden`, kept aside so the tab can
+    /// offer a way back. Declining or cancelling a request hides that person,
+    /// so without this list a contact could only be recovered from the legacy
+    /// DashPay screen.
+    hidden: Vec<ContactData>,
+    /// Whether the hidden-contacts section is expanded.
+    show_hidden: bool,
     /// Live search query bound to the Contacts search box.
     search: String,
 }
@@ -64,6 +71,8 @@ impl ContactsState {
         self.incoming.clear();
         self.outgoing.clear();
         self.contacts.clear();
+        self.hidden.clear();
+        self.show_hidden = false;
         self.search.clear();
     }
 
@@ -126,12 +135,14 @@ impl ContactsState {
             .collect();
     }
 
-    /// Store the established-contact list from `DashPayTask::LoadContacts`.
-    /// Contacts the user has hidden (including ones whose request they declined
-    /// or cancelled) are dropped — "hidden" is exactly the promise that they do
-    /// not appear in the list.
+    /// Store the established-contact list from `DashPayTask::LoadContacts`,
+    /// split into the visible contacts and the hidden ones. Hidden contacts stay
+    /// out of the active list — that is what "hidden" promises — but remain
+    /// reachable through [`ContactsState::hidden_contacts`].
     pub fn record_contacts(&mut self, contacts: Vec<ContactData>) {
-        self.contacts = contacts.into_iter().filter(|c| !c.is_hidden).collect();
+        let (hidden, visible) = contacts.into_iter().partition(|c| c.is_hidden);
+        self.contacts = visible;
+        self.hidden = hidden;
     }
 
     /// Number of established contacts, before search filtering. Drives the
@@ -143,11 +154,42 @@ impl ContactsState {
     /// Contacts matching the current search query, in list order. An empty or
     /// whitespace-only query matches every contact.
     pub fn filtered_contacts(&self) -> Vec<&ContactData> {
-        let needle = self.search.trim().to_lowercase();
         self.contacts
             .iter()
-            .filter(|c| matches_search(c, &needle))
+            .filter(|c| matches_contact_search((*c).into(), &self.search))
             .collect()
+    }
+
+    /// Established contacts currently flagged hidden. Never search-filtered:
+    /// the section exists to make a vanished contact findable, so it always
+    /// shows all of them.
+    pub fn hidden_contacts(&self) -> &[ContactData] {
+        &self.hidden
+    }
+
+    /// Whether the hidden-contacts section is expanded.
+    pub fn show_hidden(&self) -> bool {
+        self.show_hidden
+    }
+
+    /// Mutable handle on the hidden-section toggle, for binding to a checkbox.
+    pub fn show_hidden_mut(&mut self) -> &mut bool {
+        &mut self.show_hidden
+    }
+
+    /// Move a contact out of the hidden list and back into the active one, so an
+    /// unhide shows up immediately instead of waiting for the reload. A no-op
+    /// when the contact is not hidden.
+    pub fn unhide_contact(&mut self, contact_id: &Identifier) {
+        if let Some(pos) = self
+            .hidden
+            .iter()
+            .position(|c| c.identity_id == *contact_id)
+        {
+            let mut contact = self.hidden.remove(pos);
+            contact.is_hidden = false;
+            self.contacts.push(contact);
+        }
     }
 
     /// Drop a resolved request (accepted, declined, or cancelled) from both
@@ -159,27 +201,53 @@ impl ContactsState {
     }
 }
 
+/// The handles a contact search matches against, borrowed from whichever contact
+/// type the caller holds — the Identity Hub's [`ContactData`] or the legacy
+/// DashPay screen's `Contact`. One field set, so both lists find the same
+/// contact for the same query.
+#[derive(Debug, Clone, Copy)]
+pub struct ContactSearchFields<'a> {
+    pub nickname: Option<&'a str>,
+    pub display_name: Option<&'a str>,
+    pub username: Option<&'a str>,
+    pub bio: Option<&'a str>,
+    pub identity_id: Identifier,
+}
+
+impl<'a> From<&'a ContactData> for ContactSearchFields<'a> {
+    fn from(contact: &'a ContactData) -> Self {
+        Self {
+            nickname: contact.nickname.as_deref(),
+            display_name: contact.display_name.as_deref(),
+            username: contact.username.as_deref(),
+            bio: contact.bio.as_deref(),
+            identity_id: contact.identity_id,
+        }
+    }
+}
+
 /// Case-insensitive substring match over every handle a user might type:
-/// nickname, display name, DPNS username, and the Base58 identity ID. An empty
-/// needle matches everything.
-fn matches_search(contact: &ContactData, needle_lowercase: &str) -> bool {
-    if needle_lowercase.is_empty() {
+/// nickname, display name, DPNS username, bio, and the Base58 identity ID. An
+/// empty or whitespace-only query matches every contact.
+pub fn matches_contact_search(fields: ContactSearchFields<'_>, query: &str) -> bool {
+    let needle = query.trim().to_lowercase();
+    if needle.is_empty() {
         return true;
     }
-    let haystacks = [
-        contact.nickname.as_deref(),
-        contact.display_name.as_deref(),
-        contact.username.as_deref(),
-    ];
-    haystacks
-        .iter()
-        .flatten()
-        .any(|field| field.to_lowercase().contains(needle_lowercase))
-        || contact
+    [
+        fields.nickname,
+        fields.display_name,
+        fields.username,
+        fields.bio,
+    ]
+    .iter()
+    .flatten()
+    .any(|field| field.to_lowercase().contains(&needle))
+        || fields
             .identity_id
             .to_string(Encoding::Base58)
             .to_lowercase()
-            .contains(needle_lowercase)
+            .contains(&needle)
 }
 
 /// Best label for a contact row: local nickname, then DashPay display name,
@@ -279,22 +347,126 @@ mod tests {
         assert!(state.search_mut().is_empty(), "reset must clear the search");
     }
 
+    /// A hidden contact with a distinct identity, so it can be unhidden by ID.
+    fn hidden_contact(nickname: &str, identity_id: Identifier) -> ContactData {
+        ContactData {
+            identity_id,
+            is_hidden: true,
+            ..contact(Some(nickname), None, None)
+        }
+    }
+
     #[test]
-    fn record_contacts_drops_hidden_contacts() {
+    fn record_contacts_keeps_hidden_contacts_out_of_the_active_list() {
         let mut state = ContactsState::default();
-        let mut hidden = contact(Some("Ghost"), None, None);
-        hidden.is_hidden = true;
-        state.record_contacts(vec![contact(Some("Bao"), None, None), hidden]);
+        state.record_contacts(vec![
+            contact(Some("Bao"), None, None),
+            hidden_contact("Ghost", id(8)),
+        ]);
 
         assert_eq!(
             state.contacts_len(),
             1,
-            "hidden contacts must not be listed"
+            "hidden contacts must not be listed among the active ones"
         );
         assert_eq!(
             state.filtered_contacts()[0].nickname.as_deref(),
             Some("Bao")
         );
+    }
+
+    #[test]
+    fn hidden_contacts_stay_reachable_so_a_contact_never_vanishes() {
+        let mut state = ContactsState::default();
+        state.record_contacts(vec![
+            contact(Some("Bao"), None, None),
+            hidden_contact("Ghost", id(8)),
+        ]);
+
+        let hidden = state.hidden_contacts();
+        assert_eq!(hidden.len(), 1, "a hidden contact must remain recoverable");
+        assert_eq!(hidden[0].nickname.as_deref(), Some("Ghost"));
+    }
+
+    #[test]
+    fn the_hidden_section_is_collapsed_until_the_user_opens_it() {
+        let mut state = ContactsState::default();
+        assert!(
+            !state.show_hidden(),
+            "hidden contacts stay hidden by default"
+        );
+
+        *state.show_hidden_mut() = true;
+        assert!(state.show_hidden());
+
+        state.reset();
+        assert!(
+            !state.show_hidden(),
+            "leaving the tab must collapse the section again"
+        );
+    }
+
+    #[test]
+    fn unhiding_a_contact_moves_it_into_the_active_list() {
+        let mut state = ContactsState::default();
+        state.record_contacts(vec![
+            contact(Some("Bao"), None, None),
+            hidden_contact("Ghost", id(8)),
+        ]);
+
+        state.unhide_contact(&id(8));
+
+        assert!(
+            state.hidden_contacts().is_empty(),
+            "the unhidden contact must leave the hidden list"
+        );
+        assert_eq!(
+            state.contacts_len(),
+            2,
+            "the unhidden contact must join the active list without waiting for a reload"
+        );
+        let unhidden = state
+            .filtered_contacts()
+            .into_iter()
+            .find(|c| c.identity_id == id(8))
+            .expect("the unhidden contact is now active");
+        assert!(
+            !unhidden.is_hidden,
+            "the moved contact must no longer be flagged hidden"
+        );
+    }
+
+    #[test]
+    fn unhiding_an_unknown_contact_changes_nothing() {
+        let mut state = ContactsState::default();
+        state.record_contacts(vec![hidden_contact("Ghost", id(8))]);
+
+        state.unhide_contact(&id(3));
+
+        assert_eq!(state.hidden_contacts().len(), 1);
+        assert_eq!(state.contacts_len(), 0);
+    }
+
+    #[test]
+    fn reset_clears_the_hidden_list() {
+        let mut state = ContactsState::default();
+        state.record_contacts(vec![hidden_contact("Ghost", id(8))]);
+
+        state.reset();
+
+        assert!(state.hidden_contacts().is_empty());
+    }
+
+    #[test]
+    fn search_matches_the_same_fields_for_every_contact_list() {
+        // One matcher, one field set — the hub and the legacy screen must not
+        // disagree about whether a query finds a contact.
+        let mut with_bio = contact(None, None, None);
+        with_bio.bio = Some("Loves kayaking".to_string());
+
+        assert!(matches_contact_search((&with_bio).into(), "kayak"));
+        assert!(matches_contact_search((&with_bio).into(), "  "));
+        assert!(!matches_contact_search((&with_bio).into(), "surfing"));
     }
 
     #[test]

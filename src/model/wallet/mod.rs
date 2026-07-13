@@ -854,14 +854,33 @@ impl Wallet {
     /// changes (parameter vs `self`).
     // TODO(cleanup): seeds the `known_addresses`/`watched_addresses` display
     // maps. No funds-safety path reads these — the Receive list reads the
-    // watched snapshot set. Kept because six readers still iterate the maps and
-    // need per-address derivation paths the snapshot does not yet carry: the
-    // address-table, account-summary, and send-autocomplete display views; the
-    // `system_tab_sections` view; the signing-critical identity-key resolver
-    // (`qualified_identity_public_key`); and the bootstrap gate
-    // (`wallet_lifecycle`). Remove the bootstrap + maps + DB rehydrate
-    // (`database/wallet.rs`) once those readers — especially the identity-key
-    // resolver — source paths from a path-aware snapshot.
+    // watched snapshot set. Retirement is BLOCKED: the display snapshot's
+    // `address_paths` is built from upstream `all_accounts()` pools, which cover
+    // BIP44/BIP32/CoinJoin, identity *funding* (registration/topup/invitation),
+    // asset-lock, provider, and DashPay addresses — but structurally exclude two
+    // classes these maps carry, and carry no `path_reference`/`DerivationPathType`
+    // metadata. Reader status:
+    //   - account-summary — MIGRATED (snapshot-sourced; funding/provider paths
+    //     fold into `Other` without the reference, which is fine for a Core
+    //     balance breakdown).
+    //   - address-table — reconciled by unioning `known_addresses` with the
+    //     snapshot, but still reads the legacy map.
+    //   - send-autocomplete — its Platform branch lists DIP-17 platform-payment
+    //     addresses, which upstream tracks in `platform_payment_accounts` but
+    //     omits from `all_accounts()`, so the snapshot never carries them.
+    //   - `system_tab_sections` — needs per-category address *counts* keyed by
+    //     `path_reference`, and counts identity-authentication addresses; the
+    //     snapshot has neither.
+    //   - `wallet_lifecycle` bootstrap gate — the writer-gate for these very
+    //     maps; it must stay while the maps exist.
+    //   - identity-key resolver (`qualified_identity_public_key`) — resolves a
+    //     User identity's ECDSA authentication keys, which live only here (no
+    //     upstream account type for identity-authentication keys). Migrating it
+    //     would leave the key unlinked and unsignable. MUST stay on the map.
+    //     Pinned by regression tests in that module.
+    // Remove the bootstrap + maps + DB rehydrate (`database/wallet.rs`) only once
+    // upstream exposes identity-authentication + DIP-17 platform-payment
+    // addresses (with per-address `path_reference`) through a path-aware snapshot.
     pub fn bootstrap_known_addresses(&mut self, seed: &[u8; 64], app_context: &AppContext) {
         let network = app_context.network;
 

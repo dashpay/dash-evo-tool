@@ -93,7 +93,7 @@ pub struct ShieldedTabView {
     is_initialized: bool,
     /// Whether the commitment tree has been synced (enables spend operations).
     tree_synced: bool,
-    /// Pending backend task to dispatch on next ui() call (e.g., sync after Resync).
+    /// Pending backend task to dispatch on next ui() call.
     pending_task: Option<BackendTask>,
     /// The wallet's shielded receive address (Bech32m), mirrored each frame from
     /// the frame-safe [`AppContext`] snapshot. `None` until the wallet's Orchard
@@ -173,7 +173,7 @@ impl ShieldedTabView {
         self.app_context = app_context.clone();
     }
 
-    /// Drain pending backend tasks (from explicit user actions like Resync).
+    /// Drain pending backend tasks queued by user actions on this tab.
     /// Initialization is handled entirely by the backend in
     /// `handle_wallet_unlocked` — the UI never triggers it.
     pub fn tick(&mut self) -> AppAction {

@@ -1594,21 +1594,9 @@ async fn register_wallet_fails_closed_when_wallet_meta_write_fails() {
     );
 }
 
-/// Build a valid BIP44 account-0 master xpub for a legacy wallet row.
+/// Build a valid BIP44 account-0 master xpub (testnet) for a legacy wallet row.
 fn legacy_master_epk_bytes(seed: &[u8; 64]) -> Vec<u8> {
-    use dash_sdk::dpp::dashcore::secp256k1::Secp256k1;
-    use dash_sdk::dpp::key_wallet::bip32::{
-        ChildNumber, DerivationPath, ExtendedPrivKey, ExtendedPubKey,
-    };
-    let secp = Secp256k1::new();
-    let master = ExtendedPrivKey::new_master(Network::Testnet, seed).expect("master key");
-    let path = DerivationPath::from(vec![
-        ChildNumber::Hardened { index: 44 },
-        ChildNumber::Hardened { index: 1 },
-        ChildNumber::Hardened { index: 0 },
-    ]);
-    let account = master.derive_priv(&secp, &path).expect("derive account");
-    ExtendedPubKey::from_priv(&secp, &account).encode().to_vec()
+    crate::database::test_helpers::legacy_master_epk_bytes(seed, Network::Testnet)
 }
 
 /// F140 — a wallet migrated from legacy `data.db` must be visible right

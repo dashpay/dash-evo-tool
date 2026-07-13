@@ -75,7 +75,11 @@ pub fn derive_shielded_indicator(state: &MigrationState, skipped: bool) -> Shiel
             step: MigrationStep::Shielded,
         } => ShieldedIndicator::Verifying,
         MigrationState::Failed { .. } => ShieldedIndicator::Failed,
-        MigrationState::Success => ShieldedIndicator::Verified,
+        // Unreadable scheduled votes say nothing about shielded data: the wallet
+        // drain completed, so the balance is as authoritative as on `Success`.
+        MigrationState::Success | MigrationState::SucceededWithUnreadableVotes { .. } => {
+            ShieldedIndicator::Verified
+        }
         // Idle / non-shielded running step → no badge.
         MigrationState::Idle | MigrationState::Running { .. } => ShieldedIndicator::Hidden,
     }
@@ -865,6 +869,14 @@ mod tests {
         assert_eq!(
             derive_shielded_indicator(&MigrationState::Success, false),
             ShieldedIndicator::Verified,
+        );
+        assert_eq!(
+            derive_shielded_indicator(
+                &MigrationState::SucceededWithUnreadableVotes { count: 1 },
+                false,
+            ),
+            ShieldedIndicator::Verified,
+            "an unreadable vote row says nothing about shielded data — the drain completed",
         );
         // Skip-for-now hides the indicator regardless of state — the
         // session-local override the UI uses to dismiss the retry

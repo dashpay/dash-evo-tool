@@ -5,7 +5,9 @@
 //! step-label table or the action-button plumbing fails here without
 //! needing a full `AppState` harness.
 
-use dash_evo_tool::app::{MIGRATION_RETRY_ACTION_ID, migration_running_text};
+use dash_evo_tool::app::{
+    MIGRATION_RETRY_ACTION_ID, migration_running_text, migration_unreadable_votes_text,
+};
 use dash_evo_tool::context::migration_status::MigrationStep;
 use dash_evo_tool::ui::MessageType;
 use dash_evo_tool::ui::components::MessageBanner;
@@ -149,5 +151,36 @@ fn tc_a11y_004_failure_banner_uses_icon_and_text() {
         harness
             .query_by_label("Storage update could not complete. Your data is safe.")
             .is_some(),
+    );
+}
+
+/// QA-101 — a migration that drained the wallets but could not read some legacy
+/// scheduled votes surfaces a Warning banner naming the recovery action, and
+/// offers NO "Retry now": the drain is done and a corrupt row decodes no better
+/// on a second pass, so a retry button would be a dead end.
+#[test]
+fn unreadable_votes_banner_warns_without_a_retry_action() {
+    let text = migration_unreadable_votes_text(2);
+    assert!(
+        text.ends_with('.'),
+        "banner copy must be a complete sentence for i18n extraction: `{text}`",
+    );
+
+    let label = text.clone();
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(600.0, 200.0))
+        .build_ui(move |ui| {
+            MessageBanner::set_global(ui.ctx(), label.clone(), MessageType::Warning);
+            MessageBanner::show_global(ui);
+        });
+    harness.run();
+
+    assert!(
+        harness.query_by_label(text.as_str()).is_some(),
+        "the warning banner must render the unreadable-votes copy verbatim",
+    );
+    assert!(
+        harness.query_by_label("Retry now").is_none(),
+        "a completed drain must not offer a retry the user cannot benefit from",
     );
 }

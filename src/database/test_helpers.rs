@@ -149,6 +149,77 @@ pub fn seed_legacy_protected_hd_wallet_row(
     Ok(())
 }
 
+/// BIP44 ECDSA account-0 extended-public-key bytes for `seed`, the value a
+/// legacy `wallet` row carries in `master_ecdsa_bip44_account_0_epk`. The
+/// migration copies it verbatim and the W2 fund-routing gate matches on it, so a
+/// staged legacy row needs an xpub that genuinely derives from its seed.
+pub fn legacy_master_epk_bytes(
+    seed: &[u8; 64],
+    network: dash_sdk::dpp::dashcore::Network,
+) -> Vec<u8> {
+    use dash_sdk::dpp::dashcore::Network;
+    use dash_sdk::dpp::dashcore::secp256k1::Secp256k1;
+    use dash_sdk::dpp::key_wallet::bip32::{
+        ChildNumber, DerivationPath, ExtendedPrivKey, ExtendedPubKey,
+    };
+
+    let coin_type = if network == Network::Mainnet { 5 } else { 1 };
+    let secp = Secp256k1::new();
+    let master = ExtendedPrivKey::new_master(network, seed).expect("master key");
+    let path = DerivationPath::from(vec![
+        ChildNumber::Hardened { index: 44 },
+        ChildNumber::Hardened { index: coin_type },
+        ChildNumber::Hardened { index: 0 },
+    ]);
+    let account = master.derive_priv(&secp, &path).expect("derive account");
+    ExtendedPubKey::from_priv(&secp, &account).encode().to_vec()
+}
+
+/// Create the legacy `scheduled_votes` table in `data.db`. Fresh installs no
+/// longer create it (the unwire dropped it from `create_tables`), so a test that
+/// stages a v0.10-dev vote queue has to put it back exactly as the old schema
+/// had it.
+pub fn create_legacy_scheduled_votes_table(db: &Database) -> rusqlite::Result<()> {
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS scheduled_votes (
+            identity_id BLOB NOT NULL,
+            contested_name TEXT NOT NULL,
+            vote_choice TEXT NOT NULL,
+            time INTEGER NOT NULL,
+            executed INTEGER NOT NULL DEFAULT 0,
+            network TEXT NOT NULL,
+            PRIMARY KEY (identity_id, contested_name)
+        )",
+        rusqlite::params![],
+    )?;
+    Ok(())
+}
+
+/// Insert one row into the legacy `scheduled_votes` table. `vote_choice` is the
+/// `Display` form of `ResourceVoteChoice` (`Abstain`, `Lock`,
+/// `TowardsIdentity(<base58>)`); pass an unparseable string to stage the corrupt
+/// row a migration must survive.
+pub fn seed_legacy_scheduled_vote_row(
+    db: &Database,
+    voter_id: &[u8; 32],
+    contested_name: &str,
+    vote_choice: &str,
+    network: dash_sdk::dpp::dashcore::Network,
+) -> rusqlite::Result<()> {
+    db.execute(
+        "INSERT INTO scheduled_votes
+         (identity_id, contested_name, vote_choice, time, executed, network)
+         VALUES (?1, ?2, ?3, 1700000000, 0, ?4)",
+        rusqlite::params![
+            voter_id.as_slice(),
+            contested_name,
+            vote_choice,
+            network.to_string(),
+        ],
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

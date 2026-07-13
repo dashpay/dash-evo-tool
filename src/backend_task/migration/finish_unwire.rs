@@ -156,23 +156,10 @@ pub enum MigrationError {
         failed: u32,
     },
 
-    /// At least one legacy `scheduled_votes` row could not be decoded into a
-    /// usable vote. Fatal: a scheduled vote that disappears without a word is
-    /// a missed vote window, so the sentinel stays unwritten and the failure
-    /// reaches the user's banner. The legacy row is never deleted, so a fixed
-    /// build can still recover it.
-    #[error("could not import {unreadable} scheduled vote(s) from the previous version")]
-    ScheduledVotesUnreadable {
-        /// Votes that were imported into the k/v store on this pass.
-        imported: u32,
-        /// Votes that could not be decoded (corrupt voter id or vote choice).
-        unreadable: u32,
-    },
-
     /// The decoded scheduled votes could not be written into the k/v store.
-    /// Fatal for the same reason as [`Self::ScheduledVotesUnreadable`] — the
-    /// sentinel stays unwritten so the next launch retries the idempotent
-    /// import rather than leaving the votes behind.
+    /// The app-data sentinel stays unwritten so the next launch retries the
+    /// idempotent import rather than leaving the votes behind. It never blocks
+    /// the wallet drain — [`run`] judges this only after the wallets are safe.
     #[error("could not save scheduled votes from the previous version")]
     ScheduledVotesWrite {
         #[source]
@@ -236,21 +223,37 @@ impl MigrationError {
 }
 
 /// Run the FinishUnwire migration. Idempotent — completes a no-op when
-/// the sentinel is already present.
+/// the sentinels are already present.
 ///
 /// Returns `true` when this launch actually moved legacy data (rows were
-/// detected and drained), and `false` for the two no-op paths: the
-/// sentinel already existed, or no legacy rows were present. Callers use
-/// the flag to decide whether to surface a "storage update complete"
-/// banner — a no-op launch must not show one.
+/// detected and drained), and `false` for the no-op paths: the sentinels
+/// already existed, or no legacy rows were present. Callers use the flag to
+/// decide whether to surface a "storage update complete" banner — a no-op
+/// launch must not show one.
 ///
-/// Drains single-key wallet rows, HD wallet seeds, and wallet metadata
-/// into the upstream store, registers the migrated wallets, then writes
-/// the completion sentinel.
+/// Two independent passes, in this order:
+///
+/// 1. **App data** (scheduled votes, top-up history) — DET-owned rows the
+///    wallet drain never touched, under their own sentinel.
+/// 2. **Wallet drain** (single keys, HD seeds, wallet metadata, upstream
+///    registration) — the pass that restores access to funds.
+///
+/// The wallet drain runs **regardless of the app-data outcome**. The two are
+/// only coupled at the end, when the terminal state is published: a legacy vote
+/// row that cannot be imported must never stand between the user and their
+/// seeds.
+///
+/// # Errors
+///
+/// [`TaskError::MigrationFailed`] when the wallet drain fails (the completion
+/// sentinel stays unwritten, so the next launch retries), or when the wallet
+/// drain succeeded but the app-data pass hit a hard failure — an unreadable
+/// legacy file, a k/v write error. Undecodable vote rows are *not* an error:
+/// they are counted and reported on [`MigrationState::SucceededWithUnreadableVotes`],
+/// because a retry cannot decode a corrupt row and failing here would wedge the
+/// wallet drain on every launch.
 pub async fn run(app_context: &Arc<AppContext>) -> Result<bool, TaskError> {
     let status = app_context.migration_status();
-    let app_kv = app_context.app_kv();
-    let network = app_context.network;
 
     // Scheduled votes and top-up history carry their own sentinel and run
     // ahead of the wallet-drain gate below: an install that already completed
@@ -260,7 +263,63 @@ pub async fn run(app_context: &Arc<AppContext>) -> Result<bool, TaskError> {
     status.set_state(MigrationState::Running {
         step: MigrationStep::AppData,
     });
-    let app_data_moved = migrate_app_data(app_context)?;
+    let app_data = migrate_app_data(app_context);
+
+    // The app-data result is deliberately held, not propagated: the wallet drain
+    // is what restores access to funds, so nothing about DET's own rows may gate
+    // it. Propagating here would let one bad vote row wedge the drain on every
+    // launch, with no user-reachable way out.
+    let wallet_moved = match drain_wallets(app_context).await {
+        Ok(moved) => moved,
+        Err(drain_error) => {
+            if let Err(app_data_error) = &app_data {
+                tracing::warn!(
+                    target = "migration::finish_unwire",
+                    error = ?app_data_error,
+                    "App-data import failed on the same launch as the wallet drain; both retry on the next launch",
+                );
+            }
+            return Err(drain_error);
+        }
+    };
+
+    // Funds are reachable from here on, so the app-data outcome can now decide
+    // the terminal state. A hard failure leaves the app-data sentinel unwritten
+    // and reaches the user's "Retry now" banner; that retry re-runs the import
+    // alone, since the wallet drain short-circuits on its own sentinel.
+    let app_data = app_data?;
+    let moved_data = wallet_moved || app_data.moved_data();
+
+    if app_data.votes_unreadable > 0 {
+        tracing::warn!(
+            target = "migration::finish_unwire",
+            unreadable = app_data.votes_unreadable,
+            imported = app_data.votes_imported,
+            network = ?app_context.network,
+            "Some legacy scheduled votes could not be decoded; they stay in the previous version's data.db and must be scheduled again",
+        );
+        status.set_state(MigrationState::SucceededWithUnreadableVotes {
+            count: app_data.votes_unreadable,
+        });
+        return Ok(moved_data);
+    }
+
+    status.set_state(terminal_state(moved_data));
+    Ok(moved_data)
+}
+
+/// Drain the legacy wallet family — single-key rows, HD wallet seeds, wallet
+/// metadata — into the upstream store, register the migrated wallets, then
+/// record the per-network completion sentinel.
+///
+/// Returns `true` when this launch drained wallet rows, `false` for the two
+/// no-op paths (sentinel already present, or no legacy rows at all). This is
+/// the funds path: [`run`] keeps it free of every DET-owned concern so nothing
+/// but a genuine wallet-migration failure can withhold access to a seed.
+async fn drain_wallets(app_context: &Arc<AppContext>) -> Result<bool, TaskError> {
+    let status = app_context.migration_status();
+    let app_kv = app_context.app_kv();
+    let network = app_context.network;
 
     // Idempotency: if the sentinel for *this network* already exists,
     // this launch has nothing to do. The sentinel is per-network
@@ -276,11 +335,7 @@ pub async fn run(app_context: &Arc<AppContext>) -> Result<bool, TaskError> {
             network_count = completion.network_count,
             "FinishUnwire already completed for this network — skipping",
         );
-        // The wallet drain was already done by a prior run. The app-data pass
-        // above may still have moved votes on this launch — report its outcome
-        // so the completion banner appears exactly when work happened.
-        status.set_state(terminal_state(app_data_moved));
-        return Ok(app_data_moved);
+        return Ok(false);
     }
 
     status.set_state(MigrationState::Running {
@@ -295,11 +350,7 @@ pub async fn run(app_context: &Arc<AppContext>) -> Result<bool, TaskError> {
             "No legacy data.db rows detected — writing sentinel without migration",
         );
         write_sentinel(&app_kv, network, 0)?;
-        // No wallet rows to move (e.g. a fresh install): record the sentinel.
-        // The banner still follows the app-data pass, which runs even when the
-        // wallet tables are empty.
-        status.set_state(terminal_state(app_data_moved));
-        return Ok(app_data_moved);
+        return Ok(false);
     }
 
     tracing::info!(
@@ -347,9 +398,8 @@ pub async fn run(app_context: &Arc<AppContext>) -> Result<bool, TaskError> {
     tracing::info!(
         target = "migration::finish_unwire",
         network = ?network,
-        "FinishUnwire migration complete",
+        "FinishUnwire wallet drain complete",
     );
-    status.set_state(MigrationState::Success);
     Ok(true)
 }
 
@@ -411,16 +461,21 @@ pub fn app_data_sentinel_key_for(network: Network) -> String {
 /// Import the DET-owned rows the wallet drain never touched: scheduled DPNS
 /// votes (deadline-critical) and top-up history (audit trail).
 ///
-/// Returns `true` when this pass moved data. Idempotent — votes already in
-/// the k/v store are left alone, so a retry can never overwrite a vote the
-/// user has since cast with its stale legacy `executed` flag.
+/// Returns the pass counters, including `votes_unreadable` — rows that could
+/// not be decoded. Those are *not* an error: a corrupt row decodes no better on
+/// a retry, so failing here would only wedge the launch. [`run`] reports the
+/// count to the user instead, and the legacy rows are never deleted.
+///
+/// Idempotent — votes already in the k/v store are left alone, so a retry can
+/// never overwrite a vote the user has since cast with its stale legacy
+/// `executed` flag.
 ///
 /// # Errors
 ///
-/// [`MigrationError::ScheduledVotesUnreadable`] when a legacy vote row cannot
-/// be decoded. The sentinel stays unwritten and the error reaches the banner:
-/// a scheduled vote that vanishes without a word is a missed vote window.
-fn migrate_app_data(app_context: &Arc<AppContext>) -> Result<bool, TaskError> {
+/// [`TaskError::MigrationFailed`] when the legacy file cannot be opened or read,
+/// or the decoded votes cannot be written to the k/v store. The app-data
+/// sentinel stays unwritten in those cases, so the next launch retries.
+fn migrate_app_data(app_context: &Arc<AppContext>) -> Result<AppDataMigrationOutcome, TaskError> {
     let app_kv = app_context.app_kv();
     let network = app_context.network;
     let sentinel_key = app_data_sentinel_key_for(network);
@@ -430,15 +485,15 @@ fn migrate_app_data(app_context: &Arc<AppContext>) -> Result<bool, TaskError> {
         .map_err(|source| MigrationError::Sentinel { source })?
         .is_some();
     if done {
-        return Ok(false);
+        return Ok(AppDataMigrationOutcome::default());
     }
 
     let Some(path) = app_context.db.db_file_path() else {
         // In-memory / headless: no legacy file to import from.
-        return Ok(false);
+        return Ok(AppDataMigrationOutcome::default());
     };
     if !path.exists() {
-        return Ok(false);
+        return Ok(AppDataMigrationOutcome::default());
     }
     let conn = Connection::open(&path).map_err(|e| MigrationError::LegacyDbOpen {
         path: path.to_string_lossy().to_string(),
@@ -451,7 +506,7 @@ fn migrate_app_data(app_context: &Arc<AppContext>) -> Result<bool, TaskError> {
     // legacy data would fail on a dependency it never actually needs.
     if !table_has_rows(&conn, "scheduled_votes")? && !table_has_rows(&conn, "top_up")? {
         write_app_data_sentinel(&app_kv, &sentinel_key)?;
-        return Ok(false);
+        return Ok(AppDataMigrationOutcome::default());
     }
 
     // There is data to move, so the k/v store — and therefore the backend —
@@ -481,14 +536,19 @@ fn migrate_app_data(app_context: &Arc<AppContext>) -> Result<bool, TaskError> {
         target = "migration::finish_unwire",
         votes_imported = outcome.votes_imported,
         votes_skipped_existing = outcome.votes_skipped_existing,
+        votes_unreadable = outcome.votes_unreadable,
         top_up_identities_imported = outcome.top_up_identities_imported,
         network = ?network,
         "App-data migration pass complete",
     );
 
+    // The sentinel is written even when rows were unreadable: every *importable*
+    // row is now in the k/v store, and the undecodable ones will never decode. A
+    // withheld sentinel would re-run this import on every launch, which would
+    // resurrect votes the user has since cast and cleared from the queue.
     write_app_data_sentinel(&app_kv, &sentinel_key)?;
 
-    Ok(outcome.votes_imported > 0 || outcome.top_up_identities_imported > 0)
+    Ok(outcome)
 }
 
 /// Record the app-data import as complete for one network. Reuses the
@@ -583,15 +643,6 @@ where
         ),
     }
 
-    // Votes last: everything readable is safely in the k/v store before the
-    // pass reports failure, so a retry only has the corrupt rows left to face.
-    if outcome.votes_unreadable > 0 {
-        return Err(MigrationError::ScheduledVotesUnreadable {
-            imported: outcome.votes_imported,
-            unreadable: outcome.votes_unreadable,
-        });
-    }
-
     Ok(outcome)
 }
 
@@ -659,12 +710,21 @@ struct AppDataMigrationOutcome {
     /// alone. A retry must not resurrect a stale `executed` flag over a vote
     /// the user has since cast.
     votes_skipped_existing: u32,
-    /// Legacy vote rows that could not be decoded. Fatal — the sentinel stays
-    /// unwritten so the user sees the failure banner rather than losing a vote
-    /// silently ahead of its deadline.
+    /// Legacy vote rows that could not be decoded (corrupt voter id or vote
+    /// choice). Non-fatal — a corrupt row decodes no better on a retry, and
+    /// failing the pass would wedge the wallet drain behind it. Surfaced to the
+    /// user by [`run`] instead, so a vote is never lost in silence.
     votes_unreadable: u32,
     /// Identities whose top-up history was written into the k/v store.
     top_up_identities_imported: u32,
+}
+
+impl AppDataMigrationOutcome {
+    /// Whether this pass actually carried data across — the signal [`run`] uses
+    /// to decide whether the launch earns a completion banner.
+    fn moved_data(&self) -> bool {
+        self.votes_imported > 0 || self.top_up_identities_imported > 0
+    }
 }
 
 /// Outcome counters from one [`migrate_single_key_rows`] pass. Public
@@ -1627,35 +1687,6 @@ mod tests {
         DetKv::from_store(Arc::new(InMemoryKv::default()))
     }
 
-    /// TC-MIG-009 — calling the migration when the sentinel for the
-    /// active network is already present must be a no-op. The
-    /// orchestrator must not consult legacy `data.db`, must not move
-    /// state into `Running`, and must leave the sentinel untouched.
-    #[test]
-    fn sentinel_short_circuits_run() {
-        use dash_sdk::dpp::dashcore::Network;
-
-        let kv = kv();
-        let original = MigrationCompletion {
-            completed_at: 1234,
-            sha: "test-sha".into(),
-            network_count: 1,
-        };
-        kv.put(
-            DetScope::Global,
-            &sentinel_key_for(Network::Testnet),
-            &original,
-        )
-        .expect("seed sentinel");
-
-        // Reading the sentinel back via the same path the orchestrator
-        // uses is the contractual short-circuit hook. If this returns
-        // `Some`, the orchestrator skips legacy detection entirely.
-        let observed: Option<MigrationCompletion> =
-            read_sentinel(&kv, Network::Testnet).expect("read sentinel");
-        assert_eq!(observed, Some(original));
-    }
-
     // ── App-data import: scheduled votes + top-up history ────────────
 
     mod app_data {
@@ -1779,10 +1810,13 @@ mod tests {
             );
         }
 
-        /// An undecodable vote row is surfaced as a failure, never dropped in
-        /// silence — the user must learn their vote did not come across.
+        /// An undecodable vote row is counted and reported — never dropped in
+        /// silence, and never fatal. Fatal would be worse than useless: the row
+        /// decodes no better on a retry, so it would wedge every launch, and the
+        /// wallet drain behind it (QA-101). The readable votes around it still
+        /// import.
         #[test]
-        fn unreadable_vote_row_fails_the_import() {
+        fn unreadable_vote_row_is_counted_without_failing_the_import() {
             let conn = legacy_conn();
             conn.execute(
                 "INSERT INTO scheduled_votes
@@ -1792,25 +1826,26 @@ mod tests {
             )
             .expect("corrupt vote");
 
-            let err = migrate_app_data_from_conn(
+            let votes = RefCell::new(Vec::new());
+            let outcome = migrate_app_data_from_conn(
                 &conn,
                 Network::Testnet,
                 &BTreeSet::new(),
-                |_| Ok(()),
+                |v| {
+                    votes.borrow_mut().extend_from_slice(v);
+                    Ok(())
+                },
                 |_, _| Ok(()),
             )
-            .expect_err("an unreadable vote must fail the import");
+            .expect("an unreadable vote must not fail the import");
 
-            assert!(
-                matches!(
-                    err,
-                    MigrationError::ScheduledVotesUnreadable {
-                        imported: 1,
-                        unreadable: 1
-                    }
-                ),
-                "unexpected error: {err:?}",
+            assert_eq!(outcome.votes_imported, 1, "the readable vote still lands");
+            assert_eq!(
+                outcome.votes_unreadable, 1,
+                "the corrupt row must be reported, not swallowed",
             );
+            assert_eq!(votes.borrow().len(), 1);
+            assert_eq!(votes.borrow()[0].contested_name, "alice");
         }
 
         /// A fresh install has none of these tables — a no-op, not an error.
@@ -3409,6 +3444,198 @@ mod tests {
         assert!(
             !MigrationError::ProtectedSingleKeysNotRestored { remaining: 1 }.is_backend_not_ready(),
         );
+    }
+
+    /// Wire the real wallet seam onto a fixture context. Offline: the backend
+    /// builds its sidecars and hydrates from them without touching the network,
+    /// so an end-to-end `run()` can be driven to completion in a unit test. The
+    /// wallet drain aborts at its first step without a wired backend, so the
+    /// funds-reachability tests below cannot use [`fresh_app_context`] alone.
+    async fn wire_backend(app_context: &Arc<AppContext>) {
+        let (tx, _rx) = tokio::sync::mpsc::channel::<crate::app::TaskResult>(32);
+        let sender = crate::utils::egui_mpsc::SenderAsync::new(tx, app_context.egui_ctx().clone());
+        app_context
+            .ensure_wallet_backend(sender)
+            .await
+            .expect("wallet backend must wire offline");
+    }
+
+    /// Stage the v0.10-dev vote queue: the legacy table plus the rows given as
+    /// `(contested_name, vote_choice)`. A `vote_choice` the reader cannot parse
+    /// is the corrupt row an upgrade has to survive.
+    fn seed_legacy_votes(
+        app_context: &Arc<AppContext>,
+        voter: &[u8; 32],
+        rows: &[(&str, &str)],
+        network: dash_sdk::dpp::dashcore::Network,
+    ) {
+        crate::database::test_helpers::create_legacy_scheduled_votes_table(&app_context.db)
+            .expect("create legacy scheduled_votes table");
+        for (contested_name, vote_choice) in rows {
+            crate::database::test_helpers::seed_legacy_scheduled_vote_row(
+                &app_context.db,
+                voter,
+                contested_name,
+                vote_choice,
+                network,
+            )
+            .expect("insert legacy scheduled vote row");
+        }
+    }
+
+    /// Stage a legacy unprotected HD wallet row whose xpub derives from its seed,
+    /// so the drain produces a wallet the registration gate accepts. Returns the
+    /// seed hash the wallet is keyed by.
+    fn seed_legacy_wallet(
+        app_context: &Arc<AppContext>,
+        seed: &[u8; 64],
+        alias: &str,
+        network: dash_sdk::dpp::dashcore::Network,
+    ) -> crate::model::wallet::WalletSeedHash {
+        let seed_hash = crate::model::wallet::ClosedKeyItem::compute_seed_hash(seed);
+        let epk = crate::database::test_helpers::legacy_master_epk_bytes(seed, network);
+        crate::database::test_helpers::seed_legacy_unprotected_hd_wallet_row(
+            &app_context.db,
+            &seed_hash,
+            seed,
+            &epk,
+            alias,
+            network,
+        )
+        .expect("insert legacy wallet row");
+        seed_hash
+    }
+
+    /// QA-101 — the headline funds regression. A single undecodable legacy vote
+    /// row must NOT stand between the user and their wallet: the drain runs to
+    /// completion (seeds copied, wallet hydrated AND upstream-registered, the
+    /// completion sentinel written), while the corrupt row is still surfaced —
+    /// counted on the terminal state and left in `data.db` — rather than
+    /// silently dropped. Before the fix the vote import ran first, unconditionally
+    /// and fatally, so this wallet stayed unreachable on every launch forever.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn run_completes_the_wallet_drain_despite_an_unreadable_vote_row() {
+        use crate::wallet_backend::poison::RwLockRecover;
+        use dash_sdk::dpp::dashcore::Network;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = fresh_app_context(tmp.path());
+        let network = Network::Testnet;
+
+        let seed_hash = seed_legacy_wallet(&ctx, &[0xA3u8; 64], "funds", network);
+        let voter = [0x11u8; 32];
+        seed_legacy_votes(
+            &ctx,
+            &voter,
+            &[("alice", "Lock"), ("corrupt", "Nonsense")],
+            network,
+        );
+
+        wire_backend(&ctx).await;
+        let backend = ctx.wallet_backend().expect("backend wired");
+        assert!(
+            !backend.is_wallet_registered(&seed_hash),
+            "precondition: the legacy wallet is not migrated yet",
+        );
+
+        run(&ctx)
+            .await
+            .expect("an unreadable vote row must not fail the wallet migration");
+
+        // Funds first: hydrated into `ctx.wallets`, registered in the same
+        // `id_map` that `resolve_wallet` consults, and the drain recorded as done.
+        assert!(
+            ctx.wallets.read_recover().contains_key(&seed_hash),
+            "the migrated wallet must be visible after the migration",
+        );
+        assert!(
+            backend.is_wallet_registered(&seed_hash),
+            "the migrated wallet must be reachable — a corrupt vote row must never \
+             block access to funds",
+        );
+        assert!(
+            read_sentinel(&ctx.app_kv(), network)
+                .expect("read sentinel")
+                .is_some(),
+            "the completion sentinel must be written once the drain succeeds",
+        );
+
+        // No silent loss: the readable vote came across, and the unreadable one is
+        // reported on the terminal state (the banner the user sees), not swallowed.
+        let votes = ctx.get_scheduled_votes().expect("read scheduled votes");
+        assert_eq!(votes.len(), 1, "the readable vote must still be imported");
+        assert_eq!(votes[0].contested_name, "alice");
+        assert_eq!(
+            *ctx.migration_status().state(),
+            MigrationState::SucceededWithUnreadableVotes { count: 1 },
+            "the corrupt vote row must be surfaced to the user, not dropped in silence",
+        );
+
+        // The legacy rows survive, so a build with a better decoder can still get
+        // the vote back.
+        let conn = Connection::open(tmp.path().join("data.db")).expect("open data.db");
+        let remaining: i64 = conn
+            .query_row("SELECT COUNT(*) FROM scheduled_votes", [], |r| r.get(0))
+            .expect("count legacy votes");
+        assert_eq!(remaining, 2, "the migration must never delete legacy rows");
+
+        backend.shutdown().await;
+    }
+
+    /// TC-MIG-009 — end-to-end idempotency: `run()` called TWICE on the same
+    /// `AppContext` must make the second launch a true no-op. Not just "the
+    /// sentinel reads back" — the second pass must re-fire no side effect, which
+    /// this proves by clearing the vote queue between the runs (what the app does
+    /// once a vote has been cast) and requiring the re-run NOT to resurrect it
+    /// from the legacy row that is still sitting in `data.db`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn second_run_on_the_same_context_re_fires_nothing() {
+        use dash_sdk::dpp::dashcore::Network;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = fresh_app_context(tmp.path());
+        let network = Network::Testnet;
+
+        let seed_hash = seed_legacy_wallet(&ctx, &[0xB4u8; 64], "funds", network);
+        seed_legacy_votes(&ctx, &[0x22u8; 32], &[("alice", "Lock")], network);
+
+        wire_backend(&ctx).await;
+        let backend = ctx.wallet_backend().expect("backend wired");
+
+        assert!(
+            run(&ctx).await.expect("first run"),
+            "the first launch moves legacy data",
+        );
+        assert!(backend.is_wallet_registered(&seed_hash));
+        assert_eq!(ctx.get_scheduled_votes().expect("read votes").len(), 1);
+        let sentinel_after_first = read_sentinel(&ctx.app_kv(), network)
+            .expect("read sentinel")
+            .expect("sentinel written by the first run");
+
+        // The user casts the vote, so the app drops it from the queue. The legacy
+        // row still says `executed = 0` — a re-import would queue it a second time.
+        ctx.clear_all_scheduled_votes().expect("clear vote queue");
+
+        let did_work = run(&ctx).await.expect("second run");
+
+        assert!(!did_work, "the second launch must move nothing");
+        assert!(
+            ctx.get_scheduled_votes().expect("read votes").is_empty(),
+            "a re-run must not resurrect a vote the user has already dealt with",
+        );
+        assert_eq!(
+            read_sentinel(&ctx.app_kv(), network)
+                .expect("read sentinel")
+                .expect("sentinel still present"),
+            sentinel_after_first,
+            "a no-op launch must not rewrite the completion sentinel",
+        );
+        assert!(
+            matches!(*ctx.migration_status().state(), MigrationState::Idle),
+            "a no-op launch must not publish a completion banner",
+        );
+
+        backend.shutdown().await;
     }
 
     /// Funds-safety invariant (Fix #3): a run that cannot finish — here because

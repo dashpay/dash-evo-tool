@@ -679,7 +679,7 @@ As a user, I want to assign a friendly alias to an identity behind a username I 
 As a masternode operator, I want my previously scheduled DPNS votes to survive an app upgrade so that I do not miss a contest's vote window after updating.
 
 - Scheduled votes stored before the upgrade remain visible and executable afterward.
-- The first launch after the upgrade imports them from the previous version's storage, keeping each vote's choice, timestamp, and already-cast state. A vote that cannot be read is reported in a banner rather than dropped silently.
+- The first launch after the upgrade imports them from the previous version's storage, keeping each vote's choice, timestamp, and already-cast state. A vote that cannot be read is reported in a banner, with the recovery action, rather than dropped silently — and never blocks the wallet migration that restores access to funds.
 
 ---
 

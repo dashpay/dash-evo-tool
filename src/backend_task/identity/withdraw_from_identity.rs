@@ -66,6 +66,16 @@ impl AppContext {
             tracing::warn!("No signing key specified for withdrawal");
         }
 
+        // Platform rejects an output script when signing with an OWNER key,
+        // routing the withdrawal to the registered payout address instead.
+        let to_address = qualified_identity
+            .resolve_withdrawal_output(
+                signing_key.as_ref().map(|key| key.purpose()),
+                to_address,
+                self.network(),
+            )
+            .map_err(|_| TaskError::OwnerKeyWithdrawalNotAllowed)?;
+
         tracing::debug!(
             num_private_keys = qualified_identity.private_keys.private_keys.len(),
             num_wallets = qualified_identity.associated_wallets.len(),

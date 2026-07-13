@@ -104,6 +104,11 @@ pub struct MasternodeKeyPresence {
     pub payout: bool,
 }
 
+/// An `OWNER`-key withdrawal was asked to pay an address other than the
+/// identity's registered payout address, which Platform does not permit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OwnerKeyWithdrawalNotAllowed;
+
 #[derive(Debug, Encode, Decode, Clone, Hash, Ord, PartialOrd, Eq, PartialEq)]
 #[allow(clippy::enum_variant_names)]
 pub enum PrivateKeyTarget {
@@ -863,6 +868,38 @@ impl QualifiedIdentity {
             .copied()
     }
 
+    /// Resolves the output address to pass to a withdrawal, enforcing Platform's
+    /// rule that an `OWNER`-key withdrawal must carry no output script and is
+    /// routed to the identity's registered payout address.
+    ///
+    /// For a non-`OWNER` signing key the requested address passes through
+    /// unchanged. For an `OWNER` key: a `None` request, or one that already
+    /// equals the registered payout address, resolves to `None` (Platform pays
+    /// the registered payout address). A request for any other address returns
+    /// [`OwnerKeyWithdrawalNotAllowed`] — the owner key cannot pay it, and
+    /// silently redirecting to the payout address would send funds elsewhere
+    /// than the user asked.
+    pub fn resolve_withdrawal_output(
+        &self,
+        signing_key_purpose: Option<Purpose>,
+        requested: Option<Address>,
+        network: Network,
+    ) -> Result<Option<Address>, OwnerKeyWithdrawalNotAllowed> {
+        if signing_key_purpose != Some(Purpose::OWNER) {
+            return Ok(requested);
+        }
+        match requested {
+            None => Ok(None),
+            Some(address) => {
+                if self.masternode_payout_address(network).as_ref() == Some(&address) {
+                    Ok(None)
+                } else {
+                    Err(OwnerKeyWithdrawalNotAllowed)
+                }
+            }
+        }
+    }
+
     pub fn available_transfer_keys(&self) -> Vec<&QualifiedIdentityPublicKey> {
         let mut keys = vec![];
 
@@ -1227,5 +1264,110 @@ mod withdrawal_key_tests {
         );
         assert!(qi.default_withdrawal_key().is_none());
         assert!(qi.available_withdrawal_keys().is_empty());
+    }
+
+    /// A loaded enabled TRANSFER key is preferred over a lower-id OWNER key, so
+    /// an arbitrary-address withdrawal never defaults to the OWNER key (which
+    /// Platform rejects when an output script is present).
+    #[test]
+    fn active_transfer_preferred_over_lower_id_owner() {
+        let disabled_transfer = disabled_key(0, Purpose::TRANSFER);
+        let owner = key(1, Purpose::OWNER);
+        let active_transfer = key(2, Purpose::TRANSFER);
+        let qi = build_identity(
+            IdentityType::Masternode,
+            vec![
+                disabled_transfer.clone(),
+                owner.clone(),
+                active_transfer.clone(),
+            ],
+            vec![disabled_transfer, owner, active_transfer],
+        );
+        let selected = qi.default_withdrawal_key().expect("a key");
+        assert_eq!(selected.identity_public_key.id(), 2);
+        assert_eq!(selected.identity_public_key.purpose(), Purpose::TRANSFER);
+    }
+
+    fn payout_key(id: KeyID, hash: [u8; 20]) -> IdentityPublicKey {
+        let mut k = key(id, Purpose::TRANSFER);
+        k.set_key_type(KeyType::ECDSA_HASH160);
+        k.set_data(BinaryData::new(hash.to_vec()));
+        k
+    }
+
+    fn addr(hash: [u8; 20]) -> Address {
+        Address::new(
+            Network::Testnet,
+            Payload::PubkeyHash(PubkeyHash::from_byte_array(hash)),
+        )
+    }
+
+    /// Repro for the owner-key withdrawal bug: Platform rejects an owner-key
+    /// withdrawal that carries an output script. When only the OWNER key is
+    /// loaded and the user targets the registered payout address, the output
+    /// script must be omitted so Platform routes to the payout address.
+    #[test]
+    fn owner_key_withdrawal_to_payout_omits_output_script() {
+        let owner = key(1, Purpose::OWNER);
+        let payout = payout_key(2, [0x11; 20]);
+        let qi = build_identity(
+            IdentityType::Masternode,
+            vec![owner.clone(), payout],
+            vec![owner],
+        );
+        let payout_addr = qi
+            .masternode_payout_address(Network::Testnet)
+            .expect("payout address");
+
+        assert_eq!(
+            qi.resolve_withdrawal_output(
+                Some(Purpose::OWNER),
+                Some(payout_addr),
+                Network::Testnet,
+            ),
+            Ok(None),
+        );
+        assert_eq!(
+            qi.resolve_withdrawal_output(Some(Purpose::OWNER), None, Network::Testnet),
+            Ok(None),
+        );
+    }
+
+    #[test]
+    fn owner_key_withdrawal_to_other_address_is_rejected() {
+        let owner = key(1, Purpose::OWNER);
+        let payout = payout_key(2, [0x11; 20]);
+        let qi = build_identity(
+            IdentityType::Masternode,
+            vec![owner.clone(), payout],
+            vec![owner],
+        );
+        assert_eq!(
+            qi.resolve_withdrawal_output(
+                Some(Purpose::OWNER),
+                Some(addr([0x22; 20])),
+                Network::Testnet,
+            ),
+            Err(OwnerKeyWithdrawalNotAllowed),
+        );
+    }
+
+    #[test]
+    fn transfer_key_withdrawal_passes_requested_address_through() {
+        let transfer = payout_key(2, [0x11; 20]);
+        let qi = build_identity(
+            IdentityType::Masternode,
+            vec![transfer.clone()],
+            vec![transfer],
+        );
+        let requested = addr([0x22; 20]);
+        assert_eq!(
+            qi.resolve_withdrawal_output(
+                Some(Purpose::TRANSFER),
+                Some(requested.clone()),
+                Network::Testnet,
+            ),
+            Ok(Some(requested)),
+        );
     }
 }

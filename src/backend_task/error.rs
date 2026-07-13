@@ -741,6 +741,13 @@ pub enum TaskError {
     #[error("Identity not found on the platform. Please check the ID or name and try again.")]
     IdentityNotFound,
 
+    /// An owner-key withdrawal was directed at an address other than the
+    /// masternode's registered payout address, which the network does not allow.
+    #[error(
+        "A withdrawal signed with your masternode owner key can only go to your registered payout address. To send to a different address, load your payout key and try again."
+    )]
+    OwnerKeyWithdrawalNotAllowed,
+
     /// Timed out waiting for transaction confirmation.
     #[error(
         "The transaction was not confirmed within the expected time. Please check your network connection and retry."

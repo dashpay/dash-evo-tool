@@ -109,6 +109,13 @@ pub struct MasternodeKeyPresence {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct OwnerKeyWithdrawalNotAllowed;
 
+/// No key could be resolved to sign an identity credit withdrawal: the
+/// explicitly requested key is unknown, disabled, or not one this app can sign
+/// with, or — when no key was requested — the identity holds no active,
+/// locally-signable `TRANSFER`/`OWNER` key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NoUsableWithdrawalKey;
+
 #[derive(Debug, Encode, Decode, Clone, Hash, Ord, PartialOrd, Eq, PartialEq)]
 #[allow(clippy::enum_variant_names)]
 pub enum PrivateKeyTarget {
@@ -868,6 +875,61 @@ impl QualifiedIdentity {
             .copied()
     }
 
+    /// Resolves the effective key to sign an identity credit withdrawal,
+    /// returning its [`KeyID`].
+    ///
+    /// `requested` is the caller's explicit key choice, or `None` to auto-select.
+    /// Resolution runs against `self.identity`, which the caller must have
+    /// refreshed from Platform first: a key disabled on-chain since the identity
+    /// was last loaded is rejected here rather than reaching signing. Only keys
+    /// whose private material this app holds and whose purpose is `TRANSFER`
+    /// (preferred) or `OWNER` are eligible, mirroring Platform's
+    /// `TransferPreferred` selection.
+    ///
+    /// An explicit `requested` id that is unknown, disabled, or not locally
+    /// signable is rejected — never silently replaced with a different key.
+    /// Returns [`NoUsableWithdrawalKey`] when nothing eligible remains, so the
+    /// caller can surface a clear error instead of letting the SDK pick a key
+    /// (which would allow a disabled key or an unintended `OWNER` fallback).
+    pub fn resolve_withdrawal_signing_key(
+        &self,
+        requested: Option<KeyID>,
+    ) -> Result<KeyID, NoUsableWithdrawalKey> {
+        // Locally-held TRANSFER/OWNER keys that are also active in the current
+        // (refreshed) identity snapshot. `available_withdrawal_keys` filters on
+        // the stored copy's disabled flag; the extra check catches a key that was
+        // disabled on-chain after this identity was loaded.
+        let usable: Vec<&QualifiedIdentityPublicKey> = self
+            .available_withdrawal_keys()
+            .into_iter()
+            .filter(|qk| {
+                matches!(
+                    self.identity.get_public_key_by_id(qk.identity_public_key.id()),
+                    Some(current) if !current.is_disabled()
+                )
+            })
+            .collect();
+
+        if let Some(requested_id) = requested {
+            return usable
+                .iter()
+                .any(|qk| qk.identity_public_key.id() == requested_id)
+                .then_some(requested_id)
+                .ok_or(NoUsableWithdrawalKey);
+        }
+
+        usable
+            .iter()
+            .find(|qk| qk.identity_public_key.purpose() == Purpose::TRANSFER)
+            .or_else(|| {
+                usable
+                    .iter()
+                    .find(|qk| qk.identity_public_key.purpose() == Purpose::OWNER)
+            })
+            .map(|qk| qk.identity_public_key.id())
+            .ok_or(NoUsableWithdrawalKey)
+    }
+
     /// Resolves the output address to pass to a withdrawal, enforcing Platform's
     /// rule that an `OWNER`-key withdrawal must carry no output script and is
     /// routed to the identity's registered payout address.
@@ -1286,6 +1348,90 @@ mod withdrawal_key_tests {
         let selected = qi.default_withdrawal_key().expect("a key");
         assert_eq!(selected.identity_public_key.id(), 2);
         assert_eq!(selected.identity_public_key.purpose(), Purpose::TRANSFER);
+    }
+
+    /// Auto-select (no explicit id) resolves the active TRANSFER key, matching
+    /// the SDK's `TransferPreferred` intent but restricted to keys the signer
+    /// can actually use.
+    #[test]
+    fn resolve_signing_key_auto_selects_active_transfer() {
+        let transfer = key(1, Purpose::TRANSFER);
+        let qi = build_identity(IdentityType::User, vec![transfer.clone()], vec![transfer]);
+        assert_eq!(qi.resolve_withdrawal_signing_key(None), Ok(1));
+    }
+
+    /// A key active in the stored copy but disabled in the refreshed on-chain
+    /// identity must not be auto-selected — the exact case the SDK's own
+    /// selection would sign with and fail. The active key is chosen instead.
+    #[test]
+    fn resolve_signing_key_skips_key_disabled_after_refresh() {
+        // On-chain (refreshed): id 1 disabled, id 2 active.
+        // Stored copy: both look active (stale) — the resolver must consult the
+        // refreshed identity, not the stored disabled flag.
+        let qi = build_identity(
+            IdentityType::User,
+            vec![
+                disabled_key(1, Purpose::TRANSFER),
+                key(2, Purpose::TRANSFER),
+            ],
+            vec![key(1, Purpose::TRANSFER), key(2, Purpose::TRANSFER)],
+        );
+        assert_eq!(qi.resolve_withdrawal_signing_key(None), Ok(2));
+    }
+
+    /// An explicitly requested key that is disabled on-chain after refresh is
+    /// rejected, never silently swapped for another key.
+    #[test]
+    fn resolve_signing_key_rejects_explicit_disabled_key() {
+        let qi = build_identity(
+            IdentityType::User,
+            vec![
+                disabled_key(1, Purpose::TRANSFER),
+                key(2, Purpose::TRANSFER),
+            ],
+            vec![key(1, Purpose::TRANSFER), key(2, Purpose::TRANSFER)],
+        );
+        assert_eq!(
+            qi.resolve_withdrawal_signing_key(Some(1)),
+            Err(NoUsableWithdrawalKey)
+        );
+    }
+
+    /// An explicitly requested key the signer does not hold locally is rejected.
+    #[test]
+    fn resolve_signing_key_rejects_unknown_explicit_key() {
+        let transfer = key(1, Purpose::TRANSFER);
+        let qi = build_identity(IdentityType::User, vec![transfer.clone()], vec![transfer]);
+        assert_eq!(
+            qi.resolve_withdrawal_signing_key(Some(99)),
+            Err(NoUsableWithdrawalKey)
+        );
+    }
+
+    /// A valid explicit request resolves to that same key.
+    #[test]
+    fn resolve_signing_key_honors_valid_explicit_request() {
+        let owner = key(1, Purpose::OWNER);
+        let transfer = key(2, Purpose::TRANSFER);
+        let qi = build_identity(
+            IdentityType::Masternode,
+            vec![owner.clone(), transfer.clone()],
+            vec![owner, transfer],
+        );
+        assert_eq!(qi.resolve_withdrawal_signing_key(Some(1)), Ok(1));
+    }
+
+    /// With no usable key at all, resolution fails so the caller surfaces a
+    /// clear error instead of the SDK picking a key that cannot sign.
+    #[test]
+    fn resolve_signing_key_errors_when_none_usable() {
+        let ghost = key(1, Purpose::TRANSFER);
+        // On-chain only; no private material held.
+        let qi = build_identity(IdentityType::User, vec![ghost], vec![]);
+        assert_eq!(
+            qi.resolve_withdrawal_signing_key(None),
+            Err(NoUsableWithdrawalKey)
+        );
     }
 
     fn payout_key(id: KeyID, hash: [u8; 20]) -> IdentityPublicKey {

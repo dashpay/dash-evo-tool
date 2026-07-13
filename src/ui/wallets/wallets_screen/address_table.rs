@@ -12,6 +12,12 @@ use egui_extras::{Column, TableBuilder};
 
 use super::WalletsBalancesScreen;
 
+/// Hover text on the disabled key control for a funded address with no known
+/// derivation path. Its key cannot be derived without the path, and deriving at
+/// a placeholder path would expose the wallet's master key, so export is blocked.
+const NO_KNOWN_PATH_KEY_TOOLTIP: &str =
+    "This address has no known derivation path, so its private key cannot be shown.";
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum SortColumn {
     Address,
@@ -39,6 +45,11 @@ pub(super) struct AddressData {
     address_type: String,
     index: u32,
     derivation_path: DerivationPath,
+    /// Whether the address has a verified derivation path. `false` for a funded
+    /// address surfaced without a known path — key export must be disabled for
+    /// it, since deriving at its placeholder (empty) path yields the HD master
+    /// key, not this address's key.
+    has_known_path: bool,
     account_category: AccountCategory,
     account_index: Option<u32>,
 }
@@ -57,25 +68,32 @@ pub(super) struct AddressData {
 /// receive index ≥ 32): they counted in the headline total but never appeared in
 /// the list. Addresses present in both keep their `known_addresses` path (which
 /// equals the snapshot path for the same address).
+///
+/// The value is `Some(path)` for an address with a verified derivation path and
+/// `None` for a funded address whose path is unknown. The missing-path state is
+/// preserved explicitly rather than collapsed to an empty path: an empty path
+/// derives the BIP-32 master key, so treating "unknown" as the HD root would let
+/// key export hand out the wallet's root secret mislabelled as the address's key.
 pub(super) fn combined_address_paths(
     known_addresses: &BTreeMap<Address, DerivationPath>,
     snapshot_address_paths: &BTreeMap<Address, DerivationPath>,
     snapshot_address_balances: &BTreeMap<Address, u64>,
-) -> BTreeMap<Address, DerivationPath> {
-    let mut combined = known_addresses.clone();
+) -> BTreeMap<Address, Option<DerivationPath>> {
+    let mut combined: BTreeMap<Address, Option<DerivationPath>> = known_addresses
+        .iter()
+        .map(|(address, path)| (address.clone(), Some(path.clone())))
+        .collect();
     for (address, path) in snapshot_address_paths {
         combined
             .entry(address.clone())
-            .or_insert_with(|| path.clone());
+            .or_insert_with(|| Some(path.clone()));
     }
     // Funded addresses the snapshot reports outside both sets carry no known
-    // derivation path; surface them (empty path ⇒ `Other` category) so no real
-    // funds are ever invisible in the list.
+    // derivation path; surface them (`None` ⇒ `Other` category, key export
+    // disabled) so no real funds are ever invisible in the list.
     for (address, &balance) in snapshot_address_balances {
         if balance > 0 {
-            combined
-                .entry(address.clone())
-                .or_insert_with(|| DerivationPath::from(Vec::new()));
+            combined.entry(address.clone()).or_insert(None);
         }
     }
     combined
@@ -192,10 +210,17 @@ impl WalletsBalancesScreen {
             // Prepare data for the table
             listed_addresses
                 .iter()
-                .map(|(address, derivation_path)| {
+                .map(|(address, maybe_path)| {
+                    let has_known_path = maybe_path.is_some();
+                    // Placeholder for a pathless (unknown-path) address. Used only
+                    // for display and categorization; `has_known_path` gates key
+                    // export so this empty path is never derived into a key.
+                    let derivation_path = maybe_path
+                        .clone()
+                        .unwrap_or_else(|| DerivationPath::from(Vec::new()));
                     let utxo_count = snap_utxo_counts.get(address).copied().unwrap_or(0);
 
-                    let index = derivation_path
+                    let index = (&derivation_path)
                         .into_iter()
                         .last()
                         .cloned()
@@ -220,11 +245,11 @@ impl WalletsBalancesScreen {
 
                     let path_reference = wallet
                         .watched_addresses
-                        .get(derivation_path)
+                        .get(&derivation_path)
                         .map(|info| info.path_reference)
                         .unwrap_or(DerivationPathReference::Unknown);
                     let (account_category, account_index) = Self::categorize_path(
-                        derivation_path,
+                        &derivation_path,
                         path_reference,
                         self.app_context.network,
                     );
@@ -254,7 +279,8 @@ impl WalletsBalancesScreen {
                         nonce,
                         address_type,
                         index,
-                        derivation_path: derivation_path.clone(),
+                        derivation_path,
+                        has_known_path,
                         account_category,
                         account_index,
                     }
@@ -462,7 +488,13 @@ impl WalletsBalancesScreen {
                             ui.label(format!("{}", data.derivation_path));
                         });
                         row.col(|ui| {
-                            if ui.button("View Key").clicked() {
+                            // A pathless address has no derivable key: deriving at
+                            // its placeholder (empty) path would yield the HD master
+                            // key, not this address's key. Disable export for it.
+                            if !data.has_known_path {
+                                ui.add_enabled(false, egui::Button::new("View Key"))
+                                    .on_disabled_hover_text(NO_KNOWN_PATH_KEY_TOOLTIP);
+                            } else if ui.button("View Key").clicked() {
                                 // Check if wallet is locked first
                                 let wallet_locked = self
                                     .selected_wallet
@@ -577,16 +609,21 @@ mod tests {
         );
         // It carries the snapshot's real BIP-44 path, so it categorizes into the
         // Dash Core (BIP44 account 0) tab and reconciles with that tab's label.
-        assert_eq!(combined.get(&past_window), Some(&bip44_external(40)));
+        assert_eq!(combined.get(&past_window), Some(&Some(bip44_external(40))));
         // The bootstrap-window addresses are still present.
         assert!(combined.contains_key(&addr(1)));
         assert!(combined.contains_key(&addr(2)));
     }
 
     /// A funded address the snapshot reports but neither `known_addresses` nor
-    /// the snapshot's `address_paths` cover is still surfaced (with an empty
-    /// path ⇒ `Other` category), so no real funds are ever invisible. An
-    /// unfunded such address is not fabricated into a row.
+    /// the snapshot's `address_paths` cover is still surfaced (with `None` path
+    /// ⇒ `Other` category, key export disabled), so no real funds are ever
+    /// invisible. An unfunded such address is not fabricated into a row.
+    ///
+    /// The `None` (not empty-path) representation is load-bearing: an empty path
+    /// derives the BIP-32 master key, so collapsing "unknown" to the HD root
+    /// would let key export leak the wallet's root secret. Preserving `None`
+    /// keeps that address's export disabled.
     #[test]
     fn stray_funded_address_is_surfaced_unfunded_is_not() {
         let known = BTreeMap::new();
@@ -606,12 +643,28 @@ mod tests {
         );
         assert_eq!(
             combined.get(&funded_stray),
-            Some(&DerivationPath::from(Vec::new())),
-            "a pathless funded address carries an empty path (Other category)"
+            Some(&None),
+            "a pathless funded address keeps its missing-path state (None), never \
+             an empty path that would derive the HD master key"
         );
         assert!(
             !combined.contains_key(&zero_stray),
             "a zero-balance pathless address is not fabricated into a row"
         );
+    }
+
+    /// A known address keeps its verified path as `Some`, distinguishing it from
+    /// a pathless funded address (`None`) so key export stays enabled only where
+    /// a real derivation path exists.
+    #[test]
+    fn known_address_keeps_some_path() {
+        let mut known = BTreeMap::new();
+        known.insert(addr(1), bip44_external(2));
+        let snap_paths = BTreeMap::new();
+        let snap_balances = BTreeMap::new();
+
+        let combined = combined_address_paths(&known, &snap_paths, &snap_balances);
+
+        assert_eq!(combined.get(&addr(1)), Some(&Some(bip44_external(2))));
     }
 }

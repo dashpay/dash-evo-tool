@@ -52,8 +52,17 @@ impl AppContext {
             "Starting withdrawal from identity"
         );
 
-        let signing_key =
-            id.and_then(|key_id| qualified_identity.identity.get_public_key_by_id(key_id));
+        // Resolve one active TRANSFER-or-OWNER key the local signer can use,
+        // against the freshly fetched identity. Passing an explicit key to the
+        // SDK below (rather than `None`) stops it from running its own
+        // `TransferPreferred` selection, which would accept a disabled key or
+        // fall back to an OWNER key and bypass the owner-address policy.
+        let signing_key_id = qualified_identity
+            .resolve_withdrawal_signing_key(id)
+            .map_err(|_| TaskError::NoUsableWithdrawalKey)?;
+        let signing_key = qualified_identity
+            .identity
+            .get_public_key_by_id(signing_key_id);
         if let Some(key) = &signing_key {
             tracing::info!(
                 key_id = key.id(),
@@ -62,8 +71,6 @@ impl AppContext {
                 key_security_level = ?key.security_level(),
                 "Using signing key for withdrawal"
             );
-        } else {
-            tracing::warn!("No signing key specified for withdrawal");
         }
 
         // Platform rejects an output script when signing with an OWNER key,

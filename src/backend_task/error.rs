@@ -748,6 +748,14 @@ pub enum TaskError {
     )]
     OwnerKeyWithdrawalNotAllowed,
 
+    /// No active key this app can sign with was available for the withdrawal —
+    /// the chosen key may have been disabled, or no suitable transfer key is
+    /// loaded for this identity.
+    #[error(
+        "This withdrawal can't be signed because no active transfer key for this identity is available in this app. Load an active transfer key for this identity and try again."
+    )]
+    NoUsableWithdrawalKey,
+
     /// Timed out waiting for transaction confirmation.
     #[error(
         "The transaction was not confirmed within the expected time. Please check your network connection and retry."

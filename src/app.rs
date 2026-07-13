@@ -942,12 +942,13 @@ impl AppState {
         Ok(app_state)
     }
 
-    /// Allows enabling or disabling animations globally for the app.
+    /// Force UI animations off (or lift that override) for every network context.
     ///
-    /// Default is enabled.
+    /// No override by default. Lifting one does not *guarantee* animation: the
+    /// Power and Developer roles keep the UI still on their own.
     pub fn with_animations(self, enabled: bool) -> Self {
         for context in self.network_contexts.values() {
-            context.enable_animations(enabled);
+            context.set_animations_disabled(!enabled);
         }
         self
     }

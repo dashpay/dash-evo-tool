@@ -92,11 +92,14 @@ pub struct AppContext {
     identity_autodiscovery_fired: AtomicBool,
     pub(crate) wallets: RwLock<BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>>>,
     pub(crate) single_key_wallets: RwLock<BTreeMap<SingleKeyHash, Arc<RwLock<SingleKeyWallet>>>>,
-    /// Whether to animate the UI elements.
+    /// Hard override that keeps this context's UI still whatever the role — set by
+    /// automated tests through [`AppState::with_animations`](crate::app::AppState::with_animations).
     ///
-    /// This is used to control animations in the UI, such as loading spinners or transitions.
-    /// Disable for automated tests.
-    animate: AtomicBool,
+    /// Role-driven suppression is *not* stored here: it is derived on every read by
+    /// [`animations_enabled`](Self::animations_enabled). The role cell is shared by
+    /// every per-network context but a role change only passes through the active
+    /// one, so a mirrored copy would go stale on the others.
+    animations_disabled: AtomicBool,
     /// Cached settings to avoid repeated k/v reads + bincode decoding.
     /// Use RwLock to allow multiple readers but exclusive writers for cache invalidation.
     cached_settings: RwLock<Option<AppSettings>>,
@@ -320,16 +323,6 @@ impl AppContext {
         let single_key_wallets: BTreeMap<SingleKeyHash, Arc<RwLock<SingleKeyWallet>>> =
             BTreeMap::new();
 
-        let advanced_role = user_role.get().at_least(UserRole::Power);
-
-        let animate = match advanced_role {
-            true => {
-                tracing::debug!("power/developer role active, disabling animations");
-                AtomicBool::new(false)
-            }
-            false => AtomicBool::new(true), // Animations are enabled by default
-        };
-
         // Wallet selection is restored from the per-network wallet k/v
         // store inside `ensure_wallet_backend` once the backend is
         // wired. At `AppContext::new` time the backend does not exist
@@ -356,7 +349,7 @@ impl AppContext {
             identity_autodiscovery_fired: AtomicBool::new(false),
             wallets: RwLock::new(wallets),
             single_key_wallets: RwLock::new(single_key_wallets),
-            animate,
+            animations_disabled: AtomicBool::new(false),
             cached_settings: RwLock::new(None),
             app_kv,
             secret_store,
@@ -398,11 +391,22 @@ impl AppContext {
         Some(app_context)
     }
 
-    /// Enables animations in the UI.
+    /// Force UI animations off for this context, whatever the role — the switch
+    /// behind [`AppState::with_animations`](crate::app::AppState::with_animations),
+    /// which automated runs use to keep the frame loop still.
+    pub fn set_animations_disabled(&self, disabled: bool) {
+        self.animations_disabled.store(disabled, Ordering::Relaxed);
+    }
+
+    /// Whether UI elements should animate: not while an override is in force, and
+    /// not for Power or Developer, whose animation clutters an operator workflow.
     ///
-    /// This is used to control whether UI elements should animate, such as loading spinners or transitions.
-    pub fn enable_animations(&self, animate: bool) {
-        self.animate.store(animate, Ordering::Relaxed);
+    /// Derived from the shared role on every read rather than mirrored into a field
+    /// when the role changes — see the [`animations_disabled`](Self::animations_disabled)
+    /// field docs.
+    fn animations_enabled(&self) -> bool {
+        !self.animations_disabled.load(Ordering::Relaxed)
+            && !self.user_role().at_least(UserRole::Power)
     }
 
     /// The app-global user role (shared across every per-network context).
@@ -410,11 +414,10 @@ impl AppContext {
         self.user_role.get()
     }
 
-    /// Set the app-global user role. Animations are disabled for Power and
-    /// Developer roles (they clutter an operator/developer workflow).
+    /// Set the app-global user role, publishing it to every context that shares
+    /// the cell.
     pub fn set_user_role(&self, role: UserRole) {
         self.user_role.set(role);
-        self.enable_animations(!role.at_least(UserRole::Power));
     }
 
     /// Whether an experimental feature is currently exposed.
@@ -771,7 +774,7 @@ impl AppContext {
     ///
     /// Called by UI elements that need to trigger a repaint, such as loading spinners or animated icons.
     pub(super) fn repaint_animation(&self, ctx: &Context) {
-        if self.animate.load(Ordering::Relaxed) {
+        if self.animations_enabled() {
             // Request a repaint after a short delay to allow for animations
             ctx.request_repaint_after(ANIMATION_REFRESH_TIME);
         }
@@ -1484,6 +1487,101 @@ mod tests {
             UserRole::Power,
             "a role set on one network's context must be visible on another \
              network's context"
+        );
+    }
+
+    /// Animation gating is derived from the shared role, so it cannot go stale on
+    /// a context the role change did not pass through.
+    ///
+    /// The role cell is app-global, but an `AppContext` exists per network. A
+    /// mirrored `animate` flag was only refreshed on the context `set_user_role`
+    /// was called on, leaving an idle sibling (testnet, while mainnet is active)
+    /// to animate — or not — according to a role the user had already left behind,
+    /// until the next role change happened to land on it.
+    #[test]
+    fn animation_gating_follows_the_role_on_every_network_context() {
+        use crate::app_dir::ensure_env_file;
+        use crate::context::connection_status::ConnectionStatus;
+        use crate::database::test_helpers::create_database_at_path;
+        use crate::utils::tasks::TaskManager;
+        use dash_sdk::dpp::dashcore::Network;
+
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = temp_dir.path().to_path_buf();
+        ensure_env_file(&data_dir);
+        let db =
+            std::sync::Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
+        let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
+        let secret_store = AppContext::open_secret_store(&data_dir).expect("secret store");
+        let subtasks = std::sync::Arc::new(TaskManager::new());
+        let connection_status = std::sync::Arc::new(ConnectionStatus::new());
+        let egui_ctx = egui::Context::default();
+        let user_role = UserRoleCell::new(UserRole::Everyday);
+
+        let mainnet = AppContext::new(
+            data_dir.clone(),
+            Network::Mainnet,
+            db.clone(),
+            subtasks.clone(),
+            connection_status.clone(),
+            egui_ctx.clone(),
+            app_kv.clone(),
+            secret_store.clone(),
+            user_role.clone(),
+        )
+        .expect("mainnet AppContext::new");
+        let testnet = AppContext::new(
+            data_dir,
+            Network::Testnet,
+            db,
+            subtasks,
+            connection_status,
+            egui_ctx,
+            app_kv,
+            secret_store,
+            user_role,
+        )
+        .expect("testnet AppContext::new");
+
+        assert!(
+            mainnet.animations_enabled() && testnet.animations_enabled(),
+            "Everyday keeps the animated UI on every context"
+        );
+
+        // The role is raised on the ACTIVE context only — the idle sibling never
+        // sees the call, exactly as on a live role switch.
+        mainnet.set_user_role(UserRole::Power);
+
+        assert!(
+            !mainnet.animations_enabled(),
+            "Power stills the UI: animation clutters an operator workflow"
+        );
+        assert!(
+            !testnet.animations_enabled(),
+            "an idle network's context must observe the role change too, not keep \
+             animating from the role the user left behind"
+        );
+
+        // …and back down, so the derivation tracks in both directions.
+        testnet.set_user_role(UserRole::Everyday);
+        assert!(mainnet.animations_enabled() && testnet.animations_enabled());
+    }
+
+    /// The test-only override wins over the role: `AppState::with_animations(false)`
+    /// keeps the frame loop still for an automated run whatever role the fixture
+    /// happens to hold, and a later role change must not silently re-enable it.
+    #[test]
+    fn disabling_animations_survives_a_role_change() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = crate::context::test_support::test_app_context(tmp.path());
+
+        ctx.set_animations_disabled(true);
+        assert!(!ctx.animations_enabled());
+
+        ctx.set_user_role(UserRole::Everyday);
+        assert!(
+            !ctx.animations_enabled(),
+            "an explicit override must not be undone by a role change"
         );
     }
 

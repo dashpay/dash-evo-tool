@@ -354,13 +354,12 @@ pub fn subdued_everyday_spec(label: impl Into<String>, target: RootScreenType) -
     PageNavSpec::unwired_everyday(label, target, TT_WALLET_UNWIRED, TT_IDENTITY_UNWIRED)
 }
 
-/// A wallet-only global-nav spec (no identity/object pill) with the wallet pill
-/// subdued (unwired). For pages with no identity context (e.g. Wallets) —
-/// FR-GLOBAL-NAV-2 rule 4.
-pub fn subdued_wallet_only_spec(label: impl Into<String>, target: RootScreenType) -> PageNavSpec {
-    PageNavSpec::new(label, target).with_wallet_pill(PillConsumption::Unwired {
-        tooltip: TT_WALLET_UNWIRED.to_string(),
-    })
+/// A wallet-only global-nav spec with the wallet pill **interactive**
+/// (`Consumed`): picking a wallet from it drives the app-global selection via
+/// [`apply_global_nav_effect`]. For pages that own the wallet-selection surface
+/// (e.g. Wallets), mirroring the Masternodes page's interactive wallet pill.
+pub fn wallet_only_spec(label: impl Into<String>, target: RootScreenType) -> PageNavSpec {
+    PageNavSpec::new(label, target).with_wallet_pill(PillConsumption::Consumed)
 }
 
 /// Apply a generalized global-nav effect: wallet/identity selection updates the
@@ -465,4 +464,28 @@ pub fn add_top_panel_with_global_nav_capturing(
     };
     action |= apply_global_nav_effect(app_context, effect);
     (action, picked)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// TC-WALLETLINK-02: the Wallets page's spec exposes an **interactive**
+    /// (`Consumed`) wallet pill with no how-to tooltip — the pill drives the
+    /// selection here rather than pointing elsewhere.
+    #[test]
+    fn wallet_only_spec_pill_is_consumed_without_tooltip() {
+        let spec = wallet_only_spec("Wallets", RootScreenType::RootScreenWalletsBalances);
+        let pill = spec.wallet_pill().expect("wallet pill present");
+        assert!(pill.is_consumed(), "the Wallets pill must be interactive");
+        assert_eq!(
+            pill.tooltip(),
+            None,
+            "an interactive pill shows no how-to tooltip"
+        );
+        assert!(
+            spec.identity_pill().is_none(),
+            "the Wallets page is wallet-only, with no identity pill"
+        );
+    }
 }

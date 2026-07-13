@@ -77,7 +77,7 @@ directory.
 |-----------------|------|-------------|
 | `island_central_panel()` | `styled.rs` | Responsive central panel, renders global MessageBanners |
 | `add_location_view()` | `top_panel.rs` | Breadcrumb navigation + connection status |
-| `add_top_panel_with_global_nav()` | `top_panel.rs` | Top panel wired to `global_nav_switcher::render()` with subdued pills (`subdued_everyday_spec` / `subdued_wallet_only_spec`); used by Identities, DashPay, DPNS, and Wallets. Masternodes uses the identity-aware capturing variant with interactive pills instead. Every other root screen still calls the plain `add_top_panel()` |
+| `add_top_panel_with_global_nav()` | `top_panel.rs` | Top panel wired to `global_nav_switcher::render()`. Identities, DashPay, and DPNS use subdued pills (`subdued_everyday_spec`); Wallets uses an interactive wallet pill (`wallet_only_spec`) that drives the app-global wallet selection; Masternodes uses the identity-aware capturing variant with interactive pills. Every other root screen still calls the plain `add_top_panel()` |
 | `add_left_panel()` | `left_panel.rs` | Main icon navigation sidebar |
 | `load_icon()` / `load_svg_icon()` | `icons.rs` | Load & cache embedded raster/SVG icons from `icons/` |
 | Subscreen panels | `*_subscreen_chooser_panel.rs` | Tab navigation for DPNS, DashPay, Tokens, Tools |

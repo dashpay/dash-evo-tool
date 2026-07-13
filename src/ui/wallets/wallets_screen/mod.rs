@@ -22,7 +22,7 @@ use crate::ui::components::confirmation_dialog::{ConfirmationDialog, Confirmatio
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::password_input::PasswordInput;
 use crate::ui::components::styled::island_central_panel;
-use crate::ui::components::top_panel::{add_top_panel_with_global_nav, subdued_wallet_only_spec};
+use crate::ui::components::top_panel::{add_top_panel_with_global_nav, wallet_only_spec};
 use crate::ui::components::wallet_unlock_popup::{WalletUnlockPopup, WalletUnlockResult};
 use crate::ui::helpers::clicked_outside_window;
 use crate::ui::helpers::copy_text_to_clipboard;
@@ -252,51 +252,65 @@ pub struct WalletsBalancesScreen {
     asset_lock_cache: TrackedAssetLockCache,
 }
 
+/// A resolved wallet selection: at most one of an HD wallet or a single-key
+/// wallet. The setter-symmetry invariant keeps the two mutually exclusive.
+type ResolvedWalletSelection = (
+    Option<Arc<RwLock<Wallet>>>,
+    Option<Arc<RwLock<SingleKeyWallet>>>,
+);
+
+/// Resolve the shared store's per-network selection into wallet handles,
+/// single-key preferred then HD; `(None, None)` when the store names no loaded
+/// wallet (the caller applies any first-wallet fallback). The setter-symmetry
+/// invariant keeps at most one hash set, so the preference never arbitrates a
+/// real conflict — construction and `refresh_on_arrival` share this one path.
+fn resolve_selection_from_store(app_context: &Arc<AppContext>) -> ResolvedWalletSelection {
+    let selected_hd_hash = app_context
+        .selected_wallet_hash
+        .lock()
+        .ok()
+        .and_then(|g| *g);
+    let selected_sk_hash = app_context
+        .selected_single_key_hash
+        .lock()
+        .ok()
+        .and_then(|g| *g);
+
+    if let Some(sk_hash) = selected_sk_hash
+        && let Ok(sk_wallets) = app_context.single_key_wallets.read()
+        && let Some(wallet) = sk_wallets.get(&sk_hash)
+    {
+        return (None, Some(wallet.clone()));
+    }
+
+    if let Some(hd_hash) = selected_hd_hash
+        && let Ok(wallets) = app_context.wallets.read()
+        && let Some(wallet) = wallets.get(&hd_hash)
+    {
+        return (Some(wallet.clone()), None);
+    }
+
+    (None, None)
+}
+
 impl WalletsBalancesScreen {
     pub fn new(app_context: &Arc<AppContext>) -> Self {
-        // Try to restore previously selected wallet from AppContext
-        let (selected_wallet, selected_single_key_wallet) = {
-            let selected_hd_hash = app_context
-                .selected_wallet_hash
-                .lock()
-                .ok()
-                .and_then(|g| *g);
-            let selected_sk_hash = app_context
-                .selected_single_key_hash
-                .lock()
-                .ok()
-                .and_then(|g| *g);
+        // Restore the previously selected wallet from the shared store, then fall
+        // back to the first available wallet only when the store names nothing.
+        let (mut selected_wallet, mut selected_single_key_wallet) =
+            resolve_selection_from_store(app_context);
 
-            // If we have a persisted single key selection, try to find it
-            if let Some(sk_hash) = selected_sk_hash
-                && let Ok(sk_wallets) = app_context.single_key_wallets.read()
-                && let Some(wallet) = sk_wallets.get(&sk_hash)
-            {
-                return Self::create_with_selection(app_context, None, Some(wallet.clone()));
-            }
-
-            // If we have a persisted HD wallet selection, try to find it
-            if let Some(hd_hash) = selected_hd_hash
-                && let Ok(wallets) = app_context.wallets.read()
-                && let Some(wallet) = wallets.get(&hd_hash)
-            {
-                return Self::create_with_selection(app_context, Some(wallet.clone()), None);
-            }
-
-            // Default: try HD wallet first, then single key wallet
-            let hd_wallet = app_context.wallets.read_recover().values().next().cloned();
-            let sk_wallet = if hd_wallet.is_none() {
-                app_context
+        if selected_wallet.is_none() && selected_single_key_wallet.is_none() {
+            selected_wallet = app_context.wallets.read_recover().values().next().cloned();
+            if selected_wallet.is_none() {
+                selected_single_key_wallet = app_context
                     .single_key_wallets
                     .read_recover()
                     .values()
                     .next()
-                    .cloned()
-            } else {
-                None
-            };
-            (hd_wallet, sk_wallet)
-        };
+                    .cloned();
+            }
+        }
 
         Self::create_with_selection(app_context, selected_wallet, selected_single_key_wallet)
     }
@@ -399,6 +413,36 @@ impl WalletsBalancesScreen {
             self.persist_selected_single_key_hash(Some(hash));
         }
         self.persist_selected_wallet_hash(None);
+    }
+
+    /// Adopt a store-resolved selection into the screen cache, routing through
+    /// the existing selection setters so dependent view state stays consistent.
+    /// Skips when the cache already holds the same wallet, so re-arriving is
+    /// idempotent (no spurious account-tab reset).
+    fn adopt_store_selection(
+        &mut self,
+        store_hd: Option<Arc<RwLock<Wallet>>>,
+        store_sk: Option<Arc<RwLock<SingleKeyWallet>>>,
+    ) {
+        if let Some(wallet) = store_hd {
+            let already = self
+                .selected_wallet
+                .as_ref()
+                .is_some_and(|cur| Arc::ptr_eq(cur, &wallet));
+            if !already {
+                self.select_hd_wallet(wallet);
+            }
+            return;
+        }
+        if let Some(wallet) = store_sk {
+            let already = self
+                .selected_single_key_wallet
+                .as_ref()
+                .is_some_and(|cur| Arc::ptr_eq(cur, &wallet));
+            if !already {
+                self.select_single_key_wallet(wallet);
+            }
+        }
     }
 
     pub(crate) fn update_selected_wallet_for_network(&mut self) {
@@ -2424,11 +2468,10 @@ impl ScreenLike for WalletsBalancesScreen {
                 DesiredAppAction::Custom("RefreshSKWallet".to_string()),
             ));
         }
-        // TODO: wire wallet selection consumption for the Wallets page.
         let mut action = add_top_panel_with_global_nav(
             ui,
             &self.app_context,
-            subdued_wallet_only_spec("Wallets", RootScreenType::RootScreenWalletsBalances),
+            wallet_only_spec("Wallets", RootScreenType::RootScreenWalletsBalances),
             right_buttons,
         );
 
@@ -3115,6 +3158,15 @@ impl ScreenLike for WalletsBalancesScreen {
             }
         }
 
+        // Re-sync the cached selection from the shared store so arriving here
+        // always shows the wallet last chosen on any surface (e.g. the top-nav
+        // pill), replacing a stale cache. Skips when the cache already agrees.
+        let (store_hd, store_sk) = resolve_selection_from_store(&self.app_context);
+        if store_hd.is_some() || store_sk.is_some() {
+            self.adopt_store_selection(store_hd, store_sk);
+            return;
+        }
+
         // If no wallet of either type is selected but wallets exist, select the first HD wallet
         if self.selected_wallet.is_none() && self.selected_single_key_wallet.is_none() {
             let next_hd = self
@@ -3276,5 +3328,302 @@ mod tests {
     fn developer_mode_always_shows_system_tab() {
         let tabs = plan_account_tabs(&[], true, false, true);
         assert!(tabs.contains(&AccountTab::System));
+    }
+
+    mod wallet_selection_linking {
+        use super::super::{WalletsBalancesScreen, resolve_selection_from_store};
+        use crate::context::AppContext;
+        use crate::model::wallet::single_key::{SingleKeyHash, SingleKeyWallet};
+        use crate::model::wallet::{Wallet, WalletSeedHash};
+        use crate::ui::ScreenLike;
+        use dash_sdk::dpp::dashcore::Network;
+        use std::sync::{Arc, RwLock};
+
+        fn test_app_context(dir: &std::path::Path) -> Arc<AppContext> {
+            crate::app_dir::ensure_env_file(dir);
+            let db_file = dir.join("data.db");
+            let db = Arc::new(crate::database::Database::new(&db_file).expect("db"));
+            db.create_tables(true).expect("create tables");
+            db.set_default_version().expect("set version");
+            let app_kv = AppContext::open_app_kv(dir).expect("open app k/v");
+            let secret_store = AppContext::open_secret_store(dir).expect("open secret store");
+            AppContext::new(
+                dir.to_path_buf(),
+                Network::Testnet,
+                db,
+                Default::default(),
+                Default::default(),
+                egui::Context::default(),
+                app_kv,
+                secret_store,
+                Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            )
+            .expect("AppContext")
+        }
+
+        fn seed_hd(ctx: &Arc<AppContext>, seed_byte: u8) -> (WalletSeedHash, Arc<RwLock<Wallet>>) {
+            let wallet = Wallet::new_from_seed(
+                [seed_byte; 64],
+                Network::Testnet,
+                Some(format!("hd-{seed_byte}")),
+                None,
+            )
+            .expect("hd wallet");
+            let hash = wallet.seed_hash();
+            let arc = Arc::new(RwLock::new(wallet));
+            ctx.wallets.write().unwrap().insert(hash, arc.clone());
+            (hash, arc)
+        }
+
+        fn seed_sk(
+            ctx: &Arc<AppContext>,
+            key_byte: u8,
+        ) -> (SingleKeyHash, Arc<RwLock<SingleKeyWallet>>) {
+            let mut pk = [1u8; 32];
+            pk[31] = key_byte.max(1);
+            let wallet =
+                SingleKeyWallet::new(pk, Network::Testnet, None, Some(format!("sk-{key_byte}")))
+                    .expect("sk wallet");
+            let hash = wallet.key_hash;
+            let arc = Arc::new(RwLock::new(wallet));
+            ctx.single_key_wallets
+                .write()
+                .unwrap()
+                .insert(hash, arc.clone());
+            (hash, arc)
+        }
+
+        /// TC-WALLETLINK-07 (the dual-hash trap, highest-risk case). (a) A
+        /// single-key selection survives navigation without auto-picking an HD
+        /// wallet; (b) a later HD pick from the pill supersedes the stale
+        /// single-key selection. Goes RED against a setter that preserves the
+        /// stale single-key hash on an HD set (store then resolves single-key
+        /// first and re-shows the wrong wallet).
+        #[test]
+        fn hd_pick_supersedes_a_prior_single_key_selection() {
+            let tmp = tempfile::tempdir().unwrap();
+            let ctx = test_app_context(tmp.path());
+            let (hd_hash, hd_arc) = seed_hd(&ctx, 5);
+            let (sk_hash, sk_arc) = seed_sk(&ctx, 7);
+
+            // Leg (a): select the single-key wallet → store (HD=None, SK=Some).
+            ctx.set_selected_single_key_wallet(Some(sk_hash));
+            let (hd, sk) = resolve_selection_from_store(&ctx);
+            assert!(
+                hd.is_none(),
+                "a single-key selection must not auto-pick an HD wallet on arrival"
+            );
+            assert!(
+                sk.as_ref().is_some_and(|w| Arc::ptr_eq(w, &sk_arc)),
+                "the single-key wallet stays selected across arrival"
+            );
+
+            // Leg (b): pick an HD wallet from the pill → it supersedes the SK one.
+            ctx.set_selected_hd_wallet(Some(hd_hash));
+            let (hd, sk) = resolve_selection_from_store(&ctx);
+            assert!(
+                sk.is_none(),
+                "an explicit HD pick clears the stale single-key selection"
+            );
+            assert!(
+                hd.as_ref().is_some_and(|w| Arc::ptr_eq(w, &hd_arc)),
+                "the HD wallet the user picked is shown, not the stale single-key one"
+            );
+        }
+
+        /// Mirror of TC-WALLETLINK-07 for the single-key setter: an explicit
+        /// single-key pick at the context layer supersedes a prior HD selection,
+        /// so the invariant is self-enforcing regardless of caller (not just via
+        /// the screen path that clears HD itself).
+        #[test]
+        fn single_key_pick_supersedes_a_prior_hd_selection() {
+            let tmp = tempfile::tempdir().unwrap();
+            let ctx = test_app_context(tmp.path());
+            let (hd_hash, _hd_arc) = seed_hd(&ctx, 5);
+            let (sk_hash, sk_arc) = seed_sk(&ctx, 7);
+
+            ctx.set_selected_hd_wallet(Some(hd_hash));
+            ctx.set_selected_single_key_wallet(Some(sk_hash));
+            let (hd, sk) = resolve_selection_from_store(&ctx);
+            assert!(
+                hd.is_none(),
+                "an explicit single-key pick clears the stale HD selection"
+            );
+            assert!(sk.as_ref().is_some_and(|w| Arc::ptr_eq(w, &sk_arc)));
+        }
+
+        /// The store never holds both an HD and a single-key hash: neither setter
+        /// leaves the ambiguous `(Some, Some)` state, so resolution is always
+        /// unambiguous. Guards fixes to `set_selected_hd_wallet`,
+        /// `set_selected_single_key_wallet`, and `set_selected_identity`.
+        #[test]
+        fn setters_never_leave_both_hashes_set() {
+            use dash_sdk::platform::Identifier;
+            let tmp = tempfile::tempdir().unwrap();
+            let ctx = test_app_context(tmp.path());
+            let (hd_hash, _hd) = seed_hd(&ctx, 5);
+            let (sk_hash, _sk) = seed_sk(&ctx, 7);
+
+            let both_set = |ctx: &Arc<AppContext>| {
+                ctx.selected_wallet_hash().is_some()
+                    && ctx.selected_single_key_hash.lock().unwrap().is_some()
+            };
+
+            ctx.set_selected_hd_wallet(Some(hd_hash));
+            ctx.set_selected_single_key_wallet(Some(sk_hash));
+            assert!(!both_set(&ctx), "single-key set clears HD");
+
+            ctx.set_selected_hd_wallet(Some(hd_hash));
+            assert!(!both_set(&ctx), "HD set clears single-key");
+
+            // Selecting a single-key wallet, then an identity, must not resurrect
+            // the HD hash alongside the live single-key one.
+            ctx.set_selected_single_key_wallet(Some(sk_hash));
+            ctx.set_selected_identity(Some(Identifier::from([9u8; 32])));
+            assert!(
+                !both_set(&ctx),
+                "identity select never leaves both hashes set"
+            );
+        }
+
+        /// TC-WALLETLINK-03: a pill-driven HD switch made on another page is
+        /// reflected by the store resolution — no stale wallet.
+        #[test]
+        fn store_resolution_reflects_a_pill_driven_hd_switch() {
+            let tmp = tempfile::tempdir().unwrap();
+            let ctx = test_app_context(tmp.path());
+            let (_a, _a_arc) = seed_hd(&ctx, 3);
+            let (b_hash, b_arc) = seed_hd(&ctx, 5);
+
+            ctx.set_selected_hd_wallet(Some(b_hash));
+            let (hd, sk) = resolve_selection_from_store(&ctx);
+            assert!(sk.is_none());
+            assert!(hd.as_ref().is_some_and(|w| Arc::ptr_eq(w, &b_arc)));
+        }
+
+        /// TC-WALLETLINK-03 at the screen level: arriving re-syncs the cache to a
+        /// switch made elsewhere, replacing the stale handle.
+        #[test]
+        fn refresh_on_arrival_adopts_a_switch_made_elsewhere() {
+            let tmp = tempfile::tempdir().unwrap();
+            let ctx = test_app_context(tmp.path());
+            let (a_hash, a_arc) = seed_hd(&ctx, 3);
+            let (b_hash, b_arc) = seed_hd(&ctx, 5);
+
+            ctx.set_selected_hd_wallet(Some(a_hash));
+            let mut screen = WalletsBalancesScreen::new(&ctx);
+            assert!(
+                screen
+                    .selected_wallet
+                    .as_ref()
+                    .is_some_and(|w| Arc::ptr_eq(w, &a_arc)),
+                "screen starts on the stored wallet A"
+            );
+
+            // A switch to B happens on another surface.
+            ctx.set_selected_hd_wallet(Some(b_hash));
+            screen.refresh_on_arrival();
+            assert!(
+                screen
+                    .selected_wallet
+                    .as_ref()
+                    .is_some_and(|w| Arc::ptr_eq(w, &b_arc)),
+                "arriving adopts the newly-selected wallet B"
+            );
+            assert!(screen.selected_single_key_wallet.is_none());
+        }
+
+        /// TC-WALLETLINK-04: arriving when the cache already agrees with the
+        /// store is idempotent — the same wallet Arc stays selected, never reset
+        /// to first-wallet.
+        #[test]
+        fn refresh_on_arrival_is_idempotent_when_cache_matches_store() {
+            let tmp = tempfile::tempdir().unwrap();
+            let ctx = test_app_context(tmp.path());
+            let (_a, _a_arc) = seed_hd(&ctx, 3);
+            let (b_hash, b_arc) = seed_hd(&ctx, 5);
+
+            ctx.set_selected_hd_wallet(Some(b_hash));
+            let mut screen = WalletsBalancesScreen::new(&ctx);
+            screen.refresh_on_arrival();
+            assert!(
+                screen
+                    .selected_wallet
+                    .as_ref()
+                    .is_some_and(|w| Arc::ptr_eq(w, &b_arc)),
+                "the valid selection B is preserved, not clobbered by first-wallet"
+            );
+        }
+
+        /// TC-WALLETLINK-06: a stored hash naming no currently-loaded wallet (the
+        /// cross-network case) resolves to nothing rather than the wrong wallet,
+        /// leaving the caller's fallback to choose.
+        #[test]
+        fn resolution_ignores_a_hash_naming_no_loaded_wallet() {
+            let tmp = tempfile::tempdir().unwrap();
+            let ctx = test_app_context(tmp.path());
+            let (_a, _a_arc) = seed_hd(&ctx, 3);
+
+            ctx.set_selected_hd_wallet(Some([0xAB; 32]));
+            let (hd, sk) = resolve_selection_from_store(&ctx);
+            assert!(
+                hd.is_none() && sk.is_none(),
+                "an unknown/cross-network hash resolves to nothing"
+            );
+        }
+
+        /// TC-WALLETLINK-11: a `pending_wallet_selection` (from create/import) is
+        /// honored on arrival, ahead of the store re-sync.
+        #[test]
+        fn refresh_on_arrival_honors_pending_selection_first() {
+            let tmp = tempfile::tempdir().unwrap();
+            let ctx = test_app_context(tmp.path());
+            let (a_hash, _a_arc) = seed_hd(&ctx, 3);
+            let (b_hash, b_arc) = seed_hd(&ctx, 5);
+
+            ctx.set_selected_hd_wallet(Some(a_hash));
+            let mut screen = WalletsBalancesScreen::new(&ctx);
+            *ctx.pending_wallet_selection.lock().unwrap() = Some(b_hash);
+            screen.refresh_on_arrival();
+            assert!(
+                screen
+                    .selected_wallet
+                    .as_ref()
+                    .is_some_and(|w| Arc::ptr_eq(w, &b_arc)),
+                "the pending wallet B wins on arrival"
+            );
+        }
+
+        /// TC-WALLETLINK-13: `refresh_on_arrival` always clears the spinner flag.
+        #[test]
+        fn refresh_on_arrival_clears_the_refreshing_flag() {
+            let tmp = tempfile::tempdir().unwrap();
+            let ctx = test_app_context(tmp.path());
+            let (a_hash, _a_arc) = seed_hd(&ctx, 3);
+            ctx.set_selected_hd_wallet(Some(a_hash));
+            let mut screen = WalletsBalancesScreen::new(&ctx);
+            screen.refreshing = true;
+            screen.refresh_on_arrival();
+            assert!(!screen.refreshing);
+        }
+
+        /// TC-WALLETLINK-12: the pill-driven HD switch keeps its cross-axis
+        /// identity reconciliation — switching to a wallet with no owned User
+        /// identity clears a stale app-global identity to `None` (never leaves a
+        /// masternode/evonode or an unrelated identity selected).
+        #[test]
+        fn pill_hd_switch_reconciles_stale_identity_to_none() {
+            use dash_sdk::platform::Identifier;
+            let tmp = tempfile::tempdir().unwrap();
+            let ctx = test_app_context(tmp.path());
+            let (a_hash, _a_arc) = seed_hd(&ctx, 3);
+
+            ctx.set_selected_identity(Some(Identifier::from([9u8; 32])));
+            ctx.set_selected_hd_wallet(Some(a_hash));
+            assert!(
+                ctx.selected_identity_id().is_none(),
+                "switching to a wallet owning no User identity clears the stale identity"
+            );
+        }
     }
 }

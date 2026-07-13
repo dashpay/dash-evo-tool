@@ -59,6 +59,7 @@ As a user managing multiple wallets, I want to switch between them quickly so th
 
 - Wallet selector dropdown shows all loaded wallets.
 - Switching is instant with no app restart.
+- The top-nav wallet pill is interactive on the Wallets tab and stays consistent with the in-tab picker.
 
 ### WAL-005: Rename a wallet [Implemented]
 **Persona:** Priya
@@ -261,6 +262,16 @@ As a user, I want the app to tell me when a wallet's totals don't add up after s
 - If they disagree by more than a rounding amount, a single calm warning banner appears explaining that funds are safe, it's a known display issue, and a refresh or reopen usually resolves it.
 - The banner is not repeated on every later sync while the same difference persists, and it clears on its own once the totals agree again.
 - The check runs for all loaded wallets, not just the one currently on screen.
+
+### WAL-028: Switch the active wallet from the top-nav pill on the Wallets tab [Implemented]
+**Persona:** Priya, Jordan
+
+As a multi-wallet user, I can switch the active wallet from the top-nav pill while on the Wallets tab, and arriving at the Wallets tab always shows the wallet I last selected on any surface, so the pill and the in-tab picker never disagree.
+
+- The top-nav wallet pill is interactive on the Wallets tab (not a dead, informational pill), and picking a wallet from it switches the active wallet in place with no forced navigation.
+- Arriving at the Wallets tab re-syncs to the wallet last chosen on any surface, replacing a stale cached selection, without clobbering a still-valid one.
+- A single-key selection made in the tab survives navigation; a later explicit HD pick from the pill supersedes it — the two selection surfaces never show different wallets.
+- With a single wallet the pill has nothing to switch to and stays effectively non-interactive.
 
 ---
 

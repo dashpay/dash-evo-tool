@@ -1190,7 +1190,6 @@ mod tests {
     // --- HD seed scope ----------------------------------------------------
 
     #[tokio::test]
-    #[ignore = "slow: real Argon2id via platform_wallet_storage public API; no downstream fast-KDF hook — dashpay/platform#4111"]
     async fn cache_miss_prompts_decrypts_and_borrows_seed() {
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());
@@ -1214,7 +1213,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "slow: real Argon2id via platform_wallet_storage public API; no downstream fast-KDF hook — dashpay/platform#4111"]
     async fn session_hit_does_not_prompt() {
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());
@@ -1249,7 +1247,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "slow: real Argon2id via platform_wallet_storage public API; no downstream fast-KDF hook — dashpay/platform#4111"]
     async fn none_policy_does_not_cache() {
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());
@@ -1288,7 +1285,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "slow: real Argon2id via platform_wallet_storage public API; no downstream fast-KDF hook — dashpay/platform#4111"]
     async fn null_prompt_on_protected_scope_yields_unavailable() {
         // Headless host: a passphrase-protected scope has no window to ask
         // in, so the chokepoint surfaces the typed "unavailable" error
@@ -1394,7 +1390,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "slow: real Argon2id via platform_wallet_storage public API; no downstream fast-KDF hook — dashpay/platform#4111"]
     async fn wrong_passphrase_reasks_then_succeeds() {
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());
@@ -1424,7 +1419,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "slow: real Argon2id via platform_wallet_storage public API; no downstream fast-KDF hook — dashpay/platform#4111"]
     async fn ttl_expiry_reprompts() {
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());
@@ -1450,7 +1444,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "slow: real Argon2id via platform_wallet_storage public API; no downstream fast-KDF hook — dashpay/platform#4111"]
     async fn forget_clears_session_cache() {
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());
@@ -1561,7 +1554,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "slow: real Argon2id via platform_wallet_storage public API; no downstream fast-KDF hook — dashpay/platform#4111"]
     async fn single_key_cache_miss_prompts_and_decrypts() {
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());
@@ -1583,7 +1575,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "slow: real Argon2id via platform_wallet_storage public API; no downstream fast-KDF hook — dashpay/platform#4111"]
     async fn single_key_wrong_passphrase_reasks() {
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());
@@ -1606,7 +1597,6 @@ mod tests {
     /// requires the password. Starts from a legacy AES-GCM entry so the
     /// migration path is genuinely exercised (fresh imports already seal Tier-2).
     #[tokio::test]
-    #[ignore = "slow: real Argon2id via platform_wallet_storage public API; no downstream fast-KDF hook — dashpay/platform#4111"]
     async fn ts_lazy_03_protected_single_key_rewraps_to_tier2_via_chokepoint() {
         use dash_sdk::dpp::dashcore::PrivateKey;
 
@@ -1666,7 +1656,6 @@ mod tests {
     /// keys under DIFFERENT passwords. A's password cannot open B (the negative
     /// crypto property), and remembering A never satisfies B (scope-keyed cache).
     #[tokio::test]
-    #[ignore = "slow: real Argon2id via platform_wallet_storage public API; no downstream fast-KDF hook — dashpay/platform#4111"]
     async fn ts_t2_sk_iso_per_secret_passwords_are_isolated() {
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());
@@ -1740,7 +1729,6 @@ mod tests {
     // --- secret confinement -----------------------------------------------
 
     #[tokio::test]
-    #[ignore = "slow: real Argon2id via platform_wallet_storage public API; no downstream fast-KDF hook — dashpay/platform#4111"]
     async fn sentinel_never_appears_in_error_or_debug() {
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());
@@ -1797,7 +1785,6 @@ mod tests {
     /// This guards that documented lock-release-before-await property against a
     /// future cross-scope deadlock regression.
     #[tokio::test]
-    #[ignore = "slow: real Argon2id via platform_wallet_storage public API; no downstream fast-KDF hook — dashpay/platform#4111"]
     async fn nested_cross_scope_access_resolves_both() {
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());
@@ -1848,7 +1835,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "slow: real Argon2id via platform_wallet_storage public API; no downstream fast-KDF hook — dashpay/platform#4111"]
     async fn with_secret_session_holds_one_secret_across_steps() {
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());
@@ -1987,7 +1973,6 @@ mod tests {
     /// exactly once, decrypts the exact 32 bytes, and `can_resolve_without_prompt`
     /// is false (the background sweep skips a locked protected identity).
     #[tokio::test]
-    #[ignore = "slow: real Argon2id via platform_wallet_storage public API; no downstream fast-KDF hook — dashpay/platform#4111"]
     async fn ts_t2_ik_01_protected_identity_key_prompts_and_decrypts() {
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());
@@ -2042,7 +2027,6 @@ mod tests {
     /// A Tier-2 identity key re-asks on a wrong password (no oracle) and then
     /// succeeds — the same re-ask UX as protected seeds and single keys.
     #[tokio::test]
-    #[ignore = "slow: real Argon2id via platform_wallet_storage public API; no downstream fast-KDF hook — dashpay/platform#4111"]
     async fn ts_t2_ik_02_protected_identity_key_wrong_password_reasks() {
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());
@@ -2082,7 +2066,6 @@ mod tests {
     /// — the accepted trade-off. A non-opted-in identity key (default keyless)
     /// still resolves headless (covered by TS-FAST-01).
     #[tokio::test]
-    #[ignore = "slow: real Argon2id via platform_wallet_storage public API; no downstream fast-KDF hook — dashpay/platform#4111"]
     async fn ts_t2_ik_03_headless_protected_identity_key_is_unavailable() {
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());
@@ -2117,7 +2100,6 @@ mod tests {
     /// (the negative crypto property), and remembering A never satisfies B
     /// (scope-keyed cache).
     #[tokio::test]
-    #[ignore = "slow: real Argon2id via platform_wallet_storage public API; no downstream fast-KDF hook — dashpay/platform#4111"]
     async fn ts_t2_ik_iso_per_identity_passwords_are_isolated() {
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());
@@ -2196,7 +2178,6 @@ mod tests {
     /// password hint from the identity prompt-index (display-only). An empty
     /// index degrades to a generic label, never an error.
     #[tokio::test]
-    #[ignore = "slow: real Argon2id via platform_wallet_storage public API; no downstream fast-KDF hook — dashpay/platform#4111"]
     async fn protected_identity_key_prompt_uses_identity_prompt_index() {
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());
@@ -2235,7 +2216,6 @@ mod tests {
     /// After the seal the new key reports `Protected`, a password-free read
     /// fails, and it unseals to the exact bytes under the same password.
     #[tokio::test]
-    #[ignore = "slow: real Argon2id via platform_wallet_storage public API; no downstream fast-KDF hook — dashpay/platform#4111"]
     async fn seal_new_identity_key_seals_tier2_under_verified_password() {
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());
@@ -2298,7 +2278,6 @@ mod tests {
     /// Headless: sealing a new key onto a protected identity fails closed
     /// (`SecretPromptUnavailable`) and writes NOTHING — no keyless key lands.
     #[tokio::test]
-    #[ignore = "slow: real Argon2id via platform_wallet_storage public API; no downstream fast-KDF hook — dashpay/platform#4111"]
     async fn seal_new_identity_key_headless_fails_closed() {
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());
@@ -2347,7 +2326,6 @@ mod tests {
     /// A wrong password re-asks (verifying against the existing protected key),
     /// then seals the new key on the correct password.
     #[tokio::test]
-    #[ignore = "slow: real Argon2id via platform_wallet_storage public API; no downstream fast-KDF hook — dashpay/platform#4111"]
     async fn seal_new_identity_key_wrong_password_reasks() {
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());
@@ -2402,7 +2380,6 @@ mod tests {
     /// outcome as the combined `seal_new_identity_key`, with the verify and seal
     /// halves usable around an intervening on-chain broadcast.
     #[tokio::test]
-    #[ignore = "slow: real Argon2id via platform_wallet_storage public API; no downstream fast-KDF hook — dashpay/platform#4111"]
     async fn verify_up_front_then_seal_after_broadcast_one_prompt() {
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());
@@ -2468,7 +2445,6 @@ mod tests {
     /// add-key flow runs this BEFORE its broadcast, a headless add never reaches
     /// the on-chain state transition — no on-chain/local divergence.
     #[tokio::test]
-    #[ignore = "slow: real Argon2id via platform_wallet_storage public API; no downstream fast-KDF hook — dashpay/platform#4111"]
     async fn verify_identity_object_password_headless_fails_closed_before_seal() {
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());
@@ -2511,7 +2487,6 @@ mod tests {
     /// A missing identity key surfaces the loud typed `IdentityKeyMissing`,
     /// never a silent miss.
     #[tokio::test]
-    #[ignore = "slow: real Argon2id via platform_wallet_storage public API; no downstream fast-KDF hook — dashpay/platform#4111"]
     async fn identity_key_missing_is_loud() {
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());
@@ -2591,7 +2566,6 @@ mod tests {
     /// legacy envelope is dropped, and the seed reads back only with its
     /// password.
     #[tokio::test]
-    #[ignore = "slow: real Argon2id via platform_wallet_storage public API; no downstream fast-KDF hook — dashpay/platform#4111"]
     async fn ts_t2_01_protected_seed_rewraps_to_tier2_on_first_unlock() {
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());
@@ -2634,7 +2608,6 @@ mod tests {
     /// TS-T2-02 — a Tier-2 seed re-asks on a wrong object password (upstream
     /// `WrongPassword` ⇒ re-prompt, not abort) and then succeeds.
     #[tokio::test]
-    #[ignore = "slow: real Argon2id via platform_wallet_storage public API; no downstream fast-KDF hook — dashpay/platform#4111"]
     async fn ts_t2_02_tier2_seed_wrong_password_reasks_then_succeeds() {
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());
@@ -2668,7 +2641,6 @@ mod tests {
     /// B — B still prompts for its OWN password, each decrypts only with its
     /// own, and A's remembered entry never unlocks B.
     #[tokio::test]
-    #[ignore = "slow: real Argon2id via platform_wallet_storage public API; no downstream fast-KDF hook — dashpay/platform#4111"]
     async fn ts_t2_03_per_secret_passwords_are_isolated() {
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());

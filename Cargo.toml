@@ -151,6 +151,20 @@ winres = "0.1"
 [profile.dev.package."*"]
 debug = "line-tables-only"
 
+# Argon2id is deliberately memory-hard; unoptimized (opt-level=0) each 64 MiB
+# derivation runs for seconds AND holds its memory that whole time, so the
+# wallet_backend secret-storage tests both ran slowly (5-23s each) and, under
+# whole-suite parallelism, overlapped enough to push the host into swap.
+# opt-level=3 shrinks each derivation to tens of ms, which also collapses the
+# memory-hold window and the swap pressure. This mirrors platform's own root
+# argon2 stanza, which does NOT propagate downstream: Cargo honors [profile.*]
+# tables only from the workspace root, so DET must declare its own.
+[profile.dev.package.argon2]
+opt-level = 3
+
+[profile.test.package.argon2]
+opt-level = 3
+
 [lints.rust.unexpected_cfgs]
 level = "warn"
 check-cfg = ["cfg(tokio_unstable)", "cfg(feature, values(\"testing\", \"bench\", \"mcp\", \"cli\", \"headless\"))"]

@@ -201,7 +201,6 @@ mod tests {
     /// `seed.raw.v1` comes back byte-for-byte. A missing label and a foreign
     /// scope both return `Ok(None)` (scope/label partition).
     #[test]
-    #[ignore = "slow: real Argon2id via platform_wallet_storage public API; no downstream fast-KDF hook — dashpay/platform#4111"]
     fn ts_rt_01_hd_seed_raw_round_trip() {
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());
@@ -242,7 +241,6 @@ mod tests {
     /// TS-RT-02 — single-key raw round-trip. The stored value is exactly 32
     /// bytes (raw, NOT a `SingleKeyEntry` envelope). A foreign scope misses.
     #[test]
-    #[ignore = "slow: real Argon2id via platform_wallet_storage public API; no downstream fast-KDF hook — dashpay/platform#4111"]
     fn ts_rt_02_single_key_raw_round_trip() {
         let dir = tempfile::tempdir().unwrap();
         let store = fresh_store(dir.path());

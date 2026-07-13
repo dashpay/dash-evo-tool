@@ -1181,16 +1181,25 @@ async fn shielded_receive_address_is_none_before_bind() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cache_shielded_receive_address_publishes_bound_account_zero_address() {
     let (ctx, sender, _tmp) = offline_testnet_context();
-    ctx.ensure_wallet_backend(sender)
-        .await
-        .expect("ensure_wallet_backend should succeed offline");
 
     let seed = [0xD7u8; 64];
     let wallet = crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
         .expect("build wallet");
     let seed_hash = wallet.seed_hash();
+    // Register BEFORE wiring the backend: with no backend yet,
+    // `register_wallet_upstream` finds none and skips the fire-and-forget
+    // `wallet_upstream_registration` subtask. Wiring first would spawn that
+    // subtask, which then races the explicit `ensure_upstream_registered`
+    // below — both call `create_wallet_from_seed_bytes`, the loser sees
+    // `WalletAlreadyExists` then `get_wallet` returns `None` in the insert gap
+    // → `WalletNotFound` (reliably under CI load). This ordering makes
+    // `ensure_upstream_registered` the single upstream writer.
     ctx.register_wallet(wallet, &seed, WalletOrigin::Fresh)
         .expect("register wallet");
+
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
 
     let backend = ctx.wallet_backend().expect("backend wired");
     // Mirror `bootstrap_wallet_addresses_jit`'s ordering: a wallet must be
@@ -1231,16 +1240,22 @@ async fn cache_shielded_receive_address_publishes_bound_account_zero_address() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn remove_wallet_evicts_shielded_receive_address() {
     let (ctx, sender, _tmp) = offline_testnet_context();
-    ctx.ensure_wallet_backend(sender)
-        .await
-        .expect("ensure_wallet_backend should succeed offline");
 
     let seed = [0xE9u8; 64];
     let wallet = crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
         .expect("build wallet");
     let seed_hash = wallet.seed_hash();
+    // Register BEFORE wiring the backend so `register_wallet_upstream` skips the
+    // fire-and-forget `wallet_upstream_registration` subtask; otherwise it races
+    // the explicit `ensure_upstream_registered` below (both call
+    // `create_wallet_from_seed_bytes`; the loser hits `WalletAlreadyExists` then
+    // a `None` `get_wallet` in the insert gap → `WalletNotFound` under CI load).
     ctx.register_wallet(wallet, &seed, WalletOrigin::Fresh)
         .expect("register wallet");
+
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
 
     let backend = ctx.wallet_backend().expect("backend wired");
     // Mirror `bootstrap_wallet_addresses_jit`'s ordering: a wallet must be

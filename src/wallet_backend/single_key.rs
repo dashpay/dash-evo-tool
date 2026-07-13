@@ -945,7 +945,6 @@ mod tests {
     /// vault and reads back the identical entry — proving the recovery door is
     /// non-destructive (no delete/recreate/rekey of the seed vault).
     #[test]
-    #[ignore = "slow: real Argon2id via platform_wallet_storage public API; no downstream fast-KDF hook — dashpay/platform#4111"]
     fn legacy_passphrase_vault_round_trips_without_destroying_data() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("secrets").join("det-secrets.pwsvault");
@@ -1023,7 +1022,6 @@ mod tests {
     /// matches `^single_key_priv\.[1-9A-HJ-NP-Za-km-z]{26,35}$` and is
     /// scoped to the per-backend single-key `WalletId` namespace.
     #[test]
-    #[ignore = "slow: real Argon2id via platform_wallet_storage public API; no downstream fast-KDF hook — dashpay/platform#4111"]
     fn tc_sk_003_label_format_and_namespace_scope() {
         let dir = tempfile::tempdir().expect("tempdir");
         let (store, index, network) = fresh_view(dir.path(), Network::Testnet);
@@ -1303,7 +1301,6 @@ mod tests {
     /// canonical `<network>:single_key_meta:<addr>` key, listable by the
     /// cross-network prefix.
     #[test]
-    #[ignore = "slow: real Argon2id via platform_wallet_storage public API; no downstream fast-KDF hook — dashpay/platform#4111"]
     fn tc_w_01b_a_import_writes_sidecar_entry() {
         let dir = tempfile::tempdir().expect("tempdir");
         let ViewFixture {
@@ -1466,7 +1463,6 @@ mod tests {
     /// `SingleKeyPassphraseRequired` — protected signing flows through the
     /// chokepoint instead (see `sec_002_protected_sign_via_chokepoint`).
     #[test]
-    #[ignore = "slow: real Argon2id via platform_wallet_storage public API; no downstream fast-KDF hook — dashpay/platform#4111"]
     fn sec_002_import_with_passphrase_encrypts_payload() {
         let dir = tempfile::tempdir().expect("tempdir");
         let ViewFixture {
@@ -1525,7 +1521,6 @@ mod tests {
     /// `rebuild_wallet` did a plain `get`, which surfaced `NeedsPassword` and the
     /// key vanished from the picker on every launch.
     #[test]
-    #[ignore = "slow: real Argon2id via platform_wallet_storage public API; no downstream fast-KDF hook — dashpay/platform#4111"]
     fn tier2_protected_single_key_rebuilds_closed_and_is_listed() {
         let dir = tempfile::tempdir().expect("tempdir");
         let ViewFixture {
@@ -1593,7 +1588,6 @@ mod tests {
     /// decrypts just-in-time on the right one, and signs. The signature
     /// verifies against the WIF-derived public key.
     #[tokio::test]
-    #[ignore = "slow: real Argon2id via platform_wallet_storage public API; no downstream fast-KDF hook — dashpay/platform#4111"]
     async fn sec_002_protected_sign_via_chokepoint() {
         use crate::wallet_backend::secret_access::SecretAccess;
         use crate::wallet_backend::secret_prompt::SecretScope;
@@ -1671,7 +1665,6 @@ mod tests {
     /// rejected at import time with the typed
     /// `SingleKeyPassphraseTooShort` variant; no vault write occurs.
     #[test]
-    #[ignore = "slow: real Argon2id via platform_wallet_storage public API; no downstream fast-KDF hook — dashpay/platform#4111"]
     fn sec_002_short_passphrase_is_rejected() {
         let dir = tempfile::tempdir().expect("tempdir");
         let ViewFixture {
@@ -1776,7 +1769,6 @@ mod tests {
     /// still decode as `has_passphrase = false`, so a user who
     /// upgrades from a previous tag never loses their imported keys.
     #[test]
-    #[ignore = "slow: real Argon2id via platform_wallet_storage public API; no downstream fast-KDF hook — dashpay/platform#4111"]
     fn sec_002_legacy_raw_payload_still_signs() {
         let dir = tempfile::tempdir().expect("tempdir");
         let ViewFixture {

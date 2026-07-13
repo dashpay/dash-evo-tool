@@ -380,8 +380,9 @@ impl MasternodesScreen {
     /// to the list on cancel or submit.
     fn render_load_view(&mut self, ui: &mut egui::Ui) -> AppAction {
         let dev_mode = self.app_context.user_role().at_least(UserRole::Power);
+        let submitting = self.load_in_flight;
         let outcome = match &mut self.view {
-            MasternodesView::Load(form) => form.show(ui, dev_mode),
+            MasternodesView::Load(form) => form.show(ui, dev_mode, submitting),
             _ => return AppAction::None,
         };
         match outcome {
@@ -391,8 +392,10 @@ impl MasternodesScreen {
                 AppAction::None
             }
             LoadFormOutcome::Submit(input) => {
-                self.view = MasternodesView::List;
-                // Gate re-submission until this load resolves.
+                // Keep the form open with its fields intact while the load runs.
+                // On success `display_task_result` closes it; on error
+                // `display_task_error` re-enables submit so the user can correct
+                // one bad field and resubmit — no full re-entry (QA follow-up).
                 self.load_in_flight = true;
                 AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::LoadIdentity(
                     *input,
@@ -426,6 +429,11 @@ impl ScreenLike for MasternodesScreen {
             crate::backend_task::BackendTaskSuccessResult::LoadedIdentity(_)
         ) {
             self.load_in_flight = false;
+            // The load succeeded — close the form and drop back to the list,
+            // where the newly loaded node now shows as a card.
+            if matches!(self.view, MasternodesView::Load(_)) {
+                self.view = MasternodesView::List;
+            }
         }
         self.reload();
         // if a detail view is open, its own backend task (voting, an
@@ -439,8 +447,10 @@ impl ScreenLike for MasternodesScreen {
     }
 
     fn display_task_error(&mut self, _error: &crate::backend_task::error::TaskError) -> bool {
-        // A load failed — re-enable the load entry points. Let the
-        // global banner render the error (return false, do not claim it).
+        // A load failed — clear the in-flight gate so the still-open form's
+        // submit button re-enables (the Load view is untouched, so every entered
+        // field survives for correction). Let the global banner render the error
+        // (return false, do not claim it).
         self.load_in_flight = false;
         false
     }
@@ -634,6 +644,77 @@ mod tests {
         // Leaving the detail view clears the pill's selection.
         screen.view = MasternodesView::List;
         assert_eq!(screen.selected_node_id(), None);
+
+        ctx.wallet_backend().expect("backend").shutdown().await;
+    }
+
+    /// QA follow-up: a failed masternode load must keep the form open (with its
+    /// fields intact) and re-enable submit; only a successful load closes the
+    /// form and returns to the list.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn load_error_keeps_form_open_success_closes_it() {
+        use crate::backend_task::BackendTaskSuccessResult;
+        use crate::backend_task::error::TaskError;
+
+        let (ctx, _tmp) = offline_ctx().await;
+        let mut screen = MasternodesScreen::new(&ctx);
+
+        // Open the load form and simulate a submit going in flight.
+        screen.view = MasternodesView::Load(screen.new_load_form());
+        screen.load_in_flight = true;
+
+        // Error: the screen defers to the global banner, keeps the form open,
+        // and re-enables submit by clearing the in-flight gate.
+        let handled = screen.display_task_error(&TaskError::MalformedProTxHash {
+            input: "not-a-hash".to_string(),
+        });
+        assert!(
+            !handled,
+            "the global banner renders the error, not the screen"
+        );
+        assert!(
+            matches!(screen.view, MasternodesView::Load(_)),
+            "the form must stay open on error so fields can be corrected"
+        );
+        assert!(
+            !screen.load_in_flight,
+            "submit must re-enable after a failed load"
+        );
+
+        // Resubmit → in flight again.
+        screen.load_in_flight = true;
+
+        // Success: the form closes and drops back to the list.
+        let identity = Identity::create_basic_identity(
+            Identifier::from([0x33; 32]),
+            PlatformVersion::latest(),
+        )
+        .expect("basic identity");
+        let qi = QualifiedIdentity {
+            identity,
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::Masternode,
+            alias: None,
+            private_keys: KeyStorage::default(),
+            dpns_names: vec![],
+            associated_wallets: BTreeMap::new(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: BTreeMap::new(),
+            status: IdentityStatus::PendingCreation,
+            network: ctx.network(),
+        };
+        screen.display_task_result(BackendTaskSuccessResult::LoadedIdentity(qi));
+        assert!(
+            matches!(screen.view, MasternodesView::List),
+            "a successful load must close the form and return to the list"
+        );
+        assert!(
+            !screen.load_in_flight,
+            "the in-flight gate must clear on success"
+        );
 
         ctx.wallet_backend().expect("backend").shutdown().await;
     }

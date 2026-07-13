@@ -158,17 +158,20 @@ impl MasternodeLoadForm {
         !self.pro_tx_hash_input.trim().is_empty()
     }
 
-    /// Build the backend load input from the current field state.
-    fn build_input(&mut self) -> IdentityInputToLoad {
-        let password = self.encryption_password.take_secret();
+    /// Build the backend load input from the current field state. Clones the
+    /// secret fields rather than draining them, so the form keeps every value
+    /// if the load fails and the user needs to fix one field and resubmit. The
+    /// form's own copies are zeroized when it is dropped on a successful load.
+    fn build_input(&self) -> IdentityInputToLoad {
+        let password = self.encryption_password.secret().clone();
         let encryption_password = (!password.is_blank()).then_some(password);
         IdentityInputToLoad {
             identity_id_input: self.pro_tx_hash_input.trim().to_string(),
             identity_type: self.node_type,
             alias_input: self.alias_input.trim().to_string(),
-            voting_private_key_input: self.voting_key.take_secret(),
-            owner_private_key_input: self.owner_key.take_secret(),
-            payout_address_private_key_input: self.payout_key.take_secret(),
+            voting_private_key_input: self.voting_key.secret().clone(),
+            owner_private_key_input: self.owner_key.secret().clone(),
+            payout_address_private_key_input: self.payout_key.secret().clone(),
             keys_input: vec![],
             // No auto-derive: masternode keys are never wallet-derived (§Locked-#4).
             derive_keys_from_wallets: false,
@@ -184,7 +187,12 @@ impl MasternodeLoadForm {
     /// a defense-in-depth check (FR-12 / TC-FR12-09): the whole tab is already
     /// Expert-gated, but a plaintext-key-reading dev tool stays inside the
     /// Expert-Mode envelope regardless of any future non-nav entry point.
-    pub fn show(&mut self, ui: &mut Ui, dev_mode: bool) -> LoadFormOutcome {
+    ///
+    /// `submitting` is `true` while a load dispatched from this form is in
+    /// flight: the submit button locks and shows a spinner so the load cannot be
+    /// re-submitted, and the form emits no further `Submit` until the result
+    /// arrives. On error the caller re-enables the form with fields intact.
+    pub fn show(&mut self, ui: &mut Ui, dev_mode: bool, submitting: bool) -> LoadFormOutcome {
         let dark_mode = ui.style().visuals.dark_mode;
         let mut outcome = LoadFormOutcome::None;
 
@@ -352,16 +360,23 @@ impl MasternodeLoadForm {
                     outcome = LoadFormOutcome::Cancel;
                 }
 
-                let enabled = self.can_submit();
-                let clicked = ComponentStyles::add_primary_button_enabled(
-                    ui,
-                    enabled,
-                    "Load masternode",
-                )
-                .disabled_tooltip(LOAD_DISABLED_TOOLTIP)
-                .clicked();
-                if clicked && enabled {
-                    outcome = LoadFormOutcome::Submit(Box::new(self.build_input()));
+                if submitting {
+                    // A load is in flight: lock the button and show progress so
+                    // the user cannot re-submit and knows the load is running.
+                    ui.add_enabled(false, egui::Button::new("Loading…"));
+                    ui.spinner();
+                } else {
+                    let enabled = self.can_submit();
+                    let clicked = ComponentStyles::add_primary_button_enabled(
+                        ui,
+                        enabled,
+                        "Load masternode",
+                    )
+                    .disabled_tooltip(LOAD_DISABLED_TOOLTIP)
+                    .clicked();
+                    if clicked && enabled {
+                        outcome = LoadFormOutcome::Submit(Box::new(self.build_input()));
+                    }
                 }
             });
         });
@@ -527,5 +542,37 @@ mod tests {
         form.encryption_password.set_text("hunter2");
         let input = form.build_input();
         assert!(input.encryption_password.is_some());
+    }
+
+    /// Building the load input must NOT drain the form's fields: if the backend
+    /// load fails, the form stays open and the user corrects one field and
+    /// resubmits — every value (ProTxHash, alias, keys, password) must survive.
+    #[test]
+    fn build_input_preserves_fields_for_error_retry() {
+        let mut form = MasternodeLoadForm::new();
+        form.pro_tx_hash_input = "deadbeef".to_string();
+        form.alias_input = "mn-east-01".to_string();
+        form.voting_key.set_text("voter-wif");
+        form.owner_key.set_text("owner-wif");
+        form.payout_key.set_text("payout-wif");
+        form.encryption_password.set_text("hunter2");
+
+        let input = form.build_input();
+
+        // The built input carries the values through to the backend task.
+        assert_eq!(input.voting_private_key_input.expose_secret(), "voter-wif");
+        assert_eq!(input.owner_private_key_input.expose_secret(), "owner-wif");
+        assert_eq!(
+            input.payout_address_private_key_input.expose_secret(),
+            "payout-wif"
+        );
+
+        // The form retains every field so a failed load is corrected in place.
+        assert_eq!(form.pro_tx_hash_input, "deadbeef");
+        assert_eq!(form.alias_input, "mn-east-01");
+        assert_eq!(form.voting_key.text(), "voter-wif");
+        assert_eq!(form.owner_key.text(), "owner-wif");
+        assert_eq!(form.payout_key.text(), "payout-wif");
+        assert_eq!(form.encryption_password.text(), "hunter2");
     }
 }

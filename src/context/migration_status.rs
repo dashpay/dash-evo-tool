@@ -78,6 +78,18 @@ pub enum MigrationState {
     /// from [`Self::SucceededWithUnreadableVotes`] because the remedy differs —
     /// re-import a key, not re-schedule a vote.
     SucceededWithUnreadableIdentities { count: u32 },
+    /// Both DET-owned passes are damaged on the same launch: the wallet drain
+    /// landed, but `count` legacy identities could not be decoded AND the
+    /// app-data import hit a hard failure. Rendered as a single retryable error
+    /// banner naming both problems, so neither masks the other — the plain
+    /// [`Self::SucceededWithUnreadableIdentities`] would have swallowed the
+    /// app-data failure and left the user no retry. Both the identity rows and
+    /// the app-data sentinel stay unwritten, so a retry (or the next launch)
+    /// re-attempts both. Terminal until then.
+    FailedWithUnreadableIdentities {
+        count: u32,
+        error: Arc<crate::backend_task::migration::MigrationError>,
+    },
     /// Migration failed. The wrapped error is rendered for the user via
     /// its `Display` impl at banner-render time; the typed chain is
     /// preserved for the details panel and logs.
@@ -107,6 +119,16 @@ impl PartialEq for MigrationState {
                 MigrationState::SucceededWithUnreadableIdentities { count: b },
             ) => a == b,
             (MigrationState::Running { step: a }, MigrationState::Running { step: b }) => a == b,
+            (
+                MigrationState::FailedWithUnreadableIdentities {
+                    count: a,
+                    error: ea,
+                },
+                MigrationState::FailedWithUnreadableIdentities {
+                    count: b,
+                    error: eb,
+                },
+            ) => a == b && Arc::ptr_eq(ea, eb),
             (MigrationState::Failed { error: a }, MigrationState::Failed { error: b }) => {
                 Arc::ptr_eq(a, b)
             }
@@ -220,5 +242,40 @@ mod tests {
         });
         assert!(!status.state().is_running());
         assert!(matches!(*status.state(), MigrationState::Failed { .. }));
+    }
+
+    /// The combined failure state compares by `count` AND error identity, like
+    /// `Failed`: two combined states with the same count but distinct error
+    /// `Arc`s are unequal, so the per-frame reconciler treats a fresh failure as
+    /// a transition and re-renders instead of suppressing it as a duplicate.
+    #[test]
+    fn combined_failure_state_compares_count_and_error_identity() {
+        use crate::backend_task::migration::MigrationError;
+
+        let shared = Arc::new(MigrationError::WalletBackendUnavailable);
+        let a = MigrationState::FailedWithUnreadableIdentities {
+            count: 2,
+            error: Arc::clone(&shared),
+        };
+        let same = MigrationState::FailedWithUnreadableIdentities {
+            count: 2,
+            error: Arc::clone(&shared),
+        };
+        assert_eq!(a, same, "same count and same error Arc compare equal");
+
+        let different_error = MigrationState::FailedWithUnreadableIdentities {
+            count: 2,
+            error: Arc::new(MigrationError::WalletBackendUnavailable),
+        };
+        assert_ne!(
+            a, different_error,
+            "a fresh error Arc is a new transition even at the same count",
+        );
+
+        let different_count = MigrationState::FailedWithUnreadableIdentities {
+            count: 3,
+            error: Arc::clone(&shared),
+        };
+        assert_ne!(a, different_count, "a changed count is a transition");
     }
 }

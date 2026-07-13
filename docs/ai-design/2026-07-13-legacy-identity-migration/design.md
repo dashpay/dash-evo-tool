@@ -193,7 +193,7 @@ launch retries. `MigrationStep::Identities` is added for the progress UI.
 |---|---|---|
 | `data` (BLOB) | `QualifiedIdentity::from_bytes` → `qi.` everything | Includes **all key material**. |
 | `status` (u8) | `qi.status = IdentityStatus::from_u8(..)` | The encoder **skips** `status`, so a decoded blob carries the default `Unknown`. Restoring it from the column is mandatory or every migrated identity reads back as "unknown, refresh required". |
-| `alias` | already inside `data` | Column is a denormalised copy. Prefer the blob; the column is a fallback if `qi.alias` is `None`. |
+| `alias` | `qi.alias = column` (unconditional) | The SQL column is authoritative; the blob's copy is stale. In v0.9.3 `set_identity_alias` updated **only** the column, and every loader decoded the blob then unconditionally overwrote `alias` with the column value. A rename or removal left the blob stale, so the column always won. Migrating with a blob-first fallback would resurrect a renamed-away alias or reverse a removal — so the column always wins here, including a NULL column clearing a stale blob alias. |
 | `identity_type` | already inside `data` | Column is `format!("{:?}")` of the same value. `insert_local_qualified_identity` re-derives the wrapper's tag from `qi.identity_type`. Do not read the column. |
 | `wallet` + `wallet_index` | `wallet_and_identity_id_info: Option<(WalletSeedHash, u32)>` | Both-or-neither (enforced by the legacy `CHECK`). |
 | `network` | row filter `WHERE network IN (?1, ?2)` | Two-value filter via `mainnet_alias_for()` — a pre-v29 DB spells mainnet `dash`. |

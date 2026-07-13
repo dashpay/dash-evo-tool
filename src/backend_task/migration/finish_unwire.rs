@@ -171,6 +171,16 @@ pub enum MigrationError {
         source: Box<TaskError>,
     },
 
+    /// The app-data pass failed with an error that did not already originate in
+    /// the migration layer (a k/v read while checking which votes exist, say).
+    /// Wrapped so the combined [`MigrationState::FailedWithUnreadableIdentities`]
+    /// banner keeps a typed chain when both DET-owned passes break together.
+    #[error("could not import the previous version's app data")]
+    AppDataImport {
+        #[source]
+        source: Box<TaskError>,
+    },
+
     /// A decoded legacy identity could not be written into the identity store.
     /// Hard failure: the identity sentinel stays unwritten so the next launch
     /// retries the idempotent import. Never blocks the wallet drain — [`run`]
@@ -258,6 +268,21 @@ impl MigrationError {
     }
 }
 
+/// Coerce the app-data pass error into the shared `Arc<MigrationError>` chain the
+/// combined failure banner renders. `migrate_app_data`'s own failures already
+/// arrive as [`TaskError::MigrationFailed`], so their typed chain is reused
+/// verbatim; a stray non-migration error (a k/v read while probing existing
+/// votes) is wrapped in [`MigrationError::AppDataImport`] so the banner still has
+/// a typed chain to show and `is_backend_not_ready` stays reachable.
+fn app_data_error_chain(error: TaskError) -> Arc<MigrationError> {
+    match error {
+        TaskError::MigrationFailed { source } => source,
+        other => Arc::new(MigrationError::AppDataImport {
+            source: Box::new(other),
+        }),
+    }
+}
+
 /// Run the FinishUnwire migration. Idempotent — completes a no-op when
 /// the sentinels are already present.
 ///
@@ -299,6 +324,13 @@ impl MigrationError {
 /// [`MigrationState::SucceededWithUnreadableVotes`] /
 /// [`MigrationState::SucceededWithUnreadableIdentities`], because failing here
 /// would wedge the wallet drain behind a row the user cannot repair.
+///
+/// One case returns `Ok` while publishing a failure banner itself: a hard
+/// app-data failure that coincides with unreadable identities on the same
+/// launch. Both must reach the user, so the terminal state is
+/// [`MigrationState::FailedWithUnreadableIdentities`] (published here, carrying
+/// both signals) rather than a returned `Err` that the caller would re-publish
+/// as a plain `Failed`, dropping the identity count.
 pub async fn run(app_context: &Arc<AppContext>) -> Result<bool, TaskError> {
     let status = app_context.migration_status();
 
@@ -365,41 +397,54 @@ pub async fn run(app_context: &Arc<AppContext>) -> Result<bool, TaskError> {
         }
     };
 
-    // Identities outrank votes when both are damaged: an identity that did not
-    // come across took its keys with it, so the user cannot sign — let alone
-    // vote — until it is loaded again. Both counts are logged; one banner shows.
+    // Unreadable identities outrank a *readable* app-data pass: an identity that
+    // did not come across took its keys with it, so the user cannot sign — let
+    // alone vote — until it is loaded again. But a *hard* app-data failure on the
+    // same launch is not something the identity warning may swallow: it would
+    // leave the user no retry for their scheduled votes, silently and every
+    // launch (the app-data sentinel is never written, so it recurs). So when both
+    // break together, a single combined banner names each — the app-data half
+    // retryable — instead of one eating the other.
     //
-    // This check runs BEFORE `app_data` is unwrapped: a hard app-data failure is
-    // deterministic (one malformed vote-index blob recurs every launch, since its
-    // sentinel is never written), so unwrapping `app_data?` first would return
-    // that error and permanently mask this "reload your identity" banner. The
-    // app-data error is logged here and retries next launch; it must not take
-    // precedence over unreadable keys.
+    // This branch runs BEFORE `app_data` is unwrapped with `?`: unwrapping first
+    // would return the deterministic app-data error and permanently mask the
+    // identity outcome. `app_data` is moved here by value; the fall-through path
+    // below (no unreadable identities) still owns it because this branch always
+    // returns.
     if identities.unreadable > 0 {
-        let (app_data_moved, votes_unreadable) = match &app_data {
-            Ok(outcome) => (outcome.moved_data(), outcome.votes_unreadable),
-            Err(app_data_error) => {
+        match app_data {
+            Ok(outcome) => {
+                let moved_data = wallet_moved || outcome.moved_data() || identities.moved_data();
                 tracing::warn!(
                     target = "migration::finish_unwire",
-                    error = ?app_data_error,
-                    "App-data import failed on the same launch as unreadable legacy identities; it retries on the next launch",
+                    unreadable = identities.unreadable,
+                    imported = identities.imported,
+                    votes_unreadable = outcome.votes_unreadable,
+                    network = ?app_context.network,
+                    "Some legacy identities could not be decoded; they stay in the previous version's data.db and must be loaded again",
                 );
-                (false, 0)
+                status.set_state(MigrationState::SucceededWithUnreadableIdentities {
+                    count: identities.unreadable,
+                });
+                return Ok(moved_data);
             }
-        };
-        let moved_data = wallet_moved || app_data_moved || identities.moved_data();
-        tracing::warn!(
-            target = "migration::finish_unwire",
-            unreadable = identities.unreadable,
-            imported = identities.imported,
-            votes_unreadable,
-            network = ?app_context.network,
-            "Some legacy identities could not be decoded; they stay in the previous version's data.db and must be loaded again",
-        );
-        status.set_state(MigrationState::SucceededWithUnreadableIdentities {
-            count: identities.unreadable,
-        });
-        return Ok(moved_data);
+            Err(app_data_error) => {
+                let moved_data = wallet_moved || identities.moved_data();
+                tracing::warn!(
+                    target = "migration::finish_unwire",
+                    unreadable = identities.unreadable,
+                    imported = identities.imported,
+                    error = ?app_data_error,
+                    network = ?app_context.network,
+                    "Both DET-owned passes failed on the same launch: some legacy identities could not be decoded and the app-data import hit a hard error; both retry on the next launch",
+                );
+                status.set_state(MigrationState::FailedWithUnreadableIdentities {
+                    count: identities.unreadable,
+                    error: app_data_error_chain(app_data_error),
+                });
+                return Ok(moved_data);
+            }
+        }
     }
 
     // Every identity decoded, so app-data no longer masks anything critical: a
@@ -4160,6 +4205,37 @@ mod tests {
         );
     }
 
+    /// `app_data_error_chain` reuses a `MigrationFailed` chain verbatim (so the
+    /// combined banner shows the same typed source, and a wrapped
+    /// `WalletBackendUnavailable` still classifies as backend-not-ready), and
+    /// wraps any stray non-migration `TaskError` in `AppDataImport` rather than
+    /// dropping it.
+    #[test]
+    fn app_data_error_chain_preserves_migration_source_and_wraps_others() {
+        let inner = Arc::new(MigrationError::WalletBackendUnavailable);
+        let chain = app_data_error_chain(TaskError::MigrationFailed {
+            source: Arc::clone(&inner),
+        });
+        assert!(
+            Arc::ptr_eq(&chain, &inner),
+            "a MigrationFailed chain must be reused, not re-wrapped",
+        );
+        assert!(
+            chain.is_backend_not_ready(),
+            "the reused chain keeps its backend-not-ready classification",
+        );
+
+        let wrapped = app_data_error_chain(TaskError::WalletNotFound);
+        assert!(
+            matches!(*wrapped, MigrationError::AppDataImport { .. }),
+            "a non-migration error is wrapped, never dropped",
+        );
+        assert!(
+            !wrapped.is_backend_not_ready(),
+            "a wrapped app-data error is terminal, offered with a retry",
+        );
+    }
+
     /// Wire the real wallet seam onto a fixture context. Offline: the backend
     /// builds its sidecars and hydrates from them without touching the network,
     /// so an end-to-end `run()` can be driven to completion in a unit test. The
@@ -4401,6 +4477,104 @@ mod tests {
                 .is_none(),
             "the app-data sentinel must not be written when the import failed — \
              the next launch has to retry it",
+        );
+
+        backend.shutdown().await;
+    }
+
+    /// Both DET-owned passes broken on the SAME launch must surface BOTH signals,
+    /// not have one silently eat the other. Here an undecodable identity row
+    /// (unreadable identities) and a structurally-damaged legacy `top_up` table
+    /// (a hard app-data failure) coincide. Before the fix the run published
+    /// `SucceededWithUnreadableIdentities` and returned `Ok`, so the app-data
+    /// failure never reached a banner — no retry, swallowed every launch. Now the
+    /// combined `FailedWithUnreadableIdentities` carries the identity count AND
+    /// the app-data error chain: the user sees both, with a retry for the
+    /// app-data half. Funds are still safe (the wallet drain ran regardless), and
+    /// neither DET-owned sentinel is written, so both retry on the next launch.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn both_app_data_and_identity_failures_surface_together() {
+        use crate::wallet_backend::poison::RwLockRecover;
+        use dash_sdk::dpp::dashcore::Network;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = fresh_app_context(tmp.path());
+        let network = Network::Testnet;
+
+        // Funds: a normal legacy wallet, so the drain completes and `moved_data`.
+        let seed_hash = seed_legacy_wallet(&ctx, &[0xD6u8; 64], "funds", network);
+
+        {
+            let conn = Connection::open(tmp.path().join("data.db")).expect("open data.db");
+            // A corrupt identity blob → `read_identities` counts it unreadable. The
+            // modern schema already has the `identity` table; a NULL wallet link
+            // satisfies its both-or-neither CHECK.
+            conn.execute(
+                "INSERT INTO identity (id, data, status, is_local, network)
+                 VALUES (?1, ?2, 2, 1, 'testnet')",
+                rusqlite::params![[0x44u8; 32].as_slice(), vec![0xFFu8; 8]],
+            )
+            .expect("corrupt identity row");
+            // A structurally-damaged legacy `top_up` (no `amount` column) with a
+            // row → the app-data pass hard-fails when its reader's prepare fails.
+            conn.execute_batch(
+                "CREATE TABLE top_up (
+                    identity_id BLOB NOT NULL,
+                    top_up_index INTEGER NOT NULL
+                 );",
+            )
+            .expect("broken legacy top-up schema");
+            conn.execute(
+                "INSERT INTO top_up (identity_id, top_up_index) VALUES (?1, 0)",
+                rusqlite::params![[0x44u8; 32].as_slice()],
+            )
+            .expect("top-up row");
+        }
+
+        wire_backend(&ctx).await;
+        let backend = ctx.wallet_backend().expect("backend wired");
+
+        let did_work = run(&ctx)
+            .await
+            .expect("both failures are non-fatal to the run — it publishes its own terminal state");
+        assert!(did_work, "the wallet drain moved data");
+
+        // Both signals in one terminal state: the identity count AND the app-data
+        // error chain. The pre-fix `SucceededWithUnreadableIdentities` would have
+        // hidden the app-data failure — `matches!` here would fail on it.
+        assert!(
+            matches!(
+                &*ctx.migration_status().state(),
+                MigrationState::FailedWithUnreadableIdentities { count: 1, .. }
+            ),
+            "both failures must surface together, got {:?}",
+            ctx.migration_status().state(),
+        );
+
+        // Funds stay safe: the drain ran despite both DET-owned passes breaking.
+        assert!(
+            ctx.wallets.read_recover().contains_key(&seed_hash),
+            "the migrated wallet must be visible — neither DET-owned failure may block funds",
+        );
+        assert!(
+            backend.is_wallet_registered(&seed_hash),
+            "the migrated wallet must be reachable",
+        );
+
+        // Neither DET-owned sentinel is written, so both passes retry next launch.
+        assert!(
+            ctx.app_kv()
+                .get::<MigrationCompletion>(DetScope::Global, &app_data_sentinel_key_for(network))
+                .expect("read app-data sentinel")
+                .is_none(),
+            "the app-data sentinel must stay unwritten so the failure retries",
+        );
+        assert!(
+            ctx.app_kv()
+                .get::<MigrationCompletion>(DetScope::Global, &identities_sentinel_key_for(network))
+                .expect("read identity sentinel")
+                .is_none(),
+            "the identity sentinel must stay unwritten so the unreadable row retries",
         );
 
         backend.shutdown().await;

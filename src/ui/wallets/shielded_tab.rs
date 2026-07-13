@@ -75,12 +75,14 @@ pub fn derive_shielded_indicator(state: &MigrationState, skipped: bool) -> Shiel
             step: MigrationStep::Shielded,
         } => ShieldedIndicator::Verifying,
         MigrationState::Failed { .. } => ShieldedIndicator::Failed,
-        // Unreadable scheduled votes or identities say nothing about shielded
-        // data: the wallet drain completed, so the balance is as authoritative
-        // as on `Success`.
+        // Unreadable scheduled votes or identities — and even the combined
+        // app-data-plus-identities failure — say nothing about shielded data: all
+        // of these run after the wallet drain completed, so the balance is as
+        // authoritative as on `Success`.
         MigrationState::Success
         | MigrationState::SucceededWithUnreadableVotes { .. }
-        | MigrationState::SucceededWithUnreadableIdentities { .. } => ShieldedIndicator::Verified,
+        | MigrationState::SucceededWithUnreadableIdentities { .. }
+        | MigrationState::FailedWithUnreadableIdentities { .. } => ShieldedIndicator::Verified,
         // Idle / non-shielded running step → no badge.
         MigrationState::Idle | MigrationState::Running { .. } => ShieldedIndicator::Hidden,
     }

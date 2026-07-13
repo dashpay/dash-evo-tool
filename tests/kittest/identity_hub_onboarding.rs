@@ -10,8 +10,8 @@
 //! 2. Primary CTA `Create my first identity`
 //! 3. Secondary CTA `I already have an identity — load it`
 //!
-//! It also asserts the Developer Mode footer is absent (Alex persona — the
-//! default `developer_mode = false` state).
+//! It also asserts the Developer-tools footer is absent at the Everyday role
+//! (Alex persona).
 //!
 //! The rendering path exercised here is
 //! `IdentityHubScreen::ui` → `HubLanding::Onboarding` → `onboarding::render`.
@@ -20,6 +20,7 @@
 //! identity picker work.
 
 use crate::support::{fresh_app_context, mount_app, with_isolated_data_dir};
+use dash_evo_tool::model::user_role::UserRole;
 use dash_evo_tool::ui::RootScreenType;
 use dash_evo_tool::ui::components::styled::island_central_panel;
 use dash_evo_tool::ui::identity::onboarding;
@@ -28,12 +29,20 @@ use egui_kittest::kittest::Queryable;
 use std::sync::{Arc, Mutex};
 
 /// IT-ONBOARD-01: the onboarding empty state renders all required copy and
-/// CTAs when no identities are loaded, and hides the Developer Mode footer
-/// when developer mode is off.
+/// CTAs when no identities are loaded, and hides the Developer-tools footer at
+/// the Everyday role.
 #[test]
 fn it_onboard_01_renders_heading_and_both_ctas() {
     with_isolated_data_dir(|| {
-        let harness = mount_app(RootScreenType::RootScreenIdentityHub);
+        let mut harness = mount_app(RootScreenType::RootScreenIdentityHub);
+
+        // Pin the role: the footer's gate is what's under test here, not
+        // whichever role an account with no recorded choice starts at.
+        harness
+            .state()
+            .current_app_context()
+            .set_user_role(UserRole::Everyday);
+        harness.run_steps(2);
 
         // Heading — design-spec §B.1.
         assert!(
@@ -55,12 +64,11 @@ fn it_onboard_01_renders_heading_and_both_ctas() {
             "onboarding must render the 'I already have an identity — load it' secondary button"
         );
 
-        // Developer Mode footer must be absent on the Alex persona default.
-        // The label `Developer tools:` is rendered only when
-        // `AppContext::is_developer_mode()` returns `true`.
+        // The label `Developer tools:` is rendered only at the Power role or
+        // above (`user_role().at_least(UserRole::Power)`).
         assert!(
             harness.query_by_label("Developer tools:").is_none(),
-            "Developer Mode footer must be hidden when developer mode is off"
+            "Developer-tools footer must be hidden at the Everyday role"
         );
     });
 }

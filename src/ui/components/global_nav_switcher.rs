@@ -16,6 +16,7 @@
 
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::user_role::UserRole;
 use crate::model::wallet::WalletSeedHash;
 use crate::ui::RootScreenType;
 use crate::ui::components::breadcrumb_pill::{BreadcrumbPill, BreadcrumbPillMode};
@@ -542,7 +543,7 @@ fn render_app_global_identity_pill(
                     *effect = GlobalNavEffect::AddIdentityLoad;
                     ui.close();
                 }
-                if app_context.is_developer_mode()
+                if app_context.user_role().at_least(UserRole::Power)
                     && ui.button("Create multiple test identities").clicked()
                 {
                     *effect = GlobalNavEffect::CreateTestIdentities;

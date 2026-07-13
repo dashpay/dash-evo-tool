@@ -317,7 +317,6 @@ pub struct AddressInput {
     enabled_kinds: Vec<AddressKind>,
     show_type_filter: bool,
     dpns_resolution: bool,
-    developer_mode: bool,
     selection_only: bool,
     full_addresses: bool,
     label: Option<WidgetText>,
@@ -351,7 +350,6 @@ impl AddressInput {
             enabled_kinds: AddressKind::ALL.to_vec(),
             show_type_filter: false,
             dpns_resolution: true,
-            developer_mode: false,
             selection_only: false,
             full_addresses: false,
             label: None,
@@ -473,12 +471,6 @@ impl AddressInput {
         self
     }
 
-    /// Enable developer mode display (exact credits alongside DASH). Default: false.
-    pub fn with_developer_mode(mut self, enabled: bool) -> Self {
-        self.developer_mode = enabled;
-        self
-    }
-
     /// Pre-populate the input field with an address string.
     pub fn with_initial_value(mut self, address: impl Into<String>) -> Self {
         self.input_text = address.into();
@@ -522,11 +514,6 @@ impl AddressInput {
         self.all_entries
             .retain(|e| e.address_kind != AddressKind::Shielded);
         self.add_shielded_entry(address, balance);
-    }
-
-    /// Update developer mode flag.
-    pub fn set_developer_mode(&mut self, enabled: bool) {
-        self.developer_mode = enabled;
     }
 
     // --- Entry extraction ---
@@ -963,15 +950,7 @@ impl AddressInput {
             AddressKind::Core => Self::format_dash_4dp(Amount::dash_from_duffs(entry.balance)),
             AddressKind::Platform | AddressKind::Shielded | AddressKind::Identity => {
                 let dash = Amount::new(entry.balance, DASH_DECIMAL_PLACES).with_unit_name("DASH");
-                if self.developer_mode {
-                    format!(
-                        "{} ({} credits)",
-                        Self::format_dash_4dp(dash),
-                        entry.balance
-                    )
-                } else {
-                    Self::format_dash_4dp(dash)
-                }
+                Self::format_dash_4dp(dash)
             }
         }
     }

@@ -5,12 +5,14 @@ pub mod feature_gate;
 mod identity_db;
 pub mod migration_status;
 mod settings_db;
+#[cfg(test)]
+pub(crate) mod test_support;
 mod wallet_lifecycle;
 
 use crate::app_dir::core_cookie_path;
 use crate::backend_task::error::TaskError;
 use crate::config::{Config, NetworkConfig};
-use crate::context::feature_gate::FeatureGate;
+use crate::context::feature_gate::{ExperimentalFeature, FeatureGate};
 use crate::context_provider::SpvProvider;
 use crate::database::Database;
 use crate::model::fee_estimation::PlatformFeeEstimator;
@@ -49,6 +51,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock, RwLockWriteGuard};
 
 use crate::model::settings::AppSettings;
+use crate::model::user_role::{UserRole, UserRoleCell};
 
 const ANIMATION_REFRESH_TIME: std::time::Duration = std::time::Duration::from_millis(100);
 
@@ -62,13 +65,13 @@ pub(crate) type SettingsCacheGuard<'a> = RwLockWriteGuard<'a, Option<AppSettings
 pub struct AppContext {
     pub(crate) data_dir: PathBuf,
     pub(crate) network: Network,
-    /// App-global Expert Mode flag. A single `Arc<AtomicBool>` is created once by
-    /// `AppState` and shared into every per-network `AppContext`, so toggling it
-    /// on any context is observed by all of them (present and lazily created on a
-    /// later network switch). Never a per-context `AtomicBool` — that would let
-    /// the left-nav feature gate read a stale value on whichever context the app
-    /// renders from.
-    developer_mode: Arc<AtomicBool>,
+    /// App-global user role (the persona / disclosure axis). A single
+    /// [`UserRoleCell`] is created once by `AppState` and cloned into every
+    /// per-network `AppContext`, so setting it on any context is observed by all
+    /// of them (present, and lazily created on a later network switch). Never a
+    /// per-context cell — that would let the left-nav feature gate read a stale
+    /// value on whichever context the app renders from.
+    user_role: UserRoleCell,
     pub(crate) db: Arc<Database>,
     pub(crate) sdk: ArcSwap<Sdk>,
     // SDK context provider (quorum keys via DAPI). Chain sync is SPV-only,
@@ -226,7 +229,7 @@ impl AppContext {
         egui_ctx: egui::Context,
         app_kv: Arc<DetKv>,
         secret_store: Arc<SecretStore>,
-        developer_mode: Arc<AtomicBool>,
+        user_role: UserRoleCell,
     ) -> Option<Arc<Self>> {
         let config = match Config::load_from(&data_dir) {
             Ok(config) => config,
@@ -317,11 +320,11 @@ impl AppContext {
         let single_key_wallets: BTreeMap<SingleKeyHash, Arc<RwLock<SingleKeyWallet>>> =
             BTreeMap::new();
 
-        let developer_mode_enabled = developer_mode.load(Ordering::Relaxed);
+        let advanced_role = user_role.get().at_least(UserRole::Power);
 
-        let animate = match developer_mode_enabled {
+        let animate = match advanced_role {
             true => {
-                tracing::debug!("developer_mode is enabled, disabling animations");
+                tracing::debug!("power/developer role active, disabling animations");
                 AtomicBool::new(false)
             }
             false => AtomicBool::new(true), // Animations are enabled by default
@@ -338,7 +341,7 @@ impl AppContext {
         let app_context = AppContext {
             data_dir,
             network,
-            developer_mode,
+            user_role,
             db,
             sdk: ArcSwap::from_pointee(sdk),
             spv_context_provider: spv_provider.into(),
@@ -402,10 +405,26 @@ impl AppContext {
         self.animate.store(animate, Ordering::Relaxed);
     }
 
-    pub fn enable_developer_mode(&self, enable: bool) {
-        self.developer_mode.store(enable, Ordering::Relaxed);
-        // Animations are reverse of developer mode
-        self.enable_animations(!enable);
+    /// The app-global user role (shared across every per-network context).
+    pub fn user_role(&self) -> UserRole {
+        self.user_role.get()
+    }
+
+    /// Set the app-global user role. Animations are disabled for Power and
+    /// Developer roles (they clutter an operator/developer workflow).
+    pub fn set_user_role(&self, role: UserRole) {
+        self.user_role.set(role);
+        self.enable_animations(!role.at_least(UserRole::Power));
+    }
+
+    /// Whether an experimental feature is currently exposed.
+    ///
+    /// Compat shim: during the migration window this tracks the old dev-mode
+    /// gating (`>= Power`). Once a feature stabilises, its callsite drops the
+    /// [`Check::Experimental`](crate::context::feature_gate::Check) check
+    /// entirely and it unlocks for every role.
+    pub fn experimental_enabled(&self, _feature: ExperimentalFeature) -> bool {
+        self.user_role().at_least(UserRole::Power)
     }
 
     pub fn data_dir(&self) -> &std::path::Path {
@@ -742,14 +761,10 @@ impl AppContext {
         PlatformFeeEstimator::with_fee_multiplier(self.fee_multiplier_permille())
     }
 
-    pub fn is_developer_mode(&self) -> bool {
-        self.developer_mode.load(Ordering::Relaxed)
-    }
-
-    /// A clone of the shared app-global Expert Mode flag, for wiring a
-    /// newly-created per-network context to the same flag (see the field docs).
-    pub fn developer_mode_handle(&self) -> Arc<AtomicBool> {
-        Arc::clone(&self.developer_mode)
+    /// A handle on the shared app-global role, for wiring a newly-created
+    /// per-network context to the same value (see the field docs).
+    pub fn user_role_cell(&self) -> UserRoleCell {
+        self.user_role.clone()
     }
 
     /// Repaints the UI if animations are enabled.
@@ -767,7 +782,9 @@ impl AppContext {
     }
 
     pub fn state_transition_options(&self) -> Option<StateTransitionCreationOptions> {
-        if self.is_developer_mode() {
+        // Signing override: only the Developer role may relax the security-level
+        // and purpose checks when signing a state transition.
+        if self.user_role().at_least(UserRole::Developer) {
             Some(StateTransitionCreationOptions {
                 signing_options: StateTransitionSigningOptions {
                     allow_signing_with_any_security_level: true,
@@ -1388,7 +1405,7 @@ mod tests {
             egui::Context::default(),
             app_kv,
             secret_store,
-            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            crate::model::user_role::UserRoleCell::default(),
         )
         .expect("offline testnet AppContext::new");
         let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
@@ -1399,15 +1416,15 @@ mod tests {
         (temp_dir, ctx)
     }
 
-    /// Regression (mn-live-qa Bug 1): `developer_mode` is a single app-global
-    /// flag shared by every per-network `AppContext`. Toggling it on the context
-    /// for one network must be observable from the context for another —
-    /// otherwise the left-nav feature gate (`FeatureGate::DeveloperMode`) reads a
-    /// stale value on whichever per-network context the app renders from, and the
-    /// Expert-Mode-gated Masternodes tab never appears until an app restart
-    /// re-reads the persisted flag from config.
+    /// Regression (mn-live-qa Bug 1): the user role is a single app-global value
+    /// shared by every per-network `AppContext`. Setting it on the context for
+    /// one network must be observable from the context for another — otherwise
+    /// the left-nav feature gate (`FeatureGate::Masternodes`) reads a stale value
+    /// on whichever per-network context the app renders from, and the
+    /// Power-gated Masternodes tab never appears until an app restart re-reads
+    /// the persisted role.
     #[test]
-    fn developer_mode_is_shared_across_network_contexts() {
+    fn user_role_is_shared_across_network_contexts() {
         use crate::app_dir::ensure_env_file;
         use crate::context::connection_status::ConnectionStatus;
         use crate::database::test_helpers::create_database_at_path;
@@ -1424,13 +1441,13 @@ mod tests {
         let subtasks = std::sync::Arc::new(TaskManager::new());
         let connection_status = std::sync::Arc::new(ConnectionStatus::new());
         let egui_ctx = egui::Context::default();
-        // A single app-global developer-mode flag, owned by `AppState` and shared
-        // into every per-network context (mirrors the real construction path).
-        let developer_mode = std::sync::Arc::new(AtomicBool::new(false));
+        // A single app-global role cell, owned by `AppState` and shared into
+        // every per-network context (mirrors the real construction path).
+        let user_role = UserRoleCell::new(UserRole::Everyday);
 
         // The startup context (Mainnet) and a second context (Testnet) built the
         // way `AppState` builds one on a live network switch — reusing the shared
-        // db / kv / secret store / developer-mode flag.
+        // db / kv / secret store / role cell.
         let mainnet = AppContext::new(
             data_dir.clone(),
             Network::Mainnet,
@@ -1440,7 +1457,7 @@ mod tests {
             egui_ctx.clone(),
             app_kv.clone(),
             secret_store.clone(),
-            developer_mode.clone(),
+            user_role.clone(),
         )
         .expect("mainnet AppContext::new");
         let testnet = AppContext::new(
@@ -1452,21 +1469,71 @@ mod tests {
             egui_ctx,
             app_kv,
             secret_store,
-            developer_mode,
+            user_role,
         )
         .expect("testnet AppContext::new");
 
-        assert!(!mainnet.is_developer_mode());
-        assert!(!testnet.is_developer_mode());
+        assert_eq!(mainnet.user_role(), UserRole::Everyday);
+        assert_eq!(testnet.user_role(), UserRole::Everyday);
 
-        // Toggle Expert Mode on ONE context, exactly as the Settings checkbox does.
-        mainnet.enable_developer_mode(true);
+        // Raise the role on ONE context, exactly as the Settings selector does.
+        mainnet.set_user_role(UserRole::Power);
 
-        assert!(
-            testnet.is_developer_mode(),
-            "developer mode toggled on one network's context must be visible on \
-             another network's context"
+        assert_eq!(
+            testnet.user_role(),
+            UserRole::Power,
+            "a role set on one network's context must be visible on another \
+             network's context"
         );
+    }
+
+    /// The signing override in `state_transition_options` is gated strictly at
+    /// the Developer role: only `Developer` relaxes the security-level and
+    /// purpose signing checks. Everyday and Power must receive `None`.
+    #[test]
+    fn state_transition_options_signing_override_is_developer_only() {
+        use crate::app_dir::ensure_env_file;
+        use crate::context::connection_status::ConnectionStatus;
+        use crate::database::test_helpers::create_database_at_path;
+        use crate::utils::tasks::TaskManager;
+        use dash_sdk::dpp::dashcore::Network;
+
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = temp_dir.path().to_path_buf();
+        ensure_env_file(&data_dir);
+        let db =
+            std::sync::Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
+        let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
+        let secret_store = AppContext::open_secret_store(&data_dir).expect("secret store");
+        let ctx = AppContext::new(
+            data_dir,
+            Network::Testnet,
+            db,
+            std::sync::Arc::new(TaskManager::new()),
+            std::sync::Arc::new(ConnectionStatus::new()),
+            egui::Context::default(),
+            app_kv,
+            secret_store,
+            UserRoleCell::new(UserRole::Everyday),
+        )
+        .expect("testnet AppContext::new");
+
+        // Below Developer: no signing override.
+        for role in [UserRole::Everyday, UserRole::Power] {
+            ctx.set_user_role(role);
+            assert!(
+                ctx.state_transition_options().is_none(),
+                "{role:?} must not receive the signing override"
+            );
+        }
+
+        // Developer: override present with both relaxations enabled.
+        ctx.set_user_role(UserRole::Developer);
+        let opts = ctx
+            .state_transition_options()
+            .expect("Developer role must receive the signing override");
+        assert!(opts.signing_options.allow_signing_with_any_security_level);
+        assert!(opts.signing_options.allow_signing_with_any_purpose);
     }
 
     /// Seed one wallet-less identity of `identity_type` into the live identity

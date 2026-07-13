@@ -17,6 +17,7 @@ use crate::backend_task::identity::IdentityTask;
 use crate::context::AppContext;
 use crate::model::contested_name::MasternodeContestSummary;
 use crate::model::qualified_identity::{IdentityStatus, IdentityType, MasternodeKeyPresence};
+use crate::model::user_role::UserRole;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel_with_global_nav;
@@ -338,7 +339,7 @@ impl MasternodesScreen {
     /// Render the load form; map its outcome to a backend load task and return
     /// to the list on cancel or submit.
     fn render_load_view(&mut self, ui: &mut egui::Ui) -> AppAction {
-        let dev_mode = self.app_context.is_developer_mode();
+        let dev_mode = self.app_context.user_role().at_least(UserRole::Power);
         let outcome = match &mut self.view {
             MasternodesView::Load(form) => form.show(ui, dev_mode),
             _ => return AppAction::None,
@@ -466,7 +467,7 @@ mod tests {
             egui::Context::default(),
             app_kv,
             secret_store,
-            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            crate::model::user_role::UserRoleCell::default(),
         )
         .expect("offline testnet AppContext::new");
         let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);

@@ -14,6 +14,7 @@ use crate::context::connection_status::spv_phase_summary;
 use crate::context::feature_gate::FeatureGate;
 use crate::model::fee_estimation::format_duffs_as_dash;
 use crate::model::spv_status::SpvStatus;
+use crate::model::user_role::UserRole;
 use crate::model::wallet::{TransactionStatus, Wallet, WalletSeedHash, WalletTransaction};
 use crate::ui::components::MessageBanner;
 use crate::ui::components::component_trait::Component;
@@ -1146,8 +1147,8 @@ impl WalletsBalancesScreen {
                 ui.add(egui::Spinner::new().color(DashColors::DASH_BLUE));
             }
 
-            // Dev-mode buttons: right-aligned, filling all remaining space
-            if FeatureGate::DeveloperMode.is_available(&self.app_context) {
+            // Expert-only buttons: right-aligned, filling all remaining space
+            if self.app_context.user_role().at_least(UserRole::Power) {
                 let remaining = ui.available_width();
                 ui.allocate_ui_with_layout(
                     egui::vec2(remaining, ui.min_size().y),
@@ -1209,7 +1210,7 @@ impl WalletsBalancesScreen {
     fn build_account_tabs(&self, summaries: &[AccountSummary]) -> Vec<AccountTab> {
         plan_account_tabs(
             summaries,
-            self.app_context.is_developer_mode(),
+            self.app_context.user_role().at_least(UserRole::Power),
             FeatureGate::Shielded.is_available(&self.app_context),
             // Every HD wallet unconditionally bootstraps a platform-payment
             // receive address at load (`Wallet::bootstrap_known_addresses`), so
@@ -1366,7 +1367,7 @@ impl WalletsBalancesScreen {
                         // in default mode, where the tab only appears to
                         // reconcile funds outside the primary Core/Platform
                         // tabs.
-                        let label = if self.app_context.is_developer_mode() {
+                        let label = if self.app_context.user_role().at_least(UserRole::Power) {
                             "System"
                         } else {
                             "Other"
@@ -1531,7 +1532,7 @@ impl WalletsBalancesScreen {
     ) -> AppAction {
         let mut action = AppAction::None;
         let dark_mode = ui.style().visuals.dark_mode;
-        let developer_mode = self.app_context.is_developer_mode();
+        let developer_mode = self.app_context.user_role().at_least(UserRole::Power);
         let sections = self.system_tab_sections(summaries);
 
         if !developer_mode {
@@ -1660,7 +1661,7 @@ impl WalletsBalancesScreen {
         }
 
         let dark_mode = ui.style().visuals.dark_mode;
-        let show_fee = self.app_context.is_developer_mode();
+        let show_fee = self.app_context.user_role().at_least(UserRole::Power);
         let mut order: Vec<usize> = relevant_indices.clone();
         order.sort_by(|&a, &b| {
             transactions[b]
@@ -1961,7 +1962,7 @@ impl WalletsBalancesScreen {
                 .color(DashColors::text_secondary(dark_mode)),
         )
         .id_salt("balance_breakdown")
-        .default_open(self.app_context.is_developer_mode());
+        .default_open(self.app_context.user_role().at_least(UserRole::Power));
 
         header.show(ui, |ui| {
             ui.horizontal(|ui| {
@@ -2025,7 +2026,7 @@ impl WalletsBalancesScreen {
                                             .color(DashColors::text_primary(dark_mode))
                                             .size(25.0),
                                     );
-                                    if FeatureGate::DeveloperMode.is_available(&self.app_context) {
+                                    if self.app_context.user_role().at_least(UserRole::Power) {
                                         ui.label(
                                             RichText::new("[DEV]")
                                                 .color(DashColors::text_secondary(dark_mode))

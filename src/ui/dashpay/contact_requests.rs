@@ -882,19 +882,16 @@ impl ScreenLike for ContactRequests {
         self.loading = false;
 
         match result {
-            BackendTaskSuccessResult::DashPayContactRequests { incoming, outgoing } => {
+            BackendTaskSuccessResult::DashPayContactRequests {
+                identity,
+                incoming,
+                outgoing,
+            } => {
                 tracing::debug!(
                     "Received DashPayContactRequests result: {} incoming, {} outgoing",
                     incoming.len(),
                     outgoing.len()
                 );
-
-                // Clear existing requests
-                self.incoming_requests.clear();
-                self.outgoing_requests.clear();
-
-                // Mark as fetched
-                self.has_fetched_requests = true;
 
                 // Get current identity for saving to database
                 let Some(selected_identity) = self.selected_identity.as_ref() else {
@@ -904,6 +901,23 @@ impl ScreenLike for ContactRequests {
                     return;
                 };
                 let current_identity_id = selected_identity.identity.id();
+
+                // An identity switch cannot cancel a load already in flight, so
+                // a result for the identity we left must not repopulate the
+                // lists under the identity we are on.
+                if identity != current_identity_id {
+                    tracing::debug!(
+                        "Discarding contact requests for a no-longer-selected identity"
+                    );
+                    return;
+                }
+
+                // Clear existing requests
+                self.incoming_requests.clear();
+                self.outgoing_requests.clear();
+
+                // Mark as fetched
+                self.has_fetched_requests = true;
 
                 // Process incoming requests
                 for (id, doc) in incoming.iter() {

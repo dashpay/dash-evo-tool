@@ -223,11 +223,20 @@ pub enum BackendTaskSuccessResult {
     DashPayContactProfile(Option<Document>),          // Contact's public profile document
     DashPayProfileSearchResults(Vec<(Identifier, Option<Document>, String)>), // Search results: (identity_id, profile_document, username)
     DashPayContactRequests {
+        /// The identity the requests were loaded for. An identity switch cannot
+        /// cancel an in-flight load, so the consumer must drop a result whose
+        /// identity is no longer the selected one.
+        identity: Identifier,
         incoming: Vec<(Identifier, Document)>, // (request_id, document)
         outgoing: Vec<(Identifier, Document)>, // (request_id, document)
     },
     DashPayContacts(Vec<Identifier>), // List of contact identity IDs
-    DashPayContactsWithInfo(Vec<ContactData>), // List of contacts with metadata
+    DashPayContactsWithInfo {
+        /// The identity the contacts were loaded for — see
+        /// [`BackendTaskSuccessResult::DashPayContactRequests`].
+        identity: Identifier,
+        contacts: Vec<ContactData>,
+    },
     DashPayPaymentHistory(Vec<(String, String, u64, bool, String)>), // (tx_id, contact_name, amount, is_incoming, memo)
     DashPayProfileUpdated(Identifier), // Identity ID of updated profile
     DashPayContactRequestSent(String), // Username or ID of recipient

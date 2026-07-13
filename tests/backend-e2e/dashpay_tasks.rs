@@ -192,7 +192,7 @@ async fn tc_034_load_contacts_empty() {
         BackendTaskSuccessResult::DashPayContacts(contacts) => {
             tracing::info!("TC-034: LoadContacts returned {} contacts", contacts.len());
         }
-        BackendTaskSuccessResult::DashPayContactsWithInfo(contacts) => {
+        BackendTaskSuccessResult::DashPayContactsWithInfo { contacts, .. } => {
             tracing::info!(
                 "TC-034: LoadContactsWithInfo returned {} contacts",
                 contacts.len()
@@ -253,7 +253,7 @@ async fn tc_046_load_contacts_offline_serves_cache() {
         .expect("TC-046: offline read should not fail");
 
     let contacts = match result {
-        BackendTaskSuccessResult::DashPayContactsWithInfo(contacts) => contacts,
+        BackendTaskSuccessResult::DashPayContactsWithInfo { contacts, .. } => contacts,
         other => panic!("TC-046: expected DashPayContactsWithInfo, got: {:?}", other),
     };
     tracing::info!(
@@ -310,7 +310,9 @@ async fn tc_035_load_contact_requests_empty() {
         .expect("LoadContactRequests should not fail");
 
     match result {
-        BackendTaskSuccessResult::DashPayContactRequests { incoming, outgoing } => {
+        BackendTaskSuccessResult::DashPayContactRequests {
+            incoming, outgoing, ..
+        } => {
             tracing::info!(
                 "TC-035: LoadContactRequests returned {} incoming, {} outgoing",
                 incoming.len(),
@@ -408,7 +410,9 @@ async fn step_load_contact_requests(
         .expect("LoadContactRequests should not fail");
 
     match result {
-        BackendTaskSuccessResult::DashPayContactRequests { incoming, outgoing } => {
+        BackendTaskSuccessResult::DashPayContactRequests {
+            incoming, outgoing, ..
+        } => {
             tracing::info!(
                 "Step 2: B has {} incoming, {} outgoing requests",
                 incoming.len(),
@@ -746,7 +750,7 @@ async fn tc_037_dashpay_contact_lifecycle() {
                     contacts.len()
                 );
             }
-            BackendTaskSuccessResult::DashPayContactsWithInfo(contacts) => {
+            BackendTaskSuccessResult::DashPayContactsWithInfo { contacts, .. } => {
                 assert!(
                     !contacts.is_empty(),
                     "TC-037: no contacts found but no pending request either — test state inconsistent"

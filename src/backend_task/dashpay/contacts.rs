@@ -444,9 +444,10 @@ pub async fn load_contacts(
     // effort: a cache write miss only costs the offline optimisation.
     cache_contact_profiles(app_context, &contact_list);
 
-    Ok(BackendTaskSuccessResult::DashPayContactsWithInfo(
-        contact_list,
-    ))
+    Ok(BackendTaskSuccessResult::DashPayContactsWithInfo {
+        identity: identity_id,
+        contacts: contact_list,
+    })
 }
 
 /// Read the contact list for `identity` entirely from offline state: contact
@@ -511,9 +512,10 @@ pub async fn load_contacts_offline(
         });
     }
 
-    Ok(BackendTaskSuccessResult::DashPayContactsWithInfo(
-        contact_list,
-    ))
+    Ok(BackendTaskSuccessResult::DashPayContactsWithInfo {
+        identity: owner_id,
+        contacts: contact_list,
+    })
 }
 
 /// Write each contact's fetched display profile into the DET contact-profile

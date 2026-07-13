@@ -4,6 +4,7 @@ pub mod contested_name;
 pub mod dashpay;
 pub mod dashpay_derivation;
 pub mod dpns;
+pub mod edition;
 pub mod fee_estimation;
 pub mod grovestark_prover;
 pub mod identity_discovery;

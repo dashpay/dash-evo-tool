@@ -107,6 +107,10 @@ raw-cpuid = "11.5.0"
 [features]
 default = []
 testing = []
+# Masternode-owner edition: a stripped-down build that exposes only the
+# Masternodes screen and Settings. A runtime UX restriction, not a security or
+# binary-size boundary. See docs/ai-design/2026-07-13-masternode-owner-edition/.
+masternode-owner-edition = []
 bench = []
 mcp = ["dep:rmcp", "rmcp/server", "rmcp/macros", "rmcp/transport-streamable-http-server", "dep:axum", "dep:subtle"]
 cli = ["dep:rmcp", "rmcp/server", "rmcp/macros", "rmcp/client", "rmcp/transport-io", "rmcp/transport-streamable-http-client-reqwest", "dep:clap", "dep:clap_complete"]

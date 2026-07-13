@@ -10,7 +10,6 @@ use crate::model::wallet::DerivationPathHelpers;
 use crate::ui::components::MessageBanner;
 use crate::ui::components::component_trait::Component;
 use crate::ui::components::left_panel::add_left_panel;
-use crate::ui::components::password_input::PasswordInput;
 use crate::ui::components::styled::{
     ConfirmationDialog, ConfirmationStatus, StyledCard, StyledCheckbox, island_central_panel,
 };
@@ -63,7 +62,6 @@ pub struct NetworkChooserScreen {
     pub network_contexts: BTreeMap<Network, Arc<AppContext>>,
     /// Shared data directory (same for all networks).
     data_dir: PathBuf,
-    dashmate_password_input: PasswordInput,
     pub current_network: Network,
     pub recheck_time: Option<TimestampMillis>,
     developer_mode: bool,
@@ -96,17 +94,6 @@ impl NetworkChooserScreen {
 
         let data_dir = any_context.data_dir.clone();
 
-        let mut dashmate_password_input = PasswordInput::new()
-            .with_hint_text("Core RPC password")
-            .with_char_limit(40)
-            .with_desired_width(280.0);
-        if let Ok(config) = Config::load_from(&data_dir)
-            && let Some(network_config) = config.config_for_network(current_network)
-        {
-            dashmate_password_input
-                .set_text(network_config.core_rpc_password.clone().unwrap_or_default());
-        }
-
         let current_context = contexts.get(&current_network).unwrap_or(any_context);
         let developer_mode = current_context.is_developer_mode();
 
@@ -117,7 +104,6 @@ impl NetworkChooserScreen {
         Self {
             network_contexts: contexts.clone(),
             data_dir,
-            dashmate_password_input,
             current_network,
             recheck_time: None,
             developer_mode,
@@ -197,7 +183,6 @@ impl NetworkChooserScreen {
 
                         let response = ui.add_enabled_ui(!is_spv_connected, |ui| {
                             network_combo.show_ui(ui, |ui| {
-                                let prev_network = self.current_network;
                                 if ui
                                     .selectable_value(
                                         &mut self.current_network,
@@ -240,17 +225,6 @@ impl NetworkChooserScreen {
                                         .clicked()
                                 {
                                     app_action = AppAction::SwitchNetwork(Network::Regtest);
-                                }
-                                if self.current_network != prev_network {
-                                    let password = Config::load_from(&self.data_dir)
-                                        .ok()
-                                        .and_then(|c| {
-                                            c.config_for_network(self.current_network)
-                                                .as_ref()
-                                                .and_then(|nc| nc.core_rpc_password.clone())
-                                        })
-                                        .unwrap_or_default();
-                                    self.dashmate_password_input.set_text(password);
                                 }
                             });
                         });

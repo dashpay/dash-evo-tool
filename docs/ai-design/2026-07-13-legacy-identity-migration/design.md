@@ -211,7 +211,7 @@ rehydrated on load. None of them need migrating.
 
 | Case | Behaviour | Rationale |
 |---|---|---|
-| **Row already in the k/v store** | Skip, count `skipped_existing`. Check `kv.get::<StoredQualifiedIdentity>(Identity(&id), IDENTITY_KEY).is_some()` **before** inserting. | `insert_local_qualified_identity` is INSERT-OR-REPLACE. Without the pre-check, a retry after a partial failure would overwrite an identity the user has since edited (alias, added key) with the stale legacy blob. Same class of bug as re-queuing a cast vote. |
+| **Row already in the k/v store** | Fetch the modern record and **gap-merge** the legacy blob into it (`QualifiedIdentity::merge_gaps_from`): the modern record's keys, alias, protection state, and wallet link always win; only the keys/associations it lacks are taken from the blob. Re-persist in place (`update_local_qualified_identity`) and count `reconciled` **only if** the merge changed something; otherwise leave it untouched and count `skipped_existing`. | Presence is not proof every key survived. An identity loaded from only its ProTxHash (voting/owner/payout optional) persists a *partial* key map, so a wholesale skip would strand the owner/voting/payout keys still held only in the legacy blob — uncounted, so the sentinel lands and never retries. Merging fills those gaps while the "modern wins, no rewrite when identical" rule still protects a user edit (alias, added key) from being clobbered by the stale legacy copy on a retry. |
 | **Linked wallet failed to migrate / absent** | Import the identity anyway, **preserving `wallet_hash` + `wallet_index` verbatim**. Log at `warn`. | The link is what `load_local_qualified_identities_for_wallet` uses to re-attach the identity when the wallet is later restored or unlocked. Nulling it would orphan the identity permanently. A protected (locked) wallet is the *normal* case here — its seed is in the vault but it is not in `ctx.wallets` until the user unlocks. |
 | **`data IS NULL` or `is_local = 0`** | Skip silently, do not count as failure. | Not user identity data; v0.9.3's own readers ignore these rows. |
 | **`data` fails to decode** | Count `unreadable`, log at `warn` with the identity id, **withhold the sentinel**, publish a terminal warning state. Do **not** fail the pass. | Diverges from the scheduled-vote policy (which writes the sentinel anyway) on purpose: a corrupt vote row is unrecoverable, but an undecodable identity blob may be a *decoder* defect (bincode drift, §4.1) that a later build fixes. Withholding the sentinel keeps the retry door open at the cost of one cheap re-attempt per launch; the skip-if-present rule makes the retry a no-op for everything that already landed. Failing the pass instead would be wrong — it would gate nothing useful and shout at a user who cannot act. |
@@ -273,10 +273,12 @@ Ordered; each is independently reviewable.
 
 - **T-ID-03 — `finish_unwire::migrate_identities`.** Sentinel
   `identities_sentinel_key_for(network)` → `det:migration:identities:<net>:v1`.
-  Pure body `migrate_identities_from_conn(conn, network, is_present, insert) -> Result<IdentityMigrationOutcome, MigrationError>`
+  Pure body `migrate_identities_from_conn(conn, network, wallet_known, get_existing, insert, update) -> Result<IdentityMigrationOutcome, MigrationError>`
   with closure seams (matching `migrate_app_data_from_conn`) so it unit-tests
-  without an `AppContext`. Counters: `imported`, `skipped_existing`,
-  `unreadable`. Sentinel written **iff `unreadable == 0`**.
+  without an `AppContext`. `get_existing` returns the already-stored modern
+  identity (so its gaps can be filled, not just skipped); `update` re-persists a
+  reconciled record in place. Counters: `imported`, `reconciled`,
+  `skipped_existing`, `unreadable`. Sentinel written **iff `unreadable == 0`**.
   *Depends on:* T-ID-01, T-ID-02.
 
 - **T-ID-04 — Wire into `run()`** after `drain_wallets`, before the terminal
@@ -344,9 +346,10 @@ this design consumes — keep it, then add the outcome):
 **Assertions in `second_launch_after_a_v093_upgrade_changes_nothing`:**
 
 9. Edit A's alias post-migration (`ctx.set_identity_alias`), re-run
-   `finish_unwire::run` ⇒ the alias survives. This is the skip-if-present rule
-   (§7) and it must go **RED** against a naive implementation that re-inserts
-   unconditionally.
+   `finish_unwire::run` ⇒ the alias survives. This is the gap-merge reconcile
+   rule (§7): the modern alias always wins and an unchanged record is not
+   re-persisted. It must go **RED** against a naive implementation that
+   re-inserts unconditionally.
 10. Identity count is unchanged; `run()` returns `false`.
 11. The legacy `identity` rows are still in `data.db` (count unchanged).
 

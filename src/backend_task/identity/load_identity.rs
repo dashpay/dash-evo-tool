@@ -39,30 +39,6 @@ use std::sync::{Arc, RwLock};
 type WalletKeyMap = BTreeMap<(PrivateKeyTarget, u32), (QualifiedIdentityPublicKey, PrivateKeyData)>;
 type WalletMatchResult = Option<(WalletSeedHash, u32, WalletKeyMap)>;
 
-/// Merge an already-stored identity's keys and associations into a freshly
-/// built one, preserving anything the new (partial) load did not resupply
-/// (§10.8, the "Add voting key" in-place update). Keys the new load provides
-/// win on collision; keys it omits (e.g. Owner/Payout on a voting-key-only
-/// update) are carried over from `existing` rather than lost. The existing
-/// alias and identity associations are kept only when the new build lacks them.
-fn merge_existing_keys_into(new: &mut QualifiedIdentity, existing: QualifiedIdentity) {
-    for (key, value) in existing.private_keys.private_keys {
-        new.private_keys.private_keys.entry(key).or_insert(value);
-    }
-    if new.alias.is_none() {
-        new.alias = existing.alias;
-    }
-    if new.associated_voter_identity.is_none() {
-        new.associated_voter_identity = existing.associated_voter_identity;
-    }
-    if new.associated_operator_identity.is_none() {
-        new.associated_operator_identity = existing.associated_operator_identity;
-    }
-    if new.associated_owner_key_id.is_none() {
-        new.associated_owner_key_id = existing.associated_owner_key_id;
-    }
-}
-
 impl AppContext {
     pub(super) async fn load_identity(
         &self,
@@ -448,7 +424,7 @@ impl AppContext {
         if load_mode == IdentityLoadMode::MergeIntoExisting
             && let Some(existing) = existing_stored
         {
-            merge_existing_keys_into(&mut qualified_identity, existing);
+            qualified_identity.merge_gaps_from(existing);
         }
 
         // When merging into a Tier-2 node, seal the newly-merged plaintext
@@ -880,7 +856,7 @@ mod tests {
     /// §10.8 — the testable core of the "Add voting key" in-place
     /// update. A voter-key-only rebuild (blank Owner/Payout, so `associated_*`
     /// and the Owner/Payout private keys are absent) MUST NOT erase the
-    /// already-stored Owner and Payout keys: `merge_existing_keys_into` carries
+    /// already-stored Owner and Payout keys: `merge_gaps_from` carries
     /// over every key the new partial build omitted, while the resupplied voting
     /// key wins on collision.
     #[test]
@@ -910,7 +886,7 @@ mod tests {
             (voter_pk, PrivateKeyData::Clear([0xEE; 32])),
         );
 
-        merge_existing_keys_into(&mut new, existing);
+        new.merge_gaps_from(existing);
 
         // Owner and identity-auth keys survive the voter-key-only update.
         assert!(
@@ -1064,7 +1040,7 @@ mod tests {
             .expect("node stored");
 
         // Simulate the merge product: a freshly-supplied resident-plaintext
-        // voting key on a new key id (what `merge_existing_keys_into` yields).
+        // voting key on a new key id (what `merge_gaps_from` yields).
         let pv = PlatformVersion::latest();
         let new_voter = IdentityPublicKey::random_key(9, Some(9), pv);
         let new_voter_id = new_voter.id();

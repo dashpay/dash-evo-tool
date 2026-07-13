@@ -115,9 +115,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   reproduced. Re-establishing the contact from both sides restores full
   functionality.
 
+- **Shielded notes — no per-note detail view**: the Shielded tab no longer lists
+  individual notes (value, block height, spent/unspent status) or a synced-index
+  and note-count summary. Your shielded balance total is still accurate; only the
+  note-level breakdown is unavailable in this release.
+
 ### Removed
 
 - Proof log screen (internal developer tool, not part of the public feature set).
+  Proof-log records now go only to the `tracing` log target — both the persisted
+  history and the in-app viewer are gone; there is no replacement UI to inspect
+  past entries.
 - QR-code wallet import flow for identity funding and top-up screens.
 - The "fund identity directly from a transaction output" option on the identity
   registration and top-up screens (replaced by the single asset-lock funding flow
@@ -135,6 +143,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - The unreachable Dash-Qt launcher and its settings — the executable path, the
   overwrite-config option, and the close-on-exit option. There was no way to launch
   Dash-Qt from the app, so the controls had no effect and have been removed.
+- The Masternode List Diff inspector (Tools), which showed additions, removals, and
+  changes to the masternode list between blocks. No replacement is planned.
+- The "Total Received (DASH)" column on the wallet address table. There is no
+  upstream source for cumulative historical receipts post-migration, so the column
+  cannot be populated.
 
 ### Fixed
 

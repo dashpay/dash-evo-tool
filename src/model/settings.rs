@@ -124,6 +124,7 @@ impl RootScreenType {
             RootScreenType::RootScreenDashPayProfile => 20,
             RootScreenType::RootScreenDashPayPayments => 21,
             RootScreenType::RootScreenDashPayProfileSearch => 22,
+            // 23 used to be the Masternode List Diff screen
             RootScreenType::RootScreenDashpay => 24,
             RootScreenType::RootScreenToolsGroveSTARKScreen => 25,
             RootScreenType::RootScreenToolsAddressBalanceScreen => 26,
@@ -158,6 +159,7 @@ impl RootScreenType {
             20 => Some(RootScreenType::RootScreenDashPayProfile),
             21 => Some(RootScreenType::RootScreenDashPayPayments),
             22 => Some(RootScreenType::RootScreenDashPayProfileSearch),
+            // 23 used to be the Masternode List Diff screen
             24 => Some(RootScreenType::RootScreenDashpay),
             25 => Some(RootScreenType::RootScreenToolsGroveSTARKScreen),
             26 => Some(RootScreenType::RootScreenToolsAddressBalanceScreen),

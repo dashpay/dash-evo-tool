@@ -17,15 +17,17 @@ use crate::backend_task::identity::IdentityTask;
 use crate::context::AppContext;
 use crate::model::contested_name::MasternodeContestSummary;
 use crate::model::qualified_identity::{IdentityStatus, IdentityType, MasternodeKeyPresence};
+use crate::ui::components::global_nav_switcher::GlobalNavEffect;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
-use crate::ui::components::top_panel::add_top_panel_with_global_nav;
+use crate::ui::components::top_panel::add_top_panel_with_global_nav_capturing;
 use crate::ui::identity::identity_pill::shorten_id;
 use crate::ui::identity::picker::compute_column_count;
 use crate::ui::masternodes::card::MasternodeCard;
 use crate::ui::masternodes::detail_screen::{DetailOutcome, MasternodeDetailView};
 use crate::ui::masternodes::load_form::{LoadFormOutcome, MasternodeLoadForm};
-use crate::ui::state::masternodes_view::masternodes_page_nav_spec;
+use crate::ui::state::global_nav::PageNavSpec;
+use crate::ui::state::masternodes_view::{masternodes_page_nav_spec, node_pill_item};
 use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::{RootScreenType, ScreenLike};
 
@@ -232,6 +234,44 @@ impl MasternodesScreen {
         AppAction::None
     }
 
+    /// The node the page currently operates on — the one whose detail view is
+    /// open. The list and load views operate on no single node.
+    fn selected_node_id(&self) -> Option<Identifier> {
+        match &self.view {
+            MasternodesView::Detail(detail) => Some(detail.node_id()),
+            MasternodesView::List | MasternodesView::Load(_) => None,
+        }
+    }
+
+    /// The page's global-nav spec: an interactive wallet pill plus a node pill
+    /// listing every loaded node and showing the one in view. Derived from the
+    /// page's own state each frame, which is what keeps the pill and the card
+    /// grid two-way bound (FR-GLOBAL-NAV-3).
+    fn nav_spec(&self) -> PageNavSpec {
+        let items = self
+            .nodes
+            .iter()
+            .map(|node| {
+                node_pill_item(
+                    node.node_id,
+                    node.alias.as_deref(),
+                    &node.node_id_short,
+                    node.node_type,
+                )
+            })
+            .collect();
+        masternodes_page_nav_spec(items, self.selected_node_id())
+    }
+
+    /// Consume the global-nav effect this page is bound to: a node picked from
+    /// the node pill opens its detail view. Every other effect (segment-1
+    /// navigation, a wallet switch) is already applied by the shared applier.
+    fn apply_nav_effect(&mut self, effect: GlobalNavEffect) {
+        if let GlobalNavEffect::SelectPageObject(node_id) = effect {
+            self.open_detail(node_id);
+        }
+    }
+
     /// Open the detail view for `node_id`. Loads the node's full
     /// `QualifiedIdentity` from the local store; a lookup miss leaves the list
     /// view unchanged.
@@ -405,14 +445,9 @@ impl ScreenLike for MasternodesScreen {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
-        // The Masternodes breadcrumb carries segment-1 + wallet pill only — no
-        // object/identity pill (locked decision #4: masternodes are never
-        // wallet-linked, so a wallet↔object pairing would misrepresent the
-        // relationship). Node selection is driven by card-click → detail and the
-        // `‹ All masternodes` back link; the FR-6 boundary is enforced at the
-        // resolution layer (B1), independent of this breadcrumb.
-        let spec = masternodes_page_nav_spec();
-        let mut action = add_top_panel_with_global_nav(ui, &self.app_context, spec, vec![]);
+        let (mut action, effect) =
+            add_top_panel_with_global_nav_capturing(ui, &self.app_context, self.nav_spec(), vec![]);
+        self.apply_nav_effect(effect);
 
         action |= add_left_panel(ui, &self.app_context, RootScreenType::RootScreenMasternodes);
 
@@ -543,6 +578,79 @@ mod tests {
             ),
             "the contest re-query must be the trailing task",
         );
+
+        ctx.wallet_backend().expect("backend").shutdown().await;
+    }
+
+    /// FR-GLOBAL-NAV-3 — the node pill is two-way bound with the page: opening a
+    /// node (what a card click does) puts it on the pill, and picking a node
+    /// from the pill opens its detail view. The pill lists every loaded node.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn node_pill_is_two_way_bound_with_the_detail_view() {
+        let (ctx, _tmp) = offline_ctx().await;
+        seed_masternode(&ctx, 0x11);
+        seed_masternode(&ctx, 0x22);
+        let mut screen = MasternodesScreen::new(&ctx);
+
+        // On the grid, no node is in view: the pill offers both, selects none.
+        let (scope, consumption) = screen
+            .nav_spec()
+            .identity_pill()
+            .cloned()
+            .expect("node pill");
+        assert!(consumption.is_consumed(), "the node pill is interactive");
+        assert!(scope.is_page_scoped(), "a node is never the app identity");
+        assert_eq!(scope.page_scoped_selection(), None);
+
+        // Grid → pill: opening a node's detail view puts it on the pill.
+        let node = Identifier::from([0x22; 32]);
+        screen.open_detail(node);
+        assert!(matches!(screen.view, MasternodesView::Detail(_)));
+        assert_eq!(
+            screen
+                .nav_spec()
+                .identity_pill()
+                .expect("node pill")
+                .0
+                .page_scoped_selection(),
+            Some(node),
+            "the node in view must show on the pill",
+        );
+
+        // Pill → grid: picking the other node opens that node's detail view.
+        let other = Identifier::from([0x11; 32]);
+        screen.apply_nav_effect(GlobalNavEffect::SelectPageObject(other));
+        let MasternodesView::Detail(detail) = &screen.view else {
+            panic!("picking a node from the pill must open its detail view");
+        };
+        assert_eq!(detail.node_id(), other);
+
+        // A wallet switch is the shared applier's business — it must not move
+        // the page off the node in view.
+        screen.apply_nav_effect(GlobalNavEffect::SwitchWallet([0u8; 32]));
+        assert_eq!(screen.selected_node_id(), Some(other));
+
+        // Leaving the detail view clears the pill's selection.
+        screen.view = MasternodesView::List;
+        assert_eq!(screen.selected_node_id(), None);
+
+        ctx.wallet_backend().expect("backend").shutdown().await;
+    }
+
+    /// A node with no detail view open and no nodes at all both resolve to "no
+    /// selection" — the pill falls back to its placeholder rather than naming a
+    /// node the page is not showing.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn empty_page_offers_no_nodes_on_the_pill() {
+        let (ctx, _tmp) = offline_ctx().await;
+        let screen = MasternodesScreen::new(&ctx);
+
+        let (scope, _) = screen
+            .nav_spec()
+            .identity_pill()
+            .cloned()
+            .expect("node pill");
+        assert_eq!(scope.page_scoped_selection(), None);
 
         ctx.wallet_backend().expect("backend").shutdown().await;
     }

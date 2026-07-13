@@ -18,10 +18,13 @@ use crate::model::wallet::{TransactionStatus, Wallet, WalletSeedHash, WalletTran
 use crate::ui::components::MessageBanner;
 use crate::ui::components::component_trait::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
+use crate::ui::components::global_nav_switcher::GlobalNavEffect;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::password_input::PasswordInput;
 use crate::ui::components::styled::island_central_panel;
-use crate::ui::components::top_panel::{add_top_panel_with_global_nav, subdued_wallet_only_spec};
+use crate::ui::components::top_panel::{
+    add_top_panel_with_global_nav_capturing, interactive_wallet_only_spec,
+};
 use crate::ui::components::wallet_unlock_popup::{WalletUnlockPopup, WalletUnlockResult};
 use crate::ui::helpers::clicked_outside_window;
 use crate::ui::helpers::copy_text_to_clipboard;
@@ -386,6 +389,44 @@ impl WalletsBalancesScreen {
     fn select_hd_wallet(&mut self, wallet: Arc<RwLock<Wallet>>) {
         self.set_selected_hd_wallet(Some(wallet));
         self.persist_selected_single_key_hash(None);
+    }
+
+    /// Select the HD wallet with `seed_hash`, if this network has it. Used to
+    /// mirror a wallet chosen elsewhere — the global-nav pill, or another page —
+    /// into this page's own selection. An unknown hash leaves the selection
+    /// untouched.
+    fn select_hd_wallet_by_hash(&mut self, seed_hash: WalletSeedHash) {
+        let wallet = self
+            .app_context
+            .wallets
+            .read()
+            .ok()
+            .and_then(|wallets| wallets.get(&seed_hash).cloned());
+        if let Some(wallet) = wallet {
+            self.select_hd_wallet(wallet);
+        }
+    }
+
+    /// Consume the global-nav effect this page is bound to: a wallet switched on
+    /// the pill becomes this page's selected wallet (FR-GLOBAL-NAV-2 rule 2).
+    /// The app-global selection itself is already written by the shared applier.
+    fn apply_nav_effect(&mut self, effect: GlobalNavEffect) {
+        if let GlobalNavEffect::SwitchWallet(seed_hash) = effect {
+            self.select_hd_wallet_by_hash(seed_hash);
+        }
+    }
+
+    /// Adopt the app-global wallet selection when it names a different HD wallet
+    /// than this page shows — it was switched from another page's nav pill while
+    /// this screen was away. Leaves a selected single-key wallet alone: that
+    /// choice clears the app-global HD selection, so there is nothing to adopt.
+    fn adopt_app_global_wallet_selection(&mut self) {
+        let Some(seed_hash) = self.app_context.selected_wallet_hash() else {
+            return;
+        };
+        if self.selected_wallet_seed_hash() != Some(seed_hash) {
+            self.select_hd_wallet_by_hash(seed_hash);
+        }
     }
 
     fn select_single_key_wallet(&mut self, wallet: Arc<RwLock<SingleKeyWallet>>) {
@@ -2423,13 +2464,13 @@ impl ScreenLike for WalletsBalancesScreen {
                 DesiredAppAction::Custom("RefreshSKWallet".to_string()),
             ));
         }
-        // TODO: wire wallet selection consumption for the Wallets page.
-        let mut action = add_top_panel_with_global_nav(
+        let (mut action, effect) = add_top_panel_with_global_nav_capturing(
             ui,
             &self.app_context,
-            subdued_wallet_only_spec("Wallets", RootScreenType::RootScreenWalletsBalances),
+            interactive_wallet_only_spec("Wallets", RootScreenType::RootScreenWalletsBalances),
             right_buttons,
         );
+        self.apply_nav_effect(effect);
 
         action |= add_left_panel(
             ui,
@@ -3114,6 +3155,12 @@ impl ScreenLike for WalletsBalancesScreen {
             }
         }
 
+        // A wallet switched on another page's nav pill must be the one this page
+        // shows on arrival — the pill reads the app-global selection every frame,
+        // so a stale in-screen selection would make the two disagree. Runs before
+        // the first-wallet default below, which would otherwise win over it.
+        self.adopt_app_global_wallet_selection();
+
         // If no wallet of either type is selected but wallets exist, select the first HD wallet
         if self.selected_wallet.is_none() && self.selected_single_key_wallet.is_none() {
             let next_hd = self
@@ -3275,5 +3322,120 @@ mod tests {
     fn developer_mode_always_shows_system_tab() {
         let tabs = plan_account_tabs(&[], true, false, true);
         assert!(tabs.contains(&AccountTab::System));
+    }
+
+    /// Build an offline `AppContext` (no network I/O, throwaway data dir).
+    fn offline_ctx() -> (Arc<AppContext>, tempfile::TempDir) {
+        use crate::app_dir::ensure_env_file;
+        use crate::context::connection_status::ConnectionStatus;
+        use crate::database::test_helpers::create_database_at_path;
+        use crate::utils::tasks::TaskManager;
+        use dash_sdk::dpp::dashcore::Network;
+
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = temp_dir.path().to_path_buf();
+        ensure_env_file(&data_dir);
+        let db = Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
+        let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
+        let secret_store = AppContext::open_secret_store(&data_dir).expect("secret store");
+        let ctx = AppContext::new(
+            data_dir,
+            Network::Testnet,
+            db,
+            Arc::new(TaskManager::new()),
+            Arc::new(ConnectionStatus::new()),
+            egui::Context::default(),
+            app_kv,
+            secret_store,
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        )
+        .expect("offline testnet AppContext::new");
+        (ctx, temp_dir)
+    }
+
+    /// Register an HD wallet derived from a distinct seed, returning its hash.
+    fn seed_hd_wallet(ctx: &Arc<AppContext>, seed_byte: u8) -> WalletSeedHash {
+        let wallet =
+            Wallet::new_from_seed([seed_byte; 64], ctx.network(), None, None).expect("wallet");
+        let seed_hash = wallet.seed_hash();
+        ctx.wallets
+            .write()
+            .expect("wallets")
+            .insert(seed_hash, Arc::new(RwLock::new(wallet)));
+        seed_hash
+    }
+
+    /// FR-GLOBAL-NAV-2 rule 2 — the Wallets page is two-way bound with the nav
+    /// wallet pill. Switching on the pill selects that wallet on the page; the
+    /// page's own selection is what the pill reads back (the app-global hash).
+    /// An unknown wallet leaves the selection untouched.
+    #[test]
+    fn wallet_pill_switch_selects_that_wallet_on_the_page() {
+        let (ctx, _tmp) = offline_ctx();
+        let first = seed_hd_wallet(&ctx, 0xAA);
+        let second = seed_hd_wallet(&ctx, 0xBB);
+        let mut screen = WalletsBalancesScreen::new(&ctx);
+
+        screen.select_hd_wallet_by_hash(first);
+        assert_eq!(screen.selected_wallet_seed_hash(), Some(first));
+
+        // Pill → page.
+        screen.apply_nav_effect(GlobalNavEffect::SwitchWallet(second));
+        assert_eq!(screen.selected_wallet_seed_hash(), Some(second));
+        // Page → pill: the pill renders from the app-global hash every frame.
+        assert_eq!(ctx.selected_wallet_hash(), Some(second));
+
+        // A wallet this network does not have changes nothing.
+        screen.apply_nav_effect(GlobalNavEffect::SwitchWallet([0xEE; 32]));
+        assert_eq!(screen.selected_wallet_seed_hash(), Some(second));
+    }
+
+    /// A wallet switched from another page's nav pill while this screen was away
+    /// is adopted on arrival — otherwise the pill and the page would disagree.
+    #[test]
+    fn arriving_adopts_a_wallet_switched_elsewhere() {
+        let (ctx, _tmp) = offline_ctx();
+        let first = seed_hd_wallet(&ctx, 0xAA);
+        let second = seed_hd_wallet(&ctx, 0xBB);
+        let mut screen = WalletsBalancesScreen::new(&ctx);
+        screen.select_hd_wallet_by_hash(first);
+
+        // Another page's pill switches the app-global wallet.
+        ctx.set_selected_hd_wallet(Some(second));
+        screen.refresh_on_arrival();
+
+        assert_eq!(screen.selected_wallet_seed_hash(), Some(second));
+    }
+
+    /// Arriving with nothing selected must honour the app-global wallet, not the
+    /// first-wallet default — the default would otherwise silently overrule a
+    /// wallet the user picked from the nav pill on another page.
+    #[test]
+    fn arriving_with_no_selection_honours_the_app_global_wallet() {
+        let (ctx, _tmp) = offline_ctx();
+        // Built before any wallet exists → the screen starts with no selection.
+        let mut screen = WalletsBalancesScreen::new(&ctx);
+        seed_hd_wallet(&ctx, 0xAA);
+        seed_hd_wallet(&ctx, 0xBB);
+
+        // Target the wallet the first-wallet default would NOT pick.
+        let hashes: Vec<WalletSeedHash> = ctx
+            .wallets
+            .read()
+            .expect("wallets")
+            .keys()
+            .copied()
+            .collect();
+        let default_pick = hashes.first().copied().expect("a wallet");
+        let target = hashes.last().copied().expect("a wallet");
+        assert_ne!(
+            default_pick, target,
+            "the two wallets must be distinguishable"
+        );
+
+        ctx.set_selected_hd_wallet(Some(target));
+        screen.refresh_on_arrival();
+
+        assert_eq!(screen.selected_wallet_seed_hash(), Some(target));
     }
 }

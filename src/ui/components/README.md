@@ -23,7 +23,7 @@ Concise catalog of all reusable UI components. Consult before creating new UI el
 | Component | File | DomainType | Description |
 |-----------|------|------------|-------------|
 | `BreadcrumbPill` | `breadcrumb_pill.rs` | `String` | Label + optional icon + chevron. Three modes: Interactive / Subdued / Placeholder. Reusable anywhere a breadcrumb pill is needed (Identities hub breadcrumb, future wallet breadcrumbs). |
-| `global_nav_switcher::render()` | `global_nav_switcher.rs` | `GlobalNavEffect` | Page-aware three-segment switcher (`segment-1 › 💼 wallet › 👤 identity/object`) via `top_panel::add_top_panel_with_global_nav` / the Hub's own `breadcrumb_switcher` shim. Live on Identities, DashPay, DPNS, Wallets, Identity Hub, and Masternodes — interactive on Hub/Masternodes, subdued (read-only) on the other four; remaining root screens (Contracts, Tokens, Tools, Network Chooser, Withdraws, …) still render the plain breadcrumb (FR-GLOBAL-NAV rollout in progress). Composes per page from a `PageNavSpec` (`ui/state/global_nav.rs`) and reuses `BreadcrumbPill`/`IdentityPill`. |
+| `global_nav_switcher::render()` | `global_nav_switcher.rs` | `GlobalNavEffect` | Page-aware three-segment switcher (`segment-1 › 💼 wallet › 👤 identity/object`) via `top_panel::add_top_panel_with_global_nav[_capturing]` / the Hub's own `breadcrumb_switcher` shim. Live on Identities, DashPay, DPNS, Wallets, Identity Hub, and Masternodes — interactive on Hub, Wallets and Masternodes (Masternodes also carries a page-scoped node pill), subdued (read-only) on Identities, DashPay and DPNS; remaining root screens (Contracts, Tokens, Tools, Network Chooser, Withdraws, …) still render the plain breadcrumb (FR-GLOBAL-NAV rollout in progress). Composes per page from a `PageNavSpec` (`ui/state/global_nav.rs`) and reuses `BreadcrumbPill`/`IdentityPill`. |
 
 ## Display Components
 
@@ -77,7 +77,8 @@ directory.
 |-----------------|------|-------------|
 | `island_central_panel()` | `styled.rs` | Responsive central panel, renders global MessageBanners |
 | `add_location_view()` | `top_panel.rs` | Breadcrumb navigation + connection status |
-| `add_top_panel_with_global_nav()` | `top_panel.rs` | Top panel wired to `global_nav_switcher::render()` with subdued pills (`subdued_everyday_spec` / `subdued_wallet_only_spec`); used by Identities, DashPay, DPNS, and Wallets. Masternodes uses the identity-aware capturing variant with interactive pills instead. Every other root screen still calls the plain `add_top_panel()` |
+| `add_top_panel_with_global_nav()` | `top_panel.rs` | Top panel wired to `global_nav_switcher::render()` for a page that only *reads* the selection — subdued pills (`subdued_everyday_spec` / `subdued_wallet_only_spec`); used by Identities, DashPay and DPNS. Every root screen not listed here still calls the plain `add_top_panel()` |
+| `add_top_panel_with_global_nav_capturing()` | `top_panel.rs` | Same, but returns the `GlobalNavEffect` so a page that *consumes* a selection can mirror it into its own state (two-way binding). Used by Wallets (`interactive_wallet_only_spec` → mirrors `SwitchWallet`) and Masternodes (`masternodes_page_nav_spec` → mirrors `SelectPageObject` by opening that node) |
 | `add_left_panel()` | `left_panel.rs` | Main icon navigation sidebar |
 | `load_icon()` / `load_svg_icon()` | `icons.rs` | Load & cache embedded raster/SVG icons from `icons/` |
 | Subscreen panels | `*_subscreen_chooser_panel.rs` | Tab navigation for DPNS, DashPay, Tokens, Tools |

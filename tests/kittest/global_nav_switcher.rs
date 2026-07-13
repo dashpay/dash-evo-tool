@@ -9,7 +9,9 @@ use dash_evo_tool::app::AppAction;
 use dash_evo_tool::ui::RootScreenType;
 use dash_evo_tool::ui::components::global_nav_switcher::{self, GlobalNavEffect};
 use dash_evo_tool::ui::components::top_panel::apply_global_nav_effect;
-use dash_evo_tool::ui::state::global_nav::{IdentityPillScope, PageNavSpec, PillConsumption};
+use dash_evo_tool::ui::state::global_nav::{
+    IdentityPillScope, PageNavSpec, PageObjectItem, PillConsumption,
+};
 use dash_evo_tool::ui::state::hub_selection::HubSelection;
 use dash_sdk::platform::Identifier;
 use egui_kittest::Harness;
@@ -59,6 +61,7 @@ fn page_scoped_pill_renders_placeholder_when_empty() {
                         .with_identity_pill(
                             IdentityPillScope::page_scoped_object(
                                 "(no masternode yet)",
+                                "Switch between your loaded masternodes and evonodes.",
                                 vec![],
                                 None,
                             ),
@@ -73,6 +76,57 @@ fn page_scoped_pill_renders_placeholder_when_empty() {
                 .query_by_label_contains("(no masternode yet)")
                 .is_some(),
             "the page-scoped pill must show its placeholder when empty"
+        );
+    });
+}
+
+/// TC-NAV-04 — the interactive page-scoped pill names the object in view, not
+/// its placeholder, and offers the page's objects.
+#[test]
+fn page_scoped_pill_names_the_selected_object() {
+    with_isolated_data_dir(|| {
+        let (_rt, app_context) = fresh_app_context();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(900.0, 200.0))
+            .build_ui(move |ui| {
+                let mut selection = HubSelection::default();
+                let items = vec![
+                    PageObjectItem {
+                        id: Identifier::new([1; 32]),
+                        label: "mn-east-01".to_string(),
+                        icon: Some("🖥".to_string()),
+                    },
+                    PageObjectItem {
+                        id: Identifier::new([2; 32]),
+                        label: "evo-west-02".to_string(),
+                        icon: Some("◆".to_string()),
+                    },
+                ];
+                let spec =
+                    PageNavSpec::new("Masternodes", RootScreenType::RootScreenWalletsBalances)
+                        .with_wallet_pill(PillConsumption::Consumed)
+                        .with_identity_pill(
+                            IdentityPillScope::page_scoped_object(
+                                "(choose a masternode)",
+                                "Switch between your loaded masternodes and evonodes.",
+                                items,
+                                Some(Identifier::new([2; 32])),
+                            ),
+                            PillConsumption::Consumed,
+                        );
+                global_nav_switcher::render(ui, &app_context, &spec, &mut selection);
+            });
+        harness.run();
+
+        assert!(
+            harness.query_by_label_contains("evo-west-02").is_some(),
+            "the pill must name the object in view"
+        );
+        assert!(
+            harness
+                .query_by_label_contains("(choose a masternode)")
+                .is_none(),
+            "a resolved selection must replace the placeholder"
         );
     });
 }

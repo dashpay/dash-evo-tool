@@ -30,6 +30,11 @@ pub enum MigrationTask {
     /// completion sentinel exists in `det-app.sqlite`, subsequent calls
     /// return `Success` immediately without touching the legacy file.
     FinishUnwire,
+    /// Retire the "some scheduled votes could not be read" warning for the
+    /// active network. The warning is re-raised on every launch until the user
+    /// acknowledges it, so this is the one gesture that stops it — the legacy
+    /// vote rows themselves are never touched.
+    AcknowledgeUnreadableVotes,
 }
 
 impl AppContext {
@@ -67,6 +72,10 @@ impl AppContext {
                     Err(task_error)
                 }
             },
+            MigrationTask::AcknowledgeUnreadableVotes => {
+                finish_unwire::acknowledge_unreadable_votes(self)?;
+                Ok(BackendTaskSuccessResult::Refresh)
+            }
         }
     }
 }

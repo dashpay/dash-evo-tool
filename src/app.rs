@@ -57,6 +57,12 @@ use tokio::sync::mpsc as tokiompsc;
 /// risking a typo collision. Exposed for kittest coverage.
 pub const MIGRATION_RETRY_ACTION_ID: &str = "migration:retry:finish_unwire";
 
+/// Banner action id pushed when the user acknowledges the unreadable-vote
+/// warning. Until it fires, the warning is re-raised on every launch — a
+/// dismissed banner is not an acknowledgement, because the vote it names may
+/// still have a live deadline. Exposed for kittest coverage.
+pub const MIGRATION_VOTES_ACK_ACTION_ID: &str = "migration:ack:unreadable_votes";
+
 /// Action id for the SPV-sync block's "Continue in the background" escape button.
 /// SPV sync is **unbounded** — with no peers it stays Connecting/Syncing forever
 /// with no terminal signal — so a button-less hard block would trap the user

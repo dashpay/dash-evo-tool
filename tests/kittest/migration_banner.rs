@@ -6,7 +6,8 @@
 //! needing a full `AppState` harness.
 
 use dash_evo_tool::app::{
-    MIGRATION_RETRY_ACTION_ID, migration_running_text, migration_unreadable_votes_text,
+    MIGRATION_RETRY_ACTION_ID, MIGRATION_VOTES_ACK_ACTION_ID, migration_running_text,
+    migration_unreadable_votes_text,
 };
 use dash_evo_tool::context::migration_status::MigrationStep;
 use dash_evo_tool::ui::MessageType;
@@ -182,5 +183,32 @@ fn unreadable_votes_banner_warns_without_a_retry_action() {
     assert!(
         harness.query_by_label("Retry now").is_none(),
         "a completed drain must not offer a retry the user cannot benefit from",
+    );
+}
+
+/// Fix-8 — the warning carries an explicit acknowledgement, and clicking it
+/// enqueues the ack action id. The app loop drains that id and clears the
+/// durable warning record; until then the banner returns on every launch, so a
+/// vote whose deadline still matters cannot lose its only notice to a stray
+/// dismissal.
+#[test]
+fn unreadable_votes_banner_acknowledgement_enqueues_action() {
+    let text = migration_unreadable_votes_text(2);
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(600.0, 220.0))
+        .build_ui(move |ui| {
+            let handle = MessageBanner::set_global(ui.ctx(), text.clone(), MessageType::Warning);
+            handle.with_action("Got it", MIGRATION_VOTES_ACK_ACTION_ID);
+            MessageBanner::show_global(ui);
+        });
+    harness.run();
+    assert!(MessageBanner::take_action(&harness.ctx).is_none());
+
+    harness.get_by_label("Got it").click();
+    harness.run();
+
+    assert_eq!(
+        MessageBanner::take_action(&harness.ctx).as_deref(),
+        Some(MIGRATION_VOTES_ACK_ACTION_ID),
     );
 }

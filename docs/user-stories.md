@@ -262,6 +262,31 @@ As a user, I want the app to tell me when a wallet's totals don't add up after s
 - The banner is not repeated on every later sync while the same difference persists, and it clears on its own once the totals agree again.
 - The check runs for all loaded wallets, not just the one currently on screen.
 
+### WAL-028: View and copy my shielded receive address [Gap]
+**Persona:** Jordan
+
+As a developer, I want to view and copy my own shielded receive address (and generate additional diversified addresses) so that I can give it to another party to receive a private transfer.
+
+- The Shielded tab shows the wallet's default shielded address once the wallet is unlocked and synced.
+- A copy-to-clipboard control is available, and additional diversified addresses can be generated on demand.
+- Currently a gap: the Shielded tab renders only a placeholder ("Shielded address available after wallet unlock and sync"); the underlying `WalletBackend::shielded_default_address` read is async-only and not surfaced synchronously to the UI, so no address, copy control, or diversified-address generator is shown.
+
+### WAL-029: Inspect shielded note details [Gap]
+**Persona:** Jordan
+
+As a developer, I want to see the individual notes in my shielded pool — their value, block height, and spent/unspent status — so that I can verify and diagnose my shielded balance.
+
+- The Shielded tab lists each note with value, block height, and spent/unspent state, plus a synced-index and note-count summary.
+- Currently a gap: the Shielded Notes section renders only a placeholder ("Note history is managed by the upstream platform-wallet coordinator and will be surfaced here in a future update") — no per-note table, status, or count is shown.
+
+### WAL-030: Refresh a single-key wallet's balance and UTXOs [Gap]
+**Persona:** Priya, Jordan
+
+As a user with an imported single-key wallet, I want to refresh its balance and UTXO list so that I can see funds that arrived at the imported address.
+
+- A refresh action updates the single-key wallet's balance and UTXO set from the chain.
+- Currently a gap (Decision #7): `RefreshSingleKeyWalletInfo` returns a "not supported in this version" result; single-key balance/UTXO refresh is re-enabled when single-key moves onto the upstream wallet runtime that provides UTXO discovery. Key data and receive still work.
+
 ---
 
 ## Send and Receive (SND)
@@ -386,6 +411,24 @@ As a user, I want a "Max" button on a Core-to-Core send that fills in the larges
 - "Max" sets the amount to the wallet balance minus the estimated network fee, so the send leaves enough to pay the fee and succeeds.
 - The fee reserved is shown next to the amount.
 - When the balance is too low to cover the fee, "Max" produces no amount and a calm message explains why — never an error path.
+
+### SND-015: Unshield credits to a Platform address [Implemented]
+**Persona:** Jordan
+
+As a developer, I want to move credits out of the shielded pool to one of my Platform addresses so that I can use them for ordinary Platform operations.
+
+- Select Shielded Pool as source and enter a Platform address as destination.
+- Reachable from the Shielded tab's "Unshield" button, which opens the unified Send screen preset for this flow.
+- The shielded balance decreases and the Platform address balance increases after the operation completes.
+
+### SND-016: Send privately within the shielded pool [Implemented]
+**Persona:** Jordan
+
+As a developer, I want to transfer credits privately from my shielded pool to another shielded address so that the transfer amount and parties are not exposed on Platform.
+
+- Select Shielded Pool as source and enter a shielded address as destination.
+- Reachable from the Shielded tab's "Send (Private)" button, which opens the unified Send screen preset for this flow.
+- Spending is paused until the shielded balance is verified, and the button is disabled with a clear reason while verification is in progress.
 
 ---
 
@@ -619,6 +662,22 @@ As a masternode operator, I want to schedule votes for later execution so that I
 As a masternode operator, I want to apply voting choices across multiple contests in bulk so that I do not have to vote on each contest individually.
 
 - "Set all" option for batch vote assignment.
+
+### DPN-008: Set an alias for an owned username [Implemented]
+**Persona:** Alex, Priya
+
+As a user, I want to assign a friendly alias to an identity behind a username I own so that I can recognise it more easily in lists.
+
+- Alias set from the "My usernames" table.
+- Alias persists and is applied to the underlying identity.
+
+### DPN-009: Scheduled votes preserved across an app upgrade [Gap]
+**Persona:** Priya
+
+As a masternode operator, I want my previously scheduled DPNS votes to survive an app upgrade so that I do not miss a contest's vote window after updating.
+
+- Scheduled votes stored before the upgrade remain visible and executable afterward.
+- Note (PROJ-034): not migrated — legacy scheduled votes start empty after the platform-wallet upgrade, risking missed vote windows for masternode voters.
 
 ---
 
@@ -1138,6 +1197,56 @@ As an everyday user, I want to install and use Dash Evo Tool without having to r
 - The user sees sync progress and status clearly; the default everyday-user UI avoids mentions of SPV, RPC, or nodes.
 - Technical/protocol terminology may appear in Expert mode or advanced settings, where Dash Core RPC remains available as an opt-in for users who do run a local node.
 
+### NET-016: Refresh Platform (DAPI) node list [Implemented]
+**Persona:** Priya, Jordan
+
+As a user, I want to fetch a fresh list of Platform (DAPI) node addresses from Dash Core Group's directory so that I can recover connectivity when my configured nodes are stale or unreachable.
+
+- "Refresh DAPI endpoints" action available on Mainnet and Testnet.
+- Confirmation prompt before replacing an existing configured address set.
+- New addresses are persisted to config and the SDK reinitialized without an app restart.
+
+### NET-017: View live connection status (indicator and Platform endpoints) [Implemented]
+**Persona:** Alex, Priya, Jordan
+
+As a user, I want a clear connection indicator and status rows so that I know at a glance whether the app is connected, syncing, or errored.
+
+- Top-panel five-state indicator (synced, connecting, syncing, error, disconnected) with a hover tooltip.
+- Settings screen shows Platform (DAPI) availability with jargon-free labels; raw sync errors are offered only on hover. (SPV sync detail is covered by WAL-013.)
+
+### NET-018: Auto-start SPV sync on startup [Implemented]
+**Persona:** Priya, Jordan
+
+As an expert user, I want the app to automatically begin SPV sync when it opens so that my wallet is ready without pressing Connect each launch.
+
+- Expert-mode toggle "Auto-start SPV on startup", persisted across launches.
+- When enabled, sync begins automatically on app launch.
+
+### NET-019: Clear all local data for a network [Implemented]
+**Persona:** Jordan, Priya
+
+As a user, I want to permanently delete all local data for the current network — wallets, tokens, contacts, and cached identity data — so that I can reset the app to a clean state.
+
+- Danger-mode confirmation dialog before deletion; the action cannot be undone.
+- Available for the currently selected network, including Mainnet.
+- Distinct from NET-011 (Wipe Platform data), which clears only cached Platform state on Devnet/Testnet.
+
+### NET-020: Clear cached SPV data to force a resync [Implemented]
+**Persona:** Priya, Jordan
+
+As an expert user, I want to clear the cached SPV headers and filter data for a network so that the next connection performs a full resync when local chain state is corrupt or stale.
+
+- Expert-mode "Clear SPV Data" action with confirmation; disabled while SPV is active.
+- The next connection triggers a full resync.
+
+### NET-021: App settings preserved across an app upgrade [Gap]
+**Persona:** Alex, Priya, Jordan
+
+As a user, I want my saved settings — selected network, theme, onboarding state, and paths — to survive an app upgrade so that I do not silently relaunch into the wrong network or a reset configuration.
+
+- Settings stored before the upgrade remain applied afterward.
+- Note (PROJ-034): not migrated — existing users get default AppSettings on first launch after the platform-wallet upgrade (network resets to Mainnet; theme, onboarding, and paths reset); no importer exists (`db.get_settings` has zero callers). Scheduled-vote loss is tracked separately in DPN-009.
+
 ---
 
 ## Programmatic Access (MCP)
@@ -1216,6 +1325,14 @@ As any user, I want the same wallet/identity switcher on every page, so that I c
 - The third segment is page-scoped: the app-global User identity on everyday-user pages (Dashpay, Identities, Identity Hub), or the masternode/evonode in view on the Masternodes tab. Picking a masternode there never changes the identity shown on the everyday-user pages (see MN-005's Identity Hub filter).
 - On a page that does not yet consume a given pill, that pill renders dimmed with no caret; a hover tooltip explains how to change the selection elsewhere.
 - A page with no identity/object context (e.g. a Wallet page) shows only the wallet pill.
+
+### UX-004: One-time post-migration disclosure notice [Gap]
+**Persona:** Alex, Priya, Jordan
+
+As an existing user upgrading into the platform-wallet version, I want a one-time in-app notice explaining what changed — notably that direct funding from a scanned external payment (QR) was removed — so that I understand why a workflow I relied on is gone.
+
+- A one-time notice appears on first launch after the migration, disclosing the removed QR-direct-fund path (referenced by NET-008 and IDN-014).
+- Note (DOC-003): not shipped — only a generic "Storage update complete — your wallet is ready." banner appears (`src/app/reconcilers.rs:472`); the promised disclosure notice was deferred and never landed.
 
 ## Identities Hub (IDH)
 
@@ -1357,3 +1474,19 @@ As a masternode operator, I want the Masternodes tab to reset to a clean state w
 - Switching networks while the Masternodes tab is on the List view (including with a filled-but-unsubmitted Load form) returns to the empty List view for the newly active network — no leftover ProTxHash/alias/key input from the previous network's form.
 - Error and status banners raised on the previous network (e.g. a failed load, a disconnect notice) are cleared by the switch rather than lingering over the new network's view.
 - Verified by manual walkthrough switching Testnet → Mainnet → Testnet from a dirty Load form; each switch landed cleanly on the empty List with no stale data or banners.
+
+### MN-011: Refresh masternode and voting state [Implemented]
+**Persona:** Priya
+
+As a masternode operator, I want a Refresh control on the Masternodes tab, so that I can pull the latest identity and DPNS-contest state without leaving the page.
+
+- The card-list toolbar and a node's detail view each expose a Refresh action that re-reads the local cache immediately and dispatches a network re-fetch — one identity refresh per loaded node (or the single open node on the detail view) plus a DPNS-contest re-query so vote counts update too.
+- Refresh is a no-op when no node is loaded, and the detail-view re-query is skipped for a node that has no voter identity.
+
+### MN-012: Switch wallet/identity from the Masternodes header [Gap]
+**Persona:** Priya
+
+As a masternode operator, I want the same page-scoped switcher on the Masternodes header as on other tabs, so that I can see and change the active wallet and the node in view without leaving the page.
+
+- The Masternodes header renders the page-aware breadcrumb with an interactive wallet pill (the funding source for Top Up), which two-way binds with the page's wallet context.
+- **Gap:** the page-scoped masternode object pill (an interactive `Ⓜ node ▾` dropdown, two-way bound with the card grid and detail view) required by the global-nav design is not built — only the wallet pill is present. Node selection currently works via card-click → detail and the "‹ All masternodes" back link. This is a deferred slice of the cross-cutting global-navigation app-shell work, tracked separately from the Masternodes page.

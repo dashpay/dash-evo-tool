@@ -879,6 +879,25 @@ impl WalletBackend {
         kv_contains(&self.kv(), owner, KV_PREFIX_REJECTED, counterparty_id)
     }
 
+    /// Clear `owner`'s rejection marker for `counterparty_id`. Idempotent —
+    /// clearing an absent marker is `Ok(())`.
+    ///
+    /// Sending a contact request to someone is an explicit re-engagement, so it
+    /// retires an earlier decline or withdrawal. Without this, a request the
+    /// user once declined would stay filtered out of their list forever, even
+    /// after they deliberately added that person again.
+    pub fn dashpay_unmark_rejected(
+        &self,
+        owner: &Identifier,
+        counterparty_id: &Identifier,
+    ) -> Result<(), TaskError> {
+        let owner_buf = owner.to_buffer();
+        let key = sidecar_key(KV_PREFIX_REJECTED, counterparty_id);
+        self.kv()
+            .delete(DetScope::Identity(&owner_buf), &key)
+            .map_err(|e| TaskError::DashpaySidecarStorage { source: e })
+    }
+
     /// Write DET-local `(created_at_ms, updated_at_ms)` timestamps for an
     /// entity (contact, request, profile owner) into the k/v sidecar. These
     /// timestamps surface verbatim through the [`DashpayView`] adapter.

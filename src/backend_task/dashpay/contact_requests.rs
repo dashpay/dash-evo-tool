@@ -599,16 +599,28 @@ pub async fn send_contact_request_with_proof(
         core_height_created_at,
         created_at_ts,
     );
-    if let Ok(backend) = app_context.wallet_backend()
-        && let Err(err) = backend
+    if let Ok(backend) = app_context.wallet_backend() {
+        if let Err(err) = backend
             .record_sent_contact_request(&seed_hash, &owner_id, contact_record)
             .await
-    {
-        tracing::warn!(
-            %err,
-            "record_sent_contact_request failed; contact was sent but \
-             local wallet-manager state not updated",
-        );
+        {
+            tracing::warn!(
+                %err,
+                "record_sent_contact_request failed; contact was sent but \
+                 local wallet-manager state not updated",
+            );
+        }
+
+        // Sending to someone retires an earlier decline or withdrawal of theirs:
+        // the user has deliberately re-engaged, so their requests must stop being
+        // filtered out of the list.
+        if let Err(err) = backend.dashpay_unmark_rejected(&owner_id, &to_identity_id) {
+            tracing::debug!(
+                %err,
+                "Clearing the stale rejection marker failed; an earlier declined \
+                 request from this person may stay hidden until the next decline is cleared",
+            );
+        }
     }
 
     Ok(BackendTaskSuccessResult::DashPayContactRequestSent(

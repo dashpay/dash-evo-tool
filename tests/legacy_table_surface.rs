@@ -70,6 +70,12 @@ const ALLOW_LIST: &[&str] = &[
     "src/backend_task/migration/mod.rs",
     // Test-only helper modules colocated with prod code.
     "src/database/contract.rs",
+    // v0.9.3 -> v1.0 upgrade-path lock test: asserts the legacy `wallet`
+    // row count survives migration by reading it directly from a scratch
+    // fixture database. A test-only fixture-verification read, the sibling
+    // of `wallet_lifecycle/tests.rs`'s exemption above — never a cold-boot
+    // read.
+    "src/backend_task/migration/v093_upgrade.rs",
 ];
 
 fn allow_list() -> BTreeSet<PathBuf> {

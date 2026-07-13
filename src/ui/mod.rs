@@ -214,9 +214,10 @@ pub enum ScreenType {
     DashPayContactDetails(QualifiedIdentity, Identifier),
     DashPayContactProfileViewer(QualifiedIdentity, Identifier),
     /// Reached from the Identity Hub, the contacts list, contact details and the
-    /// profile viewer — all four ungated. TODO: classify these entry points
-    /// explicitly when the `UserRole`/`FeatureGate` rework (#879) lands, so a
-    /// rebase cannot silently default them open or closed.
+    /// profile viewer. All four entry points are gated on
+    /// [`FeatureGate::DashPayOperations`](crate::context::feature_gate::FeatureGate::DashPayOperations)
+    /// — paying a contact is an experimental DashPay operation, so no route to
+    /// this screen may open without it.
     DashPaySendPayment(QualifiedIdentity, Identifier),
     DashPayQRGenerator,
     DashPayProfileSearch,

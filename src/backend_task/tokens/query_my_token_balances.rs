@@ -149,7 +149,6 @@ mod tests {
     use dash_sdk::dpp::data_contract::associated_token::token_configuration::TokenConfiguration;
     use dash_sdk::dpp::data_contract::associated_token::token_configuration::v0::TokenConfigurationV0;
     use std::sync::Arc;
-    use std::sync::atomic::AtomicBool;
     use tokio::sync::mpsc::Receiver;
 
     /// Offline, wired context — real k/v store and wallet backend, no network.
@@ -177,7 +176,7 @@ mod tests {
             egui::Context::default(),
             app_kv,
             secret_store,
-            Arc::new(AtomicBool::new(false)),
+            crate::model::user_role::UserRoleCell::default(),
         )
         .expect("offline testnet AppContext");
 

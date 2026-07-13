@@ -5,6 +5,7 @@ use crate::support::{mount_app, with_isolated_data_dir};
 use dash_evo_tool::context::AppContext;
 use dash_evo_tool::model::qualified_identity::encrypted_key_storage::KeyStorage;
 use dash_evo_tool::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
+use dash_evo_tool::model::user_role::UserRole;
 use dash_evo_tool::ui::{RootScreenType, ScreenLike};
 use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -133,30 +134,30 @@ fn seed_node_with_voter_key(app_context: &Arc<AppContext>, byte: u8, alias: &str
         .expect("seed node-with-voter-key insert");
 }
 
-/// TC-FR1-01…04 — the Masternodes nav entry is absent when Expert Mode is off
-/// and present when it is on. Toggling `enable_developer_mode` flips the gate;
-/// the nav rail re-evaluates the per-entry `FeatureGate::DeveloperMode` skip
-/// each frame. Counted with `query_all_by_label` because the nav button exposes
-/// both a Button and an inner Label node for the same text.
+/// TC-FR1-01…04 — the Masternodes nav entry is absent below the Power role and
+/// present at Power or above. Raising the role flips the gate; the nav rail
+/// re-evaluates the per-entry `FeatureGate::Masternodes` skip each frame.
+/// Counted with `query_all_by_label` because the nav button exposes both a
+/// Button and an inner Label node for the same text.
 #[test]
 fn nav_gated_by_expert_mode() {
     with_isolated_data_dir(|| {
         let mut harness = mount_app(RootScreenType::RootScreenIdentities);
         let app_context = harness.state().current_app_context().clone();
 
-        app_context.enable_developer_mode(false);
+        app_context.set_user_role(UserRole::Everyday);
         harness.run_steps(3);
         assert_eq!(
             harness.query_all_by_label("Masternodes").count(),
             0,
-            "the Masternodes nav entry must be absent when Expert Mode is off"
+            "the Masternodes nav entry must be absent below the Power role"
         );
 
-        app_context.enable_developer_mode(true);
+        app_context.set_user_role(UserRole::Power);
         harness.run_steps(3);
         assert!(
             harness.query_all_by_label("Masternodes").count() >= 1,
-            "the Masternodes nav entry must appear when Expert Mode is on"
+            "the Masternodes nav entry must appear at the Power role"
         );
     });
 }
@@ -175,18 +176,18 @@ fn de_gating_falls_back_to_identities() {
         let mut harness = mount_app(RootScreenType::RootScreenIdentities);
         let app_context = harness.state().current_app_context().clone();
 
-        // Expert Mode on, select the Masternodes tab — it stays selected.
-        app_context.enable_developer_mode(true);
+        // Power role on, select the Masternodes tab — it stays selected.
+        app_context.set_user_role(UserRole::Power);
         harness.state_mut().selected_main_screen = RootScreenType::RootScreenMasternodes;
         harness.run_steps(3);
         assert_eq!(
             harness.state().selected_main_screen,
             RootScreenType::RootScreenMasternodes,
-            "the Masternodes tab stays active while Expert Mode is on"
+            "the Masternodes tab stays active at the Power role"
         );
 
-        // Flip Expert Mode off — the active tab must fall back to Identities.
-        app_context.enable_developer_mode(false);
+        // Drop below Power — the active tab must fall back to Identities.
+        app_context.set_user_role(UserRole::Everyday);
         harness.run_steps(3);
         assert_eq!(
             harness.state().selected_main_screen,
@@ -196,14 +197,14 @@ fn de_gating_falls_back_to_identities() {
     });
 }
 
-/// Enable Expert Mode, activate the Masternodes tab, and reload its cached list
-/// (the direct field-set bypasses `set_main_screen`, so drive the screen's
+/// Raise to the Power role, activate the Masternodes tab, and reload its cached
+/// list (the direct field-set bypasses `set_main_screen`, so drive the screen's
 /// arrival refresh explicitly — the same call `set_main_screen` makes).
 fn activate_masternodes_tab(
     harness: &mut egui_kittest::Harness<'static, dash_evo_tool::app::AppState>,
     app_context: &Arc<AppContext>,
 ) {
-    app_context.enable_developer_mode(true);
+    app_context.set_user_role(UserRole::Power);
     harness.state_mut().selected_main_screen = RootScreenType::RootScreenMasternodes;
     harness
         .state_mut()

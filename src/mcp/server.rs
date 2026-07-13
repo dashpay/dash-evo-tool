@@ -380,9 +380,7 @@ pub async fn init_app_context() -> Result<Arc<AppContext>, McpError> {
         egui::Context::default(),
         app_kv,
         secret_store,
-        std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
-            config.developer_mode.unwrap_or(false),
-        )),
+        crate::model::user_role::UserRoleCell::default(),
     )
     .ok_or_else(|| {
         McpError::internal_error(
@@ -390,6 +388,10 @@ pub async fn init_app_context() -> Result<Arc<AppContext>, McpError> {
             None,
         )
     })?;
+
+    // Seed the role from AppSettings — the single source of truth, matching the
+    // GUI boot path, so a role chosen in the GUI is honoured here too.
+    app_context.seed_user_role_from_settings();
 
     // Chain sync is SPV-only (owned by upstream platform-wallet). Starting it
     // here would fast-fail: the wallet backend is not wired yet at boot. SPV is

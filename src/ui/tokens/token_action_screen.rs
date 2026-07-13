@@ -11,6 +11,7 @@ use crate::app::AppAction;
 use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
 use crate::context::AppContext;
 use crate::model::fee_estimation::format_credits_as_dash;
+use crate::model::user_role::UserRole;
 use crate::model::wallet::Wallet;
 use crate::ui::components::component_trait::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
@@ -469,7 +470,12 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
             ui.add_space(10.0);
 
             let identity = &self.common.identity_token_info.identity;
-            let has_keys = if self.common.app_context.is_developer_mode() {
+            let has_keys = if self
+                .common
+                .app_context
+                .user_role()
+                .at_least(UserRole::Developer)
+            {
                 !identity.identity.public_keys().is_empty()
             } else {
                 !identity
@@ -560,7 +566,13 @@ impl<A: TokenAction> ScreenLike for TokenActionScreen<A> {
                 &self.common.group_action_id,
             );
 
-            if self.common.app_context.is_developer_mode() || !button_text.contains("Test") {
+            if self
+                .common
+                .app_context
+                .user_role()
+                .at_least(UserRole::Power)
+                || !button_text.contains("Test")
+            {
                 ui.add_space(10.0);
                 if ComponentStyles::add_primary_button(ui, button_text).clicked() {
                     let message = self.action.confirm_message(&self.ctx());

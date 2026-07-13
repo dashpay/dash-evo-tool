@@ -22,8 +22,9 @@ use rusqlite::Connection;
 use crate::backend_task::contested_names::ScheduledDPNSVote;
 use crate::database::{Database, column_exists, table_exists};
 use crate::model::settings::{
-    AppSettings, RootScreenType, UserMode, network_from_legacy_str, theme_mode_from_str,
+    AppSettings, RootScreenType, network_from_legacy_str, theme_mode_from_str,
 };
+use crate::model::user_role::UserRole;
 
 /// Legacy spelling of mainnet in `data.db`. Migration 29 rewrites it to
 /// `mainnet`, but a DB that never reached v29 still carries the old value,
@@ -124,8 +125,12 @@ pub(crate) fn read_app_settings(conn: &Connection) -> rusqlite::Result<Option<Ap
     if let Some(s) = value_as_string(&values, "theme_preference") {
         settings.theme_mode = theme_mode_from_str(&s);
     }
+    // The legacy `user_mode` column only ever held the retired `UserMode`
+    // strings, which gated nothing and so carry no role information. They decode
+    // to `None` — no role was ever chosen — and the app resolves that to
+    // `UserRole::WHEN_UNSET`, the tier the legacy build exposed unconditionally.
     if let Some(s) = value_as_string(&values, "user_mode") {
-        settings.user_mode = UserMode::from_str_or_default(&s);
+        settings.user_role = UserRole::from_persisted(&s);
     }
     if let Some(b) = value_as_bool(&values, "onboarding_completed") {
         settings.onboarding_completed = b;
@@ -471,7 +476,6 @@ mod tests {
         assert_eq!(settings.theme_mode, ThemeMode::Dark);
         assert!(settings.onboarding_completed);
         assert!(settings.show_evonode_tools);
-        assert_eq!(settings.user_mode, UserMode::Beginner);
         assert!(settings.disable_zmq);
         assert!(!settings.overwrite_dash_conf);
         assert!(!settings.auto_start_spv);
@@ -480,6 +484,31 @@ mod tests {
             settings.dash_qt_path,
             Some(std::path::PathBuf::from("/opt/dash-qt"))
         );
+    }
+
+    /// The legacy `user_mode` column gated nothing, so it records no role. It
+    /// must import as "no role chosen" (`None`) — which the app resolves to
+    /// [`UserRole::WHEN_UNSET`], the surface the legacy build gave every user —
+    /// and never as a concrete role. Seeding `Everyday` off a legacy `Beginner`
+    /// would silently strip capability the user already had.
+    #[test]
+    fn legacy_user_mode_imports_as_no_role_chosen() {
+        for legacy_mode in ["Beginner", "Advanced"] {
+            let conn = Connection::open_in_memory().unwrap();
+            create_settings_table(&conn);
+            conn.execute(
+                "INSERT INTO settings (id, network, start_root_screen, user_mode, database_version)
+                 VALUES (1, 'testnet', 0, ?1, 40)",
+                rusqlite::params![legacy_mode],
+            )
+            .unwrap();
+
+            let settings = read_app_settings(&conn).unwrap().expect("settings row");
+            assert_eq!(
+                settings.user_role, None,
+                "legacy user_mode {legacy_mode} must not seed a role",
+            );
+        }
     }
 
     /// A `data.db` that never reached migration 29 still spells mainnet

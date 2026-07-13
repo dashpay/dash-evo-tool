@@ -13,6 +13,7 @@ use crate::backend_task::error::TaskError;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::context::connection_status::{ConnectionStatus, OverallConnectionState};
+use crate::context::feature_gate::FeatureGate;
 use crate::context::migration_status::MigrationStep;
 use crate::database::Database;
 use crate::model::settings::AppSettings;
@@ -600,15 +601,11 @@ impl AppState {
 
         let saved_network = settings.network;
 
-        // App-global Expert Mode flag: read once from config and shared into
-        // every per-network context (including any created later by a network
-        // switch), so a live toggle is observed everywhere without a restart.
-        let developer_mode = Arc::new(std::sync::atomic::AtomicBool::new(
-            crate::config::Config::load_from(&data_dir)
-                .ok()
-                .and_then(|c| c.developer_mode)
-                .unwrap_or(false),
-        ));
+        // App-global user role, shared into every per-network context (including
+        // any created later by a network switch) so a live change is observed
+        // everywhere without a restart. Seeded below from `get_app_settings()`
+        // once the active context exists — the single persisted source of truth.
+        let user_role = crate::model::user_role::UserRoleCell::default();
 
         // Build a helper to create AppContext for a given network.
         let make_context = |network: Network| -> Option<Arc<AppContext>> {
@@ -621,7 +618,7 @@ impl AppState {
                 ctx.clone(),
                 Arc::clone(&app_kv),
                 Arc::clone(&secret_store),
-                Arc::clone(&developer_mode),
+                user_role.clone(),
             )
         };
 
@@ -672,6 +669,12 @@ impl AppState {
             .get(&chosen_network)
             .expect("invariant: chosen_network was just taken from network_contexts")
             .clone();
+
+        // Seed the shared role cell from AppSettings — the single source of truth —
+        // publishing it to every context holding the cell. A settings read that
+        // fails here seeds the least-privileged role rather than `WHEN_UNSET`; see
+        // `seed_user_role_from_settings`.
+        active_context.seed_user_role_from_settings();
 
         // load fonts
         ctx.set_fonts(crate::bundled::fonts().expect("failed to load fonts"));
@@ -976,12 +979,13 @@ impl AppState {
         Ok(app_state)
     }
 
-    /// Allows enabling or disabling animations globally for the app.
+    /// Force UI animations off (or lift that override) for every network context.
     ///
-    /// Default is enabled.
+    /// No override by default. Lifting one does not *guarantee* animation: the
+    /// Power and Developer roles keep the UI still on their own.
     pub fn with_animations(self, enabled: bool) -> Self {
         for context in self.network_contexts.values() {
-            context.enable_animations(enabled);
+            context.set_animations_disabled(!enabled);
         }
         self
     }
@@ -1094,12 +1098,12 @@ impl AppState {
     }
 
     pub fn active_root_screen_mut(&mut self) -> &mut Screen {
-        // Live de-gating (§10.11): if Expert Mode flipped off while the
+        // Live de-gating (§10.11): if the role dropped below Power while the
         // Masternodes tab was active, fall back to the neutral Identities tab so
-        // the Expert-gated screen is never shown without its gate. Identities is
-        // always registered, so the subsequent lookup cannot fail.
+        // the gated screen is never shown without its gate. Identities is always
+        // registered, so the subsequent lookup cannot fail.
         if self.selected_main_screen == RootScreenType::RootScreenMasternodes
-            && !self.current_app_context().is_developer_mode()
+            && !FeatureGate::Masternodes.is_available(self.current_app_context())
         {
             self.selected_main_screen = RootScreenType::RootScreenIdentities;
         }

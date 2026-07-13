@@ -77,8 +77,8 @@ directory.
 |-----------------|------|-------------|
 | `island_central_panel()` | `styled.rs` | Responsive central panel, renders global MessageBanners |
 | `add_location_view()` | `top_panel.rs` | Breadcrumb navigation + connection status |
-| `add_top_panel_with_global_nav()` | `top_panel.rs` | Top panel wired to `global_nav_switcher::render()` for a page that only *reads* the selection — subdued pills (`subdued_everyday_spec` / `subdued_wallet_only_spec`); used by Identities, DashPay and DPNS. Every root screen not listed here still calls the plain `add_top_panel()` |
-| `add_top_panel_with_global_nav_capturing()` | `top_panel.rs` | Same, but returns the `GlobalNavEffect` so a page that *consumes* a selection can mirror it into its own state (two-way binding). Used by Wallets (`interactive_wallet_only_spec` → mirrors `SwitchWallet`) and Masternodes (`masternodes_page_nav_spec` → mirrors `SelectPageObject` by opening that node) |
+| `add_top_panel_with_global_nav()` | `top_panel.rs` | Top panel wired to `global_nav_switcher::render()` for a page that only *reads* the selection — subdued pills (`subdued_everyday_spec`); used by Identities, DashPay and DPNS. Every root screen not listed here still calls the plain `add_top_panel()` |
+| `add_top_panel_with_global_nav_capturing()` | `top_panel.rs` | Same, but also returns the (already-applied) `GlobalNavEffect` so a page that *consumes* a selection can mirror it into its own state (two-way binding). Used by Wallets (`wallet_only_spec` → mirrors `SwitchWallet` into the page's cached wallet) and Masternodes (`masternodes_page_nav_spec` → mirrors `SelectPageObject` by opening that node) |
 | `add_left_panel()` | `left_panel.rs` | Main icon navigation sidebar |
 | `load_icon()` / `load_svg_icon()` | `icons.rs` | Load & cache embedded raster/SVG icons from `icons/` |
 | Subscreen panels | `*_subscreen_chooser_panel.rs` | Tab navigation for DPNS, DashPay, Tokens, Tools |

@@ -13,34 +13,11 @@
 //! [`SelectedWallet`](crate::model::selected_wallet::SelectedWallet)
 //! blob in the per-network wallet k/v store.
 
+use crate::model::user_role::UserRole;
 use dash_sdk::dpp::dashcore::Network;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::str::FromStr;
-
-/// User experience mode
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum UserMode {
-    Beginner,
-    #[default]
-    Advanced,
-}
-
-impl UserMode {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            UserMode::Beginner => "Beginner",
-            UserMode::Advanced => "Advanced",
-        }
-    }
-
-    pub(crate) fn from_str_or_default(s: &str) -> Self {
-        match s {
-            "Beginner" => UserMode::Beginner,
-            _ => UserMode::Advanced,
-        }
-    }
-}
 
 /// Theme mode preference persisted in [`AppSettings::theme_mode`].
 ///
@@ -237,8 +214,11 @@ pub struct AppSettings {
     pub onboarding_completed: bool,
     /// Whether Evonode-related tools are shown in the UI.
     pub show_evonode_tools: bool,
-    /// User experience mode (Beginner or Advanced).
-    pub user_mode: UserMode,
+    /// The role the user has explicitly selected, or `None` when no explicit
+    /// choice has ever been recorded. `None` resolves to [`UserRole::WHEN_UNSET`]
+    /// at the settings-load call site (`AppContext::get_app_settings`) and is
+    /// only overwritten once the user picks a role — see `UserRole::from_persisted`.
+    pub user_role: Option<UserRole>,
     /// Whether DET closes Dash-Qt automatically when it exits.
     pub close_dash_qt_on_exit: bool,
     /// SPV sync starts automatically on launch. Default `true` for fresh
@@ -264,7 +244,8 @@ impl Default for AppSettings {
             theme_mode: ThemeMode::System,
             onboarding_completed: false,
             show_evonode_tools: false,
-            user_mode: UserMode::Advanced,
+            // `None` = no explicit role recorded; resolved at load.
+            user_role: None,
             close_dash_qt_on_exit: true,
             // Default to on so wallets sync without a manual step on fresh installs.
             // Existing users who stored false explicitly (from the old default) keep
@@ -296,6 +277,10 @@ struct AppSettingsWire {
     _reserved_core_backend_mode: u8,
     onboarding_completed: bool,
     show_evonode_tools: bool,
+    /// Length-prefixed slot that once held the orphaned `UserMode` string and
+    /// now carries the canonical `UserRole` string (or `""` when no explicit
+    /// role is recorded). Reusing the slot keeps the positional wire layout
+    /// unchanged; only the stored value's meaning moved.
     user_mode: String,
     close_dash_qt_on_exit: bool,
     auto_start_spv: bool,
@@ -317,7 +302,9 @@ impl From<&AppSettings> for AppSettingsWire {
             _reserved_core_backend_mode: 1,
             onboarding_completed: s.onboarding_completed,
             show_evonode_tools: s.show_evonode_tools,
-            user_mode: s.user_mode.as_str().to_string(),
+            // `None` encodes as the empty string, which decodes back to `None`
+            // (a legacy sentinel) via `UserRole::from_persisted`.
+            user_mode: s.user_role.map(UserRole::as_str).unwrap_or("").to_string(),
             close_dash_qt_on_exit: s.close_dash_qt_on_exit,
             auto_start_spv: s.auto_start_spv,
         }
@@ -331,7 +318,9 @@ impl From<AppSettingsWire> for AppSettings {
         let root_screen_type =
             RootScreenType::from_int(w.root_screen_type).unwrap_or(defaults.root_screen_type);
         let theme_mode = theme_mode_from_str(&w.theme_mode);
-        let user_mode = UserMode::from_str_or_default(&w.user_mode);
+        // Decoding stays pure: `None` (legacy sentinel or empty) is resolved to
+        // a concrete role once at the load site, seeded from `.env`.
+        let user_role = UserRole::from_persisted(&w.user_mode);
         Self {
             network,
             root_screen_type,
@@ -344,7 +333,7 @@ impl From<AppSettingsWire> for AppSettings {
             theme_mode,
             onboarding_completed: w.onboarding_completed,
             show_evonode_tools: w.show_evonode_tools,
-            user_mode,
+            user_role,
             close_dash_qt_on_exit: w.close_dash_qt_on_exit,
             auto_start_spv: w.auto_start_spv,
         }
@@ -437,7 +426,9 @@ mod tests {
         let s = AppSettings::default();
         assert_eq!(s.network, Network::Mainnet);
         assert!(matches!(s.theme_mode, ThemeMode::System));
-        assert!(matches!(s.user_mode, UserMode::Advanced));
+        // No explicit role on a fresh install; the concrete role is seeded
+        // from `.env` at the load site (`AppContext::get_app_settings`).
+        assert_eq!(s.user_role, None);
         assert!(s.overwrite_dash_conf);
         assert!(!s.disable_zmq);
         assert!(!s.onboarding_completed);
@@ -498,7 +489,7 @@ mod tests {
             theme_mode: ThemeMode::Dark,
             onboarding_completed: true,
             show_evonode_tools: true,
-            user_mode: UserMode::Beginner,
+            user_role: Some(UserRole::Power),
             close_dash_qt_on_exit: false,
             auto_start_spv: true,
         };
@@ -515,7 +506,7 @@ mod tests {
         assert_eq!(decoded.theme_mode, s.theme_mode);
         assert_eq!(decoded.onboarding_completed, s.onboarding_completed);
         assert_eq!(decoded.show_evonode_tools, s.show_evonode_tools);
-        assert_eq!(decoded.user_mode, s.user_mode);
+        assert_eq!(decoded.user_role, s.user_role);
         assert_eq!(decoded.close_dash_qt_on_exit, s.close_dash_qt_on_exit);
         assert_eq!(decoded.auto_start_spv, s.auto_start_spv);
     }
@@ -550,7 +541,8 @@ mod tests {
         // offset — a shifted layout would scramble these.
         assert!(decoded.onboarding_completed);
         assert!(decoded.show_evonode_tools);
-        assert_eq!(decoded.user_mode, UserMode::Beginner);
+        // Legacy "Beginner" is a sentinel — it decodes to `None`, not a role.
+        assert_eq!(decoded.user_role, None);
         assert!(!decoded.close_dash_qt_on_exit);
         assert!(decoded.auto_start_spv);
         // Fields before it, for completeness.
@@ -579,6 +571,52 @@ mod tests {
         };
         let s: AppSettings = wire.into();
         assert_eq!(s.network, Network::Mainnet);
+    }
+
+    /// The canonical `UserRole` strings survive the reused `user_mode` wire
+    /// slot in both directions — the slot now carries the role, not the retired
+    /// `UserMode`.
+    #[test]
+    fn user_role_canonical_strings_round_trip_through_wire() {
+        for role in [UserRole::Everyday, UserRole::Power, UserRole::Developer] {
+            let s = AppSettings {
+                user_role: Some(role),
+                ..AppSettings::default()
+            };
+            let encoded =
+                bincode::serde::encode_to_vec(&s, bincode::config::standard()).expect("encode");
+            let (decoded, _): (AppSettings, _) =
+                bincode::serde::decode_from_slice(&encoded, bincode::config::standard())
+                    .expect("decode");
+            assert_eq!(decoded.user_role, Some(role));
+        }
+    }
+
+    /// The migration-critical case: a pre-migration blob's `user_mode` slot
+    /// holds the legacy `"Advanced"` default for EVERY user. It must decode to
+    /// `None` (a sentinel deferring to the `.env` seed), never `Power` — mapping
+    /// it to a role would silently promote the entire user base to expert mode.
+    #[test]
+    fn legacy_advanced_user_mode_decodes_to_none_not_a_role() {
+        let wire = AppSettingsWire {
+            network: "testnet".to_string(),
+            root_screen_type: 0,
+            dash_qt_path: None,
+            overwrite_dash_conf: true,
+            disable_zmq: false,
+            theme_mode: "System".to_string(),
+            _reserved_core_backend_mode: 1,
+            onboarding_completed: false,
+            show_evonode_tools: false,
+            user_mode: "Advanced".to_string(),
+            close_dash_qt_on_exit: true,
+            auto_start_spv: false,
+        };
+        let s: AppSettings = wire.into();
+        assert_eq!(
+            s.user_role, None,
+            "legacy 'Advanced' must be a sentinel, not a role"
+        );
     }
 
     fn wire_with_dash_qt_path(dash_qt_path: Option<String>) -> AppSettingsWire {

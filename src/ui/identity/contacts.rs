@@ -20,6 +20,7 @@ use crate::app::{AppAction, BackendTasksExecutionMode};
 use crate::backend_task::BackendTask;
 use crate::backend_task::dashpay::{ContactData, DashPayTask};
 use crate::context::AppContext;
+use crate::context::feature_gate::FeatureGate;
 use crate::model::dashpay::AcceptedAccounts;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::ScreenType;
@@ -427,7 +428,9 @@ fn received_section(
 }
 
 /// Active contacts — searchable list of established contacts, each row offering
-/// a Pay affordance that opens the existing send-payment screen.
+/// a Pay affordance that opens the existing send-payment screen. Pay is an
+/// experimental DashPay feature, classified identically at all four entry points
+/// into [`ScreenType::DashPaySendPayment`].
 fn active_section(
     ui: &mut Ui,
     app_context: &Arc<AppContext>,
@@ -436,6 +439,7 @@ fn active_section(
     dark_mode: bool,
 ) -> AppAction {
     let mut action = AppAction::None;
+    let pay_available = FeatureGate::DashPayOperations.is_available(app_context);
     ui.add_space(12.0);
 
     let heading = format!("{ACTIVE_HEADING_PREFIX} · {}", state.contacts_len());
@@ -468,6 +472,9 @@ fn active_section(
                     ui.with_layout(
                         eframe::egui::Layout::right_to_left(eframe::egui::Align::Center),
                         |ui| {
+                            if !pay_available {
+                                return;
+                            }
                             let pay = ui
                                 .add(ComponentStyles::secondary_button(PAY_LABEL, dark_mode))
                                 .clickable_tooltip("Send Dash to this contact.");

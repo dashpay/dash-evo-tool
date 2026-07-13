@@ -2,6 +2,7 @@ use crate::app::AppAction;
 use crate::backend_task::dashpay::DashPayTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
+use crate::context::feature_gate::FeatureGate;
 use crate::model::dashpay::AcceptedAccounts;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::components::MessageBanner;
@@ -297,7 +298,10 @@ impl ContactDetailsScreen {
                         });
 
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
-                            if ui.button("Send Payment").clicked() {
+                            // Send Payment is an experimental DashPay feature.
+                            if FeatureGate::DashPayOperations.is_available(&self.app_context)
+                                && ui.button("Send Payment").clicked()
+                            {
                                 action = AppAction::AddScreen(
                                     ScreenType::DashPaySendPayment(
                                         self.identity.clone(),

@@ -7,6 +7,7 @@
 
 pub mod account_summary;
 pub mod avatar_cache;
+pub mod contacts_view;
 pub mod global_nav;
 pub mod hub_selection;
 pub mod masternodes_view;

@@ -149,6 +149,19 @@ pub async fn load_contact_requests(
         }
     });
 
+    // Drop requests the user has already resolved locally (declined an incoming
+    // one, or cancelled a sent one). Platform keeps contactRequest documents
+    // forever, so without this the resolved row reappears on every reload.
+    let backend = app_context.wallet_backend().ok();
+    retain_unresolved(
+        &mut incoming,
+        &mut outgoing,
+        |counterparty| match &backend {
+            Some(backend) => backend.dashpay_is_rejected(&identity_id, counterparty),
+            None => false,
+        },
+    );
+
     tracing::info!(
         "After filtering: {} incoming, {} outgoing contact requests",
         incoming.len(),
@@ -156,6 +169,44 @@ pub async fn load_contact_requests(
     );
 
     Ok(BackendTaskSuccessResult::DashPayContactRequests { incoming, outgoing })
+}
+
+/// The recipient (`toUserId`) of a contact-request document.
+fn recipient_of(doc: &Document) -> Option<Identifier> {
+    doc.properties()
+        .get("toUserId")
+        .and_then(|v| v.to_identifier().ok())
+}
+
+/// Drop every request whose counterparty the user has already resolved, per
+/// `is_resolved`. An outgoing document with an unreadable `toUserId` is kept:
+/// we cannot prove it was resolved, and hiding a request the user may still be
+/// waiting on is the worse failure.
+fn retain_unresolved(
+    incoming: &mut Vec<(Identifier, Document)>,
+    outgoing: &mut Vec<(Identifier, Document)>,
+    is_resolved: impl Fn(&Identifier) -> bool,
+) {
+    incoming.retain(|(_, doc)| !is_resolved(&doc.owner_id()));
+    outgoing.retain(|(_, doc)| match recipient_of(doc) {
+        Some(to) => !is_resolved(&to),
+        None => true,
+    });
+}
+
+/// Verify that `doc` is a contact request `owner` actually sent, and return its
+/// recipient. Guards the cancel path against acting on a stale UI row that
+/// belongs to a different identity.
+fn recipient_of_sent_request(
+    doc: &Document,
+    owner: &Identifier,
+) -> Result<Identifier, DashPayError> {
+    if doc.owner_id() != *owner {
+        return Err(DashPayError::ContactRequestNotSentByYou);
+    }
+    recipient_of(doc).ok_or_else(|| DashPayError::InvalidDocument {
+        reason: "contact request document is missing its toUserId field".to_string(),
+    })
 }
 
 pub async fn send_contact_request(
@@ -548,16 +599,28 @@ pub async fn send_contact_request_with_proof(
         core_height_created_at,
         created_at_ts,
     );
-    if let Ok(backend) = app_context.wallet_backend()
-        && let Err(err) = backend
+    if let Ok(backend) = app_context.wallet_backend() {
+        if let Err(err) = backend
             .record_sent_contact_request(&seed_hash, &owner_id, contact_record)
             .await
-    {
-        tracing::warn!(
-            %err,
-            "record_sent_contact_request failed; contact was sent but \
-             local wallet-manager state not updated",
-        );
+        {
+            tracing::warn!(
+                %err,
+                "record_sent_contact_request failed; contact was sent but \
+                 local wallet-manager state not updated",
+            );
+        }
+
+        // Sending to someone retires an earlier decline or withdrawal of theirs:
+        // the user has deliberately re-engaged, so their requests must stop being
+        // filtered out of the list.
+        if let Err(err) = backend.dashpay_unmark_rejected(&owner_id, &to_identity_id) {
+            tracing::debug!(
+                %err,
+                "Clearing the stale rejection marker failed; an earlier declined \
+                 request from this person may stay hidden until the next decline is cleared",
+            );
+        }
     }
 
     Ok(BackendTaskSuccessResult::DashPayContactRequestSent(
@@ -835,4 +898,207 @@ pub async fn reject_contact_request(
     Ok(BackendTaskSuccessResult::DashPayContactRequestRejected(
         request_id,
     ))
+}
+
+/// Cancel a contact request this identity sent and that is still pending.
+///
+/// DashPay `contactRequest` documents are immutable and cannot be deleted
+/// (`documentsMutable: false`, `canBeDeleted: false` in the DashPay contract),
+/// so the request cannot be un-sent from Platform. Cancelling therefore does
+/// what `reject_contact_request` does for the incoming direction: it broadcasts
+/// a `contactInfo` document marking the recipient hidden — a real, persisted
+/// state transition — and records the withdrawal in the DET sidecar so the
+/// request stops being listed as pending.
+///
+/// State is re-verified against Platform before acting: the request must still
+/// exist, must have been sent by `identity`, and must not have been answered in
+/// the meantime.
+pub async fn cancel_contact_request(
+    app_context: &Arc<AppContext>,
+    sdk: &Sdk,
+    identity: QualifiedIdentity,
+    request_id: Identifier,
+) -> Result<BackendTaskSuccessResult, TaskError> {
+    let dashpay_contract = app_context.dashpay_contract.clone();
+    let owner_id = identity.identity.id();
+
+    // Step 1: re-fetch the request rather than trusting the row the user
+    // clicked — the list may be stale by seconds or by an identity switch.
+    let query = DocumentQuery::new(dashpay_contract.clone(), "contactRequest").map_err(|e| {
+        DashPayError::QueryCreation {
+            query_target: "DashPay contactRequest",
+            source: Box::new(e),
+        }
+    })?;
+    let query_with_id = DocumentQuery::with_document_id(query, &request_id);
+
+    let doc = Document::fetch(sdk, query_with_id)
+        .await?
+        .ok_or(TaskError::DocumentNotFound)?;
+
+    // Step 2: verify we sent it, and to whom.
+    let to_identity_id = recipient_of_sent_request(&doc, &owner_id)?;
+
+    // Step 3: if the recipient already sent one back, the request is no longer
+    // pending — it is an established contact. Cancelling it would be a lie, so
+    // report the real state and let the UI refresh into it.
+    let mut reciprocal_query =
+        DocumentQuery::new(dashpay_contract, "contactRequest").map_err(|e| {
+            DashPayError::QueryCreation {
+                query_target: "DashPay contactRequest",
+                source: Box::new(e),
+            }
+        })?;
+    reciprocal_query = reciprocal_query
+        .with_where(WhereClause {
+            field: "$ownerId".to_string(),
+            operator: WhereOperator::Equal,
+            value: Value::Identifier(to_identity_id.to_buffer()),
+        })
+        .with_where(WhereClause {
+            field: "toUserId".to_string(),
+            operator: WhereOperator::Equal,
+            value: Value::Identifier(owner_id.to_buffer()),
+        });
+    reciprocal_query.limit = 1;
+
+    if !Document::fetch_many(sdk, reciprocal_query)
+        .await?
+        .is_empty()
+    {
+        return Ok(BackendTaskSuccessResult::DashPayContactAlreadyEstablished(
+            to_identity_id,
+        ));
+    }
+
+    // Step 4: broadcast the withdrawal as a hidden contactInfo document. This is
+    // the only part of a cancellation that Platform can carry.
+    super::contact_info::create_or_update_contact_info(
+        app_context,
+        sdk,
+        identity,
+        to_identity_id,
+        None,       // No nickname
+        None,       // No note
+        true,       // display_hidden = true for a withdrawn request
+        Vec::new(), // No accepted accounts
+    )
+    .await?;
+
+    // Step 5: mirror the withdrawal into the DET sidecar. `load_contact_requests`
+    // consults this, so the row stops being listed even though the document
+    // itself lives on forever.
+    if let Ok(backend) = app_context.wallet_backend()
+        && let Err(e) = backend.dashpay_mark_rejected(&owner_id, &to_identity_id)
+    {
+        tracing::debug!(
+            to = %to_identity_id.to_string(Encoding::Base58),
+            error = ?e,
+            "DashPay cancellation sidecar write failed; request will still display as pending"
+        );
+    }
+
+    Ok(BackendTaskSuccessResult::DashPayContactRequestCancelled(
+        request_id,
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dash_sdk::dpp::document::DocumentV0;
+
+    fn id(byte: u8) -> Identifier {
+        Identifier::from_bytes(&[byte; 32]).expect("32-byte identifier")
+    }
+
+    /// Build a `contactRequest`-shaped document. `to` of `None` omits the
+    /// `toUserId` property entirely, modelling a malformed document.
+    fn request_doc(owner: Identifier, to: Option<Identifier>) -> Document {
+        let mut properties = BTreeMap::new();
+        if let Some(to) = to {
+            properties.insert("toUserId".to_string(), Value::Identifier(to.to_buffer()));
+        }
+        DppDocument::V0(DocumentV0 {
+            id: id(99),
+            owner_id: owner,
+            creator_id: None,
+            properties,
+            revision: Some(1),
+            created_at: None,
+            updated_at: None,
+            transferred_at: None,
+            created_at_block_height: None,
+            updated_at_block_height: None,
+            transferred_at_block_height: None,
+            created_at_core_block_height: None,
+            updated_at_core_block_height: None,
+            transferred_at_core_block_height: None,
+        })
+    }
+
+    #[test]
+    fn recipient_of_sent_request_returns_the_recipient() {
+        let doc = request_doc(id(1), Some(id(2)));
+        assert_eq!(recipient_of_sent_request(&doc, &id(1)).unwrap(), id(2));
+    }
+
+    #[test]
+    fn cancelling_someone_elses_request_is_rejected() {
+        // A stale row from a previous identity must never cancel through.
+        let doc = request_doc(id(1), Some(id(2)));
+        assert!(matches!(
+            recipient_of_sent_request(&doc, &id(3)),
+            Err(DashPayError::ContactRequestNotSentByYou)
+        ));
+    }
+
+    #[test]
+    fn cancelling_a_malformed_request_is_rejected() {
+        let doc = request_doc(id(1), None);
+        assert!(matches!(
+            recipient_of_sent_request(&doc, &id(1)),
+            Err(DashPayError::InvalidDocument { .. })
+        ));
+    }
+
+    #[test]
+    fn retain_unresolved_drops_declined_and_cancelled_rows() {
+        // Incoming from id(1) — declined. Incoming from id(2) — still pending.
+        let mut incoming = vec![
+            (id(10), request_doc(id(1), Some(id(9)))),
+            (id(11), request_doc(id(2), Some(id(9)))),
+        ];
+        // Outgoing to id(3) — cancelled. Outgoing to id(4) — still pending.
+        let mut outgoing = vec![
+            (id(12), request_doc(id(9), Some(id(3)))),
+            (id(13), request_doc(id(9), Some(id(4)))),
+        ];
+
+        let resolved = [id(1), id(3)];
+        retain_unresolved(&mut incoming, &mut outgoing, |c| resolved.contains(c));
+
+        assert_eq!(incoming.len(), 1, "the declined request must not be listed");
+        assert_eq!(incoming[0].0, id(11));
+        assert_eq!(
+            outgoing.len(),
+            1,
+            "the cancelled request must not be listed"
+        );
+        assert_eq!(outgoing[0].0, id(13));
+    }
+
+    #[test]
+    fn retain_unresolved_keeps_rows_with_unreadable_recipients() {
+        let mut incoming = Vec::new();
+        let mut outgoing = vec![(id(12), request_doc(id(9), None))];
+
+        retain_unresolved(&mut incoming, &mut outgoing, |_| true);
+
+        assert_eq!(
+            outgoing.len(),
+            1,
+            "a request we cannot attribute must stay visible rather than be silently hidden"
+        );
+    }
 }

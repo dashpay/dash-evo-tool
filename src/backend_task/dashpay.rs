@@ -81,6 +81,15 @@ pub enum DashPayTask {
         identity: QualifiedIdentity,
         request_id: Identifier,
     },
+    /// Withdraw a still-pending contact request this identity sent.
+    ///
+    /// Platform cannot delete a `contactRequest` document, so the handler
+    /// broadcasts a hidden `contactInfo` and records the withdrawal locally —
+    /// see [`contact_requests::cancel_contact_request`].
+    CancelContactRequest {
+        identity: QualifiedIdentity,
+        request_id: Identifier,
+    },
     LoadPaymentHistory {
         identity: QualifiedIdentity,
     },
@@ -200,6 +209,12 @@ impl AppContext {
                 request_id,
             } => Ok(
                 contact_requests::reject_contact_request(self, sdk, identity, request_id).await?,
+            ),
+            DashPayTask::CancelContactRequest {
+                identity,
+                request_id,
+            } => Ok(
+                contact_requests::cancel_contact_request(self, sdk, identity, request_id).await?,
             ),
             DashPayTask::LoadPaymentHistory { identity } => {
                 let identity_id = identity.identity.id();

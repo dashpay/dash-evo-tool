@@ -788,6 +788,16 @@ As a user, I want my contact list, their profiles, and their avatars to show ins
 - Contact profiles and avatar images are cached locally and served on subsequent views.
 - An explicit "Refresh" action re-fetches the latest profiles and avatars from the network.
 
+### DPY-014: Cancel a sent contact request [Implemented]
+**Persona:** Alex, Priya
+
+As a user, I want to cancel a contact request I sent so that it stops sitting in my list when I no longer expect an answer.
+
+- A DashPay contact request is immutable on Platform and cannot be deleted, so cancelling cannot un-send it. The UI states this plainly rather than implying a withdrawal.
+- Cancelling re-checks the request against the network first: it must still exist, must have been sent by the acting identity, and must not have already been answered.
+- Cancelling publishes a hidden contact-info document and records the withdrawal locally, so the request leaves the sent list and stays gone across restarts.
+- A request the other person already accepted is reported as an established contact instead of being cancelled.
+
 ---
 
 ## Token Operations (TOK)
@@ -1388,6 +1398,26 @@ As any persona, my payments, funding movements, and platform actions all live in
 
 - Activity tab shell ships with filter chips; a reusable row component for rendering timeline entries will be added once the aggregator lands.
 - Full aggregation across DashPay payments, funding, and platform ops depends on a backend aggregator; gated behind the `identity-hub-activity-feed` Cargo feature until implemented.
+
+### IDH-007: Manage contacts from the Identities hub [Implemented]
+**Persona:** Alex, Priya
+
+As a user, I want to handle my contacts entirely from the Identities hub — answer requests, find a contact, and pay them — without detouring through a separate DashPay screen.
+
+- Received requests offer Accept and Decline; both act on the request and the row leaves the list.
+- Sent requests offer Cancel, which withdraws the request (see DPY-014).
+- Established contacts are listed with a search box that filters them by nickname, display name, username, or identity ID.
+- Each contact row offers Pay, which opens the existing send-payment flow for that contact.
+- Contacts the user has hidden do not appear in the list.
+
+### IDH-008: Name an identity on this device [Implemented]
+**Persona:** Alex, Priya
+
+As a user with more than one identity, I want to give an identity a name only I see so that I can tell my identities apart without registering a username.
+
+- Settings tab hosts the name field; the copy states that the name stays on the device and is never published.
+- Saving is only offered when the name actually changed, and clearing the field removes the name.
+- The saved name is what the breadcrumb and identity pills show, in preference to the username or the raw identity ID.
 
 ## Masternodes (MN)
 

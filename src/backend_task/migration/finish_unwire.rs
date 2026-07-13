@@ -166,6 +166,27 @@ pub enum MigrationError {
         source: Box<TaskError>,
     },
 
+    /// The legacy top-up history could not be carried across — the legacy table
+    /// is unreadable, or the k/v store rejected the write. Audit trail, not
+    /// funds, so it never blocks the wallet drain; but the app-data sentinel
+    /// stays unwritten so the next launch retries the idempotent import rather
+    /// than recording the loss as final.
+    #[error("could not save the top-up history from the previous version")]
+    TopUpHistoryWrite {
+        #[source]
+        source: Box<TaskError>,
+    },
+
+    /// Could not read, write or clear the durable unreadable-vote warning. That
+    /// record is what re-raises the warning on every launch until the user
+    /// acknowledges it, so a failure here is surfaced rather than dropped — a
+    /// silently-lost warning is a silently-missed vote deadline.
+    #[error("could not access the unreadable-vote warning")]
+    VoteWarningRecord {
+        #[source]
+        source: KvAdapterError,
+    },
+
     /// The wallet backend was not yet wired when the migration ran.
     /// This is a hard configuration bug: the orchestrator runs after
     /// `ensure_wallet_backend`, so this should never fire in
@@ -243,6 +264,10 @@ impl MigrationError {
 /// row that cannot be imported must never stand between the user and their
 /// seeds.
 ///
+/// A pending [`UnreadableVotesWarning`] is re-published on every launch — not
+/// only the one that discovered it — until [`acknowledge_unreadable_votes`]
+/// clears it.
+///
 /// # Errors
 ///
 /// [`TaskError::MigrationFailed`] when the wallet drain fails (the completion
@@ -290,16 +315,19 @@ pub async fn run(app_context: &Arc<AppContext>) -> Result<bool, TaskError> {
     let app_data = app_data?;
     let moved_data = wallet_moved || app_data.moved_data();
 
-    if app_data.votes_unreadable > 0 {
+    // The warning is read back from storage rather than taken from this pass's
+    // counters: on every launch after the discovery run the import short-circuits
+    // on its sentinel and reports zero, yet the votes it could not decode still
+    // need re-scheduling. Re-published until the user acknowledges it.
+    if let Some(warning) = read_vote_warning(&app_context.app_kv(), app_context.network)? {
         tracing::warn!(
             target = "migration::finish_unwire",
-            unreadable = app_data.votes_unreadable,
-            imported = app_data.votes_imported,
+            unreadable = warning.count,
             network = ?app_context.network,
             "Some legacy scheduled votes could not be decoded; they stay in the previous version's data.db and must be scheduled again",
         );
         status.set_state(MigrationState::SucceededWithUnreadableVotes {
-            count: app_data.votes_unreadable,
+            count: warning.count,
         });
         return Ok(moved_data);
     }
@@ -458,6 +486,85 @@ pub fn app_data_sentinel_key_for(network: Network) -> String {
     format!("det:migration:app_data:{}:v1", network_prefix(network))
 }
 
+/// Per-network key of the un-acknowledged unreadable-vote warning. Distinct
+/// from the app-data sentinel: the sentinel records that the import *ran*, this
+/// record that the user has not yet been *told* what it could not carry across.
+fn vote_warning_key_for(network: Network) -> String {
+    format!(
+        "det:migration:unreadable_votes:{}:v1",
+        network_prefix(network)
+    )
+}
+
+/// Durable "some scheduled votes could not be read" warning.
+///
+/// The import runs once (the app-data sentinel short-circuits every later
+/// launch), so the pass counters exist for exactly one launch. A user who was
+/// away, or who dismissed the banner without reading it, would never hear about
+/// it again — while the vote it names may still have a live deadline. This
+/// record outlives the pass: [`run`] re-publishes it on every launch until
+/// [`acknowledge_unreadable_votes`] clears it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UnreadableVotesWarning {
+    /// Legacy vote rows the import could not decode. Never `0` — a zero-count
+    /// warning is not written at all.
+    pub count: u32,
+}
+
+/// The pending unreadable-vote warning for `network`, if the user has not
+/// acknowledged it yet.
+fn read_vote_warning(
+    app_kv: &crate::wallet_backend::DetKv,
+    network: Network,
+) -> Result<Option<UnreadableVotesWarning>, MigrationError> {
+    app_kv
+        .get::<UnreadableVotesWarning>(DetScope::Global, &vote_warning_key_for(network))
+        .map_err(|source| MigrationError::VoteWarningRecord { source })
+}
+
+/// Record `count` unreadable vote rows as a pending warning. A zero count
+/// writes nothing — there is nothing to tell the user.
+///
+/// Written BEFORE the app-data sentinel: a crash between the two re-runs the
+/// idempotent import, whereas the reverse order would lose the warning for good.
+fn write_vote_warning(
+    app_kv: &crate::wallet_backend::DetKv,
+    network: Network,
+    count: u32,
+) -> Result<(), MigrationError> {
+    if count == 0 {
+        return Ok(());
+    }
+    app_kv
+        .put(
+            DetScope::Global,
+            &vote_warning_key_for(network),
+            &UnreadableVotesWarning { count },
+        )
+        .map_err(|source| MigrationError::VoteWarningRecord { source })
+}
+
+/// Retire the unreadable-vote warning for the active network: the user has read
+/// it. Clears the durable record so later launches stay quiet, and drops the
+/// banner. The legacy rows in `data.db` are untouched — only the notice is
+/// retired, so a build with a better decoder can still recover the votes.
+pub fn acknowledge_unreadable_votes(app_context: &Arc<AppContext>) -> Result<(), TaskError> {
+    let network = app_context.network;
+    app_context
+        .app_kv()
+        .delete(DetScope::Global, &vote_warning_key_for(network))
+        .map_err(|source| MigrationError::VoteWarningRecord { source })?;
+    tracing::info!(
+        target = "migration::finish_unwire",
+        network = ?network,
+        "User acknowledged the unreadable-vote warning",
+    );
+    app_context
+        .migration_status()
+        .set_state(MigrationState::Idle);
+    Ok(())
+}
+
 /// Import the DET-owned rows the wallet drain never touched: scheduled DPNS
 /// votes (deadline-critical) and top-up history (audit trail).
 ///
@@ -542,6 +649,13 @@ fn migrate_app_data(app_context: &Arc<AppContext>) -> Result<AppDataMigrationOut
         "App-data migration pass complete",
     );
 
+    // Persist the warning before the sentinel: this is the only pass that ever
+    // counts the undecodable rows (the sentinel short-circuits every later
+    // launch), so the count has to outlive it or the user gets one banner and no
+    // second chance. Ordered before the sentinel so a crash in between re-runs the
+    // idempotent import rather than losing the warning.
+    write_vote_warning(&app_kv, network, outcome.votes_unreadable)?;
+
     // The sentinel is written even when rows were unreadable: every *importable*
     // row is now in the k/v store, and the undecodable ones will never decode. A
     // withheld sentinel would re-run this import on every launch, which would
@@ -615,11 +729,16 @@ where
         outcome.votes_imported = u32::try_from(to_import.len()).unwrap_or(u32::MAX);
     }
 
-    // Top-ups are audit trail, not funds: a read failure must not strand the
-    // votes that already landed, so it is logged and skipped rather than
-    // failing the pass.
-    match crate::database::legacy_import::read_top_ups(conn, network) {
+    // Top-ups are audit trail, not funds, so a failure never blocks the votes that
+    // already landed — every identity is attempted before the pass gives up. But it
+    // is not swallowed either: the caller withholds the app-data sentinel on `Err`,
+    // so the next launch retries the idempotent import. Swallowing would freeze a
+    // one-off k/v error into permanent loss, because the sentinel short-circuits
+    // every later launch. Undecodable *rows* never reach here — the reader skips
+    // and logs them — so an error here is structural and a retry is worth taking.
+    let failure = match crate::database::legacy_import::read_top_ups(conn, network) {
         Ok(top_ups) => {
+            let mut first_error = None;
             for (identity_id, history) in top_ups {
                 let id = dash_sdk::platform::Identifier::from(identity_id);
                 match save_top_ups(&id, &history) {
@@ -627,20 +746,28 @@ where
                         outcome.top_up_identities_imported =
                             outcome.top_up_identities_imported.saturating_add(1)
                     }
-                    Err(e) => tracing::warn!(
-                        target = "migration::finish_unwire",
-                        identity = %hex::encode(identity_id),
-                        error = ?e,
-                        "Could not write top-up history; the audit trail stays in legacy data.db",
-                    ),
+                    Err(e) => {
+                        tracing::warn!(
+                            target = "migration::finish_unwire",
+                            identity = %hex::encode(identity_id),
+                            error = ?e,
+                            "Could not write top-up history; the import will be retried on the next launch",
+                        );
+                        first_error.get_or_insert(e);
+                    }
                 }
             }
+            first_error.map(|source| MigrationError::TopUpHistoryWrite {
+                source: Box::new(source),
+            })
         }
-        Err(e) => tracing::warn!(
-            target = "migration::finish_unwire",
-            error = ?e,
-            "Could not read legacy top-up history; the audit trail stays in legacy data.db",
-        ),
+        Err(source) => Some(MigrationError::LegacyDbRead {
+            table: "top_up",
+            source,
+        }),
+    };
+    if let Some(failure) = failure {
+        return Err(failure);
     }
 
     Ok(outcome)
@@ -1842,6 +1969,64 @@ mod tests {
             );
             assert_eq!(votes.borrow().len(), 1);
             assert_eq!(votes.borrow()[0].contested_name, "alice");
+        }
+
+        /// A top-up write failure must fail the pass. It is audit trail, so it
+        /// never blocks the wallet drain — but swallowing it would let the
+        /// app-data sentinel record "done" over a history that never landed,
+        /// making a transient k/v error permanent. The votes that already
+        /// imported stay imported; the retry is idempotent.
+        #[test]
+        fn top_up_write_failure_fails_the_pass() {
+            let conn = legacy_conn();
+
+            let result = migrate_app_data_from_conn(
+                &conn,
+                Network::Testnet,
+                &BTreeSet::new(),
+                |_| Ok(()),
+                |_, _| Err(TaskError::WalletNotFound),
+            );
+
+            assert!(
+                matches!(result, Err(MigrationError::TopUpHistoryWrite { .. })),
+                "a top-up write failure must reach the caller so the sentinel is withheld, got {result:?}",
+            );
+        }
+
+        /// A structurally unreadable `top_up` table (here: no `amount` column)
+        /// fails the pass for the same reason — the caller must withhold the
+        /// sentinel rather than declare the history migrated.
+        #[test]
+        fn top_up_read_failure_fails_the_pass() {
+            let conn = Connection::open_in_memory().expect("open");
+            conn.execute_batch(
+                "CREATE TABLE identity (id BLOB PRIMARY KEY, network TEXT NOT NULL);
+                 CREATE TABLE top_up (
+                    identity_id BLOB NOT NULL,
+                    top_up_index INTEGER NOT NULL
+                 );",
+            )
+            .expect("schema");
+
+            let result = migrate_app_data_from_conn(
+                &conn,
+                Network::Testnet,
+                &BTreeSet::new(),
+                |_| Ok(()),
+                |_, _| Ok(()),
+            );
+
+            assert!(
+                matches!(
+                    result,
+                    Err(MigrationError::LegacyDbRead {
+                        table: "top_up",
+                        ..
+                    })
+                ),
+                "an unreadable top-up table must reach the caller, got {result:?}",
+            );
         }
 
         /// A fresh install has none of these tables — a no-op, not an error.
@@ -3629,6 +3814,112 @@ mod tests {
         assert!(
             matches!(*ctx.migration_status().state(), MigrationState::Idle),
             "a no-op launch must not publish a completion banner",
+        );
+
+        backend.shutdown().await;
+    }
+
+    /// A top-up import failure must leave the app-data sentinel unwritten, so
+    /// the next launch retries the (idempotent) import. Writing the sentinel
+    /// anyway would make a one-off failure permanent: the fast path short-circuits
+    /// on it forever and the history never comes across. Staged with a legacy
+    /// `top_up` table that has no `amount` column, which is what a structurally
+    /// damaged legacy file looks like from the reader's side.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn app_data_sentinel_is_withheld_when_top_ups_cannot_be_imported() {
+        use dash_sdk::dpp::dashcore::Network;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = fresh_app_context(tmp.path());
+        let network = Network::Testnet;
+        let identity = [0x44u8; 32];
+
+        {
+            // `identity` comes from the modern schema; only `top_up` is staged, and
+            // without its `amount` column — the reader's prepare fails on it.
+            let conn = Connection::open(tmp.path().join("data.db")).expect("open data.db");
+            conn.execute_batch(
+                "CREATE TABLE top_up (
+                    identity_id BLOB NOT NULL,
+                    top_up_index INTEGER NOT NULL
+                 );",
+            )
+            .expect("broken legacy top-up schema");
+            conn.execute(
+                "INSERT INTO top_up (identity_id, top_up_index) VALUES (?1, 0)",
+                rusqlite::params![identity.as_slice()],
+            )
+            .expect("top-up row");
+        }
+
+        wire_backend(&ctx).await;
+        let backend = ctx.wallet_backend().expect("backend wired");
+
+        let result = migrate_app_data(&ctx);
+
+        assert!(
+            result.is_err(),
+            "an unimportable top-up history must fail the app-data pass, got {result:?}",
+        );
+        assert!(
+            ctx.app_kv()
+                .get::<MigrationCompletion>(DetScope::Global, &app_data_sentinel_key_for(network))
+                .expect("read app-data sentinel")
+                .is_none(),
+            "the app-data sentinel must not be written when the import failed — \
+             the next launch has to retry it",
+        );
+
+        backend.shutdown().await;
+    }
+
+    /// Fix-8 — the unreadable-vote warning is durable. The discovery run records
+    /// it; every later launch re-publishes it from that record even though both
+    /// sentinels short-circuit the passes, so a user who was away when the
+    /// migration finished still learns that a vote with a live deadline needs
+    /// re-scheduling. Only an explicit acknowledgement retires it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn unreadable_vote_warning_is_republished_until_acknowledged() {
+        use dash_sdk::dpp::dashcore::Network;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = fresh_app_context(tmp.path());
+        let network = Network::Testnet;
+
+        seed_legacy_wallet(&ctx, &[0xC5u8; 64], "funds", network);
+        seed_legacy_votes(&ctx, &[0x33u8; 32], &[("corrupt", "Nonsense")], network);
+
+        wire_backend(&ctx).await;
+        let backend = ctx.wallet_backend().expect("backend wired");
+
+        run(&ctx).await.expect("first launch");
+        assert_eq!(
+            *ctx.migration_status().state(),
+            MigrationState::SucceededWithUnreadableVotes { count: 1 },
+            "the discovery run surfaces the warning",
+        );
+
+        // A later launch starts from a fresh in-memory status, and both sentinels
+        // now short-circuit their passes — the warning must come from storage.
+        ctx.migration_status().set_state(MigrationState::Idle);
+        run(&ctx).await.expect("second launch");
+        assert_eq!(
+            *ctx.migration_status().state(),
+            MigrationState::SucceededWithUnreadableVotes { count: 1 },
+            "a warning the user may have missed must survive a restart",
+        );
+
+        acknowledge_unreadable_votes(&ctx).expect("acknowledge");
+        assert!(
+            matches!(*ctx.migration_status().state(), MigrationState::Idle),
+            "acknowledging clears the banner immediately",
+        );
+
+        ctx.migration_status().set_state(MigrationState::Idle);
+        run(&ctx).await.expect("third launch");
+        assert!(
+            matches!(*ctx.migration_status().state(), MigrationState::Idle),
+            "an acknowledged warning must never come back",
         );
 
         backend.shutdown().await;

@@ -680,6 +680,8 @@ As a masternode operator, I want my previously scheduled DPNS votes to survive a
 
 - Scheduled votes stored before the upgrade remain visible and executable afterward.
 - The first launch after the upgrade imports them from the previous version's storage, keeping each vote's choice, timestamp, and already-cast state. A vote that cannot be read is reported in a banner, with the recovery action, rather than dropped silently — and never blocks the wallet migration that restores access to funds.
+- A single unreadable vote row costs only itself: the readable votes in the same batch still import.
+- The report of unreadable votes returns on every launch until it is explicitly acknowledged, so a vote whose deadline is still open cannot lose its only notice to a missed or dismissed banner.
 
 ---
 

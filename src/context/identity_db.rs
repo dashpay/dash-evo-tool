@@ -69,6 +69,28 @@ fn top_up_err(source: KvAdapterError) -> TaskError {
     TaskError::TopUpHistoryStorage { source }
 }
 
+/// Merge `top_ups` into the stored history of `identity_id` (read-merge-write).
+///
+/// Callers hold a partial view of the history — the top-up flow carries the
+/// entries it hydrated plus the one it just confirmed, and the legacy-data
+/// import carries only what `data.db` held — so a replacing write would drop
+/// every entry the caller never saw. On a colliding index the caller's value
+/// wins: it is the fresher of the two. Removal is not expressible here; the
+/// purge path deletes the whole key instead.
+fn save_top_ups_in(
+    kv: &DetKv,
+    identity_id: &[u8; 32],
+    top_ups: &std::collections::BTreeMap<u32, u64>,
+) -> std::result::Result<(), TaskError> {
+    let scope = DetScope::Identity(identity_id);
+    let mut merged = kv
+        .get::<std::collections::BTreeMap<u32, u64>>(scope, TOP_UPS_KEY)
+        .map_err(top_up_err)?
+        .unwrap_or_default();
+    merged.extend(top_ups.iter().map(|(index, amount)| (*index, *amount)));
+    kv.put(scope, TOP_UPS_KEY, &merged).map_err(top_up_err)
+}
+
 /// Validate a raw voter id and return it as the `[u8; 32]` the
 /// [`DetScope::Identity`] scope borrows. Surfaces a typed error rather
 /// than panicking on a wrong-length slice.
@@ -784,16 +806,13 @@ impl AppContext {
     }
 
     /// Persist the running top-up history for an identity into the
-    /// per-network wallet k/v store.
+    /// per-network wallet k/v store. Merges — see [`save_top_ups_in`].
     pub fn save_top_ups(
         &self,
         identity_id: &Identifier,
         top_ups: &std::collections::BTreeMap<u32, u64>,
     ) -> std::result::Result<(), TaskError> {
-        let kv = self.det_kv()?;
-        let id = identity_id.to_buffer();
-        kv.put(DetScope::Identity(&id), TOP_UPS_KEY, top_ups)
-            .map_err(top_up_err)
+        save_top_ups_in(&self.det_kv()?, &identity_id.to_buffer(), top_ups)
     }
 
     pub fn get_identity_by_id(
@@ -1349,6 +1368,48 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(got, map);
+    }
+
+    /// A legacy import carries only the entries it found in `data.db`. It must
+    /// union them into whatever the user has recorded since — a top-up made
+    /// between two migration passes is real money moved, and a replacing write
+    /// would erase its record.
+    #[test]
+    fn save_top_ups_merges_into_the_stored_history() {
+        let kv = empty_kv();
+        let a = id(1);
+
+        // The user tops up in the new build; the entry lands at index 1.
+        save_top_ups_in(&kv, &a, &std::collections::BTreeMap::from([(1u32, 250u64)])).unwrap();
+        // A late migration pass replays the legacy history, which knows only index 0.
+        save_top_ups_in(&kv, &a, &std::collections::BTreeMap::from([(0u32, 100u64)])).unwrap();
+
+        let got: std::collections::BTreeMap<u32, u64> = kv
+            .get(DetScope::Identity(&a), TOP_UPS_KEY)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            got,
+            std::collections::BTreeMap::from([(0u32, 100u64), (1u32, 250u64)]),
+            "the entry recorded between the passes must survive the import",
+        );
+    }
+
+    /// On a colliding index the caller's value wins: the top-up flow writes the
+    /// amount it just confirmed on-chain, which is fresher than any stored copy.
+    #[test]
+    fn save_top_ups_incoming_value_wins_on_a_colliding_index() {
+        let kv = empty_kv();
+        let a = id(1);
+
+        save_top_ups_in(&kv, &a, &std::collections::BTreeMap::from([(0u32, 100u64)])).unwrap();
+        save_top_ups_in(&kv, &a, &std::collections::BTreeMap::from([(0u32, 999u64)])).unwrap();
+
+        let got: std::collections::BTreeMap<u32, u64> = kv
+            .get(DetScope::Identity(&a), TOP_UPS_KEY)
+            .unwrap()
+            .unwrap();
+        assert_eq!(got, std::collections::BTreeMap::from([(0u32, 999u64)]));
     }
 
     // ---------------------------------------------------------------

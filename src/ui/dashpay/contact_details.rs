@@ -2,6 +2,7 @@ use crate::app::AppAction;
 use crate::backend_task::dashpay::DashPayTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
+use crate::model::dashpay::AcceptedAccounts;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::components::MessageBanner;
 use crate::ui::components::dashpay_subscreen_chooser_panel::add_dashpay_subscreen_chooser_panel;
@@ -213,7 +214,9 @@ impl ContactDetailsScreen {
                     Some(self.edit_note.clone())
                 },
                 is_hidden: self.edit_hidden,
-                accepted_accounts: vec![],
+                // This form edits the nickname, note, and hidden flag — it has
+                // no say over which accounts the user accepted.
+                accepted_accounts: AcceptedAccounts::Preserve,
             },
         )))
     }

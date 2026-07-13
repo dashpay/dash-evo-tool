@@ -391,8 +391,11 @@ impl ScreenLike for IdentityHubScreen {
                 );
             }
             // The counterpart answered while the row was on screen. Nothing to
-            // withdraw or accept — reload into the truth.
+            // withdraw or accept — reload into the truth. The result names the
+            // contact, not the request, so every request guard is released and
+            // the reloaded lists decide what is still actionable.
             BackendTaskSuccessResult::DashPayContactAlreadyEstablished(_) => {
+                self.contacts_state.clear_in_flight();
                 self.contacts_state.invalidate();
                 MessageBanner::set_global(
                     self.app_context.egui_ctx(),
@@ -405,6 +408,11 @@ impl ScreenLike for IdentityHubScreen {
     }
 
     fn display_task_error(&mut self, _error: &TaskError) -> bool {
+        // A failed Accept / Decline / Cancel must leave its row clickable again.
+        // The error carries no request ID, so every guard is released: the worst
+        // case is a row the user can retry, against a row stuck forever.
+        self.contacts_state.clear_in_flight();
+
         // Clear any dangling pending_save so a failed UpdateProfile doesn't
         // leave a stale snapshot around. If a later DashPayProfileUpdated from
         // a different path (e.g. the legacy ProfileScreen) arrives it would

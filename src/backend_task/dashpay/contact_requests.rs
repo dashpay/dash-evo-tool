@@ -121,14 +121,18 @@ pub async fn load_contact_requests(
     });
 
     // Drop requests the user has already resolved locally (declined an incoming
-    // one, or cancelled a sent one). Platform keeps contactRequest documents
+    // one, or withdrawn a sent one). Platform keeps contactRequest documents
     // forever, so without this the resolved row reappears on every reload.
     let backend = app_context.wallet_backend().ok();
     retain_unresolved(
         &mut incoming,
         &mut outgoing,
-        |counterparty| match &backend {
-            Some(backend) => backend.dashpay_is_rejected(&identity_id, counterparty),
+        |sender| match &backend {
+            Some(backend) => backend.dashpay_is_declined(&identity_id, sender),
+            None => false,
+        },
+        |recipient| match &backend {
+            Some(backend) => backend.dashpay_is_withdrawn(&identity_id, recipient),
             None => false,
         },
     );
@@ -139,21 +143,33 @@ pub async fn load_contact_requests(
         outgoing.len()
     );
 
-    Ok(BackendTaskSuccessResult::DashPayContactRequests { incoming, outgoing })
+    Ok(BackendTaskSuccessResult::DashPayContactRequests {
+        identity: identity_id,
+        incoming,
+        outgoing,
+    })
 }
 
-/// Drop every request whose counterparty the user has already resolved, per
-/// `is_resolved`. An outgoing document with an unreadable `toUserId` is kept:
-/// we cannot prove it was resolved, and hiding a request the user may still be
-/// waiting on is the worse failure.
+/// Drop every request the user has already resolved: an incoming one they
+/// declined (per `is_declined`, keyed on the sender) or a sent one they withdrew
+/// (per `is_withdrawn`, keyed on the recipient).
+///
+/// The two directions are asked separately on purpose — withdrawing our request
+/// to Bob resolves nothing about the request Bob sends us afterwards, and a
+/// shared marker would silently hide it.
+///
+/// An outgoing document with an unreadable `toUserId` is kept: we cannot prove
+/// it was resolved, and hiding a request the user may still be waiting on is the
+/// worse failure.
 fn retain_unresolved(
     incoming: &mut Vec<(Identifier, Document)>,
     outgoing: &mut Vec<(Identifier, Document)>,
-    is_resolved: impl Fn(&Identifier) -> bool,
+    is_declined: impl Fn(&Identifier) -> bool,
+    is_withdrawn: impl Fn(&Identifier) -> bool,
 ) {
-    incoming.retain(|(_, doc)| !is_resolved(&doc.owner_id()));
+    incoming.retain(|(_, doc)| !is_declined(&doc.owner_id()));
     outgoing.retain(|(_, doc)| match contact_request_recipient(doc) {
-        Some(to) => !is_resolved(&to),
+        Some(to) => !is_withdrawn(&to),
         None => true,
     });
 }
@@ -171,6 +187,25 @@ fn recipient_of_sent_request(
     contact_request_recipient(doc).ok_or_else(|| DashPayError::InvalidDocument {
         reason: "contact request document is missing its toUserId field".to_string(),
     })
+}
+
+/// Verify that `doc` is a contact request addressed to `recipient`, and return
+/// its sender.
+///
+/// Accepting or declining reads the counterparty off the fetched document, so
+/// without this check a stale row — one the user clicked after switching
+/// identity — would sign a real state transition under the wrong identity's key.
+fn sender_of_received_request(
+    doc: &Document,
+    recipient: &Identifier,
+) -> Result<Identifier, DashPayError> {
+    match contact_request_recipient(doc) {
+        Some(to) if to == *recipient => Ok(doc.owner_id()),
+        Some(_) => Err(DashPayError::ContactRequestNotAddressedToYou),
+        None => Err(DashPayError::InvalidDocument {
+            reason: "contact request document is missing its toUserId field".to_string(),
+        }),
+    }
 }
 
 pub async fn send_contact_request(
@@ -571,14 +606,18 @@ pub async fn send_contact_request_with_proof(
             );
         }
 
-        // Sending to someone retires an earlier decline or withdrawal of theirs:
-        // the user has deliberately re-engaged, so their requests must stop being
-        // filtered out of the list.
-        if let Err(err) = backend.dashpay_unmark_rejected(&owner_id, &to_identity_id) {
+        // Sending to someone retires an earlier decline of their request and an
+        // earlier withdrawal of ours: the user has deliberately re-engaged, so
+        // neither direction may stay filtered out of the list.
+        // Both markers are cleared unconditionally — a failure on one must not
+        // leave the other standing.
+        let declined = backend.dashpay_unmark_declined(&owner_id, &to_identity_id);
+        let withdrawn = backend.dashpay_unmark_withdrawn(&owner_id, &to_identity_id);
+        if let Err(err) = declined.and(withdrawn) {
             tracing::debug!(
                 %err,
-                "Clearing the stale rejection marker failed; an earlier declined \
-                 request from this person may stay hidden until the next decline is cleared",
+                "Clearing the stale resolution markers failed; an earlier declined or \
+                 withdrawn request involving this person may stay hidden",
             );
         }
     }
@@ -666,8 +705,9 @@ pub async fn accept_contact_request(
         .await?
         .ok_or(TaskError::DocumentNotFound)?;
 
-    // Get the sender's identity (the owner of the incoming request)
-    let from_identity_id = doc.owner_id();
+    // Verify the request was addressed to us before acting on it, and get the
+    // sender's identity (the owner of the incoming request).
+    let from_identity_id = sender_of_received_request(&doc, &identity.identity.id())?;
 
     // Check if we already sent a contact request to this identity
     let mut existing_query = contact_request_query(app_context)?;
@@ -798,10 +838,12 @@ pub async fn reject_contact_request(
         .await?
         .ok_or(TaskError::DocumentNotFound)?;
 
-    let from_identity_id = doc.owner_id();
     // Captured before `identity` is moved into `create_or_update_contact_info`;
-    // the rejection marker is scoped to this acting identity.
+    // the decline marker is scoped to this acting identity.
     let owner_id = identity.identity.id();
+
+    // Verify the request was addressed to us before declining it.
+    let from_identity_id = sender_of_received_request(&doc, &owner_id)?;
 
     // Create or update contactInfo to mark this contact as hidden
     use super::contact_info::create_or_update_contact_info;
@@ -818,22 +860,23 @@ pub async fn reject_contact_request(
     )
     .await?;
 
-    // Mirror the rejection into the DET-local sidecar so `DashpayView`
-    // surfaces the request as "rejected" until a fresh outgoing/incoming
-    // pair establishes a contact. DashPay has no on-chain "rejected" flag,
-    // so the sidecar is the source of truth here.
+    // Mirror the decline into the DET-local sidecar so `DashpayView` surfaces
+    // the request as "rejected" until a fresh outgoing/incoming pair
+    // establishes a contact. DashPay has no on-chain "rejected" flag, so the
+    // sidecar is the source of truth here.
     //
     // The reader keys on the counterparty's identity id under the acting
     // identity's own scope (see `DashpayView::contact_requests`), so we pass
     // both `owner_id` and the original sender identity, not the request
-    // document id.
+    // document id. The marker is incoming-only: it must not silence a request
+    // we later send to that same person.
     if let Ok(backend) = app_context.wallet_backend()
-        && let Err(e) = backend.dashpay_mark_rejected(&owner_id, &from_identity_id)
+        && let Err(e) = backend.dashpay_mark_declined(&owner_id, &from_identity_id)
     {
         tracing::debug!(
             from = %from_identity_id.to_string(Encoding::Base58),
             error = ?e,
-            "DashPay rejection sidecar write failed; request will still display as pending"
+            "DashPay decline sidecar write failed; request will still display as pending"
         );
     }
 
@@ -869,7 +912,13 @@ trait CancelOps {
 
     /// Record the withdrawal in the DET sidecar so the request stops being
     /// listed as pending.
-    fn mark_withdrawn(&self);
+    ///
+    /// # Errors
+    ///
+    /// The marker is the only thing that retires the row — Platform keeps the
+    /// `contactRequest` document forever — so a failed write must surface
+    /// rather than be reported as a completed cancellation.
+    fn mark_withdrawn(&self) -> Result<(), TaskError>;
 }
 
 /// Check, hide, then re-check and undo the hide if the recipient answered inside
@@ -900,7 +949,7 @@ async fn cancel_flow<O: CancelOps>(ops: &O) -> Result<CancelOutcome, TaskError> 
         return Ok(CancelOutcome::AlreadyEstablished);
     }
 
-    ops.mark_withdrawn();
+    ops.mark_withdrawn()?;
     Ok(CancelOutcome::Withdrawn)
 }
 
@@ -949,16 +998,10 @@ impl CancelOps for PlatformCancelOps<'_> {
         .map(|_| ())
     }
 
-    fn mark_withdrawn(&self) {
-        if let Ok(backend) = self.app_context.wallet_backend()
-            && let Err(e) = backend.dashpay_mark_rejected(&self.owner_id, &self.to_identity_id)
-        {
-            tracing::debug!(
-                to = %self.to_identity_id.to_string(Encoding::Base58),
-                error = ?e,
-                "DashPay cancellation sidecar write failed; request will still display as pending"
-            );
-        }
+    fn mark_withdrawn(&self) -> Result<(), TaskError> {
+        self.app_context
+            .wallet_backend()?
+            .dashpay_mark_withdrawn(&self.owner_id, &self.to_identity_id)
     }
 }
 
@@ -1075,27 +1118,57 @@ mod tests {
     }
 
     #[test]
-    fn retain_unresolved_drops_declined_and_cancelled_rows() {
+    fn accepting_a_request_addressed_to_someone_else_is_rejected() {
+        // A stale row from a previous identity must never reach a signed
+        // acceptance under the identity now in use.
+        let doc = request_doc(id(1), Some(id(2)));
+        assert!(matches!(
+            sender_of_received_request(&doc, &id(3)),
+            Err(DashPayError::ContactRequestNotAddressedToYou)
+        ));
+    }
+
+    #[test]
+    fn accepting_a_request_addressed_to_us_returns_its_sender() {
+        let doc = request_doc(id(1), Some(id(2)));
+        assert_eq!(sender_of_received_request(&doc, &id(2)).unwrap(), id(1));
+    }
+
+    #[test]
+    fn accepting_a_malformed_request_is_rejected() {
+        let doc = request_doc(id(1), None);
+        assert!(matches!(
+            sender_of_received_request(&doc, &id(2)),
+            Err(DashPayError::InvalidDocument { .. })
+        ));
+    }
+
+    #[test]
+    fn retain_unresolved_drops_declined_and_withdrawn_rows() {
         // Incoming from id(1) — declined. Incoming from id(2) — still pending.
         let mut incoming = vec![
             (id(10), request_doc(id(1), Some(id(9)))),
             (id(11), request_doc(id(2), Some(id(9)))),
         ];
-        // Outgoing to id(3) — cancelled. Outgoing to id(4) — still pending.
+        // Outgoing to id(3) — withdrawn. Outgoing to id(4) — still pending.
         let mut outgoing = vec![
             (id(12), request_doc(id(9), Some(id(3)))),
             (id(13), request_doc(id(9), Some(id(4)))),
         ];
 
-        let resolved = [id(1), id(3)];
-        retain_unresolved(&mut incoming, &mut outgoing, |c| resolved.contains(c));
+        retain_unresolved(
+            &mut incoming,
+            &mut outgoing,
+            |sender| *sender == id(1),
+            |recipient| *recipient == id(3),
+        );
 
         assert_eq!(incoming.len(), 1, "the declined request must not be listed");
         assert_eq!(incoming[0].0, id(11));
         assert_eq!(
             outgoing.len(),
             1,
-            "the cancelled request must not be listed"
+            "the withdrawn request must not be listed"
         );
         assert_eq!(outgoing[0].0, id(13));
     }
@@ -1105,12 +1178,55 @@ mod tests {
         let mut incoming = Vec::new();
         let mut outgoing = vec![(id(12), request_doc(id(9), None))];
 
-        retain_unresolved(&mut incoming, &mut outgoing, |_| true);
+        retain_unresolved(&mut incoming, &mut outgoing, |_| true, |_| true);
 
         assert_eq!(
             outgoing.len(),
             1,
             "a request we cannot attribute must stay visible rather than be silently hidden"
+        );
+    }
+
+    #[test]
+    fn a_withdrawn_outgoing_request_does_not_hide_a_later_incoming_one() {
+        // We (id 9) withdrew a request to id(2), so id(2) carries a withdrawal
+        // marker. Later id(2) sends us a genuine request: it is new, unresolved
+        // business and must be listed.
+        let mut incoming = vec![(id(20), request_doc(id(2), Some(id(9))))];
+        let mut outgoing = Vec::new();
+
+        retain_unresolved(
+            &mut incoming,
+            &mut outgoing,
+            /* is_declined = */ |_| false,
+            /* is_withdrawn = */ |recipient| *recipient == id(2),
+        );
+
+        assert_eq!(
+            incoming.len(),
+            1,
+            "withdrawing our own request must not silence the other side's new request"
+        );
+    }
+
+    #[test]
+    fn a_declined_incoming_request_does_not_hide_a_later_outgoing_one() {
+        // The mirror case: we declined id(2)'s request, then changed our mind
+        // and sent them one. Ours is pending until they answer it.
+        let mut incoming = Vec::new();
+        let mut outgoing = vec![(id(21), request_doc(id(9), Some(id(2))))];
+
+        retain_unresolved(
+            &mut incoming,
+            &mut outgoing,
+            /* is_declined = */ |sender| *sender == id(2),
+            /* is_withdrawn = */ |_| false,
+        );
+
+        assert_eq!(
+            outgoing.len(),
+            1,
+            "declining their earlier request must not silence the request we sent them"
         );
     }
 
@@ -1135,6 +1251,8 @@ mod tests {
         withdrawn: Mutex<bool>,
         /// When set, the first hide broadcast fails.
         hide_fails: bool,
+        /// When set, recording the withdrawal in the sidecar fails.
+        withdraw_fails: bool,
     }
 
     impl ScriptedOps {
@@ -1175,8 +1293,12 @@ mod tests {
             Ok(())
         }
 
-        fn mark_withdrawn(&self) {
+        fn mark_withdrawn(&self) -> Result<(), TaskError> {
+            if self.withdraw_fails {
+                return Err(TaskError::WalletBackendNotYetWired);
+            }
             *self.withdrawn.lock().expect("not poisoned") = true;
+            Ok(())
         }
     }
 
@@ -1252,6 +1374,22 @@ mod tests {
         assert!(
             !ops.was_withdrawn(),
             "the request is still pending on Platform, so it must keep being listed"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_withdrawal_record_is_not_reported_as_a_cancellation() {
+        // The marker is what retires the row from the listing. Without it the
+        // request comes back as pending on the next reload, so announcing a
+        // successful cancellation would be a lie.
+        let ops = ScriptedOps {
+            withdraw_fails: true,
+            ..ScriptedOps::with_reciprocal([false, false])
+        };
+
+        assert!(
+            cancel_flow(&ops).await.is_err(),
+            "a withdrawal the sidecar refused must surface as an error, not as success"
         );
     }
 }

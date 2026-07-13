@@ -125,6 +125,12 @@ impl IdentityHubScreen {
         self.selected_tab = tab;
     }
 
+    /// Whether an identity-scoped backend result still belongs to the identity
+    /// on screen. See [`applies_to_selected_identity`].
+    fn result_is_for_selected_identity(&self, result_identity: &Identifier) -> bool {
+        applies_to_selected_identity(self.app_context.selected_identity_id(), result_identity)
+    }
+
     /// Retire a request row the backend just resolved (accepted, declined, or
     /// cancelled), confirm it to the user, and re-arm the Contacts load so the
     /// authoritative lists replace the local edit.
@@ -358,14 +364,22 @@ impl ScreenLike for IdentityHubScreen {
             // can render real RequestCard rows instead of hardcoded empties.
             // The result arrives from LoadContactRequests,
             // dispatched alongside LoadContacts in contacts::render_populated.
-            BackendTaskSuccessResult::DashPayContactRequests { incoming, outgoing } => {
-                self.contacts_state
-                    .record_requests(incoming.clone(), outgoing.clone());
+            BackendTaskSuccessResult::DashPayContactRequests {
+                identity,
+                incoming,
+                outgoing,
+            } => {
+                if self.result_is_for_selected_identity(identity) {
+                    self.contacts_state
+                        .record_requests(incoming.clone(), outgoing.clone());
+                }
             }
             // The established-contact list behind the Contacts tab's active
             // section and its search box.
-            BackendTaskSuccessResult::DashPayContactsWithInfo(contacts) => {
-                self.contacts_state.record_contacts(contacts.clone());
+            BackendTaskSuccessResult::DashPayContactsWithInfo { identity, contacts } => {
+                if self.result_is_for_selected_identity(identity) {
+                    self.contacts_state.record_contacts(contacts.clone());
+                }
             }
             // A resolved request: drop the row now so the list reflects the
             // action immediately, then re-arm the load so the authoritative
@@ -419,6 +433,20 @@ impl ScreenLike for IdentityHubScreen {
     }
 }
 
+/// Whether a backend result loaded for `result_identity` may still be applied
+/// while `selected` is the identity on screen.
+///
+/// Switching identity cannot cancel a load already in flight, so a result for
+/// the previous identity can land after the switch. Applying it would paint one
+/// identity's contacts and requests under another's name — and hand the user
+/// rows that act under the wrong key.
+fn applies_to_selected_identity(
+    selected: Option<Identifier>,
+    result_identity: &Identifier,
+) -> bool {
+    selected.as_ref() == Some(result_identity)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -463,5 +491,26 @@ mod tests {
         last_good = HubLanding::from_identity_count(0);
         // Next good load = empty account — falls back to Onboarding legitimately.
         assert_eq!(last_good, HubLanding::Onboarding);
+    }
+
+    fn id(byte: u8) -> Identifier {
+        Identifier::from_bytes(&[byte; 32]).expect("32-byte identifier")
+    }
+
+    #[test]
+    fn a_result_for_the_selected_identity_applies() {
+        assert!(applies_to_selected_identity(Some(id(1)), &id(1)));
+    }
+
+    #[test]
+    fn a_result_for_a_previously_selected_identity_is_discarded() {
+        // The load was dispatched for identity A; the user switched to B before
+        // it returned. A's contacts must never appear under B.
+        assert!(!applies_to_selected_identity(Some(id(2)), &id(1)));
+    }
+
+    #[test]
+    fn a_result_arriving_with_no_identity_selected_is_discarded() {
+        assert!(!applies_to_selected_identity(None, &id(1)));
     }
 }

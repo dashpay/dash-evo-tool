@@ -622,7 +622,17 @@ impl ScreenLike for ContactDetailsScreen {
                     );
                 }
             }
-            BackendTaskSuccessResult::DashPayContactsWithInfo(contacts_data) => {
+            BackendTaskSuccessResult::DashPayContactsWithInfo {
+                identity,
+                contacts: contacts_data,
+            } => {
+                // Contacts loaded for another identity say nothing about this
+                // screen's contact — a reload that outlived an identity switch
+                // must not overwrite what is on screen.
+                if identity != self.identity.identity.id() {
+                    return;
+                }
+
                 // If a full contacts reload happened, update our contact if present
                 for contact_data in contacts_data {
                     if contact_data.identity_id == self.contact_id {

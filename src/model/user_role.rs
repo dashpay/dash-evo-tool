@@ -39,7 +39,21 @@ impl UserRole {
     /// builds that exposed the power-user surface unconditionally, so starting
     /// them anywhere lower would read as lost functionality. Everyday is a choice
     /// the user opts *into*.
+    ///
+    /// Applies only when the stored role is *known* to be absent. A role that
+    /// could not be **read** is a different case entirely — see
+    /// [`LEAST_PRIVILEGED`](Self::LEAST_PRIVILEGED).
     pub const WHEN_UNSET: UserRole = UserRole::Power;
+
+    /// The role to fall back to when the stored one cannot be trusted — an
+    /// unreadable settings store, or a role encoding that does not decode.
+    ///
+    /// The opposite decision from [`WHEN_UNSET`](Self::WHEN_UNSET), and
+    /// deliberately so: "the user never chose a role" is a fact, and Power is the
+    /// right answer to it; "we do not know which role the user chose" is an
+    /// absence of facts, and answering it with Power would let a transient glitch
+    /// grant capability the user may never have had. Unknown resolves down.
+    pub const LEAST_PRIVILEGED: UserRole = UserRole::Everyday;
 
     /// Canonical persisted string for this role. Paired with
     /// [`from_persisted`](Self::from_persisted); these strings are the on-disk
@@ -99,13 +113,13 @@ impl UserRole {
     }
 
     /// Decode the `u8` discriminant [`UserRoleCell`] stores. Unknown values fall
-    /// back to the baseline role — least privilege for a value that cannot be
-    /// trusted.
+    /// back to [`LEAST_PRIVILEGED`](Self::LEAST_PRIVILEGED) — a value that cannot
+    /// be trusted must not grant capability.
     const fn from_u8(v: u8) -> Self {
         match v {
             1 => UserRole::Power,
             2 => UserRole::Developer,
-            _ => UserRole::Everyday,
+            _ => UserRole::LEAST_PRIVILEGED,
         }
     }
 }
@@ -177,6 +191,29 @@ mod tests {
         assert!(!UserRole::Everyday.at_least(UserRole::Power));
         assert!(UserRole::Everyday.at_least(UserRole::Everyday));
         assert!(!UserRole::Power.at_least(UserRole::Developer));
+    }
+
+    /// The two fallbacks answer different questions and must not converge: a
+    /// *known* absence of a role opts into the power surface (`WHEN_UNSET`),
+    /// whereas an *unknown* role grants the least of it (`LEAST_PRIVILEGED`).
+    /// Collapsing them is the bug this pair exists to prevent — a settings read
+    /// that merely failed would otherwise elevate the session.
+    #[test]
+    fn unknown_and_unset_roles_resolve_in_opposite_directions() {
+        assert_eq!(
+            UserRole::LEAST_PRIVILEGED,
+            [UserRole::Everyday, UserRole::Power, UserRole::Developer]
+                .into_iter()
+                .min()
+                .expect("the role order has a floor"),
+            "the untrusted-value fallback must be the lowest role there is"
+        );
+        assert!(
+            UserRole::WHEN_UNSET.at_least(UserRole::LEAST_PRIVILEGED)
+                && UserRole::WHEN_UNSET != UserRole::LEAST_PRIVILEGED,
+            "a role that was never recorded must resolve strictly above one that \
+             could not be read"
+        );
     }
 
     #[test]

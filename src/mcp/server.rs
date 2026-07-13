@@ -391,12 +391,7 @@ pub async fn init_app_context() -> Result<Arc<AppContext>, McpError> {
 
     // Seed the role from AppSettings — the single source of truth, matching the
     // GUI boot path, so a role chosen in the GUI is honoured here too.
-    app_context.set_user_role(
-        app_context
-            .get_app_settings()
-            .user_role
-            .unwrap_or(crate::model::user_role::UserRole::WHEN_UNSET),
-    );
+    app_context.seed_user_role_from_settings();
 
     // Chain sync is SPV-only (owned by upstream platform-wallet). Starting it
     // here would fast-fail: the wallet backend is not wired yet at boot. SPV is

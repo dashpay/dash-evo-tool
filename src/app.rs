@@ -633,16 +633,11 @@ impl AppState {
             .expect("invariant: chosen_network was just taken from network_contexts")
             .clone();
 
-        // Seed the shared role cell from AppSettings — the single source of truth.
-        // `get_app_settings` resolves an account that never chose a role to
-        // `UserRole::WHEN_UNSET`. `set_user_role` publishes the value to every
-        // context holding the cell and syncs animation gating.
-        active_context.set_user_role(
-            active_context
-                .get_app_settings()
-                .user_role
-                .unwrap_or(crate::model::user_role::UserRole::WHEN_UNSET),
-        );
+        // Seed the shared role cell from AppSettings — the single source of truth —
+        // publishing it to every context holding the cell. A settings read that
+        // fails here seeds the least-privileged role rather than `WHEN_UNSET`; see
+        // `seed_user_role_from_settings`.
+        active_context.seed_user_role_from_settings();
 
         // load fonts
         ctx.set_fonts(crate::bundled::fonts().expect("failed to load fonts"));

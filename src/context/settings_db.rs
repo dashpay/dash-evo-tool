@@ -67,7 +67,10 @@ impl AppContext {
         // from the store instead of serving a value that never persisted.
         self.app_kv
             .put(DetScope::Global, AppSettings::KV_KEY, &settings)?;
-        *guard = Some(settings);
+        // The blob is persisted verbatim, the cache holds the resolved view — the
+        // value a reload would produce. A `mutate` that clears the role must not
+        // leave the cache serving one no reader expects (see `with_default_user_role`).
+        *guard = Some(with_default_user_role(settings));
         Ok(())
     }
 
@@ -112,10 +115,40 @@ impl AppContext {
     /// in memory. The stored blob is left untouched and the fallback is never
     /// cached, so a transient failure costs the user nothing once the store
     /// recovers. Successful reads are cached in-memory between updates.
+    ///
+    /// Callers that make a *durable* decision from the result — one nothing later
+    /// re-derives, such as seeding the runtime role — must use
+    /// [`try_get_app_settings`](Self::try_get_app_settings) instead: they need to
+    /// tell "the user stored nothing" apart from "we could not read what the user
+    /// stored", and this method deliberately erases that difference.
     pub fn get_app_settings(&self) -> AppSettings {
+        self.try_get_app_settings().unwrap_or_else(|e| {
+            tracing::warn!(
+                error = ?e,
+                "Could not read the stored app settings; serving defaults for this read only"
+            );
+            with_default_user_role(AppSettings::default())
+        })
+    }
+
+    /// Read the persisted [`AppSettings`], reporting a failed read instead of
+    /// degrading to defaults.
+    ///
+    /// The `user_role` of a returned value is always `Some`, on the cached path as
+    /// well as on a fresh load — an absent role is resolved to
+    /// [`UserRole::WHEN_UNSET`] in memory (see [`with_default_user_role`]), and every
+    /// writer caches that resolved view. Callers may rely on the invariant.
+    ///
+    /// # Errors
+    ///
+    /// Returns the k/v error when the stored blob cannot be read or decoded.
+    /// The failure is never cached: only a write invalidates the cache, and a
+    /// read-only session performs none, so caching it would pin the process to
+    /// defaults long after the store recovered.
+    pub fn try_get_app_settings(&self) -> Result<AppSettings, KvAdapterError> {
         // Fast path: cache hit under a read lock.
         if let Some(cached) = self.cached_settings.read_recover().clone() {
-            return cached;
+            return Ok(cached);
         }
 
         // Cache miss: hold the write lock across the load+populate so a
@@ -125,24 +158,47 @@ impl AppContext {
         let mut guard = self.cached_settings.write_recover();
         // Double-check: a racer may have populated the cache while we waited.
         if let Some(cached) = guard.clone() {
-            return cached;
+            return Ok(cached);
         }
 
-        let loaded = match self.load_app_settings_uncached() {
-            Ok(settings) => settings,
+        let loaded = self.load_app_settings_uncached()?;
+        *guard = Some(loaded.clone());
+        Ok(loaded)
+    }
+
+    /// Seed the runtime role cell from the persisted [`AppSettings`] — the single
+    /// source of truth — publishing it to every context that shares the cell.
+    ///
+    /// Runs once per process, at boot. A successful read is authoritative,
+    /// *including* a blob that never recorded a role: that resolves to
+    /// [`UserRole::WHEN_UNSET`], which is how a fresh install and a pre-role
+    /// account keep the power surface they have always had.
+    ///
+    /// A **failed** read is not authoritative and must not borrow that resolution.
+    /// Nothing re-seeds the cell from the later reads that succeed, so treating an
+    /// unreadable store as "no role recorded" would grant `WHEN_UNSET`'s elevated
+    /// surface for the whole session — on one transient hiccup, to a user whose
+    /// stored role may be Everyday. It seeds [`UserRole::LEAST_PRIVILEGED`]
+    /// instead. The real role returns at the next start; until then the user sees
+    /// the least-privileged mode in the interface-mode selector and can re-pick
+    /// their own, which persists and republishes it.
+    pub fn seed_user_role_from_settings(&self) {
+        let role = match self.try_get_app_settings() {
+            Ok(settings) => settings
+                .user_role
+                .expect("invariant: try_get_app_settings resolves an absent role to WHEN_UNSET"),
             Err(e) => {
                 tracing::warn!(
                     error = ?e,
-                    "Could not read the stored app settings; serving defaults for this read only"
+                    role = UserRole::LEAST_PRIVILEGED.as_str(),
+                    "Could not read the stored interface mode at startup; starting in the \
+                     least-privileged mode. Restart the app, or pick the mode again in \
+                     Settings, to restore it."
                 );
-                // Deliberately not cached: only a write invalidates the cache, and
-                // a read-only session performs none — caching this fallback would
-                // pin the process to defaults long after the store recovered.
-                return with_default_user_role(AppSettings::default());
+                UserRole::LEAST_PRIVILEGED
             }
         };
-        *guard = Some(loaded.clone());
-        loaded
+        self.set_user_role(role);
     }
 
     /// Load and decode [`AppSettings`] straight from the k/v store, applying the
@@ -170,11 +226,16 @@ impl AppContext {
     }
 
     /// Write the [`AppSettings`] blob to the shared app k/v store.
+    ///
+    /// The blob is stored verbatim — a `user_role` of `None` stays `None` on disk
+    /// until the user picks one. The cache takes the *resolved* view (see
+    /// [`with_default_user_role`]), so a cached read cannot hand out a role-less
+    /// value that a reload of the same blob would have resolved.
     pub fn set_app_settings(&self, settings: &AppSettings) -> Result<(), KvAdapterError> {
         let mut guard = self.invalidate_settings_cache();
         self.app_kv
             .put(DetScope::Global, AppSettings::KV_KEY, settings)?;
-        *guard = Some(settings.clone());
+        *guard = Some(with_default_user_role(settings.clone()));
         Ok(())
     }
 }
@@ -615,6 +676,132 @@ mod tests {
             UserRole::Everyday,
             "the runtime role must not advertise a mode that never reached the store"
         );
+    }
+
+    /// The "a returned `user_role` is always `Some`" invariant holds on the *cached*
+    /// path too, not only on a fresh load.
+    ///
+    /// Both writers populate the cache from a caller-supplied blob whose role may be
+    /// `None`, so the resolution has to happen there as well —
+    /// `seed_user_role_from_settings` reads the invariant with an `expect`, and a
+    /// cached role-less blob would otherwise panic it.
+    #[test]
+    fn a_cached_role_less_blob_still_reads_as_a_resolved_role() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = test_app_context(tmp.path());
+
+        // Nothing invalidates the cache between each write and its read, so the
+        // value under test is the cached one, not a reload.
+        ctx.set_app_settings(&AppSettings {
+            user_role: None,
+            ..AppSettings::default()
+        })
+        .unwrap();
+        assert_eq!(
+            ctx.get_app_settings().user_role,
+            Some(UserRole::WHEN_UNSET),
+            "set_app_settings must cache the resolved role, not the raw None"
+        );
+
+        ctx.update_app_settings(|s| s.user_role = None).unwrap();
+        assert_eq!(
+            ctx.try_get_app_settings().unwrap().user_role,
+            Some(UserRole::WHEN_UNSET),
+            "update_app_settings must cache the resolved role, not the raw None"
+        );
+
+        // The seed `expect`s that invariant: a role-less cached blob must not panic it.
+        ctx.seed_user_role_from_settings();
+        assert_eq!(ctx.user_role(), UserRole::WHEN_UNSET);
+    }
+
+    /// Regression: a settings read that *fails* at boot must not elevate the
+    /// session's role.
+    ///
+    /// The seed runs once per process and nothing re-seeds the cell from the later
+    /// reads that succeed, so resolving an unreadable store the way a role-less blob
+    /// is resolved (to `WHEN_UNSET`, i.e. Power) would hand the whole session the
+    /// power surface — on one poisoned lock, for a user whose stored role is
+    /// Everyday. Unknown must resolve *down*.
+    #[test]
+    fn failed_boot_read_seeds_the_least_privileged_role_never_power() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Arc::new(FailingKv::default());
+        let ctx = test_app_context_with_kv(tmp.path(), Arc::new(DetKv::from_store(store.clone())));
+
+        ctx.set_and_persist_user_role(UserRole::Everyday)
+            .expect("a healthy store persists the role");
+
+        // Park the cell above the expected outcome, so a seed that silently did
+        // nothing would be indistinguishable from neither fallback firing.
+        ctx.set_user_role(UserRole::Developer);
+
+        store.fail_reads(true);
+        drop(ctx.invalidate_settings_cache());
+        ctx.seed_user_role_from_settings();
+
+        assert_eq!(
+            ctx.user_role(),
+            UserRole::LEAST_PRIVILEGED,
+            "an unreadable store must seed the least-privileged role"
+        );
+        assert_ne!(
+            ctx.user_role(),
+            UserRole::WHEN_UNSET,
+            "a failed read is not 'no role recorded': it must never grant Power"
+        );
+
+        // The store recovers. The user's real role is still Everyday — a restart
+        // (or re-picking the mode) seeds it, and the failed read left nothing behind.
+        store.fail_reads(false);
+        drop(ctx.invalidate_settings_cache());
+        ctx.seed_user_role_from_settings();
+
+        assert_eq!(
+            ctx.user_role(),
+            UserRole::Everyday,
+            "the persisted role is authoritative once the store can be read"
+        );
+    }
+
+    /// The other half of the contract: a *successful* read of a blob that never
+    /// recorded a role still resolves to `WHEN_UNSET` (Power). This is intentional
+    /// product behaviour for fresh installs and pre-role blobs, and hardening the
+    /// failure path must not have quietly demoted it.
+    #[test]
+    fn successful_boot_read_of_a_role_less_blob_seeds_when_unset() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = test_app_context(tmp.path());
+
+        ctx.update_app_settings(|s| s.user_role = None).unwrap();
+        ctx.set_user_role(UserRole::Everyday);
+        drop(ctx.invalidate_settings_cache());
+
+        ctx.seed_user_role_from_settings();
+
+        assert_eq!(
+            ctx.user_role(),
+            UserRole::WHEN_UNSET,
+            "an account that never chose a role keeps the power surface it always had"
+        );
+    }
+
+    /// A persisted role is seeded verbatim — the boot seed reads the canonical
+    /// value, so a deliberate downgrade survives a restart.
+    #[test]
+    fn boot_seed_publishes_the_persisted_role() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = test_app_context(tmp.path());
+
+        for role in [UserRole::Everyday, UserRole::Power, UserRole::Developer] {
+            ctx.update_app_settings(|s| s.user_role = Some(role))
+                .unwrap();
+            ctx.set_user_role(UserRole::LEAST_PRIVILEGED);
+
+            ctx.seed_user_role_from_settings();
+
+            assert_eq!(ctx.user_role(), role, "the boot seed must publish {role:?}");
+        }
     }
 
     /// The happy path still publishes and persists together.

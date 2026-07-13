@@ -136,6 +136,19 @@ pub fn migration_running_text(step: MigrationStep) -> &'static str {
     }
 }
 
+/// User-facing banner copy for a migration that finished the wallet drain but
+/// left `count` undecodable scheduled votes behind. The votes stay in the
+/// previous version's storage (nothing is deleted), but they will not be cast,
+/// so the sentence names the one action that recovers them. No "Retry now" —
+/// a corrupt row decodes no better on a second pass. Exposed for kittest
+/// coverage.
+pub fn migration_unreadable_votes_text(count: u32) -> String {
+    format!(
+        "Some scheduled votes from the previous version could not be read and were not carried \
+         over ({count} in total). Schedule them again on the Scheduled Votes screen."
+    )
+}
+
 /// How long the cold-start readiness gate waits for the wallet backend to wire
 /// before it stops retrying silently and surfaces a visible, actionable banner.
 ///

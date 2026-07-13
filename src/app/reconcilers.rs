@@ -33,7 +33,7 @@ use super::{
     COLD_START_BACKEND_READY_TIMEOUT, COLD_START_STUCK_MESSAGE, MIGRATION_RETRY_ACTION_ID,
     SPV_CONNECTING_DESCRIPTION, SPV_CONTINUE_BACKGROUND_ACTION, SPV_SYNCING_DESCRIPTION,
     SpvBlockStep, cold_start_backend_wait_timed_out, migration_running_text,
-    should_dispatch_cold_start, spv_block_step,
+    migration_unreadable_votes_text, should_dispatch_cold_start, spv_block_step,
 };
 
 /// Drives platform-level accessibility (AccessKit) activation on the first
@@ -472,6 +472,19 @@ impl MigrationReconciler {
                     "Storage update complete — your wallet is ready.",
                     MessageType::Success,
                 );
+                self.banner_handle = Some(handle);
+            }
+            MigrationState::SucceededWithUnreadableVotes { count } => {
+                // The wallets landed; only the corrupt vote rows did not. A
+                // Warning (not Error) with no retry action: the drain is done and
+                // re-reading a corrupt row cannot help. Sticky, so the user who
+                // stepped away still learns the votes need re-scheduling.
+                let handle = MessageBanner::set_global(
+                    ctx,
+                    migration_unreadable_votes_text(count),
+                    MessageType::Warning,
+                );
+                handle.disable_auto_dismiss();
                 self.banner_handle = Some(handle);
             }
             MigrationState::Failed { error } => {

@@ -59,6 +59,12 @@ pub enum MigrationState {
     Running { step: MigrationStep },
     /// Migration completed successfully (or no legacy data was present).
     Success,
+    /// The wallet drain completed — seeds, metadata and registration all
+    /// landed, so funds are reachable — but `count` legacy scheduled votes
+    /// could not be decoded and did not come across. Terminal and non-fatal:
+    /// the legacy rows are never deleted, and a retry cannot decode a corrupt
+    /// row, so the user is told once rather than offered a futile retry.
+    SucceededWithUnreadableVotes { count: u32 },
     /// Migration failed. The wrapped error is rendered for the user via
     /// its `Display` impl at banner-render time; the typed chain is
     /// preserved for the details panel and logs.
@@ -79,6 +85,10 @@ impl PartialEq for MigrationState {
         match (self, other) {
             (MigrationState::Idle, MigrationState::Idle) => true,
             (MigrationState::Success, MigrationState::Success) => true,
+            (
+                MigrationState::SucceededWithUnreadableVotes { count: a },
+                MigrationState::SucceededWithUnreadableVotes { count: b },
+            ) => a == b,
             (MigrationState::Running { step: a }, MigrationState::Running { step: b }) => a == b,
             (MigrationState::Failed { error: a }, MigrationState::Failed { error: b }) => {
                 Arc::ptr_eq(a, b)

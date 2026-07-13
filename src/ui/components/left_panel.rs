@@ -1,6 +1,7 @@
 use crate::app::AppAction;
 use crate::context::AppContext;
 use crate::context::feature_gate::FeatureGate;
+use crate::model::edition::Edition;
 use crate::model::user_role::UserRole;
 use crate::ui::RootScreenType;
 use crate::ui::components::icons::{load_icon, load_svg_icon};
@@ -144,6 +145,13 @@ pub fn add_left_panel(
                                     .show(ui, |ui| {
                                         ui.vertical_centered(|ui| {
                                             for (label, screen_type, icon_path, gate) in buttons.iter() {
+                                                // Skip entries the current edition hides (the
+                                                // Developer role lifts this — see `Edition::permits`).
+                                                if !Edition::CURRENT
+                                                    .permits(*screen_type, app_context.user_role())
+                                                {
+                                                    continue;
+                                                }
                                                 // Skip entries whose feature gate is not available
                                                 if let Some(gate) = gate
                                                     && !gate.is_available(app_context)

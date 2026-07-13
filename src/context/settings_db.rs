@@ -7,6 +7,7 @@
 //! stale value.
 
 use super::{AppContext, SettingsCacheGuard};
+use crate::model::edition::Edition;
 use crate::model::settings::{AppSettings, detect_dash_qt_path};
 use crate::model::user_role::UserRole;
 use crate::ui::RootScreenType;
@@ -199,6 +200,56 @@ impl AppContext {
             }
         };
         self.set_user_role(role);
+    }
+
+    /// Land a masternode-owner edition build on [`UserRole::Power`] the first
+    /// time it runs, so its only meaningful surface — the Power-gated
+    /// Masternodes screen — is reachable out of the box.
+    ///
+    /// A no-op in every other edition. In the masternode-owner edition it fires
+    /// **only on first run**: when no role has ever been persisted (a fresh or
+    /// pre-role install). An explicit prior choice is never overridden — a user
+    /// who picked Developer (the edition's escape hatch) or any other role keeps
+    /// it. Once this records `Power`, the disk holds an explicit role and the
+    /// force never fires again ("persists normally after that").
+    ///
+    /// Deliberately keyed on a role that was **never recorded**, distinct from
+    /// one that could not be **read**: a transient k/v read failure must not be
+    /// mistaken for "first run" and silently rewrite the user's real role. On a
+    /// read error this does nothing and leaves the boot seed
+    /// ([`seed_user_role_from_settings`](Self::seed_user_role_from_settings)) in
+    /// charge.
+    ///
+    /// Runs once per process, at boot, after the role has been seeded.
+    pub fn apply_edition_first_run_role(&self) {
+        if Edition::CURRENT != Edition::MasternodeOwner {
+            return;
+        }
+        // Read the raw persisted role (pre-resolution): `Some(None)` is "a blob
+        // exists but recorded no role", `None` is "no blob yet" — both are first
+        // run; `Some(Some(_))` is an explicit prior choice to respect.
+        match self
+            .app_kv
+            .get::<AppSettings>(DetScope::Global, AppSettings::KV_KEY)
+        {
+            Ok(Some(settings)) if settings.user_role.is_some() => {} // explicit choice — keep it
+            Ok(_) => {
+                if let Err(e) = self.set_and_persist_user_role(UserRole::Power) {
+                    tracing::warn!(
+                        error = ?e,
+                        "Could not record the initial interface mode for this edition; \
+                         the Masternodes screen may be hidden until a role is picked in Settings."
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = ?e,
+                    "Could not read the stored interface mode at startup; leaving the \
+                     seeded role in place for this edition."
+                );
+            }
+        }
     }
 
     /// Load and decode [`AppSettings`] straight from the k/v store, applying the
@@ -814,5 +865,112 @@ mod tests {
 
         assert_eq!(ctx.user_role(), UserRole::Power);
         assert_eq!(ctx.get_app_settings().user_role, Some(UserRole::Power));
+    }
+
+    /// In a non-edition (Full) build the first-run force is a no-op: it must not
+    /// touch the role, so a Full build never silently promotes anyone.
+    #[cfg(not(feature = "masternode-owner-edition"))]
+    #[test]
+    fn first_run_force_is_a_no_op_outside_the_edition() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = test_app_context(tmp.path());
+        ctx.set_user_role(UserRole::Everyday);
+
+        ctx.apply_edition_first_run_role();
+
+        assert_eq!(ctx.user_role(), UserRole::Everyday);
+        // Nothing was persisted either.
+        assert_eq!(
+            ctx.app_kv()
+                .get::<AppSettings>(DetScope::Global, AppSettings::KV_KEY)
+                .unwrap()
+                .and_then(|s| s.user_role),
+            None,
+        );
+    }
+}
+
+/// First-run role-forcing behaviour of the masternode-owner edition. These only
+/// have teeth when compiled as that edition (`Edition::CURRENT` is a no-op
+/// otherwise), so the whole module is feature-gated.
+#[cfg(all(test, feature = "masternode-owner-edition"))]
+mod edition_first_run_tests {
+    use super::*;
+    use crate::context::test_support::test_app_context;
+
+    /// The raw persisted role, before the `WHEN_UNSET` resolution — `None` means
+    /// no explicit choice was ever recorded.
+    fn persisted_role(ctx: &AppContext) -> Option<UserRole> {
+        ctx.app_kv()
+            .get::<AppSettings>(DetScope::Global, AppSettings::KV_KEY)
+            .unwrap()
+            .and_then(|s| s.user_role)
+    }
+
+    /// First run (no role ever recorded) lands on Power and records it, so the
+    /// Power-gated Masternodes surface is reachable out of the box and the force
+    /// never fires again.
+    #[test]
+    fn first_run_lands_on_power_and_persists_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = test_app_context(tmp.path());
+        assert_eq!(persisted_role(&ctx), None, "no role recorded yet");
+
+        ctx.apply_edition_first_run_role();
+
+        assert_eq!(ctx.user_role(), UserRole::Power);
+        assert_eq!(
+            persisted_role(&ctx),
+            Some(UserRole::Power),
+            "the force must record an explicit role so it fires only once"
+        );
+    }
+
+    /// An explicit prior choice is never overridden — the force is first-run
+    /// only. A user who dropped to Everyday keeps it (recoverable via Settings).
+    #[test]
+    fn explicit_everyday_choice_is_not_overridden() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = test_app_context(tmp.path());
+        ctx.set_and_persist_user_role(UserRole::Everyday).unwrap();
+
+        ctx.apply_edition_first_run_role();
+
+        assert_eq!(ctx.user_role(), UserRole::Everyday);
+        assert_eq!(persisted_role(&ctx), Some(UserRole::Everyday));
+    }
+
+    /// The Developer escape hatch survives the force untouched.
+    #[test]
+    fn developer_escape_hatch_is_preserved() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = test_app_context(tmp.path());
+        ctx.set_and_persist_user_role(UserRole::Developer).unwrap();
+
+        ctx.apply_edition_first_run_role();
+
+        assert_eq!(ctx.user_role(), UserRole::Developer);
+    }
+
+    /// Idempotent: a second boot (role now recorded as Power) leaves an
+    /// Everyday runtime role alone — proving the force keys on the persisted
+    /// value, not the live one, and cannot re-fire.
+    #[test]
+    fn force_does_not_refire_once_a_role_is_recorded() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = test_app_context(tmp.path());
+        ctx.apply_edition_first_run_role(); // records Power
+        assert_eq!(persisted_role(&ctx), Some(UserRole::Power));
+
+        // Simulate a later, lower runtime role (as if the user picked Everyday
+        // this session but it is already recorded as Power on disk).
+        ctx.set_user_role(UserRole::Everyday);
+        ctx.apply_edition_first_run_role();
+
+        assert_eq!(
+            ctx.user_role(),
+            UserRole::Everyday,
+            "an already-recorded role must not be re-forced"
+        );
     }
 }

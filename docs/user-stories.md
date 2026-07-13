@@ -1544,3 +1544,13 @@ As a masternode operator, I want the same page-scoped switcher on the Masternode
 - The Masternodes header renders the page-aware breadcrumb with an interactive wallet pill (the funding source for Top Up), which two-way binds with the page's wallet context.
 - The third segment is a page-scoped node pill listing every loaded masternode/evonode, two-way bound with the page: opening a card names that node on the pill, and picking a node from the pill opens its detail view. It reads `(no masternode yet)` when none is loaded and `(choose a masternode)` while the grid is open.
 - Picking a node there never changes the identity shown on the everyday-user pages (see MN-005's Identity Hub filter) — the node selection is page-scoped, never the app-global identity.
+
+### MN-013: Run the masternode-owner edition for an urgent upgrade [Implemented]
+**Persona:** Priya
+
+As a masternode operator doing an urgent v0.9.3 → v1.0 upgrade, I want a stripped-down build that shows only the Masternodes screen and Settings, so that I can complete the withdrawal path without navigating a full application I do not need for this task.
+
+- A compile-time `masternode-owner-edition` build exposes only the Masternodes screen and Settings; every other root screen is hidden from navigation. All navigation paths (nav list, global pills, in-screen buttons) are clamped at a single chokepoint, so no path reaches a hidden screen.
+- The build lands on the Detailed view (Power) on first run so the Masternodes screen is available immediately; a later explicit choice is respected.
+- Selecting the Developer view is a full escape hatch that reveals every screen again. Settings always stays reachable, so the interface-mode selector is never stranded.
+- The masternode load path is wallet-free, so no wallet needs to be created or imported in this edition.

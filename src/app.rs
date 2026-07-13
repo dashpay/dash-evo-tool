@@ -16,6 +16,7 @@ use crate::context::connection_status::{ConnectionStatus, OverallConnectionState
 use crate::context::feature_gate::FeatureGate;
 use crate::context::migration_status::MigrationStep;
 use crate::database::Database;
+use crate::model::edition::Edition;
 use crate::model::settings::AppSettings;
 use crate::ui::components::secret_prompt_host::{ActivePrompt, EguiSecretPromptHost, QueuedPrompt};
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt, ProgressOverlay};
@@ -525,6 +526,40 @@ impl BackendInitReason {
     }
 }
 
+/// Whether `screen` is reachable right now — the single reachability predicate
+/// the navigation clamp funnels through.
+///
+/// Two axes compose here: the build [`Edition`] (with the Developer escape
+/// hatch, via [`Edition::permits`]) decides whether the screen is exposed at
+/// all, and the per-screen feature gate decides whether the current role/context
+/// may use it. Today only the Masternodes screen carries such a gate
+/// ([`FeatureGate::Masternodes`], Power-and-up); every other screen has none.
+///
+/// In the [`Edition::Full`] build the edition axis is always satisfied, so this
+/// reduces to exactly the pre-existing Masternodes gating — no behaviour change.
+fn root_screen_reachable(app_context: &AppContext, screen: RootScreenType) -> bool {
+    Edition::CURRENT.permits(screen, app_context.user_role())
+        && match screen {
+            RootScreenType::RootScreenMasternodes => {
+                FeatureGate::Masternodes.is_available(app_context)
+            }
+            _ => true,
+        }
+}
+
+/// The screen navigation clamps to when the requested or persisted target is not
+/// reachable. Prefers the edition's home screen, falling back to its guaranteed
+/// always-reachable floor — so the result is always a registered, reachable
+/// screen and the `active_root_screen_mut` lookup below can never panic.
+fn edition_landing(app_context: &AppContext) -> RootScreenType {
+    let home = Edition::CURRENT.home_screen();
+    if root_screen_reachable(app_context, home) {
+        home
+    } else {
+        Edition::CURRENT.always_reachable_screen()
+    }
+}
+
 impl AppState {
     /// Creates a new `AppState`, opening the seed vault keyless.
     ///
@@ -690,6 +725,11 @@ impl AppState {
         // fails here seeds the least-privileged role rather than `WHEN_UNSET`; see
         // `seed_user_role_from_settings`.
         active_context.seed_user_role_from_settings();
+
+        // A masternode-owner edition build lands on Power on first run so its
+        // Power-gated Masternodes surface is reachable; a no-op elsewhere. Must
+        // follow the seed above (it reads/publishes the same role cell).
+        active_context.apply_edition_first_run_role();
 
         // load fonts
         ctx.set_fonts(crate::bundled::fonts().expect("failed to load fonts"));
@@ -930,13 +970,18 @@ impl AppState {
         })
         .collect();
 
-        // Resolve the effective selected root screen. If the persisted value
-        // is no longer registered, fall back to the `Identities` screen so
-        // `active_root_screen_mut()` does not panic on first frame.
-        let selected_main_screen = if main_screens.contains_key(&persisted_main_screen) {
+        // Resolve the effective selected root screen. Keep the persisted value
+        // only if it is both registered and reachable in the current edition and
+        // role; otherwise clamp to the edition's landing screen. This guarantees
+        // the first frame opens on a reachable screen and never on one the
+        // edition hides (e.g. a persisted Tokens tab in the masternode-owner
+        // edition).
+        let selected_main_screen = if main_screens.contains_key(&persisted_main_screen)
+            && root_screen_reachable(&active_context, persisted_main_screen)
+        {
             persisted_main_screen
         } else {
-            RootScreenType::RootScreenIdentities
+            edition_landing(&active_context)
         };
 
         let mut app_state = Self {
@@ -1113,14 +1158,13 @@ impl AppState {
     }
 
     pub fn active_root_screen_mut(&mut self) -> &mut Screen {
-        // Live de-gating (§10.11): if the role dropped below Power while the
-        // Masternodes tab was active, fall back to the neutral Identities tab so
-        // the gated screen is never shown without its gate. Identities is always
-        // registered, so the subsequent lookup cannot fail.
-        if self.selected_main_screen == RootScreenType::RootScreenMasternodes
-            && !FeatureGate::Masternodes.is_available(self.current_app_context())
-        {
-            self.selected_main_screen = RootScreenType::RootScreenIdentities;
+        // Live de-gating: if the active screen has become unreachable — the role
+        // dropped below a screen's gate, or (in a restricted edition) the screen
+        // is hidden — clamp to the edition's landing screen so a gated or hidden
+        // screen is never shown. `edition_landing` always returns a registered,
+        // reachable screen, so the subsequent lookup cannot fail.
+        if !root_screen_reachable(self.current_app_context(), self.selected_main_screen) {
+            self.selected_main_screen = edition_landing(self.current_app_context());
         }
         self.main_screens
             .get_mut(&self.selected_main_screen)
@@ -1338,11 +1382,20 @@ impl AppState {
     }
 
     fn set_main_screen(&mut self, root_screen_type: RootScreenType) {
-        self.selected_main_screen = root_screen_type;
+        // The single funnel every `SetMainScreen*` action passes through — the
+        // one enforcement chokepoint for edition/role reachability. A request for
+        // an unreachable screen (a hidden edition tab, or a gated screen the
+        // current role cannot use) is clamped to the edition's landing screen so
+        // no navigation path can bypass the gate. Persist the clamped target, not
+        // the requested one, so the next boot reopens on a reachable screen.
+        let target = if root_screen_reachable(self.current_app_context(), root_screen_type) {
+            root_screen_type
+        } else {
+            edition_landing(self.current_app_context())
+        };
+        self.selected_main_screen = target;
         self.active_root_screen_mut().refresh_on_arrival();
-        self.current_app_context()
-            .update_settings(root_screen_type)
-            .ok();
+        self.current_app_context().update_settings(target).ok();
     }
 
     /// Auto-start chain sync for the active context when the user opted in.
@@ -2062,5 +2115,103 @@ mod spv_overlay_tests {
                 );
             }
         }
+    }
+}
+
+/// Reachability clamp — the navigation gate `set_main_screen` /
+/// `active_root_screen_mut` funnel through. `Edition::CURRENT` is compile-time,
+/// so each build asserts its own edition's behaviour under a `cfg`.
+#[cfg(test)]
+mod edition_nav_tests {
+    use super::*;
+    use crate::context::test_support::test_app_context;
+    use crate::model::user_role::UserRole;
+
+    fn ctx_with_role(role: UserRole) -> (tempfile::TempDir, std::sync::Arc<AppContext>) {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = test_app_context(tmp.path());
+        ctx.set_user_role(role);
+        (tmp, ctx)
+    }
+
+    /// Masternodes is Power-gated in every edition; the gate is unchanged by the
+    /// edition work.
+    #[test]
+    fn masternodes_needs_power_in_any_edition() {
+        for (role, expected) in [
+            (UserRole::Everyday, false),
+            (UserRole::Power, true),
+            (UserRole::Developer, true),
+        ] {
+            let (_tmp, ctx) = ctx_with_role(role);
+            assert_eq!(
+                root_screen_reachable(&ctx, RootScreenType::RootScreenMasternodes),
+                expected,
+                "Masternodes reachability for {role:?}"
+            );
+        }
+    }
+
+    /// Full build (default features): the edition axis is always satisfied, so
+    /// every non-Masternodes screen stays reachable at every role — no
+    /// behaviour change from the pre-edition code.
+    #[cfg(not(feature = "masternode-owner-edition"))]
+    #[test]
+    fn full_edition_keeps_all_screens_reachable() {
+        for role in [UserRole::Everyday, UserRole::Power, UserRole::Developer] {
+            let (_tmp, ctx) = ctx_with_role(role);
+            for screen in [
+                RootScreenType::RootScreenWalletsBalances,
+                RootScreenType::RootScreenMyTokenBalances,
+                RootScreenType::RootScreenNetworkChooser,
+                RootScreenType::RootScreenIdentities,
+            ] {
+                assert!(
+                    root_screen_reachable(&ctx, screen),
+                    "Full edition must keep {screen:?} reachable for {role:?}"
+                );
+            }
+            // The landing screen is Identities and it is always reachable.
+            assert_eq!(edition_landing(&ctx), RootScreenType::RootScreenIdentities);
+        }
+    }
+
+    /// Masternode-owner edition: only Masternodes + Settings are reachable below
+    /// Developer; Developer is a full escape hatch; and the clamp always lands on
+    /// a reachable screen (never stranding the user).
+    #[cfg(feature = "masternode-owner-edition")]
+    #[test]
+    fn masternode_owner_edition_hides_everything_but_masternodes_and_settings() {
+        // Settings stays reachable at every role — the recovery path.
+        for role in [UserRole::Everyday, UserRole::Power, UserRole::Developer] {
+            let (_tmp, ctx) = ctx_with_role(role);
+            assert!(root_screen_reachable(
+                &ctx,
+                RootScreenType::RootScreenNetworkChooser
+            ));
+        }
+
+        // Below Developer, a hidden screen is unreachable; Developer lifts it.
+        let hidden = RootScreenType::RootScreenWalletsBalances;
+        let (_t1, everyday) = ctx_with_role(UserRole::Everyday);
+        let (_t2, power) = ctx_with_role(UserRole::Power);
+        let (_t3, developer) = ctx_with_role(UserRole::Developer);
+        assert!(!root_screen_reachable(&everyday, hidden));
+        assert!(!root_screen_reachable(&power, hidden));
+        assert!(
+            root_screen_reachable(&developer, hidden),
+            "Developer escape hatch must reveal hidden screens"
+        );
+
+        // Landing: Power lands on Masternodes; Everyday (Masternodes gated out)
+        // falls back to the always-reachable Settings floor.
+        assert_eq!(
+            edition_landing(&power),
+            RootScreenType::RootScreenMasternodes
+        );
+        assert_eq!(
+            edition_landing(&everyday),
+            RootScreenType::RootScreenNetworkChooser
+        );
     }
 }

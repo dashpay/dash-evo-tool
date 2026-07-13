@@ -1495,13 +1495,14 @@ As a masternode operator, I want to set an optional password when I load my node
 - Entering a password seals the entered voting/owner/payout keys encrypted-at-rest (Tier-2) at load time.
 - The detail view's Keys section shows the current protection tier ("Unprotected" / "Password-protected") and offers "Add password protection…" only while unprotected.
 
-### MN-007: Move a node's credits [Implemented]
+### MN-007: Withdraw a node's credits [Implemented]
 **Persona:** Priya
 
-As a masternode operator, I want to withdraw, top up, and transfer a node's Platform credits from its detail view, so that I can manage its balance without leaving the Masternodes page.
+As a masternode operator, I want to withdraw a node's Platform credits from its detail view, so that I can move its balance to Core without leaving the Masternodes page.
 
-- The detail view's actions row opens the existing Withdraw, Top Up, and Transfer screens scoped to the selected node (Masternode or Evonode).
+- The detail view's actions row opens the existing Withdraw screen scoped to the selected node (Masternode or Evonode).
 - Withdrawing with the owner key forces the destination to the node's registered Core payout address; withdrawing with the transfer/payout key allows any address.
+- The Top Up and Transfer actions were removed from this screen; those flows remain available for User identities on the Identities pages.
 
 ### MN-008: Manage a node's keys [Implemented]
 **Persona:** Priya

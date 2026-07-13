@@ -446,10 +446,13 @@ fn detail_view_opens_from_card_with_sections_and_back() {
             harness.query_by_label("Withdraw").is_some(),
             "Withdraw action"
         );
-        assert!(harness.query_by_label("Top up").is_some(), "Top up action");
         assert!(
-            harness.query_by_label("Transfer").is_some(),
-            "Transfer action"
+            harness.query_by_label("Top up").is_none(),
+            "Top up action was removed from the masternode detail screen"
+        );
+        assert!(
+            harness.query_by_label("Transfer").is_none(),
+            "Transfer action was removed from the masternode detail screen"
         );
         assert!(harness.query_by_label("Keys").is_some(), "Keys section");
         assert!(

@@ -395,15 +395,9 @@ impl MasternodeDetailView {
                 .color(DashColors::text_primary(dark_mode)),
         );
         ui.horizontal_wrapped(|ui| {
-            // All three credit screens are reused, scoped to THIS node (FR-9).
+            // The withdrawal screen is reused, scoped to THIS node (FR-9).
             if ui.button("Withdraw").clicked() {
                 action = Some(self.push(ScreenType::WithdrawalScreen(self.identity.clone())));
-            }
-            if ui.button("Top up").clicked() {
-                action = Some(self.push(ScreenType::TopUpIdentity(self.identity.clone())));
-            }
-            if ui.button("Transfer").clicked() {
-                action = Some(self.push(ScreenType::TransferScreen(self.identity.clone())));
             }
             // Evonode-only token-rewards cross-link (FR-11); absent for a plain
             // masternode (TC-FR11-02).

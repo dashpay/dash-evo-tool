@@ -73,6 +73,45 @@ fn key_role_label(
     }
 }
 
+/// Button labels for the "Manage keys" list, one per entry of `keys`, in order.
+///
+/// Each label is the key's role word (`Owner`/`Payout`/`Voting`/…) plus a
+/// `(disabled)` marker for keys platform has retired: a node that rotates its
+/// payout address keeps the old, disabled Payout key on-chain next to the new
+/// active one, so a role word alone is not unique. When two keys would still
+/// collide (e.g. two retired Payout keys), the key id disambiguates them, so
+/// every button carries a distinct, correct label.
+fn manage_keys_labels(
+    keys: &[(PrivateKeyTarget, dash_sdk::platform::IdentityPublicKey)],
+) -> Vec<String> {
+    let base: Vec<String> = keys
+        .iter()
+        .map(|(target, key)| {
+            let mut label = format!("{} key", key_role_label(target, key));
+            if key.is_disabled() {
+                label.push_str(" (disabled)");
+            }
+            label
+        })
+        .collect();
+
+    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    for label in &base {
+        *counts.entry(label.as_str()).or_default() += 1;
+    }
+
+    base.iter()
+        .zip(keys.iter())
+        .map(|(label, (_, key))| {
+            if counts.get(label.as_str()).copied().unwrap_or(0) > 1 {
+                format!("{label} #{}", key.id())
+            } else {
+                label.clone()
+            }
+        })
+        .collect()
+}
+
 /// At-rest protection posture of a node's vault keys, reduced to what the detail
 /// view needs: the tier label and whether an `Add password protection…` action
 /// applies (only when there are unprotected vault keys to seal).
@@ -488,11 +527,10 @@ impl MasternodeDetailView {
                 .strong()
                 .color(DashColors::text_primary(dark_mode)),
         );
-        for (target, key) in self.identity_keys() {
-            if ui
-                .button(format!("{} key ›", key_role_label(&target, &key)))
-                .clicked()
-            {
+        let keys = self.identity_keys();
+        let labels = manage_keys_labels(&keys);
+        for ((target, key), label) in keys.into_iter().zip(labels) {
+            if ui.button(format!("{label} ›")).clicked() {
                 action = Some(self.open_key_info(target, &key));
             }
         }
@@ -809,6 +847,105 @@ mod tests {
             SECTION_ORDER,
             ["Header", "Actions", "Keys", "DPNS", "Remove"]
         );
+    }
+
+    /// Build a masternode key with a chosen id / purpose / disabled state.
+    fn mn_key(
+        id: dash_sdk::dpp::identity::KeyID,
+        purpose: dash_sdk::dpp::identity::Purpose,
+        disabled: bool,
+    ) -> dash_sdk::platform::IdentityPublicKey {
+        use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
+        use dash_sdk::dpp::identity::{KeyType, SecurityLevel};
+        use dash_sdk::dpp::platform_value::BinaryData;
+        IdentityPublicKeyV0 {
+            id,
+            key_type: KeyType::ECDSA_HASH160,
+            purpose,
+            security_level: SecurityLevel::CRITICAL,
+            read_only: true,
+            data: BinaryData::new(vec![id as u8; 20]),
+            disabled_at: disabled.then_some(1),
+            contract_bounds: None,
+        }
+        .into()
+    }
+
+    /// An evonode that has rotated its payout address holds two `TRANSFER`
+    /// (Payout) keys on its main identity — the active new one and the disabled
+    /// old one — plus the owner key and a voter-identity voting key. Every
+    /// "Manage keys" button must get a distinct, correct label: the disabled
+    /// payout key is marked `(disabled)` instead of colliding with the active
+    /// one under a bare "Payout key".
+    #[test]
+    fn manage_keys_labels_disambiguate_rotated_evonode_payout_keys() {
+        use dash_sdk::dpp::identity::Purpose;
+        let keys = vec![
+            (
+                PrivateKeyTarget::PrivateKeyOnMainIdentity,
+                mn_key(0, Purpose::TRANSFER, false),
+            ),
+            (
+                PrivateKeyTarget::PrivateKeyOnMainIdentity,
+                mn_key(1, Purpose::OWNER, false),
+            ),
+            (
+                PrivateKeyTarget::PrivateKeyOnMainIdentity,
+                mn_key(2, Purpose::TRANSFER, true),
+            ),
+            (
+                PrivateKeyTarget::PrivateKeyOnVoterIdentity,
+                mn_key(0, Purpose::VOTING, false),
+            ),
+        ];
+
+        let labels = manage_keys_labels(&keys);
+        assert_eq!(
+            labels,
+            vec![
+                "Payout key".to_string(),
+                "Owner key".to_string(),
+                "Payout key (disabled)".to_string(),
+                "Voting key".to_string(),
+            ]
+        );
+        // No two buttons ever share a label.
+        let unique: std::collections::BTreeSet<_> = labels.iter().collect();
+        assert_eq!(unique.len(), labels.len(), "labels must be unique");
+    }
+
+    /// When even the role + `(disabled)` marker still collides — a payout
+    /// address rotated twice leaves two disabled Payout keys — the key id
+    /// breaks the tie so every button stays unique.
+    #[test]
+    fn manage_keys_labels_fall_back_to_key_id_on_residual_collision() {
+        use dash_sdk::dpp::identity::Purpose;
+        let keys = vec![
+            (
+                PrivateKeyTarget::PrivateKeyOnMainIdentity,
+                mn_key(0, Purpose::TRANSFER, false),
+            ),
+            (
+                PrivateKeyTarget::PrivateKeyOnMainIdentity,
+                mn_key(2, Purpose::TRANSFER, true),
+            ),
+            (
+                PrivateKeyTarget::PrivateKeyOnMainIdentity,
+                mn_key(3, Purpose::TRANSFER, true),
+            ),
+        ];
+
+        let labels = manage_keys_labels(&keys);
+        assert_eq!(
+            labels,
+            vec![
+                "Payout key".to_string(),
+                "Payout key (disabled) #2".to_string(),
+                "Payout key (disabled) #3".to_string(),
+            ]
+        );
+        let unique: std::collections::BTreeSet<_> = labels.iter().collect();
+        assert_eq!(unique.len(), labels.len(), "labels must be unique");
     }
 
     #[test]

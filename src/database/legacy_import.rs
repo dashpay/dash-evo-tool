@@ -14,6 +14,7 @@
 use std::collections::BTreeMap;
 
 use dash_sdk::dpp::dashcore::Network;
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
 use dash_sdk::platform::Identifier;
@@ -294,7 +295,7 @@ pub(crate) fn read_identities(
     }
 
     let mut stmt = conn.prepare(
-        "SELECT id, data, status, wallet, wallet_index FROM identity \
+        "SELECT id, data, status, wallet, wallet_index, alias FROM identity \
          WHERE is_local = 1 AND data IS NOT NULL AND network IN (?1, ?2)",
     )?;
     let mut rows = stmt.query(rusqlite::params![
@@ -315,6 +316,9 @@ pub(crate) fn read_identities(
         let status: i64 = row.get(2)?;
         let wallet: Option<Vec<u8>> = row.get(3)?;
         let wallet_index: Option<i64> = row.get(4)?;
+        // Denormalised copy of the blob's own alias. Read as a fallback only —
+        // the blob wins whenever it carries one (see below).
+        let alias: Option<String> = row.get(5)?;
 
         let Ok(id) = <[u8; 32]>::try_from(id.as_slice()) else {
             tracing::warn!(
@@ -389,11 +393,35 @@ pub(crate) fn read_identities(
             continue;
         };
 
+        // The vault key derives from the id inside the blob, not this row's `id`
+        // column (see `insert_local_qualified_identity`), while the migration's
+        // skip-if-present precheck keys off the column. A hand-edited row whose
+        // two ids disagree would pass that precheck and then silently overwrite a
+        // different, already-loaded identity. Treat the divergence as row-level
+        // corruption: count it and skip, like every other bad row here.
+        if qi.identity.id().to_buffer() != id {
+            tracing::warn!(
+                target = "database::legacy_import",
+                identity = %hex::encode(id),
+                embedded = %hex::encode(qi.identity.id().to_buffer()),
+                "Skipping legacy identity whose row id and stored id disagree",
+            );
+            out.unreadable = out.unreadable.saturating_add(1);
+            continue;
+        }
+
         // Neither field is in the bincode blob — the legacy encoder skipped both
         // and kept them in columns. Without this, every imported identity reads
         // back as `Unknown` status on mainnet.
         qi.status = IdentityStatus::from(status);
         qi.network = network;
+
+        // The blob is the source of truth for the alias; the column is a
+        // denormalised copy. Fall back to it only when the blob carries none, so
+        // a row that has both always keeps the blob's value.
+        if qi.alias.is_none() {
+            qi.alias = alias;
+        }
 
         out.identities.push(LegacyIdentityRow { id, qi, wallet });
     }
@@ -1028,6 +1056,12 @@ mod tests {
 
     /// A genuinely-encodable identity blob, in the legacy `to_bytes()` shape.
     fn identity_blob(id: [u8; 32]) -> Vec<u8> {
+        identity_blob_with_alias(id, Some("alias"))
+    }
+
+    /// Like [`identity_blob`], but with an explicit alias — `None` yields a blob
+    /// whose own alias is absent, which exercises the column fallback.
+    fn identity_blob_with_alias(id: [u8; 32], alias: Option<&str>) -> Vec<u8> {
         use crate::model::qualified_identity::IdentityType;
         use dash_sdk::dpp::version::PlatformVersion;
 
@@ -1042,7 +1076,7 @@ mod tests {
             associated_operator_identity: None,
             associated_owner_key_id: None,
             identity_type: IdentityType::User,
-            alias: Some("alias".to_string()),
+            alias: alias.map(str::to_string),
             private_keys: Default::default(),
             dpns_names: vec![],
             associated_wallets: BTreeMap::new(),
@@ -1289,6 +1323,105 @@ mod tests {
         );
         assert_eq!(read.identities[0].id, good);
         assert_eq!(read.unreadable, 2, "both corrupt rows are reported");
+    }
+
+    /// The blob is the source of truth for the alias; the `alias` column is a
+    /// denormalised copy. The column fills in only when the blob carries none —
+    /// otherwise a blob with its own alias must keep it, column notwithstanding.
+    #[test]
+    fn identities_alias_falls_back_to_column_only_when_blob_has_none() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_identity_table(&conn);
+
+        let blob_wins = [0xAA; 32];
+        let column_fallback = [0xBB; 32];
+
+        // Blob carries its own alias — the differing column value must be ignored.
+        conn.execute(
+            "INSERT INTO identity (id, data, status, is_local, alias, network)
+             VALUES (?1, ?2, 2, 1, 'column-alias', 'testnet')",
+            rusqlite::params![
+                blob_wins.as_slice(),
+                identity_blob_with_alias(blob_wins, Some("blob-alias"))
+            ],
+        )
+        .unwrap();
+        // Blob has no alias — the column is the only source left, so it fills in.
+        conn.execute(
+            "INSERT INTO identity (id, data, status, is_local, alias, network)
+             VALUES (?1, ?2, 2, 1, 'column-alias', 'testnet')",
+            rusqlite::params![
+                column_fallback.as_slice(),
+                identity_blob_with_alias(column_fallback, None)
+            ],
+        )
+        .unwrap();
+
+        let read = read_identities(&conn, Network::Testnet).unwrap();
+
+        let alias_of = |id: [u8; 32]| {
+            read.identities
+                .iter()
+                .find(|r| r.id == id)
+                .unwrap_or_else(|| panic!("row not found"))
+                .qi
+                .alias
+                .clone()
+        };
+        assert_eq!(
+            alias_of(blob_wins).as_deref(),
+            Some("blob-alias"),
+            "the blob's own alias wins over the column",
+        );
+        assert_eq!(
+            alias_of(column_fallback).as_deref(),
+            Some("column-alias"),
+            "the column fills in when the blob has no alias",
+        );
+        assert_eq!(read.unreadable, 0);
+    }
+
+    /// The vault key comes from the id *inside* the blob, but the migration's
+    /// skip-if-present precheck keys off the row's `id` column. A row whose two
+    /// ids disagree is corruption: importing it would silently overwrite the
+    /// unrelated identity the blob names. It is counted and skipped, not imported.
+    #[test]
+    fn identities_skip_rows_whose_row_id_and_blob_id_disagree() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_identity_table(&conn);
+
+        let good = [0xAA; 32];
+        let row_id = [0xBB; 32];
+        let blob_id = [0xCC; 32];
+
+        insert_identity(
+            &conn,
+            good,
+            Some(identity_blob(good)),
+            2,
+            true,
+            None,
+            "testnet",
+        );
+        // Row `id` column and the blob's embedded id disagree.
+        insert_identity(
+            &conn,
+            row_id,
+            Some(identity_blob(blob_id)),
+            2,
+            true,
+            None,
+            "testnet",
+        );
+
+        let read = read_identities(&conn, Network::Testnet).unwrap();
+
+        assert_eq!(read.identities.len(), 1, "only the consistent row imports");
+        assert_eq!(read.identities[0].id, good);
+        assert_eq!(
+            read.unreadable, 1,
+            "the divergent row is reported, never imported",
+        );
     }
 
     #[test]

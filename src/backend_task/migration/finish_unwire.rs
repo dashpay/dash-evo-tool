@@ -364,19 +364,35 @@ pub async fn run(app_context: &Arc<AppContext>) -> Result<bool, TaskError> {
             return Err(identity_error);
         }
     };
-    let app_data = app_data?;
-
-    let moved_data = wallet_moved || app_data.moved_data() || identities.moved_data();
 
     // Identities outrank votes when both are damaged: an identity that did not
     // come across took its keys with it, so the user cannot sign — let alone
     // vote — until it is loaded again. Both counts are logged; one banner shows.
+    //
+    // This check runs BEFORE `app_data` is unwrapped: a hard app-data failure is
+    // deterministic (one malformed vote-index blob recurs every launch, since its
+    // sentinel is never written), so unwrapping `app_data?` first would return
+    // that error and permanently mask this "reload your identity" banner. The
+    // app-data error is logged here and retries next launch; it must not take
+    // precedence over unreadable keys.
     if identities.unreadable > 0 {
+        let (app_data_moved, votes_unreadable) = match &app_data {
+            Ok(outcome) => (outcome.moved_data(), outcome.votes_unreadable),
+            Err(app_data_error) => {
+                tracing::warn!(
+                    target = "migration::finish_unwire",
+                    error = ?app_data_error,
+                    "App-data import failed on the same launch as unreadable legacy identities; it retries on the next launch",
+                );
+                (false, 0)
+            }
+        };
+        let moved_data = wallet_moved || app_data_moved || identities.moved_data();
         tracing::warn!(
             target = "migration::finish_unwire",
             unreadable = identities.unreadable,
             imported = identities.imported,
-            votes_unreadable = app_data.votes_unreadable,
+            votes_unreadable,
             network = ?app_context.network,
             "Some legacy identities could not be decoded; they stay in the previous version's data.db and must be loaded again",
         );
@@ -385,6 +401,11 @@ pub async fn run(app_context: &Arc<AppContext>) -> Result<bool, TaskError> {
         });
         return Ok(moved_data);
     }
+
+    // Every identity decoded, so app-data no longer masks anything critical: a
+    // hard failure here is the user's "Retry now" banner.
+    let app_data = app_data?;
+    let moved_data = wallet_moved || app_data.moved_data() || identities.moved_data();
 
     // The warning is read back from storage rather than taken from this pass's
     // counters: on every launch after the discovery run the import short-circuits

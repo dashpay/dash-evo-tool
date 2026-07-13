@@ -329,7 +329,7 @@ impl MasternodeDetailView {
                     .color(DashColors::text_secondary(dark_mode)),
             );
             // Copy the FULL ProTxHash, not the shortened display string (TC-FR5-03).
-            if ui.button("⧉").on_hover_text("Copy ProTxHash").clicked() {
+            if ui.button("Copy").on_hover_text("Copy ProTxHash").clicked() {
                 ui.ctx().copy_text(self.node_id_hex_full.clone());
             }
             draw_type_badge(ui, self.badge_label(), dark_mode);
@@ -464,7 +464,7 @@ impl MasternodeDetailView {
                         .color(DashColors::text_secondary(dark_mode)),
                 );
                 if ui
-                    .button("⧉")
+                    .button("Copy")
                     .on_hover_text("Copy voter identity ID")
                     .clicked()
                 {

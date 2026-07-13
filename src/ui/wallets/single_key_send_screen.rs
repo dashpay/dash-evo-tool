@@ -778,15 +778,19 @@ impl SingleKeyWalletSendScreen {
 
             ui.add_space(20.0);
 
-            // Send button
+            // Send button. Enabled purely by the local preconditions (wallet
+            // unlocked, no send in flight) — the version limitation is not a UI
+            // gate: `CoreTask::SendSingleKeyWalletPayment` is the authoritative
+            // enforcement layer and refuses with a typed
+            // `TaskError::SingleKeyWalletsUnsupported`, which surfaces as an
+            // error banner. The warning banner above states the limitation
+            // before the user commits to the attempt.
             let wallet_is_open = self
                 .selected_wallet
                 .as_ref()
                 .is_some_and(|w| w.read().map(|g| g.is_open()).unwrap_or(false));
-            // Single-key wallets are unsupported in this version.
-            let is_rpc_mode = false;
 
-            let button_enabled = wallet_is_open && !self.sending && is_rpc_mode;
+            let button_enabled = wallet_is_open && !self.sending;
             // Only force white label text when the button is actually clickable;
             // otherwise let egui's default disabled visuals take over so the
             // greyed-out state is visually unambiguous.
@@ -805,10 +809,7 @@ impl SingleKeyWalletSendScreen {
                 })
                 .min_size(egui::vec2(120.0, 36.0));
 
-            let mut response = ui.add_enabled(button_enabled, send_button);
-            if !is_rpc_mode {
-                response = response.on_disabled_hover_text(SINGLE_KEY_SEND_UNAVAILABLE);
-            }
+            let response = ui.add_enabled(button_enabled, send_button);
             if response.clicked() {
                 match self.validate_and_send() {
                     Ok(send_action) => {
@@ -842,9 +843,6 @@ impl ScreenLike for SingleKeyWalletSendScreen {
             RootScreenType::RootScreenWalletsBalances,
         );
 
-        // Single-key wallets are unsupported in this version.
-        let is_rpc_mode = false;
-
         action |= island_central_panel(ui, |ui| {
             let mut inner_action = AppAction::None;
             let dark_mode = ui.style().visuals.dark_mode;
@@ -854,21 +852,18 @@ impl ScreenLike for SingleKeyWalletSendScreen {
             egui::ScrollArea::vertical()
                 .auto_shrink([true; 2])
                 .show(ui, |ui| {
-                    // Persistent warning banner for the SPV backend. Stored on
+                    // States the version limitation up front, so a send attempt
+                    // that the backend will refuse is never a surprise. Stored on
                     // the screen so the underlying tracing log fires once on
-                    // mode entry instead of every repaint — see the matching
-                    // note in `single_key_view.rs`.
-                    if !is_rpc_mode {
-                        if !self.spv_warning_banner.has_message() {
-                            self.spv_warning_banner
-                                .set_message(SINGLE_KEY_SEND_UNAVAILABLE, MessageType::Warning)
-                                .disable_auto_dismiss();
-                        }
-                        self.spv_warning_banner.show(ui);
-                        ui.add_space(10.0);
-                    } else if self.spv_warning_banner.has_message() {
-                        self.spv_warning_banner.clear();
+                    // entry instead of every repaint — see the matching note in
+                    // `single_key_view.rs`.
+                    if !self.spv_warning_banner.has_message() {
+                        self.spv_warning_banner
+                            .set_message(SINGLE_KEY_SEND_UNAVAILABLE, MessageType::Warning)
+                            .disable_auto_dismiss();
                     }
+                    self.spv_warning_banner.show(ui);
+                    ui.add_space(10.0);
 
                     // Heading with Advanced Options checkbox
                     ui.horizontal(|ui| {

@@ -1121,10 +1121,14 @@ impl WalletsBalancesScreen {
                         )
                         .create_screen(&self.app_context),
                     );
-                } else if let Some(sk_wallet) = &self.selected_single_key_wallet {
-                    action = AppAction::AddScreen(
-                        crate::ui::ScreenType::SingleKeyWalletSendScreen(sk_wallet.clone())
-                            .create_screen(&self.app_context),
+                } else if self.selected_single_key_wallet.is_some() {
+                    // Single-key send cannot work in this version, so state the
+                    // limitation here rather than routing the user into a send
+                    // screen that could only refuse the payment.
+                    MessageBanner::set_global(
+                        ui.ctx(),
+                        SINGLE_KEY_SEND_UNAVAILABLE,
+                        MessageType::Warning,
                     );
                 } else {
                     MessageBanner::set_global(

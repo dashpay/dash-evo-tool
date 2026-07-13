@@ -1,7 +1,7 @@
 use crate::app::AppAction;
+use crate::ui::MessageType;
 use crate::ui::components::component_trait::Component;
 use crate::ui::theme::DashColors;
-use crate::ui::{MessageType, ScreenType};
 use crate::wallet_backend::poison::RwLockRecover;
 use eframe::egui;
 use egui::{Frame, Margin, RichText, Ui};
@@ -9,9 +9,9 @@ use egui::{Frame, Margin, RichText, Ui};
 use super::WalletsBalancesScreen;
 
 /// Shown as a disabled-button tooltip and in the in-screen warning banner for
-/// single-key-wallet send actions. Exported so the dedicated send screen can
-/// reuse the same copy. Sending from a single-key wallet is not available in
-/// this version; receiving still works.
+/// single-key-wallet send actions. Exported so the dedicated send screen and
+/// the wallets action bar can reuse the same copy. Sending from a single-key
+/// wallet is not available in this version; receiving still works.
 pub(crate) const SINGLE_KEY_SEND_UNAVAILABLE: &str = "Sending from a single-key wallet is not available in this version. You can still receive funds at this address. To send these funds, import them into a recovery-phrase wallet.";
 
 impl WalletsBalancesScreen {
@@ -21,7 +21,7 @@ impl WalletsBalancesScreen {
         ui: &mut Ui,
         dark_mode: bool,
     ) -> AppAction {
-        let mut action = AppAction::None;
+        let action = AppAction::None;
 
         let wallet_arc = match &self.selected_single_key_wallet {
             Some(w) => w.clone(),
@@ -41,8 +41,6 @@ impl WalletsBalancesScreen {
         drop(wallet);
 
         let text_color = DashColors::text_primary(dark_mode);
-        // Single-key wallets are unsupported in this version.
-        let is_rpc_mode = false;
 
         Frame::group(ui.style())
             .fill(DashColors::surface(dark_mode))
@@ -56,9 +54,11 @@ impl WalletsBalancesScreen {
                     ui.label(RichText::new(format!("Balance: {:.8} DASH", balance_dash)));
                     ui.add_space(10.0);
 
-                    // Single-key sending is unavailable this release. The Send
-                    // button below is greyed out; this banner is the "why" the
-                    // user would otherwise miss from a silent disable.
+                    // Sending from a single-key wallet cannot work in this
+                    // version, so the Send button below is permanently
+                    // disabled. This banner carries the "why" plus the
+                    // recovery-phrase workaround that a bare greyed-out
+                    // button would leave unexplained.
                     //
                     // The banner lives on the screen struct so its state is
                     // constructed once and then re-rendered each frame. Setting
@@ -66,46 +66,25 @@ impl WalletsBalancesScreen {
                     // local) means `BannerState::logged` is preserved, so the
                     // underlying tracing log fires once — not 60 times a second
                     // while the screen is visible.
-                    if !is_rpc_mode {
-                        if !self.sk_spv_warning_banner.has_message() {
-                            self.sk_spv_warning_banner
-                                .set_message(SINGLE_KEY_SEND_UNAVAILABLE, MessageType::Warning)
-                                .disable_auto_dismiss();
-                        }
-                        self.sk_spv_warning_banner.show(ui);
-                        ui.add_space(10.0);
-                    } else if self.sk_spv_warning_banner.has_message() {
-                        self.sk_spv_warning_banner.clear();
+                    if !self.sk_spv_warning_banner.has_message() {
+                        self.sk_spv_warning_banner
+                            .set_message(SINGLE_KEY_SEND_UNAVAILABLE, MessageType::Warning)
+                            .disable_auto_dismiss();
                     }
+                    self.sk_spv_warning_banner.show(ui);
+                    ui.add_space(10.0);
 
                     // Action buttons for SK wallet
                     ui.horizontal(|ui| {
-                        // Only force the primary text color when the button is
-                        // enabled; otherwise let egui apply its default disabled
-                        // visuals so the button actually looks greyed out.
-                        let send_label = RichText::new("Send").strong();
-                        let send_label = if is_rpc_mode {
-                            send_label.color(text_color)
-                        } else {
-                            send_label
-                        };
-                        let send_button = egui::Button::new(send_label);
-                        let send_response = ui.add_enabled(is_rpc_mode, send_button);
-                        let send_response = if is_rpc_mode {
-                            send_response
-                        } else {
-                            send_response.on_disabled_hover_text(SINGLE_KEY_SEND_UNAVAILABLE)
-                        };
-                        if send_response.clicked() {
-                            action = AppAction::AddScreen(
-                                ScreenType::SingleKeyWalletSendScreen(wallet_arc.clone())
-                                    .create_screen(&self.app_context),
-                            );
-                        }
+                        // Left unstyled so egui's default disabled visuals apply
+                        // and the button reads as genuinely greyed out.
+                        let send_button = egui::Button::new(RichText::new("Send").strong());
+                        ui.add_enabled(false, send_button)
+                            .on_disabled_hover_text(SINGLE_KEY_SEND_UNAVAILABLE);
 
-                        // Receive only displays the local address — it does
-                        // not touch Core or SPV, so it stays enabled in both
-                        // modes.
+                        // Receive only displays the local address — it needs
+                        // neither UTXO discovery nor signing, so it stays
+                        // available.
                         if ui
                             .button(RichText::new("Receive").color(text_color))
                             .clicked()
@@ -230,5 +209,84 @@ impl WalletsBalancesScreen {
             });
 
         action
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SINGLE_KEY_SEND_UNAVAILABLE;
+    use crate::backend_task::error::TaskError;
+
+    /// Terms the Everyday User persona must never be shown (CLAUDE.md
+    /// "Error messages" rule 1). "RPC" is listed even though this build is
+    /// SPV-only: the concept is meaningless to the user either way.
+    const JARGON: &[&str] = &[
+        "SPV",
+        "RPC",
+        "UTXO",
+        "backend",
+        "consensus",
+        "nonce",
+        "SDK",
+        "state transition",
+    ];
+
+    fn assert_everyday_user_copy(msg: &str) {
+        let lower = msg.to_lowercase();
+        for term in JARGON {
+            assert!(
+                !lower.contains(&term.to_lowercase()),
+                "user-facing copy must not contain the jargon term {term:?}: {msg}"
+            );
+        }
+        // Rule 2: users must be able to self-resolve — never redirected to a
+        // human. Rule 3: calm, not apologetic/alarming.
+        assert!(
+            !lower.contains("contact support"),
+            "user-facing copy must never redirect to support: {msg}"
+        );
+        assert!(
+            !lower.contains("sorry") && !lower.contains("went wrong"),
+            "user-facing copy must stay calm and non-apologetic: {msg}"
+        );
+    }
+
+    /// The single-key send limitation is surfaced in-app, and the copy tells
+    /// the user what happened AND the concrete step they can take themselves
+    /// (move the funds into a recovery-phrase wallet). This is the whole
+    /// user-visible contract of the disabled Send control: without the
+    /// workaround the message would be a dead end.
+    #[test]
+    fn send_unavailable_copy_states_limitation_and_a_self_serve_action() {
+        assert_everyday_user_copy(SINGLE_KEY_SEND_UNAVAILABLE);
+
+        let lower = SINGLE_KEY_SEND_UNAVAILABLE.to_lowercase();
+        assert!(
+            lower.contains("not available"),
+            "copy must state the limitation: {SINGLE_KEY_SEND_UNAVAILABLE}"
+        );
+        assert!(
+            lower.contains("recovery-phrase"),
+            "copy must name the recovery-phrase workaround so the user can act: \
+             {SINGLE_KEY_SEND_UNAVAILABLE}"
+        );
+        assert!(
+            lower.contains("receive"),
+            "copy must say receiving still works, so the address is not read as dead: \
+             {SINGLE_KEY_SEND_UNAVAILABLE}"
+        );
+    }
+
+    /// The backend is the authoritative enforcement layer: a send that reaches
+    /// it is refused with a typed variant whose `Display` is itself
+    /// Everyday-User copy, since it is rendered straight into a `MessageBanner`.
+    #[test]
+    fn unsupported_task_error_display_is_everyday_user_copy() {
+        let msg = TaskError::SingleKeyWalletsUnsupported.to_string();
+        assert_everyday_user_copy(&msg);
+        assert!(
+            msg.to_lowercase().contains("recovery-phrase"),
+            "the typed refusal must point at the same workaround as the UI copy: {msg}"
+        );
     }
 }

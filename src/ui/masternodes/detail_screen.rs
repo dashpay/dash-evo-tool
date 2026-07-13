@@ -368,7 +368,13 @@ impl MasternodeDetailView {
                     .color(DashColors::text_secondary(dark_mode)),
             );
             // Copy the FULL ProTxHash, not the shortened display string (TC-FR5-03).
-            if ui.button("Copy").on_hover_text("Copy ProTxHash").clicked() {
+            // `small_button` is text-height, so it stays vertically centered with
+            // the monospace hash and the badge; a full-size button towers over them.
+            if ui
+                .small_button("Copy")
+                .on_hover_text("Copy ProTxHash")
+                .clicked()
+            {
                 ui.ctx().copy_text(self.node_id_hex_full.clone());
             }
             draw_type_badge(ui, self.badge_label(), dark_mode);
@@ -496,8 +502,10 @@ impl MasternodeDetailView {
                     RichText::new(format!("Voter identity: {}", shorten_id(&voter_full)))
                         .color(DashColors::text_secondary(dark_mode)),
                 );
+                // `small_button` keeps the copy affordance text-height and
+                // vertically centered with the voter-identity label.
                 if ui
-                    .button("Copy")
+                    .small_button("Copy")
                     .on_hover_text("Copy voter identity ID")
                     .clicked()
                 {

@@ -106,10 +106,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   breakdowns, address tables, masternode tools); a few of the most advanced
   actions (state-transition signing overrides, proceeding without a locally
   held key, clearing Platform addresses) now require the new Developer tools
-  level. The choice is remembered and can be changed anytime; `DEVELOPER_MODE`
-  in `.env` still works as a one-time starting point on first launch but no
-  longer overrides your choice afterward. See [User Roles](docs/user-roles.md)
-  for details.
+  level. Until you pick a level, the app starts in Detailed view, so nothing
+  the old Expert mode showed you is hidden. The choice is remembered and can
+  be changed anytime, and it is made in the app — the `DEVELOPER_MODE` entry
+  in `.env` no longer has any effect on it. See
+  [User Roles](docs/user-roles.md) for details.
 
 ### Known Limitations
 

@@ -815,6 +815,12 @@ impl QualifiedIdentity {
 
         // Check the main identity's public keys
         for (target, public_key) in self.private_keys.identity_public_keys() {
+            // Platform rejects signing with a disabled key. Rotating a masternode
+            // payout address disables the old TRANSFER key and appends a new active
+            // one, so a rotated identity holds both — only the active key is signable.
+            if public_key.identity_public_key.is_disabled() {
+                continue;
+            }
             match (self.identity_type, target) {
                 (IdentityType::User, PrivateKeyTarget::PrivateKeyOnMainIdentity) => {
                     if public_key.identity_public_key.purpose() == Purpose::TRANSFER {
@@ -1167,5 +1173,59 @@ mod withdrawal_key_tests {
         );
         let selected = qi.default_withdrawal_key().expect("a key");
         assert_eq!(selected.identity_public_key.purpose(), Purpose::TRANSFER);
+    }
+
+    fn disabled_key(id: KeyID, purpose: Purpose) -> IdentityPublicKey {
+        let mut k = key(id, purpose);
+        k.set_disabled_at(1);
+        k
+    }
+
+    /// Repro for the withdrawal disabled-key bug: rotating a masternode payout
+    /// address disables the original `TRANSFER` key (id 0) and appends a new
+    /// active one at a higher id. The disabled key must be skipped so the
+    /// withdrawal signs with the active key Platform still accepts.
+    #[test]
+    fn disabled_transfer_key_is_skipped_for_active() {
+        let disabled = disabled_key(0, Purpose::TRANSFER);
+        let active = key(1, Purpose::TRANSFER);
+        let qi = build_identity(
+            IdentityType::Masternode,
+            vec![disabled.clone(), active.clone()],
+            vec![disabled, active],
+        );
+        let selected = qi.default_withdrawal_key().expect("a key");
+        assert_eq!(selected.identity_public_key.id(), 1);
+        assert!(!selected.identity_public_key.is_disabled());
+    }
+
+    #[test]
+    fn available_withdrawal_keys_excludes_disabled() {
+        let disabled = disabled_key(0, Purpose::TRANSFER);
+        let active = key(1, Purpose::TRANSFER);
+        let qi = build_identity(
+            IdentityType::Masternode,
+            vec![disabled.clone(), active.clone()],
+            vec![disabled, active],
+        );
+        let ids: Vec<KeyID> = qi
+            .available_withdrawal_keys()
+            .iter()
+            .map(|qk| qk.identity_public_key.id())
+            .collect();
+        assert_eq!(ids, vec![1]);
+    }
+
+    /// A wholly disabled key set leaves no signable withdrawal key.
+    #[test]
+    fn all_disabled_yields_no_withdrawal_key() {
+        let disabled = disabled_key(0, Purpose::TRANSFER);
+        let qi = build_identity(
+            IdentityType::Masternode,
+            vec![disabled.clone()],
+            vec![disabled],
+        );
+        assert!(qi.default_withdrawal_key().is_none());
+        assert!(qi.available_withdrawal_keys().is_empty());
     }
 }

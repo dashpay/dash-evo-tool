@@ -1,6 +1,7 @@
 use crate::app::AppAction;
 use crate::context::AppContext;
 use crate::context::feature_gate::FeatureGate;
+use crate::model::user_role::UserRole;
 use crate::ui::RootScreenType;
 use crate::ui::components::icons::{load_icon, load_svg_icon};
 use crate::ui::components::styled::GradientButton;
@@ -87,16 +88,16 @@ pub fn add_left_panel(
                 None,
             ));
             // Masternodes sits directly below the identity cluster (locked
-            // decision #3), gated behind Expert Mode — the nav item and route
-            // are both absent when Expert Mode is off (the gate skip below drops
-            // the entry).
+            // decision #3), gated at the Power role — masternode operation is a
+            // Power User activity. The nav item and route are both absent below
+            // Power (the gate skip below drops the entry).
             // TODO: swap `voting.png` for a dedicated node/server glyph when one
             // is added to `icons/` (distinct from `identity.png`).
             buttons.push((
                 "Masternodes",
                 RootScreenType::RootScreenMasternodes,
                 "voting.png",
-                Some(FeatureGate::DeveloperMode),
+                Some(FeatureGate::Masternodes),
             ));
         }
     }
@@ -127,7 +128,7 @@ pub fn add_left_panel(
                     if app_context.network != Network::Mainnet {
                         bottom_reserved += 22.0; // network label + spacing
                     }
-                    if app_context.is_developer_mode() {
+                    if app_context.user_role().at_least(UserRole::Power) {
                         bottom_reserved += 2.0 + 16.0; // dev label area (spacing + label height)
                     }
 
@@ -314,8 +315,8 @@ pub fn add_left_panel(
                                             );
                                         }
 
-                                        // Dev mode label (below network label if present)
-                                        if app_context.is_developer_mode() {
+                                        // Expert label (below network label if present)
+                                        if app_context.user_role().at_least(UserRole::Power) {
                                             ui.add_space(5.0);
                                             let dev_label = egui::RichText::new("🔧 Expert")
                                                 .color(DashColors::GRADIENT_PURPLE)

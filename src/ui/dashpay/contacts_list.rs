@@ -2,6 +2,7 @@ use crate::app::AppAction;
 use crate::backend_task::dashpay::DashPayTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
+use crate::context::feature_gate::FeatureGate;
 
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::components::avatar::Avatar;
@@ -810,7 +811,11 @@ impl ContactsList {
                                             }
                                         }
 
-                                        if ui.button("Pay").clicked() {
+                                        // Pay is an experimental DashPay feature.
+                                        if FeatureGate::DashPayOperations
+                                            .is_available(&self.app_context)
+                                            && ui.button("Pay").clicked()
+                                        {
                                             if let Some(identity) = self.selected_identity.clone() {
                                                 action = AppAction::AddScreen(
                                                     ScreenType::DashPaySendPayment(
@@ -917,13 +922,24 @@ impl ScreenLike for ContactsList {
                 self.has_loaded = true;
                 self.message = None;
             }
-            BackendTaskSuccessResult::DashPayContactsWithInfo(contacts_data) => {
+            BackendTaskSuccessResult::DashPayContactsWithInfo {
+                identity,
+                contacts: contacts_data,
+            } => {
+                let owner_id_opt = self.selected_identity.as_ref().map(|i| i.identity.id());
+
+                // A load that outlived an identity switch belongs to the
+                // identity we left — it must not repopulate this list.
+                if owner_id_opt != Some(identity) {
+                    tracing::debug!("Discarding contacts for a no-longer-selected identity");
+                    return;
+                }
+
                 // Clear existing contacts and repopulate the in-memory map
                 // from the adapter result. Upstream `ManagedIdentity` is
                 // now the authoritative source for contact rows (D4d), so
                 // the DET-local cache writes are gone.
                 self.contacts.clear();
-                let owner_id_opt = self.selected_identity.as_ref().map(|i| i.identity.id());
                 for contact_data in contacts_data {
                     // Skip self-contacts (where contact is the same as the owner)
                     if owner_id_opt

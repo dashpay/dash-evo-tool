@@ -38,6 +38,10 @@ Test locations:
 - E2E: `tests/e2e/`
 - Backend E2E: `tests/backend-e2e/` (network-dependent, `#[ignore]`)
 
+### GUI testing (live app, real display)
+
+Driving the actual compiled binary through a real display — for flows that need real navigation, real async/network timing, or visual verification beyond what `kittest` (no display) or `backend-e2e` (no UI) can cover. Read `docs/gui-testing/README.md` before running this kind of test — it has the safety rules (isolated data dir, credential handling, fund-movement caps) and the reusable scenario library under `docs/gui-testing/scenarios/`.
+
 Always run `cargo clippy` and `cargo +nightly fmt` when finalizing your work.
 
 ### User stories catalog
@@ -108,6 +112,7 @@ User-facing error messages (shown in `MessageBanner` via `Display`) must follow 
 - **docs/personas** contains user personas (Everyday User, Power User, Platform Developer) that define the three target user archetypes and the progressive disclosure model for UI complexity. Consult these when making UX decisions about what to show/hide or how to structure wallet features.
 - **docs/user-stories.md** catalogs user stories across feature areas, tagged by persona and marked `[Implemented]` or `[Gap]`. Reference when planning new features or verifying coverage.
 - **docs/ux-design-patterns.md** is the UI/UX reference card — explains **when and how** to use design tokens, buttons, dialogs, forms, accessibility rules, and progressive disclosure. For exact values (sizes, colors, padding), refer to source files (`src/ui/theme.rs`, `src/ui/components/`). Consult when building or reviewing UI.
+- **docs/gui-testing/** contains standing guidelines and a reusable scenario library for testing the real compiled app through a real display (not date-grouped — this is reusable practice, not a point-in-time design record). Read `docs/gui-testing/README.md` before driving the GUI directly for verification.
 - end-user documentation is in a separate repo: https://github.com/dashpay/docs/tree/HEAD/docs/user/network/dash-evo-tool , published at https://docs.dash.org/en/stable/docs/user/network/dash-evo-tool/
 
 ### System Layers (top → bottom)

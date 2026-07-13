@@ -262,7 +262,7 @@ impl BackendTestContext {
             egui_ctx,
             app_kv,
             secret_store,
-            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            dash_evo_tool::model::user_role::UserRoleCell::default(),
         )
         .expect("Failed to create AppContext for testnet");
 

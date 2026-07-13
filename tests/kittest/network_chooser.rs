@@ -1,5 +1,8 @@
-use crate::support::with_isolated_data_dir;
+use crate::support::{mount_app, with_isolated_data_dir};
+use dash_evo_tool::model::user_role::UserRole;
+use dash_evo_tool::ui::RootScreenType;
 use egui_kittest::Harness;
+use egui_kittest::kittest::Queryable;
 
 /// Test that the network chooser screen renders without panicking
 #[test]
@@ -21,6 +24,34 @@ fn test_network_chooser_renders() {
 
         // Run a few frames to ensure the app initializes
         harness.run_steps(10);
+    });
+}
+
+/// The Settings interface-mode selector sets the app-global role and persists
+/// it to AppSettings — the single source of truth the runtime role and the
+/// gates read from.
+#[test]
+fn interface_mode_selector_sets_and_persists_role() {
+    with_isolated_data_dir(|| {
+        let mut harness = mount_app(RootScreenType::RootScreenNetworkChooser);
+        let app_context = harness.state().current_app_context().clone();
+
+        // An account that never chose a role starts at the unset default.
+        assert_eq!(app_context.user_role(), UserRole::WHEN_UNSET);
+
+        harness.get_by_label("Developer tools").click();
+        harness.run_steps(3);
+
+        assert_eq!(
+            app_context.user_role(),
+            UserRole::Developer,
+            "selecting 'Developer tools' must raise the app-global role"
+        );
+        assert_eq!(
+            app_context.get_app_settings().user_role,
+            Some(UserRole::Developer),
+            "the selected role must be persisted to AppSettings"
+        );
     });
 }
 

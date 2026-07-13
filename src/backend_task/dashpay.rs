@@ -19,6 +19,7 @@ pub mod validation;
 
 pub use contacts::ContactData;
 
+use crate::model::dashpay::AcceptedAccounts;
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
@@ -120,7 +121,11 @@ pub enum DashPayTask {
         nickname: Option<String>,
         note: Option<String>,
         is_hidden: bool,
-        accepted_accounts: Vec<u32>,
+        /// The write replaces the whole `contactInfo` document, so a caller that
+        /// only flips `is_hidden` or edits a nickname must say
+        /// [`AcceptedAccounts::Preserve`] — otherwise the accounts the user
+        /// accepted are erased.
+        accepted_accounts: AcceptedAccounts,
     },
     /// Register DashPay receiving addresses for incoming payment detection
     RegisterDashPayAddresses {

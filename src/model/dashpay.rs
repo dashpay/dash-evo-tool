@@ -33,6 +33,32 @@ pub struct StoredProfile {
     pub updated_at: i64,
 }
 
+/// What a `contactInfo` write does to the contact's accepted-accounts list.
+///
+/// A `contactInfo` document is always written whole, so every write decides the
+/// fate of the accounts the user has already accepted. A caller with no opinion
+/// on them — unhiding a contact, renaming one — says [`Preserve`] and keeps the
+/// stored list; only a caller that owns the list says [`Replace`].
+///
+/// [`Preserve`]: AcceptedAccounts::Preserve
+/// [`Replace`]: AcceptedAccounts::Replace
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum AcceptedAccounts {
+    /// Keep the accounts already stored in the contact's `contactInfo`.
+    #[default]
+    Preserve,
+    /// Overwrite the stored accounts with exactly these.
+    Replace(Vec<u32>),
+}
+
+impl From<Vec<u32>> for AcceptedAccounts {
+    /// A bare account list is a full overwrite — the caller supplied the whole
+    /// list, so it owns it.
+    fn from(accounts: Vec<u32>) -> Self {
+        Self::Replace(accounts)
+    }
+}
+
 /// Relationship state of a DashPay contact.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

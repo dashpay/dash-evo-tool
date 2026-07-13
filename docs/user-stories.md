@@ -59,6 +59,7 @@ As a user managing multiple wallets, I want to switch between them quickly so th
 
 - Wallet selector dropdown shows all loaded wallets.
 - Switching is instant with no app restart.
+- The top-nav wallet pill is interactive on the Wallets tab and stays consistent with the in-tab picker.
 
 ### WAL-005: Rename a wallet [Implemented]
 **Persona:** Priya
@@ -204,12 +205,12 @@ As a user, I want to see clear tabs for Dash Core, Platform, and Shielded so tha
 - Empty accounts display "(empty)" indicator.
 - Switching tabs is instant with no data reload.
 
-### WAL-022: View system accounts in developer mode [Implemented]
-**Persona:** Jordan
+### WAL-022: View system accounts in the Detailed view [Implemented]
+**Persona:** Priya, Jordan
 
-As a developer, I want a System tab that reveals all internal account categories (Identity Registration, CoinJoin, Provider keys, etc.) so that I can inspect low-level wallet structure without cluttering the default view.
+As a power user, I want a System tab that reveals all internal account categories (Identity Registration, CoinJoin, Provider keys, etc.) so that I can inspect low-level wallet structure without cluttering the default view.
 
-- System tab appears only when developer mode is enabled.
+- System tab appears only at the Power role (Detailed view) or above.
 - Each system account category is shown as a collapsible section.
 - Section headers display address count and balance.
 
@@ -262,7 +263,17 @@ As a user, I want the app to tell me when a wallet's totals don't add up after s
 - The banner is not repeated on every later sync while the same difference persists, and it clears on its own once the totals agree again.
 - The check runs for all loaded wallets, not just the one currently on screen.
 
-### WAL-028: View and copy my shielded receive address [Implemented]
+### WAL-028: Switch the active wallet from the top-nav pill on the Wallets tab [Implemented]
+**Persona:** Priya, Jordan
+
+As a multi-wallet user, I can switch the active wallet from the top-nav pill while on the Wallets tab, and arriving at the Wallets tab always shows the wallet I last selected on any surface, so the pill and the in-tab picker never disagree.
+
+- The top-nav wallet pill is interactive on the Wallets tab (not a dead, informational pill), and picking a wallet from it switches the active wallet in place with no forced navigation.
+- Arriving at the Wallets tab re-syncs to the wallet last chosen on any surface, replacing a stale cached selection, without clobbering a still-valid one.
+- A single-key selection made in the tab survives navigation; a later explicit HD pick from the pill supersedes it — the two selection surfaces never show different wallets.
+- With a single wallet the pill has nothing to switch to and stays effectively non-interactive.
+
+### WAL-029: View and copy my shielded receive address [Implemented]
 **Persona:** Jordan
 
 As a developer, I want to view and copy my own shielded receive address so that I can give it to another party to receive a private transfer.
@@ -272,7 +283,7 @@ As a developer, I want to view and copy my own shielded receive address so that 
 - The address is published to the UI through a frame-safe snapshot written on the backend side after `ensure_shielded_bound`, sourced from the upstream key slot the shielded coordinator scans with — never re-derived in DET.
 - Generating additional diversified addresses remains a gap: upstream `platform-wallet` exposes no per-diversifier-index accessor (only `shielded_default_address` / `shielded_default_addresses`), so a "+" control cannot be wired without either duplicating Orchard key derivation outside the coordinator seam or stranding funds in a ZIP-32 account the single-account spend path cannot spend from.
 
-### WAL-029: Inspect shielded note details [Gap]
+### WAL-030: Inspect shielded note details [Gap]
 **Persona:** Jordan
 
 As a developer, I want to see the individual notes in my shielded pool — their value, block height, and spent/unspent status — so that I can verify and diagnose my shielded balance.
@@ -280,7 +291,7 @@ As a developer, I want to see the individual notes in my shielded pool — their
 - The Shielded tab lists each note with value, block height, and spent/unspent state, plus a synced-index and note-count summary.
 - Currently a gap: the Shielded Notes section renders only a placeholder ("Note history is managed by the upstream platform-wallet coordinator and will be surfaced here in a future update") — no per-note table, status, or count is shown.
 
-### WAL-030: Single-key wallet balance and UTXOs update automatically [Gap]
+### WAL-031: Single-key wallet balance and UTXOs update automatically [Gap]
 **Persona:** Priya, Jordan
 
 As a user with an imported single-key wallet, I want its balance and UTXO list to update on their own as funds arrive and are spent, so that I can see my funds without hunting for a refresh control.
@@ -306,7 +317,7 @@ As a user, I want to send Dash to a recipient address so that I can make payment
 As a user with an imported private key, I want to send Dash from that single-key wallet so that I can move funds to another address.
 
 - Temporarily unavailable in this version: the Send control for a single-key wallet is disabled and the app states the limitation and the workaround in place ("You can still receive funds at this address. To send these funds, import them into a recovery-phrase wallet."). A send that reaches the backend is refused with a typed error carrying the same message.
-- Currently blocked upstream, on the same gap as WAL-030: signing and raw-transaction broadcast are both already available, but coin selection needs the imported address's UTXOs, which cannot be discovered until the address can be registered as a watch-only wallet. Single-key wallet data is retained on disk and loads correctly; only the spend action is gated.
+- Currently blocked upstream, on the same gap as WAL-031: signing and raw-transaction broadcast are both already available, but coin selection needs the imported address's UTXOs, which cannot be discovered until the address can be registered as a watch-only wallet. Single-key wallet data is retained on disk and loads correctly; only the spend action is gated.
 
 ### SND-003: Receive Dash with QR code [Implemented]
 **Persona:** Alex, Priya
@@ -539,6 +550,7 @@ As a user, I want to view all keys associated with my identity so that I can aud
 
 As a power user, I want to add a password to an identity's signing keys so that they cannot be used to sign on this device without that password.
 
+- Applies only to identities with vault-stored keys (standalone-imported identities). HD-wallet-backed identity keys are derived on demand from that wallet's own seed and are already covered by the wallet's own password; the "Key Protection" section is hidden entirely for such identities since there is no separate vault key to protect.
 - Identity keys default to keyless: they sign automatically and headless/MCP signing keeps working — this is unchanged for any identity the user does not opt in.
 - From the Key Info screen, a collapsible "Key Protection" section (closed by default) shows whether this identity's keys are protected and offers "Add password protection…" or "Remove password protection…".
 - Opting in shows a danger warning (a forgotten password makes the keys unrecoverable for standalone-imported identities; automatic tools can no longer sign this identity), then asks for a new password, a confirmation, and an optional plain-text hint.
@@ -587,15 +599,17 @@ As a user, I want to top up identity credits from a Platform address so that I c
 - Available as funding method in top-up screen.
 - Uses Platform address credits directly.
 
-### IDN-014: Fund identity directly from scanned external payment [Removed — upstream-only funding]
+### IDN-014: Fund identity by receiving a deposit to a shown QR/address [Implemented]
 **Persona:** Priya, Jordan
 
-As a user, I want to register or top up an identity by scanning a QR code or supplying an external outpoint directly, so that I can fund an identity without first receiving the payment into my wallet.
+As an everyday user, I can fund a new identity or a top-up by receiving a Dash deposit to an address the tool shows me as a QR code, so I can pay from any wallet or exchange without first moving funds into this tool.
 
-- `RegisterIdentityFundingMethod::FundWithUtxo` and `TopUpIdentityFundingMethod::FundWithUtxo` variants removed.
-- QR-direct-fund UI removed.
+- Choosing "Receive a new deposit" shows a scannable deposit address (QR + copyable text) and the minimum amount to send.
+- Once enough arrives the amount field pre-fills (capped at the received balance, fee reserved) and I confirm to create/top-up.
+- I can switch funding methods at any time from the waiting and received sub-steps — the flow is never a dead end.
+- A build/broadcast failure leaves my deposit safe in the wallet, reusable via the existing wallet-balance and recover-unfinished-funding methods.
 
-**Rationale:** No upstream funding-outpoint API exists in `platform-wallet` at PR #3625 head. The capability cannot be preserved or emulated; all asset-lock funding is upstream-authoritative wallet-managed selection. Superseded by funding from wallet balance (`WalletBackend::create_asset_lock_proof`). Disclosed via the one-time post-migration informational notice shown to all migrated users.
+**Note:** The deposit lands in the wallet balance and then funds through the existing `FundWithWallet` → `AssetLockFunding::FromWalletBalance` path — no external funding-outpoint API is required. This restores the removed scan-to-fund capability using the address the tool derives from the SPV-watched receive pool.
 
 ### IDN-015: Automatic identity discovery after sync [Implemented]
 **Persona:** Alex, Priya
@@ -680,6 +694,8 @@ As a masternode operator, I want my previously scheduled DPNS votes to survive a
 
 - Scheduled votes stored before the upgrade remain visible and executable afterward.
 - The first launch after the upgrade imports them from the previous version's storage, keeping each vote's choice, timestamp, and already-cast state. A vote that cannot be read is reported in a banner, with the recovery action, rather than dropped silently — and never blocks the wallet migration that restores access to funds.
+- A single unreadable vote row costs only itself: the readable votes in the same batch still import.
+- The report of unreadable votes returns on every launch until it is explicitly acknowledged, so a vote whose deadline is still open cannot lose its only notice to a missed or dismissed banner.
 
 ---
 
@@ -1125,20 +1141,21 @@ As a user, I want to choose between light, dark, or auto theme so that the app m
 - Light, dark, and system-auto options.
 - Theme change applied immediately.
 
-### NET-005: Toggle developer mode [Implemented]
+### NET-005: Unlock advanced features by interface mode [Implemented]
 **Persona:** Priya, Jordan
 
-As a user, I want to enable developer mode so that I can access advanced features like address tables, refresh controls, and debug tools.
+As a user, I want a higher interface mode to reveal advanced features like address tables, refresh controls, and debug tools, so that complexity stays out of my way until I ask for it.
 
-- Toggles visibility of advanced UI elements.
+- Detailed view and Developer tools each add capabilities on top of the mode below them.
+- Feature availability is monotonic: anything a lower mode can do, a higher mode can too.
 
-### NET-006: Select user mode [Gap]
-**Persona:** Alex, Priya
+### NET-006: Select interface mode [Implemented]
+**Persona:** Alex, Priya, Jordan
 
-As a user, I want to choose between Beginner and Advanced mode so that the interface matches my experience level.
+As a user, I want to choose between Default view, Detailed view, and Developer tools so that the interface matches my experience level.
 
-- Beginner mode hides complexity; Advanced mode shows full detail.
-- `UserMode` enum and database persistence exist but no UI control is implemented.
+- Same three choices and descriptions on the Network Settings "Interface mode" card and the Welcome screen onboarding row.
+- Choice persists and applies immediately, and can be changed again at any time.
 
 ### NET-007: Granular refresh controls [Implemented]
 **Persona:** Priya
@@ -1211,7 +1228,7 @@ As an everyday user, I want to install and use Dash Evo Tool without having to r
 
 - Fresh install connects to the Dash network via the built-in SPV light client with zero configuration.
 - The user sees sync progress and status clearly; the default everyday-user UI avoids mentions of SPV, RPC, or nodes.
-- Technical/protocol terminology may appear in Expert mode or advanced settings, where Dash Core RPC remains available as an opt-in for users who do run a local node.
+- Technical/protocol terminology may appear in Detailed view, Developer tools, or advanced settings, where Dash Core RPC remains available as an opt-in for users who do run a local node.
 
 ### NET-016: Refresh Platform (DAPI) node list [Implemented]
 **Persona:** Priya, Jordan
@@ -1387,13 +1404,13 @@ As Alex, setting up a social profile to unlock DashPay contacts is clearly optio
 - Settings tab hosts the social-profile block where display name and avatar can be edited; identities without a profile continue to use payments and usernames untouched.
 - Home tab renders a `Set up your social profile` entry in the onboarding checklist with a skip affordance — opting in is never forced.
 
-### IDH-005: Developer bulk identity creation [Gap]
-**Persona:** Jordan
+### IDH-005: Bulk identity creation [Gap]
+**Persona:** Priya, Jordan
 
-As Jordan in Developer Mode, I have a single entry point to create many test identities without leaving the Identities section.
+As a power user, I have a single entry point to create many test identities without leaving the Identities section.
 
-- Onboarding screen surfaces a Developer-mode footer mentioning `Create multiple test identities` / `Load identity by ID` as plain text.
-- Planned (follow-up): wire those footer items to the existing `AddNewIdentityScreen` bulk path and dev-mode identity-picker dropdown entries.
+- Onboarding screen surfaces a footer, shown at the Power role or above, mentioning `Create multiple test identities` / `Load identity by ID` as plain text.
+- Planned (follow-up): wire those footer items to the existing `AddNewIdentityScreen` bulk path and the Power-role identity-picker dropdown entries.
 
 ### IDH-006: Unified activity timeline [Gap]
 **Persona:** All
@@ -1442,7 +1459,7 @@ As a masternode operator, I want a card list of my loaded masternodes showing ty
 
 - Each card shows a shortened ProTxHash (or alias as heading), a Masternode/Evonode type badge, voter-identity readiness ("Voting ready" / "No voting key"), a compact Voting/Owner/Payout key-status indicator, a DPNS-voting status line, and an identity status dot with a text label.
 - An empty state explains what a masternode identity is for and offers a primary "Load a masternode" action when none are loaded.
-- The Masternodes tab and its nav entry are visible only with Expert Mode enabled; turning Expert Mode off while the tab is active falls back to the Identities screen.
+- The Masternodes tab and its nav entry are visible only at the Detailed view interface mode or above; dropping below Detailed view while the tab is active falls back to the Identities screen.
 
 ### MN-003: Open a masternode and vote [Implemented]
 **Persona:** Priya

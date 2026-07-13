@@ -2,6 +2,8 @@ use crate::app::AppAction;
 use crate::backend_task::dashpay::DashPayTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
+use crate::context::feature_gate::FeatureGate;
+use crate::model::dashpay::AcceptedAccounts;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::components::MessageBanner;
 use crate::ui::components::dashpay_subscreen_chooser_panel::add_dashpay_subscreen_chooser_panel;
@@ -213,7 +215,9 @@ impl ContactDetailsScreen {
                     Some(self.edit_note.clone())
                 },
                 is_hidden: self.edit_hidden,
-                accepted_accounts: vec![],
+                // This form edits the nickname, note, and hidden flag — it has
+                // no say over which accounts the user accepted.
+                accepted_accounts: AcceptedAccounts::Preserve,
             },
         )))
     }
@@ -294,7 +298,10 @@ impl ContactDetailsScreen {
                         });
 
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
-                            if ui.button("Send Payment").clicked() {
+                            // Send Payment is an experimental DashPay feature.
+                            if FeatureGate::DashPayOperations.is_available(&self.app_context)
+                                && ui.button("Send Payment").clicked()
+                            {
                                 action = AppAction::AddScreen(
                                     ScreenType::DashPaySendPayment(
                                         self.identity.clone(),
@@ -622,7 +629,17 @@ impl ScreenLike for ContactDetailsScreen {
                     );
                 }
             }
-            BackendTaskSuccessResult::DashPayContactsWithInfo(contacts_data) => {
+            BackendTaskSuccessResult::DashPayContactsWithInfo {
+                identity,
+                contacts: contacts_data,
+            } => {
+                // Contacts loaded for another identity say nothing about this
+                // screen's contact — a reload that outlived an identity switch
+                // must not overwrite what is on screen.
+                if identity != self.identity.identity.id() {
+                    return;
+                }
+
                 // If a full contacts reload happened, update our contact if present
                 for contact_data in contacts_data {
                     if contact_data.identity_id == self.contact_id {

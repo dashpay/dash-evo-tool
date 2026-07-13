@@ -7,6 +7,7 @@
 //! bodies. Consolidated here following the `leak_test_support` pattern.
 
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use platform_wallet_storage::{KvError, KvStore, ObjectId};
 
@@ -69,5 +70,58 @@ impl KvStore for InMemoryKv {
             .collect();
         keys.sort();
         Ok(keys)
+    }
+}
+
+/// An [`InMemoryKv`] whose reads can be made to fail on demand, counting every
+/// `put` that reaches the store.
+///
+/// Models a transient backing-store failure (a poisoned persister lock, a SQLite
+/// hiccup) so callers can be held to the rule a failed read imposes: never write
+/// a value back over a blob you could not read. `put_count` is the assertion
+/// handle — a caller that "recovers" from a read error by persisting defaults
+/// shows up as an extra put.
+#[derive(Default)]
+pub(crate) struct FailingKv {
+    inner: InMemoryKv,
+    fail_reads: AtomicBool,
+    puts: AtomicUsize,
+}
+
+impl FailingKv {
+    /// Make every subsequent `get` fail with [`KvError::LockPoisoned`] (`true`),
+    /// or restore normal reads (`false`). Stored values are never touched, so a
+    /// read armed to fail and then restored still yields the original blob.
+    pub(crate) fn fail_reads(&self, fail: bool) {
+        self.fail_reads.store(fail, Ordering::Relaxed);
+    }
+
+    /// How many `put` calls have reached the store.
+    pub(crate) fn put_count(&self) -> usize {
+        self.puts.load(Ordering::Relaxed)
+    }
+}
+
+impl KvStore for FailingKv {
+    fn get(&self, scope: &ObjectId, key: &str) -> Result<Option<Vec<u8>>, KvError> {
+        if self.fail_reads.load(Ordering::Relaxed) {
+            return Err(KvError::LockPoisoned);
+        }
+        self.inner.get(scope, key)
+    }
+
+    fn put(&self, scope: &ObjectId, key: &str, value: &[u8]) -> Result<(), KvError> {
+        // Counted before delegating: an attempted write is what the assertions
+        // are about, whether or not the store would have accepted it.
+        self.puts.fetch_add(1, Ordering::Relaxed);
+        self.inner.put(scope, key, value)
+    }
+
+    fn delete(&self, scope: &ObjectId, key: &str) -> Result<(), KvError> {
+        self.inner.delete(scope, key)
+    }
+
+    fn list_keys(&self, scope: &ObjectId, prefix: Option<&str>) -> Result<Vec<String>, KvError> {
+        self.inner.list_keys(scope, prefix)
     }
 }

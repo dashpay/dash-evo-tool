@@ -669,7 +669,7 @@ fn boot(dir: &std::path::Path) -> (Arc<AppContext>, AppSettings) {
         egui::Context::default(),
         app_kv,
         secret_store,
-        Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        crate::model::user_role::UserRoleCell::default(),
     )
     .expect("AppContext");
 

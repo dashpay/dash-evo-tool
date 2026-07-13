@@ -31,9 +31,9 @@ use crate::ui::components::{
 
 use super::{
     COLD_START_BACKEND_READY_TIMEOUT, COLD_START_STUCK_MESSAGE, MIGRATION_RETRY_ACTION_ID,
-    SPV_CONNECTING_DESCRIPTION, SPV_CONTINUE_BACKGROUND_ACTION, SPV_SYNCING_DESCRIPTION,
-    SpvBlockStep, cold_start_backend_wait_timed_out, migration_running_text,
-    migration_unreadable_identities_text, migration_unreadable_votes_text,
+    MIGRATION_VOTES_ACK_ACTION_ID, SPV_CONNECTING_DESCRIPTION, SPV_CONTINUE_BACKGROUND_ACTION,
+    SPV_SYNCING_DESCRIPTION, SpvBlockStep, cold_start_backend_wait_timed_out,
+    migration_running_text, migration_unreadable_identities_text, migration_unreadable_votes_text,
     should_dispatch_cold_start, spv_block_step,
 };
 
@@ -477,15 +477,18 @@ impl MigrationReconciler {
             }
             MigrationState::SucceededWithUnreadableVotes { count } => {
                 // The wallets landed; only the corrupt vote rows did not. A
-                // Warning (not Error) with no retry action: the drain is done and
-                // re-reading a corrupt row cannot help. Sticky, so the user who
-                // stepped away still learns the votes need re-scheduling.
+                // Warning (not Error): the drain is done and re-reading a corrupt
+                // row cannot help, so there is no retry. Sticky, and re-raised on
+                // every launch until the user clicks the acknowledge action — a
+                // vote whose deadline still matters must not lose its only notice
+                // because the user was away when the banner appeared.
                 let handle = MessageBanner::set_global(
                     ctx,
                     migration_unreadable_votes_text(count),
                     MessageType::Warning,
                 );
                 handle.disable_auto_dismiss();
+                handle.with_action("Got it", MIGRATION_VOTES_ACK_ACTION_ID);
                 self.banner_handle = Some(handle);
             }
             MigrationState::SucceededWithUnreadableIdentities { count } => {
@@ -547,9 +550,10 @@ impl MigrationReconciler {
         }
     }
 
-    /// Drain pending banner-action clicks. The only registered action is the
+    /// Drain pending banner-action clicks. Two actions are registered: the
     /// migration Retry, which re-dispatches `FinishUnwire` after resetting the
-    /// cold-start guard — returned for `AppState` to dispatch.
+    /// cold-start guard, and the unreadable-vote acknowledgement, which clears the
+    /// durable warning. Both are returned for `AppState` to dispatch.
     pub(super) fn drain_actions(
         &mut self,
         ctx: &egui::Context,
@@ -569,6 +573,15 @@ impl MigrationReconciler {
                 self.last_state = None;
                 self.dispatched.remove(&network);
                 task = Some(BackendTask::MigrationTask(MigrationTask::FinishUnwire));
+            } else if action_id == MIGRATION_VOTES_ACK_ACTION_ID {
+                tracing::info!(
+                    target = "migration::cold_start",
+                    ?network,
+                    "User acknowledged the unreadable-vote warning",
+                );
+                task = Some(BackendTask::MigrationTask(
+                    MigrationTask::AcknowledgeUnreadableVotes,
+                ));
             } else {
                 tracing::warn!(
                     target = "ui::banner",

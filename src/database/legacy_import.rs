@@ -23,8 +23,9 @@ use crate::backend_task::contested_names::ScheduledDPNSVote;
 use crate::database::{Database, column_exists, table_exists};
 use crate::model::qualified_identity::{IdentityStatus, QualifiedIdentity};
 use crate::model::settings::{
-    AppSettings, RootScreenType, UserMode, network_from_legacy_str, theme_mode_from_str,
+    AppSettings, RootScreenType, network_from_legacy_str, theme_mode_from_str,
 };
+use crate::model::user_role::UserRole;
 
 /// Legacy spelling of mainnet in `data.db`. Migration 29 rewrites it to
 /// `mainnet`, but a DB that never reached v29 still carries the old value,
@@ -34,7 +35,8 @@ const LEGACY_MAINNET_ALIAS: &str = "dash";
 /// Outcome of one legacy scheduled-vote read.
 ///
 /// `unreadable` counts rows the reader could not decode into a
-/// [`ScheduledDPNSVote`] (corrupt voter id, unparseable vote choice). They
+/// [`ScheduledDPNSVote`] — a malformed column (NULL, wrong type, out-of-range
+/// integer) as much as a corrupt voter id or an unparseable vote choice. They
 /// are reported rather than silently dropped so the caller can refuse to
 /// mark the import complete — a dropped vote is a missed vote window.
 #[derive(Debug, Default, PartialEq)]
@@ -156,8 +158,12 @@ pub(crate) fn read_app_settings(conn: &Connection) -> rusqlite::Result<Option<Ap
     if let Some(s) = value_as_string(&values, "theme_preference") {
         settings.theme_mode = theme_mode_from_str(&s);
     }
+    // The legacy `user_mode` column only ever held the retired `UserMode`
+    // strings, which gated nothing and so carry no role information. They decode
+    // to `None` — no role was ever chosen — and the app resolves that to
+    // `UserRole::WHEN_UNSET`, the tier the legacy build exposed unconditionally.
     if let Some(s) = value_as_string(&values, "user_mode") {
-        settings.user_mode = UserMode::from_str_or_default(&s);
+        settings.user_role = UserRole::from_persisted(&s);
     }
     if let Some(b) = value_as_bool(&values, "onboarding_completed") {
         settings.onboarding_completed = b;
@@ -218,11 +224,24 @@ pub(crate) fn read_scheduled_votes(
 
     let mut rows = rows;
     while let Some(row) = rows.next()? {
-        let voter_id: Vec<u8> = row.get(0)?;
-        let contested_name: String = row.get(1)?;
-        let vote_choice: String = row.get(2)?;
-        let unix_timestamp: u64 = row.get(3)?;
-        let executed: i64 = row.get(4)?;
+        // Column decoding is per-row, like the domain decoding below it: a NULL,
+        // a type mismatch or an out-of-range integer (a negative `time` fails the
+        // `u64` range check) is corruption of ONE row. Propagating it would
+        // discard every vote already read in this pass and turn a
+        // warning-and-skip into a hard migration failure.
+        let decoded = decode_scheduled_vote_columns(row);
+        let (voter_id, contested_name, vote_choice, unix_timestamp, executed) = match decoded {
+            Ok(columns) => columns,
+            Err(e) => {
+                tracing::warn!(
+                    target = "database::legacy_import",
+                    error = ?e,
+                    "Skipping legacy scheduled vote with an unreadable column",
+                );
+                out.unreadable = out.unreadable.saturating_add(1);
+                continue;
+            }
+        };
 
         let Ok(voter_id) = Identifier::from_bytes(&voter_id) else {
             tracing::warn!(
@@ -382,6 +401,28 @@ pub(crate) fn read_identities(
     Ok(out)
 }
 
+/// Decode the five raw columns of one legacy `scheduled_votes` row. Kept
+/// separate so a conversion failure is a `Result` the row loop can count and
+/// skip, rather than a `?` that escapes [`read_scheduled_votes`].
+fn decode_scheduled_vote_columns(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<(Vec<u8>, String, String, u64, i64)> {
+    Ok((
+        row.get(0)?,
+        row.get(1)?,
+        row.get(2)?,
+        row.get(3)?,
+        row.get(4)?,
+    ))
+}
+
+/// Decode the three raw columns of one legacy `top_up` row. Same contract as
+/// [`decode_scheduled_vote_columns`]: a malformed column costs its own row, not
+/// the whole read.
+fn decode_top_up_columns(row: &rusqlite::Row<'_>) -> rusqlite::Result<(Vec<u8>, u32, u64)> {
+    Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+}
+
 /// Read the top-up history of every identity on `network`.
 ///
 /// The legacy `top_up` table carries no network column, so rows are scoped
@@ -405,9 +446,17 @@ pub(crate) fn read_top_ups(conn: &Connection, network: Network) -> rusqlite::Res
 
     let mut grouped: BTreeMap<[u8; 32], BTreeMap<u32, u64>> = BTreeMap::new();
     while let Some(row) = rows.next()? {
-        let identity_id: Vec<u8> = row.get(0)?;
-        let index: u32 = row.get(1)?;
-        let amount: u64 = row.get(2)?;
+        let (identity_id, index, amount) = match decode_top_up_columns(row) {
+            Ok(columns) => columns,
+            Err(e) => {
+                tracing::warn!(
+                    target = "database::legacy_import",
+                    error = ?e,
+                    "Skipping legacy top-up row with an unreadable column",
+                );
+                continue;
+            }
+        };
         let Ok(identity_id) = <[u8; 32]>::try_from(identity_id.as_slice()) else {
             tracing::warn!(
                 target = "database::legacy_import",
@@ -587,7 +636,6 @@ mod tests {
         assert_eq!(settings.theme_mode, ThemeMode::Dark);
         assert!(settings.onboarding_completed);
         assert!(settings.show_evonode_tools);
-        assert_eq!(settings.user_mode, UserMode::Beginner);
         assert!(settings.disable_zmq);
         assert!(!settings.overwrite_dash_conf);
         assert!(!settings.auto_start_spv);
@@ -596,6 +644,31 @@ mod tests {
             settings.dash_qt_path,
             Some(std::path::PathBuf::from("/opt/dash-qt"))
         );
+    }
+
+    /// The legacy `user_mode` column gated nothing, so it records no role. It
+    /// must import as "no role chosen" (`None`) — which the app resolves to
+    /// [`UserRole::WHEN_UNSET`], the surface the legacy build gave every user —
+    /// and never as a concrete role. Seeding `Everyday` off a legacy `Beginner`
+    /// would silently strip capability the user already had.
+    #[test]
+    fn legacy_user_mode_imports_as_no_role_chosen() {
+        for legacy_mode in ["Beginner", "Advanced"] {
+            let conn = Connection::open_in_memory().unwrap();
+            create_settings_table(&conn);
+            conn.execute(
+                "INSERT INTO settings (id, network, start_root_screen, user_mode, database_version)
+                 VALUES (1, 'testnet', 0, ?1, 40)",
+                rusqlite::params![legacy_mode],
+            )
+            .unwrap();
+
+            let settings = read_app_settings(&conn).unwrap().expect("settings row");
+            assert_eq!(
+                settings.user_role, None,
+                "legacy user_mode {legacy_mode} must not seed a role",
+            );
+        }
     }
 
     /// A `data.db` that never reached migration 29 still spells mainnet
@@ -799,6 +872,51 @@ mod tests {
         assert_eq!(read.unreadable, 2, "both corrupt rows are reported");
     }
 
+    /// A malformed column is the same class of damage as an undecodable vote
+    /// choice: skip the row, count it, keep going. Aborting the read would
+    /// discard every vote already accumulated in the same pass — the valid rows
+    /// on both sides of the bad one — and turn a warning into a hard failure.
+    /// Both shapes SQLite can hand back are covered: an out-of-range integer
+    /// (a negative `time` where a `u64` belongs) and a type mismatch (a blob in
+    /// the `vote_choice` text column).
+    #[test]
+    fn scheduled_votes_malformed_column_skips_only_its_own_row() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_scheduled_votes_table(&conn, true);
+        let voter = [0x11u8; 32];
+
+        insert_vote(&conn, &voter, "before", "Lock", 0, Some("testnet"));
+        conn.execute(
+            "INSERT INTO scheduled_votes
+             (identity_id, contested_name, vote_choice, time, executed, network)
+             VALUES (?1, 'negative-time', 'Lock', -1, 0, 'testnet')",
+            rusqlite::params![voter.as_slice()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO scheduled_votes
+             (identity_id, contested_name, vote_choice, time, executed, network)
+             VALUES (?1, 'blob-choice', ?2, 1700000000, 0, 'testnet')",
+            rusqlite::params![voter.as_slice(), vec![0xFFu8; 4]],
+        )
+        .unwrap();
+        insert_vote(&conn, &voter, "after", "Abstain", 0, Some("testnet"));
+
+        let read = read_scheduled_votes(&conn, Network::Testnet).unwrap();
+
+        assert_eq!(read.unreadable, 2, "both malformed rows are reported");
+        let names: Vec<&str> = read
+            .votes
+            .iter()
+            .map(|v| v.contested_name.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["before", "after"],
+            "the valid votes on both sides of a malformed row still import",
+        );
+    }
+
     #[test]
     fn scheduled_votes_absent_table_reads_empty() {
         let conn = Connection::open_in_memory().unwrap();
@@ -841,6 +959,45 @@ mod tests {
         assert_eq!(top_ups.len(), 1, "only the testnet identity's top-ups");
         assert_eq!(top_ups[0].0, mine);
         assert_eq!(top_ups[0].1, BTreeMap::from([(0, 1000), (1, 2000)]));
+    }
+
+    /// A malformed amount (negative, so out of range for `u64`) skips its own
+    /// row rather than aborting the read and losing every other identity's
+    /// audit trail.
+    #[test]
+    fn top_ups_malformed_column_skips_only_its_own_row() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE identity (id BLOB PRIMARY KEY, network TEXT NOT NULL);
+             CREATE TABLE top_up (
+                identity_id BLOB NOT NULL,
+                top_up_index INTEGER NOT NULL,
+                amount INTEGER NOT NULL,
+                PRIMARY KEY (identity_id, top_up_index)
+             );",
+        )
+        .unwrap();
+        let mine = [0xAAu8; 32];
+        conn.execute(
+            "INSERT INTO identity (id, network) VALUES (?1, 'testnet')",
+            rusqlite::params![mine.as_slice()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO top_up (identity_id, top_up_index, amount) VALUES
+                (?1, 0, 1000), (?1, 1, -5), (?1, 2, 2000)",
+            rusqlite::params![mine.as_slice()],
+        )
+        .unwrap();
+
+        let top_ups = read_top_ups(&conn, Network::Testnet).unwrap();
+
+        assert_eq!(top_ups.len(), 1);
+        assert_eq!(
+            top_ups[0].1,
+            BTreeMap::from([(0, 1000), (2, 2000)]),
+            "the readable top-ups around a malformed row still import",
+        );
     }
 
     #[test]

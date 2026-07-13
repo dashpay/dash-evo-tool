@@ -770,7 +770,7 @@ mod tests {
         );
     }
 
-    /// WAL-028 — the receive-address copy is i18n-clean: complete sentences for
+    /// WAL-029 — the receive-address copy is i18n-clean: complete sentences for
     /// the prose, a bare label for the button. The pending copy is what a
     /// locked / not-yet-bound wallet shows in place of an address, so it must
     /// never read as if an address were present.

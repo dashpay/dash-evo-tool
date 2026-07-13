@@ -99,6 +99,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   including pasting a raw shielded address in hex form — there are just fewer
   screens to navigate between.
 
+- **Expert mode replaced by three interface levels**: the single Expert-mode
+  toggle is now a three-way choice — **Default view**, **Detailed view**, and
+  **Developer tools** — set from Network Settings or during first-time setup.
+  Detailed view unlocks everything the old Expert mode did (account
+  breakdowns, address tables, masternode tools); a few of the most advanced
+  actions (state-transition signing overrides, proceeding without a locally
+  held key, clearing Platform addresses) now require the new Developer tools
+  level. Until you pick a level, the app starts in Detailed view, so nothing
+  the old Expert mode showed you is hidden. The choice is remembered and can
+  be changed anytime, and it is made in the app — the `DEVELOPER_MODE` entry
+  in `.env` no longer has any effect on it. See
+  [User Roles](docs/user-roles.md) for details.
+
 ### Known Limitations
 
 - **Single-key wallets — send and balance refresh not available**: importing a

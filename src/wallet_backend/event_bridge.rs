@@ -422,20 +422,6 @@ impl PlatformEventHandler for EventBridge {
         self.nudge_refresh();
     }
 
-    fn on_wallet_skipped_on_load(
-        &self,
-        wallet_id: platform_wallet::wallet::platform_wallet::WalletId,
-        reason: &platform_wallet::manager::load_outcome::SkipReason,
-    ) {
-        // Public wallet id + structural reason only; never a secret. The
-        // user-facing banner is raised in `register_persisted_wallets`.
-        tracing::warn!(
-            wallet_id = %hex::encode(wallet_id),
-            %reason,
-            "A saved wallet was skipped on load because its stored data is corrupt"
-        );
-    }
-
     fn on_shielded_sync_progress(&self, cumulative_scanned: u64, block_height: u64) {
         // Downloaded-notes progress for an in-flight pass — drives the
         // shielded tab's "scanning" indicator. Network-scoped (one pass covers

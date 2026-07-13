@@ -38,10 +38,36 @@ const TOKEN_KEY_PREFIX: &str = "det:token:";
 /// k/v store, so each holds its own ordering).
 const TOKEN_ORDER_KEY: &str = "det:token_order:v1";
 
-/// Versioned key for the `(token_id, identity_id)` pairs the user stopped
-/// tracking. Upstream's token watch set is in-memory only, so the dismissal
-/// is persisted here and re-applied every time DET rebuilds a watch set.
-const TOKEN_UNTRACKED_KEY: &str = "det:token_untracked:v1";
+/// Key prefix for the `(token_id, identity_id)` pairs the user stopped
+/// tracking. Upstream's token watch set is in-memory only, so the dismissal is
+/// persisted here and re-applied every time DET rebuilds a watch set.
+///
+/// One presence marker per pair at
+/// `det:token_untracked:v2:<token_id_base58>:<identity_id_base58>`; the value is
+/// empty, only the key carries meaning. Dismiss and re-track run as independent
+/// backend tasks that can overlap, so a marker per pair (rather than one
+/// set-valued blob) keeps each mutation a single self-contained write that no
+/// concurrent mutation can read stale and clobber. Token id leads, so dropping
+/// every dismissal of one token is a single prefix scan.
+const TOKEN_UNTRACKED_PREFIX: &str = "det:token_untracked:v2:";
+
+/// Marker key for one dismissed `(token, identity)` pair.
+fn untracked_key(pair: &IdentityTokenIdentifier) -> String {
+    format!(
+        "{}{}",
+        untracked_token_prefix(&pair.token_id),
+        pair.identity_id.to_string(Encoding::Base58)
+    )
+}
+
+/// Key prefix covering every identity that dismissed `token_id`.
+fn untracked_token_prefix(token_id: &Identifier) -> String {
+    format!(
+        "{}{}:",
+        TOKEN_UNTRACKED_PREFIX,
+        token_id.to_string(Encoding::Base58)
+    )
+}
 
 fn contract_key(contract_id: &Identifier) -> String {
     format!(
@@ -408,12 +434,7 @@ impl AppContext {
         &self,
         pair: IdentityTokenIdentifier,
     ) -> std::result::Result<(), TaskError> {
-        let kv = self.det_kv()?;
-        let mut pairs = read_untracked(&kv)?;
-        if pairs.insert(pair) {
-            write_untracked(&kv, &pairs)?;
-        }
-        Ok(())
+        mark_untracked_in(&self.det_kv()?, pair)
     }
 
     /// Track a previously dismissed identity-token pair again.
@@ -422,12 +443,7 @@ impl AppContext {
         &self,
         pair: IdentityTokenIdentifier,
     ) -> std::result::Result<(), TaskError> {
-        let kv = self.det_kv()?;
-        let mut pairs = read_untracked(&kv)?;
-        if pairs.remove(&pair) {
-            write_untracked(&kv, &pairs)?;
-        }
-        Ok(())
+        clear_untracked_in(&self.det_kv()?, pair)
     }
 
     /// Track a token again for every identity that dismissed it. Idempotent.
@@ -654,16 +670,10 @@ impl AppContext {
             return Ok(());
         }
         let kv = self.det_kv()?;
-        let registry_keys = kv
-            .list(DetScope::Global, Some(TOKEN_KEY_PREFIX))
-            .map_err(token_err)?;
-        for key in registry_keys {
-            kv.delete(DetScope::Global, &key).map_err(token_err)?;
-        }
+        delete_by_prefix(&kv, TOKEN_KEY_PREFIX)?;
+        delete_by_prefix(&kv, TOKEN_UNTRACKED_PREFIX)?;
         // Balances are owned upstream now — nothing local to wipe.
         kv.delete(DetScope::Global, TOKEN_ORDER_KEY)
-            .map_err(token_err)?;
-        kv.delete(DetScope::Global, TOKEN_UNTRACKED_KEY)
             .map_err(token_err)?;
         Ok(())
     }
@@ -712,49 +722,69 @@ fn decode_token_config(bytes: &[u8]) -> std::result::Result<TokenConfiguration, 
         .map_err(|source| TaskError::TokenConfigEncoding { source })
 }
 
-/// Read the dismissed pairs. An absent key means nothing was ever dismissed.
-/// The stored payload is `(token_id, identity_id)`-ordered; that on-disk layout
-/// is fixed by already-written user data, so the mapping to the named fields
-/// happens here and nowhere else.
+/// Read the dismissed pairs back off their marker keys. No markers means
+/// nothing was ever dismissed. A key that does not decode back to a
+/// `(token, identity)` pair is skipped with a warning rather than failing the
+/// whole read — one unreadable marker must not hide every other dismissal.
 fn read_untracked(kv: &DetKv) -> std::result::Result<BTreeSet<IdentityTokenIdentifier>, TaskError> {
-    let Some(payload): Option<Vec<([u8; 32], [u8; 32])>> = kv
-        .get(DetScope::Global, TOKEN_UNTRACKED_KEY)
-        .map_err(token_err)?
-    else {
-        return Ok(BTreeSet::new());
-    };
-    Ok(payload
-        .into_iter()
-        .map(|(token, identity)| IdentityTokenIdentifier {
-            token_id: Identifier::from(token),
-            identity_id: Identifier::from(identity),
-        })
-        .collect())
+    let keys = kv
+        .list(DetScope::Global, Some(TOKEN_UNTRACKED_PREFIX))
+        .map_err(token_err)?;
+    let mut pairs = BTreeSet::new();
+    for key in keys {
+        match parse_untracked_key(&key) {
+            Some(pair) => {
+                pairs.insert(pair);
+            }
+            None => tracing::warn!(key = %key, "Skipping unparseable token dismissal key"),
+        }
+    }
+    Ok(pairs)
 }
 
-fn write_untracked(
+/// Decode a marker key back into the pair it dismisses. The inverse of
+/// [`untracked_key`] — the sole place the `<token>:<identity>` key layout is
+/// mapped back onto the named fields.
+fn parse_untracked_key(key: &str) -> Option<IdentityTokenIdentifier> {
+    let (token, identity) = key.strip_prefix(TOKEN_UNTRACKED_PREFIX)?.split_once(':')?;
+    Some(IdentityTokenIdentifier {
+        token_id: Identifier::from_string(token, Encoding::Base58).ok()?,
+        identity_id: Identifier::from_string(identity, Encoding::Base58).ok()?,
+    })
+}
+
+/// Dismiss one pair. A single upsert of that pair's marker — idempotent, and
+/// independent of every other pair's marker.
+fn mark_untracked_in(
     kv: &DetKv,
-    pairs: &BTreeSet<IdentityTokenIdentifier>,
+    pair: IdentityTokenIdentifier,
 ) -> std::result::Result<(), TaskError> {
-    let payload: Vec<([u8; 32], [u8; 32])> = pairs
-        .iter()
-        .map(|pair| (pair.token_id.to_buffer(), pair.identity_id.to_buffer()))
-        .collect();
-    kv.put(DetScope::Global, TOKEN_UNTRACKED_KEY, &payload)
+    kv.put(DetScope::Global, &untracked_key(&pair), &())
+        .map_err(token_err)
+}
+
+/// Re-track one pair. A single delete of that pair's marker — idempotent, and
+/// independent of every other pair's marker.
+fn clear_untracked_in(
+    kv: &DetKv,
+    pair: IdentityTokenIdentifier,
+) -> std::result::Result<(), TaskError> {
+    kv.delete(DetScope::Global, &untracked_key(&pair))
         .map_err(token_err)
 }
 
 /// Drop every dismissal recorded for `token_id`, whichever identity made it.
-/// Writes back only when the set actually shrinks.
 fn clear_untracked_token_in(
     kv: &DetKv,
     token_id: &Identifier,
 ) -> std::result::Result<(), TaskError> {
-    let mut pairs = read_untracked(kv)?;
-    let before = pairs.len();
-    pairs.retain(|pair| pair.token_id != *token_id);
-    if pairs.len() != before {
-        write_untracked(kv, &pairs)?;
+    delete_by_prefix(kv, &untracked_token_prefix(token_id))
+}
+
+/// Delete every Global-scoped key under `prefix`.
+fn delete_by_prefix(kv: &DetKv, prefix: &str) -> std::result::Result<(), TaskError> {
+    for key in kv.list(DetScope::Global, Some(prefix)).map_err(token_err)? {
+        kv.delete(DetScope::Global, &key).map_err(token_err)?;
     }
     Ok(())
 }
@@ -792,7 +822,8 @@ where
 mod tests {
     use super::*;
     use crate::wallet_backend::kv_test_support::InMemoryKv;
-    use std::sync::Arc;
+    use platform_wallet_storage::{KvError, KvStore, ObjectId};
+    use std::sync::{Arc, Mutex};
 
     fn empty_kv() -> DetKv {
         DetKv::from_store(Arc::new(InMemoryKv::default()))
@@ -936,32 +967,67 @@ mod tests {
         assert!(read_untracked(&kv).unwrap().is_empty());
     }
 
+    /// Seed dismissals through the same path the backend tasks use.
+    fn dismiss_all(kv: &DetKv, pairs: impl IntoIterator<Item = IdentityTokenIdentifier>) {
+        for pair in pairs {
+            mark_untracked_in(kv, pair).expect("dismiss pair");
+        }
+    }
+
     #[test]
     fn untracked_pairs_round_trip_through_the_kv_store() {
         let kv = empty_kv();
         let pairs = BTreeSet::from([pair(1, 10), pair(2, 20)]);
-        write_untracked(&kv, &pairs).unwrap();
+        dismiss_all(&kv, pairs.iter().copied());
         assert_eq!(read_untracked(&kv).unwrap(), pairs);
     }
 
-    /// The stored layout is `(token_id, identity_id)` and is fixed by
-    /// already-written user data: reading it back as the wrong field would
-    /// silently un-track a pair nobody dismissed.
     #[test]
-    fn untracked_pairs_persist_in_token_then_identity_order() {
+    fn dismissing_the_same_pair_twice_is_idempotent() {
         let kv = empty_kv();
-        write_untracked(&kv, &BTreeSet::from([pair(1, 10)])).unwrap();
+        dismiss_all(&kv, [pair(1, 10), pair(1, 10)]);
+        assert_eq!(read_untracked(&kv).unwrap(), BTreeSet::from([pair(1, 10)]));
+    }
 
-        let payload: Vec<([u8; 32], [u8; 32])> = kv
-            .get(DetScope::Global, TOKEN_UNTRACKED_KEY)
-            .unwrap()
-            .unwrap();
+    #[test]
+    fn re_tracking_a_pair_that_was_never_dismissed_is_a_noop() {
+        let kv = empty_kv();
+        dismiss_all(&kv, [pair(1, 10)]);
+        clear_untracked_in(&kv, pair(2, 20)).unwrap();
+        assert_eq!(read_untracked(&kv).unwrap(), BTreeSet::from([pair(1, 10)]));
+    }
+
+    /// A marker key carries `<token>:<identity>` in that order. Decoding it the
+    /// other way round would silently un-track a pair nobody dismissed.
+    #[test]
+    fn a_marker_key_round_trips_back_to_its_pair_token_id_first() {
+        let dismissed = pair(1, 10);
+        let key = untracked_key(&dismissed);
 
         assert_eq!(
-            payload,
-            vec![(ident(1).to_buffer(), ident(10).to_buffer())],
-            "token_id is stored first, identity_id second"
+            key,
+            format!(
+                "{TOKEN_UNTRACKED_PREFIX}{}:{}",
+                ident(1).to_string(Encoding::Base58),
+                ident(10).to_string(Encoding::Base58)
+            ),
+            "token_id is keyed first, identity_id second"
         );
+        assert_eq!(parse_untracked_key(&key), Some(dismissed));
+    }
+
+    #[test]
+    fn an_unparseable_marker_key_is_skipped_rather_than_failing_the_read() {
+        let kv = empty_kv();
+        dismiss_all(&kv, [pair(1, 10)]);
+        kv.put(
+            DetScope::Global,
+            &format!("{TOKEN_UNTRACKED_PREFIX}not-base58:nonsense"),
+            &(),
+        )
+        .unwrap();
+
+        assert_eq!(read_untracked(&kv).unwrap(), BTreeSet::from([pair(1, 10)]));
     }
 
     #[test]
@@ -969,7 +1035,7 @@ mod tests {
         let kv = empty_kv();
         let cleared = ident(1);
         let kept = pair(2, 10);
-        write_untracked(&kv, &BTreeSet::from([pair(1, 10), pair(1, 11), kept])).unwrap();
+        dismiss_all(&kv, [pair(1, 10), pair(1, 11), kept]);
 
         clear_untracked_token_in(&kv, &cleared).unwrap();
 
@@ -980,8 +1046,146 @@ mod tests {
     fn clearing_an_undismissed_token_is_a_noop() {
         let kv = empty_kv();
         let pairs = BTreeSet::from([pair(1, 10)]);
-        write_untracked(&kv, &pairs).unwrap();
+        dismiss_all(&kv, pairs.iter().copied());
         clear_untracked_token_in(&kv, &ident(9)).unwrap();
         assert_eq!(read_untracked(&kv).unwrap(), pairs);
+    }
+
+    // ----------------------------------------------------------------
+    // Untracked pairs: concurrent dismissals must not clobber each other.
+    //
+    // Dismiss / re-track are independent backend tasks, each `tokio::spawn`ed,
+    // so two of them can overlap. A mutation that reads the whole dismissal
+    // set and writes it back has a window in which a concurrent mutation is
+    // read-before / written-over — the lost update surfaces as a dismissed
+    // token reappearing on the next refresh.
+    // ----------------------------------------------------------------
+
+    /// Delegates to [`InMemoryKv`], stalling *after* each read has taken its
+    /// snapshot. Two concurrent mutations therefore both observe the
+    /// pre-mutation state and write back late: a mutation that reads before it
+    /// writes loses its peer's update, while a mutation that only writes never
+    /// reads, never stalls, and cannot be clobbered.
+    #[derive(Default)]
+    struct StallingReadKv {
+        inner: InMemoryKv,
+    }
+
+    impl KvStore for StallingReadKv {
+        fn get(&self, scope: &ObjectId, key: &str) -> Result<Option<Vec<u8>>, KvError> {
+            let value = self.inner.get(scope, key);
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            value
+        }
+
+        fn put(&self, scope: &ObjectId, key: &str, value: &[u8]) -> Result<(), KvError> {
+            self.inner.put(scope, key, value)
+        }
+
+        fn delete(&self, scope: &ObjectId, key: &str) -> Result<(), KvError> {
+            self.inner.delete(scope, key)
+        }
+
+        fn list_keys(
+            &self,
+            scope: &ObjectId,
+            prefix: Option<&str>,
+        ) -> Result<Vec<String>, KvError> {
+            self.inner.list_keys(scope, prefix)
+        }
+    }
+
+    fn stalling_kv() -> DetKv {
+        DetKv::from_store(Arc::new(StallingReadKv::default()))
+    }
+
+    #[test]
+    fn concurrent_dismissals_of_different_pairs_both_survive() {
+        let kv = stalling_kv();
+        let (first, second) = (pair(1, 10), pair(2, 20));
+
+        std::thread::scope(|scope| {
+            scope.spawn(|| mark_untracked_in(&kv, first).expect("dismiss first"));
+            scope.spawn(|| mark_untracked_in(&kv, second).expect("dismiss second"));
+        });
+
+        assert_eq!(
+            read_untracked(&kv).unwrap(),
+            BTreeSet::from([first, second]),
+            "each dismissal must be an independent write — neither may clobber the other"
+        );
+    }
+
+    #[test]
+    fn a_dismissal_racing_a_re_track_of_another_pair_keeps_both_mutations() {
+        let kv = stalling_kv();
+        let (dismissed, kept, retracked) = (pair(1, 10), pair(2, 20), pair(3, 30));
+        for seed in [retracked, kept] {
+            mark_untracked_in(&kv, seed).expect("seed dismissal");
+        }
+
+        std::thread::scope(|scope| {
+            scope.spawn(|| mark_untracked_in(&kv, dismissed).expect("dismiss"));
+            scope.spawn(|| clear_untracked_in(&kv, retracked).expect("re-track"));
+        });
+
+        assert_eq!(
+            read_untracked(&kv).unwrap(),
+            BTreeSet::from([dismissed, kept]),
+            "a dismissal and a re-track of different pairs must both land"
+        );
+    }
+
+    /// Records every store operation so a read-modify-write can be spotted
+    /// structurally, without relying on a thread interleaving.
+    #[derive(Default)]
+    struct RecordingKv {
+        inner: InMemoryKv,
+        ops: Mutex<Vec<String>>,
+    }
+
+    impl KvStore for RecordingKv {
+        fn get(&self, scope: &ObjectId, key: &str) -> Result<Option<Vec<u8>>, KvError> {
+            self.ops.lock().unwrap().push(format!("get {key}"));
+            self.inner.get(scope, key)
+        }
+
+        fn put(&self, scope: &ObjectId, key: &str, value: &[u8]) -> Result<(), KvError> {
+            self.ops.lock().unwrap().push(format!("put {key}"));
+            self.inner.put(scope, key, value)
+        }
+
+        fn delete(&self, scope: &ObjectId, key: &str) -> Result<(), KvError> {
+            self.ops.lock().unwrap().push(format!("delete {key}"));
+            self.inner.delete(scope, key)
+        }
+
+        fn list_keys(
+            &self,
+            scope: &ObjectId,
+            prefix: Option<&str>,
+        ) -> Result<Vec<String>, KvError> {
+            self.inner.list_keys(scope, prefix)
+        }
+    }
+
+    /// The structural invariant behind the two race tests above: a dismissal
+    /// and a re-track each touch exactly their own pair's key, and neither
+    /// reads the dismissal set first — so there is no window to lose.
+    #[test]
+    fn dismissing_and_re_tracking_a_pair_are_single_writes_with_no_read_back() {
+        let store = Arc::new(RecordingKv::default());
+        let kv = DetKv::from_store(store.clone());
+        let dismissed = pair(1, 10);
+        let key = untracked_key(&dismissed);
+
+        mark_untracked_in(&kv, dismissed).unwrap();
+        clear_untracked_in(&kv, dismissed).unwrap();
+
+        assert_eq!(
+            *store.ops.lock().unwrap(),
+            vec![format!("put {key}"), format!("delete {key}")],
+            "a mutation that reads the dismissal set before writing it back would race a concurrent one"
+        );
     }
 }

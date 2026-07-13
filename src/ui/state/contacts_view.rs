@@ -12,6 +12,7 @@ use crate::ui::identity::identity_pill::display_label;
 use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::{Document, Identifier};
+use std::collections::HashSet;
 
 /// A single cached contact-request entry, derived from a raw
 /// `DashPayContactRequests` result document.
@@ -53,6 +54,11 @@ pub struct ContactsState {
     show_hidden: bool,
     /// Live search query bound to the Contacts search box.
     search: String,
+    /// Requests whose Accept / Decline / Cancel is already running, keyed by
+    /// request ID. Each of those actions is a signed, paid-for state transition,
+    /// so a row keeps its buttons disabled until its result lands — a second
+    /// click would buy a second transition.
+    in_flight: HashSet<Identifier>,
 }
 
 impl ContactsState {
@@ -76,6 +82,7 @@ impl ContactsState {
         self.hidden.clear();
         self.show_hidden = false;
         self.search.clear();
+        self.in_flight.clear();
     }
 
     /// Re-arm the load without clearing what is already on screen. Used after a
@@ -192,10 +199,36 @@ impl ContactsState {
 
     /// Drop a resolved request (accepted, declined, or cancelled) from both
     /// lists so the row leaves the UI immediately, without waiting for the
-    /// authoritative reload to land.
+    /// authoritative reload to land. Also releases the request's in-flight
+    /// guard, since its action is now resolved.
     pub fn remove_request(&mut self, request_id: &Identifier) {
         self.incoming.retain(|e| e.request_id != *request_id);
         self.outgoing.retain(|e| e.request_id != *request_id);
+        self.in_flight.remove(request_id);
+    }
+
+    /// Claim the in-flight slot for a request. `true` means the caller owns the
+    /// dispatch; `false` means an action for that request is already running and
+    /// the caller must not dispatch a second one.
+    pub fn begin_request(&mut self, request_id: Identifier) -> bool {
+        self.in_flight.insert(request_id)
+    }
+
+    /// Whether an action for this request is already running. Drives the row's
+    /// disabled state, so the user sees why the buttons do not respond.
+    pub fn is_in_flight(&self, request_id: &Identifier) -> bool {
+        self.in_flight.contains(request_id)
+    }
+
+    /// Release every in-flight guard.
+    ///
+    /// Success releases a single request by ID through [`remove_request`]. A
+    /// failure carries no request ID, so the hub releases all of them: a row the
+    /// user can click again is right, a row stuck forever is not.
+    ///
+    /// [`remove_request`]: Self::remove_request
+    pub fn clear_in_flight(&mut self) {
+        self.in_flight.clear();
     }
 }
 
@@ -533,6 +566,67 @@ mod tests {
 
         state.remove_request(&id(4));
         assert!(state.outgoing().is_empty(), "cancelled row must leave");
+    }
+
+    #[test]
+    fn a_request_is_in_flight_only_once() {
+        let mut state = ContactsState::default();
+
+        assert!(
+            state.begin_request(id(2)),
+            "the first click owns the action"
+        );
+        assert!(state.is_in_flight(&id(2)));
+        assert!(
+            !state.begin_request(id(2)),
+            "a second click must not claim an action that is already running"
+        );
+        assert!(
+            state.begin_request(id(3)),
+            "the guard is per request, not global"
+        );
+    }
+
+    #[test]
+    fn resolving_a_request_releases_its_guard_and_leaves_the_others() {
+        let mut state = ContactsState::default();
+        state.begin_request(id(2));
+        state.begin_request(id(3));
+
+        state.remove_request(&id(2));
+
+        assert!(!state.is_in_flight(&id(2)));
+        assert!(
+            state.is_in_flight(&id(3)),
+            "an unrelated request must keep its guard"
+        );
+    }
+
+    #[test]
+    fn clearing_the_guards_makes_every_row_actionable_again() {
+        let mut state = ContactsState::default();
+        state.begin_request(id(2));
+
+        state.clear_in_flight();
+
+        assert!(!state.is_in_flight(&id(2)));
+        assert!(
+            state.begin_request(id(2)),
+            "after a failure the user must be able to retry the row"
+        );
+    }
+
+    #[test]
+    fn reset_clears_the_in_flight_guards() {
+        let mut state = ContactsState::default();
+        state.begin_request(id(2));
+
+        state.reset();
+
+        assert!(
+            !state.is_in_flight(&id(2)),
+            "leaving the tab must not carry a guard into the next entry"
+        );
     }
 
     #[test]

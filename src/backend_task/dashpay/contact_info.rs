@@ -2,6 +2,7 @@ use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::dashpay::errors::DashPayError;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
+use crate::model::dashpay::AcceptedAccounts;
 use crate::model::qualified_identity::QualifiedIdentity;
 use aes_gcm::aes::Aes256;
 use aes_gcm::aes::cipher::{BlockEncrypt, KeyInit};
@@ -114,6 +115,82 @@ impl ContactInfoPrivateData {
         }
 
         Ok(bytes)
+    }
+
+    /// Parse the plaintext produced by [`serialize`](Self::serialize).
+    ///
+    /// Returns `None` when `bytes` is truncated mid-field — a document written
+    /// by another client in a format this one cannot read. Trailing padding is
+    /// ignored: every field is length-prefixed, so parsing stops at the last
+    /// declared account.
+    pub fn deserialize(bytes: &[u8]) -> Option<Self> {
+        let version = u32::from_le_bytes(bytes.get(..4)?.try_into().ok()?);
+        let mut pos = 4;
+
+        let take_string = |pos: &mut usize| -> Option<Option<String>> {
+            let len = *bytes.get(*pos)? as usize;
+            *pos += 1;
+            let raw = bytes.get(*pos..*pos + len)?;
+            *pos += len;
+            Some(if len == 0 {
+                None
+            } else {
+                String::from_utf8(raw.to_vec()).ok()
+            })
+        };
+        let alias_name = take_string(&mut pos)?;
+        let note = take_string(&mut pos)?;
+
+        let display_hidden = *bytes.get(pos)? != 0;
+        pos += 1;
+
+        let count = *bytes.get(pos)? as usize;
+        pos += 1;
+        let accepted_accounts = (0..count)
+            .map(|_| {
+                let raw = bytes.get(pos..pos + 4)?;
+                pos += 4;
+                Some(u32::from_le_bytes(raw.try_into().ok()?))
+            })
+            .collect::<Option<Vec<u32>>>()?;
+
+        Some(Self {
+            version,
+            alias_name,
+            note,
+            display_hidden,
+            accepted_accounts,
+        })
+    }
+}
+
+/// The accounts a `contactInfo` write should store, honouring the caller's
+/// [`AcceptedAccounts`] choice against the document already on Platform.
+///
+/// [`AcceptedAccounts::Preserve`] reads the stored list back out of the existing
+/// document's encrypted `privateData`. A document that is absent, unreadable, or
+/// written in an unknown format yields an empty list: this is a brand-new
+/// contact, or one whose accounts this client could never have shown the user
+/// anyway — neither is a reason to fail the unhide or rename the user asked for.
+fn resolve_accepted_accounts(
+    requested: AcceptedAccounts,
+    existing: Option<&Document>,
+    private_data_key: &[u8; 32],
+) -> Vec<u32> {
+    match requested {
+        AcceptedAccounts::Replace(accounts) => accounts,
+        AcceptedAccounts::Preserve => {
+            let Some(Value::Bytes(encrypted)) =
+                existing.and_then(|doc| doc.properties().get("privateData"))
+            else {
+                return Vec::new();
+            };
+            super::contacts::decrypt_private_data(encrypted, private_data_key)
+                .ok()
+                .and_then(|plaintext| ContactInfoPrivateData::deserialize(&plaintext))
+                .map(|data| data.accepted_accounts)
+                .unwrap_or_default()
+        }
     }
 }
 
@@ -244,6 +321,20 @@ fn encrypt_private_data(data: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, String> 
     Ok(result)
 }
 
+/// Write the `contactInfo` document for `contact_user_id`, creating it when the
+/// identity has none yet and replacing it otherwise.
+///
+/// The document is written whole, so `accepted_accounts` decides what happens to
+/// the accounts already stored: pass [`AcceptedAccounts::Preserve`] to keep them
+/// (the right choice for a caller that only flips `display_hidden` or edits a
+/// nickname), or a `Vec<u32>` — which converts to
+/// [`AcceptedAccounts::Replace`] — to overwrite the list outright.
+///
+/// # Errors
+///
+/// Fails when the contact's encryption keys cannot be derived, when the
+/// encrypted fields exceed the DashPay contract's size limits, when the identity
+/// has no usable authentication key, or when the state transition is rejected.
 #[allow(clippy::too_many_arguments)]
 pub async fn create_or_update_contact_info(
     app_context: &Arc<AppContext>,
@@ -253,7 +344,7 @@ pub async fn create_or_update_contact_info(
     nickname: Option<String>,
     note: Option<String>,
     display_hidden: bool,
-    accepted_accounts: Vec<u32>,
+    accepted_accounts: impl Into<AcceptedAccounts>,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
     let dashpay_contract = app_context.dashpay_contract.clone();
     let identity_id = identity.identity.id();
@@ -344,7 +435,11 @@ pub async fn create_or_update_contact_info(
     private_data.alias_name = nickname;
     private_data.note = note;
     private_data.display_hidden = display_hidden;
-    private_data.accepted_accounts = accepted_accounts;
+    private_data.accepted_accounts = resolve_accepted_accounts(
+        accepted_accounts.into(),
+        found_existing_doc.as_ref(),
+        &private_data_key,
+    );
 
     // Encrypt private data
     let encrypted_private_data =
@@ -500,4 +595,159 @@ pub async fn create_or_update_contact_info(
     Ok(BackendTaskSuccessResult::DashPayContactInfoUpdated(
         contact_user_id,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const KEY: [u8; 32] = [7u8; 32];
+    const OTHER_KEY: [u8; 32] = [9u8; 32];
+
+    fn id(byte: u8) -> Identifier {
+        Identifier::from_bytes(&[byte; 32]).expect("32-byte identifier")
+    }
+
+    /// A stored `contactInfo` document whose `privateData` holds `accounts`,
+    /// encrypted exactly the way [`create_or_update_contact_info`] writes it.
+    fn stored_contact_info(accounts: Vec<u32>, key: &[u8; 32]) -> Document {
+        let private_data = ContactInfoPrivateData {
+            version: 0,
+            alias_name: Some("Bao".to_string()),
+            note: None,
+            display_hidden: true,
+            accepted_accounts: accounts,
+        };
+        let encrypted = encrypt_private_data(&private_data.serialize().expect("serialize"), key)
+            .expect("encrypt");
+
+        let mut properties = BTreeMap::new();
+        properties.insert("privateData".to_string(), Value::Bytes(encrypted));
+        DppDocument::V0(DocumentV0 {
+            id: id(1),
+            owner_id: id(2),
+            creator_id: None,
+            properties,
+            revision: Some(1),
+            created_at: None,
+            updated_at: None,
+            transferred_at: None,
+            created_at_block_height: None,
+            updated_at_block_height: None,
+            transferred_at_block_height: None,
+            created_at_core_block_height: None,
+            updated_at_core_block_height: None,
+            transferred_at_core_block_height: None,
+        })
+    }
+
+    #[test]
+    fn private_data_round_trips_every_accepted_account() {
+        let original = ContactInfoPrivateData {
+            version: 0,
+            alias_name: Some("Bao".to_string()),
+            note: Some("Met at the meetup".to_string()),
+            display_hidden: true,
+            accepted_accounts: vec![0, 3, 17],
+        };
+
+        let parsed = ContactInfoPrivateData::deserialize(&original.serialize().expect("serialize"))
+            .expect("a document this client wrote must parse back");
+
+        assert_eq!(parsed.alias_name.as_deref(), Some("Bao"));
+        assert_eq!(parsed.note.as_deref(), Some("Met at the meetup"));
+        assert!(parsed.display_hidden);
+        assert_eq!(
+            parsed.accepted_accounts,
+            vec![0, 3, 17],
+            "every accepted account must survive the round trip, not just the first"
+        );
+    }
+
+    #[test]
+    fn private_data_round_trips_through_the_minimum_size_padding() {
+        // An empty private data is padded up to the contract's minimum size —
+        // the padding must not be mistaken for a field.
+        let original = ContactInfoPrivateData::new();
+        let parsed = ContactInfoPrivateData::deserialize(&original.serialize().expect("serialize"))
+            .expect("padded plaintext must parse");
+
+        assert_eq!(parsed.alias_name, None);
+        assert_eq!(parsed.note, None);
+        assert!(!parsed.display_hidden);
+        assert!(parsed.accepted_accounts.is_empty());
+    }
+
+    #[test]
+    fn truncated_private_data_is_not_parsed_as_a_shorter_list() {
+        let bytes = ContactInfoPrivateData {
+            version: 0,
+            alias_name: None,
+            note: None,
+            display_hidden: false,
+            accepted_accounts: vec![1, 2, 3],
+        }
+        .serialize()
+        .expect("serialize");
+
+        // Chop the final account in half: the list declares three, so a parser
+        // that returned the two it could read would silently drop an account.
+        assert!(
+            ContactInfoPrivateData::deserialize(&bytes[..bytes.len() - 2]).is_none(),
+            "a truncated account list must not parse as a shorter one"
+        );
+    }
+
+    #[test]
+    fn preserve_keeps_every_account_stored_on_the_existing_document() {
+        let existing = stored_contact_info(vec![0, 4, 9], &KEY);
+
+        assert_eq!(
+            resolve_accepted_accounts(AcceptedAccounts::Preserve, Some(&existing), &KEY),
+            vec![0, 4, 9],
+            "preserving must return the whole stored list, not the first entry"
+        );
+    }
+
+    #[test]
+    fn replace_overwrites_whatever_the_document_stored() {
+        let existing = stored_contact_info(vec![0, 4, 9], &KEY);
+
+        assert_eq!(
+            resolve_accepted_accounts(AcceptedAccounts::Replace(vec![2]), Some(&existing), &KEY),
+            vec![2],
+            "a caller that supplies a list owns it outright"
+        );
+        assert!(
+            resolve_accepted_accounts(AcceptedAccounts::Replace(vec![]), Some(&existing), &KEY)
+                .is_empty(),
+            "an explicit empty list clears the stored accounts"
+        );
+    }
+
+    #[test]
+    fn preserving_a_contact_with_no_stored_document_yields_no_accounts() {
+        assert!(
+            resolve_accepted_accounts(AcceptedAccounts::Preserve, None, &KEY).is_empty(),
+            "a first-ever contactInfo has nothing to preserve"
+        );
+    }
+
+    #[test]
+    fn unreadable_private_data_preserves_nothing_instead_of_failing_the_write() {
+        let existing = stored_contact_info(vec![0, 4, 9], &OTHER_KEY);
+
+        assert!(
+            resolve_accepted_accounts(AcceptedAccounts::Preserve, Some(&existing), &KEY).is_empty(),
+            "a privateData blob this client cannot decrypt must not block the write"
+        );
+    }
+
+    #[test]
+    fn a_bare_account_list_is_a_replacement() {
+        assert_eq!(
+            AcceptedAccounts::from(vec![1, 2]),
+            AcceptedAccounts::Replace(vec![1, 2])
+        );
+    }
 }

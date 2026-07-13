@@ -16,10 +16,12 @@
 
 use super::request_card::{RequestAction, RequestCard};
 use super::social_profile_gate_card::SocialProfileGateCard;
-use crate::app::AppAction;
+use crate::app::{AppAction, BackendTasksExecutionMode};
 use crate::backend_task::BackendTask;
 use crate::backend_task::dashpay::{ContactData, DashPayTask};
 use crate::context::AppContext;
+use crate::context::feature_gate::FeatureGate;
+use crate::model::dashpay::AcceptedAccounts;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::ScreenType;
 use crate::ui::identity::identity_pill::shorten_id;
@@ -123,26 +125,80 @@ pub fn contacts_button_kind(button: ContactsButton) -> ContactsButtonKind {
     }
 }
 
-/// Render one request row and dispatch whatever the user clicked on it.
+/// Render one request row and report which request the user acted on.
 ///
 /// The received and sent sections differ only in the card they hand in — the
-/// row itself (render, spacing, action dispatch) is the same on both, so it
-/// lives here once.
+/// row itself (render, spacing, click reporting) is the same on both, so it
+/// lives here once. Dispatch is [`dispatch_request`]'s job, which needs the
+/// state this loop only reads.
 fn request_row(
     ui: &mut Ui,
     card: RequestCard,
     entry: &ContactRequestEntry,
-    identity: &QualifiedIdentity,
-) -> AppAction {
+) -> Option<(Identifier, RequestAction)> {
     let response = card.show(ui);
     ui.add_space(4.0);
 
-    match response.action() {
-        Some(request_action) => AppAction::BackendTask(BackendTask::DashPayTask(Box::new(
-            request_task(request_action, identity.clone(), entry.request_id),
-        ))),
-        None => AppAction::None,
+    response.action().map(|action| (entry.request_id, action))
+}
+
+/// Pair each request with whether its action is already running, so the row loop
+/// no longer needs the state it would otherwise have to hold borrowed.
+fn request_rows<'a>(
+    entries: &'a [ContactRequestEntry],
+    state: &ContactsState,
+) -> Vec<(&'a ContactRequestEntry, bool)> {
+    entries
+        .iter()
+        .map(|entry| (entry, state.is_in_flight(&entry.request_id)))
+        .collect()
+}
+
+/// Dispatch the backend task for the request row the user clicked, if any.
+///
+/// Accept, Decline, and Cancel each sign and pay for a state transition, so the
+/// request is marked in flight and a further click on it dispatches nothing
+/// until its result lands. The row's buttons are disabled meanwhile; this guard
+/// is what makes that true rather than merely visible.
+fn dispatch_request(
+    state: &mut ContactsState,
+    identity: &QualifiedIdentity,
+    clicked: Option<(Identifier, RequestAction)>,
+) -> AppAction {
+    let Some((request_id, action)) = clicked else {
+        return AppAction::None;
+    };
+    if !state.begin_request(request_id) {
+        return AppAction::None;
     }
+    AppAction::BackendTask(BackendTask::DashPayTask(Box::new(request_task(
+        action,
+        identity.clone(),
+        request_id,
+    ))))
+}
+
+/// One-shot hydration of the tab: the contact list and the request lists.
+///
+/// Both loads travel as a single [`AppAction::BackendTasks`]. Two separate
+/// `AppAction::BackendTask`s would not: `AppAction`'s `|=` is last-writer-wins,
+/// so the first load would be dropped on the floor and the active section would
+/// never fill.
+fn load_action(identity: &QualifiedIdentity, state: &mut ContactsState) -> AppAction {
+    if !state.claim_load() {
+        return AppAction::None;
+    }
+    AppAction::BackendTasks(
+        vec![
+            BackendTask::DashPayTask(Box::new(DashPayTask::LoadContacts {
+                identity: identity.clone(),
+            })),
+            BackendTask::DashPayTask(Box::new(DashPayTask::LoadContactRequests {
+                identity: identity.clone(),
+            })),
+        ],
+        BackendTasksExecutionMode::Concurrent,
+    )
 }
 
 /// Backend task for a request-card action. Accept and Decline act on a received
@@ -171,8 +227,10 @@ pub fn request_task(
 /// Backend task that makes a hidden contact visible again.
 ///
 /// Unhiding is a `contactInfo` broadcast with `display_hidden` cleared — the
-/// same document the decline / cancel paths set it on. The contact's nickname
-/// and note ride along so restoring visibility does not wipe them.
+/// same document the decline / cancel paths set it on. The whole document is
+/// rewritten, so everything unhiding has no opinion about rides along untouched:
+/// the nickname and note are carried over, and the accepted accounts are
+/// preserved rather than replaced with an empty list.
 pub fn unhide_task(identity: QualifiedIdentity, contact: &ContactData) -> DashPayTask {
     DashPayTask::UpdateContactInfo {
         identity,
@@ -180,7 +238,7 @@ pub fn unhide_task(identity: QualifiedIdentity, contact: &ContactData) -> DashPa
         nickname: contact.nickname.clone(),
         note: contact.note.clone(),
         is_hidden: false,
-        accepted_accounts: Vec::new(),
+        accepted_accounts: AcceptedAccounts::Preserve,
     }
 }
 
@@ -316,19 +374,14 @@ fn render_populated(
 
     // Fire LoadContacts + LoadContactRequests once per tab entry. The hub
     // resets the guard in `refresh_on_arrival()` so a tab switch or explicit
-    // refresh triggers another load. Both tasks dispatch together so all three
-    // sections hydrate in a single round-trip.
-    if state.claim_load() {
-        action |= AppAction::BackendTask(BackendTask::DashPayTask(Box::new(
-            DashPayTask::LoadContacts {
-                identity: identity.clone(),
-            },
-        )));
-        action |= AppAction::BackendTask(BackendTask::DashPayTask(Box::new(
-            DashPayTask::LoadContactRequests {
-                identity: identity.clone(),
-            },
-        )));
+    // refresh triggers another load.
+    //
+    // Only when nothing else claimed this frame: `|=` is last-writer-wins, so a
+    // load dispatched alongside a click would swallow one of the two. The load
+    // guard is untouched until it actually dispatches, so it simply goes out on
+    // the next paint.
+    if matches!(action, AppAction::None) {
+        action = load_action(identity, state);
     }
 
     action
@@ -339,40 +392,45 @@ fn render_populated(
 fn received_section(
     ui: &mut Ui,
     identity: &QualifiedIdentity,
-    state: &ContactsState,
+    state: &mut ContactsState,
     dark_mode: bool,
 ) -> AppAction {
-    let mut action = AppAction::None;
     ui.add_space(12.0);
 
-    let incoming = state.incoming();
-    let heading = if incoming.is_empty() {
+    let rows = request_rows(state.incoming(), state);
+    let heading = if rows.is_empty() {
         RECEIVED_HEADING.to_string()
     } else {
-        format!("{RECEIVED_HEADING} · {}", incoming.len())
+        format!("{RECEIVED_HEADING} · {}", rows.len())
     };
 
+    // Collected inside the row loop and acted on after it, so dispatching can
+    // take `state` mutably once the loop's read borrow has ended.
+    let mut clicked = None;
     section_card(ui, dark_mode, &heading, |ui| {
-        if incoming.is_empty() {
+        if rows.is_empty() {
             ui.label(RichText::new(NO_RECEIVED_EMPTY).color(DashColors::text_secondary(dark_mode)));
             return;
         }
-        for entry in incoming {
+        for (entry, busy) in rows {
             let handle = entry.counterpart_id.to_string(Encoding::Base58);
             let card = RequestCard::received(
                 shorten_id(&handle),
                 &handle,
                 entry.relative_time.as_deref().unwrap_or(""),
-            );
-            action |= request_row(ui, card, entry, identity);
+            )
+            .with_busy(busy);
+            clicked = request_row(ui, card, entry).or(clicked);
         }
     });
 
-    action
+    dispatch_request(state, identity, clicked)
 }
 
 /// Active contacts — searchable list of established contacts, each row offering
-/// a Pay affordance that opens the existing send-payment screen.
+/// a Pay affordance that opens the existing send-payment screen. Pay is an
+/// experimental DashPay feature, classified identically at all four entry points
+/// into [`ScreenType::DashPaySendPayment`].
 fn active_section(
     ui: &mut Ui,
     app_context: &Arc<AppContext>,
@@ -381,6 +439,7 @@ fn active_section(
     dark_mode: bool,
 ) -> AppAction {
     let mut action = AppAction::None;
+    let pay_available = FeatureGate::DashPayOperations.is_available(app_context);
     ui.add_space(12.0);
 
     let heading = format!("{ACTIVE_HEADING_PREFIX} · {}", state.contacts_len());
@@ -413,6 +472,9 @@ fn active_section(
                     ui.with_layout(
                         eframe::egui::Layout::right_to_left(eframe::egui::Align::Center),
                         |ui| {
+                            if !pay_available {
+                                return;
+                            }
                             let pay = ui
                                 .add(ComponentStyles::secondary_button(PAY_LABEL, dark_mode))
                                 .clickable_tooltip("Send Dash to this contact.");
@@ -518,21 +580,21 @@ fn hidden_section(
 fn sent_section(
     ui: &mut Ui,
     identity: &QualifiedIdentity,
-    state: &ContactsState,
+    state: &mut ContactsState,
     dark_mode: bool,
 ) -> AppAction {
-    let mut action = AppAction::None;
     ui.add_space(12.0);
 
-    let outgoing = state.outgoing();
-    let heading = if outgoing.is_empty() {
+    let rows = request_rows(state.outgoing(), state);
+    let heading = if rows.is_empty() {
         SENT_HEADING.to_string()
     } else {
-        format!("{SENT_HEADING} · {}", outgoing.len())
+        format!("{SENT_HEADING} · {}", rows.len())
     };
 
+    let mut clicked = None;
     section_card(ui, dark_mode, &heading, |ui| {
-        if outgoing.is_empty() {
+        if rows.is_empty() {
             ui.label(RichText::new(NO_SENT_EMPTY).color(DashColors::text_secondary(dark_mode)));
             return;
         }
@@ -544,14 +606,14 @@ fn sent_section(
         );
         ui.add_space(8.0);
 
-        for entry in outgoing {
+        for (entry, busy) in rows {
             let handle = entry.counterpart_id.to_string(Encoding::Base58);
-            let card = RequestCard::sent(shorten_id(&handle), &handle);
-            action |= request_row(ui, card, entry, identity);
+            let card = RequestCard::sent(shorten_id(&handle), &handle).with_busy(busy);
+            clicked = request_row(ui, card, entry).or(clicked);
         }
     });
 
-    action
+    dispatch_request(state, identity, clicked)
 }
 
 /// Header row: title on the left, three action buttons right-aligned.
@@ -927,6 +989,156 @@ mod tests {
             }
             other => panic!("expected UpdateContactInfo, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn unhide_leaves_the_accepted_accounts_alone() {
+        // The write replaces the whole contactInfo document. Unhiding says
+        // nothing about which accounts the user accepted, so it must not
+        // volunteer an empty list — that would erase every one of them.
+        let task = unhide_task(qualified_identity(id(1)), &hidden_contact(None, None));
+        match task {
+            DashPayTask::UpdateContactInfo {
+                accepted_accounts, ..
+            } => assert_eq!(
+                accepted_accounts,
+                AcceptedAccounts::Preserve,
+                "unhiding must preserve the contact's accepted accounts, not overwrite them"
+            ),
+            other => panic!("expected UpdateContactInfo, got {other:?}"),
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // Hydration — both loads must survive the trip to `AppState`.
+    // `AppAction`'s `|=` is last-writer-wins, so two separate
+    // `BackendTask` actions in one frame mean the first is silently lost.
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn hydration_dispatches_both_loads_in_one_action() {
+        let identity = qualified_identity(id(1));
+        let mut state = ContactsState::default();
+
+        let AppAction::BackendTasks(tasks, mode) = load_action(&identity, &mut state) else {
+            panic!("hydration must dispatch its loads as one multi-task action");
+        };
+
+        assert_eq!(mode, BackendTasksExecutionMode::Concurrent);
+        assert!(
+            tasks.iter().any(|t| matches!(
+                t,
+                BackendTask::DashPayTask(task) if matches!(**task, DashPayTask::LoadContacts { .. })
+            )),
+            "the contact list must be loaded — without it the active section stays empty"
+        );
+        assert!(
+            tasks.iter().any(|t| matches!(
+                t,
+                BackendTask::DashPayTask(task)
+                    if matches!(**task, DashPayTask::LoadContactRequests { .. })
+            )),
+            "the request lists must be loaded"
+        );
+    }
+
+    #[test]
+    fn hydration_fires_once_per_tab_entry() {
+        let identity = qualified_identity(id(1));
+        let mut state = ContactsState::default();
+
+        assert_ne!(load_action(&identity, &mut state), AppAction::None);
+        assert_eq!(
+            load_action(&identity, &mut state),
+            AppAction::None,
+            "a second paint must not re-dispatch the loads"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // In-flight guard — Accept / Decline / Cancel each sign and pay for a
+    // state transition, so a second click while the first is running must
+    // not buy a second one.
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn a_second_click_while_the_request_is_in_flight_dispatches_nothing() {
+        let identity = qualified_identity(id(1));
+        let mut state = ContactsState::default();
+        let clicked = Some((id(2), RequestAction::Accepted));
+
+        assert_ne!(
+            dispatch_request(&mut state, &identity, clicked),
+            AppAction::None,
+            "the first click must dispatch"
+        );
+        assert!(
+            state.is_in_flight(&id(2)),
+            "the row must be marked in flight"
+        );
+        assert_eq!(
+            dispatch_request(&mut state, &identity, clicked),
+            AppAction::None,
+            "a second click must not pay for a second state transition"
+        );
+    }
+
+    #[test]
+    fn another_request_stays_clickable_while_one_is_in_flight() {
+        let identity = qualified_identity(id(1));
+        let mut state = ContactsState::default();
+
+        dispatch_request(
+            &mut state,
+            &identity,
+            Some((id(2), RequestAction::Accepted)),
+        );
+
+        assert_ne!(
+            dispatch_request(
+                &mut state,
+                &identity,
+                Some((id(3), RequestAction::Declined))
+            ),
+            AppAction::None,
+            "the guard is per request — an unrelated row must still act"
+        );
+    }
+
+    #[test]
+    fn a_failed_request_becomes_clickable_again() {
+        let identity = qualified_identity(id(1));
+        let mut state = ContactsState::default();
+        let clicked = Some((id(2), RequestAction::Cancelled));
+
+        dispatch_request(&mut state, &identity, clicked);
+        // What the hub does when a task fails: it has no request ID to key on,
+        // so it releases every guard rather than stranding a row.
+        state.clear_in_flight();
+
+        assert_ne!(
+            dispatch_request(&mut state, &identity, clicked),
+            AppAction::None,
+            "a failed action must leave the row actionable, not stuck forever"
+        );
+    }
+
+    #[test]
+    fn a_resolved_request_releases_its_guard() {
+        let identity = qualified_identity(id(1));
+        let mut state = ContactsState::default();
+
+        dispatch_request(
+            &mut state,
+            &identity,
+            Some((id(2), RequestAction::Accepted)),
+        );
+        state.remove_request(&id(2));
+
+        assert!(
+            !state.is_in_flight(&id(2)),
+            "a resolved request must not hold its guard"
+        );
     }
 
     #[test]

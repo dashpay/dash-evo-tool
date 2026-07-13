@@ -223,11 +223,20 @@ pub enum BackendTaskSuccessResult {
     DashPayContactProfile(Option<Document>),          // Contact's public profile document
     DashPayProfileSearchResults(Vec<(Identifier, Option<Document>, String)>), // Search results: (identity_id, profile_document, username)
     DashPayContactRequests {
+        /// The identity the requests were loaded for. An identity switch cannot
+        /// cancel an in-flight load, so the consumer must drop a result whose
+        /// identity is no longer the selected one.
+        identity: Identifier,
         incoming: Vec<(Identifier, Document)>, // (request_id, document)
         outgoing: Vec<(Identifier, Document)>, // (request_id, document)
     },
     DashPayContacts(Vec<Identifier>), // List of contact identity IDs
-    DashPayContactsWithInfo(Vec<ContactData>), // List of contacts with metadata
+    DashPayContactsWithInfo {
+        /// The identity the contacts were loaded for — see
+        /// [`BackendTaskSuccessResult::DashPayContactRequests`].
+        identity: Identifier,
+        contacts: Vec<ContactData>,
+    },
     DashPayPaymentHistory(Vec<(String, String, u64, bool, String)>), // (tx_id, contact_name, amount, is_incoming, memo)
     DashPayProfileUpdated(Identifier), // Identity ID of updated profile
     DashPayContactRequestSent(String), // Username or ID of recipient
@@ -625,10 +634,10 @@ impl AppContext {
                 let egui_ctx = self.egui_ctx().clone();
                 let app_kv = self.app_kv();
                 let secret_store = self.secret_store();
-                // Share the app-global Expert Mode flag so the freshly-switched
-                // context observes the same value (and live toggles) as the rest
-                // of the app — never a fresh per-context flag.
-                let developer_mode = self.developer_mode_handle();
+                // Share the app-global role cell so the freshly-switched context
+                // observes the same value (and live changes) as the rest of the
+                // app — never a fresh per-context cell.
+                let user_role = self.user_role_cell();
                 let new_ctx = tokio::task::block_in_place(|| {
                     AppContext::new(
                         data_dir,
@@ -639,7 +648,7 @@ impl AppContext {
                         egui_ctx,
                         app_kv,
                         secret_store,
-                        developer_mode,
+                        user_role,
                     )
                 })
                 .ok_or(TaskError::NetworkContextCreationFailed { network })?;

@@ -108,7 +108,10 @@ fn decrypt_to_user_id(encrypted: &[u8], key: &[u8; 32]) -> Result<[u8; 32], Stri
 }
 
 // Helper function to decrypt private data using AES-256-CBC
-fn decrypt_private_data(encrypted_data: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, String> {
+pub(super) fn decrypt_private_data(
+    encrypted_data: &[u8],
+    key: &[u8; 32],
+) -> Result<Vec<u8>, String> {
     use cbc::cipher::BlockDecryptMut;
     use cbc::cipher::KeyIvInit;
     use cbc::cipher::block_padding::Pkcs7;
@@ -444,9 +447,10 @@ pub async fn load_contacts(
     // effort: a cache write miss only costs the offline optimisation.
     cache_contact_profiles(app_context, &contact_list);
 
-    Ok(BackendTaskSuccessResult::DashPayContactsWithInfo(
-        contact_list,
-    ))
+    Ok(BackendTaskSuccessResult::DashPayContactsWithInfo {
+        identity: identity_id,
+        contacts: contact_list,
+    })
 }
 
 /// Read the contact list for `identity` entirely from offline state: contact
@@ -511,9 +515,10 @@ pub async fn load_contacts_offline(
         });
     }
 
-    Ok(BackendTaskSuccessResult::DashPayContactsWithInfo(
-        contact_list,
-    ))
+    Ok(BackendTaskSuccessResult::DashPayContactsWithInfo {
+        identity: owner_id,
+        contacts: contact_list,
+    })
 }
 
 /// Write each contact's fetched display profile into the DET contact-profile

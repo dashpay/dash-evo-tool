@@ -994,7 +994,7 @@ mod tests {
             egui::Context::default(),
             app_kv,
             secret_store,
-            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            crate::model::user_role::UserRoleCell::default(),
         )
         .expect("offline testnet AppContext::new");
         (ctx, temp_dir)

@@ -14,9 +14,9 @@ pub fn add_dashpay_subscreen_chooser_panel(
     app_context: &Arc<AppContext>,
     current_subscreen: DashPaySubscreen,
 ) -> AppAction {
-    // Payment History is experimental (developer mode only).
+    // Payment History is an experimental DashPay feature.
     let mut subscreens = vec![DashPaySubscreen::Profile, DashPaySubscreen::Contacts];
-    if FeatureGate::DeveloperMode.is_available(app_context) {
+    if FeatureGate::DashPayOperations.is_available(app_context) {
         subscreens.push(DashPaySubscreen::Payments);
     }
     subscreens.push(DashPaySubscreen::ProfileSearch);

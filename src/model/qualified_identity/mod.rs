@@ -506,35 +506,6 @@ impl Signer<IdentityPublicKey> for QualifiedIdentity {
 }
 
 impl QualifiedIdentity {
-    /// Fills this identity's empty slots from `other` without overwriting
-    /// anything already set: `self`'s private keys, alias, and identity
-    /// associations win on collision, and only the gaps — key ids `self` lacks,
-    /// and any `None` alias / association — are taken from `other`.
-    ///
-    /// Two callers rely on this "keep what I have, borrow only what I'm missing"
-    /// merge: a partial in-app load being completed by a fuller stored record
-    /// (e.g. adding a voting key without erasing the Owner/Payout keys), and the
-    /// legacy-identity migration reconciling an already-present modern identity
-    /// with keys still held only in the previous version's blob. In both cases
-    /// `self` is the authoritative record and `other` is the supplement.
-    pub fn merge_gaps_from(&mut self, other: QualifiedIdentity) {
-        for (key, value) in other.private_keys.private_keys {
-            self.private_keys.private_keys.entry(key).or_insert(value);
-        }
-        if self.alias.is_none() {
-            self.alias = other.alias;
-        }
-        if self.associated_voter_identity.is_none() {
-            self.associated_voter_identity = other.associated_voter_identity;
-        }
-        if self.associated_operator_identity.is_none() {
-            self.associated_operator_identity = other.associated_operator_identity;
-        }
-        if self.associated_owner_key_id.is_none() {
-            self.associated_owner_key_id = other.associated_owner_key_id;
-        }
-    }
-
     /// Serializes the QualifiedIdentity to a vector of bytes.
     pub fn to_bytes(&self) -> Vec<u8> {
         bincode::encode_to_vec(self, bincode::config::standard())

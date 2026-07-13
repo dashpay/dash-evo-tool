@@ -1103,19 +1103,40 @@ where
     for row in legacy.identities {
         let id = Identifier::from(row.id);
 
-        // Presence is not proof every key survived — a partial (e.g. ProTxHash-
-        // only) modern identity can still be missing keys the legacy blob holds.
-        // Gap-merge them in (modern always wins) instead of skipping wholesale,
-        // and re-persist only when something changed so a retry never clobbers a
-        // user edit with the stale legacy copy (design.md §7).
+        // Presence is not proof every key survived: an identity loaded from only
+        // its ProTxHash (voting/owner/payout optional) persists a *bare* record
+        // whose keys are still in the legacy blob. Recover them — but only for a
+        // record holding NO private keys, the one unambiguous "loaded without its
+        // keys" signal. An identity that already holds keys is left untouched:
+        //   * a missing key there may be a deliberate removal ("Remove private key
+        //     from DET"), so refilling from the stale blob would resurrect it;
+        //   * a protected identity always holds (protected) keys, so it never
+        //     enters this branch and can never trip the vault-first downgrade
+        //     guard in `update_local_qualified_identity`.
+        // Alias is never touched: its absence is a user edit, not a bare load.
         if let Some(mut modern) = get_existing(&id).map_err(import_failed)? {
-            let before = modern.clone();
-            modern.merge_gaps_from(row.qi);
-            if modern == before {
-                outcome.skipped_existing = outcome.skipped_existing.saturating_add(1);
+            if modern.private_keys.private_keys.is_empty() {
+                let before = modern.clone();
+                // No keys to overwrite, so take the legacy set wholesale and fill
+                // only the masternode role associations the bare record lacks.
+                modern.private_keys = row.qi.private_keys;
+                if modern.associated_owner_key_id.is_none() {
+                    modern.associated_owner_key_id = row.qi.associated_owner_key_id;
+                }
+                if modern.associated_voter_identity.is_none() {
+                    modern.associated_voter_identity = row.qi.associated_voter_identity;
+                }
+                if modern.associated_operator_identity.is_none() {
+                    modern.associated_operator_identity = row.qi.associated_operator_identity;
+                }
+                if modern == before {
+                    outcome.skipped_existing = outcome.skipped_existing.saturating_add(1);
+                } else {
+                    update(&modern).map_err(import_failed)?;
+                    outcome.reconciled = outcome.reconciled.saturating_add(1);
+                }
             } else {
-                update(&modern).map_err(import_failed)?;
-                outcome.reconciled = outcome.reconciled.saturating_add(1);
+                outcome.skipped_existing = outcome.skipped_existing.saturating_add(1);
             }
             continue;
         }
@@ -1145,14 +1166,15 @@ where
 struct IdentityMigrationOutcome {
     /// Identities written into the per-network identity store, keys vaulted.
     imported: u32,
-    /// Identities already in the store, into which the legacy blob supplied keys
-    /// or associations the modern record was missing. The merge fills only gaps —
-    /// modern keys, alias, protection state, and wallet link always win — and the
-    /// record is re-persisted in place. Distinct from `imported` (a brand-new
-    /// identity) and from `skipped_existing` (present, nothing to add).
+    /// Bare identities already in the store (no private keys — a ProTxHash-only
+    /// load) into which the legacy blob supplied the keys and masternode role
+    /// associations they were missing, re-persisted in place. Distinct from
+    /// `imported` (a brand-new identity) and `skipped_existing` (present with
+    /// keys, or bare with nothing to add).
     reconciled: u32,
-    /// Identities already in the store with nothing the legacy blob could add,
-    /// therefore left untouched.
+    /// Identities already in the store that were left untouched: either they
+    /// already hold keys (so we neither risk a protection downgrade nor resurrect
+    /// a deliberately-removed key), or they are bare with nothing to recover.
     skipped_existing: u32,
     /// Legacy rows that could not be decoded. Withholds the sentinel so a later
     /// build can retry, but never fails the pass — the identities that *did*
@@ -2466,12 +2488,36 @@ mod tests {
     mod identities {
         use super::*;
         use crate::model::qualified_identity::IdentityType;
+        use crate::model::qualified_identity::PrivateKeyTarget;
+        use crate::model::qualified_identity::encrypted_key_storage::PrivateKeyData;
+        use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
         use dash_sdk::dpp::dashcore::Network;
+        use dash_sdk::dpp::identity::IdentityPublicKey;
         use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
         use dash_sdk::dpp::version::PlatformVersion;
         use std::cell::RefCell;
 
         const NETWORK: Network = Network::Testnet;
+
+        /// A decoded identity holding one resident (plaintext) private key —
+        /// stands in for a legacy blob that still carries its keys, or a modern
+        /// record that already holds keys (so it is not a bare load).
+        fn identity_qi_with_key(id: [u8; 32], key_byte: u8) -> QualifiedIdentity {
+            let mut qi = QualifiedIdentity::from_bytes(&identity_blob(id)).expect("decode");
+            let ipk = IdentityPublicKey::random_key(
+                0,
+                Some(u64::from(key_byte)),
+                PlatformVersion::latest(),
+            );
+            qi.private_keys.private_keys.insert(
+                (PrivateKeyTarget::PrivateKeyOnMainIdentity, 0),
+                (
+                    QualifiedIdentityPublicKey::from(ipk),
+                    PrivateKeyData::Clear([key_byte; 32]),
+                ),
+            );
+            qi
+        }
 
         fn create_identity_table(conn: &Connection) {
             conn.execute_batch(
@@ -2635,27 +2681,27 @@ mod tests {
 
         /// Presence in the modern store is not proof the keys survived. A
         /// masternode loaded from only its ProTxHash under an earlier build
-        /// persists a partial identity (no Owner key); the legacy blob still
-        /// holds that Owner key. The importer must reconcile the missing key into
-        /// the existing record — not skip it wholesale — or the key is stranded
+        /// persists a *bare* identity (no private keys); the legacy blob still
+        /// holds its keys and owner association. The importer must recover them
+        /// into the bare record — not skip it wholesale — or they are stranded
         /// with the sentinel written and never retried.
         #[test]
-        fn a_present_but_partial_identity_gains_the_legacy_only_keys() {
+        fn a_present_but_bare_identity_gains_the_legacy_only_keys() {
             let conn = Connection::open_in_memory().expect("in-memory db");
             create_identity_table(&conn);
             let id = [0xAA; 32];
 
-            // Legacy blob carries an Owner key id the modern record is missing.
-            let mut legacy_qi =
-                QualifiedIdentity::from_bytes(&identity_blob(id)).expect("decode legacy");
+            // Legacy blob carries a private key AND an Owner association the
+            // modern record is missing.
+            let mut legacy_qi = identity_qi_with_key(id, 0xC5);
             legacy_qi.associated_owner_key_id = Some(7);
             insert_identity(&conn, id, Some(legacy_qi.to_bytes()), true);
 
-            // Modern record: same identity, loaded partial — no Owner key.
+            // Modern record: same identity, loaded bare — no private keys.
             let modern = QualifiedIdentity::from_bytes(&identity_blob(id)).expect("decode modern");
-            assert_eq!(
-                modern.associated_owner_key_id, None,
-                "precondition: partial"
+            assert!(
+                modern.private_keys.private_keys.is_empty(),
+                "precondition: the modern record is bare",
             );
 
             let updated: RefCell<Vec<QualifiedIdentity>> = RefCell::new(Vec::new());
@@ -2672,23 +2718,69 @@ mod tests {
             )
             .expect("import");
 
-            assert_eq!(outcome.reconciled, 1, "the partial identity is reconciled");
+            assert_eq!(outcome.reconciled, 1, "the bare identity is reconciled");
             assert_eq!(outcome.imported, 0);
             assert_eq!(outcome.skipped_existing, 0);
-            assert!(
-                outcome.moved_data(),
-                "a reconcile that recovers keys counts as data moved",
-            );
+            assert!(outcome.moved_data(), "recovered keys count as data moved");
             let merged = updated.borrow();
-            assert_eq!(
-                merged.len(),
-                1,
-                "the reconciled identity is re-persisted once"
+            assert_eq!(merged.len(), 1, "the record is re-persisted once");
+            assert!(
+                !merged[0].private_keys.private_keys.is_empty(),
+                "the legacy-only private key must be recovered into the bare record",
             );
             assert_eq!(
                 merged[0].associated_owner_key_id,
                 Some(7),
-                "the legacy-only Owner key must be merged into the modern record",
+                "the legacy-only Owner association must be recovered",
+            );
+        }
+
+        /// A present identity that ALREADY holds keys is never reconciled — the
+        /// guard behind both the protection-downgrade and the resurrected-removal
+        /// hazards. If the modern record has keys, a missing key/alias may be a
+        /// deliberate removal, and re-persisting a `Clear` key into a protected
+        /// identity would trip the vault-first downgrade guard and fail the whole
+        /// pass. Such a record must be left untouched: not re-persisted, not
+        /// counted reconciled.
+        #[test]
+        fn a_present_keyed_identity_is_left_untouched_never_reconciled() {
+            let conn = Connection::open_in_memory().expect("in-memory db");
+            create_identity_table(&conn);
+            let id = [0xAA; 32];
+
+            // Legacy blob has an extra key, an alias, and an owner association —
+            // all absent from the modern record.
+            let mut legacy_qi = identity_qi_with_key(id, 0x11);
+            legacy_qi.alias = Some("legacy name".to_string());
+            legacy_qi.associated_owner_key_id = Some(9);
+            insert_identity(&conn, id, Some(legacy_qi.to_bytes()), true);
+
+            // Modern record already holds a (different) key — so it is NOT bare;
+            // its alias was deliberately cleared (None) and it has no owner assoc.
+            let modern = identity_qi_with_key(id, 0x22);
+            assert!(modern.alias.is_none() && modern.associated_owner_key_id.is_none());
+
+            let updated: RefCell<Vec<QualifiedIdentity>> = RefCell::new(Vec::new());
+            let outcome = migrate_identities_from_conn(
+                &conn,
+                NETWORK,
+                |_| true,
+                |qid| Ok((qid.to_buffer() == id).then(|| modern.clone())),
+                |_, _| panic!("a present identity must not reach the insert writer"),
+                |qi| {
+                    updated.borrow_mut().push(qi.clone());
+                    Ok(())
+                },
+            )
+            .expect("import");
+
+            assert_eq!(outcome.skipped_existing, 1);
+            assert_eq!(outcome.reconciled, 0);
+            assert_eq!(outcome.imported, 0);
+            assert!(
+                updated.borrow().is_empty(),
+                "a keyed identity must not be re-persisted: no protection downgrade, \
+                 no resurrected alias, no resurrected removed key",
             );
         }
 

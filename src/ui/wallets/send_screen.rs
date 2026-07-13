@@ -4,7 +4,7 @@ use crate::backend_task::core::{CoreTask, PaymentRecipient, WalletPaymentRequest
 use crate::backend_task::identity::{IdentityTask, IdentityTopUpInfo, TopUpIdentityFundingMethod};
 use crate::backend_task::wallet::WalletTask;
 use crate::context::AppContext;
-use crate::context::feature_gate::ExperimentalFeature;
+use crate::context::feature_gate::FeatureGate;
 use crate::model::address::{AddressKind, ValidatedAddress};
 use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
 use crate::model::fee_estimation::{
@@ -2052,11 +2052,10 @@ impl WalletSendScreen {
                 });
         }
 
-        // Shielded balance option (experimental feature)
+        // Shielded balance option (experimental, and only where the network
+        // defines the shielded state transitions).
         let shielded_balance = self.get_shielded_balance();
-        if self
-            .app_context
-            .experimental_enabled(ExperimentalFeature::Shielded)
+        if FeatureGate::ShieldedOperations.is_available(&self.app_context)
             && let Some((seed_hash, balance)) = shielded_balance
             && balance > 0
         {
@@ -2105,12 +2104,10 @@ impl WalletSendScreen {
     }
 
     /// Destination address kinds for the free-form (General) send, derived from
-    /// the selected source. Shielded destinations are gated as an experimental
-    /// feature here.
+    /// the selected source. Shielded destinations are offered only where the
+    /// network can settle them and the feature is unlocked.
     fn general_destination_kinds(&self) -> Vec<AddressKind> {
-        let shielded_enabled = self
-            .app_context
-            .experimental_enabled(ExperimentalFeature::Shielded);
+        let shielded_enabled = FeatureGate::ShieldedOperations.is_available(&self.app_context);
         match &self.selected_source {
             Some(SourceSelection::CoreWallet) => {
                 let mut kinds = vec![AddressKind::Core, AddressKind::Platform];

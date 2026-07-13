@@ -2,7 +2,7 @@ use crate::app::AppAction;
 use crate::backend_task::dashpay::DashPayTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
-use crate::context::feature_gate::ExperimentalFeature;
+use crate::context::feature_gate::FeatureGate;
 
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::components::avatar::Avatar;
@@ -841,9 +841,8 @@ impl ContactsList {
                                         }
 
                                         // Pay is an experimental DashPay feature.
-                                        if self
-                                            .app_context
-                                            .experimental_enabled(ExperimentalFeature::DashPay)
+                                        if FeatureGate::DashPayOperations
+                                            .is_available(&self.app_context)
                                             && ui.button("Pay").clicked()
                                         {
                                             if let Some(identity) = self.selected_identity.clone() {

@@ -5,6 +5,8 @@ pub mod feature_gate;
 mod identity_db;
 pub mod migration_status;
 mod settings_db;
+#[cfg(test)]
+pub(crate) mod test_support;
 mod wallet_lifecycle;
 
 use crate::app_dir::core_cookie_path;

@@ -47,6 +47,13 @@ impl AppContext {
     /// write lock (the same guard [`Self::set_app_settings`] uses), so
     /// concurrent updaters cannot lose each other's writes — every call
     /// observes the prior committed state.
+    ///
+    /// # Errors
+    ///
+    /// Returns the k/v error when the current settings cannot be read, or when
+    /// the mutated value cannot be written. A failed *read* aborts before the
+    /// write: committing `mutate` on top of a defaults blob would reset every
+    /// field it does not touch.
     pub fn update_app_settings(
         &self,
         mutate: impl FnOnce(&mut AppSettings),
@@ -54,7 +61,7 @@ impl AppContext {
         // Holding this guard across the full cycle serialises updaters and
         // blocks readers from observing a half-applied value.
         let mut guard = self.invalidate_settings_cache();
-        let mut settings = self.load_app_settings_uncached();
+        let mut settings = self.load_app_settings_uncached()?;
         mutate(&mut settings);
         // On a put failure the cache stays cleared, so the next read reloads
         // from the store instead of serving a value that never persisted.
@@ -69,11 +76,21 @@ impl AppContext {
     /// from at the next boot. Both role-setting UI surfaces (Settings selector,
     /// onboarding row) go through here so the runtime atomic and the persisted
     /// value never diverge.
-    pub fn set_and_persist_user_role(&self, role: UserRole) {
+    ///
+    /// The role is persisted **before** it is published to the runtime atomic: a
+    /// role that only ever reached the atomic would look accepted, then silently
+    /// revert at the next boot, when the seed reads the canonical value that was
+    /// never written.
+    ///
+    /// # Errors
+    ///
+    /// Returns the k/v error when the role could not be persisted. The runtime
+    /// role is then left untouched, and the caller must surface the failure —
+    /// the user's selection did not take effect.
+    pub fn set_and_persist_user_role(&self, role: UserRole) -> Result<(), KvAdapterError> {
+        self.update_app_settings(|s| s.user_role = Some(role))?;
         self.set_user_role(role);
-        if let Err(e) = self.update_app_settings(|s| s.user_role = Some(role)) {
-            tracing::warn!(error = ?e, "Failed to persist the selected user role");
-        }
+        Ok(())
     }
 
     /// Invalidates the settings cache and returns a guard.
@@ -89,9 +106,11 @@ impl AppContext {
 
     /// Read the persisted [`AppSettings`].
     ///
-    /// Returns defaults when the blob is absent (first run) or when the
-    /// stored value fails to decode (e.g. a future schema). Cached
-    /// in-memory between updates.
+    /// Returns defaults when the blob is absent (first run), and — for this read
+    /// only — when it cannot be read or decoded (e.g. a future schema): the frame
+    /// loop needs a value every frame, so an unreadable blob degrades to defaults
+    /// in memory. The stored blob is left untouched, so a transient failure costs
+    /// the user nothing once the store recovers. Cached in-memory between updates.
     pub fn get_app_settings(&self) -> AppSettings {
         // Fast path: cache hit under a read lock.
         if let Some(cached) = self.cached_settings.read_recover().clone() {
@@ -108,30 +127,38 @@ impl AppContext {
             return cached;
         }
 
-        let loaded = self.load_app_settings_uncached();
+        let loaded = self.load_app_settings_uncached().unwrap_or_else(|e| {
+            tracing::warn!(
+                error = ?e,
+                "Could not read the stored app settings; serving defaults for this read and leaving the stored value untouched"
+            );
+            self.seed_user_role_from_env(AppSettings::default())
+        });
         *guard = Some(loaded.clone());
         loaded
     }
 
     /// Load and decode [`AppSettings`] straight from the k/v store, applying the
-    /// dash-qt autodetect fallback. Bypasses the cache — the caller must hold
-    /// the `cached_settings` write lock. A missing or undecodable blob falls
-    /// back to defaults.
-    fn load_app_settings_uncached(&self) -> AppSettings {
-        let settings = match self
+    /// dash-qt autodetect fallback and the one-time `.env` role seed. Bypasses
+    /// the cache — the caller must hold the `cached_settings` write lock.
+    ///
+    /// An absent blob (first run) reads as defaults.
+    ///
+    /// # Errors
+    ///
+    /// Returns the k/v error when the stored blob cannot be read or decoded. An
+    /// unreadable blob is emphatically *not* "no settings stored": the value is
+    /// still there, just unavailable right now (poisoned lock, SQLite hiccup,
+    /// future schema). Reporting that as an error is what stops every writer
+    /// below — the seed write-back here, and the read-modify-write in
+    /// [`Self::update_app_settings`] — from overwriting the user's real settings
+    /// with a defaults blob on one transient failure.
+    fn load_app_settings_uncached(&self) -> Result<AppSettings, KvAdapterError> {
+        let stored = self
             .app_kv
-            .get::<AppSettings>(DetScope::Global, AppSettings::KV_KEY)
-        {
-            Ok(Some(s)) => with_dash_qt_path_fallback(s),
-            Ok(None) => AppSettings::default(),
-            Err(e) => {
-                tracing::warn!(
-                    error = ?e,
-                    "Failed to load AppSettings from app k/v; using defaults"
-                );
-                AppSettings::default()
-            }
-        };
+            .get::<AppSettings>(DetScope::Global, AppSettings::KV_KEY)?;
+        let settings = stored.map(with_dash_qt_path_fallback).unwrap_or_default();
+
         let seeded_role = settings.user_role.is_none();
         let settings = self.seed_user_role_from_env(settings);
         if seeded_role {
@@ -139,17 +166,10 @@ impl AppContext {
             // consumed exactly once: later loads read the canonical role string
             // and never consult `.env` again. (The `.env DEVELOPER_MODE` parser
             // itself stays — the v34 SPV migration still reads it.)
-            if let Err(e) = self
-                .app_kv
-                .put(DetScope::Global, AppSettings::KV_KEY, &settings)
-            {
-                tracing::warn!(
-                    error = ?e,
-                    "Failed to persist the seeded user role; it will be re-seeded on the next load"
-                );
-            }
+            self.app_kv
+                .put(DetScope::Global, AppSettings::KV_KEY, &settings)?;
         }
-        settings
+        Ok(settings)
     }
 
     /// Seeds `user_role` from the legacy `.env DEVELOPER_MODE` flag when the
@@ -197,8 +217,9 @@ fn with_dash_qt_path_fallback(mut settings: AppSettings) -> AppSettings {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context::test_support::{test_app_context, test_app_context_with_kv};
     use crate::wallet_backend::DetKv;
-    use crate::wallet_backend::kv_test_support::InMemoryKv;
+    use crate::wallet_backend::kv_test_support::{FailingKv, InMemoryKv};
     use dash_sdk::dpp::dashcore::Network;
     use std::sync::Arc;
 
@@ -274,30 +295,6 @@ mod tests {
         };
         let filled = with_dash_qt_path_fallback(settings);
         assert_eq!(filled.dash_qt_path, Some(stored));
-    }
-
-    /// Build a network-free [`AppContext`] backed by throwaway temp storage —
-    /// enough to exercise the settings read-modify-write path.
-    fn test_app_context(dir: &std::path::Path) -> Arc<AppContext> {
-        crate::app_dir::ensure_env_file(dir);
-        let db_file = dir.join("data.db");
-        let db = Arc::new(crate::database::Database::new(&db_file).expect("db"));
-        db.create_tables(true).expect("create tables");
-        db.set_default_version().expect("set version");
-        let app_kv = AppContext::open_app_kv(dir).expect("open app k/v");
-        let secret_store = AppContext::open_secret_store(dir).expect("open secret store");
-        AppContext::new(
-            dir.to_path_buf(),
-            Network::Testnet,
-            db,
-            Default::default(),
-            Default::default(),
-            egui::Context::default(),
-            app_kv,
-            secret_store,
-            std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0)),
-        )
-        .expect("AppContext")
     }
 
     /// Each `update_app_settings` call observes the state committed by the
@@ -472,5 +469,141 @@ mod tests {
             Some(UserRole::Power),
             "the seeded role must be persisted and survive a later .env change"
         );
+    }
+
+    /// Regression: a failed *read* must never provoke a write-back.
+    ///
+    /// A read error is not "no settings stored" — the blob is still there, just
+    /// unreadable right now (poisoned lock, SQLite hiccup, future schema). Taking
+    /// the role-less `AppSettings::default()` as the loaded value and then
+    /// persisting the `.env` role seed on top of it would overwrite the user's
+    /// real settings — network, onboarding, SPV prefs, theme — with defaults, on
+    /// one transient hiccup.
+    #[test]
+    fn read_error_does_not_overwrite_persisted_settings() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Arc::new(FailingKv::default());
+        let ctx = test_app_context_with_kv(tmp.path(), Arc::new(DetKv::from_store(store.clone())));
+
+        // The user's real, fully-populated settings.
+        let stored = AppSettings {
+            network: Network::Testnet,
+            theme_mode: ThemeMode::Dark,
+            user_role: Some(UserRole::Developer),
+            auto_start_spv: true,
+            onboarding_completed: true,
+            ..AppSettings::default()
+        };
+        ctx.set_app_settings(&stored).unwrap();
+        let puts_before = store.put_count();
+
+        // Every read now fails. Bypass the cache so the load actually hits it.
+        store.fail_reads(true);
+        drop(ctx.invalidate_settings_cache());
+        let got = ctx.get_app_settings();
+
+        assert_eq!(
+            store.put_count(),
+            puts_before,
+            "a failed read must not write anything back to the store"
+        );
+        assert!(
+            got.user_role.is_some(),
+            "the caller still gets a usable role for this read"
+        );
+
+        // The store recovers: the stored settings must be exactly as they were.
+        store.fail_reads(false);
+        drop(ctx.invalidate_settings_cache());
+        let recovered = ctx.get_app_settings();
+        assert_eq!(
+            recovered.user_role,
+            Some(UserRole::Developer),
+            "the persisted role survived the failed read"
+        );
+        assert_eq!(recovered.theme_mode, ThemeMode::Dark);
+        assert!(recovered.onboarding_completed);
+        assert!(recovered.auto_start_spv);
+    }
+
+    /// A write that cannot read the current blob must fail instead of committing
+    /// its mutation on top of defaults — the read-modify-write would otherwise
+    /// silently reset every field it does not touch.
+    #[test]
+    fn update_on_unreadable_store_fails_without_clobbering() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Arc::new(FailingKv::default());
+        let ctx = test_app_context_with_kv(tmp.path(), Arc::new(DetKv::from_store(store.clone())));
+
+        // `auto_start_spv` defaults to true, so pin the baseline the update flips.
+        ctx.set_app_settings(&AppSettings {
+            user_role: Some(UserRole::Developer),
+            onboarding_completed: true,
+            auto_start_spv: false,
+            ..AppSettings::default()
+        })
+        .unwrap();
+        let puts_before = store.put_count();
+
+        store.fail_reads(true);
+        drop(ctx.invalidate_settings_cache());
+        let result = ctx.update_app_settings(|s| s.auto_start_spv = true);
+
+        assert!(result.is_err(), "an unreadable store must fail the update");
+        assert_eq!(
+            store.put_count(),
+            puts_before,
+            "a failed read-modify-write must not commit anything"
+        );
+
+        store.fail_reads(false);
+        drop(ctx.invalidate_settings_cache());
+        let recovered = ctx.get_app_settings();
+        assert_eq!(recovered.user_role, Some(UserRole::Developer));
+        assert!(recovered.onboarding_completed);
+        assert!(
+            !recovered.auto_start_spv,
+            "the failed update left the stored blob untouched"
+        );
+    }
+
+    /// The role reaches the runtime atomic only once it is safely persisted:
+    /// publishing first would show the user a mode that silently reverts on the
+    /// next boot, because the boot seed reads the (unwritten) canonical value.
+    #[test]
+    fn user_role_is_not_published_when_it_cannot_be_persisted() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Arc::new(FailingKv::default());
+        let ctx = test_app_context_with_kv(tmp.path(), Arc::new(DetKv::from_store(store.clone())));
+
+        ctx.set_and_persist_user_role(UserRole::Everyday)
+            .expect("a healthy store persists the role");
+        assert_eq!(ctx.user_role(), UserRole::Everyday);
+
+        store.fail_reads(true);
+        drop(ctx.invalidate_settings_cache());
+        let result = ctx.set_and_persist_user_role(UserRole::Developer);
+
+        assert!(
+            result.is_err(),
+            "a failed persist must be reported to the caller, not swallowed"
+        );
+        assert_eq!(
+            ctx.user_role(),
+            UserRole::Everyday,
+            "the runtime role must not advertise a mode that never reached the store"
+        );
+    }
+
+    /// The happy path still publishes and persists together.
+    #[test]
+    fn user_role_is_published_and_persisted_together() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = test_app_context(tmp.path());
+
+        ctx.set_and_persist_user_role(UserRole::Power).unwrap();
+
+        assert_eq!(ctx.user_role(), UserRole::Power);
+        assert_eq!(ctx.get_app_settings().user_role, Some(UserRole::Power));
     }
 }

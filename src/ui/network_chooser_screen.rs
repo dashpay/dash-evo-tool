@@ -493,12 +493,28 @@ impl NetworkChooserScreen {
                 // The role is app-global and shared by every per-network context;
                 // persist it as the canonical AppSettings value and publish it to
                 // the shared runtime atomic in one call.
-                self.current_app_context()
-                    .set_and_persist_user_role(self.selected_role);
-                // Raising the role also disables animations, which stops the
-                // continuous repaints, so request one so newly-gated nav entries
-                // (e.g. Masternodes) appear immediately.
-                ui.ctx().request_repaint();
+                match self
+                    .current_app_context()
+                    .set_and_persist_user_role(self.selected_role)
+                {
+                    Ok(()) => {
+                        // Raising the role also disables animations, which stops the
+                        // continuous repaints, so request one so newly-gated nav entries
+                        // (e.g. Masternodes) appear immediately.
+                        ui.ctx().request_repaint();
+                    }
+                    Err(e) => {
+                        // The selection never reached the store, so the radio group
+                        // must fall back to the mode that is still in effect.
+                        self.selected_role = previous_role;
+                        MessageBanner::set_global(
+                            ui.ctx(),
+                            "Could not save your interface mode. Select it again, or restart the application if the problem continues.",
+                            MessageType::Error,
+                        )
+                        .with_details(e);
+                    }
+                }
             }
         });
 

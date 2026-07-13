@@ -2,7 +2,7 @@ use crate::app::AppAction;
 use crate::backend_task::BackendTask;
 use crate::backend_task::migration::MigrationTask;
 use crate::context::AppContext;
-use crate::context::feature_gate::ExperimentalFeature;
+use crate::context::feature_gate::FeatureGate;
 use crate::context::migration_status::{MigrationState, MigrationStep};
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::wallet::WalletSeedHash;
@@ -194,9 +194,7 @@ impl ShieldedTabView {
     /// Render the collapsible shielded addresses section with a table of all
     /// diversified addresses.
     fn render_address_section(&mut self, ui: &mut Ui, dark_mode: bool) {
-        let shielded_enabled = self
-            .app_context
-            .experimental_enabled(ExperimentalFeature::Shielded);
+        let shielded_enabled = FeatureGate::ShieldedOperations.is_available(&self.app_context);
 
         let header = egui::CollapsingHeader::new(
             RichText::new("Shielded Addresses")

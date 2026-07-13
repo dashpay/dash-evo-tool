@@ -108,10 +108,21 @@ impl Check {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FeatureGate {
     /// Shielded (ZK) transactions — requires the current platform version to
-    /// define all shielded state transitions.
+    /// define all shielded state transitions. Backs the Shielded account tab.
     Shielded,
+    /// Shielded operations the user can actually invoke — shielded send sources
+    /// and shielded destinations. Both axes must hold: the connected network has
+    /// to define the shielded state transitions ([`FeatureGate::Shielded`]) *and*
+    /// the feature is still experimental. Offering a shielded destination the
+    /// network cannot settle is a dead end, so this never reduces to the
+    /// experimental flag alone.
+    ShieldedOperations,
     /// DashPay social features — always available (placeholder for future restriction)
     DashPay,
+    /// DashPay operations the user can actually invoke — pay buttons and the
+    /// payment-history subscreen. Experimental only: DashPay has no network
+    /// capability gate today, unlike [`FeatureGate::ShieldedOperations`].
+    DashPayOperations,
     /// Masternode operation — a Power User activity (the operator persona), so
     /// gated at [`UserRole::Power`]. Backs the Masternodes nav entry.
     Masternodes,
@@ -128,7 +139,12 @@ impl FeatureGate {
     fn checks(self) -> &'static [Check] {
         match self {
             FeatureGate::Shielded => &[Check::Capability(Capability::ShieldedProtocol)],
+            FeatureGate::ShieldedOperations => &[
+                Check::Capability(Capability::ShieldedProtocol),
+                Check::Experimental(ExperimentalFeature::Shielded),
+            ],
             FeatureGate::DashPay => &[],
+            FeatureGate::DashPayOperations => &[Check::Experimental(ExperimentalFeature::DashPay)],
             FeatureGate::Masternodes => &[Check::MinRole(UserRole::Power)],
             FeatureGate::DeveloperTools => &[Check::MinRole(UserRole::Developer)],
         }
@@ -137,5 +153,173 @@ impl FeatureGate {
     /// Evaluate whether this feature is available in the current context.
     pub fn is_available(self, ctx: &AppContext) -> bool {
         self.checks().iter().all(|c| c.is_met(ctx))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::context::test_support::test_app_context;
+    use std::sync::Arc;
+
+    const ROLES: [UserRole; 3] = [UserRole::Everyday, UserRole::Power, UserRole::Developer];
+
+    /// Highest protocol version probed by [`known_protocol_versions`]. Well past
+    /// the versions upstream defines today, so the probe cannot silently miss one.
+    const MAX_PROBED_PROTOCOL_VERSION: u32 = 40;
+
+    /// A context in `role`, on its own data dir — the app k/v store refuses a
+    /// second open of the same path, so contexts cannot share one.
+    fn ctx_with_role(role: UserRole) -> (tempfile::TempDir, Arc<AppContext>) {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = test_app_context(tmp.path());
+        ctx.set_user_role(role);
+        (tmp, ctx)
+    }
+
+    /// Every protocol version upstream actually defines.
+    fn known_protocol_versions() -> Vec<u32> {
+        (1..=MAX_PROBED_PROTOCOL_VERSION)
+            .filter(|v| PlatformVersion::get_optional(*v).is_some())
+            .collect()
+    }
+
+    /// Masternode operation is the operator persona's activity: Power and above.
+    #[test]
+    fn masternodes_requires_at_least_power() {
+        for role in ROLES {
+            let (_tmp, ctx) = ctx_with_role(role);
+            assert_eq!(
+                FeatureGate::Masternodes.is_available(&ctx),
+                role.at_least(UserRole::Power),
+                "Masternodes availability for {role:?}"
+            );
+        }
+    }
+
+    /// The developer tier is reserved for the Developer role — a Power user must
+    /// not reach it (that conflation is exactly what the old dev-mode flag did).
+    #[test]
+    fn developer_tools_requires_the_developer_role() {
+        for role in ROLES {
+            let (_tmp, ctx) = ctx_with_role(role);
+            assert_eq!(
+                FeatureGate::DeveloperTools.is_available(&ctx),
+                role == UserRole::Developer,
+                "DeveloperTools availability for {role:?}"
+            );
+        }
+    }
+
+    /// The empty conjunction is `true`: a gate with no checks is available to
+    /// every role, unconditionally.
+    #[test]
+    fn empty_check_list_is_always_available() {
+        assert!(
+            FeatureGate::DashPay.checks().is_empty(),
+            "this test is about the empty-conjunction case"
+        );
+        for role in ROLES {
+            let (_tmp, ctx) = ctx_with_role(role);
+            assert!(
+                FeatureGate::DashPay.is_available(&ctx),
+                "DashPay nav entry must stay available for {role:?}"
+            );
+        }
+    }
+
+    /// The experimental axis is wired: DashPay *operations* (pay buttons, payment
+    /// history) track today's `experimental_enabled` rule — Power and above — while
+    /// the DashPay nav entry above stays open to everyone.
+    #[test]
+    fn dashpay_operations_track_the_experimental_axis() {
+        for role in ROLES {
+            let (_tmp, ctx) = ctx_with_role(role);
+            assert_eq!(
+                FeatureGate::DashPayOperations.is_available(&ctx),
+                ctx.experimental_enabled(ExperimentalFeature::DashPay),
+                "DashPayOperations must follow the experimental axis for {role:?}"
+            );
+            assert_eq!(
+                FeatureGate::DashPayOperations.is_available(&ctx),
+                role.at_least(UserRole::Power),
+                "…which today means Power and above ({role:?})"
+            );
+        }
+    }
+
+    /// An unfetched protocol version (0, the boot value) means "we do not know what
+    /// this network supports" — the capability must read as unmet, never optimistic.
+    #[test]
+    fn shielded_capability_is_unmet_before_a_version_is_fetched() {
+        let (_tmp, ctx) = ctx_with_role(UserRole::Developer);
+
+        assert_eq!(ctx.platform_protocol_version(), 0, "boot value");
+        assert!(!Capability::ShieldedProtocol.is_met(&ctx));
+        assert!(
+            !FeatureGate::Shielded.is_available(&ctx),
+            "the shielded tab stays hidden until the network's version is known"
+        );
+    }
+
+    /// Tripwire. No protocol version upstream ships today defines the shielded
+    /// state transitions, so the capability is unmet on every network — which is
+    /// why the "capability met" half of the AND cannot be exercised yet.
+    ///
+    /// When upstream lands shielded state transitions this test fails. That is the
+    /// point: whoever bumps the dependency must then re-check the shielded gates
+    /// and add the missing `capability ∧ role ⇒ available` case below.
+    #[test]
+    fn no_known_protocol_version_defines_shielded_state_transitions_yet() {
+        let (_tmp, ctx) = ctx_with_role(UserRole::Developer);
+        let versions = known_protocol_versions();
+        assert!(!versions.is_empty(), "the probe must find some versions");
+
+        for version in versions {
+            ctx.set_platform_protocol_version(version);
+            assert!(
+                !Capability::ShieldedProtocol.is_met(&ctx),
+                "protocol v{version} unexpectedly defines all shielded state transitions — \
+                 the shielded gates now have a reachable capability and need re-checking"
+            );
+        }
+    }
+
+    /// AND semantics. `ShieldedOperations` is the first multi-check gate: it needs
+    /// the experimental axis *and* the network capability. A Developer passes the
+    /// experimental check outright, so the gate can only be closed by the failing
+    /// capability — proving the capability check is genuinely part of the
+    /// conjunction and not decoration. A gate that reduced to `experimental_enabled`
+    /// (the bug this replaces) would be available here.
+    #[test]
+    fn shielded_operations_fails_when_only_the_experimental_axis_passes() {
+        let (_tmp, ctx) = ctx_with_role(UserRole::Developer);
+
+        assert!(
+            ctx.experimental_enabled(ExperimentalFeature::Shielded),
+            "a Developer passes the experimental check"
+        );
+        assert!(
+            !Capability::ShieldedProtocol.is_met(&ctx),
+            "no network defines the shielded state transitions yet"
+        );
+        assert!(
+            !FeatureGate::ShieldedOperations.is_available(&ctx),
+            "one failing check must close the conjunction: shielded send options \
+             must not be offered on a network that cannot settle them"
+        );
+    }
+
+    /// A failing capability closes the gate for every role — no role can buy its
+    /// way past a network that does not support the feature.
+    #[test]
+    fn shielded_operations_is_unavailable_for_every_role_today() {
+        for role in ROLES {
+            let (_tmp, ctx) = ctx_with_role(role);
+            assert!(
+                !FeatureGate::ShieldedOperations.is_available(&ctx),
+                "ShieldedOperations must stay closed for {role:?} while the capability is unmet"
+            );
+        }
     }
 }

@@ -2,9 +2,10 @@ use crate::app::AppAction;
 use crate::context::AppContext;
 use crate::model::user_role::UserRole;
 use crate::ui::components::icons::load_svg_icon;
+use crate::ui::components::message_banner::MessageBanner;
 use crate::ui::components::styled::island_central_panel;
 use crate::ui::theme::{DashColors, Shadow, Shape, Spacing};
-use crate::ui::{RootScreenType, ScreenType};
+use crate::ui::{MessageType, RootScreenType, ScreenType};
 use egui::{RichText, ScrollArea, Vec2};
 use std::sync::Arc;
 
@@ -115,8 +116,19 @@ impl WelcomeScreen {
         });
 
         if role != previous {
-            self.app_context.set_and_persist_user_role(role);
-            ui.ctx().request_repaint();
+            match self.app_context.set_and_persist_user_role(role) {
+                // `role` is re-read from the context every frame, so a failed
+                // selection reverts on its own — only the banner is needed.
+                Ok(()) => ui.ctx().request_repaint(),
+                Err(e) => {
+                    MessageBanner::set_global(
+                        ui.ctx(),
+                        "Could not save your experience level. Select it again, or restart the application if the problem continues.",
+                        MessageType::Error,
+                    )
+                    .with_details(e);
+                }
+            }
         }
 
         ui.add_space(6.0);

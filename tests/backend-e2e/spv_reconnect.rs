@@ -75,7 +75,7 @@ async fn spv_reconnect_succeeds_without_already_open() {
             egui_ctx.clone(),
             app_kv,
             secret_store,
-            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            dash_evo_tool::model::user_role::UserRoleCell::default(),
         )
         .expect("create isolated AppContext"),
     );

@@ -6,6 +6,7 @@ use crate::model::amount::Amount;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::encrypted_key_storage::PrivateKeyData;
 use crate::model::qualified_identity::{IdentityType, PrivateKeyTarget, QualifiedIdentity};
+use crate::model::user_role::UserRole;
 use crate::model::wallet::Wallet;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
@@ -74,10 +75,14 @@ impl WithdrawalScreen {
             .default_withdrawal_key()
             .map(|qk| qk.identity_public_key.clone())
             .or_else(|| {
-                // Developer mode may sign with any on-chain key; keep the
-                // power-user escape hatch instead of leaving the form blank.
+                // Only the Developer role can actually sign with an on-chain-only
+                // key (the signing override in `state_transition_options` plus the
+                // Developer branch of the `has_keys` gate below). Pre-selecting one
+                // for any lower role gives a key the signer cannot use, so this
+                // fallback matches that Developer gate.
                 app_context
-                    .is_developer_mode()
+                    .user_role()
+                    .at_least(UserRole::Developer)
                     .then(|| {
                         identity.identity.get_first_public_key_matching(
                             Purpose::TRANSFER,
@@ -163,7 +168,7 @@ impl WithdrawalScreen {
             .unwrap_or(false);
         let can_have_withdrawal_address = !is_owner_key;
 
-        if can_have_withdrawal_address || self.app_context.is_developer_mode() {
+        if can_have_withdrawal_address || self.app_context.user_role().at_least(UserRole::Power) {
             ui.horizontal(|ui| {
                 ui.label("Address:");
 
@@ -208,8 +213,9 @@ impl WithdrawalScreen {
                 }
             });
 
-            // In dev mode with OWNER key, show hint about auto-selected payout address
-            if self.app_context.is_developer_mode()
+            // For Power users with an OWNER key, show a hint about the
+            // auto-selected payout address.
+            if self.app_context.user_role().at_least(UserRole::Power)
                 && is_owner_key
                 && let Some(payout_address) = self
                     .identity
@@ -260,7 +266,7 @@ impl WithdrawalScreen {
             .masternode_payout_address(self.app_context.network)
         {
             format!("masternode payout address {}", payout_address)
-        } else if !self.app_context.is_developer_mode() {
+        } else if !self.app_context.user_role().at_least(UserRole::Power) {
             self.withdraw_from_identity_status = WithdrawFromIdentityStatus::Error;
             MessageBanner::set_global(
                 self.app_context.egui_ctx(),
@@ -426,7 +432,7 @@ impl ScreenLike for WithdrawalScreen {
             });
             ui.add_space(10.0);
 
-            let has_keys = if self.app_context.is_developer_mode() {
+            let has_keys = if self.app_context.user_role().at_least(UserRole::Developer) {
                 !self.identity.identity.public_keys().is_empty()
             } else {
                 !self.identity.available_withdrawal_keys().is_empty()

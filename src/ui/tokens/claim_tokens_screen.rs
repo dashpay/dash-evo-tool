@@ -1,5 +1,6 @@
 use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
 use crate::model::fee_estimation::format_credits_as_dash;
+use crate::model::user_role::UserRole;
 use crate::ui::components::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::left_panel::add_left_panel;
@@ -349,7 +350,7 @@ impl ScreenLike for ClaimTokensScreen {
             ui.add_space(10.0);
 
             // Check if user has any auth keys
-            let has_keys = if self.app_context.is_developer_mode() {
+            let has_keys = if self.app_context.user_role().at_least(UserRole::Developer) {
                 !identity.identity.public_keys().is_empty()
             } else {
                 match identity.identity_type {

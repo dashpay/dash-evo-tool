@@ -425,7 +425,7 @@ mod send_payment_unsupported_options {
             egui::Context::default(),
             app_kv,
             secret_store,
-            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            crate::model::user_role::UserRoleCell::default(),
         )
         .expect("AppContext")
     }

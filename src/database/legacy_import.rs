@@ -305,20 +305,24 @@ pub(crate) fn read_identities(
 
     let mut out = LegacyIdentities::default();
     while let Some(row) = rows.next()? {
-        let id: Vec<u8> = row.get(0)?;
-        let data: Vec<u8> = row.get(1)?;
-        // SQLite stores both of these as signed 64-bit integers and the legacy
-        // schema puts no `CHECK` on either, so a corrupted row can hold a value
-        // that does not fit. Widen the read and convert explicitly: a narrow
-        // `row.get::<u8>` would raise `IntegralValueOutOfRange` through `?` and
-        // take the whole identity read down — every other row-level corruption
-        // here is counted and skipped, and this one must behave the same.
-        let status: i64 = row.get(2)?;
-        let wallet: Option<Vec<u8>> = row.get(3)?;
-        let wallet_index: Option<i64> = row.get(4)?;
-        // Denormalised copy of the blob's own alias. Read as a fallback only —
-        // the blob wins whenever it carries one (see below).
-        let alias: Option<String> = row.get(5)?;
+        // A wrong SQLite storage class on any column is row-level corruption:
+        // decode through a `Result` so a bad column costs its own row, not the
+        // whole read. A bare `row.get::<_>?` here would escape `read_identities`
+        // and discard every identity already accumulated this pass — every other
+        // corruption case below is counted and skipped, and this must match.
+        let (id, data, status, wallet, wallet_index, alias) = match decode_identity_columns(row) {
+            Ok(columns) => columns,
+            Err(_) => {
+                // No id is logged: the failing column may itself be the id, and
+                // nothing about a row that may carry key material is ever logged.
+                tracing::warn!(
+                    target = "database::legacy_import",
+                    "Skipping legacy identity whose column types could not be read",
+                );
+                out.unreadable = out.unreadable.saturating_add(1);
+                continue;
+            }
+        };
 
         let Ok(id) = <[u8; 32]>::try_from(id.as_slice()) else {
             tracing::warn!(
@@ -416,17 +420,52 @@ pub(crate) fn read_identities(
         qi.status = IdentityStatus::from(status);
         qi.network = network;
 
-        // The blob is the source of truth for the alias; the column is a
-        // denormalised copy. Fall back to it only when the blob carries none, so
-        // a row that has both always keeps the blob's value.
-        if qi.alias.is_none() {
-            qi.alias = alias;
-        }
+        // The SQL `alias` column is authoritative — the blob's copy is stale.
+        // In v0.9.3, `set_identity_alias` wrote ONLY the column, while every
+        // identity loader decoded the blob and then unconditionally overwrote
+        // `alias` with the column value (`identity.alias = alias;`). A rename or
+        // an alias removal therefore left the blob holding the old value, and the
+        // column always won at load time. Keeping the blob when populated would
+        // resurrect a renamed-away alias or reverse a removal during upgrade, so
+        // the column wins here exactly as it did in v0.9.3 — including a NULL
+        // column clearing a stale blob alias.
+        qi.alias = alias;
 
         out.identities.push(LegacyIdentityRow { id, qi, wallet });
     }
 
     Ok(out)
+}
+
+/// Decode the six raw columns of one legacy `identity` row. Kept separate so a
+/// malformed column storage class is a `Result` the row loop can count and skip,
+/// rather than a `?` that escapes [`read_identities`] and discards every row
+/// already accumulated. Same contract as [`decode_scheduled_vote_columns`].
+///
+/// `status` and `wallet_index` are read as signed 64-bit integers on purpose:
+/// the legacy schema puts no `CHECK` on either, so a corrupted row can hold a
+/// value past the modern `u8` / `u32` range. Widening here and converting in the
+/// row loop turns that into a counted, skipped row rather than an
+/// `IntegralValueOutOfRange` that a narrow `row.get` would raise through `?`.
+#[allow(clippy::type_complexity)]
+fn decode_identity_columns(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<(
+    Vec<u8>,
+    Vec<u8>,
+    i64,
+    Option<Vec<u8>>,
+    Option<i64>,
+    Option<String>,
+)> {
+    Ok((
+        row.get(0)?,
+        row.get(1)?,
+        row.get(2)?,
+        row.get(3)?,
+        row.get(4)?,
+        row.get(5)?,
+    ))
 }
 
 /// Decode the five raw columns of one legacy `scheduled_votes` row. Kept
@@ -1325,34 +1364,108 @@ mod tests {
         assert_eq!(read.unreadable, 2, "both corrupt rows are reported");
     }
 
-    /// The blob is the source of truth for the alias; the `alias` column is a
-    /// denormalised copy. The column fills in only when the blob carries none —
-    /// otherwise a blob with its own alias must keep it, column notwithstanding.
+    /// A wrong SQLite *storage class* on a column (an INTEGER where the blob is
+    /// expected, a BLOB where the `alias` text is expected) must cost only its
+    /// own row. Before the per-row decode, these raised `InvalidColumnType`
+    /// through `?` and discarded every identity already read this pass — keys
+    /// included. The good row, ordered first, proves the batch is not thrown
+    /// away when a later row is malformed.
     #[test]
-    fn identities_alias_falls_back_to_column_only_when_blob_has_none() {
+    fn identities_skip_malformed_column_types_without_discarding_read_rows() {
         let conn = Connection::open_in_memory().unwrap();
         create_identity_table(&conn);
 
-        let blob_wins = [0xAA; 32];
-        let column_fallback = [0xBB; 32];
+        let good = [0xAA; 32];
+        let bad_data = [0xBBu8; 32];
+        let bad_alias = [0xCCu8; 32];
 
-        // Blob carries its own alias — the differing column value must be ignored.
+        // Ordered first so a `?`-escape would take it down with the bad rows.
+        insert_identity(
+            &conn,
+            good,
+            Some(identity_blob(good)),
+            2,
+            true,
+            None,
+            "testnet",
+        );
+        // `data` holds an INTEGER — `row.get::<Vec<u8>>` rejects it. It passes the
+        // `data IS NOT NULL` filter, so the read reaches the decode and skips.
+        conn.execute(
+            "INSERT INTO identity (id, data, status, is_local, network)
+             VALUES (?1, 42, 2, 1, 'testnet')",
+            rusqlite::params![bad_data.as_slice()],
+        )
+        .unwrap();
+        // `alias` holds a BLOB — a TEXT-affinity column keeps a blob as a blob, so
+        // `row.get::<Option<String>>` rejects it. This is the column added in the
+        // prior commit; a malformed one must not fail the whole read either.
+        conn.execute(
+            "INSERT INTO identity (id, data, status, is_local, alias, network)
+             VALUES (?1, ?2, 2, 1, X'DEADBEEF', 'testnet')",
+            rusqlite::params![bad_alias.as_slice(), identity_blob(bad_alias)],
+        )
+        .unwrap();
+
+        let read = read_identities(&conn, Network::Testnet)
+            .expect("a malformed column type must not fail the whole read");
+
+        assert_eq!(
+            read.identities.len(),
+            1,
+            "the readable identity accumulated before the bad rows must survive",
+        );
+        assert_eq!(read.identities[0].id, good);
+        assert_eq!(read.unreadable, 2, "both malformed-type rows are reported");
+    }
+
+    /// The SQL `alias` column is authoritative and always wins over the blob's
+    /// stale copy. In v0.9.3 `set_identity_alias` wrote only the column, and
+    /// every loader decoded the blob then unconditionally overwrote `alias` with
+    /// the column value — so a rename or a removal left the blob stale, and the
+    /// column always won at load time. The migration must reproduce that: a
+    /// populated column overrides a differing blob alias, and a NULL column
+    /// clears a stale blob alias (a rename-away / removal the user made in
+    /// v0.9.3). Getting this backwards would resurrect a renamed-away alias.
+    #[test]
+    fn identities_alias_always_takes_the_column() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_identity_table(&conn);
+
+        let column_overrides_blob = [0xAA; 32];
+        let column_fills_empty_blob = [0xBB; 32];
+        let null_column_clears_blob = [0xCC; 32];
+
+        // Blob carries "blob-alias" but the column holds a newer "column-alias":
+        // the column value the user last set must win.
         conn.execute(
             "INSERT INTO identity (id, data, status, is_local, alias, network)
              VALUES (?1, ?2, 2, 1, 'column-alias', 'testnet')",
             rusqlite::params![
-                blob_wins.as_slice(),
-                identity_blob_with_alias(blob_wins, Some("blob-alias"))
+                column_overrides_blob.as_slice(),
+                identity_blob_with_alias(column_overrides_blob, Some("blob-alias"))
             ],
         )
         .unwrap();
-        // Blob has no alias — the column is the only source left, so it fills in.
+        // Blob has no alias — the column supplies the value.
         conn.execute(
             "INSERT INTO identity (id, data, status, is_local, alias, network)
              VALUES (?1, ?2, 2, 1, 'column-alias', 'testnet')",
             rusqlite::params![
-                column_fallback.as_slice(),
-                identity_blob_with_alias(column_fallback, None)
+                column_fills_empty_blob.as_slice(),
+                identity_blob_with_alias(column_fills_empty_blob, None)
+            ],
+        )
+        .unwrap();
+        // Blob still holds a stale "blob-alias" but the column is NULL — the user
+        // removed the alias in v0.9.3, which wrote only the column. The NULL must
+        // win, or the migration resurrects the removed alias.
+        conn.execute(
+            "INSERT INTO identity (id, data, status, is_local, alias, network)
+             VALUES (?1, ?2, 2, 1, NULL, 'testnet')",
+            rusqlite::params![
+                null_column_clears_blob.as_slice(),
+                identity_blob_with_alias(null_column_clears_blob, Some("blob-alias"))
             ],
         )
         .unwrap();
@@ -1369,14 +1482,19 @@ mod tests {
                 .clone()
         };
         assert_eq!(
-            alias_of(blob_wins).as_deref(),
-            Some("blob-alias"),
-            "the blob's own alias wins over the column",
+            alias_of(column_overrides_blob).as_deref(),
+            Some("column-alias"),
+            "the column value overrides a differing blob alias",
         );
         assert_eq!(
-            alias_of(column_fallback).as_deref(),
+            alias_of(column_fills_empty_blob).as_deref(),
             Some("column-alias"),
-            "the column fills in when the blob has no alias",
+            "the column supplies the alias when the blob has none",
+        );
+        assert_eq!(
+            alias_of(null_column_clears_blob),
+            None,
+            "a NULL column clears a stale blob alias the user removed in v0.9.3",
         );
         assert_eq!(read.unreadable, 0);
     }

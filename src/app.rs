@@ -171,6 +171,21 @@ pub fn migration_unreadable_identities_text(count: u32) -> String {
     )
 }
 
+/// User-facing banner copy for the rare launch where both DET-owned passes broke:
+/// `count` identities could not be read AND updating the rest of the previous
+/// version's data (such as scheduled votes) hit a hard error. Names each problem
+/// in its own sentence and offers the retry the app-data half needs — the
+/// identity half recovers by loading the identities again. The previous version's
+/// data is never deleted, so both are recoverable. Exposed for kittest coverage.
+pub fn migration_failed_with_unreadable_identities_text(count: u32) -> String {
+    format!(
+        "Some identities from the previous version could not be read and were not carried over \
+         ({count} in total), and updating the rest of your previous data did not finish. Your \
+         previous data is untouched. Choose Retry now to finish updating, then load these \
+         identities again to restore their keys."
+    )
+}
+
 /// How long the cold-start readiness gate waits for the wallet backend to wire
 /// before it stops retrying silently and surfaces a visible, actionable banner.
 ///
@@ -1906,6 +1921,32 @@ mod migration_banner_tests {
     #[test]
     fn migration_retry_action_id_is_stable() {
         assert_eq!(MIGRATION_RETRY_ACTION_ID, "migration:retry:finish_unwire");
+    }
+
+    /// The combined-failure banner must surface BOTH signals in one message: the
+    /// unreadable-identity count AND the app-data failure, plus the retry the
+    /// app-data half needs. If it named only one, the other would be silently
+    /// swallowed — exactly the bug this copy exists to prevent.
+    #[test]
+    fn migration_combined_failure_text_names_both_problems_and_the_retry() {
+        let text = migration_failed_with_unreadable_identities_text(3);
+        assert!(
+            text.contains("identities"),
+            "must name the identity problem"
+        );
+        assert!(
+            text.contains('3'),
+            "must carry the unreadable-identity count"
+        );
+        assert!(
+            text.contains("did not finish"),
+            "must name the app-data failure, not only the identities",
+        );
+        assert!(
+            text.contains("Retry now"),
+            "must offer the retry the app-data half needs",
+        );
+        assert!(text.ends_with('.'), "one complete sentence-shaped message");
     }
 
     /// Cold-start dispatch gate (the startup-race fix): dispatch only when the

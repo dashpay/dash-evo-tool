@@ -33,7 +33,8 @@ use super::{
     COLD_START_BACKEND_READY_TIMEOUT, COLD_START_STUCK_MESSAGE, MIGRATION_RETRY_ACTION_ID,
     MIGRATION_VOTES_ACK_ACTION_ID, SPV_CONNECTING_DESCRIPTION, SPV_CONTINUE_BACKGROUND_ACTION,
     SPV_SYNCING_DESCRIPTION, SpvBlockStep, cold_start_backend_wait_timed_out,
-    migration_running_text, migration_unreadable_identities_text, migration_unreadable_votes_text,
+    migration_failed_with_unreadable_identities_text, migration_running_text,
+    migration_unreadable_identities_text, migration_unreadable_votes_text,
     should_dispatch_cold_start, spv_block_step,
 };
 
@@ -502,6 +503,31 @@ impl MigrationReconciler {
                     MessageType::Warning,
                 );
                 handle.disable_auto_dismiss();
+                self.banner_handle = Some(handle);
+            }
+            MigrationState::FailedWithUnreadableIdentities { count, error } => {
+                // Both DET-owned passes broke on the same launch. One Error banner
+                // (retryable, sticky) names both problems — the identities need
+                // reloading AND the app-data update must be retried — so neither
+                // silently hides the other.
+                if error.is_backend_not_ready() {
+                    // Transient app-data backend-not-ready: reset to Idle so the
+                    // frame loop re-dispatches once ready, no failure flash.
+                    self.dispatched.remove(&app_context.network);
+                    app_context
+                        .migration_status()
+                        .set_state(MigrationState::Idle);
+                    self.last_state = Some(MigrationState::Idle);
+                    return;
+                }
+                let handle = MessageBanner::set_global(
+                    ctx,
+                    migration_failed_with_unreadable_identities_text(count),
+                    MessageType::Error,
+                );
+                handle.disable_auto_dismiss();
+                handle.with_details(error.as_ref());
+                handle.with_action("Retry now", MIGRATION_RETRY_ACTION_ID);
                 self.banner_handle = Some(handle);
             }
             MigrationState::Failed { error } => {

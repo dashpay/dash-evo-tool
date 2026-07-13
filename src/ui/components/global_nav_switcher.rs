@@ -121,11 +121,13 @@ fn gather_wallets(app_context: &Arc<AppContext>) -> Vec<(WalletSeedHash, String)
         .collect()
 }
 
-/// Identity display label (Local nickname → DPNS → short id).
+/// Identity display label (Local nickname → DPNS → short id). The switcher
+/// reads no social profile, so the display-name tier is empty.
 fn identity_label(qi: &QualifiedIdentity) -> String {
     let dpns = qi.dpns_names.first().map(|n| n.name.as_str());
     display_label(
         qi.alias.as_deref(),
+        None,
         dpns,
         &qi.identity.id().to_string(Encoding::Base58),
     )

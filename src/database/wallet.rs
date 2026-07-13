@@ -1,4 +1,4 @@
-use crate::database::{CorruptedBlobError, Database};
+use crate::database::{CorruptedBlobError, Database, column_exists};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::{
     AddressInfo, ClosedKeyItem, DerivationPathReference, DerivationPathType, OpenWalletSeed,
@@ -76,14 +76,7 @@ impl Database {
 
     /// Migration: Add balance columns to wallet table (version 16).
     pub fn add_wallet_balance_columns(&self, conn: &Connection) -> rusqlite::Result<()> {
-        // Check if confirmed_balance column exists
-        let column_exists: bool = conn.query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('wallet') WHERE name='confirmed_balance'",
-            [],
-            |row| row.get::<_, i32>(0).map(|count| count > 0),
-        )?;
-
-        if !column_exists {
+        if !column_exists(conn, "wallet", "confirmed_balance")? {
             conn.execute(
                 "ALTER TABLE wallet ADD COLUMN confirmed_balance INTEGER DEFAULT 0;",
                 (),
@@ -103,14 +96,7 @@ impl Database {
 
     /// Migration: Add total_received column to wallet_addresses table.
     pub fn add_address_total_received_column(&self, conn: &Connection) -> rusqlite::Result<()> {
-        // Check if total_received column exists
-        let column_exists: bool = conn.query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('wallet_addresses') WHERE name='total_received'",
-            [],
-            |row| row.get::<_, i32>(0).map(|count| count > 0),
-        )?;
-
-        if !column_exists {
+        if !column_exists(conn, "wallet_addresses", "total_received")? {
             conn.execute(
                 "ALTER TABLE wallet_addresses ADD COLUMN total_received INTEGER DEFAULT 0;",
                 (),

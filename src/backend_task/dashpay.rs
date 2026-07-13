@@ -22,7 +22,22 @@ pub use contacts::ContactData;
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
-use dash_sdk::platform::{Identifier, IdentityPublicKey};
+use dash_sdk::platform::{DocumentQuery, Identifier, IdentityPublicKey};
+use errors::DashPayError;
+
+/// A fresh `contactRequest` [`DocumentQuery`] against the cached DashPay
+/// contract. Callers add their own `where` / `order by` clauses and limit.
+///
+/// Every `contactRequest` read in this module goes through here, so the
+/// contract handle and the error attribution are stated once.
+fn contact_request_query(app_context: &AppContext) -> Result<DocumentQuery, DashPayError> {
+    DocumentQuery::new(app_context.dashpay_contract.clone(), "contactRequest").map_err(|e| {
+        DashPayError::QueryCreation {
+            query_target: "DashPay contactRequest",
+            source: Box::new(e),
+        }
+    })
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum DashPayTask {

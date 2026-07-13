@@ -4,6 +4,7 @@ use crate::backend_task::dashpay::errors::DashPayError;
 use crate::backend_task::error::TaskError;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
+use crate::model::dashpay::contact_request_recipient;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::components::component_trait::Component;
@@ -942,10 +943,7 @@ impl ScreenLike for ContactRequests {
                 // Process outgoing requests
                 for (id, doc) in outgoing.iter() {
                     let properties = doc.properties();
-                    let to_identity = properties
-                        .get("toUserId")
-                        .and_then(|v| v.to_identifier().ok())
-                        .unwrap_or_default();
+                    let to_identity = contact_request_recipient(doc).unwrap_or_default();
 
                     let account_reference = properties
                         .get("accountReference")

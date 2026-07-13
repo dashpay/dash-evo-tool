@@ -1114,12 +1114,8 @@ fn legacy_table_exists_named(
     conn: &Connection,
     table: &'static str,
 ) -> Result<bool, MigrationError> {
-    conn.query_row(
-        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
-        rusqlite::params![table],
-        |row| row.get::<_, i64>(0).map(|c| c > 0),
-    )
-    .map_err(|e| MigrationError::LegacyDbRead { table, source: e })
+    crate::database::table_exists(conn, table)
+        .map_err(|e| MigrationError::LegacyDbRead { table, source: e })
 }
 
 /// Outcome counters from one [`migrate_wallet_meta_rows`] pass.

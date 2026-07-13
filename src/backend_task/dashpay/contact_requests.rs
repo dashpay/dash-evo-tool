@@ -1,3 +1,4 @@
+use super::contact_request_query;
 use super::encryption::{
     encrypt_account_label, encrypt_extended_public_key, generate_ecdh_shared_key,
 };
@@ -9,6 +10,7 @@ use crate::backend_task::dashpay::auto_accept_proof::{
 };
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
+use crate::model::dashpay::contact_request_recipient;
 use crate::model::qualified_identity::QualifiedIdentity;
 // Upstream contact-request type: used to record the sent request in the
 // local wallet-manager so dashpay_sync can auto-establish the contact.
@@ -38,7 +40,6 @@ pub async fn load_contact_requests(
     identity: QualifiedIdentity,
 ) -> Result<BackendTaskSuccessResult, TaskError> {
     let identity_id = identity.identity.id();
-    let dashpay_contract = app_context.dashpay_contract.clone();
 
     tracing::info!(
         "Loading contact requests for identity: {}",
@@ -46,18 +47,12 @@ pub async fn load_contact_requests(
     );
 
     // Query for incoming contact requests (where toUserId == our identity)
-    let mut incoming_query = DocumentQuery::new(dashpay_contract.clone(), "contactRequest")
-        .map_err(|e| DashPayError::QueryCreation {
-            query_target: "DashPay contactRequest",
-            source: Box::new(e),
-        })?;
-
-    let query_value = Value::Identifier(identity_id.to_buffer());
+    let mut incoming_query = contact_request_query(app_context)?;
 
     incoming_query = incoming_query.with_where(WhereClause {
         field: "toUserId".to_string(),
         operator: WhereOperator::Equal,
-        value: query_value.clone(),
+        value: Value::Identifier(identity_id.to_buffer()),
     });
 
     // Without this orderBy, the query returns 0 results even when documents exist
@@ -68,13 +63,7 @@ pub async fn load_contact_requests(
     incoming_query.limit = 50;
 
     // Query for outgoing contact requests (where $ownerId == our identity)
-    let mut outgoing_query =
-        DocumentQuery::new(dashpay_contract, "contactRequest").map_err(|e| {
-            DashPayError::QueryCreation {
-                query_target: "DashPay contactRequest",
-                source: Box::new(e),
-            }
-        })?;
+    let mut outgoing_query = contact_request_query(app_context)?;
 
     outgoing_query = outgoing_query.with_where(WhereClause {
         field: "$ownerId".to_string(),
@@ -111,43 +100,24 @@ pub async fn load_contact_requests(
 
     // Filter out mutual requests (where both parties have sent requests to each other)
     // These are now contacts, not pending requests
-    let mut contacts_established = HashSet::new();
+    let contacts_established: HashSet<Identifier> = incoming
+        .iter()
+        .map(|(_, doc)| doc.owner_id())
+        .filter(|from_id| {
+            outgoing
+                .iter()
+                .any(|(_, doc)| contact_request_recipient(doc).as_ref() == Some(from_id))
+        })
+        .collect();
 
-    // Check each incoming request
-    for (_, incoming_doc) in incoming.iter() {
-        let from_id = incoming_doc.owner_id();
-
-        // Check if we also sent a request to this person
-        for (_, outgoing_doc) in outgoing.iter() {
-            if let Some(Value::Identifier(to_id_bytes)) = outgoing_doc.properties().get("toUserId")
-            {
-                // Parse the identifier, skip if invalid
-                let Ok(to_id) = Identifier::from_bytes(to_id_bytes.as_slice()) else {
-                    tracing::warn!("Invalid toUserId in contact request document, skipping");
-                    continue;
-                };
-                if to_id == from_id {
-                    // Mutual request found - they are now contacts
-                    contacts_established.insert(from_id);
-                }
-            }
-        }
-    }
-
-    // Filter out established contacts from both lists
+    // Filter out established contacts from both lists. An outgoing document
+    // with an unreadable recipient is kept: it cannot be attributed, and hiding
+    // a request the user may still be waiting on is the worse failure.
     incoming.retain(|(_, doc)| !contacts_established.contains(&doc.owner_id()));
 
-    outgoing.retain(|(_, doc)| {
-        if let Some(Value::Identifier(to_id_bytes)) = doc.properties().get("toUserId") {
-            // Parse the identifier, keep the document if we can't parse (defensive)
-            let Ok(to_id) = Identifier::from_bytes(to_id_bytes.as_slice()) else {
-                tracing::warn!("Invalid toUserId in outgoing contact request, keeping in list");
-                return true;
-            };
-            !contacts_established.contains(&to_id)
-        } else {
-            true
-        }
+    outgoing.retain(|(_, doc)| match contact_request_recipient(doc) {
+        Some(to_id) => !contacts_established.contains(&to_id),
+        None => true,
     });
 
     // Drop requests the user has already resolved locally (declined an incoming
@@ -172,13 +142,6 @@ pub async fn load_contact_requests(
     Ok(BackendTaskSuccessResult::DashPayContactRequests { incoming, outgoing })
 }
 
-/// The recipient (`toUserId`) of a contact-request document.
-fn recipient_of(doc: &Document) -> Option<Identifier> {
-    doc.properties()
-        .get("toUserId")
-        .and_then(|v| v.to_identifier().ok())
-}
-
 /// Drop every request whose counterparty the user has already resolved, per
 /// `is_resolved`. An outgoing document with an unreadable `toUserId` is kept:
 /// we cannot prove it was resolved, and hiding a request the user may still be
@@ -189,7 +152,7 @@ fn retain_unresolved(
     is_resolved: impl Fn(&Identifier) -> bool,
 ) {
     incoming.retain(|(_, doc)| !is_resolved(&doc.owner_id()));
-    outgoing.retain(|(_, doc)| match recipient_of(doc) {
+    outgoing.retain(|(_, doc)| match contact_request_recipient(doc) {
         Some(to) => !is_resolved(&to),
         None => true,
     });
@@ -205,7 +168,7 @@ fn recipient_of_sent_request(
     if doc.owner_id() != *owner {
         return Err(DashPayError::ContactRequestNotSentByYou);
     }
-    recipient_of(doc).ok_or_else(|| DashPayError::InvalidDocument {
+    contact_request_recipient(doc).ok_or_else(|| DashPayError::InvalidDocument {
         reason: "contact request document is missing its toUserId field".to_string(),
     })
 }
@@ -279,11 +242,7 @@ pub async fn send_contact_request_with_proof(
 
     // Step 3: Check if a contact request already exists
     let dashpay_contract = app_context.dashpay_contract.clone();
-    let mut existing_query = DocumentQuery::new(dashpay_contract.clone(), "contactRequest")
-        .map_err(|e| DashPayError::QueryCreation {
-            query_target: "DashPay contactRequest",
-            source: Box::new(e),
-        })?;
+    let mut existing_query = contact_request_query(app_context)?;
 
     existing_query = existing_query
         .with_where(WhereClause {
@@ -699,16 +658,9 @@ pub async fn accept_contact_request(
     // According to DashPay DIP, accepting means sending a contact request back
     // First, we need to fetch the incoming contact request to get the sender's identity
 
-    let dashpay_contract = app_context.dashpay_contract.clone();
-
     // Fetch the specific contact request document by creating a query with its ID
-    let query = DocumentQuery::new(dashpay_contract.clone(), "contactRequest").map_err(|e| {
-        DashPayError::QueryCreation {
-            query_target: "DashPay contactRequest",
-            source: Box::new(e),
-        }
-    })?;
-    let query_with_id = DocumentQuery::with_document_id(query, &request_id);
+    let query_with_id =
+        DocumentQuery::with_document_id(contact_request_query(app_context)?, &request_id);
 
     let doc = Document::fetch(sdk, query_with_id)
         .await?
@@ -718,11 +670,7 @@ pub async fn accept_contact_request(
     let from_identity_id = doc.owner_id();
 
     // Check if we already sent a contact request to this identity
-    let mut existing_query = DocumentQuery::new(dashpay_contract.clone(), "contactRequest")
-        .map_err(|e| DashPayError::QueryCreation {
-            query_target: "DashPay contactRequest",
-            source: Box::new(e),
-        })?;
+    let mut existing_query = contact_request_query(app_context)?;
 
     existing_query = existing_query
         .with_where(WhereClause {
@@ -843,15 +791,8 @@ pub async fn reject_contact_request(
     // Instead, we should update our contactInfo document to mark this contact as hidden
 
     // First, fetch the contact request to get the sender's identity
-    let dashpay_contract = app_context.dashpay_contract.clone();
-
-    let query = DocumentQuery::new(dashpay_contract.clone(), "contactRequest").map_err(|e| {
-        DashPayError::QueryCreation {
-            query_target: "DashPay contactRequest",
-            source: Box::new(e),
-        }
-    })?;
-    let query_with_id = DocumentQuery::with_document_id(query, &request_id);
+    let query_with_id =
+        DocumentQuery::with_document_id(contact_request_query(app_context)?, &request_id);
 
     let doc = Document::fetch(sdk, query_with_id)
         .await?
@@ -976,12 +917,7 @@ struct PlatformCancelOps<'a> {
 
 impl CancelOps for PlatformCancelOps<'_> {
     async fn reciprocal_request_exists(&self) -> Result<bool, TaskError> {
-        let mut query =
-            DocumentQuery::new(self.app_context.dashpay_contract.clone(), "contactRequest")
-                .map_err(|e| DashPayError::QueryCreation {
-                    query_target: "DashPay contactRequest",
-                    source: Box::new(e),
-                })?;
+        let mut query = contact_request_query(self.app_context)?;
         query = query
             .with_where(WhereClause {
                 field: "$ownerId".to_string(),
@@ -1049,12 +985,8 @@ pub async fn cancel_contact_request(
 
     // Re-fetch the request rather than trusting the row the user clicked — the
     // list may be stale by seconds or by an identity switch.
-    let query = DocumentQuery::new(app_context.dashpay_contract.clone(), "contactRequest")
-        .map_err(|e| DashPayError::QueryCreation {
-            query_target: "DashPay contactRequest",
-            source: Box::new(e),
-        })?;
-    let query_with_id = DocumentQuery::with_document_id(query, &request_id);
+    let query_with_id =
+        DocumentQuery::with_document_id(contact_request_query(app_context)?, &request_id);
 
     let doc = Document::fetch(sdk, query_with_id)
         .await?

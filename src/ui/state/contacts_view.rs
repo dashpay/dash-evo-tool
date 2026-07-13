@@ -7,6 +7,8 @@
 //! belongs in `ui/state/`.
 
 use crate::backend_task::dashpay::ContactData;
+use crate::model::dashpay::contact_request_recipient;
+use crate::ui::identity::identity_pill::display_label;
 use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::{Document, Identifier};
@@ -122,12 +124,8 @@ impl ContactsState {
         self.outgoing = outgoing
             .into_iter()
             .filter_map(|(request_id, doc)| {
-                let counterpart_id = doc
-                    .properties()
-                    .get("toUserId")
-                    .and_then(|v| v.to_identifier().ok())?;
                 Some(ContactRequestEntry {
-                    counterpart_id,
+                    counterpart_id: contact_request_recipient(&doc)?,
                     request_id,
                     relative_time: relative_time(&doc),
                 })
@@ -250,33 +248,17 @@ pub fn matches_contact_search(fields: ContactSearchFields<'_>, query: &str) -> b
             .contains(&needle)
 }
 
-/// Best label for a contact row: local nickname, then DashPay display name,
-/// then DPNS username, then a shortened identity ID. Mirrors the hub-wide label
-/// priority rule (IDH-003).
+/// Best label for a contact row. Delegates to [`display_label`], the one
+/// resolver for the hub-wide priority rule (local nickname → DashPay display
+/// name → DPNS username → shortened identity ID), so a contact row and an
+/// identity pill can never disagree on what to call the same identity.
 pub fn contact_label(contact: &ContactData) -> String {
-    let named = [
+    display_label(
         contact.nickname.as_deref(),
         contact.display_name.as_deref(),
         contact.username.as_deref(),
-    ]
-    .into_iter()
-    .flatten()
-    .map(str::trim)
-    .find(|s| !s.is_empty());
-
-    match named {
-        Some(name) => name.to_string(),
-        None => abbreviate_id(&contact.identity_id.to_string(Encoding::Base58)),
-    }
-}
-
-/// Shorten a Base58 identity ID for display: first 8 chars + "…".
-pub fn abbreviate_id(id: &str) -> String {
-    if id.len() <= 10 {
-        id.to_string()
-    } else {
-        format!("{}…", &id[..8])
-    }
+        &contact.identity_id.to_string(Encoding::Base58),
+    )
 }
 
 /// Pre-format a document's `created_at` as a human-relative timestamp.
@@ -288,6 +270,7 @@ fn relative_time(doc: &Document) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::identity::identity_pill::shorten_id;
 
     fn id(byte: u8) -> Identifier {
         Identifier::from_bytes(&[byte; 32]).expect("32-byte identifier")
@@ -568,9 +551,10 @@ mod tests {
         );
 
         // No profile at all — fall back to the shortened identity ID.
+        let base58 = id(7).to_string(Encoding::Base58);
         let fallback = contact_label(&contact(None, None, None));
-        assert_eq!(fallback, abbreviate_id(&id(7).to_string(Encoding::Base58)));
-        assert!(fallback.ends_with('…'));
+        assert_eq!(fallback, shorten_id(&base58));
+        assert!(fallback.contains('…'));
     }
 
     #[test]
@@ -583,9 +567,37 @@ mod tests {
     }
 
     #[test]
-    fn abbreviate_id_shortens_long_ids_only() {
-        assert_eq!(abbreviate_id("AbCdEfGhIjKlMnOpQrStUv"), "AbCdEfGh…");
-        assert_eq!(abbreviate_id("AbCdEfGh"), "AbCdEfGh");
-        assert_eq!(abbreviate_id(""), "");
+    fn a_profileless_contact_is_shortened_exactly_like_its_identity_pill() {
+        // One identity must not render two different ways depending on the tab.
+        // The contacts list and the identity pill share `shorten_id`, so the
+        // same id shortens to the same string on both surfaces.
+        let base58 = id(7).to_string(Encoding::Base58);
+        assert_eq!(
+            contact_label(&contact(None, None, None)),
+            shorten_id(&base58),
+        );
+    }
+
+    #[test]
+    fn a_contacts_label_is_the_hub_wide_label_for_the_same_identity() {
+        // `contact_label` must stay a pure delegation to `display_label` — the
+        // whole point of the shared resolver is that no tier can drift.
+        for (nickname, display, username) in [
+            (Some("Bao"), Some("Alex Kim"), Some("alex.dash")),
+            (None, Some("Alex Kim"), Some("alex.dash")),
+            (None, None, Some("alex.dash")),
+            (None, None, None),
+        ] {
+            let c = contact(nickname, display, username);
+            assert_eq!(
+                contact_label(&c),
+                display_label(
+                    nickname,
+                    display,
+                    username,
+                    &c.identity_id.to_string(Encoding::Base58)
+                ),
+            );
+        }
     }
 }

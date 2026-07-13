@@ -22,7 +22,8 @@ use crate::backend_task::dashpay::{ContactData, DashPayTask};
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::ScreenType;
-use crate::ui::state::contacts_view::{abbreviate_id, contact_label};
+use crate::ui::identity::identity_pill::shorten_id;
+use crate::ui::state::contacts_view::contact_label;
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt, Shape};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::Identifier;
@@ -119,6 +120,28 @@ pub fn contacts_button_kind(button: ContactsButton) -> ContactsButtonKind {
         ContactsButton::HeaderScanQr => OpenScreen(AddContact),
         ContactsButton::HeaderShowMyQr => OpenScreen(QrGenerator),
         ContactsButton::GateSetUpProfile => SwitchHubTab(super::IdentityHubTab::Settings),
+    }
+}
+
+/// Render one request row and dispatch whatever the user clicked on it.
+///
+/// The received and sent sections differ only in the card they hand in — the
+/// row itself (render, spacing, action dispatch) is the same on both, so it
+/// lives here once.
+fn request_row(
+    ui: &mut Ui,
+    card: RequestCard,
+    entry: &ContactRequestEntry,
+    identity: &QualifiedIdentity,
+) -> AppAction {
+    let response = card.show(ui);
+    ui.add_space(4.0);
+
+    match response.action() {
+        Some(request_action) => AppAction::BackendTask(BackendTask::DashPayTask(Box::new(
+            request_task(request_action, identity.clone(), entry.request_id),
+        ))),
+        None => AppAction::None,
     }
 }
 
@@ -336,21 +359,12 @@ fn received_section(
         }
         for entry in incoming {
             let handle = entry.counterpart_id.to_string(Encoding::Base58);
-            let response = RequestCard::received(
-                abbreviate_id(&handle),
+            let card = RequestCard::received(
+                shorten_id(&handle),
                 &handle,
                 entry.relative_time.as_deref().unwrap_or(""),
-            )
-            .show(ui);
-            ui.add_space(4.0);
-
-            if let Some(request_action) = response.action() {
-                action |= AppAction::BackendTask(BackendTask::DashPayTask(Box::new(request_task(
-                    request_action,
-                    identity.clone(),
-                    entry.request_id,
-                ))));
-            }
+            );
+            action |= request_row(ui, card, entry, identity);
         }
     });
 
@@ -532,16 +546,8 @@ fn sent_section(
 
         for entry in outgoing {
             let handle = entry.counterpart_id.to_string(Encoding::Base58);
-            let response = RequestCard::sent(abbreviate_id(&handle), &handle).show(ui);
-            ui.add_space(4.0);
-
-            if let Some(request_action) = response.action() {
-                action |= AppAction::BackendTask(BackendTask::DashPayTask(Box::new(request_task(
-                    request_action,
-                    identity.clone(),
-                    entry.request_id,
-                ))));
-            }
+            let card = RequestCard::sent(shorten_id(&handle), &handle);
+            action |= request_row(ui, card, entry, identity);
         }
     });
 

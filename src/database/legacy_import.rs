@@ -20,7 +20,7 @@ use dash_sdk::platform::Identifier;
 use rusqlite::Connection;
 
 use crate::backend_task::contested_names::ScheduledDPNSVote;
-use crate::database::Database;
+use crate::database::{Database, column_exists, table_exists};
 use crate::model::settings::{
     AppSettings, RootScreenType, UserMode, network_from_legacy_str, theme_mode_from_str,
 };
@@ -290,22 +290,6 @@ fn mainnet_alias_for(network: Network) -> String {
         Network::Mainnet => LEGACY_MAINNET_ALIAS.to_string(),
         other => other.to_string(),
     }
-}
-
-fn table_exists(conn: &Connection, table: &str) -> rusqlite::Result<bool> {
-    conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
-        [table],
-        |row| row.get(0),
-    )
-}
-
-fn column_exists(conn: &Connection, table: &str, column: &str) -> rusqlite::Result<bool> {
-    conn.query_row(
-        "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = ?2",
-        rusqlite::params![table, column],
-        |row| row.get::<_, i64>(0).map(|c| c > 0),
-    )
 }
 
 fn settings_columns(conn: &Connection) -> rusqlite::Result<Vec<String>> {

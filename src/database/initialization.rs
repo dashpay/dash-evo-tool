@@ -1663,11 +1663,7 @@ impl Database {
 
     /// Check if a table exists in the database.
     pub(crate) fn table_exists(&self, conn: &Connection, table: &str) -> rusqlite::Result<bool> {
-        conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
-            [table],
-            |row| row.get(0),
-        )
+        crate::database::table_exists(conn, table)
     }
 
     /// Migration 29: rename network value `"dash"` to `"mainnet"` in all tables.

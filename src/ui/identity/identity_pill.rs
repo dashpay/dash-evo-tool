@@ -1,7 +1,9 @@
 //! Identity pill — the third segment of the breadcrumb switcher.
 //!
-//! Label priority: **Local nickname → DPNS username → shortened Identity ID**
-//! (design-spec §G6).
+//! Label priority: **Local nickname → DashPay display name → DPNS username →
+//! shortened Identity ID** (design-spec §G6). [`display_label`] is the one
+//! resolver for that rule; every surface that names an identity goes through
+//! it, so the same identity never renders two different ways.
 //!
 //! Follows the project's lazy-init component pattern
 //! (`docs/COMPONENT_DESIGN_PATTERN.md`): domain/config fields stored on the
@@ -15,26 +17,34 @@ use crate::ui::components::breadcrumb_pill::{
 use crate::ui::components::component_trait::ComponentResponse;
 use eframe::egui::Ui;
 
-/// Label priority resolver for an identity. Returns the first non-empty
-/// option in the priority order. Never returns an empty string — an empty
-/// identifier id falls back to the stable placeholder `Unknown identity`.
+/// Hub-wide label priority resolver for an identity. Returns the first
+/// non-empty source in priority order. Never returns an empty string — an
+/// empty identifier id falls back to the stable placeholder
+/// `Unknown identity`. Blank and whitespace-only sources are skipped.
+///
+/// The arguments are listed in priority order:
 ///
 /// * `local_nickname` — `QualifiedIdentity.alias` in the codebase, displayed
 ///   in the UI as "Local nickname".
+/// * `display_name` — the DashPay social-profile display name. `None` on
+///   surfaces that have no profile to read (e.g. the breadcrumb pill).
 /// * `dpns_handle` — the identity's primary DPNS username (without the
 ///   leading `@`).
 /// * `identity_id_base58` — the raw Base58 identity id. Shortened to
-///   `"Fx1Kj…9Tt"`-style when used as the fallback label.
+///   `"Fx1Kj…9Tt"`-style by [`shorten_id`] when used as the fallback label.
 pub fn display_label(
     local_nickname: Option<&str>,
+    display_name: Option<&str>,
     dpns_handle: Option<&str>,
     identity_id_base58: &str,
 ) -> String {
-    if let Some(nickname) = local_nickname.map(str::trim).filter(|s| !s.is_empty()) {
-        return nickname.to_string();
-    }
-    if let Some(handle) = dpns_handle.map(str::trim).filter(|s| !s.is_empty()) {
-        return handle.to_string();
+    let named = [local_nickname, display_name, dpns_handle]
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .find(|s| !s.is_empty());
+    if let Some(name) = named {
+        return name.to_string();
     }
     let trimmed = identity_id_base58.trim();
     if trimmed.is_empty() {
@@ -167,10 +177,12 @@ impl IdentityPill {
     }
 
     /// Resolve the display label using the priority rule (for tests and
-    /// compositional callers).
+    /// compositional callers). The pill carries no social-profile display
+    /// name, so that tier is empty here.
     pub fn resolved_label(&self) -> String {
         display_label(
             self.local_nickname.as_deref(),
+            None,
             self.dpns_handle.as_deref(),
             &self.identity_id_base58,
         )
@@ -217,37 +229,59 @@ mod tests {
 
     #[test]
     fn nickname_wins_when_present() {
-        let label = display_label(Some("dev"), Some("alex.dash"), "Fx1Kj9TtFx1Kj9Tt");
+        let label = display_label(
+            Some("dev"),
+            Some("Alex Kim"),
+            Some("alex.dash"),
+            "Fx1Kj9TtFx1Kj9Tt",
+        );
         assert_eq!(label, "dev");
     }
 
     #[test]
-    fn dpns_wins_when_no_nickname() {
-        let label = display_label(None, Some("alex.dash"), "Fx1Kj9TtFx1Kj9Tt");
+    fn display_name_wins_when_no_nickname() {
+        let label = display_label(
+            None,
+            Some("Alex Kim"),
+            Some("alex.dash"),
+            "Fx1Kj9TtFx1Kj9Tt",
+        );
+        assert_eq!(label, "Alex Kim");
+    }
+
+    #[test]
+    fn dpns_wins_when_no_nickname_or_display_name() {
+        let label = display_label(None, None, Some("alex.dash"), "Fx1Kj9TtFx1Kj9Tt");
         assert_eq!(label, "alex.dash");
     }
 
     #[test]
     fn empty_nickname_falls_through_to_dpns() {
-        let label = display_label(Some(""), Some("alex.dash"), "Fx1Kj9TtFx1Kj9Tt");
+        let label = display_label(Some(""), None, Some("alex.dash"), "Fx1Kj9TtFx1Kj9Tt");
         assert_eq!(label, "alex.dash");
     }
 
     #[test]
     fn whitespace_nickname_falls_through_to_dpns() {
-        let label = display_label(Some("   "), Some("alex.dash"), "Fx1Kj9TtFx1Kj9Tt");
+        let label = display_label(Some("   "), None, Some("alex.dash"), "Fx1Kj9TtFx1Kj9Tt");
+        assert_eq!(label, "alex.dash");
+    }
+
+    #[test]
+    fn blank_display_name_falls_through_to_dpns() {
+        let label = display_label(None, Some("  "), Some("alex.dash"), "Fx1Kj9TtFx1Kj9Tt");
         assert_eq!(label, "alex.dash");
     }
 
     #[test]
     fn raw_id_fallback_when_nothing_else() {
-        let label = display_label(None, None, "Fx1Kj9TtFx1Kj9Tt");
+        let label = display_label(None, None, None, "Fx1Kj9TtFx1Kj9Tt");
         assert_eq!(label, "Fx1Kj…9Tt");
     }
 
     #[test]
     fn short_id_not_shortened() {
-        let label = display_label(None, None, "abcdef");
+        let label = display_label(None, None, None, "abcdef");
         assert_eq!(label, "abcdef");
     }
 
@@ -266,13 +300,13 @@ mod tests {
         // Defensive fallback: an empty id must never produce an invisible
         // pill. Callers should avoid passing an empty id, but the label
         // resolver guards against it so a bug upstream never renders a blank.
-        let label = display_label(None, None, "");
+        let label = display_label(None, None, None, "");
         assert_eq!(label, "Unknown identity");
     }
 
     #[test]
     fn whitespace_only_id_uses_unknown_identity_fallback() {
-        let label = display_label(None, None, "   ");
+        let label = display_label(None, None, None, "   ");
         assert_eq!(label, "Unknown identity");
     }
 

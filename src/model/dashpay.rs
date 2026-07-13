@@ -1,7 +1,22 @@
 //! DashPay domain types shared by the `WalletBackend` adapter, backend tasks,
 //! and the UI. Pure data — no I/O, no SDK calls.
 
+use dash_sdk::dpp::document::DocumentV0Getters;
+use dash_sdk::platform::{Document, Identifier};
 use serde::{Deserialize, Serialize};
+
+/// The recipient (`toUserId`) of a DashPay `contactRequest` document.
+///
+/// Returns `None` when the field is absent or does not hold a readable
+/// identifier — a malformed document. Callers decide what that means for them:
+/// the request lists keep such a row (they cannot prove it was resolved), while
+/// the cancel path refuses to act on one.
+pub fn contact_request_recipient(document: &Document) -> Option<Identifier> {
+    document
+        .properties()
+        .get("toUserId")
+        .and_then(|value| value.to_identifier().ok())
+}
 
 /// DashPay profile data — the local snapshot of an identity's published profile.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -290,6 +305,53 @@ pub fn validate_profile_fields(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dash_sdk::dpp::document::{Document as DppDocument, DocumentV0};
+    use dash_sdk::dpp::platform_value::Value;
+    use std::collections::BTreeMap;
+
+    fn id(byte: u8) -> Identifier {
+        Identifier::from_bytes(&[byte; 32]).expect("32-byte identifier")
+    }
+
+    /// A `contactRequest`-shaped document. `to` of `None` omits `toUserId`
+    /// entirely, modelling a malformed document.
+    fn request_doc(to: Option<Identifier>) -> Document {
+        let mut properties = BTreeMap::new();
+        if let Some(to) = to {
+            properties.insert("toUserId".to_string(), Value::Identifier(to.to_buffer()));
+        }
+        DppDocument::V0(DocumentV0 {
+            id: id(99),
+            owner_id: id(1),
+            creator_id: None,
+            properties,
+            revision: Some(1),
+            created_at: None,
+            updated_at: None,
+            transferred_at: None,
+            created_at_block_height: None,
+            updated_at_block_height: None,
+            transferred_at_block_height: None,
+            created_at_core_block_height: None,
+            updated_at_core_block_height: None,
+            transferred_at_core_block_height: None,
+        })
+    }
+
+    #[test]
+    fn contact_request_recipient_reads_the_to_user_id() {
+        assert_eq!(
+            contact_request_recipient(&request_doc(Some(id(2)))),
+            Some(id(2))
+        );
+    }
+
+    #[test]
+    fn a_contact_request_without_a_recipient_is_unreadable() {
+        // Callers must be able to tell "recipient is X" from "cannot attribute
+        // this request" — the latter is what guards the cancel path.
+        assert_eq!(contact_request_recipient(&request_doc(None)), None);
+    }
 
     #[test]
     fn storage_key_distinguishes_outputs_of_one_tx() {

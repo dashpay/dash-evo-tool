@@ -19,6 +19,7 @@ use crate::framework::task_runner::{run_task, run_task_with_nonce_retry};
 use dash_evo_tool::backend_task::dashpay::DashPayTask;
 use dash_evo_tool::backend_task::identity::IdentityTask;
 use dash_evo_tool::backend_task::{BackendTask, BackendTaskSuccessResult};
+use dash_evo_tool::model::dashpay::AcceptedAccounts;
 use dash_evo_tool::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
@@ -693,7 +694,7 @@ async fn step_update_contact_info(
         nickname: Some("Test Nickname".into()),
         note: Some("E2E note".into()),
         is_hidden: false,
-        accepted_accounts: vec![0],
+        accepted_accounts: AcceptedAccounts::Replace(vec![0]),
     }));
 
     let result = run_task_with_nonce_retry(&ctx.app_context, task)

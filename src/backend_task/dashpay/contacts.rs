@@ -108,7 +108,10 @@ fn decrypt_to_user_id(encrypted: &[u8], key: &[u8; 32]) -> Result<[u8; 32], Stri
 }
 
 // Helper function to decrypt private data using AES-256-CBC
-fn decrypt_private_data(encrypted_data: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, String> {
+pub(super) fn decrypt_private_data(
+    encrypted_data: &[u8],
+    key: &[u8; 32],
+) -> Result<Vec<u8>, String> {
     use cbc::cipher::BlockDecryptMut;
     use cbc::cipher::KeyIvInit;
     use cbc::cipher::block_padding::Pkcs7;

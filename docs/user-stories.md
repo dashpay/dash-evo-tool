@@ -753,6 +753,9 @@ As a user, I want to edit contact details (nickname, note, hidden status) so tha
 
 - Set custom nickname and personal notes per contact.
 - Toggle contact visibility (hidden/visible).
+- Hidden contacts stay listed in a collapsed "Show hidden contacts" section of the Identity Hub
+  Contacts tab, and can be unhidden from there — including contacts hidden as a side effect of
+  declining or cancelling a request.
 - Changes persist locally.
 
 ### DPY-010: Remove a contact [Gap]

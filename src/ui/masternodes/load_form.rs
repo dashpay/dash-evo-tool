@@ -10,6 +10,7 @@ use crate::model::masternode_input::is_valid_pro_tx_hash;
 use crate::model::qualified_identity::IdentityType;
 use crate::ui::components::password_input::PasswordInput;
 use crate::ui::masternodes::testnet_fixture::TestnetNodes;
+use crate::ui::masternodes::{TIP_OWNER_KEY, TIP_PAYOUT_KEY, TIP_VOTING_KEY};
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use eframe::egui::{self, RichText, Ui};
 
@@ -291,23 +292,27 @@ impl MasternodeLoadForm {
             );
             ui.add_space(12.0);
 
-            // Optional V/O/P key inputs (WIF or hex, hold-to-reveal).
+            // Optional V/O/P key inputs (WIF or hex, hold-to-reveal). Labels and
+            // tooltips follow the Dash Core DIP-3 ProRegTx key roles.
             ui.label(
                 RichText::new("Voting private key")
                     .color(DashColors::text_primary(dark_mode)),
-            );
+            )
+            .info_tooltip(TIP_VOTING_KEY);
             self.voting_key.show(ui);
             ui.add_space(8.0);
             ui.label(
                 RichText::new("Owner private key")
                     .color(DashColors::text_primary(dark_mode)),
-            );
+            )
+            .info_tooltip(TIP_OWNER_KEY);
             self.owner_key.show(ui);
             ui.add_space(8.0);
             ui.label(
                 RichText::new("Payout address private key")
                     .color(DashColors::text_primary(dark_mode)),
-            );
+            )
+            .info_tooltip(TIP_PAYOUT_KEY);
             self.payout_key.show(ui);
             ui.add_space(12.0);
 

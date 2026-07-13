@@ -31,7 +31,8 @@ use crate::ui::components::password_input::PasswordInput;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::identity::identity_picker_card::draw_type_badge;
 use crate::ui::identity::identity_pill::shorten_id;
-use crate::ui::theme::{ComponentStyles, DashColors};
+use crate::ui::masternodes::{TIP_OWNER_KEY, TIP_PAYOUT_KEY, TIP_VOTING_KEY};
+use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::tokens::claim_tokens_screen::ClaimTokensScreen;
 use crate::ui::tokens::tokens_screen::IdentityTokenBasicInfo;
 use crate::ui::{MessageType, Screen, ScreenType};
@@ -53,60 +54,79 @@ fn dpns_section_header(open_contest_count: usize) -> String {
 /// The fixed top→bottom section order. Actions must precede Keys (TC-FR5-01).
 pub const SECTION_ORDER: [&str; 5] = ["Header", "Actions", "Keys", "DPNS", "Remove"];
 
-/// A short, human label for a masternode key button, derived from its purpose
-/// and the identity it lives on. Voter-identity keys are always "Voting"; on
-/// the main identity, Owner/Payout keys are named by purpose, everything else
-/// falls back to its purpose name.
+/// Tooltip for an authentication key — Platform-only, so it has no DIP-3 role
+/// counterpart and lives here rather than in the shared masternode tooltips.
+const TIP_AUTH_KEY: &str = "An authentication key signs this identity's actions on Dash Platform.";
+
+/// A short role name for a masternode key and its tooltip, aligned with the Dash
+/// Core DIP-3 ProRegTx roles. Voter-identity keys are always the voting key; on
+/// the main identity, the Platform Owner and Transfer keys of a masternode
+/// identity mirror the ProTx owner key and payout address respectively. Unknown
+/// purposes fall back to their name with no tooltip.
 fn key_role_label(
     target: &PrivateKeyTarget,
     key: &dash_sdk::platform::IdentityPublicKey,
-) -> String {
+) -> (String, Option<&'static str>) {
+    role_label_and_tip(
+        *target == PrivateKeyTarget::PrivateKeyOnVoterIdentity,
+        key.purpose(),
+    )
+}
+
+/// The pure label/tooltip mapping behind [`key_role_label`], split out so it can
+/// be unit-tested without constructing an `IdentityPublicKey`.
+fn role_label_and_tip(
+    is_voter: bool,
+    purpose: dash_sdk::dpp::identity::Purpose,
+) -> (String, Option<&'static str>) {
     use dash_sdk::dpp::identity::Purpose;
-    if *target == PrivateKeyTarget::PrivateKeyOnVoterIdentity {
-        return "Voting".to_string();
+    if is_voter {
+        return ("Voting".to_string(), Some(TIP_VOTING_KEY));
     }
-    match key.purpose() {
-        Purpose::OWNER => "Owner".to_string(),
-        Purpose::TRANSFER => "Payout".to_string(),
-        Purpose::AUTHENTICATION => "Authentication".to_string(),
-        other => format!("{other:?}"),
+    match purpose {
+        Purpose::OWNER => ("Owner".to_string(), Some(TIP_OWNER_KEY)),
+        Purpose::TRANSFER => ("Payout address".to_string(), Some(TIP_PAYOUT_KEY)),
+        Purpose::AUTHENTICATION => ("Authentication".to_string(), Some(TIP_AUTH_KEY)),
+        other => (format!("{other:?}"), None),
     }
 }
 
-/// Button labels for the "Manage keys" list, one per entry of `keys`, in order.
+/// Button labels (and DIP-3-aligned tooltips) for the "Manage keys" list, one
+/// per entry of `keys`, in order.
 ///
-/// Each label is the key's role word (`Owner`/`Payout`/`Voting`/…) plus a
-/// `(disabled)` marker for keys platform has retired: a node that rotates its
-/// payout address keeps the old, disabled Payout key on-chain next to the new
-/// active one, so a role word alone is not unique. When two keys would still
-/// collide (e.g. two retired Payout keys), the key id disambiguates them, so
-/// every button carries a distinct, correct label.
+/// Each label is the key's role word (`Owner`/`Payout address`/`Voting`/…)
+/// plus a `(disabled)` marker for keys platform has retired: a node that
+/// rotates its payout address keeps the old, disabled Payout key on-chain
+/// next to the new active one, so a role word alone is not unique. When two
+/// keys would still collide (e.g. two retired Payout keys), the key id
+/// disambiguates them, so every button carries a distinct, correct label.
 fn manage_keys_labels(
     keys: &[(PrivateKeyTarget, dash_sdk::platform::IdentityPublicKey)],
-) -> Vec<String> {
-    let base: Vec<String> = keys
+) -> Vec<(String, Option<&'static str>)> {
+    let base: Vec<(String, Option<&'static str>)> = keys
         .iter()
         .map(|(target, key)| {
-            let mut label = format!("{} key", key_role_label(target, key));
+            let (role, tip) = key_role_label(target, key);
+            let mut label = format!("{role} key");
             if key.is_disabled() {
                 label.push_str(" (disabled)");
             }
-            label
+            (label, tip)
         })
         .collect();
 
     let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
-    for label in &base {
+    for (label, _) in &base {
         *counts.entry(label.as_str()).or_default() += 1;
     }
 
     base.iter()
         .zip(keys.iter())
-        .map(|(label, (_, key))| {
+        .map(|((label, tip), (_, key))| {
             if counts.get(label.as_str()).copied().unwrap_or(0) > 1 {
-                format!("{label} #{}", key.id())
+                (format!("{label} #{}", key.id()), *tip)
             } else {
-                label.clone()
+                (label.clone(), *tip)
             }
         })
         .collect()
@@ -477,7 +497,11 @@ impl MasternodeDetailView {
 
         // Compact V/O/P presence (glyph, not colour-only — NFR-6).
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Roles:").color(DashColors::text_secondary(dark_mode)));
+            ui.label(RichText::new("Roles:").color(DashColors::text_secondary(dark_mode)))
+                .info_tooltip(
+                    "Shows which of this node's keys are loaded: V is the voting key, O is the \
+                     owner key, and P is the payout address key.",
+                );
             for (letter, present) in [
                 ("V", self.key_presence.voting),
                 ("O", self.key_presence.owner),
@@ -531,8 +555,13 @@ impl MasternodeDetailView {
         );
         let keys = self.identity_keys();
         let labels = manage_keys_labels(&keys);
-        for ((target, key), label) in keys.into_iter().zip(labels) {
-            if ui.button(format!("{label} ›")).clicked() {
+        for ((target, key), (label, tip)) in keys.into_iter().zip(labels) {
+            let button = ui.button(format!("{label} ›"));
+            let button = match tip {
+                Some(tip) => button.clickable_tooltip(tip),
+                None => button,
+            };
+            if button.clicked() {
                 action = Some(self.open_key_info(target, &key));
             }
         }
@@ -901,13 +930,16 @@ mod tests {
             ),
         ];
 
-        let labels = manage_keys_labels(&keys);
+        let labels: Vec<String> = manage_keys_labels(&keys)
+            .into_iter()
+            .map(|(label, _tip)| label)
+            .collect();
         assert_eq!(
             labels,
             vec![
-                "Payout key".to_string(),
+                "Payout address key".to_string(),
                 "Owner key".to_string(),
-                "Payout key (disabled)".to_string(),
+                "Payout address key (disabled)".to_string(),
                 "Voting key".to_string(),
             ]
         );
@@ -937,17 +969,49 @@ mod tests {
             ),
         ];
 
-        let labels = manage_keys_labels(&keys);
+        let labels: Vec<String> = manage_keys_labels(&keys)
+            .into_iter()
+            .map(|(label, _tip)| label)
+            .collect();
         assert_eq!(
             labels,
             vec![
-                "Payout key".to_string(),
-                "Payout key (disabled) #2".to_string(),
-                "Payout key (disabled) #3".to_string(),
+                "Payout address key".to_string(),
+                "Payout address key (disabled) #2".to_string(),
+                "Payout address key (disabled) #3".to_string(),
             ]
         );
         let unique: std::collections::BTreeSet<_> = labels.iter().collect();
         assert_eq!(unique.len(), labels.len(), "labels must be unique");
+    }
+
+    #[test]
+    fn role_labels_follow_dip3_protx_terms() {
+        use dash_sdk::dpp::identity::Purpose;
+        // A voter-identity key is always the voting key, regardless of purpose.
+        assert_eq!(
+            role_label_and_tip(true, Purpose::AUTHENTICATION),
+            ("Voting".to_string(), Some(TIP_VOTING_KEY))
+        );
+        // Main-identity roles mirror the DIP-3 ProRegTx owner key and payout
+        // address; the Platform Transfer key surfaces as "Payout address".
+        assert_eq!(
+            role_label_and_tip(false, Purpose::OWNER),
+            ("Owner".to_string(), Some(TIP_OWNER_KEY))
+        );
+        assert_eq!(
+            role_label_and_tip(false, Purpose::TRANSFER),
+            ("Payout address".to_string(), Some(TIP_PAYOUT_KEY))
+        );
+        assert_eq!(
+            role_label_and_tip(false, Purpose::AUTHENTICATION),
+            ("Authentication".to_string(), Some(TIP_AUTH_KEY))
+        );
+        // An unmapped purpose keeps its name and carries no tooltip.
+        assert_eq!(
+            role_label_and_tip(false, Purpose::ENCRYPTION),
+            (format!("{:?}", Purpose::ENCRYPTION), None)
+        );
     }
 
     #[test]

@@ -23,19 +23,27 @@ fn welcome_role_selector_sets_and_persists_role() {
         harness.run_steps(10);
 
         let app_context = harness.state().current_app_context().clone();
-        assert_eq!(app_context.user_role(), UserRole::Everyday);
+        assert_eq!(
+            app_context.user_role(),
+            UserRole::WHEN_UNSET,
+            "an account that never chose a role starts at the unset default"
+        );
 
-        harness.get_by_label("Detailed view").click();
+        // Deliberately a role the account does not already hold: picking the
+        // starting role would leave the selector idle, and the persisted `None`
+        // would still *read back* as the default — a green assertion proving
+        // nothing. A downgrade can only be observed if it was really written.
+        harness.get_by_label("Default view").click();
         harness.run_steps(3);
 
         assert_eq!(
             app_context.user_role(),
-            UserRole::Power,
-            "selecting 'Detailed view' on the welcome row must set the Power role"
+            UserRole::Everyday,
+            "selecting 'Default view' on the welcome row must set the Everyday role"
         );
         assert_eq!(
             app_context.get_app_settings().user_role,
-            Some(UserRole::Power),
+            Some(UserRole::Everyday),
             "the onboarding role choice must be persisted to AppSettings"
         );
     });

@@ -11,9 +11,9 @@ revealing more advanced controls than the one before it:
 | **Developer tools** | Adds raw protocol data, Devnet, and signing overrides. |
 
 Each mode includes everything the one before it does — Developer tools has
-everything Detailed view has, plus more. **Default view** is the starting
-point for a fresh install; pick a higher mode only once you need the
-additional controls it unlocks.
+everything Detailed view has, plus more. **Detailed view** is the starting
+point until you pick a mode yourself; switch down to Default view for a
+simpler screen, or up to Developer tools when you need raw protocol data.
 
 ## Where to set it
 
@@ -35,47 +35,36 @@ picking one at onboarding: open **Network Settings** at any time and change
 it from the **Interface mode** card. The app applies the change immediately,
 with no restart required.
 
-## `.env` behavior: `DEVELOPER_MODE`
+## Upgrading from an older install
 
-The `.env` file in the application directory still has a `DEVELOPER_MODE`
-entry (`true` or `false`), but it now works differently than it used to:
+Earlier versions had a **Developer mode** on/off switch instead of the three
+interface modes. If you are upgrading, and you have not picked an interface
+mode yet, the app starts you in **Detailed view** — the mode that matches the
+account details, address tables and masternode tools those builds exposed.
+Nothing you had is hidden, and you can move to another mode at any time from
+**Network Settings**.
 
-- **It is a one-time starting point, not a live switch.** `DEVELOPER_MODE` is
-  only read once — the very first time the app runs and no interface mode has
-  ever been chosen yet (via the UI or a previous `.env` read).
-- **Once a mode is chosen, `.env` is never consulted again.** This applies
-  whether the mode was set by picking it in the UI or by the one-time
-  `DEVELOPER_MODE` seed itself. Editing `DEVELOPER_MODE` afterward has no
-  effect — use **Network Settings** to change modes instead.
+The interface mode is chosen in the app, not in a file: it is stored with your
+other settings, and it is the same on every network.
 
-### Migration from an older install
+## Migration note: obsolete `.env` entries
 
-If you are upgrading from a version that had the old `DEVELOPER_MODE`
-on/off toggle, your existing `.env` value is used exactly once, the first
-time you launch this version:
+Older configurations may still contain a global `DEVELOPER_MODE=true|false`
+entry, or per-network entries such as `MAINNET_developer_mode=true`. Neither has
+any effect on the interface mode — that is chosen in the app and stored with your
+settings. New installs no longer get a `DEVELOPER_MODE` line at all.
 
-- `DEVELOPER_MODE=true` seeds **Detailed view** — this app's earlier
-  "developer mode" corresponded to what is now Detailed view (account
-  details, address tables, masternode tools), not the new Developer tools
-  mode.
-- `DEVELOPER_MODE=false`, or no `DEVELOPER_MODE` entry at all, seeds
-  **Default view** — no change from today's default.
+Leave the leftover entries or delete them, as you prefer. The one place
+`DEVELOPER_MODE` is still consulted is the one-time database upgrade that moved
+existing installs onto the built-in light client (SPV): an install that had both
+`DEVELOPER_MODE=true` and a Dash Core RPC password configured keeps talking to
+its local Dash Core node. That upgrade runs once, and only for installs that
+predate it.
 
-After that one-time seed, the value in `.env` is ignored; change modes from
-**Network Settings** going forward.
-
-The application directory is:
+The application directory holding `.env` is:
 
 | Operating System | Path |
 | - | - |
 | macOS | `~/Library/Application Support/Dash-Evo-Tool/.env` |
 | Windows | `C:\Users\<User>\AppData\Roaming\Dash-Evo-Tool\config\.env` |
 | Linux | `~/.config/dash-evo-tool/.env` |
-
-## Migration note: obsolete per-network values
-
-Earlier builds used per-network entries such as `MAINNET_developer_mode=true`
-and `TESTNET_developer_mode=false` in `.env`. These are obsolete and ignored —
-the interface mode is a single global setting, not configured per network.
-Any leftover `*_developer_mode` entries from older configurations can be
-removed safely.

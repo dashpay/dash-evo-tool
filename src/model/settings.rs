@@ -213,9 +213,9 @@ pub struct AppSettings {
     /// Whether Evonode-related tools are shown in the UI.
     pub show_evonode_tools: bool,
     /// The role the user has explicitly selected, or `None` when no explicit
-    /// choice has ever been recorded. `None` is seeded once from the legacy
-    /// `.env DEVELOPER_MODE` flag at the settings-load call site
-    /// (`AppContext::get_app_settings`) — see `UserRole::from_persisted`.
+    /// choice has ever been recorded. `None` resolves to [`UserRole::WHEN_UNSET`]
+    /// at the settings-load call site (`AppContext::get_app_settings`) and is
+    /// only overwritten once the user picks a role — see `UserRole::from_persisted`.
     pub user_role: Option<UserRole>,
     /// Whether DET closes Dash-Qt automatically when it exits.
     pub close_dash_qt_on_exit: bool,
@@ -242,7 +242,7 @@ impl Default for AppSettings {
             theme_mode: ThemeMode::System,
             onboarding_completed: false,
             show_evonode_tools: false,
-            // `None` = no explicit role recorded; seeded from `.env` at load.
+            // `None` = no explicit role recorded; resolved at load.
             user_role: None,
             close_dash_qt_on_exit: true,
             // Default to on so wallets sync without a manual step on fresh installs.

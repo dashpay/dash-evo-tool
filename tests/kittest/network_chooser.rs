@@ -28,7 +28,7 @@ fn test_network_chooser_renders() {
 }
 
 /// The Settings interface-mode selector sets the app-global role and persists
-/// it to AppSettings — the single source of truth the runtime atomic and the
+/// it to AppSettings — the single source of truth the runtime role and the
 /// gates read from.
 #[test]
 fn interface_mode_selector_sets_and_persists_role() {
@@ -36,8 +36,8 @@ fn interface_mode_selector_sets_and_persists_role() {
         let mut harness = mount_app(RootScreenType::RootScreenNetworkChooser);
         let app_context = harness.state().current_app_context().clone();
 
-        // Fresh install defaults to the baseline role.
-        assert_eq!(app_context.user_role(), UserRole::Everyday);
+        // An account that never chose a role starts at the unset default.
+        assert_eq!(app_context.user_role(), UserRole::WHEN_UNSET);
 
         harness.get_by_label("Developer tools").click();
         harness.run_steps(3);

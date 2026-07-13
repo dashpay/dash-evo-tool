@@ -2880,7 +2880,7 @@ mod tests {
             egui::Context::default(),
             app_kv,
             secret_store,
-            std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            crate::model::user_role::UserRoleCell::default(),
         )
         .expect("AppContext")
     }

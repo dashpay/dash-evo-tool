@@ -567,12 +567,8 @@ impl AppState {
         // App-global user role, shared into every per-network context (including
         // any created later by a network switch) so a live change is observed
         // everywhere without a restart. Seeded below from `get_app_settings()`
-        // once the active context exists — the single persisted source of truth,
-        // which resolves a role-less blob via the one-time `.env DEVELOPER_MODE`
-        // reconciliation and persists the result.
-        let user_role = Arc::new(std::sync::atomic::AtomicU8::new(
-            crate::model::user_role::UserRole::default() as u8,
-        ));
+        // once the active context exists — the single persisted source of truth.
+        let user_role = crate::model::user_role::UserRoleCell::default();
 
         // Build a helper to create AppContext for a given network.
         let make_context = |network: Network| -> Option<Arc<AppContext>> {
@@ -585,7 +581,7 @@ impl AppState {
                 ctx.clone(),
                 Arc::clone(&app_kv),
                 Arc::clone(&secret_store),
-                Arc::clone(&user_role),
+                user_role.clone(),
             )
         };
 
@@ -637,16 +633,15 @@ impl AppState {
             .expect("invariant: chosen_network was just taken from network_contexts")
             .clone();
 
-        // Seed the shared role atomic from AppSettings — the single source of
-        // truth. `get_app_settings` resolves a role-less blob via the one-time
-        // `.env DEVELOPER_MODE` seed and persists the canonical string, so `.env`
-        // is consulted at most once ever. `set_user_role` publishes the value to
-        // the shared atomic (visible to every context) and syncs animation gating.
+        // Seed the shared role cell from AppSettings — the single source of truth.
+        // `get_app_settings` resolves an account that never chose a role to
+        // `UserRole::WHEN_UNSET`. `set_user_role` publishes the value to every
+        // context holding the cell and syncs animation gating.
         active_context.set_user_role(
             active_context
                 .get_app_settings()
                 .user_role
-                .unwrap_or_default(),
+                .unwrap_or(crate::model::user_role::UserRole::WHEN_UNSET),
         );
 
         // load fonts

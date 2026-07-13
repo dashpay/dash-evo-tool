@@ -380,9 +380,7 @@ pub async fn init_app_context() -> Result<Arc<AppContext>, McpError> {
         egui::Context::default(),
         app_kv,
         secret_store,
-        std::sync::Arc::new(std::sync::atomic::AtomicU8::new(
-            crate::model::user_role::UserRole::default() as u8,
-        )),
+        crate::model::user_role::UserRoleCell::default(),
     )
     .ok_or_else(|| {
         McpError::internal_error(
@@ -392,11 +390,13 @@ pub async fn init_app_context() -> Result<Arc<AppContext>, McpError> {
     })?;
 
     // Seed the role from AppSettings — the single source of truth, matching the
-    // GUI boot path. `get_app_settings` resolves a role-less blob via the
-    // one-time `.env DEVELOPER_MODE` seed and persists the canonical string, so a
-    // role chosen in the GUI is honoured here instead of being re-derived from
-    // `.env`.
-    app_context.set_user_role(app_context.get_app_settings().user_role.unwrap_or_default());
+    // GUI boot path, so a role chosen in the GUI is honoured here too.
+    app_context.set_user_role(
+        app_context
+            .get_app_settings()
+            .user_role
+            .unwrap_or(crate::model::user_role::UserRole::WHEN_UNSET),
+    );
 
     // Chain sync is SPV-only (owned by upstream platform-wallet). Starting it
     // here would fast-fail: the wallet backend is not wired yet at boot. SPV is

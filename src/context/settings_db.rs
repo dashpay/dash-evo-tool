@@ -72,13 +72,13 @@ impl AppContext {
     }
 
     /// Set the app-global user role and persist it as the canonical string in
-    /// [`AppSettings`] — the single source of truth the runtime atomic is seeded
+    /// [`AppSettings`] — the single source of truth the runtime role is seeded
     /// from at the next boot. Both role-setting UI surfaces (Settings selector,
-    /// onboarding row) go through here so the runtime atomic and the persisted
+    /// onboarding row) go through here so the runtime role and the persisted
     /// value never diverge.
     ///
-    /// The role is persisted **before** it is published to the runtime atomic: a
-    /// role that only ever reached the atomic would look accepted, then silently
+    /// The role is persisted **before** it is published to the runtime role cell:
+    /// a role that only ever reached the cell would look accepted, then silently
     /// revert at the next boot, when the seed reads the canonical value that was
     /// never written.
     ///
@@ -109,8 +109,9 @@ impl AppContext {
     /// Returns defaults when the blob is absent (first run), and — for this read
     /// only — when it cannot be read or decoded (e.g. a future schema): the frame
     /// loop needs a value every frame, so an unreadable blob degrades to defaults
-    /// in memory. The stored blob is left untouched, so a transient failure costs
-    /// the user nothing once the store recovers. Cached in-memory between updates.
+    /// in memory. The stored blob is left untouched and the fallback is never
+    /// cached, so a transient failure costs the user nothing once the store
+    /// recovers. Successful reads are cached in-memory between updates.
     pub fn get_app_settings(&self) -> AppSettings {
         // Fast path: cache hit under a read lock.
         if let Some(cached) = self.cached_settings.read_recover().clone() {
@@ -127,70 +128,45 @@ impl AppContext {
             return cached;
         }
 
-        let loaded = self.load_app_settings_uncached().unwrap_or_else(|e| {
-            tracing::warn!(
-                error = ?e,
-                "Could not read the stored app settings; serving defaults for this read and leaving the stored value untouched"
-            );
-            self.seed_user_role_from_env(AppSettings::default())
-        });
+        let loaded = match self.load_app_settings_uncached() {
+            Ok(settings) => settings,
+            Err(e) => {
+                tracing::warn!(
+                    error = ?e,
+                    "Could not read the stored app settings; serving defaults for this read only"
+                );
+                // Deliberately not cached: only a write invalidates the cache, and
+                // a read-only session performs none — caching this fallback would
+                // pin the process to defaults long after the store recovered.
+                return with_default_user_role(AppSettings::default());
+            }
+        };
         *guard = Some(loaded.clone());
         loaded
     }
 
     /// Load and decode [`AppSettings`] straight from the k/v store, applying the
-    /// dash-qt autodetect fallback and the one-time `.env` role seed. Bypasses
-    /// the cache — the caller must hold the `cached_settings` write lock.
+    /// dash-qt autodetect and default-role fallbacks. Bypasses the cache — the
+    /// caller must hold the `cached_settings` write lock.
     ///
-    /// An absent blob (first run) reads as defaults.
+    /// An absent blob (first run) reads as defaults. Read-only: both fallbacks
+    /// resolve in memory, so a load never writes back and can never trade a
+    /// decoded blob for a defaults one.
     ///
     /// # Errors
     ///
     /// Returns the k/v error when the stored blob cannot be read or decoded. An
     /// unreadable blob is emphatically *not* "no settings stored": the value is
     /// still there, just unavailable right now (poisoned lock, SQLite hiccup,
-    /// future schema). Reporting that as an error is what stops every writer
-    /// below — the seed write-back here, and the read-modify-write in
-    /// [`Self::update_app_settings`] — from overwriting the user's real settings
-    /// with a defaults blob on one transient failure.
+    /// future schema). Reporting that as an error is what stops the
+    /// read-modify-write in [`Self::update_app_settings`] from overwriting the
+    /// user's real settings with a defaults blob on one transient failure.
     fn load_app_settings_uncached(&self) -> Result<AppSettings, KvAdapterError> {
         let stored = self
             .app_kv
             .get::<AppSettings>(DetScope::Global, AppSettings::KV_KEY)?;
         let settings = stored.map(with_dash_qt_path_fallback).unwrap_or_default();
-
-        let seeded_role = settings.user_role.is_none();
-        let settings = self.seed_user_role_from_env(settings);
-        if seeded_role {
-            // Persist the one-time `.env` reconciliation so the sentinel slot is
-            // consumed exactly once: later loads read the canonical role string
-            // and never consult `.env` again. (The `.env DEVELOPER_MODE` parser
-            // itself stays — the v34 SPV migration still reads it.)
-            self.app_kv
-                .put(DetScope::Global, AppSettings::KV_KEY, &settings)?;
-        }
-        Ok(settings)
-    }
-
-    /// Seeds `user_role` from the legacy `.env DEVELOPER_MODE` flag when the
-    /// persisted blob recorded no explicit role (`None`) — every pre-migration
-    /// user and every fresh install. `DEVELOPER_MODE=true` maps to Power
-    /// (today's "developer mode" is power-user mode); anything else maps to
-    /// Everyday. Mirrors the impure dash-qt autodetect fallback: decoding stays
-    /// pure, the one-time `.env` read happens here at the load site.
-    fn seed_user_role_from_env(&self, mut settings: AppSettings) -> AppSettings {
-        if settings.user_role.is_none() {
-            let developer = crate::config::Config::load_from(&self.data_dir)
-                .ok()
-                .and_then(|c| c.developer_mode)
-                .unwrap_or(false);
-            settings.user_role = Some(if developer {
-                UserRole::Power
-            } else {
-                UserRole::Everyday
-            });
-        }
-        settings
+        Ok(with_default_user_role(settings))
     }
 
     /// Write the [`AppSettings`] blob to the shared app k/v store.
@@ -211,6 +187,15 @@ fn with_dash_qt_path_fallback(mut settings: AppSettings) -> AppSettings {
     if settings.dash_qt_path.is_none() {
         settings.dash_qt_path = detect_dash_qt_path();
     }
+    settings
+}
+
+/// Resolves the role of an account that never recorded one — a fresh install, or
+/// a blob written before the role field existed — to [`UserRole::WHEN_UNSET`].
+/// In-memory only: the stored `None` stays until the user picks a role, so this
+/// fallback never has a write to fail.
+fn with_default_user_role(mut settings: AppSettings) -> AppSettings {
+    settings.user_role.get_or_insert(UserRole::WHEN_UNSET);
     settings
 }
 
@@ -388,86 +373,36 @@ mod tests {
         assert!(got.auto_start_spv, "no concurrent field update may be lost");
     }
 
-    /// A role-less blob (fresh install, or a pre-migration blob whose legacy
-    /// `"Advanced"` sentinel decoded to `None`) is seeded from the legacy `.env`
-    /// flag: `DEVELOPER_MODE=true` → Power. This is the one-time reconciliation
-    /// that keeps expert users on their level after migration.
+    /// An account with no stored blob at all (fresh install) resolves to Power,
+    /// not to the enum's `Default` (Everyday).
     #[test]
-    fn role_less_blob_seeds_power_when_env_developer_mode_true() {
-        use std::io::Write;
+    fn absent_blob_resolves_to_power() {
         let tmp = tempfile::tempdir().unwrap();
         let ctx = test_app_context(tmp.path());
 
-        let env_path = tmp.path().join(".env");
-        let mut f = std::fs::OpenOptions::new()
-            .append(true)
-            .open(&env_path)
-            .unwrap();
-        writeln!(f, "DEVELOPER_MODE=true").unwrap();
-        // Drop the guard immediately: it clears the cache, and holding it would
-        // deadlock the `get_app_settings` read below.
-        drop(ctx.invalidate_settings_cache());
-
-        let got = ctx.get_app_settings();
         assert_eq!(
-            got.user_role,
+            ctx.get_app_settings().user_role,
             Some(UserRole::Power),
-            "DEVELOPER_MODE=true must seed the Power role for a role-less blob"
+            "an account with no recorded role starts at Power"
         );
     }
 
-    /// An explicit persisted role is authoritative: the `.env` seed only fills a
-    /// role-less (`None`) blob, so it must never override a choice already
-    /// recorded — even when `DEVELOPER_MODE=true` would otherwise seed Power.
+    /// An explicit persisted role is authoritative: the default only fills a
+    /// role-less (`None`) blob, so it must never override a recorded choice —
+    /// including a deliberate downgrade to Everyday.
     #[test]
-    fn explicit_persisted_role_is_not_reseeded_from_env() {
-        use std::io::Write;
+    fn explicit_persisted_role_overrides_the_default() {
         let tmp = tempfile::tempdir().unwrap();
         let ctx = test_app_context(tmp.path());
 
         ctx.update_app_settings(|s| s.user_role = Some(UserRole::Everyday))
             .unwrap();
-
-        let env_path = tmp.path().join(".env");
-        let mut f = std::fs::OpenOptions::new()
-            .append(true)
-            .open(&env_path)
-            .unwrap();
-        writeln!(f, "DEVELOPER_MODE=true").unwrap();
-        // Drop the guard immediately: it clears the cache, and holding it would
-        // deadlock the `get_app_settings` read below.
         drop(ctx.invalidate_settings_cache());
 
-        let got = ctx.get_app_settings();
-        assert_eq!(
-            got.user_role,
-            Some(UserRole::Everyday),
-            "an explicit role must survive; the .env seed only fills a role-less blob"
-        );
-    }
-
-    /// The `.env` seed is consumed exactly once: the first `get_app_settings`
-    /// that resolves a role-less blob persists the canonical role, so a later
-    /// change to `.env DEVELOPER_MODE` no longer moves the role.
-    #[test]
-    fn env_seed_is_persisted_and_consulted_only_once() {
-        let tmp = tempfile::tempdir().unwrap();
-        let ctx = test_app_context(tmp.path());
-        let env_path = tmp.path().join(".env");
-
-        // First resolution: DEVELOPER_MODE=true seeds Power and persists it.
-        std::fs::write(&env_path, "DEVELOPER_MODE=true\n").unwrap();
-        drop(ctx.invalidate_settings_cache());
-        assert_eq!(ctx.get_app_settings().user_role, Some(UserRole::Power));
-
-        // Flip `.env` to false and drop the cache. The persisted Power role must
-        // win — the seed is not consulted a second time.
-        std::fs::write(&env_path, "DEVELOPER_MODE=false\n").unwrap();
-        drop(ctx.invalidate_settings_cache());
         assert_eq!(
             ctx.get_app_settings().user_role,
-            Some(UserRole::Power),
-            "the seeded role must be persisted and survive a later .env change"
+            Some(UserRole::Everyday),
+            "an explicit role must survive; the default only fills a role-less blob"
         );
     }
 
@@ -475,10 +410,9 @@ mod tests {
     ///
     /// A read error is not "no settings stored" — the blob is still there, just
     /// unreadable right now (poisoned lock, SQLite hiccup, future schema). Taking
-    /// the role-less `AppSettings::default()` as the loaded value and then
-    /// persisting the `.env` role seed on top of it would overwrite the user's
-    /// real settings — network, onboarding, SPV prefs, theme — with defaults, on
-    /// one transient hiccup.
+    /// `AppSettings::default()` as the loaded value and persisting anything on top
+    /// of it would overwrite the user's real settings — network, onboarding, SPV
+    /// prefs, theme — with defaults, on one transient hiccup.
     #[test]
     fn read_error_does_not_overwrite_persisted_settings() {
         let tmp = tempfile::tempdir().unwrap();
@@ -526,6 +460,94 @@ mod tests {
         assert!(recovered.auto_start_spv);
     }
 
+    /// Regression: a transient read failure must not poison the in-memory cache.
+    ///
+    /// The error fallback is a defaults blob served for *that one read*. Caching it
+    /// pins the whole process to defaults — network, theme, onboarding flag and role
+    /// all reset in memory — until the next explicit write invalidates the cache.
+    /// A read-only session (the MCP stdio boot path, a UI session that changes no
+    /// setting) never performs that write, so the next read after the store recovers
+    /// must go back to the store rather than serve the stale fallback.
+    #[test]
+    fn read_error_does_not_poison_the_settings_cache() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Arc::new(FailingKv::default());
+        let ctx = test_app_context_with_kv(tmp.path(), Arc::new(DetKv::from_store(store.clone())));
+
+        let stored = AppSettings {
+            network: Network::Testnet,
+            theme_mode: ThemeMode::Dark,
+            user_role: Some(UserRole::Developer),
+            onboarding_completed: true,
+            ..AppSettings::default()
+        };
+        ctx.set_app_settings(&stored).unwrap();
+
+        // One failing read, with the cache cold so the load actually hits the store.
+        store.fail_reads(true);
+        drop(ctx.invalidate_settings_cache());
+        assert_eq!(
+            ctx.get_app_settings().network,
+            AppSettings::default().network,
+            "an unreadable store degrades to defaults for that read"
+        );
+
+        // The store recovers on its own; nothing invalidates the cache in between.
+        store.fail_reads(false);
+        let recovered = ctx.get_app_settings();
+
+        assert_eq!(
+            recovered.network,
+            Network::Testnet,
+            "the read after recovery must retry the store, not serve the cached fallback"
+        );
+        assert_eq!(recovered.theme_mode, ThemeMode::Dark);
+        assert_eq!(recovered.user_role, Some(UserRole::Developer));
+        assert!(recovered.onboarding_completed);
+    }
+
+    /// A role-less blob resolves to the default role in memory only: the decoded
+    /// settings keep every field the user did store, and nothing is written back.
+    ///
+    /// The write-back is what used to make this path dangerous — a failing `put`
+    /// discarded the successfully decoded blob and dropped the caller all the way
+    /// to `AppSettings::default()`. With the role defaulted purely in memory there
+    /// is no write to fail.
+    #[test]
+    fn role_less_blob_keeps_real_settings_and_is_not_written_back() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Arc::new(FailingKv::default());
+        let ctx = test_app_context_with_kv(tmp.path(), Arc::new(DetKv::from_store(store.clone())));
+
+        // A pre-migration blob: real settings, no role ever recorded.
+        ctx.set_app_settings(&AppSettings {
+            network: Network::Testnet,
+            theme_mode: ThemeMode::Dark,
+            onboarding_completed: true,
+            user_role: None,
+            ..AppSettings::default()
+        })
+        .unwrap();
+        let puts_before = store.put_count();
+
+        drop(ctx.invalidate_settings_cache());
+        let got = ctx.get_app_settings();
+
+        assert_eq!(
+            got.user_role,
+            Some(UserRole::Power),
+            "a role-less account defaults to Power"
+        );
+        assert_eq!(got.network, Network::Testnet, "real settings survive");
+        assert_eq!(got.theme_mode, ThemeMode::Dark);
+        assert!(got.onboarding_completed);
+        assert_eq!(
+            store.put_count(),
+            puts_before,
+            "resolving the default role must not write to the store"
+        );
+    }
+
     /// A write that cannot read the current blob must fail instead of committing
     /// its mutation on top of defaults — the read-modify-write would otherwise
     /// silently reset every field it does not touch.
@@ -567,7 +589,7 @@ mod tests {
         );
     }
 
-    /// The role reaches the runtime atomic only once it is safely persisted:
+    /// The role reaches the runtime role cell only once it is safely persisted:
     /// publishing first would show the user a mode that silently reverts on the
     /// next boot, because the boot seed reads the (unwritten) canonical value.
     #[test]

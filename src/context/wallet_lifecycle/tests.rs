@@ -65,7 +65,7 @@ fn offline_testnet_context_with_db(
         egui_ctx,
         app_kv,
         secret_store,
-        std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0)),
+        crate::model::user_role::UserRoleCell::default(),
     )
     .expect("AppContext::new should succeed offline with bundled testnet config");
 
@@ -690,7 +690,7 @@ async fn issue7_fresh_persistor_bip44_xpub_matches_det_bridge() {
             egui::Context::default(),
             app_kv,
             secret_store,
-            std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            crate::model::user_role::UserRoleCell::default(),
         )
         .expect("cold-boot AppContext::new");
         let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);

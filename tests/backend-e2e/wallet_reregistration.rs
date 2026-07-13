@@ -210,7 +210,7 @@ async fn cold_process_boot_from_migrated_state_registers_and_shows_balance() {
         egui_ctx,
         app_kv,
         secret_store,
-        std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0)),
+        dash_evo_tool::model::user_role::UserRoleCell::default(),
     )
     .expect("create cold-boot AppContext");
 

@@ -96,7 +96,7 @@ impl WelcomeScreen {
     }
 
     /// Experience-level selector shown during onboarding. Writes the app-global
-    /// role (runtime atomic + persisted `AppSettings.user_role`) the moment the
+    /// role (runtime cell + persisted `AppSettings.user_role`) the moment the
     /// user changes it; the same value backs the Settings selector.
     fn render_role_selector(&self, ui: &mut egui::Ui, dark_mode: bool) {
         ui.label(

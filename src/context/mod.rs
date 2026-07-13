@@ -47,11 +47,11 @@ use platform_wallet_storage::secrets::SecretStore;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::str::FromStr as _;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock, RwLockWriteGuard};
 
 use crate::model::settings::AppSettings;
-use crate::model::user_role::UserRole;
+use crate::model::user_role::{UserRole, UserRoleCell};
 
 const ANIMATION_REFRESH_TIME: std::time::Duration = std::time::Duration::from_millis(100);
 
@@ -65,14 +65,13 @@ pub(crate) type SettingsCacheGuard<'a> = RwLockWriteGuard<'a, Option<AppSettings
 pub struct AppContext {
     pub(crate) data_dir: PathBuf,
     pub(crate) network: Network,
-    /// App-global user role (the persona / disclosure axis), stored as the
-    /// [`UserRole`] discriminant. A single `Arc<AtomicU8>` is created once by
-    /// `AppState` and shared into every per-network `AppContext`, so setting it
-    /// on any context is observed by all of them (present and lazily created on
-    /// a later network switch). Never a per-context atomic — that would let the
-    /// left-nav feature gate read a stale value on whichever context the app
-    /// renders from.
-    user_role: Arc<AtomicU8>,
+    /// App-global user role (the persona / disclosure axis). A single
+    /// [`UserRoleCell`] is created once by `AppState` and cloned into every
+    /// per-network `AppContext`, so setting it on any context is observed by all
+    /// of them (present, and lazily created on a later network switch). Never a
+    /// per-context cell — that would let the left-nav feature gate read a stale
+    /// value on whichever context the app renders from.
+    user_role: UserRoleCell,
     pub(crate) db: Arc<Database>,
     pub(crate) sdk: ArcSwap<Sdk>,
     // SDK context provider (quorum keys via DAPI). Chain sync is SPV-only,
@@ -230,7 +229,7 @@ impl AppContext {
         egui_ctx: egui::Context,
         app_kv: Arc<DetKv>,
         secret_store: Arc<SecretStore>,
-        user_role: Arc<AtomicU8>,
+        user_role: UserRoleCell,
     ) -> Option<Arc<Self>> {
         let config = match Config::load_from(&data_dir) {
             Ok(config) => config,
@@ -321,8 +320,7 @@ impl AppContext {
         let single_key_wallets: BTreeMap<SingleKeyHash, Arc<RwLock<SingleKeyWallet>>> =
             BTreeMap::new();
 
-        let advanced_role =
-            UserRole::from_u8(user_role.load(Ordering::Relaxed)).at_least(UserRole::Power);
+        let advanced_role = user_role.get().at_least(UserRole::Power);
 
         let animate = match advanced_role {
             true => {
@@ -409,13 +407,13 @@ impl AppContext {
 
     /// The app-global user role (shared across every per-network context).
     pub fn user_role(&self) -> UserRole {
-        UserRole::from_u8(self.user_role.load(Ordering::Relaxed))
+        self.user_role.get()
     }
 
     /// Set the app-global user role. Animations are disabled for Power and
     /// Developer roles (they clutter an operator/developer workflow).
     pub fn set_user_role(&self, role: UserRole) {
-        self.user_role.store(role as u8, Ordering::Relaxed);
+        self.user_role.set(role);
         self.enable_animations(!role.at_least(UserRole::Power));
     }
 
@@ -763,10 +761,10 @@ impl AppContext {
         PlatformFeeEstimator::with_fee_multiplier(self.fee_multiplier_permille())
     }
 
-    /// A clone of the shared app-global role atomic, for wiring a newly-created
+    /// A handle on the shared app-global role, for wiring a newly-created
     /// per-network context to the same value (see the field docs).
-    pub fn user_role_handle(&self) -> Arc<AtomicU8> {
-        Arc::clone(&self.user_role)
+    pub fn user_role_cell(&self) -> UserRoleCell {
+        self.user_role.clone()
     }
 
     /// Repaints the UI if animations are enabled.
@@ -1407,7 +1405,7 @@ mod tests {
             egui::Context::default(),
             app_kv,
             secret_store,
-            std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0)),
+            crate::model::user_role::UserRoleCell::default(),
         )
         .expect("offline testnet AppContext::new");
         let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
@@ -1443,13 +1441,13 @@ mod tests {
         let subtasks = std::sync::Arc::new(TaskManager::new());
         let connection_status = std::sync::Arc::new(ConnectionStatus::new());
         let egui_ctx = egui::Context::default();
-        // A single app-global role atomic, owned by `AppState` and shared into
+        // A single app-global role cell, owned by `AppState` and shared into
         // every per-network context (mirrors the real construction path).
-        let user_role = std::sync::Arc::new(AtomicU8::new(UserRole::Everyday as u8));
+        let user_role = UserRoleCell::new(UserRole::Everyday);
 
         // The startup context (Mainnet) and a second context (Testnet) built the
         // way `AppState` builds one on a live network switch — reusing the shared
-        // db / kv / secret store / role atomic.
+        // db / kv / secret store / role cell.
         let mainnet = AppContext::new(
             data_dir.clone(),
             Network::Mainnet,
@@ -1516,7 +1514,7 @@ mod tests {
             egui::Context::default(),
             app_kv,
             secret_store,
-            std::sync::Arc::new(AtomicU8::new(UserRole::Everyday as u8)),
+            UserRoleCell::new(UserRole::Everyday),
         )
         .expect("testnet AppContext::new");
 

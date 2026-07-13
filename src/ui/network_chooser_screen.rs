@@ -492,7 +492,7 @@ impl NetworkChooserScreen {
             if self.selected_role != previous_role {
                 // The role is app-global and shared by every per-network context;
                 // persist it as the canonical AppSettings value and publish it to
-                // the shared runtime atomic in one call.
+                // the shared runtime role cell in one call.
                 match self
                     .current_app_context()
                     .set_and_persist_user_role(self.selected_role)

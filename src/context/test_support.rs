@@ -5,11 +5,11 @@
 
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::AtomicU8;
 
 use dash_sdk::dpp::dashcore::Network;
 
 use super::AppContext;
+use crate::model::user_role::UserRoleCell;
 use crate::wallet_backend::DetKv;
 
 /// Build a network-free [`AppContext`] backed by throwaway temp storage — enough
@@ -36,7 +36,7 @@ pub(crate) fn test_app_context_with_kv(dir: &Path, app_kv: Arc<DetKv>) -> Arc<Ap
         egui::Context::default(),
         app_kv,
         secret_store,
-        Arc::new(AtomicU8::new(0)),
+        UserRoleCell::default(),
     )
     .expect("AppContext")
 }

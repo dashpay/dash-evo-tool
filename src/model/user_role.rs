@@ -6,13 +6,15 @@
 //! See `docs/personas/README.md` and
 //! `docs/ai-design/2026-07-10-persona-capability-gating/design.md`.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, Ordering};
+
 /// The role the user is operating in. Ordered: each role is a strict superset
 /// of the one below, so "at least Power" is `role >= UserRole::Power`.
 ///
-/// Explicit discriminants (`= 0/1/2`) pin the on-disk / atomic encoding:
-/// [`from_u8`](Self::from_u8) reads this discriminant back out of the shared
-/// runtime atomic, so reordering variants must not silently change a persisted
-/// or in-flight role.
+/// Explicit discriminants (`= 0/1/2`) pin the on-disk encoding and the one
+/// [`UserRoleCell`] stores, so reordering variants must not silently change a
+/// persisted or in-flight role.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub enum UserRole {
     /// Default view — Everyday User (Alex). Balance, send/receive, DPNS, and
@@ -30,6 +32,15 @@ pub enum UserRole {
 }
 
 impl UserRole {
+    /// The role of an account that never recorded one — a fresh install, or a
+    /// settings blob written before the role field existed.
+    ///
+    /// Deliberately not [`Default::default`] (Everyday): those accounts come from
+    /// builds that exposed the power-user surface unconditionally, so starting
+    /// them anywhere lower would read as lost functionality. Everyday is a choice
+    /// the user opts *into*.
+    pub const WHEN_UNSET: UserRole = UserRole::Power;
+
     /// Canonical persisted string for this role. Paired with
     /// [`from_persisted`](Self::from_persisted); these strings are the on-disk
     /// contract, so keep them stable.
@@ -46,11 +57,10 @@ impl UserRole {
     ///
     /// The legacy `UserMode` values (`"Advanced"`, `"Beginner"`), the empty
     /// string, and anything unknown all return `None` — a deliberate sentinel
-    /// meaning "no explicit role was ever recorded." `None` must NOT collapse
-    /// to a concrete role here: because the retired `UserMode` defaulted to
-    /// `"Advanced"` for every user, mapping that literal to a role would
-    /// silently promote the entire existing user base. The caller instead
-    /// seeds the initial role once from the legacy `.env DEVELOPER_MODE` flag.
+    /// meaning "no explicit role was ever recorded." `None` must NOT collapse to
+    /// a concrete role here: the caller resolves it to [`WHEN_UNSET`](Self::WHEN_UNSET),
+    /// and folding that decision into the decoder would make an unknown string
+    /// indistinguishable from a deliberate choice.
     pub fn from_persisted(s: &str) -> Option<Self> {
         match s {
             "Everyday" => Some(UserRole::Everyday),
@@ -88,15 +98,58 @@ impl UserRole {
         self >= min
     }
 
-    /// Decode the `u8` discriminant stored in the shared runtime atomic.
-    /// Unknown values fall back to the baseline role, mirroring the `None`
-    /// default of [`from_persisted`](Self::from_persisted).
-    pub const fn from_u8(v: u8) -> Self {
+    /// Decode the `u8` discriminant [`UserRoleCell`] stores. Unknown values fall
+    /// back to the baseline role — least privilege for a value that cannot be
+    /// trusted.
+    const fn from_u8(v: u8) -> Self {
         match v {
             1 => UserRole::Power,
             2 => UserRole::Developer,
             _ => UserRole::Everyday,
         }
+    }
+}
+
+/// The app-global [`UserRole`], shared by every per-network `AppContext`.
+///
+/// Clone it to wire a sibling context to the *same* role: every clone reads and
+/// writes one shared value, so a role set through any handle is immediately
+/// observed by all of them — never a per-context copy, which would let a feature
+/// gate render from a stale value. Cheap to clone and safe to share across
+/// threads; the atomic encoding is an implementation detail.
+///
+/// ```
+/// # use dash_evo_tool::model::user_role::{UserRole, UserRoleCell};
+/// let cell = UserRoleCell::new(UserRole::Everyday);
+/// let sibling = cell.clone();
+/// cell.set(UserRole::Developer);
+/// assert_eq!(sibling.get(), UserRole::Developer);
+/// ```
+#[derive(Debug, Clone)]
+pub struct UserRoleCell(Arc<AtomicU8>);
+
+impl UserRoleCell {
+    /// A cell holding `role`, shared by every clone of the returned handle.
+    pub fn new(role: UserRole) -> Self {
+        Self(Arc::new(AtomicU8::new(role as u8)))
+    }
+
+    /// The role currently held.
+    pub fn get(&self) -> UserRole {
+        UserRole::from_u8(self.0.load(Ordering::Relaxed))
+    }
+
+    /// Publish `role` to every holder of this cell.
+    pub fn set(&self, role: UserRole) {
+        self.0.store(role as u8, Ordering::Relaxed);
+    }
+}
+
+impl Default for UserRoleCell {
+    /// A cell at [`UserRole::default`] — the pre-seed value at boot, before the
+    /// persisted settings are read.
+    fn default() -> Self {
+        Self::new(UserRole::default())
     }
 }
 
@@ -135,8 +188,8 @@ mod tests {
 
     #[test]
     fn legacy_and_unknown_strings_are_sentinels() {
-        // The retired `UserMode` variants and any garbage must decode to
-        // `None` so they defer to the `.env` seed rather than mis-promoting.
+        // The retired `UserMode` variants and any garbage must decode to `None`
+        // so they defer to `WHEN_UNSET` rather than mis-promoting.
         for s in ["Advanced", "Beginner", "", "developer", "power", "42"] {
             assert_eq!(
                 UserRole::from_persisted(s),
@@ -167,5 +220,36 @@ mod tests {
         }
         // Unknown discriminants fall back to the baseline role.
         assert_eq!(UserRole::from_u8(99), UserRole::Everyday);
+    }
+
+    /// Every role survives a cell round-trip, so the encoding the cell hides
+    /// never reinterprets a value on the way through.
+    #[test]
+    fn cell_round_trips_every_role() {
+        let cell = UserRoleCell::default();
+        assert_eq!(cell.get(), UserRole::default());
+
+        for role in [UserRole::Everyday, UserRole::Power, UserRole::Developer] {
+            cell.set(role);
+            assert_eq!(cell.get(), role);
+        }
+    }
+
+    /// Clones share one value in both directions — the property `AppContext`
+    /// relies on to keep every per-network context on the same role.
+    #[test]
+    fn cell_clones_share_one_value() {
+        let cell = UserRoleCell::new(UserRole::Everyday);
+        let sibling = cell.clone();
+
+        cell.set(UserRole::Power);
+        assert_eq!(sibling.get(), UserRole::Power, "a write is seen by a clone");
+
+        sibling.set(UserRole::Developer);
+        assert_eq!(
+            cell.get(),
+            UserRole::Developer,
+            "a clone's write is seen by the original"
+        );
     }
 }

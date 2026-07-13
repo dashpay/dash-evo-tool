@@ -624,10 +624,10 @@ impl AppContext {
                 let egui_ctx = self.egui_ctx().clone();
                 let app_kv = self.app_kv();
                 let secret_store = self.secret_store();
-                // Share the app-global role atomic so the freshly-switched
-                // context observes the same value (and live changes) as the rest
-                // of the app — never a fresh per-context atomic.
-                let user_role = self.user_role_handle();
+                // Share the app-global role cell so the freshly-switched context
+                // observes the same value (and live changes) as the rest of the
+                // app — never a fresh per-context cell.
+                let user_role = self.user_role_cell();
                 let new_ctx = tokio::task::block_in_place(|| {
                     AppContext::new(
                         data_dir,

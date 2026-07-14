@@ -37,8 +37,13 @@ pub enum TaskError {
     /// [`Self::WalletBackendNotYetWired`]: the backend is ready, but this
     /// particular wallet is not yet registered with it (still loading, or
     /// skipped during load). User-actionable — waiting and retrying resolves it.
-    #[error("This wallet is still loading. Please wait a moment and try again.")]
-    WalletNotLoaded,
+    #[error("The wallet \"{wallet_label}\" is still loading. Please wait a moment and try again.")]
+    WalletNotLoaded {
+        /// Display alias for the affected wallet, or a fallback hex prefix of
+        /// the seed hash when no alias has been set. With several wallets
+        /// loaded, this is the only thing that says *which* one to wait for.
+        wallet_label: String,
+    },
 
     /// An internal wallet-state inconsistency: the wallet backend's records
     /// disagree with each other in a way that should never happen (a wallet
@@ -741,6 +746,21 @@ pub enum TaskError {
     #[error("Identity not found on the platform. Please check the ID or name and try again.")]
     IdentityNotFound,
 
+    /// An owner-key withdrawal was directed at an address other than the
+    /// masternode's registered payout address, which the network does not allow.
+    #[error(
+        "A withdrawal signed with your masternode owner key can only go to your registered payout address. To send to a different address, load your payout key and try again."
+    )]
+    OwnerKeyWithdrawalNotAllowed,
+
+    /// No active key this app can sign with was available for the withdrawal —
+    /// the chosen key may have been disabled, or no suitable transfer key is
+    /// loaded for this identity.
+    #[error(
+        "This withdrawal can't be signed because no active transfer key for this identity is available in this app. Load an active transfer key for this identity and try again."
+    )]
+    NoUsableWithdrawalKey,
+
     /// Timed out waiting for transaction confirmation.
     #[error(
         "The transaction was not confirmed within the expected time. Please check your network connection and retry."
@@ -1079,6 +1099,14 @@ pub enum TaskError {
     )]
     DuplicateProTxHash { identity_id: Identifier },
 
+    /// A load of this identity is already running. Carries the resolved identity
+    /// id so the caller can name the node. Excludes the concurrent load that
+    /// would race the duplicate check above.
+    #[error(
+        "This node is already being loaded. Wait for that load to finish before loading it again."
+    )]
+    IdentityLoadInProgress { identity_id: Identifier },
+
     /// The ProTxHash could not be read as a hex ProTxHash or a Base58 identity
     /// id. Carries the offending input (data, not a message).
     #[error(
@@ -1338,6 +1366,15 @@ pub enum TaskError {
         "Could not find the key for this address in your wallet. Please check your wallet and retry."
     )]
     WalletKeyLookupFailed,
+
+    /// A wallet-key derivation was requested at the empty derivation path. The
+    /// empty path IS the BIP-32 root, so deriving there yields the wallet's
+    /// master key rather than an address key — refused at the chokepoint every
+    /// key-bearing wallet task shares, never at an individual caller.
+    #[error(
+        "This address has no known derivation path, so its private key cannot be shown or used. Choose an address with a known derivation path."
+    )]
+    RootKeyDerivationRefused,
 
     /// A wallet address or identity-auth key could not be derived. The upstream
     /// detail (a legacy `String`) is logged at the call site, never stored here.

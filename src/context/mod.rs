@@ -3,6 +3,7 @@ mod contested_names_db;
 mod contract_token_db;
 pub mod feature_gate;
 mod identity_db;
+pub(crate) mod identity_load_registry;
 pub mod migration_status;
 mod settings_db;
 #[cfg(test)]
@@ -12,7 +13,7 @@ mod wallet_lifecycle;
 use crate::app_dir::core_cookie_path;
 use crate::backend_task::error::TaskError;
 use crate::config::{Config, NetworkConfig};
-use crate::context::feature_gate::{ExperimentalFeature, FeatureGate};
+use crate::context::feature_gate::ExperimentalFeature;
 use crate::context_provider::SpvProvider;
 use crate::database::Database;
 use crate::model::fee_estimation::PlatformFeeEstimator;
@@ -90,6 +91,13 @@ pub struct AppContext {
     /// so the sweep runs once; cleared in
     /// [`stop_spv`](Self::stop_spv) so a reconnect re-arms it.
     identity_autodiscovery_fired: AtomicBool,
+    /// How far this session's most recent load of each identity got, stamped with
+    /// the token of the load it belongs to. The single source of truth for whether
+    /// a dispatched load is still outstanding and whether it actually succeeded —
+    /// a screen that navigated away cannot learn either from its callbacks. Also
+    /// gives a load exclusive use of its identity for its whole
+    /// check → fetch → insert → seal span. See [`identity_load_registry`].
+    identity_loads: identity_load_registry::SharedLoadRegistry,
     pub(crate) wallets: RwLock<BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>>>,
     pub(crate) single_key_wallets: RwLock<BTreeMap<SingleKeyHash, Arc<RwLock<SingleKeyWallet>>>>,
     /// Hard override that keeps this context's UI still whatever the role — set by
@@ -153,6 +161,23 @@ pub struct AppContext {
     /// first completed sync delivers a balance.  Must never be written from the frame
     /// loop (Nagatha ruling: no `block_in_place`/`block_on` on the UI thread).
     pub(crate) shielded_balances: Arc<Mutex<std::collections::HashMap<WalletSeedHash, u64>>>,
+    /// Frame-safe shielded receive-address snapshot (Bech32m, Orchard account 0).
+    ///
+    /// The read side of the receive-address bridge: written on the async backend
+    /// side by [`Self::cache_shielded_receive_address`] right after the wallet's
+    /// Orchard keys are bound, read synchronously in the frame loop via
+    /// [`Self::shielded_receive_address`]. Starts empty — the Shielded tab shows
+    /// its "not ready yet" copy until a bind completes.
+    ///
+    /// **Funds safety:** the address is produced by the upstream-owned key slot
+    /// (`PlatformWallet::shielded_default_address`), i.e. the same `OrchardKeySet`
+    /// that `bind_shielded` registered with the `NetworkShieldedCoordinator` as
+    /// the viewing keys it scans with. It is never re-derived DET-side, so a
+    /// displayed address is always one the wallet can actually detect notes for.
+    /// Evicted on wallet removal so a re-imported seed can never surface a
+    /// removed wallet's address. Must never be written from the frame loop
+    /// (Nagatha ruling: no `block_in_place`/`block_on` on the UI thread).
+    pub(crate) shielded_addresses: Arc<Mutex<std::collections::HashMap<WalletSeedHash, String>>>,
     /// Frame-safe platform-address balance snapshot (duffs, summed across owned addresses).
     ///
     /// Written by `on_platform_address_sync_completed` in [`EventBridge`] after each
@@ -347,6 +372,7 @@ impl AppContext {
             core_client: core_client.into(),
             has_wallet: (!wallets.is_empty() || !single_key_wallets.is_empty()).into(),
             identity_autodiscovery_fired: AtomicBool::new(false),
+            identity_loads: Default::default(),
             wallets: RwLock::new(wallets),
             single_key_wallets: RwLock::new(single_key_wallets),
             animations_disabled: AtomicBool::new(false),
@@ -366,6 +392,7 @@ impl AppContext {
             ),
             platform_protocol_version: AtomicU32::new(0),
             shielded_balances: Arc::new(Mutex::new(std::collections::HashMap::new())),
+            shielded_addresses: Arc::new(Mutex::new(std::collections::HashMap::new())),
             platform_balances: Arc::new(Mutex::new(std::collections::HashMap::new())),
             platform_sync_cursors: Arc::new(Mutex::new(std::collections::HashMap::new())),
             egui_ctx,
@@ -550,20 +577,14 @@ impl AppContext {
         self.platform_protocol_version.load(Ordering::Relaxed)
     }
 
-    /// Update the cached platform protocol version from epoch info.
+    /// Cache the platform protocol version fetched from the connected network.
     ///
-    /// When the version crosses the shielded threshold for the first time,
-    /// retroactively initializes shielded wallets that were unlocked before
-    /// the protocol version was known.
-    pub fn set_platform_protocol_version(self: &Arc<Self>, version: u32) {
-        let was_shielded = FeatureGate::Shielded.is_available(self);
-
+    /// Read by the shielded-operations capability check to decide whether the
+    /// network can settle shielded state transitions. `0` means "not fetched
+    /// yet", which reads as below any activation version.
+    pub fn set_platform_protocol_version(&self, version: u32) {
         self.platform_protocol_version
-            .swap(version, Ordering::Relaxed);
-
-        if !was_shielded && FeatureGate::Shielded.is_available(self) {
-            self.init_missing_shielded_wallets();
-        }
+            .store(version, Ordering::Relaxed);
     }
 
     /// Synchronous read of the frame-safe shielded balance for `seed_hash`.
@@ -597,6 +618,21 @@ impl AppContext {
             .ok()
             .and_then(|map| map.get(seed_hash).copied())
             .unwrap_or(0)
+    }
+
+    /// Synchronous, frame-safe reader for the wallet's shielded receive address
+    /// (Bech32m, Orchard account 0). Returns `None` until the wallet's shielded
+    /// keys are bound — the Shielded tab renders its "not ready yet" copy then.
+    ///
+    /// The read side of the push snapshot; the write side is
+    /// [`Self::cache_shielded_receive_address`], driven from the JIT bootstrap
+    /// once `ensure_shielded_bound` succeeds. Safe to call from the egui frame
+    /// loop — no blocking I/O, no async.
+    pub fn shielded_receive_address(&self, seed_hash: &WalletSeedHash) -> Option<String> {
+        self.shielded_addresses
+            .lock()
+            .ok()
+            .and_then(|map| map.get(seed_hash).cloned())
     }
 
     /// Synchronous read of the frame-safe platform-address balance for `seed_hash`.
@@ -1360,6 +1396,22 @@ impl AppContext {
     ) -> std::collections::BTreeMap<dash_sdk::dpp::dashcore::Address, u64> {
         self.wallet_backend()
             .map(|wb| wb.address_balances(seed_hash))
+            .unwrap_or_default()
+    }
+
+    /// Authoritative per-address derivation paths from the snapshot: every
+    /// address the upstream wallet generated, across its Core-chain accounts and
+    /// the DIP-17 platform-payment pool. The set an address autocomplete may
+    /// offer from — it can never surface an address upstream does not watch.
+    pub fn snapshot_address_paths(
+        &self,
+        seed_hash: &WalletSeedHash,
+    ) -> std::collections::BTreeMap<
+        dash_sdk::dpp::dashcore::Address,
+        dash_sdk::dpp::key_wallet::bip32::DerivationPath,
+    > {
+        self.wallet_backend()
+            .map(|wb| wb.address_paths(seed_hash))
             .unwrap_or_default()
     }
 }

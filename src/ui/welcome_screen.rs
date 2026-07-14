@@ -251,7 +251,7 @@ impl WelcomeScreen {
                     Some(Box::new(ScreenType::ImportMnemonic)),
                 ),
                 OnboardingAction::ImportIdentity => (RootScreenType::RootScreenIdentities, None),
-                OnboardingAction::JustBrowse => (RootScreenType::RootScreenDashPayProfile, None),
+                OnboardingAction::JustBrowse => (RootScreenType::RootScreenIdentityHub, None),
             };
 
             return AppAction::OnboardingComplete {

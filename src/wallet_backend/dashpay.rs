@@ -208,8 +208,8 @@ pub(crate) fn derive_contact_info_encryption_keys(
 //
 // Two sidecar families (`timestamps`, `addr_map`) use `DetScope::Global`
 // against the per-network upstream persister. The network already partitions
-// the database file, so no `<network>:` prefix is needed inside the key. Four
-// families (`blocked`, `rejected`, `private`, `address_index`) use
+// the database file, so no `<network>:` prefix is needed inside the key. Five
+// families (`blocked`, `declined`, `withdrawn`, `private`, `address_index`) use
 // `DetScope::Identity(&owner)` — the owner is carried by the scope, so the
 // key contains only the counterparty id; the upstream soft-cascade reaps them
 // when the owner identity row is deleted.
@@ -219,11 +219,19 @@ pub(crate) fn derive_contact_info_encryption_keys(
 /// own decision, so the marker must not bleed across identities that share a
 /// wallet. Key shape: `det:dashpay:blocked:<counterparty_b58>`.
 const KV_PREFIX_BLOCKED: &str = "det:dashpay:blocked:";
-/// Mark a contact request as rejected. Value: empty (`()`). Presence is the
-/// signal. Scope: [`DetScope::Identity(&owner)`] — rejection is the acting
-/// identity's own decision and must not bleed across identities. Key shape:
-/// `det:dashpay:rejected:<counterparty_b58>`.
-const KV_PREFIX_REJECTED: &str = "det:dashpay:rejected:";
+/// Mark an *incoming* contact request as declined. Value: empty (`()`).
+/// Presence is the signal. Scope: [`DetScope::Identity(&owner)`] — declining is
+/// the acting identity's own decision and must not bleed across identities.
+/// Key shape: `det:dashpay:declined:<counterparty_b58>`.
+const KV_PREFIX_DECLINED: &str = "det:dashpay:declined:";
+/// Mark an *outgoing* contact request as withdrawn. Value: empty (`()`).
+/// Presence is the signal. Scope: [`DetScope::Identity(&owner)`].
+/// Key shape: `det:dashpay:withdrawn:<counterparty_b58>`.
+///
+/// Kept apart from [`KV_PREFIX_DECLINED`] because the two resolutions run in
+/// opposite directions: withdrawing our request to Bob says nothing about a
+/// request Bob later sends us, and a single marker would silently hide it.
+const KV_PREFIX_WITHDRAWN: &str = "det:dashpay:withdrawn:";
 /// DET-local `(created_at, updated_at)` timestamps for an entity (contact, request).
 /// Value: `(i64, i64)` encoded by the [`DetKv`] schema. Scope: [`DetScope::Global`].
 const KV_PREFIX_TIMESTAMPS: &str = "det:dashpay:timestamps:";
@@ -352,7 +360,8 @@ impl<'a> DashpayView<'a> {
             for (recipient_id, request) in dashpay.sent_contact_requests().iter() {
                 let status = derive_request_status(
                     owner,
-                    /* request_id_for_sidecar = */ recipient_id,
+                    /* counterparty = */ recipient_id,
+                    ContactRequestDirection::Sent,
                     /* has_matching_established = */
                     dashpay.established_contacts().contains_key(recipient_id),
                     request.created_at,
@@ -373,6 +382,7 @@ impl<'a> DashpayView<'a> {
                 let status = derive_request_status(
                     owner,
                     sender_id,
+                    ContactRequestDirection::Received,
                     dashpay.established_contacts().contains_key(sender_id),
                     request.created_at,
                     now_ms,
@@ -581,12 +591,15 @@ fn profile_to_det(
 ///
 /// Precedence: `accepted` > `rejected` > `expired` > `pending`. A
 /// pending request older than [`DASHPAY_REQUEST_EXPIRY_DAYS`] (per
-/// `created_at_ms` vs `now_ms`) reports as `"expired"`. The `rejected`
-/// marker is read under `owner`'s Identity scope so one identity's rejection
-/// never colours another identity's view of the same counterparty.
+/// `created_at_ms` vs `now_ms`) reports as `"expired"`. The resolution marker
+/// is read per `direction` — a sent request answers to the withdrawal marker,
+/// a received one to the decline marker — under `owner`'s Identity scope, so
+/// neither another identity's decision nor the opposite direction's colours
+/// this request's status.
 fn derive_request_status(
     owner: &Identifier,
     counterparty: &Identifier,
+    direction: ContactRequestDirection,
     has_matching_established: bool,
     created_at_ms: u64,
     now_ms: u64,
@@ -595,7 +608,7 @@ fn derive_request_status(
     if has_matching_established {
         return ContactRequestStatus::Accepted;
     }
-    if kv_contains(kv, owner, KV_PREFIX_REJECTED, counterparty) {
+    if kv_contains(kv, owner, resolution_prefix(direction), counterparty) {
         return ContactRequestStatus::Rejected;
     }
     let age_ms = now_ms.saturating_sub(created_at_ms);
@@ -603,6 +616,15 @@ fn derive_request_status(
         return ContactRequestStatus::Expired;
     }
     ContactRequestStatus::Pending
+}
+
+/// The sidecar marker that retires a request running in `direction`: a sent
+/// request is retired by withdrawing it, a received one by declining it.
+fn resolution_prefix(direction: ContactRequestDirection) -> &'static str {
+    match direction {
+        ContactRequestDirection::Sent => KV_PREFIX_WITHDRAWN,
+        ContactRequestDirection::Received => KV_PREFIX_DECLINED,
+    }
 }
 
 /// The [`DASHPAY_REQUEST_EXPIRY_DAYS`] window expressed in milliseconds, the
@@ -850,20 +872,107 @@ impl WalletBackend {
             .map_err(|e| TaskError::DashpaySidecarStorage { source: e })
     }
 
-    /// Record that `owner` has rejected an incoming contact request from
-    /// `counterparty_id` (or, equivalently, withdrew the sent request from
-    /// their point of view). Scoped to `owner`'s Identity so the rejection is
+    /// Record that `owner` declined the *incoming* contact request from
+    /// `counterparty_id`. Scoped to `owner`'s Identity so the decision is
     /// private to that identity. The sidecar key matches what [`DashpayView`]
-    /// consults when deriving request status.
-    pub fn dashpay_mark_rejected(
+    /// consults when deriving the status of a received request.
+    ///
+    /// Declining says nothing about a request `owner` may send *to*
+    /// `counterparty_id` — that direction has its own marker, see
+    /// [`dashpay_mark_withdrawn`](Self::dashpay_mark_withdrawn).
+    pub fn dashpay_mark_declined(
         &self,
         owner: &Identifier,
         counterparty_id: &Identifier,
     ) -> Result<(), TaskError> {
+        self.put_marker(owner, KV_PREFIX_DECLINED, counterparty_id)
+    }
+
+    /// Whether `owner` declined the incoming contact request from
+    /// `counterparty_id`. Reads the same owner-scoped marker
+    /// [`dashpay_mark_declined`](Self::dashpay_mark_declined) writes.
+    ///
+    /// A `contactRequest` document is immutable and undeletable on Platform, so
+    /// this marker is the only thing that can retire a declined request from a
+    /// listing.
+    pub fn dashpay_is_declined(&self, owner: &Identifier, counterparty_id: &Identifier) -> bool {
+        kv_contains(&self.kv(), owner, KV_PREFIX_DECLINED, counterparty_id)
+    }
+
+    /// Clear `owner`'s decline marker for `counterparty_id`. Idempotent —
+    /// clearing an absent marker is `Ok(())`.
+    ///
+    /// Sending a contact request to someone is an explicit re-engagement, so it
+    /// retires an earlier decline. Without this, a request the user once
+    /// declined would stay filtered out of their list forever, even after they
+    /// deliberately added that person again.
+    pub fn dashpay_unmark_declined(
+        &self,
+        owner: &Identifier,
+        counterparty_id: &Identifier,
+    ) -> Result<(), TaskError> {
+        self.delete_marker(owner, KV_PREFIX_DECLINED, counterparty_id)
+    }
+
+    /// Record that `owner` withdrew the *outgoing* contact request they sent to
+    /// `counterparty_id`. Scoped to `owner`'s Identity. The sidecar key matches
+    /// what [`DashpayView`] consults when deriving the status of a sent request.
+    ///
+    /// Withdrawing says nothing about a request `counterparty_id` may later send
+    /// to `owner` — that direction has its own marker, see
+    /// [`dashpay_mark_declined`](Self::dashpay_mark_declined).
+    pub fn dashpay_mark_withdrawn(
+        &self,
+        owner: &Identifier,
+        counterparty_id: &Identifier,
+    ) -> Result<(), TaskError> {
+        self.put_marker(owner, KV_PREFIX_WITHDRAWN, counterparty_id)
+    }
+
+    /// Whether `owner` withdrew the contact request they sent to
+    /// `counterparty_id`. Reads the same owner-scoped marker
+    /// [`dashpay_mark_withdrawn`](Self::dashpay_mark_withdrawn) writes.
+    pub fn dashpay_is_withdrawn(&self, owner: &Identifier, counterparty_id: &Identifier) -> bool {
+        kv_contains(&self.kv(), owner, KV_PREFIX_WITHDRAWN, counterparty_id)
+    }
+
+    /// Clear `owner`'s withdrawal marker for `counterparty_id`. Idempotent —
+    /// clearing an absent marker is `Ok(())`. Re-sending a request to the same
+    /// person retires the earlier withdrawal, so the fresh request lists.
+    pub fn dashpay_unmark_withdrawn(
+        &self,
+        owner: &Identifier,
+        counterparty_id: &Identifier,
+    ) -> Result<(), TaskError> {
+        self.delete_marker(owner, KV_PREFIX_WITHDRAWN, counterparty_id)
+    }
+
+    /// Write a presence-only marker keyed on `counterparty_id` under `owner`'s
+    /// Identity scope.
+    fn put_marker(
+        &self,
+        owner: &Identifier,
+        prefix: &str,
+        counterparty_id: &Identifier,
+    ) -> Result<(), TaskError> {
         let owner_buf = owner.to_buffer();
-        let key = sidecar_key(KV_PREFIX_REJECTED, counterparty_id);
+        let key = sidecar_key(prefix, counterparty_id);
         self.kv()
             .put::<()>(DetScope::Identity(&owner_buf), &key, &())
+            .map_err(|e| TaskError::DashpaySidecarStorage { source: e })
+    }
+
+    /// Clear a presence-only marker written by [`put_marker`](Self::put_marker).
+    fn delete_marker(
+        &self,
+        owner: &Identifier,
+        prefix: &str,
+        counterparty_id: &Identifier,
+    ) -> Result<(), TaskError> {
+        let owner_buf = owner.to_buffer();
+        let key = sidecar_key(prefix, counterparty_id);
+        self.kv()
+            .delete(DetScope::Identity(&owner_buf), &key)
             .map_err(|e| TaskError::DashpaySidecarStorage { source: e })
     }
 
@@ -1028,7 +1137,7 @@ impl WalletBackend {
 
     /// Drop every Identity-scoped DashPay overlay for `owner` — the
     /// per-contact private memos, address-index cursors, and the blocked /
-    /// rejected markers.
+    /// declined / withdrawn markers.
     ///
     /// The remaining Global-scoped overlays (timestamps, reverse address map)
     /// are not owner-scoped and are swept by the `det:dashpay:` Global prefix in
@@ -1043,7 +1152,8 @@ impl WalletBackend {
             KV_PREFIX_PRIVATE,
             KV_PREFIX_ADDRESS_INDEX,
             KV_PREFIX_BLOCKED,
-            KV_PREFIX_REJECTED,
+            KV_PREFIX_DECLINED,
+            KV_PREFIX_WITHDRAWN,
         ] {
             let keys = kv
                 .list(scope, Some(prefix))
@@ -1274,34 +1384,106 @@ mod tests {
         let now_ms: u64 = 1_000_000_000_000;
         let created_at_ms: u64 = now_ms - 60_000;
         assert_eq!(
-            derive_request_status(&owner, &counterparty, true, created_at_ms, now_ms, &kv),
+            derive_request_status(
+                &owner,
+                &counterparty,
+                ContactRequestDirection::Received,
+                true,
+                created_at_ms,
+                now_ms,
+                &kv
+            ),
             ContactRequestStatus::Accepted,
             "matching established contact wins"
         );
         assert_eq!(
-            derive_request_status(&owner, &counterparty, false, created_at_ms, now_ms, &kv),
+            derive_request_status(
+                &owner,
+                &counterparty,
+                ContactRequestDirection::Received,
+                false,
+                created_at_ms,
+                now_ms,
+                &kv
+            ),
             ContactRequestStatus::Pending,
-            "no established + no rejection sidecar + fresh = pending"
+            "no established + no resolution sidecar + fresh = pending"
         );
     }
 
     #[test]
-    fn rejected_request_status_reads_sidecar_when_present() {
+    fn declined_incoming_request_status_reads_the_decline_marker() {
         let kv = empty_kv();
         let owner = id_from_byte(1);
         let counterparty = id_from_byte(2);
         let owner_buf = owner.to_buffer();
         kv.put::<()>(
             DetScope::Identity(&owner_buf),
-            &sidecar_key(KV_PREFIX_REJECTED, &counterparty),
+            &sidecar_key(KV_PREFIX_DECLINED, &counterparty),
             &(),
         )
         .unwrap();
         let now_ms: u64 = 1_000_000_000_000;
         let created_at_ms: u64 = now_ms - 60_000;
         assert_eq!(
-            derive_request_status(&owner, &counterparty, false, created_at_ms, now_ms, &kv),
+            derive_request_status(
+                &owner,
+                &counterparty,
+                ContactRequestDirection::Received,
+                false,
+                created_at_ms,
+                now_ms,
+                &kv
+            ),
             ContactRequestStatus::Rejected
+        );
+    }
+
+    /// A withdrawal and a decline resolve opposite directions. Neither may
+    /// colour the other, or cancelling our request to Bob would silently retire
+    /// the genuine request Bob sends us next.
+    #[test]
+    fn resolution_markers_do_not_leak_across_directions() {
+        let kv = empty_kv();
+        let owner = id_from_byte(1);
+        let counterparty = id_from_byte(2);
+        let owner_buf = owner.to_buffer();
+        let now_ms: u64 = 1_000_000_000_000;
+        let created_at_ms: u64 = now_ms - 60_000;
+
+        // The owner withdrew the request they had sent to the counterparty.
+        kv.put::<()>(
+            DetScope::Identity(&owner_buf),
+            &sidecar_key(KV_PREFIX_WITHDRAWN, &counterparty),
+            &(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            derive_request_status(
+                &owner,
+                &counterparty,
+                ContactRequestDirection::Sent,
+                false,
+                created_at_ms,
+                now_ms,
+                &kv
+            ),
+            ContactRequestStatus::Rejected,
+            "the withdrawn request we sent must stop showing as pending"
+        );
+        assert_eq!(
+            derive_request_status(
+                &owner,
+                &counterparty,
+                ContactRequestDirection::Received,
+                false,
+                created_at_ms,
+                now_ms,
+                &kv
+            ),
+            ContactRequestStatus::Pending,
+            "a request that person sends us afterwards is new business — it stays pending"
         );
     }
 
@@ -1315,7 +1497,15 @@ mod tests {
         let threshold_ms = (DASHPAY_REQUEST_EXPIRY_DAYS as u64) * 86_400_000;
         let created_at_ms: u64 = now_ms - threshold_ms - 60_000;
         assert_eq!(
-            derive_request_status(&owner, &counterparty, false, created_at_ms, now_ms, &kv),
+            derive_request_status(
+                &owner,
+                &counterparty,
+                ContactRequestDirection::Received,
+                false,
+                created_at_ms,
+                now_ms,
+                &kv
+            ),
             ContactRequestStatus::Expired,
             "older-than-threshold pending request reports as expired"
         );
@@ -1331,7 +1521,15 @@ mod tests {
         // One minute younger than the threshold.
         let created_at_ms: u64 = now_ms - threshold_ms + 60_000;
         assert_eq!(
-            derive_request_status(&owner, &counterparty, false, created_at_ms, now_ms, &kv),
+            derive_request_status(
+                &owner,
+                &counterparty,
+                ContactRequestDirection::Received,
+                false,
+                created_at_ms,
+                now_ms,
+                &kv
+            ),
             ContactRequestStatus::Pending
         );
     }
@@ -1417,15 +1615,15 @@ mod tests {
     }
 
     /// D3 contract: the key encoding used by the write helpers
-    /// (`dashpay_mark_blocked`, `dashpay_mark_rejected`,
-    /// `dashpay_set_timestamps`, `dashpay_set_payment_timestamps`) must
-    /// match the encoding the read helpers (`kv_contains`,
-    /// `kv_timestamps`, `kv_payment_timestamps`) consult — otherwise
-    /// every write is invisible to the view.
+    /// (`dashpay_mark_blocked`, `dashpay_mark_declined`,
+    /// `dashpay_mark_withdrawn`, `dashpay_set_timestamps`,
+    /// `dashpay_set_payment_timestamps`) must match the encoding the read
+    /// helpers (`kv_contains`, `kv_timestamps`, `kv_payment_timestamps`)
+    /// consult — otherwise every write is invisible to the view.
     ///
-    /// The blocked / rejected markers are owner-scoped (Wave 2 / F40): the
-    /// write lands under the owner's `DetScope::Identity` keyed only on the
-    /// counterparty, and `kv_contains` reads from the same place.
+    /// The blocked / declined / withdrawn markers are owner-scoped (Wave 2 /
+    /// F40): the write lands under the owner's `DetScope::Identity` keyed only
+    /// on the counterparty, and `kv_contains` reads from the same place.
     #[test]
     fn d3_blocked_marker_round_trips_through_sidecar_key() {
         let kv = empty_kv();
@@ -1445,27 +1643,41 @@ mod tests {
     }
 
     #[test]
-    fn d3_rejected_marker_round_trips_through_sidecar_key() {
+    fn d3_resolution_markers_round_trip_through_sidecar_keys() {
         let kv = empty_kv();
         let owner = id_from_byte(1);
         let owner_buf = owner.to_buffer();
         let counterparty = id_from_byte(8);
-        // What `dashpay_mark_rejected` writes:
-        kv.put::<()>(
-            DetScope::Identity(&owner_buf),
-            &sidecar_key(KV_PREFIX_REJECTED, &counterparty),
-            &(),
-        )
-        .unwrap();
-        // What `derive_request_status` reads:
-        assert!(kv_contains(&kv, &owner, KV_PREFIX_REJECTED, &counterparty));
-
         let now_ms: u64 = 1_000_000_000_000;
         let created_at_ms: u64 = now_ms - 60_000;
-        assert_eq!(
-            derive_request_status(&owner, &counterparty, false, created_at_ms, now_ms, &kv),
-            ContactRequestStatus::Rejected
-        );
+
+        for (prefix, direction) in [
+            (KV_PREFIX_DECLINED, ContactRequestDirection::Received),
+            (KV_PREFIX_WITHDRAWN, ContactRequestDirection::Sent),
+        ] {
+            let key = sidecar_key(prefix, &counterparty);
+            // What `dashpay_mark_declined` / `dashpay_mark_withdrawn` write:
+            kv.put::<()>(DetScope::Identity(&owner_buf), &key, &())
+                .unwrap();
+            // What `derive_request_status` reads:
+            assert!(kv_contains(&kv, &owner, prefix, &counterparty));
+            assert_eq!(
+                derive_request_status(
+                    &owner,
+                    &counterparty,
+                    direction,
+                    false,
+                    created_at_ms,
+                    now_ms,
+                    &kv
+                ),
+                ContactRequestStatus::Rejected
+            );
+
+            // And the matching unmark (delete) clears it.
+            kv.delete(DetScope::Identity(&owner_buf), &key).unwrap();
+            assert!(!kv_contains(&kv, &owner, prefix, &counterparty));
+        }
     }
 
     #[test]
@@ -1536,10 +1748,9 @@ mod tests {
     }
 
     #[test]
-    fn d3_reject_then_list_contact_requests_yields_rejected_status() {
-        // Simulates: send → reject → list. After D3 wires
-        // `dashpay_mark_rejected`, the outgoing request's status flips
-        // to "rejected" without touching upstream presence (rejected
+    fn d3_withdraw_then_list_contact_requests_yields_rejected_status() {
+        // Simulates: send → withdraw → list. The outgoing request's status
+        // flips to "rejected" without touching upstream presence (withdrawn
         // requests are not removed from `sent_contact_requests`).
         let kv = empty_kv();
         let owner = id_from_byte(1);
@@ -1547,23 +1758,37 @@ mod tests {
         let counterparty = id_from_byte(2);
         kv.put::<()>(
             DetScope::Identity(&owner_buf),
-            &sidecar_key(KV_PREFIX_REJECTED, &counterparty),
+            &sidecar_key(KV_PREFIX_WITHDRAWN, &counterparty),
             &(),
         )
         .unwrap();
 
         let now_ms: u64 = 2_000_000_000_000;
         let created_at_ms: u64 = now_ms - 1_000;
-        let derived =
-            derive_request_status(&owner, &counterparty, false, created_at_ms, now_ms, &kv);
+        let derived = derive_request_status(
+            &owner,
+            &counterparty,
+            ContactRequestDirection::Sent,
+            false,
+            created_at_ms,
+            now_ms,
+            &kv,
+        );
         assert_eq!(derived, ContactRequestStatus::Rejected);
 
-        // And the threshold-expiry override does not fire for rejected
+        // And the threshold-expiry override does not fire for resolved
         // requests — `rejected` precedence is higher than `expired`.
         let threshold_ms = (DASHPAY_REQUEST_EXPIRY_DAYS as u64) * 86_400_000;
         let old_created = now_ms - threshold_ms - 60_000;
-        let derived_old =
-            derive_request_status(&owner, &counterparty, false, old_created, now_ms, &kv);
+        let derived_old = derive_request_status(
+            &owner,
+            &counterparty,
+            ContactRequestDirection::Sent,
+            false,
+            old_created,
+            now_ms,
+            &kv,
+        );
         assert_eq!(derived_old, ContactRequestStatus::Rejected);
     }
 
@@ -1580,13 +1805,21 @@ mod tests {
         // 7 days + a margin of safety.
         let created_at_ms: u64 = now_ms - threshold_ms - 86_400_000;
         assert_eq!(
-            derive_request_status(&owner, &counterparty, false, created_at_ms, now_ms, &kv),
+            derive_request_status(
+                &owner,
+                &counterparty,
+                ContactRequestDirection::Received,
+                false,
+                created_at_ms,
+                now_ms,
+                &kv
+            ),
             ContactRequestStatus::Expired
         );
     }
 
     /// F40: two identities that share a wallet must not see each other's
-    /// blocked / rejected markers. Identity A blocks/rejects a counterparty;
+    /// blocked / declined markers. Identity A blocks/declines a counterparty;
     /// identity B's view of that same counterparty stays clean.
     #[test]
     fn markers_are_isolated_per_owner_identity() {
@@ -1596,7 +1829,7 @@ mod tests {
         let counterparty = id_from_byte(3);
         let a_buf = owner_a.to_buffer();
 
-        // Owner A blocks and rejects the counterparty.
+        // Owner A blocks the counterparty and declines their request.
         kv.put::<()>(
             DetScope::Identity(&a_buf),
             &sidecar_key(KV_PREFIX_BLOCKED, &counterparty),
@@ -1605,7 +1838,7 @@ mod tests {
         .unwrap();
         kv.put::<()>(
             DetScope::Identity(&a_buf),
-            &sidecar_key(KV_PREFIX_REJECTED, &counterparty),
+            &sidecar_key(KV_PREFIX_DECLINED, &counterparty),
             &(),
         )
         .unwrap();
@@ -1615,7 +1848,7 @@ mod tests {
         assert!(kv_contains(
             &kv,
             &owner_a,
-            KV_PREFIX_REJECTED,
+            KV_PREFIX_DECLINED,
             &counterparty
         ));
 
@@ -1625,19 +1858,35 @@ mod tests {
             "owner B must not see owner A's blocked marker"
         );
         assert!(
-            !kv_contains(&kv, &owner_b, KV_PREFIX_REJECTED, &counterparty),
-            "owner B must not see owner A's rejected marker"
+            !kv_contains(&kv, &owner_b, KV_PREFIX_DECLINED, &counterparty),
+            "owner B must not see owner A's decline marker"
         );
 
         let now_ms: u64 = 1_000_000_000_000;
         let created_at_ms: u64 = now_ms - 60_000;
         assert_eq!(
-            derive_request_status(&owner_a, &counterparty, false, created_at_ms, now_ms, &kv),
+            derive_request_status(
+                &owner_a,
+                &counterparty,
+                ContactRequestDirection::Received,
+                false,
+                created_at_ms,
+                now_ms,
+                &kv
+            ),
             ContactRequestStatus::Rejected,
-            "A's own rejection colours A's view"
+            "A's own decline colours A's view"
         );
         assert_eq!(
-            derive_request_status(&owner_b, &counterparty, false, created_at_ms, now_ms, &kv),
+            derive_request_status(
+                &owner_b,
+                &counterparty,
+                ContactRequestDirection::Received,
+                false,
+                created_at_ms,
+                now_ms,
+                &kv
+            ),
             ContactRequestStatus::Pending,
             "B's view of the same counterparty is unaffected"
         );
@@ -1895,7 +2144,7 @@ mod tests {
         )
         .unwrap();
 
-        // Four Identity-scoped overlays under the owner.
+        // Five Identity-scoped overlays under the owner.
         kv.put::<ContactPrivateInfo>(
             DetScope::Identity(&owner),
             &sidecar_key(KV_PREFIX_PRIVATE, &contact),
@@ -1922,7 +2171,13 @@ mod tests {
         .unwrap();
         kv.put::<()>(
             DetScope::Identity(&owner),
-            &sidecar_key(KV_PREFIX_REJECTED, &contact),
+            &sidecar_key(KV_PREFIX_DECLINED, &contact),
+            &(),
+        )
+        .unwrap();
+        kv.put::<()>(
+            DetScope::Identity(&owner),
+            &sidecar_key(KV_PREFIX_WITHDRAWN, &contact),
             &(),
         )
         .unwrap();
@@ -1944,7 +2199,7 @@ mod tests {
         let owned = kv
             .list(DetScope::Identity(&owner), Some("det:dashpay:"))
             .expect("owner sidecar listing must succeed");
-        assert_eq!(owned.len(), 4, "four owner-scoped overlays: {owned:?}");
+        assert_eq!(owned.len(), 5, "five owner-scoped overlays: {owned:?}");
     }
 
     /// D4d-Sweep2: the combined clear (Global prefix sweep + per-owner
@@ -1956,7 +2211,7 @@ mod tests {
         let owner = id_from_byte(1).to_buffer();
         let contact = id_from_byte(2);
 
-        // A Global overlay (timestamps) plus the four owner-scoped overlays.
+        // A Global overlay (timestamps) plus the five owner-scoped overlays.
         kv.put::<(i64, i64)>(
             DetScope::Global,
             &sidecar_key(KV_PREFIX_TIMESTAMPS, &contact),
@@ -1971,7 +2226,13 @@ mod tests {
         .unwrap();
         kv.put::<()>(
             DetScope::Identity(&owner),
-            &sidecar_key(KV_PREFIX_REJECTED, &contact),
+            &sidecar_key(KV_PREFIX_DECLINED, &contact),
+            &(),
+        )
+        .unwrap();
+        kv.put::<()>(
+            DetScope::Identity(&owner),
+            &sidecar_key(KV_PREFIX_WITHDRAWN, &contact),
             &(),
         )
         .unwrap();
@@ -2010,7 +2271,8 @@ mod tests {
             KV_PREFIX_PRIVATE,
             KV_PREFIX_ADDRESS_INDEX,
             KV_PREFIX_BLOCKED,
-            KV_PREFIX_REJECTED,
+            KV_PREFIX_DECLINED,
+            KV_PREFIX_WITHDRAWN,
         ] {
             for k in kv.list(DetScope::Identity(&owner), Some(prefix)).unwrap() {
                 kv.delete(DetScope::Identity(&owner), &k).unwrap();

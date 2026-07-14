@@ -4,6 +4,7 @@ use crate::backend_task::dashpay::errors::DashPayError;
 use crate::backend_task::error::TaskError;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
+use crate::model::dashpay::contact_request_recipient;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::components::component_trait::Component;
@@ -881,19 +882,16 @@ impl ScreenLike for ContactRequests {
         self.loading = false;
 
         match result {
-            BackendTaskSuccessResult::DashPayContactRequests { incoming, outgoing } => {
+            BackendTaskSuccessResult::DashPayContactRequests {
+                identity,
+                incoming,
+                outgoing,
+            } => {
                 tracing::debug!(
                     "Received DashPayContactRequests result: {} incoming, {} outgoing",
                     incoming.len(),
                     outgoing.len()
                 );
-
-                // Clear existing requests
-                self.incoming_requests.clear();
-                self.outgoing_requests.clear();
-
-                // Mark as fetched
-                self.has_fetched_requests = true;
 
                 // Get current identity for saving to database
                 let Some(selected_identity) = self.selected_identity.as_ref() else {
@@ -903,6 +901,23 @@ impl ScreenLike for ContactRequests {
                     return;
                 };
                 let current_identity_id = selected_identity.identity.id();
+
+                // An identity switch cannot cancel a load already in flight, so
+                // a result for the identity we left must not repopulate the
+                // lists under the identity we are on.
+                if identity != current_identity_id {
+                    tracing::debug!(
+                        "Discarding contact requests for a no-longer-selected identity"
+                    );
+                    return;
+                }
+
+                // Clear existing requests
+                self.incoming_requests.clear();
+                self.outgoing_requests.clear();
+
+                // Mark as fetched
+                self.has_fetched_requests = true;
 
                 // Process incoming requests
                 for (id, doc) in incoming.iter() {
@@ -942,10 +957,7 @@ impl ScreenLike for ContactRequests {
                 // Process outgoing requests
                 for (id, doc) in outgoing.iter() {
                     let properties = doc.properties();
-                    let to_identity = properties
-                        .get("toUserId")
-                        .and_then(|v| v.to_identifier().ok())
-                        .unwrap_or_default();
+                    let to_identity = contact_request_recipient(doc).unwrap_or_default();
 
                     let account_reference = properties
                         .get("accountReference")

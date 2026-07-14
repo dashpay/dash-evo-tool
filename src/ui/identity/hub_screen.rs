@@ -125,6 +125,25 @@ impl IdentityHubScreen {
         self.selected_tab = tab;
     }
 
+    /// Whether an identity-scoped backend result still belongs to the identity
+    /// on screen. See [`applies_to_selected_identity`].
+    fn result_is_for_selected_identity(&self, result_identity: &Identifier) -> bool {
+        applies_to_selected_identity(self.app_context.selected_identity_id(), result_identity)
+    }
+
+    /// Retire a request row the backend just resolved (accepted, declined, or
+    /// cancelled), confirm it to the user, and re-arm the Contacts load so the
+    /// authoritative lists replace the local edit.
+    fn resolve_request(&mut self, request_id: &Identifier, confirmation: &str) {
+        self.contacts_state.remove_request(request_id);
+        self.contacts_state.invalidate();
+        MessageBanner::set_global(
+            self.app_context.egui_ctx(),
+            confirmation,
+            MessageType::Success,
+        );
+    }
+
     /// Apply a breadcrumb-switcher effect: wallet / identity switches mutate the
     /// app-scoped selection and reset identity-scoped caches; add-flows route to
     /// the existing screens.
@@ -345,15 +364,69 @@ impl ScreenLike for IdentityHubScreen {
             // can render real RequestCard rows instead of hardcoded empties.
             // The result arrives from LoadContactRequests,
             // dispatched alongside LoadContacts in contacts::render_populated.
-            BackendTaskSuccessResult::DashPayContactRequests { incoming, outgoing } => {
-                self.contacts_state
-                    .record_requests(incoming.clone(), outgoing.clone());
+            BackendTaskSuccessResult::DashPayContactRequests {
+                identity,
+                incoming,
+                outgoing,
+            } => {
+                if self.result_is_for_selected_identity(identity) {
+                    self.contacts_state
+                        .record_requests(incoming.clone(), outgoing.clone());
+                }
+            }
+            // The established-contact list behind the Contacts tab's active
+            // section and its search box.
+            BackendTaskSuccessResult::DashPayContactsWithInfo { identity, contacts } => {
+                if self.result_is_for_selected_identity(identity) {
+                    self.contacts_state.record_contacts(contacts.clone());
+                }
+            }
+            // A resolved request: drop the row now so the list reflects the
+            // action immediately, then re-arm the load so the authoritative
+            // lists (including the new contact, on accept) replace it.
+            BackendTaskSuccessResult::DashPayContactRequestAccepted(request_id) => {
+                self.resolve_request(request_id, "Contact request accepted.");
+            }
+            BackendTaskSuccessResult::DashPayContactRequestRejected(request_id) => {
+                self.resolve_request(request_id, "Contact request declined.");
+            }
+            BackendTaskSuccessResult::DashPayContactRequestCancelled(request_id) => {
+                self.resolve_request(request_id, "Contact request cancelled.");
+            }
+            // A confirmed contactInfo write — on this tab that is an unhide.
+            // Re-arm the load so the restored contact comes back from the
+            // authoritative list, not just the optimistic local move.
+            BackendTaskSuccessResult::DashPayContactInfoUpdated(_) => {
+                self.contacts_state.invalidate();
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    "This contact is back in your list.",
+                    MessageType::Success,
+                );
+            }
+            // The counterpart answered while the row was on screen. Nothing to
+            // withdraw or accept — reload into the truth. The result names the
+            // contact, not the request, so every request guard is released and
+            // the reloaded lists decide what is still actionable.
+            BackendTaskSuccessResult::DashPayContactAlreadyEstablished(_) => {
+                self.contacts_state.clear_in_flight();
+                self.contacts_state.invalidate();
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    "You are already contacts with this person.",
+                    MessageType::Info,
+                );
             }
             _ => {}
         }
     }
 
     fn display_task_error(&mut self, _error: &TaskError) -> bool {
+        // A failed Accept / Decline / Cancel must leave its row clickable again.
+        // The error carries no request ID, so every guard is released: the worst
+        // case is a row the user can retry, against a row stuck forever.
+        self.contacts_state.clear_in_flight();
+
         // Clear any dangling pending_save so a failed UpdateProfile doesn't
         // leave a stale snapshot around. If a later DashPayProfileUpdated from
         // a different path (e.g. the legacy ProfileScreen) arrives it would
@@ -366,6 +439,20 @@ impl ScreenLike for IdentityHubScreen {
         // other special-case error handling of its own yet.
         false
     }
+}
+
+/// Whether a backend result loaded for `result_identity` may still be applied
+/// while `selected` is the identity on screen.
+///
+/// Switching identity cannot cancel a load already in flight, so a result for
+/// the previous identity can land after the switch. Applying it would paint one
+/// identity's contacts and requests under another's name — and hand the user
+/// rows that act under the wrong key.
+fn applies_to_selected_identity(
+    selected: Option<Identifier>,
+    result_identity: &Identifier,
+) -> bool {
+    selected.as_ref() == Some(result_identity)
 }
 
 #[cfg(test)]
@@ -412,5 +499,26 @@ mod tests {
         last_good = HubLanding::from_identity_count(0);
         // Next good load = empty account — falls back to Onboarding legitimately.
         assert_eq!(last_good, HubLanding::Onboarding);
+    }
+
+    fn id(byte: u8) -> Identifier {
+        Identifier::from_bytes(&[byte; 32]).expect("32-byte identifier")
+    }
+
+    #[test]
+    fn a_result_for_the_selected_identity_applies() {
+        assert!(applies_to_selected_identity(Some(id(1)), &id(1)));
+    }
+
+    #[test]
+    fn a_result_for_a_previously_selected_identity_is_discarded() {
+        // The load was dispatched for identity A; the user switched to B before
+        // it returned. A's contacts must never appear under B.
+        assert!(!applies_to_selected_identity(Some(id(2)), &id(1)));
+    }
+
+    #[test]
+    fn a_result_arriving_with_no_identity_selected_is_discarded() {
+        assert!(!applies_to_selected_identity(None, &id(1)));
     }
 }

@@ -128,9 +128,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   reproduced. Re-establishing the contact from both sides restores full
   functionality.
 
+- **Shielded notes — no per-note detail view**: the Shielded tab no longer lists
+  individual notes (value, block height, spent/unspent status) or a synced-index
+  and note-count summary. Your shielded balance total is still accurate; only the
+  note-level breakdown is unavailable in this release.
+
 ### Removed
 
 - Proof log screen (internal developer tool, not part of the public feature set).
+  Proof-log records now go only to the `tracing` log target — both the persisted
+  history and the in-app viewer are gone; there is no replacement UI to inspect
+  past entries.
 - QR-code wallet import flow for identity funding and top-up screens.
 - The "fund identity directly from a transaction output" option on the identity
   registration and top-up screens (replaced by the single asset-lock funding flow
@@ -148,8 +156,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - The unreachable Dash-Qt launcher and its settings — the executable path, the
   overwrite-config option, and the close-on-exit option. There was no way to launch
   Dash-Qt from the app, so the controls had no effect and have been removed.
+- The Masternode List Diff inspector (Tools), which showed additions, removals, and
+  changes to the masternode list between blocks. No replacement is planned.
+- The "Total Received (DASH)" column on the wallet address table. There is no
+  upstream source for cumulative historical receipts post-migration, so the column
+  cannot be populated.
 
 ### Fixed
+
+- **Your settings and scheduled votes now survive an upgrade**: upgrading from an
+  earlier version no longer starts the app with a blank configuration. The first
+  launch after the upgrade brings across your selected network, start screen,
+  theme, onboarding state, Dash-Qt path and the remaining toggles — so a testnet
+  user is no longer relaunched on Mainnet — along with your scheduled DPNS votes
+  (choice, time and already-cast state) and your identities' top-up history.
+  Scheduled votes are imported even on an install whose wallets were already
+  moved by a previous launch. If a scheduled vote cannot be read, the app says so
+  in a banner with a "Retry now" action instead of dropping it silently; the
+  original data is never deleted from the previous version's storage.
 
 - **Expert mode now reveals the Masternodes tab without a restart**: turning on
   Expert mode in Settings immediately shows the "Masternodes" entry in the left

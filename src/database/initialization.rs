@@ -1663,11 +1663,7 @@ impl Database {
 
     /// Check if a table exists in the database.
     pub(crate) fn table_exists(&self, conn: &Connection, table: &str) -> rusqlite::Result<bool> {
-        conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
-            [table],
-            |row| row.get(0),
-        )
+        crate::database::table_exists(conn, table)
     }
 
     /// Migration 29: rename network value `"dash"` to `"mainnet"` in all tables.
@@ -2749,6 +2745,23 @@ mod test {
                 params![vec![0xDDu8; 32], vec![0u8; 100]],
             )
             .unwrap();
+
+            // A queued DPNS vote and a top-up: the non-wallet rows the unwire
+            // left behind. The v0.9.0 `scheduled_votes` shape has no `network`
+            // column, so these also cover the pre-v6 reader path.
+            conn.execute(
+                "INSERT INTO scheduled_votes
+                    (identity_id, contested_name, vote_choice, time, executed)
+                 VALUES (?1, 'quantum', 'Lock', 1700000000, 0)",
+                params![identity_id],
+            )
+            .unwrap();
+            conn.execute(
+                "INSERT INTO top_up (identity_id, top_up_index, amount)
+                 VALUES (?1, 0, 100000)",
+                params![identity_id],
+            )
+            .unwrap();
         }
 
         assert_eq!(db.db_schema_version().unwrap(), 5);
@@ -2808,6 +2821,34 @@ mod test {
             )
             .unwrap();
         assert_eq!(lock_identity, Some(vec![0xBBu8; 32]));
+
+        // The ladder must leave the non-wallet rows readable for the import
+        // that carries them into the k/v store. A dropped scheduled vote is a
+        // missed vote window, so this is asserted end-to-end against the real
+        // post-migration schema rather than a hand-built fixture.
+        use crate::database::legacy_import::{
+            read_app_settings, read_scheduled_votes, read_top_ups,
+        };
+        use dash_sdk::dpp::dashcore::Network;
+
+        let votes = read_scheduled_votes(&conn, Network::Mainnet).unwrap();
+        assert_eq!(votes.unreadable, 0);
+        assert_eq!(votes.votes.len(), 1, "the scheduled vote must survive");
+        assert_eq!(votes.votes[0].contested_name, "quantum");
+        assert!(!votes.votes[0].executed_successfully);
+
+        let top_ups = read_top_ups(&conn, Network::Mainnet).unwrap();
+        assert_eq!(top_ups.len(), 1);
+        assert_eq!(top_ups[0].1.get(&0), Some(&100_000));
+
+        let settings = read_app_settings(&conn)
+            .unwrap()
+            .expect("the settings row must survive the ladder");
+        assert_eq!(
+            settings.network,
+            Network::Mainnet,
+            "the saved network must survive; resetting it relaunches the user elsewhere",
+        );
     }
 
     // ── v34 migration: SPV-default backend ──────────────────────────

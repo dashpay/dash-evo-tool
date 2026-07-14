@@ -854,14 +854,30 @@ impl Wallet {
     /// changes (parameter vs `self`).
     // TODO(cleanup): seeds the `known_addresses`/`watched_addresses` display
     // maps. No funds-safety path reads these — the Receive list reads the
-    // watched snapshot set. Kept because six readers still iterate the maps and
-    // need per-address derivation paths the snapshot does not yet carry: the
-    // address-table, account-summary, and send-autocomplete display views; the
-    // `system_tab_sections` view; the signing-critical identity-key resolver
-    // (`qualified_identity_public_key`); and the bootstrap gate
-    // (`wallet_lifecycle`). Remove the bootstrap + maps + DB rehydrate
-    // (`database/wallet.rs`) once those readers — especially the identity-key
-    // resolver — source paths from a path-aware snapshot.
+    // watched snapshot set, and the send-autocomplete now reads the snapshot's
+    // `address_paths` (Core *and* DIP-17 platform-payment).
+    //
+    // Retirement is blocked on ONE upstream gap: identity *authentication* keys
+    // (DIP-13/15). `key-wallet` can derive that path
+    // (`DerivationPath::identity_authentication_path`) but has no account type
+    // and no address pool that tracks the addresses, so they cannot reach any
+    // snapshot. Remaining readers:
+    //   - identity-key resolver (`qualified_identity_public_key`) — resolves a
+    //     User identity's ECDSA authentication keys, which live only here.
+    //     Migrating it would leave the key unlinked and unsignable. MUST stay on
+    //     the map until upstream tracks those addresses. Pinned by regression
+    //     tests in that module.
+    //   - `system_tab_sections` — counts identity-authentication addresses, so it
+    //     is blocked by the same gap. (It also keys counts by `path_reference`,
+    //     but that is recomputable: `categorize_account_path` already treats path
+    //     shape as authoritative over the stored reference.)
+    //   - address-table — unions `known_addresses` with the snapshot; the union
+    //     exists to surface those same auth-key addresses.
+    //   - `wallet_lifecycle` bootstrap gate — the writer-gate for these very
+    //     maps; it must stay while the maps exist.
+    // Remove the bootstrap + maps + DB rehydrate (`database/wallet.rs`) once
+    // upstream tracks identity-authentication addresses in an account pool, so
+    // they reach `address_paths` like every other class.
     pub fn bootstrap_known_addresses(&mut self, seed: &[u8; 64], app_context: &AppContext) {
         let network = app_context.network;
 

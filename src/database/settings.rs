@@ -18,7 +18,7 @@
 //!
 //! [`AppSettings::KV_KEY`]: crate::model::settings::AppSettings::KV_KEY
 
-use crate::database::Database;
+use crate::database::{Database, column_exists};
 use rusqlite::{Connection, Result, params};
 
 impl Database {
@@ -26,26 +26,14 @@ impl Database {
     /// existing `settings` table. Kept only for the v3 migration arm —
     /// fresh installs never create these columns.
     pub fn add_custom_dash_qt_columns(&self, conn: &rusqlite::Connection) -> Result<()> {
-        let custom_dash_qt_path_exists: bool = conn.query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('settings') WHERE name='custom_dash_qt_path'",
-            [],
-            |row| row.get::<_, i32>(0).map(|count| count > 0),
-        )?;
-
-        if !custom_dash_qt_path_exists {
+        if !column_exists(conn, "settings", "custom_dash_qt_path")? {
             conn.execute(
                 "ALTER TABLE settings ADD COLUMN custom_dash_qt_path TEXT DEFAULT NULL;",
                 (),
             )?;
         }
 
-        let overwrite_dash_conf_exists: bool = conn.query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('settings') WHERE name='overwrite_dash_conf'",
-            [],
-            |row| row.get::<_, i32>(0).map(|count| count > 0),
-        )?;
-
-        if !overwrite_dash_conf_exists {
+        if !column_exists(conn, "settings", "overwrite_dash_conf")? {
             conn.execute(
                 "ALTER TABLE settings ADD COLUMN overwrite_dash_conf INTEGER DEFAULT NULL;",
                 (),
@@ -58,13 +46,7 @@ impl Database {
     /// Backfill `theme_preference` on an existing `settings` table.
     /// Kept only for the v10 migration arm.
     pub fn add_theme_preference_column(&self, conn: &rusqlite::Connection) -> Result<()> {
-        let theme_preference_exists: bool = conn.query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('settings') WHERE name='theme_preference'",
-            [],
-            |row| row.get::<_, i32>(0).map(|count| count > 0),
-        )?;
-
-        if !theme_preference_exists {
+        if !column_exists(conn, "settings", "theme_preference")? {
             conn.execute(
                 "ALTER TABLE settings ADD COLUMN theme_preference TEXT DEFAULT 'System';",
                 (),
@@ -77,13 +59,7 @@ impl Database {
     /// Backfill `disable_zmq` on an existing `settings` table.
     /// Kept only for the v12 migration arm.
     pub fn add_disable_zmq_column(&self, conn: &rusqlite::Connection) -> Result<()> {
-        let disable_zmq_exists: bool = conn.query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('settings') WHERE name='disable_zmq'",
-            [],
-            |row| row.get::<_, i32>(0).map(|count| count > 0),
-        )?;
-
-        if !disable_zmq_exists {
+        if !column_exists(conn, "settings", "disable_zmq")? {
             conn.execute(
                 "ALTER TABLE settings ADD COLUMN disable_zmq INTEGER DEFAULT 0;",
                 (),
@@ -97,13 +73,7 @@ impl Database {
     /// Kept only for the v15 migration arm — the column is later dropped by
     /// [`Self::drop_core_backend_mode_column`] in the v38 arm.
     pub fn add_core_backend_mode_column(&self, conn: &rusqlite::Connection) -> Result<()> {
-        let column_exists: bool = conn.query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('settings') WHERE name='core_backend_mode'",
-            [],
-            |row| row.get::<_, i32>(0).map(|count| count > 0),
-        )?;
-
-        if !column_exists {
+        if !column_exists(conn, "settings", "core_backend_mode")? {
             conn.execute(
                 "ALTER TABLE settings ADD COLUMN core_backend_mode INTEGER DEFAULT 1;",
                 (),
@@ -119,13 +89,7 @@ impl Database {
     /// idempotent — safe to re-run and a no-op on DBs that never had it.
     /// Used by the v38 migration arm.
     pub fn drop_core_backend_mode_column(&self, conn: &rusqlite::Connection) -> Result<()> {
-        let column_exists: bool = conn.query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('settings') WHERE name='core_backend_mode'",
-            [],
-            |row| row.get::<_, i32>(0).map(|count| count > 0),
-        )?;
-
-        if column_exists {
+        if column_exists(conn, "settings", "core_backend_mode")? {
             conn.execute("ALTER TABLE settings DROP COLUMN core_backend_mode;", ())?;
         }
 
@@ -136,39 +100,21 @@ impl Database {
     /// `user_mode` on an existing `settings` table. Kept only for the
     /// migration ladder.
     pub fn add_onboarding_columns(&self, conn: &rusqlite::Connection) -> Result<()> {
-        let onboarding_exists: bool = conn.query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('settings') WHERE name='onboarding_completed'",
-            [],
-            |row| row.get::<_, i32>(0).map(|count| count > 0),
-        )?;
-
-        if !onboarding_exists {
+        if !column_exists(conn, "settings", "onboarding_completed")? {
             conn.execute(
                 "ALTER TABLE settings ADD COLUMN onboarding_completed INTEGER DEFAULT 0;",
                 (),
             )?;
         }
 
-        let evonode_exists: bool = conn.query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('settings') WHERE name='show_evonode_tools'",
-            [],
-            |row| row.get::<_, i32>(0).map(|count| count > 0),
-        )?;
-
-        if !evonode_exists {
+        if !column_exists(conn, "settings", "show_evonode_tools")? {
             conn.execute(
                 "ALTER TABLE settings ADD COLUMN show_evonode_tools INTEGER DEFAULT 0;",
                 (),
             )?;
         }
 
-        let user_mode_exists: bool = conn.query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('settings') WHERE name='user_mode'",
-            [],
-            |row| row.get::<_, i32>(0).map(|count| count > 0),
-        )?;
-
-        if !user_mode_exists {
+        if !column_exists(conn, "settings", "user_mode")? {
             conn.execute(
                 "ALTER TABLE settings ADD COLUMN user_mode TEXT DEFAULT 'Advanced';",
                 (),
@@ -180,13 +126,7 @@ impl Database {
 
     /// Backfill `auto_start_spv` on an existing `settings` table.
     pub fn add_auto_start_spv_column(&self, conn: &rusqlite::Connection) -> Result<()> {
-        let column_exists: bool = conn.query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('settings') WHERE name='auto_start_spv'",
-            [],
-            |row| row.get::<_, i32>(0).map(|count| count > 0),
-        )?;
-
-        if !column_exists {
+        if !column_exists(conn, "settings", "auto_start_spv")? {
             conn.execute(
                 "ALTER TABLE settings ADD COLUMN auto_start_spv INTEGER DEFAULT 0;",
                 (),
@@ -198,13 +138,7 @@ impl Database {
 
     /// Backfill `close_dash_qt_on_exit` on an existing `settings` table.
     pub fn add_close_dash_qt_on_exit_column(&self, conn: &rusqlite::Connection) -> Result<()> {
-        let column_exists: bool = conn.query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('settings') WHERE name='close_dash_qt_on_exit'",
-            [],
-            |row| row.get::<_, i32>(0).map(|count| count > 0),
-        )?;
-
-        if !column_exists {
+        if !column_exists(conn, "settings", "close_dash_qt_on_exit")? {
             conn.execute(
                 "ALTER TABLE settings ADD COLUMN close_dash_qt_on_exit INTEGER DEFAULT 1;",
                 (),

@@ -345,6 +345,33 @@ pub fn parse_shielded_recipient(input: &str) -> Option<Vec<u8>> {
     (bytes.len() == SHIELDED_ADDRESS_RAW_LEN).then_some(bytes)
 }
 
+/// A raw Orchard payload that does not decode to a valid shielded address.
+///
+/// Raised when the 43-byte payload is not a well-formed Orchard address (its
+/// `pk_d` is not a valid curve point), so it cannot be rendered as bech32m.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("This shielded address could not be read. Please reopen the wallet and try again.")]
+pub struct InvalidShieldedAddress;
+
+/// Encode a raw 43-byte Orchard payload as its canonical Bech32m string
+/// (`dash1z…` on mainnet, `tdash1z…` elsewhere).
+///
+/// The inverse of [`parse_shielded_recipient`] and the single source of truth
+/// for rendering a shielded address the wallet backend hands us as raw bytes.
+///
+/// # Errors
+///
+/// Returns [`InvalidShieldedAddress`] when `raw` is not a well-formed Orchard
+/// address.
+pub fn encode_shielded_address(
+    raw: &[u8; SHIELDED_ADDRESS_RAW_LEN],
+    network: Network,
+) -> Result<String, InvalidShieldedAddress> {
+    dash_sdk::dpp::address_funds::OrchardAddress::from_raw_bytes(raw)
+        .map(|addr| addr.to_bech32m_string(network))
+        .map_err(|_| InvalidShieldedAddress)
+}
+
 /// Truncate an address string for display, showing a prefix and suffix
 /// separated by an ellipsis.
 ///
@@ -408,6 +435,76 @@ mod tests {
         assert_eq!(parse_shielded_recipient("not-an-address"), None);
         // Bech32m for a different address family is not a shielded recipient.
         assert_eq!(parse_shielded_recipient("dash1qexampleplatform"), None);
+    }
+
+    // --- encode_shielded_address (raw -> bech32m) ---
+    //
+    // Vectors are derived through the real upstream ZIP-32 path
+    // (`OrchardKeySet::from_seed`) rather than fabricated bytes: an Orchard
+    // payload embeds a curve point, so arbitrary bytes are not a valid address
+    // and would not exercise the encoder honestly.
+
+    fn test_shielded_raw_address(network: Network) -> [u8; SHIELDED_ADDRESS_RAW_LEN] {
+        let keys =
+            platform_wallet::wallet::shielded::OrchardKeySet::from_seed(&[7u8; 64], network, 0)
+                .expect("ZIP-32 derivation from a valid test seed");
+        keys.address_at(0).to_raw_address_bytes()
+    }
+
+    #[test]
+    fn encode_shielded_address_round_trips_with_parse() {
+        let raw = test_shielded_raw_address(Network::Testnet);
+        let encoded =
+            encode_shielded_address(&raw, Network::Testnet).expect("valid Orchard payload encodes");
+        // The encoder and the existing parser are exact inverses — a receive
+        // address we render must parse back to the very bytes it came from,
+        // or a user could copy an address that does not match wallet state.
+        assert_eq!(
+            parse_shielded_recipient(&encoded).as_deref(),
+            Some(raw.as_slice()),
+        );
+    }
+
+    #[test]
+    fn encode_shielded_address_uses_network_prefix() {
+        let mainnet = encode_shielded_address(
+            &test_shielded_raw_address(Network::Mainnet),
+            Network::Mainnet,
+        )
+        .expect("valid Orchard payload encodes");
+        let testnet = encode_shielded_address(
+            &test_shielded_raw_address(Network::Testnet),
+            Network::Testnet,
+        )
+        .expect("valid Orchard payload encodes");
+
+        assert!(mainnet.starts_with("dash1z"), "got {mainnet}");
+        assert!(testnet.starts_with("tdash1z"), "got {testnet}");
+        // The output satisfies the shielded network validator the send path
+        // enforces, so an address we display is one the app will accept back.
+        assert!(validate_orchard_address_for_network(&mainnet, Network::Mainnet).is_ok());
+        assert!(validate_orchard_address_for_network(&testnet, Network::Testnet).is_ok());
+        assert_eq!(AddressKind::detect(&testnet), Some(AddressKind::Shielded));
+    }
+
+    #[test]
+    fn encode_shielded_address_rejects_malformed_payload() {
+        // All-zero bytes are not a valid Orchard address (pk_d is not a valid
+        // curve point) — the encoder must reject rather than emit a string
+        // that no one can pay to.
+        assert_eq!(
+            encode_shielded_address(&[0u8; SHIELDED_ADDRESS_RAW_LEN], Network::Testnet),
+            Err(InvalidShieldedAddress),
+        );
+    }
+
+    #[test]
+    fn invalid_shielded_address_message_is_user_facing() {
+        // Everyday-User rule: what happened + what to do, no jargon.
+        assert_eq!(
+            InvalidShieldedAddress.to_string(),
+            "This shielded address could not be read. Please reopen the wallet and try again.",
+        );
     }
 
     #[test]

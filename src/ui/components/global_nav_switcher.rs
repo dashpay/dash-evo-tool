@@ -122,11 +122,13 @@ fn gather_wallets(app_context: &Arc<AppContext>) -> Vec<(WalletSeedHash, String)
         .collect()
 }
 
-/// Identity display label (Local nickname → DPNS → short id).
+/// Identity display label (Local nickname → DPNS → short id). The switcher
+/// reads no social profile, so the display-name tier is empty.
 fn identity_label(qi: &QualifiedIdentity) -> String {
     let dpns = qi.dpns_names.first().map(|n| n.name.as_str());
     display_label(
         qi.alias.as_deref(),
+        None,
         dpns,
         &qi.identity.id().to_string(Encoding::Base58),
     )
@@ -140,18 +142,36 @@ fn monogram_initial(label: &str) -> Option<char> {
         .map(|c| c.to_ascii_uppercase())
 }
 
+/// The selected page-scoped item, if the selection resolves against `items`. A
+/// stale selection (not in `items`) resolves to `None`, so the pill falls back
+/// to its placeholder.
+fn resolve_page_object(
+    items: &[PageObjectItem],
+    selected: Option<Identifier>,
+) -> Option<&PageObjectItem> {
+    selected.and_then(|id| items.iter().find(|it| it.id == id))
+}
+
 /// The pill label for a page-scoped object: the selected item's label, or the
-/// placeholder when nothing is selected (or the selection is stale — not in
-/// `items`).
+/// placeholder when nothing is selected (or the selection is stale).
 fn page_object_label(
     placeholder: &str,
     items: &[PageObjectItem],
     selected: Option<Identifier>,
 ) -> String {
-    selected
-        .and_then(|id| items.iter().find(|it| it.id == id))
+    resolve_page_object(items, selected)
         .map(|it| it.label.clone())
         .unwrap_or_else(|| placeholder.to_string())
+}
+
+/// A page-scoped pill with no items to offer is a placeholder — there is
+/// nothing to pick, so it never opens a dropdown.
+fn page_object_mode(items: &[PageObjectItem]) -> BreadcrumbPillMode {
+    if items.is_empty() {
+        BreadcrumbPillMode::Placeholder
+    } else {
+        BreadcrumbPillMode::Interactive
+    }
 }
 
 /// Identity-primary context shared by the wallet + app-global identity pills.
@@ -306,6 +326,7 @@ pub fn render(
                 }
                 IdentityPillScope::PageScopedObject {
                     placeholder,
+                    tooltip,
                     items,
                     selected,
                 } => {
@@ -313,6 +334,7 @@ pub fn render(
                         ui,
                         consumption,
                         placeholder,
+                        tooltip,
                         items,
                         *selected,
                         dark_mode,
@@ -556,26 +578,45 @@ fn render_app_global_identity_pill(
 /// Render the page-scoped object pill (masternode/evonode in view). `Consumed`
 /// opens a dropdown of `items` and emits [`GlobalNavEffect::SelectPageObject`]
 /// — never `SelectIdentity`; `Unwired` renders a subdued, non-interactive pill.
+/// `tooltip` is the page's own copy for the interactive pill.
+#[allow(clippy::too_many_arguments)]
 fn render_page_object_pill(
     ui: &mut Ui,
     consumption: &PillConsumption,
     placeholder: &str,
+    tooltip: &str,
     items: &[PageObjectItem],
     selected: Option<Identifier>,
     dark_mode: bool,
     effect: &mut GlobalNavEffect,
 ) {
     let label = page_object_label(placeholder, items, selected);
+    // The glyph belongs to the selected object; a placeholder carries none.
+    let icon = resolve_page_object(items, selected).and_then(|it| it.icon.clone());
 
-    if let PillConsumption::Unwired { tooltip } = consumption {
-        BreadcrumbPill::new(label)
-            .subdued(true)
-            .with_tooltip(tooltip.clone())
-            .show(ui);
+    if let PillConsumption::Unwired {
+        tooltip: how_to_change,
+    } = consumption
+    {
+        let mut pill = BreadcrumbPill::new(label).subdued(true);
+        if let Some(icon) = icon {
+            pill = pill.with_icon(icon);
+        }
+        pill.with_tooltip(how_to_change.clone()).show(ui);
         return;
     }
 
-    let resp = BreadcrumbPill::new(label).show(ui);
+    let mut pill = BreadcrumbPill::new(label).with_mode(page_object_mode(items));
+    if let Some(icon) = icon {
+        pill = pill.with_icon(icon);
+    }
+    // An empty page offers nothing to pick: placeholder only, no dropdown.
+    if items.is_empty() {
+        pill.show(ui);
+        return;
+    }
+
+    let resp = pill.with_tooltip(tooltip.to_string()).show(ui);
     if let Some(anchor) = resp.response.clone() {
         let popup_id = ui.make_persistent_id("global_nav_object_switcher");
         egui::Popup::new(popup_id, ui.ctx().clone(), &anchor, anchor.layer_id)
@@ -586,7 +627,11 @@ fn render_page_object_pill(
                 ui.set_min_width(240.0);
                 for it in items {
                     let is_active = selected == Some(it.id);
-                    if ui.selectable_label(is_active, &it.label).clicked() {
+                    let row = match &it.icon {
+                        Some(icon) => format!("{icon} {}", it.label),
+                        None => it.label.clone(),
+                    };
+                    if ui.selectable_label(is_active, row).clicked() {
                         *effect = GlobalNavEffect::SelectPageObject(it.id);
                         ui.close();
                     }
@@ -643,33 +688,63 @@ mod tests {
         );
     }
 
-    /// TC-NAV-04 foundation — a page-scoped selection resolves the pill label to
-    /// the selected item; a stale or absent selection falls back to placeholder.
-    #[test]
-    fn page_object_label_resolves_selection_else_placeholder() {
-        let items = vec![
+    fn node_items() -> Vec<PageObjectItem> {
+        vec![
             PageObjectItem {
                 id: id(1),
                 label: "mn-east-01".to_string(),
+                icon: Some("🖥".to_string()),
             },
             PageObjectItem {
                 id: id(2),
                 label: "evo-west-02".to_string(),
+                icon: Some("◆".to_string()),
             },
-        ];
+        ]
+    }
+
+    /// TC-NAV-04 foundation — a page-scoped selection resolves the pill label to
+    /// the selected item; a stale or absent selection falls back to placeholder.
+    #[test]
+    fn page_object_label_resolves_selection_else_placeholder() {
+        let items = node_items();
         assert_eq!(
-            page_object_label("(no masternode yet)", &items, Some(id(2))),
+            page_object_label("(choose a masternode)", &items, Some(id(2))),
             "evo-west-02"
         );
         // Nothing selected → placeholder.
         assert_eq!(
-            page_object_label("(no masternode yet)", &items, None),
-            "(no masternode yet)"
+            page_object_label("(choose a masternode)", &items, None),
+            "(choose a masternode)"
         );
         // Stale selection (not in items) → placeholder.
         assert_eq!(
-            page_object_label("(no masternode yet)", &items, Some(id(9))),
-            "(no masternode yet)"
+            page_object_label("(choose a masternode)", &items, Some(id(9))),
+            "(choose a masternode)"
+        );
+    }
+
+    /// The pill's glyph is the selected object's own; a placeholder (nothing or
+    /// a stale id selected) carries none.
+    #[test]
+    fn page_object_icon_belongs_to_the_selected_item() {
+        let items = node_items();
+        assert_eq!(
+            resolve_page_object(&items, Some(id(2))).and_then(|it| it.icon.as_deref()),
+            Some("◆")
+        );
+        assert!(resolve_page_object(&items, None).is_none());
+        assert!(resolve_page_object(&items, Some(id(9))).is_none());
+    }
+
+    /// A page with no objects to offer renders a placeholder pill (no dropdown);
+    /// one or more objects make it interactive.
+    #[test]
+    fn page_object_pill_is_placeholder_until_objects_exist() {
+        assert_eq!(page_object_mode(&[]), BreadcrumbPillMode::Placeholder);
+        assert_eq!(
+            page_object_mode(&node_items()),
+            BreadcrumbPillMode::Interactive
         );
     }
 

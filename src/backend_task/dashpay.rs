@@ -19,10 +19,26 @@ pub mod validation;
 
 pub use contacts::ContactData;
 
+use crate::model::dashpay::AcceptedAccounts;
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
-use dash_sdk::platform::{Identifier, IdentityPublicKey};
+use dash_sdk::platform::{DocumentQuery, Identifier, IdentityPublicKey};
+use errors::DashPayError;
+
+/// A fresh `contactRequest` [`DocumentQuery`] against the cached DashPay
+/// contract. Callers add their own `where` / `order by` clauses and limit.
+///
+/// Every `contactRequest` read in this module goes through here, so the
+/// contract handle and the error attribution are stated once.
+fn contact_request_query(app_context: &AppContext) -> Result<DocumentQuery, DashPayError> {
+    DocumentQuery::new(app_context.dashpay_contract.clone(), "contactRequest").map_err(|e| {
+        DashPayError::QueryCreation {
+            query_target: "DashPay contactRequest",
+            source: Box::new(e),
+        }
+    })
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum DashPayTask {
@@ -81,6 +97,15 @@ pub enum DashPayTask {
         identity: QualifiedIdentity,
         request_id: Identifier,
     },
+    /// Withdraw a still-pending contact request this identity sent.
+    ///
+    /// Platform cannot delete a `contactRequest` document, so the handler
+    /// broadcasts a hidden `contactInfo` and records the withdrawal locally —
+    /// see [`contact_requests::cancel_contact_request`].
+    CancelContactRequest {
+        identity: QualifiedIdentity,
+        request_id: Identifier,
+    },
     LoadPaymentHistory {
         identity: QualifiedIdentity,
     },
@@ -96,7 +121,11 @@ pub enum DashPayTask {
         nickname: Option<String>,
         note: Option<String>,
         is_hidden: bool,
-        accepted_accounts: Vec<u32>,
+        /// The write replaces the whole `contactInfo` document, so a caller that
+        /// only flips `is_hidden` or edits a nickname must say
+        /// [`AcceptedAccounts::Preserve`] — otherwise the accounts the user
+        /// accepted are erased.
+        accepted_accounts: AcceptedAccounts,
     },
     /// Register DashPay receiving addresses for incoming payment detection
     RegisterDashPayAddresses {
@@ -200,6 +229,12 @@ impl AppContext {
                 request_id,
             } => Ok(
                 contact_requests::reject_contact_request(self, sdk, identity, request_id).await?,
+            ),
+            DashPayTask::CancelContactRequest {
+                identity,
+                request_id,
+            } => Ok(
+                contact_requests::cancel_contact_request(self, sdk, identity, request_id).await?,
             ),
             DashPayTask::LoadPaymentHistory { identity } => {
                 let identity_id = identity.identity.id();

@@ -113,8 +113,12 @@ impl Check {
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FeatureGate {
-    /// Shielded (ZK) transactions — requires the current platform version to
-    /// define all shielded state transitions. Backs the Shielded account tab.
+    /// The Shielded account tab — the view of the wallet's shielded (Orchard)
+    /// pool. Always available: DET configures the shielded coordinator on every
+    /// network, so shielded balances can exist and must be viewable wherever the
+    /// wallet runs. Distinct from [`FeatureGate::ShieldedOperations`], which gates
+    /// *creating* shielded state transitions behind the network's protocol
+    /// capability.
     Shielded,
     /// Shielded operations the user can actually invoke — shielded send sources
     /// and shielded destinations. Both axes must hold: the connected network has
@@ -144,7 +148,7 @@ impl FeatureGate {
     /// feature is always available (the empty conjunction is `true`).
     fn checks(self) -> &'static [Check] {
         match self {
-            FeatureGate::Shielded => &[Check::Capability(Capability::ShieldedProtocol)],
+            FeatureGate::Shielded => &[],
             FeatureGate::ShieldedOperations => &[
                 Check::Capability(Capability::ShieldedProtocol),
                 Check::Experimental(ExperimentalFeature::Shielded),
@@ -256,7 +260,10 @@ mod tests {
     }
 
     /// An unfetched protocol version (0, the boot value) means "we do not know what
-    /// this network supports" — the capability must read as unmet, never optimistic.
+    /// this network supports" — the shielded *capability* must read as unmet, so
+    /// shielded *operations* stay closed until the version is known, never
+    /// optimistic. The Shielded *tab* is decoupled from this — see
+    /// `shielded_tab_gate_is_available_regardless_of_protocol_version`.
     #[test]
     fn shielded_capability_is_unmet_before_a_version_is_fetched() {
         let (_tmp, ctx) = ctx_with_role(UserRole::Developer);
@@ -264,9 +271,36 @@ mod tests {
         assert_eq!(ctx.platform_protocol_version(), 0, "boot value");
         assert!(!Capability::ShieldedProtocol.is_met(&ctx));
         assert!(
-            !FeatureGate::Shielded.is_available(&ctx),
-            "the shielded tab stays hidden until the network's version is known"
+            !FeatureGate::ShieldedOperations.is_available(&ctx),
+            "shielded operations stay closed until the network's version is known"
         );
+    }
+
+    /// The Shielded *tab* gate is decoupled from the state-transition capability:
+    /// DET runs the shielded coordinator on every network, so shielded balances
+    /// can exist and the tab that views them must be available regardless of the
+    /// connected protocol version or the user's role. Regression guard for the bug
+    /// where a wallet tracked a shielded balance but the tab bar offered no
+    /// Shielded tab to view it.
+    #[test]
+    fn shielded_tab_gate_is_available_regardless_of_protocol_version() {
+        for role in ROLES {
+            let (_tmp, ctx) = ctx_with_role(role);
+            // Boot value: the network's version is not known yet.
+            assert!(
+                FeatureGate::Shielded.is_available(&ctx),
+                "Shielded tab must be available at boot for {role:?}"
+            );
+            // Every protocol version upstream defines — none of which the tab
+            // gate depends on.
+            for version in known_protocol_versions() {
+                ctx.set_platform_protocol_version(version);
+                assert!(
+                    FeatureGate::Shielded.is_available(&ctx),
+                    "Shielded tab must be available on protocol v{version} for {role:?}"
+                );
+            }
+        }
     }
 
     /// Tripwire. Shielded state transitions have not shipped, so

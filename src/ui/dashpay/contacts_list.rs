@@ -11,6 +11,7 @@ use crate::ui::components::wallet_unlock_popup::WalletUnlockResult;
 use crate::ui::dashpay::contact_requests::ContactRequests;
 use crate::ui::dashpay::persist_contact_private_info;
 use crate::ui::state::AvatarCache;
+use crate::ui::state::contacts_view::{ContactSearchFields, matches_contact_search};
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, ScreenLike, ScreenType};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -31,6 +32,18 @@ pub struct Contact {
     pub is_hidden: bool,
     pub account_reference: u32,
     pub created_at: Option<i64>,
+}
+
+impl<'a> From<&'a Contact> for ContactSearchFields<'a> {
+    fn from(contact: &'a Contact) -> Self {
+        Self {
+            nickname: contact.nickname.as_deref(),
+            display_name: contact.display_name.as_deref(),
+            username: contact.username.as_deref(),
+            bio: contact.bio.as_deref(),
+            identity_id: contact.identity_id,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -532,7 +545,7 @@ impl ContactsList {
         }
 
         // Filter contacts based on search, filter, and hidden status
-        let query = self.search_query.to_lowercase();
+        let query = self.search_query.clone();
 
         let mut filtered_contacts: Vec<_> = self
             .contacts
@@ -566,49 +579,7 @@ impl ContactsList {
                     return false;
                 }
 
-                // Filter by search query
-                if query.is_empty() {
-                    return true;
-                }
-
-                // Enhanced search functionality
-                let search_in_text = |text: &str| text.to_lowercase().contains(&query);
-
-                // Search in username
-                if let Some(username) = &contact.username
-                    && search_in_text(username)
-                {
-                    return true;
-                }
-
-                // Search in display name
-                if let Some(display_name) = &contact.display_name
-                    && search_in_text(display_name)
-                {
-                    return true;
-                }
-
-                // Search in nickname
-                if let Some(nickname) = &contact.nickname
-                    && search_in_text(nickname)
-                {
-                    return true;
-                }
-
-                // Search in bio
-                if let Some(bio) = &contact.bio
-                    && search_in_text(bio)
-                {
-                    return true;
-                }
-
-                // Search in identity ID (partial match)
-                let identity_str = contact.identity_id.to_string(Encoding::Base58);
-                if search_in_text(&identity_str) {
-                    return true;
-                }
-
-                false
+                matches_contact_search(ContactSearchFields::from(*contact), &query)
             })
             .cloned()
             .collect();
@@ -951,13 +922,24 @@ impl ScreenLike for ContactsList {
                 self.has_loaded = true;
                 self.message = None;
             }
-            BackendTaskSuccessResult::DashPayContactsWithInfo(contacts_data) => {
+            BackendTaskSuccessResult::DashPayContactsWithInfo {
+                identity,
+                contacts: contacts_data,
+            } => {
+                let owner_id_opt = self.selected_identity.as_ref().map(|i| i.identity.id());
+
+                // A load that outlived an identity switch belongs to the
+                // identity we left — it must not repopulate this list.
+                if owner_id_opt != Some(identity) {
+                    tracing::debug!("Discarding contacts for a no-longer-selected identity");
+                    return;
+                }
+
                 // Clear existing contacts and repopulate the in-memory map
                 // from the adapter result. Upstream `ManagedIdentity` is
                 // now the authoritative source for contact rows (D4d), so
                 // the DET-local cache writes are gone.
                 self.contacts.clear();
-                let owner_id_opt = self.selected_identity.as_ref().map(|i| i.identity.id());
                 for contact_data in contacts_data {
                     // Skip self-contacts (where contact is the same as the owner)
                     if owner_id_opt

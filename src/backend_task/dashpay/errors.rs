@@ -97,6 +97,23 @@ pub enum DashPayError {
     #[error("You have already sent a contact request to '{to}'. Please wait for them to respond.")]
     ContactRequestAlreadySent { to: String },
 
+    /// The request selected for cancellation was sent by a different identity.
+    /// Almost always a stale list: the user switched identity while the
+    /// Contacts tab still showed the previous identity's sent requests.
+    #[error(
+        "This request was not sent by the identity you are using. Refresh your contacts and try again."
+    )]
+    ContactRequestNotSentByYou,
+
+    /// The request selected for acceptance or decline was addressed to a
+    /// different identity. Almost always a stale list: the user switched
+    /// identity while the Contacts tab still showed the previous identity's
+    /// received requests.
+    #[error(
+        "This request was not sent to the identity you are using. Refresh your contacts and try again."
+    )]
+    ContactRequestNotAddressedToYou,
+
     /// Encrypted contact info fields exceed DashPay contract limits.
     #[error("Contact info is too large to save. Try shortening your nickname or note.")]
     ContactInfoValidationFailed { errors: Vec<String> },

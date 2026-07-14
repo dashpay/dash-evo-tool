@@ -185,17 +185,28 @@ impl AppContext {
                 };
                 Ok(BackendTaskSuccessResult::RefreshedWallet { warning })
             }
-            // Single-key send/refresh unsupported this release — by design (single-key-mock.md, Decision #7).
-            // TODO: implementing balance/UTXO refresh for a bare imported P2PKH key
-            //   needs UTXO discovery, which has no DET-local path. Per the F1 spike it
-            //   requires (a) a key-wallet single-address pool/account helper (e.g.
-            //   `AddressPool::with_single_address`) and (b) a public platform-wallet
-            //   constructor `PlatformWalletManager::register_watch_only_wallet` that
-            //   runs the existing private `register_wallet` body — both parked on
-            //   an upstream platform-wallet change. Once those land, register the key
-            //   as a degenerate watch-only wallet keyed by
-            //   `seed_hash = SHA-256(SINGLE_KEY_NAMESPACE_BYTES ‖ addr)` and project
-            //   `wallet_balance`/`utxos` into the `SingleKeyWallet` display fields.
+            // Single-key balance/UTXO monitoring is blocked on upstream platform-wallet.
+            //
+            // The SPV watch set is the union of every managed account's address-pool
+            // addresses (`ManagedWalletInfo::monitored_addresses`), and balances/UTXOs
+            // come from the funding accounts — so a single imported P2PKH address WOULD
+            // be monitored once it sits in a registered wallet's pool. key-wallet already
+            // has everything needed to build that pool without derivation
+            // (`AddressPool::new_without_generation` + `AddressInfo` + `KeySource::NoKeySource`).
+            //
+            // TODO: what is missing is a way to REGISTER such a wallet. platform-wallet's
+            //   `PlatformWalletManager::register_wallet` is private, and the only public
+            //   registration entry points (`create_wallet_from_mnemonic` /
+            //   `create_wallet_from_seed_bytes`) require an HD seed. The inner
+            //   `WalletManager` — which does expose a public `insert_wallet` — is reachable
+            //   only via `PlatformWallet::wallet_manager()`, i.e. only when a wallet is
+            //   ALREADY registered, so a single-key-only user has no handle at all.
+            //   Unblocked by a public seedless entry point upstream, e.g.
+            //   `register_watch_only_wallet(wallet, info, birth_height)` running the
+            //   existing private `register_wallet` body. Once that lands, register the key
+            //   as a watch-only wallet whose external pool holds exactly the imported
+            //   address, and monitoring becomes automatic — no refresh action, so this
+            //   task should be deleted rather than implemented.
             CoreTask::RefreshSingleKeyWalletInfo(_wallet) => {
                 Err(TaskError::SingleKeyWalletsUnsupported)
             }
@@ -278,19 +289,17 @@ impl AppContext {
                     total_amount,
                 })
             }
-            // Single-key send/refresh unsupported this release — by design (single-key-mock.md, Decision #7).
-            // TODO: raw-tx broadcast is available upstream (`SpvBroadcaster`) and
-            //   F1-independent. What is
-            //   missing is coin selection over the imported key's UTXOs, which depends
-            //   on the same UTXO-discovery upstream change as the refresh path above
-            //   (the key-wallet single-address pool helper + the platform-wallet
-            //   `register_watch_only_wallet` constructor). Once UTXOs are discoverable,
-            //   build a P2PKH tx from `utxos(seed_hash)`, sign via `DetSigner::SingleKey`,
-            //   and broadcast. The related UI re-point (drop the dead `is_rpc_mode` gating
-            //   in `single_key_send_screen.rs`, route fee math through
-            //   `model/fee_estimation.rs`, and replace the string-parsed min-relay error
-            //   with a typed `TaskError` variant) lands with this. Do NOT touch the parked
-            //   `single_key_send_screen.rs` fee math.
+            // Single-key send is blocked on the same upstream gap as the refresh path
+            // above: without a registered watch-only wallet there is no UTXO set to
+            // select coins from. Raw-tx broadcast (`SpvBroadcaster`) and signing
+            // (`DetSigner::SingleKey`, via the `secret_seam` chokepoint) are both already
+            // available — coin selection is the only missing input.
+            //
+            // TODO: once the imported address is registered and its UTXOs are
+            //   discoverable, build a P2PKH tx from `utxos(seed_hash)`, sign through the
+            //   secret seam, and broadcast. Landing that also re-points the parked send
+            //   UI: route its fee math through `model/fee_estimation.rs` and replace the
+            //   string-parsed min-relay error with a typed `TaskError` variant.
             CoreTask::SendSingleKeyWalletPayment {
                 wallet: _,
                 request: _,

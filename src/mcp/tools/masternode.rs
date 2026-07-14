@@ -188,6 +188,9 @@ impl AsyncTool<DashMcpService> for MasternodeIdentityLoad {
             // can request MergeIntoExisting (key-preserving) once MCP secret
             // handling for Tier-2 nodes is designed.
             load_mode: crate::backend_task::identity::IdentityLoadMode::Overwrite,
+            // A headless load gates on nothing: it opens a record of its own rather
+            // than adopting one a GUI screen is waiting on.
+            load_token: None,
         };
 
         let task = BackendTask::IdentityTask(IdentityTask::LoadIdentity(input));

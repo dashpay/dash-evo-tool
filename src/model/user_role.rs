@@ -21,11 +21,11 @@ pub enum UserRole {
     /// history. Account internals and address tables stay hidden.
     #[default]
     Everyday = 0,
-    /// Detailed view — Power User (Priya). Full account breakdown, address
+    /// Expert view — Power User (Priya). Full account breakdown, address
     /// tables and derivation paths, asset-lock management, refresh controls,
     /// key export, and masternode key paths.
     Power = 1,
-    /// Developer tools — Platform Developer (Jordan). Everything in Power, plus
+    /// Developer view — Platform Developer (Jordan). Everything in Power, plus
     /// raw credits, state-transition context, Devnet config, faucet, bulk
     /// operations, and signing overrides.
     Developer = 2,
@@ -91,8 +91,21 @@ impl UserRole {
     pub fn label(self) -> &'static str {
         match self {
             UserRole::Everyday => "Default view",
-            UserRole::Power => "Detailed view",
-            UserRole::Developer => "Developer tools",
+            UserRole::Power => "Expert view",
+            UserRole::Developer => "Developer view",
+        }
+    }
+
+    /// Compact label for the always-visible interface-mode indicator in the nav
+    /// rail. `None` for the default role, which shows no indicator; the raised
+    /// roles use single-word forms of their [`label`](Self::label) that fit the
+    /// indicator's width. Keeping this distinct per role is what lets the
+    /// indicator visibly change when the user switches between raised modes.
+    pub fn indicator_label(self) -> Option<&'static str> {
+        match self {
+            UserRole::Everyday => None,
+            UserRole::Power => Some("Expert"),
+            UserRole::Developer => Some("Dev"),
         }
     }
 
@@ -240,7 +253,7 @@ mod tests {
     fn labels_and_descriptions_are_distinct_per_role() {
         let roles = [UserRole::Everyday, UserRole::Power, UserRole::Developer];
         let labels: Vec<_> = roles.iter().map(|r| r.label()).collect();
-        assert_eq!(labels, ["Default view", "Detailed view", "Developer tools"]);
+        assert_eq!(labels, ["Default view", "Expert view", "Developer view"]);
         // Every role has a non-empty description and no two share one.
         for (i, a) in roles.iter().enumerate() {
             assert!(!a.description().is_empty());
@@ -248,6 +261,22 @@ mod tests {
                 assert_ne!(a.description(), b.description());
             }
         }
+    }
+
+    /// The nav-rail indicator is hidden for the default role and shows a
+    /// distinct compact label for each raised role. The Power/Developer labels
+    /// must differ — collapsing them is the defect that made switching between
+    /// the two raised modes produce no visible change in the indicator.
+    #[test]
+    fn indicator_label_is_hidden_for_default_and_distinct_per_raised_role() {
+        assert_eq!(UserRole::Everyday.indicator_label(), None);
+        assert_eq!(UserRole::Power.indicator_label(), Some("Expert"));
+        assert_eq!(UserRole::Developer.indicator_label(), Some("Dev"));
+        assert_ne!(
+            UserRole::Power.indicator_label(),
+            UserRole::Developer.indicator_label(),
+            "raised roles must carry distinct indicators so a switch is visible"
+        );
     }
 
     #[test]

@@ -1,55 +1,139 @@
 //! Page-scoped view-model for the Masternodes global-nav breadcrumb (B7).
 //!
 //! Builds the Masternodes page's [`PageNavSpec`]: a page-aware `Masternodes`
-//! segment-1 and an **interactive** wallet pill (funds Top up — FR-9).
+//! segment-1, an **interactive** wallet pill (funds Top up — FR-9) and an
+//! **interactive** page-scoped node pill (`🖥 mn-east-01 ›` — FR-GLOBAL-NAV-3),
+//! two-way bound with the card grid and the detail view. Renders nothing
+//! (module-placement discriminator → `ui/state`).
 //!
-//! The page deliberately carries **no** object/identity pill. Masternode and
-//! evonode identities are never wallet-linked (`wallet_info` is always `None`
-//! for them — locked decision #4). The breadcrumb's "wallet pill + object pill"
-//! pairing expresses a genuine wallet↔identity relationship elsewhere in the
-//! app (a wallet switch can reconcile a User identity); applying it here would
-//! falsely imply a wallet↔masternode relationship that does not exist. Node
-//! selection is driven entirely by card-click → detail and the detail /
-//! load-form `‹ All masternodes` back link. Renders nothing (module-placement
-//! discriminator → `ui/state`).
-//!
-//! The FR-6 boundary (a masternode never becoming the app-global identity) is
-//! enforced structurally at the resolution layer (B1), independent of whether
-//! any pill renders in this breadcrumb.
+//! FR-6 boundary: the node pill carries a **page-scoped** selection, distinct
+//! from the app-global user identity. The switcher maps it to
+//! `GlobalNavEffect::SelectPageObject`, never `SelectIdentity`, so a masternode
+//! can never become the app-global identity, nor surface in the everyday-user
+//! identity picker. The boundary is additionally enforced at the resolution
+//! layer (B1).
 
+use dash_sdk::platform::Identifier;
+
+use crate::model::qualified_identity::IdentityType;
 use crate::ui::RootScreenType;
-use crate::ui::state::global_nav::{PageNavSpec, PillConsumption};
+use crate::ui::identity::identity_hero_card::HeroIdentityKind;
+use crate::ui::masternodes::card::card_heading;
+use crate::ui::state::global_nav::{
+    IdentityPillScope, PageNavSpec, PageObjectItem, PillConsumption,
+};
 
-/// Build the Masternodes page's global-nav spec: a page-aware `Masternodes`
-/// segment-1 plus an interactive wallet pill. No object/identity pill — see the
-/// module docs for why (locked decision #4).
-pub fn masternodes_page_nav_spec() -> PageNavSpec {
+/// Node-pill label when no node is loaded yet.
+const NO_NODES_PLACEHOLDER: &str = "(no masternode yet)";
+/// Node-pill label when nodes are loaded but none is open.
+const NO_NODE_SELECTED_PLACEHOLDER: &str = "(choose a masternode)";
+/// Hover tooltip for the interactive node pill.
+const TT_NODE_PILL: &str = "Switch between your loaded masternodes and evonodes.";
+
+/// Dropdown label for a loaded node: its alias when set, otherwise the
+/// shortened ProTxHash — the same heading rule as its card, so the pill and the
+/// grid always name a node identically.
+pub fn node_pill_item(
+    node_id: Identifier,
+    alias: Option<&str>,
+    node_id_short: &str,
+    node_type: IdentityType,
+) -> PageObjectItem {
+    let kind: HeroIdentityKind = node_type.into();
+    PageObjectItem {
+        id: node_id,
+        label: card_heading(alias, node_id_short),
+        icon: Some(kind.type_glyph().to_string()),
+    }
+}
+
+/// The node-pill placeholder: nothing loaded yet vs. loaded but none open.
+fn node_placeholder(node_count: usize) -> &'static str {
+    if node_count == 0 {
+        NO_NODES_PLACEHOLDER
+    } else {
+        NO_NODE_SELECTED_PLACEHOLDER
+    }
+}
+
+/// Build the Masternodes page's global-nav spec: page-aware segment-1, an
+/// interactive wallet pill, and an interactive node pill listing `items` with
+/// `selected` (the node whose detail view is open) shown on the pill.
+pub fn masternodes_page_nav_spec(
+    items: Vec<PageObjectItem>,
+    selected: Option<Identifier>,
+) -> PageNavSpec {
+    let placeholder = node_placeholder(items.len());
     PageNavSpec::new("Masternodes", RootScreenType::RootScreenMasternodes)
         .with_wallet_pill(PillConsumption::Consumed)
+        .with_identity_pill(
+            IdentityPillScope::page_scoped_object(placeholder, TT_NODE_PILL, items, selected),
+            PillConsumption::Consumed,
+        )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// The Masternodes breadcrumb exposes segment-1 and an interactive wallet
-    /// pill, and — deliberately — NO object/identity pill (locked decision #4:
-    /// masternodes are never wallet-linked, so a wallet↔object pairing would
-    /// misrepresent the relationship). Card-click/detail drive node selection.
+    fn id(byte: u8) -> Identifier {
+        Identifier::new([byte; 32])
+    }
+
+    /// The Masternodes breadcrumb carries segment-1, an interactive wallet pill
+    /// (FR-9 Top up) and an interactive page-scoped node pill carrying the node
+    /// in view (FR-GLOBAL-NAV-3).
     #[test]
-    fn spec_has_segment1_and_wallet_pill_but_no_object_pill() {
-        let spec = masternodes_page_nav_spec();
+    fn spec_has_segment1_and_two_interactive_pills() {
+        let items = vec![node_pill_item(
+            id(7),
+            Some("mn-east-01"),
+            "abcd…ef01",
+            IdentityType::Masternode,
+        )];
+        let spec = masternodes_page_nav_spec(items, Some(id(7)));
+
         assert_eq!(spec.segment1_label(), "Masternodes");
         assert_eq!(
             spec.segment1_target(),
             RootScreenType::RootScreenMasternodes
         );
-        // Wallet pill interactive (FR-9 Top up).
         assert!(spec.wallet_pill().expect("wallet pill").is_consumed());
-        // No object/identity pill on this page.
+
+        let (scope, consumption) = spec.identity_pill().expect("node pill");
+        assert!(consumption.is_consumed(), "the node pill is interactive");
         assert!(
-            spec.identity_pill().is_none(),
-            "the Masternodes breadcrumb must carry no object/identity pill",
+            scope.is_page_scoped(),
+            "the node pill is page-scoped, never the app-global identity",
         );
+        assert_eq!(scope.page_scoped_selection(), Some(id(7)));
+    }
+
+    /// The placeholder distinguishes "none loaded" from "none open", mirroring
+    /// the identity pill's `(no identity yet)` / `(choose an identity)` rule.
+    #[test]
+    fn placeholder_distinguishes_no_nodes_from_none_selected() {
+        assert_eq!(node_placeholder(0), "(no masternode yet)");
+        assert_eq!(node_placeholder(3), "(choose a masternode)");
+    }
+
+    /// A node's pill label follows its card heading (alias, else shortened
+    /// ProTxHash) and its glyph follows its type.
+    #[test]
+    fn node_item_label_follows_card_heading_and_glyph_follows_type() {
+        let aliased = node_pill_item(
+            id(1),
+            Some("mn-east-01"),
+            "abcd…ef01",
+            IdentityType::Masternode,
+        );
+        assert_eq!(aliased.label, "mn-east-01");
+        assert_eq!(aliased.icon.as_deref(), Some("\u{1F5A5}"));
+
+        let anonymous = node_pill_item(id(2), None, "abcd…ef01", IdentityType::Masternode);
+        assert_eq!(anonymous.label, "abcd…ef01");
+
+        let evonode = node_pill_item(id(3), None, "beef…cafe", IdentityType::Evonode);
+        assert_eq!(evonode.icon.as_deref(), Some("\u{25C6}"));
     }
 }

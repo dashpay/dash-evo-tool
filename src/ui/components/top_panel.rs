@@ -91,9 +91,10 @@ fn add_connection_indicator(ui: &mut Ui, app_context: &Arc<AppContext>) {
             )),
             |ui| {
                 ui.horizontal(|ui| {
+                    // Hover-only: the tooltip is the indicator's whole interaction.
                     let (rect, resp) = ui.allocate_exact_size(
                         egui::vec2(circle_size, circle_size),
-                        egui::Sense::click(),
+                        egui::Sense::hover(),
                     );
                     let center = rect.center();
 
@@ -354,10 +355,11 @@ pub fn subdued_everyday_spec(label: impl Into<String>, target: RootScreenType) -
     PageNavSpec::unwired_everyday(label, target, TT_WALLET_UNWIRED, TT_IDENTITY_UNWIRED)
 }
 
-/// A wallet-only global-nav spec with the wallet pill **interactive**
-/// (`Consumed`): picking a wallet from it drives the app-global selection via
-/// [`apply_global_nav_effect`]. For pages that own the wallet-selection surface
-/// (e.g. Wallets), mirroring the Masternodes page's interactive wallet pill.
+/// A wallet-only global-nav spec (no identity/object pill) with the wallet pill
+/// **interactive** (`Consumed`): picking a wallet from it drives the app-global
+/// selection via [`apply_global_nav_effect`]. For pages with no identity context
+/// that own the wallet-selection surface, e.g. Wallets — FR-GLOBAL-NAV-2 rules 2
+/// and 4.
 pub fn wallet_only_spec(label: impl Into<String>, target: RootScreenType) -> PageNavSpec {
     PageNavSpec::new(label, target).with_wallet_pill(PillConsumption::Consumed)
 }
@@ -433,20 +435,24 @@ pub fn add_top_panel_with_global_nav(
     action
 }
 
-/// Like [`add_top_panel_with_global_nav`], but also returns the page-scoped
-/// object the user picked from an interactive page-scoped-object pill, if any.
-/// This is the documented consumer of the page-scoped-object boundary pattern
-/// (`IdentityPillScope::PageScopedObject` → `SelectPageObject`) for a page whose
-/// breadcrumb carries an object pill: all other effects (segment-1 nav, wallet
-/// switch) are applied here as usual, while `SelectPageObject` is **only**
-/// surfaced to the caller — never written to `AppContext::selected_identity_id`
-/// (the FR-6 boundary). Returns `(action, picked_page_object)`.
+/// Like [`add_top_panel_with_global_nav`], but also returns the raw
+/// [`GlobalNavEffect`] so a page that **consumes** a selection can mirror it into
+/// its own view state — the page half of the two-way binding (FR-GLOBAL-NAV-2
+/// rule 2). The returned effect is **already applied**; a caller must only
+/// synchronize its own state from it, never re-apply it.
+///
+/// Two consumers today: the Wallets page mirrors
+/// [`GlobalNavEffect::SwitchWallet`] into its selected wallet, and the
+/// Masternodes page mirrors [`GlobalNavEffect::SelectPageObject`] by opening
+/// that node's detail view. `SelectPageObject` is *only* surfaced here — the
+/// applier never writes it to `AppContext::selected_identity_id` (the FR-6
+/// boundary).
 pub fn add_top_panel_with_global_nav_capturing(
     ui: &mut Ui,
     app_context: &Arc<AppContext>,
     spec: PageNavSpec,
     right_buttons: Vec<(&str, DesiredAppAction)>,
-) -> (AppAction, Option<dash_sdk::platform::Identifier>) {
+) -> (AppAction, GlobalNavEffect) {
     let mut effect = GlobalNavEffect::None;
     let mut selection = HubSelection::default();
     let mut action = render_top_island(
@@ -458,12 +464,8 @@ pub fn add_top_panel_with_global_nav_capturing(
         },
         right_buttons,
     );
-    let picked = match effect {
-        GlobalNavEffect::SelectPageObject(id) => Some(id),
-        _ => None,
-    };
-    action |= apply_global_nav_effect(app_context, effect);
-    (action, picked)
+    action |= apply_global_nav_effect(app_context, effect.clone());
+    (action, effect)
 }
 
 #[cfg(test)]

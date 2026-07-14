@@ -1,4 +1,5 @@
 mod initialization;
+pub(crate) mod legacy_import;
 mod settings;
 mod single_key_wallet;
 #[cfg(any(test, feature = "testing"))]
@@ -28,6 +29,36 @@ impl From<CorruptedBlobError> for rusqlite::Error {
     fn from(e: CorruptedBlobError) -> Self {
         rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Blob, Box::new(e))
     }
+}
+
+/// Whether `table` exists in the SQLite schema at `conn`.
+///
+/// The one schema-existence probe: legacy `data.db` readers, the migration
+/// ladder, and the migration tasks all run against tables that a fresh install
+/// never creates, so "missing" is a normal answer, not an error. Callers that
+/// need a domain-typed error map the `rusqlite::Error` themselves.
+pub(crate) fn table_exists(conn: &Connection, table: &str) -> rusqlite::Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+        [table],
+        |row| row.get(0),
+    )
+}
+
+/// Whether `table` has a column named `column`.
+///
+/// A missing table has no columns, so it yields `false` rather than an error —
+/// the migration ladder relies on that to stay idempotent.
+pub(crate) fn column_exists(
+    conn: &Connection,
+    table: &str,
+    column: &str,
+) -> rusqlite::Result<bool> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = ?2",
+        rusqlite::params![table, column],
+        |row| row.get::<_, i64>(0).map(|count| count > 0),
+    )
 }
 
 #[derive(Debug)]

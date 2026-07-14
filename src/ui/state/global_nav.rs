@@ -20,6 +20,9 @@ pub struct PageObjectItem {
     pub id: Identifier,
     /// Display label for the dropdown row and the pill when this item is active.
     pub label: String,
+    /// Type glyph shown ahead of the label, e.g. `HeroIdentityKind::type_glyph`.
+    /// `None` renders the label alone.
+    pub icon: Option<String>,
 }
 
 /// How a breadcrumb pill participates on a given page (FR-GLOBAL-NAV-2 rule 3).
@@ -60,6 +63,9 @@ pub enum IdentityPillScope {
     PageScopedObject {
         /// Label shown when nothing is selected, e.g. `(no masternode yet)`.
         placeholder: String,
+        /// Hover tooltip for the interactive pill. Page-owned copy, so the
+        /// switcher stays free of page-specific wording.
+        tooltip: String,
         /// The objects the dropdown offers.
         items: Vec<PageObjectItem>,
         /// The currently selected object, if any.
@@ -68,14 +74,16 @@ pub enum IdentityPillScope {
 }
 
 impl IdentityPillScope {
-    /// Build a page-scoped object scope with the given placeholder and items.
+    /// Build a page-scoped object scope from its page-owned copy and items.
     pub fn page_scoped_object(
         placeholder: impl Into<String>,
+        tooltip: impl Into<String>,
         items: Vec<PageObjectItem>,
         selected: Option<Identifier>,
     ) -> Self {
         Self::PageScopedObject {
             placeholder: placeholder.into(),
+            tooltip: tooltip.into(),
             items,
             selected,
         }
@@ -237,9 +245,11 @@ mod tests {
     fn page_scoped_object_is_isolated_from_app_global() {
         let scope = IdentityPillScope::page_scoped_object(
             "(no masternode yet)",
+            "Switch between your loaded masternodes and evonodes.",
             vec![PageObjectItem {
                 id: id(7),
                 label: "mn-east-01".to_string(),
+                icon: Some("🖥".to_string()),
             }],
             Some(id(7)),
         );

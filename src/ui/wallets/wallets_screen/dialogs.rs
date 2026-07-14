@@ -1117,10 +1117,11 @@ impl WalletsBalancesScreen {
 
         let seed_hash = wallet.read().map(|g| g.seed_hash()).unwrap_or_default();
         let balances = self.app_context.snapshot_address_balances(&seed_hash);
+        let paths = self.app_context.snapshot_address_paths(&seed_hash);
         let address_input = AddressInput::new(self.app_context.network)
             .with_label("Mine to address:")
             .with_address_kinds(&[AddressKind::Core])
-            .with_wallets(&[(wallet, balances)])
+            .with_wallets(&[(wallet, balances, paths)])
             .with_selection_only(true)
             .with_full_addresses(true);
 

@@ -138,6 +138,10 @@ impl AppContext {
                             %error,
                             "Shielded bind deferred; will retry on next unlock"
                         );
+                    } else {
+                        // Keys are bound, so the receive address is now readable
+                        // from the upstream key slot. Cache it for the frame loop.
+                        self.cache_shielded_receive_address(&backend, &seed_hash).await;
                     }
                     // Register every established contact's DIP-15 receiving
                     // account so SPV watches the addresses each contact pays us
@@ -166,6 +170,55 @@ impl AppContext {
                 error = %e,
                 "JIT address bootstrap skipped"
             );
+        }
+    }
+
+    /// Publish `seed_hash`'s shielded receive address into the frame-safe
+    /// snapshot the Shielded tab reads ([`AppContext::shielded_receive_address`]).
+    ///
+    /// Reads Orchard **account 0** — the only account DET binds and the only one
+    /// its spend path (`shielded_transfer(.., 0, ..)`) can spend from — through
+    /// the upstream-owned key slot, so the address shown is derived from the very
+    /// `OrchardKeySet` the coordinator scans with. Runs on the async backend
+    /// side, never in the frame loop.
+    ///
+    /// Best-effort: an unbound wallet or a malformed payload leaves the snapshot
+    /// untouched and the tab keeps its "not ready yet" copy rather than showing a
+    /// stale or unusable address.
+    pub(super) async fn cache_shielded_receive_address(
+        &self,
+        backend: &WalletBackend,
+        seed_hash: &WalletSeedHash,
+    ) {
+        let raw = match backend.shielded_default_address(seed_hash, 0).await {
+            Ok(Some(raw)) => raw,
+            Ok(None) => {
+                tracing::debug!(
+                    wallet = %hex::encode(seed_hash),
+                    "Shielded receive address unavailable; wallet has no bound Orchard account 0"
+                );
+                return;
+            }
+            Err(error) => {
+                tracing::debug!(
+                    wallet = %hex::encode(seed_hash),
+                    %error,
+                    "Shielded receive address read failed; will retry on next boot/unlock"
+                );
+                return;
+            }
+        };
+        match crate::model::address::encode_shielded_address(&raw, self.network) {
+            Ok(address) => {
+                if let Ok(mut cache) = self.shielded_addresses.lock() {
+                    cache.insert(*seed_hash, address);
+                }
+            }
+            Err(error) => tracing::warn!(
+                wallet = %hex::encode(seed_hash),
+                %error,
+                "Shielded receive address could not be encoded; leaving it unset"
+            ),
         }
     }
 
@@ -343,16 +396,6 @@ impl AppContext {
                 error = %e,
                 "Failed to persist warmed auth-pubkey cache"
             );
-        }
-    }
-
-    pub(crate) fn init_missing_shielded_wallets(self: &Arc<Self>) {
-        for wallet in self.open_wallets() {
-            let ctx = Arc::clone(self);
-            self.subtasks
-                .spawn_sync("shielded_bind_after_protocol_update", async move {
-                    ctx.bootstrap_wallet_addresses_jit(&wallet).await;
-                });
         }
     }
 

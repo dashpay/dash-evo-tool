@@ -104,7 +104,7 @@ No funding-outpoint API exists in `platform-wallet` at PR #3625 head. The `FundW
 - `top_up_asset_lock_transaction_for_utxo`
 - `asset_lock_transaction_for_utxo_from_private_key`
 
-This is a user-facing capability removal. It is disclosed via the one-time post-migration notice (see [data-model-and-migration.md § Mandatory one-time informational notice](data-model-and-migration.md#accepted-fund-accessibility-trade-off-user-decision-2026-05-18)).
+This is a user-facing capability removal. It is disclosed via CHANGELOG.
 
 **Path 3 — `received_transaction_finality` slim (asset-lock-finality-only).**
 Slim `context/transaction_processing.rs::received_transaction_finality` to handle only asset-lock finality. Delete the `Wallet.utxos` / `address_balances` / legacy-`utxos`-table write branches. RETAIN the asset-lock detection and registration branch: `store_asset_lock_transaction` + the finality-wait channel that `broadcast_and_commit_asset_lock` and `wait_for_asset_lock_proof` depend on. ZMQ call sites at `app.rs:1267,1285` stay — ZMQ is still required for asset-lock detection.
@@ -191,8 +191,7 @@ The Smythe security audit is a **release-blocking gate** at P5. No push to #860 
 |---|---|---|
 | **I1** | Authoritative selection at construction | No code path selects spendable inputs from `WalletSnapshot` or any `Wallet.utxos` snapshot. All coin-selection goes through `WalletBackend::create_asset_lock_proof` or `WalletBackend::send_payment` (upstream live UTXO set). |
 | **I2** | No DET-side parallel spend engine | The functions `select_unspent_utxos_for`, `select_utxos_with_fee_retry`, `generic_asset_lock_transaction`, `registration_asset_lock_transaction_for_utxo`, `top_up_asset_lock_transaction_for_utxo`, `asset_lock_transaction_for_utxo_from_private_key`, `remove_selected_utxos`, `build_multi_recipient_payment_transaction` are deleted, not orphaned. No dead caller, no commented-out call, no unreachable arm. |
-<!-- TODO(DOC-003): Promised one-time post-migration notice (invariant I3) never shipped -->
-| **I3** | `FundWithUtxo` removal disclosed | The one-time post-migration notice text ships in the release build. `RegisterIdentityFundingMethod::FundWithUtxo` and `TopUpIdentityFundingMethod::FundWithUtxo` variants are gone. No dead erroring arm remains in any match on either enum. |
+| **I3** | `FundWithUtxo` removal disclosed | The removal is disclosed via CHANGELOG (no in-app one-time notice ships). `RegisterIdentityFundingMethod::FundWithUtxo` and `TopUpIdentityFundingMethod::FundWithUtxo` variants are gone. No dead erroring arm remains in any match on either enum. |
 | **I4** | Crash-retry no-double-broadcast | Asset-lock transactions are stored (durable) before broadcast. Upstream deduplication prevents double-broadcast on retry. Store-before-broadcast ordering is verified by test. |
 | **I5** | Path 3 deletion leaves asset-lock detection intact | `received_transaction_finality` no longer writes to `Wallet.utxos` / `address_balances` / legacy `utxos` table. The asset-lock detection branch (`store_asset_lock_transaction` + finality-wait channel) is fully functional. `broadcast_and_commit_asset_lock` and `wait_for_asset_lock_proof` succeed in test without any `Wallet` mutation. |
 | **I6** | No frame-thread blocking | No code path added in P4a, P4a.5, or P4b causes the egui frame thread to await or block on a wallet operation. All upstream calls are dispatched through `BackendTask` / `WalletBackend` async methods. |

@@ -66,19 +66,25 @@ Verdicts: PASS / FAIL / BLOCKED (reason) / N/A (Gap/Superseded/Removed — not i
 
 ## IDN
 
-- [ ] IDN-001: Register a new identity
-- [ ] IDN-002: Load existing identity by ID
-- [ ] IDN-003: Load evonode/masternode identity
-- [ ] IDN-004: Top up identity credits
-- [ ] IDN-005: Withdraw credits to Core address
-- [ ] IDN-006: Transfer credits between identities
-- [ ] IDN-007: Add key to identity
-- [ ] IDN-008: View identity keys and details
-- [ ] IDN-009: Refresh identity state
-- [ ] IDN-010: Search identity by DPNS name
+- [x] IDN-001: Register a new identity — BLOCKED (wizard/validation confirmed working;
+      independent "+Add Key" no-op bug found in Advanced key-selection mode)
+- [x] IDN-002: Load existing identity by ID — FAIL (ID+key "Load Identity" button silently
+      hangs with zero feedback; sibling tabs on the same screen — "From my wallet", "My
+      username" — degrade gracefully with clean typed/generic errors)
+- [x] IDN-003: Load evonode/masternode identity — FAIL (same silent-hang defect class as
+      IDN-002 on "Load masternode"; ProTxHash format validation and node-type toggle both PASS)
+- [x] IDN-004: Top up identity credits — BLOCKED (no identity reachable — see IDN-001/002/003)
+- [x] IDN-005: Withdraw credits to Core address — BLOCKED (same reasoning as IDN-004)
+- [x] IDN-006: Transfer credits between identities — BLOCKED (same reasoning as IDN-004)
+- [x] IDN-007: Add key to identity — BLOCKED (same reasoning as IDN-004)
+- [x] IDN-008: View identity keys and details — BLOCKED (same reasoning as IDN-004)
+- [x] IDN-009: Refresh identity state — BLOCKED (same reasoning as IDN-004)
+- [x] IDN-010: Search identity by DPNS name — BLOCKED (dispatches and fails cleanly on the
+      known masternode-list/quorum-sync error, same signature as DEV.md)
 - [x] IDN-011: Bulk identity creation — N/A (Gap, not implemented)
-- [ ] IDN-012: Register identity from Platform addresses
-- [ ] IDN-013: Top up identity from Platform addresses
+- [x] IDN-012: Register identity from Platform addresses — BLOCKED (confirmed implemented and
+      correctly gated in source; live Platform-balance cache never populates in this session)
+- [x] IDN-013: Top up identity from Platform addresses — BLOCKED (no identity reachable)
 
 ## DPN
 

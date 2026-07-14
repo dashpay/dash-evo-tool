@@ -317,7 +317,9 @@ fn app_data_error_chain(error: TaskError) -> Arc<MigrationError> {
 /// [`MigrationState::SucceededWithUnreadableIdentitiesAndVotes`], because the
 /// identity pass keeps its sentinel unwritten while any row fails to decode, so
 /// a lone identity warning would outrank the vote warning on every launch and
-/// silently cost the user a live vote deadline.
+/// silently cost the user a live vote deadline. If reading that record fails, the
+/// vote half is withheld until a later launch reads it successfully — the identity
+/// half still reaches the user, and neither is reported as a failed migration.
 ///
 /// # Errors
 ///
@@ -430,9 +432,13 @@ pub async fn run(app_context: &Arc<AppContext>) -> Result<bool, TaskError> {
                 // and honestly reports zero unreadable votes — exactly on the
                 // launches where this branch is the only one the user ever sees.
                 //
-                // A k/v read that itself fails is surfaced as the retryable half of
-                // the combined failure banner rather than dropped: neither signal
-                // may vanish silently.
+                // A k/v read that itself fails costs only the vote half of the
+                // banner, never the identity half: the record is durable and this
+                // branch re-runs on every launch (the identity sentinel stays
+                // unwritten), so the next successful read re-publishes it. Reporting
+                // the read error as a *failure* state instead would tell the user the
+                // app-data pass did not finish — it did, and wrote its sentinel — and
+                // offer a retry that re-runs nothing.
                 match read_vote_warning(&app_context.app_kv(), app_context.network) {
                     Ok(Some(warning)) => {
                         tracing::warn!(
@@ -469,11 +475,10 @@ pub async fn run(app_context: &Arc<AppContext>) -> Result<bool, TaskError> {
                             imported = identities.imported,
                             error = ?warning_error,
                             network = ?app_context.network,
-                            "Some legacy identities could not be decoded and the pending vote-warning record could not be read; the identity rows stay in the previous version's data.db",
+                            "Some legacy identities could not be decoded, and the pending vote-warning record could not be read so any vote notice is withheld until the next launch; the identity rows stay in the previous version's data.db and must be loaded again",
                         );
-                        status.set_state(MigrationState::FailedWithUnreadableIdentities {
+                        status.set_state(MigrationState::SucceededWithUnreadableIdentities {
                             count: identities.unreadable,
-                            error: Arc::new(warning_error),
                         });
                     }
                 }
@@ -4633,6 +4638,77 @@ mod tests {
                 .expect("read identity sentinel")
                 .is_none(),
             "the identity sentinel must stay unwritten so the unreadable row retries",
+        );
+
+        backend.shutdown().await;
+    }
+
+    /// A failed *vote-warning read* is not an app-data failure, and the banner may
+    /// not say it is. Here the app-data pass SUCCEEDS (its sentinel is written) and
+    /// only the follow-up warning-record read fails, alongside an undecodable
+    /// identity row. `FailedWithUnreadableIdentities` tells the user "updating the
+    /// rest of your previous data did not finish" and offers a "Retry now" that
+    /// re-runs a pass which already completed — false on both counts. The identity
+    /// signal is the one the user must act on, so the run falls through to the
+    /// honest `SucceededWithUnreadableIdentities` and the unreadable notice record
+    /// is left for the next launch to re-read.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_unreadable_vote_warning_record_does_not_claim_the_app_data_pass_failed() {
+        use dash_sdk::dpp::dashcore::Network;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = fresh_app_context(tmp.path());
+        let network = Network::Testnet;
+
+        // Funds: a normal legacy wallet, so the drain completes and `moved_data`.
+        seed_legacy_wallet(&ctx, &[0xD7u8; 64], "funds", network);
+
+        {
+            let conn = Connection::open(tmp.path().join("data.db")).expect("open data.db");
+            // A corrupt identity blob → unreadable == 1, which is what steers the run
+            // into the branch under test. The legacy `top_up` table is left alone, so
+            // the app-data pass runs clean and writes its sentinel.
+            conn.execute(
+                "INSERT INTO identity (id, data, status, is_local, network)
+                 VALUES (?1, ?2, 2, 1, 'testnet')",
+                rusqlite::params![[0x45u8; 32].as_slice(), vec![0xFFu8; 8]],
+            )
+            .expect("corrupt identity row");
+        }
+
+        // Poison the warning record: a unit value encodes to an empty bincode body,
+        // so decoding it back as an `UnreadableVotesWarning` hits an unexpected end
+        // of input. The app-data pass decodes zero unreadable votes and therefore
+        // never overwrites it.
+        ctx.app_kv()
+            .put(DetScope::Global, &vote_warning_key_for(network), &())
+            .expect("poison the vote-warning record");
+        assert!(
+            read_vote_warning(&ctx.app_kv(), network).is_err(),
+            "precondition: the poisoned record must make the warning read fail, \
+             otherwise this test would pass for the wrong reason",
+        );
+
+        wire_backend(&ctx).await;
+        let backend = ctx.wallet_backend().expect("backend wired");
+
+        let did_work = run(&ctx).await.expect("a failed notice read is not fatal");
+        assert!(did_work, "the wallet drain moved data");
+
+        assert_eq!(
+            *ctx.migration_status().state(),
+            MigrationState::SucceededWithUnreadableIdentities { count: 1 },
+            "an unreadable notice record must not be reported as an app-data failure",
+        );
+
+        // The fact the old banner denied: the app-data pass really did finish.
+        assert!(
+            ctx.app_kv()
+                .get::<MigrationCompletion>(DetScope::Global, &app_data_sentinel_key_for(network))
+                .expect("read app-data sentinel")
+                .is_some(),
+            "the app-data sentinel proves the pass completed — a banner offering to \
+             'finish updating' it would be lying",
         );
 
         backend.shutdown().await;

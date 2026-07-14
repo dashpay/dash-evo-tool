@@ -105,6 +105,12 @@ pub enum MigrationState {
     /// app-data failure and left the user no retry. Both the identity rows and
     /// the app-data sentinel stay unwritten, so a retry (or the next launch)
     /// re-attempts both. Terminal until then.
+    ///
+    /// A *hard* app-data failure is the only producer. An app-data pass that
+    /// completed and merely left a later notice-record read failing is not one:
+    /// its sentinel is written, so this state's "we did not finish updating the
+    /// rest of your data — retry" copy would be false and its retry a no-op. That
+    /// path publishes [`Self::SucceededWithUnreadableIdentities`] instead.
     FailedWithUnreadableIdentities {
         count: u32,
         error: Arc<crate::backend_task::migration::MigrationError>,

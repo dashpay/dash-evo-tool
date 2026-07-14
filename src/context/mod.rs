@@ -91,11 +91,13 @@ pub struct AppContext {
     /// so the sweep runs once; cleared in
     /// [`stop_spv`](Self::stop_spv) so a reconnect re-arms it.
     identity_autodiscovery_fired: AtomicBool,
-    /// Identity ids whose load task is currently running. Claimed for the whole
-    /// check → fetch → insert span of a load, so two overlapping loads of the
-    /// same identity cannot both pass the `RejectIfExists` check and clobber each
-    /// other's insert. See [`identity_load_registry`].
-    identity_loads_in_flight: identity_load_registry::InFlightIdentityLoads,
+    /// How far this session's most recent load of each identity got. The single
+    /// source of truth for whether a dispatched load is still outstanding and
+    /// whether it actually succeeded — a screen that navigated away cannot learn
+    /// either from its callbacks. Also gives a load exclusive use of its identity
+    /// for its whole check → fetch → insert → seal span. See
+    /// [`identity_load_registry`].
+    identity_load_phases: identity_load_registry::IdentityLoadPhases,
     pub(crate) wallets: RwLock<BTreeMap<WalletSeedHash, Arc<RwLock<Wallet>>>>,
     pub(crate) single_key_wallets: RwLock<BTreeMap<SingleKeyHash, Arc<RwLock<SingleKeyWallet>>>>,
     /// Hard override that keeps this context's UI still whatever the role — set by
@@ -370,7 +372,7 @@ impl AppContext {
             core_client: core_client.into(),
             has_wallet: (!wallets.is_empty() || !single_key_wallets.is_empty()).into(),
             identity_autodiscovery_fired: AtomicBool::new(false),
-            identity_loads_in_flight: Default::default(),
+            identity_load_phases: Default::default(),
             wallets: RwLock::new(wallets),
             single_key_wallets: RwLock::new(single_key_wallets),
             animations_disabled: AtomicBool::new(false),

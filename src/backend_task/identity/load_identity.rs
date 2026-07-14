@@ -117,13 +117,17 @@ impl AppContext {
             }
         };
 
-        // The duplicate check below, the network fetch and the insert are not one
-        // atomic step: two overlapping loads of this identity could both pass the
-        // check and both insert, the last one clobbering the first's alias, keys
-        // and protection tier. Claim the identity for that whole span — a second
-        // load of it, from any screen, tool or CLI, is rejected up front. Released
-        // when the guard drops, on every return path.
-        let _load_guard = self.begin_identity_load(identity_id)?;
+        // The duplicate check below, the network fetch, the insert and the key seal
+        // are not one atomic step: two overlapping loads of this identity could both
+        // pass the check and both insert, the last one clobbering the first's alias,
+        // keys and protection tier. Claim the identity for that whole span — a
+        // second load of it, from any screen, tool or CLI, is rejected up front.
+        //
+        // The guard is also how this load reports its outcome to a screen that
+        // navigated away (task results reach only the visible screen): dropped on
+        // any error path it records `Failed`, and only the explicit `loaded()` after
+        // the last fallible step below records success.
+        let load_guard = self.begin_identity_load(identity_id)?;
 
         // §10.9 / TC-EDGE-07: a fresh load rejects a ProTxHash already stored,
         // before any network fetch — so the existing node's alias/keys/protection
@@ -491,6 +495,11 @@ impl AppContext {
         if let Some(password) = encryption_password {
             self.protect_identity_keys(qualified_identity.identity.id(), password, None)?;
         }
+
+        // Past the last fallible step: the node is stored with its keys as
+        // requested. Anything that failed before this — including a key seal that
+        // left the insert behind — reported `Failed` when the guard dropped.
+        load_guard.loaded();
 
         Ok(BackendTaskSuccessResult::LoadedIdentity(qualified_identity))
     }

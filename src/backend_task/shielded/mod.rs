@@ -1,6 +1,7 @@
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
+use crate::context::feature_gate::FeatureGate;
 use crate::model::wallet::WalletSeedHash;
 use crate::wallet_backend::PlatformPathIndex;
 use dash_sdk::dpp::address_funds::{OrchardAddress, PlatformAddress};
@@ -69,6 +70,13 @@ impl AppContext {
         self: &Arc<Self>,
         task: ShieldedTask,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
+        if !FeatureGate::ShieldedOperations.is_available(self) {
+            tracing::warn!(
+                "Refused a shielded fund movement because shielded operations are unavailable"
+            );
+            return Err(TaskError::ShieldedOperationsUnavailable);
+        }
+
         let backend = self.wallet_backend()?;
         match task {
             ShieldedTask::ShieldFromAssetLock {
@@ -211,5 +219,38 @@ impl AppContext {
                 tracing::debug!(?error, "post-operation shielded balance refresh failed");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::TaskResult;
+    use crate::backend_task::BackendTask;
+    use crate::context::test_support::test_app_context;
+    use crate::model::user_role::UserRole;
+    use crate::utils::egui_mpsc::SenderAsync;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn mcp_style_direct_dispatch_rejects_unavailable_shielded_write() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(tmp.path());
+        ctx.set_user_role(UserRole::Developer);
+        assert!(FeatureGate::Shielded.is_available(&ctx));
+        assert!(!FeatureGate::ShieldedOperations.is_available(&ctx));
+
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let sender = SenderAsync::new(tx, egui::Context::default());
+        let task = BackendTask::ShieldedTask(ShieldedTask::ShieldFromAssetLock {
+            seed_hash: WalletSeedHash::default(),
+            amount_duffs: 1,
+        });
+
+        let result = ctx.run_backend_task(task, sender).await;
+
+        assert!(
+            matches!(&result, Err(TaskError::ShieldedOperationsUnavailable)),
+            "a direct backend dispatch must reject unsupported shielded writes before moving funds: {result:?}"
+        );
     }
 }

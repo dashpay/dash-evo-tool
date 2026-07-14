@@ -160,88 +160,86 @@ impl WithdrawalScreen {
         // errors are handled inside AmountInput
     }
 
-    fn render_address_input(&mut self, ui: &mut Ui) {
-        let is_owner_key = self
-            .selected_key
+    /// Whether the selected signing key is an `OWNER` key, which fixes the
+    /// destination to the registered payout address at every role — Platform
+    /// rejects any other output script (see `resolve_withdrawal_output`).
+    fn owner_key_selected(&self) -> bool {
+        self.selected_key
             .as_ref()
-            .map(|key| key.purpose() == Purpose::OWNER)
-            .unwrap_or(false);
-        let can_have_withdrawal_address = !is_owner_key;
+            .is_some_and(|key| key.purpose() == Purpose::OWNER)
+    }
 
-        if can_have_withdrawal_address || self.app_context.user_role().at_least(UserRole::Power) {
-            ui.horizontal(|ui| {
-                ui.label("Address:");
+    fn render_address_input(&mut self, ui: &mut Ui) {
+        if self.owner_key_selected() {
+            // Drop anything typed under a previously selected key — the submitted
+            // task must never carry a destination the owner key cannot pay. Runs
+            // before the Withdraw button each frame, so a key switch reconciles
+            // before a click on it is handled.
+            self.withdrawal_address.clear();
+            self.withdrawal_address_error = None;
 
-                let hint = if self.app_context.network == Network::Mainnet {
-                    "Enter Core address (X.../7...)"
+            match self
+                .identity
+                .masternode_payout_address(self.app_context.network)
+            {
+                Some(payout_address) => {
+                    ui.label(format!("Masternode payout address: {payout_address}"));
+                    ui.label(
+                        RichText::new(
+                            "Withdrawals signed with the owner key always go to this address.",
+                        )
+                        .italics()
+                        .color(Color32::GRAY),
+                    );
+                }
+                None => {
+                    ui.label("No masternode payout address");
+                }
+            }
+            return;
+        }
+
+        ui.horizontal(|ui| {
+            ui.label("Address:");
+
+            let hint = if self.app_context.network == Network::Mainnet {
+                "Enter Core address (X.../7...)"
+            } else {
+                "Enter Core address (y.../8...)"
+            };
+            let response =
+                ui.add(egui::TextEdit::singleline(&mut self.withdrawal_address).hint_text(hint));
+
+            // Validate address when it changes
+            if response.changed() {
+                if self.withdrawal_address.is_empty() {
+                    self.withdrawal_address_error = None;
                 } else {
-                    "Enter Core address (y.../8...)"
-                };
-                let response = ui.add(
-                    egui::TextEdit::singleline(&mut self.withdrawal_address)
-                        .hint_text(hint),
-                );
-
-                // Validate address when it changes
-                if response.changed() {
-                    if self.withdrawal_address.is_empty() {
-                        self.withdrawal_address_error = None;
+                    let trimmed = self.withdrawal_address.trim();
+                    if crate::ui::helpers::is_platform_address_string(trimmed) {
+                        self.withdrawal_address_error = Some(
+                            "Platform addresses not supported for withdrawal. Use a Core address."
+                                .to_string(),
+                        );
                     } else {
-                        let trimmed = self.withdrawal_address.trim();
-                        if crate::ui::helpers::is_platform_address_string(trimmed) {
-                            self.withdrawal_address_error = Some(
-                                "Platform addresses not supported for withdrawal. Use a Core address."
-                                    .to_string(),
-                            );
-                        } else {
-                            match Address::from_str(trimmed) {
-                                Ok(_) => {
-                                    self.withdrawal_address_error = None;
-                                }
-                                Err(_) => {
-                                    self.withdrawal_address_error =
-                                        Some("Invalid Core address".to_string());
-                                }
+                        match Address::from_str(trimmed) {
+                            Ok(_) => {
+                                self.withdrawal_address_error = None;
+                            }
+                            Err(_) => {
+                                self.withdrawal_address_error =
+                                    Some("Invalid Core address".to_string());
                             }
                         }
                     }
                 }
-
-                // Show error next to input
-                if let Some(error) = &self.withdrawal_address_error {
-                    ui.colored_label(DashColors::ERROR, error);
-                }
-            });
-
-            // For Power users with an OWNER key, show a hint about the
-            // auto-selected payout address.
-            if self.app_context.user_role().at_least(UserRole::Power)
-                && is_owner_key
-                && let Some(payout_address) = self
-                    .identity
-                    .masternode_payout_address(self.app_context.network)
-            {
-                ui.label(
-                    RichText::new(format!(
-                        "Leave empty to use masternode payout address: {}",
-                        payout_address
-                    ))
-                    .italics()
-                    .color(Color32::GRAY),
-                );
             }
-        } else {
-            ui.label(format!(
-                "Masternode payout address: {}",
-                match self
-                    .identity
-                    .masternode_payout_address(self.app_context.network)
-                {
-                    Some(address) => address.to_string(),
-                    None => "No masternode payout address".to_string(),
-                }
-            ));
-        }
+
+            // Show error next to input
+            if let Some(error) = &self.withdrawal_address_error {
+                ui.colored_label(DashColors::ERROR, error);
+            }
+        });
     }
 
     fn show_confirmation_popup(&mut self, ui: &mut Ui) -> AppAction {

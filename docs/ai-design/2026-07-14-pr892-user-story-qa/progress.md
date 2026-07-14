@@ -188,7 +188,10 @@ Verdicts: PASS / FAIL / BLOCKED (reason) / N/A (Gap/Superseded/Removed — not i
 - [x] NET-009: Toggle ZMQ — FAIL (`disable_zmq` field exists in settings model, zero UI
       surface, no `SystemTask` variant to update it)
 - [x] NET-010: Onboarding wizard — PASS
-- [ ] NET-011: Wipe Platform data
+- [x] NET-011: Wipe Platform data — BLOCKED (deliberately not run: destructive/irreversible
+      against the campaign's shared, evidence-bearing data dir; the agent permission system
+      independently halted the attempt and requires explicit human confirmation — see
+      `scenarios/NET.md` and `summary-report.md` for details)
 - [x] NET-012: Configure Devnet through the UI — N/A (Gap, not implemented)
 - [x] NET-013: Testnet faucet integration — N/A (Gap, not implemented)
 - [x] NET-014: Bulk fund addresses — N/A (Gap, not implemented)

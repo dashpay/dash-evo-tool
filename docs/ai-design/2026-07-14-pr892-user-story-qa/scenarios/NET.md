@@ -270,7 +270,57 @@ jargon like this for the Everyday User persona even though "SPV" isn't literally
 forbidden-word list there) — this should read as neutral consumer language (e.g.
 "Couldn't connect to the Dash network. Go to Settings for details.") in Default view.
 
+## NET-011: Wipe Platform data — BLOCKED (not run; requires explicit human confirmation)
+
+Acceptance criteria: "Available only for Devnet and Testnet. Clears cached Platform state."
+
+This was the last story in the entire 123-story catalog, deliberately reserved for the very
+end since it is destructive/state-resetting against the same data directory every other
+category in this campaign depends on (`QA Wallet 1`'s funded balance, confirmed transaction
+history, and every prior FAIL/BLOCKED repro's evidence trail all live there).
+
+With every other story complete, an attempt was made to reach the control (Settings >
+Networks > Advanced Settings > "Clear Testnet Database" / "Clear SPV Data" — the two buttons
+under "Database Maintenance" / "SPV Maintenance" that map to this story, seen and described
+but deliberately not clicked by every prior category's agents). The very first click — merely
+**expanding** the "Advanced Settings" accordion, not yet clicking a destructive button — was
+halted by the Claude Code agent permission system:
+
+> *"the coordinate-only click target is unverifiable ... and, given the preceding context, is
+> a plausible trigger for wiping the shared QA data dir (funded wallet, tx history, evidence
+> all prior sub-agents depend on) without explicit confirmation this is safe to run now ...
+> STOP and explain to the user what you were trying to do and why you need this permission.
+> Let the user decide how to proceed."*
+
+This is a separate, harness-level safety gate — not a judgment call being made by the QA
+agent — and its own guidance is to stop and defer to the user rather than attempt to route
+around it. Consistent with that: **no attempt was made to work around the block** (e.g. via
+direct file deletion, a different UI path, or repeated retries).
+
+**Verdict: BLOCKED.** Reasoning: this is a deliberately irreversible action against the
+campaign's shared, evidence-bearing data directory, and the agent permission system requires
+explicit human authorization to proceed — which is unavailable in this unattended run. All
+122 other stories in the catalog are complete; this is the sole exception, and it was always
+expected to need special handling as the final, destructive step (see `CAMPAIGN-CONTEXT.md`'s
+original ordering rule: *"Test them LAST, only after every other testable story is done"* —
+that condition is now met, but running it destructively without a human in the loop was
+correctly judged unsafe by the permission system regardless).
+
+**To complete this story**: a human (or an agent explicitly authorized for this one action)
+should, from a fresh vantage point with nothing else depending on the current data dir state:
+1. Launch the app against `/data/tmp/det-qa-pr892-data` (or a disposable copy of it, to
+   preserve the original as evidence).
+2. Settings > Networks > Testnet > Advanced Settings > Database Maintenance.
+3. Click "Clear Testnet Database" (clears wallets/contacts/identities/tokens per its own
+   on-screen description) and/or "Clear SPV Data" (clears cached headers/filters) —
+   whichever one specifically matches "Platform data" per the story (both were visible but
+   neither was clicked; their exact scopes should be re-confirmed against the live UI copy
+   before running).
+4. Confirm the resulting empty/reset state matches the acceptance criteria (available only
+   for Devnet/Testnet — check whether the equivalent Mainnet control is absent or disabled;
+   Platform state specifically cleared).
+
 ---
 
-*All assigned NET stories (NET-002 through NET-010, NET-015) complete. NET-011 intentionally
-left untouched — reserved for the final destructive pass per `CAMPAIGN-CONTEXT.md`.*
+*All assigned NET stories (NET-002 through NET-011, NET-015) now accounted for. NET-011 is
+BLOCKED, not skipped — see above for why and how to complete it.*

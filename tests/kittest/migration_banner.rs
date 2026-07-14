@@ -217,6 +217,35 @@ fn unreadable_votes_banner_acknowledgement_enqueues_action() {
     );
 }
 
+/// Every message that tells the user their identities did not come across must
+/// also tell them WHERE to get them back. "Load these identities again" named no
+/// screen and no control, which leaves the Everyday User hunting for a flow they
+/// may never have opened — the repo's error-message rules require a concrete,
+/// self-serviceable action. The remedy lives behind "Load Identity" on the
+/// Identities screen, so all three variants name both, exactly as the vote copy
+/// names the Scheduled Votes screen.
+#[test]
+fn every_unreadable_identity_message_names_where_to_load_them_again() {
+    for text in [
+        migration_unreadable_identities_text(2),
+        migration_unreadable_identities_and_votes_text(2, 3),
+        migration_failed_with_unreadable_identities_text(1),
+    ] {
+        assert!(
+            text.contains("Identities screen"),
+            "the copy must name the screen that recovers the keys: `{text}`",
+        );
+        assert!(
+            text.contains("Load Identity"),
+            "the copy must name the control the user has to press: `{text}`",
+        );
+        assert!(
+            text.ends_with('.'),
+            "banner copy must be a complete sentence for i18n extraction: `{text}`",
+        );
+    }
+}
+
 /// The unreadable-identity warning is acknowledgeable, exactly like its vote
 /// sibling. It used to render as a sticky, action-less banner: the user was told
 /// their keys had not come across and given no way to say "I understand" — so the

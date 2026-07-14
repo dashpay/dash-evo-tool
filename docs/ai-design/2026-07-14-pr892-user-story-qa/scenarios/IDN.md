@@ -149,7 +149,18 @@ pair would leave a user staring at a frozen button forever with no explanation).
 
 ---
 
-## IDN-003: Load evonode/masternode identity — **FAIL** (same silent-hang defect class as
+## IDN-003: Load evonode/masternode identity — reclassified `[Superseded by MN-001]` in the
+## corrected catalog
+
+**Reconciliation note**: PR892's real catalog (`docs/user-stories.md` in the PR892-build
+worktree) tags this story `[Superseded by MN-001]`, not `[Implemented]` — the new MN
+category's MN-001 ("Load a masternode by keys") now owns this capability. `progress.md`
+tracks IDN-003 as N/A accordingly. The FAIL finding below (same silent-hang defect class as
+IDN-002, on the exact "Load a masternode" flow this story describes) is kept as directly
+relevant context for whoever tests MN-001 — the underlying screen and bug are the same one
+MN-001 will exercise.
+
+## IDN-003 (original write-up, kept as context for MN-001): Load evonode/masternode identity — **FAIL** (same silent-hang defect class as
 ## IDN-002; format validation and node-type toggle confirmed working)
 
 **Persona:** Priya. Acceptance criteria: "Enter protx hash to load the associated identity."

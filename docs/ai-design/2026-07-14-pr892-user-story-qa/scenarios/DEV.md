@@ -236,7 +236,15 @@ be exercised at all.
 
 ---
 
-## DEV-002: View proof request log — **FAIL** (no UI implementation found)
+## DEV-002: View proof request log — reclassified N/A (Gap) in the corrected catalog
+
+**Reconciliation note**: PR892's real catalog (`docs/user-stories.md` in the PR892-build
+worktree) tags this story `[Gap]`, not `[Implemented]`. The FAIL finding below — no UI
+implementation found anywhere, only a failure-only tracing target — is fully consistent
+with that reclassification. `progress.md` now tracks this as N/A; the write-up is kept as
+evidence.
+
+## DEV-002 (original write-up, kept for evidence): View proof request log — **FAIL** (no UI implementation found)
 
 **Persona:** Jordan. Acceptance criteria: "Proof log lists all requests with timestamps and
 results."
@@ -266,7 +274,15 @@ QA campaign's rules and does not modify `docs/user-stories.md`'s tagging itself.
 
 ---
 
-## DEV-006: View masternode list diff — **FAIL** (no UI implementation found)
+## DEV-006: View masternode list diff — reclassified N/A (Removed) in the corrected catalog
+
+**Reconciliation note**: PR892's real catalog (`docs/user-stories.md` in the PR892-build
+worktree) tags this story `[Removed]`, not `[Implemented]`. The FAIL finding below — no
+diff/history/monitoring UI found anywhere, confirmed via both UI exploration and a
+source-code search — is fully consistent with that reclassification. `progress.md` now
+tracks this as N/A; the write-up is kept for evidence.
+
+## DEV-006 (original write-up, kept for evidence): View masternode list diff — **FAIL** (no UI implementation found)
 
 **Persona:** Priya. Acceptance criteria: "Shows additions, removals, and changes between blocks."
 

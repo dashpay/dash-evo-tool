@@ -71,7 +71,18 @@ criterion — a confirmation dialog before broadcast — does not hold in this b
 SND-005 below, which fails for the same underlying reason (no pre-broadcast review step
 exists to show a fee estimate in).
 
-## SND-002: Send Dash from single-key wallet — FAIL (product limitation, explicit typed error)
+## SND-002: Send Dash from single-key wallet — reclassified N/A (Gap) in the corrected catalog
+
+**Reconciliation note**: PR892's real catalog (`docs/user-stories.md` in the PR892-build
+worktree, not the doc originally used for this campaign's first pass) tags this story
+`[Gap]`, not `[Implemented]`. The FAIL finding below — sending is explicitly and
+consistently disabled for single-key wallets, with a dedicated typed error
+(`SingleKeyWalletsUnsupported`) — is fully consistent with that reclassification: this is a
+genuinely unimplemented feature, not a bug in an implemented one. `progress.md` now tracks
+this as N/A; the write-up below is kept as-is since it's still the accurate, evidence-backed
+description of current behavior.
+
+## SND-002 (original write-up, kept for evidence): Send Dash from single-key wallet — FAIL (product limitation, explicit typed error)
 
 Steps:
 1. Generated a fresh zero-balance receiving address on `QA Wallet 1` (index 61,

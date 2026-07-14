@@ -106,9 +106,19 @@ Verdict: **PASS**. All three options apply immediately with no restart. Left the
 **System** (matching the "previous theme" fallback, currently rendering Light) at the end
 of this pass.
 
-## NET-005: Toggle developer mode — PASS
+## NET-005: Unlock advanced features by interface mode — PASS
 
-Acceptance criteria: "Toggles visibility of advanced UI elements."
+**Reconciliation note**: this story was retitled from "Toggle developer mode" to "Unlock
+advanced features by interface mode" in the corrected PR892 catalog, with acceptance
+criteria now emphasizing that feature availability is **monotonic** across Default → Expert
+→ Developer (anything a lower mode can do, a higher mode can too). The test below already
+demonstrates exactly this progressive-disclosure behavior; kept as PASS with no re-test
+needed. See also **NET-006** (new, distinct story: choosing/persisting the interface mode
+itself, including Welcome-screen consistency) — not yet tested, tracked separately in
+`progress.md`.
+
+Acceptance criteria (original wording, still accurate to what was tested): "Toggles
+visibility of advanced UI elements."
 
 Steps:
 1. Settings > Networks > Interface mode: three-way radio, Default view / Expert view /
@@ -159,7 +169,16 @@ platform-wallet migration, making a manual "Core Only" refresh meaningless. This
 the user-story text has drifted from an architecture change rather than a real product gap;
 worth a documentation update, not a code fix.
 
-## NET-008: Select Core backend mode — FAIL
+## NET-008: Select Core backend mode — reclassified N/A (Removed) in the corrected catalog
+
+**Reconciliation note**: PR892's real catalog (`docs/user-stories.md` in the PR892-build
+worktree) tags this story `[Removed]`, not `[Implemented]`. The FAIL finding below — the
+RPC/SPV backend selector was deliberately deleted as part of the platform-wallet migration,
+confirmed via source (`_reserved_core_backend_mode` retired field, `any_rpc_backend()`
+hardcoded `false`) — is fully consistent with that reclassification. `progress.md` now
+tracks this as N/A; the write-up is kept for evidence.
+
+## NET-008 (original write-up, kept for evidence): Select Core backend mode — FAIL
 
 Acceptance criteria: "SPV for light sync, RPC for full node, Auto for app-selected."
 
@@ -274,10 +293,19 @@ forbidden-word list there) — this should read as neutral consumer language (e.
 
 Acceptance criteria: "Available only for Devnet and Testnet. Clears cached Platform state."
 
-This was the last story in the entire 123-story catalog, deliberately reserved for the very
-end since it is destructive/state-resetting against the same data directory every other
-category in this campaign depends on (`QA Wallet 1`'s funded balance, confirmed transaction
-history, and every prior FAIL/BLOCKED repro's evidence trail all live there).
+**Reconciliation note**: the original write-up below described this as "the last story in
+the entire 123-story catalog" — that count is superseded (see `progress.md`'s header and
+`summary-report.md`'s methodology section for the corrected 175-story PR892 catalog). The
+substance is unchanged: this is still a destructive, state-resetting story, and it is still
+being deliberately deferred to the very end — now alongside two newly-identified destructive
+siblings, **NET-019** ("Clear all local data for a network") and **NET-020** ("Clear cached
+SPV data to force a resync"), which map to the same "Clear Testnet Database" / "Clear SPV
+Data" controls referenced below. All three are grouped as the final destructive pass.
+
+This was reserved for the very end since it is destructive/state-resetting against the same
+data directory every other category in this campaign depends on (`QA Wallet 1`'s funded
+balance, confirmed transaction history, and every prior FAIL/BLOCKED repro's evidence trail
+all live there).
 
 With every other story complete, an attempt was made to reach the control (Settings >
 Networks > Advanced Settings > "Clear Testnet Database" / "Clear SPV Data" — the two buttons
@@ -299,12 +327,13 @@ direct file deletion, a different UI path, or repeated retries).
 
 **Verdict: BLOCKED.** Reasoning: this is a deliberately irreversible action against the
 campaign's shared, evidence-bearing data directory, and the agent permission system requires
-explicit human authorization to proceed — which is unavailable in this unattended run. All
-122 other stories in the catalog are complete; this is the sole exception, and it was always
-expected to need special handling as the final, destructive step (see `CAMPAIGN-CONTEXT.md`'s
-original ordering rule: *"Test them LAST, only after every other testable story is done"* —
-that condition is now met, but running it destructively without a human in the loop was
-correctly judged unsafe by the permission system regardless).
+explicit human authorization to proceed — which is unavailable in this unattended run. This
+was always expected to need special handling as one of the final, destructive steps (see
+`CAMPAIGN-CONTEXT.md`'s original ordering rule: *"Test them LAST, only after every other
+testable story is done"*) — running it destructively without a human in the loop was
+correctly judged unsafe by the permission system regardless. NET-019 and NET-020 (see
+reconciliation note above) are expected to hit the same permission gate when their turn
+comes, for the same reason.
 
 **To complete this story**: a human (or an agent explicitly authorized for this one action)
 should, from a fresh vantage point with nothing else depending on the current data dir state:
@@ -323,4 +352,7 @@ should, from a fresh vantage point with nothing else depending on the current da
 ---
 
 *All assigned NET stories (NET-002 through NET-011, NET-015) now accounted for. NET-011 is
-BLOCKED, not skipped — see above for why and how to complete it.*
+BLOCKED, not skipped — see above for why and how to complete it. NET-005 was retitled and
+NET-008 was reclassified N/A in the corrected 175-story catalog (see reconciliation notes
+above); NET-006, NET-016 through NET-021, and NET-012 through NET-014 are tracked separately
+in `progress.md` — most still pending as of this reconciliation pass.*

@@ -331,7 +331,13 @@ WAL-022).
 
 Verdict: **PASS**.
 
-## WAL-022: View system accounts in developer mode — PASS (scope slightly broader than worded)
+## WAL-022: View system accounts in the Detailed view — PASS (scope slightly broader than worded)
+
+**Reconciliation note**: this story's title was updated from "View system accounts in
+developer mode" to "View system accounts in the Detailed view" in the corrected PR892
+catalog (`docs/user-stories.md`) — same underlying story, same test below; the retitle just
+better matches the observed gating (System tab is hidden only in Default view, not gated
+strictly to Developer mode — see the PASS reasoning below, which already called this out).
 
 Steps: confirmed via Settings > Networks > Interface mode (Default / Expert / Developer)
 that the System tab is visible in **both Expert and Developer view**, and confirmed

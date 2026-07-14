@@ -1,13 +1,34 @@
 # PR892 User-Story QA — Progress Checklist
 
-Tracks completion of every story in `docs/user-stories.md` against the PR892 build. One line per story.
+Tracks completion of every story in **PR892's own `docs/user-stories.md`**
+(`/data/git-worktrees/home-ubuntu-git-dash-evo-tool-2-pr892-build/docs/user-stories.md` @
+commit `57195d54`) against the PR892 build. One line per story.
 
-Verdicts: PASS / FAIL / BLOCKED (reason) / N/A (Gap/Superseded/Removed — not implemented, no testing needed).
+Verdicts: PASS / FAIL / BLOCKED (reason) / N/A (Gap/Superseded/Removed — not implemented, no
+testing needed).
 
-**Note:** the source brief for this campaign referenced 152 stories across categories WAL/SND/ALK/IDN/DPN/DPY/TOK/DOC/DEV/NET/MCP/UX/IDH/MN. The actual `docs/user-stories.md` at the PR892 base (`v1.0-dev`) contains 123 stories (112 `[Implemented]`, 11 `[Gap]`) across only WAL/SND/ALK/IDN/DPN/DPY/TOK/DOC/DEV/NET/MCP — no UX, IDH, or MN category exists in this document version. Masternode/evonode aspects are covered under IDN-003 and DEV-006. Proceeding with the document as it actually exists.
+**Reconciliation note (2026-07-14, post-initial-sweep):** the first pass of this campaign was
+run against `docs/user-stories.md` in the *qa-docs* worktree (based on `v1.0-dev`, 123
+stories) — this was a coordinator pointing error, not a stale-doc issue as originally
+reported below. PR892's real catalog is a **superset**: 175 stories (155 `[Implemented]`, 17
+`[Gap]`, 2 `[Removed]`, 1 `[Superseded by MN-001]`), adding three new categories (UX, IDH,
+MN) plus new/retitled/reclassified stories within existing categories. This file has been
+reconciled against the real PR892 doc: every story tested in the first pass whose definition
+is unchanged keeps its original verdict; stories reclassified to Gap/Removed/Superseded are
+marked N/A (with a note where the original FAIL finding is still informative — e.g. a story
+now tagged Gap because the feature genuinely isn't implemented, which is exactly what testing
+found); genuinely new or redefined stories are unchecked, pending testing. See
+`summary-report.md`'s methodology section for full detail, including a second, unrelated
+incident (a shared-build-path binary clobber) also noted there.
 
-**Totals:** 123 stories total — 112 `[Implemented]` (to test), 11 `[Gap]` (N/A, skip).
+**Also note**: the source doc has a genuine duplicate ID — `IDN-013` is used for two
+different stories ("Password-protect an identity's signing keys (SEC-001)" and "Top up
+identity from Platform addresses"). Tracked here as `IDN-013a` and `IDN-013b` respectively to
+disambiguate; flagged as a documentation defect worth fixing upstream in `docs/user-stories.md`.
 
+**Totals:** 175 stories total (176 tracked lines here due to the IDN-013 duplicate) — 155
+`[Implemented]` (to test), 17 `[Gap]`, 2 `[Removed]`, 1 `[Superseded]` (20 N/A, no testing
+needed).
 
 ## WAL
 
@@ -27,30 +48,40 @@ Verdicts: PASS / FAIL / BLOCKED (reason) / N/A (Gap/Superseded/Removed — not i
 - [x] WAL-014: Label addresses — N/A (Gap, not implemented)
 - [x] WAL-015: Create throwaway wallet without mnemonic backup — N/A (Gap, not implemented)
 - [x] WAL-016: View transaction history — PASS (PR892 cold-boot regression test confirmed fixed)
-- [x] WAL-017: Fund Platform address from wallet — FAIL (asset-lock coin selection: "No UTXOs available for selection" despite funded wallet)
-- [x] WAL-018: Fund Platform address from asset lock — BLOCKED (no asset lock can ever be created due to WAL-017 bug)
-- [x] WAL-019: Transfer credits between Platform addresses — BLOCKED (no Platform address ever holds balance due to WAL-017 bug)
+- [x] WAL-017: Fund Platform address from wallet — FAIL (asset-lock coin selection: "No UTXOs available for selection" despite funded wallet; later shown transient/non-persistent, see ALK.md)
+- [x] WAL-018: Fund Platform address from asset lock — BLOCKED (no asset lock could be created at test time due to WAL-017 bug)
+- [x] WAL-019: Transfer credits between Platform addresses — BLOCKED (no Platform address held balance at test time)
 - [x] WAL-020: Withdraw from Platform address to Core — BLOCKED (same root cause as WAL-019)
 - [x] WAL-021: Navigate wallet accounts via tabs — PASS
-- [x] WAL-022: View system accounts in developer mode — PASS (System tab gated on "not Default view", i.e. Expert or Developer)
+- [x] WAL-022: View system accounts in the Detailed view — PASS (title updated from "developer mode" to "the Detailed view" in the reconciled doc; same underlying test — System tab gated on "not Default view")
 - [x] WAL-023: Collapsible transaction history — PASS
 - [x] WAL-024: Collapsible balance breakdown — PASS
+- [ ] WAL-025: Restore a password-protected imported key after an update
+- [ ] WAL-026: Unlock a passphrase-protected vault at startup
+- [ ] WAL-027: Balance health check after syncing
+- [ ] WAL-028: Switch the active wallet from the top-nav pill on the Wallets tab
+- [ ] WAL-029: View and copy my shielded receive address
+- [x] WAL-030: Inspect shielded note details — N/A (Gap, not implemented)
+- [x] WAL-031: Single-key wallet balance and UTXOs update automatically — N/A (Gap, not implemented)
 
 ## SND
 
 - [x] SND-001: Send Dash to an address — PASS (nav confirmed; full E2E send now completed — but no confirmation dialog appears before broadcast, see SND-005)
-- [x] SND-002: Send Dash from single-key wallet — FAIL (send disabled for SK wallets; explicit typed error `SingleKeyWalletsUnsupported`)
+- [x] SND-002: Send Dash from single-key wallet — N/A (reclassified to Gap in the reconciled doc; original testing found sending explicitly disabled for single-key wallets with a typed `SingleKeyWalletsUnsupported` error, consistent with — and likely the reason for — this reclassification; see scenarios/SND.md)
 - [x] SND-003: Receive Dash with QR code — FAIL (Receive button inert, no QR shown)
 - [x] SND-004: Send to a DPNS username — N/A (Gap, not implemented)
 - [x] SND-005: See fee estimate before confirming send — FAIL (no fee estimate or confirmation dialog anywhere pre-broadcast; Max silently deducts an undisplayed fee)
 - [x] SND-006: Send to multiple recipients — PASS (add/remove recipients, single tx broadcast confirmed on-chain)
 - [x] SND-007: Shield DASH from Core wallet — FAIL ("Invalid output address" on submit; root cause disclosed in-app as "Shielded sending is not available on this network yet")
 - [x] SND-008: Top up identity from Send screen — BLOCKED (no identity exists yet — IDN not run; Identity-destination UI recognition partially verified)
-- [x] SND-009: Shield credits from Platform address — BLOCKED (WAL-017: no Platform address ever holds balance)
+- [x] SND-009: Shield credits from Platform address — BLOCKED (WAL-017: no Platform address held balance at test time)
 - [x] SND-010: Withdraw from shielded pool to Core address — BLOCKED (shielded balance always 0; no "Shielded Pool" source option exposed in Send screen)
 - [x] SND-011: Transfer identity credits to another identity — BLOCKED (no identity exists yet — IDN not run)
 - [x] SND-012: Withdraw identity credits to Core address — BLOCKED (same reasoning as SND-011)
 - [x] SND-013: Transfer identity credits to Platform address — BLOCKED (same reasoning as SND-011)
+- [ ] SND-014: Send maximum from a Core wallet
+- [ ] SND-015: Unshield credits to a Platform address
+- [ ] SND-016: Send privately within the shielded pool
 
 ## ALK
 
@@ -71,20 +102,29 @@ Verdicts: PASS / FAIL / BLOCKED (reason) / N/A (Gap/Superseded/Removed — not i
 - [x] IDN-002: Load existing identity by ID — FAIL (ID+key "Load Identity" button silently
       hangs with zero feedback; sibling tabs on the same screen — "From my wallet", "My
       username" — degrade gracefully with clean typed/generic errors)
-- [x] IDN-003: Load evonode/masternode identity — FAIL (same silent-hang defect class as
-      IDN-002 on "Load masternode"; ProTxHash format validation and node-type toggle both PASS)
+- [x] IDN-003: Load evonode/masternode identity — N/A (reclassified to `[Superseded by
+      MN-001]` in the reconciled doc; original FAIL finding — same silent-hang defect class
+      as IDN-002 — carried forward as context for whoever tests MN-001, which now owns this
+      capability)
 - [x] IDN-004: Top up identity credits — BLOCKED (no identity reachable — see IDN-001/002/003)
 - [x] IDN-005: Withdraw credits to Core address — BLOCKED (same reasoning as IDN-004)
 - [x] IDN-006: Transfer credits between identities — BLOCKED (same reasoning as IDN-004)
 - [x] IDN-007: Add key to identity — BLOCKED (same reasoning as IDN-004)
 - [x] IDN-008: View identity keys and details — BLOCKED (same reasoning as IDN-004)
+- [ ] IDN-013a: Password-protect an identity's signing keys (SEC-001) — *disambiguated ID,
+      see duplicate-ID note above; this is the story between IDN-008 and IDN-009 in the doc*
 - [x] IDN-009: Refresh identity state — BLOCKED (same reasoning as IDN-004)
 - [x] IDN-010: Search identity by DPNS name — BLOCKED (dispatches and fails cleanly on the
       known masternode-list/quorum-sync error, same signature as DEV.md)
 - [x] IDN-011: Bulk identity creation — N/A (Gap, not implemented)
 - [x] IDN-012: Register identity from Platform addresses — BLOCKED (confirmed implemented and
       correctly gated in source; live Platform-balance cache never populates in this session)
-- [x] IDN-013: Top up identity from Platform addresses — BLOCKED (no identity reachable)
+- [x] IDN-013b: Top up identity from Platform addresses — BLOCKED (no identity reachable;
+      *disambiguated ID, see duplicate-ID note above — this is the story in its expected
+      numeric position after IDN-012*)
+- [ ] IDN-014: Fund identity by receiving a deposit to a shown QR/address
+- [ ] IDN-015: Automatic identity discovery after sync
+- [ ] IDN-016: Identities and their keys preserved across an app upgrade
 
 ## DPN
 
@@ -92,12 +132,14 @@ Verdicts: PASS / FAIL / BLOCKED (reason) / N/A (Gap/Superseded/Removed — not i
       name-format validation + fee estimate confirmed implemented via source)
 - [x] DPN-002: View owned usernames — BLOCKED (no identity reachable)
 - [x] DPN-003: View active name contests — BLOCKED (no masternode/evonode identity
-      reachable — IDN-003)
+      reachable — IDN-003 / MN-001)
 - [x] DPN-004: View past name contests — BLOCKED (same as DPN-003)
 - [x] DPN-005: Vote on contested names — BLOCKED (same as DPN-003; acceptance criteria
       itself requires a masternode/evonode identity)
 - [x] DPN-006: Schedule votes — BLOCKED (same as DPN-003)
 - [x] DPN-007: Batch voting across contests — BLOCKED (same as DPN-003)
+- [ ] DPN-008: Set an alias for an owned username
+- [ ] DPN-009: Scheduled votes preserved across an app upgrade
 
 ## DPY
 
@@ -114,6 +156,9 @@ Verdicts: PASS / FAIL / BLOCKED (reason) / N/A (Gap/Superseded/Removed — not i
       unreachable)
 - [x] DPY-010: Remove a contact — N/A (Gap, not implemented)
 - [x] DPY-011: Auto-accept contact requests — BLOCKED (no identity reachable)
+- [ ] DPY-012: Detect payments received from contacts
+- [ ] DPY-013: View contacts and avatars offline
+- [ ] DPY-014: Cancel a sent contact request
 
 ## TOK
 
@@ -139,6 +184,7 @@ Verdicts: PASS / FAIL / BLOCKED (reason) / N/A (Gap/Superseded/Removed — not i
 - [x] TOK-016: Estimate perpetual token rewards — BLOCKED (no tracked token to estimate for)
 - [x] TOK-017: Pay for document operations with tokens — BLOCKED (transitively, via DOC's
       contract-add environment blocker)
+- [ ] TOK-018: Stop tracking a token balance
 
 ## DOC
 
@@ -161,11 +207,14 @@ Verdicts: PASS / FAIL / BLOCKED (reason) / N/A (Gap/Superseded/Removed — not i
 ## DEV
 
 - [x] DEV-001: Decode state transitions — PASS
-- [x] DEV-002: View proof request log — FAIL (no UI implementation found; only a failure-only tracing target, no browsable log)
+- [x] DEV-002: View proof request log — N/A (reclassified to Gap in the reconciled doc;
+      original FAIL finding — no UI implementation, only a failure-only tracing target —
+      consistent with this reclassification)
 - [x] DEV-003: Inspect ZK proofs — FAIL (Proof deserializer works; GroveSTARK gen/verification deliberately hidden from all UI navigation)
 - [x] DEV-004: View document and contract JSON — BLOCKED (Contract deserializer PASS; Document deserializer's contract-loading path blocked by known Testnet masternode-list/quorum-sync issue, see ALK.md)
 - [x] DEV-005: View Platform info — FAIL (2/8 sub-tools work — Basic Platform Info, Validator Set Info; rest blocked by known masternode-list-sync issue)
-- [x] DEV-006: View masternode list diff — FAIL (no UI implementation found; Masternodes screen only supports per-node load-by-ProTxHash, not list diff/monitoring)
+- [x] DEV-006: View masternode list diff — N/A (reclassified to Removed in the reconciled
+      doc; original FAIL finding — no UI implementation found — consistent with the removal)
 - [x] DEV-007: Check any address balance — BLOCKED (address-format validation PASS; balance fetch blocked by known masternode-list-sync issue)
 - [x] DEV-008: Mine blocks on Regtest — BLOCKED (Regtest-only, no regtest node running in this environment)
 
@@ -179,25 +228,40 @@ Verdicts: PASS / FAIL / BLOCKED (reason) / N/A (Gap/Superseded/Removed — not i
       with autodetection, but zero UI surface to view/edit/validate it; no `SystemTask`
       variant to update it)
 - [x] NET-004: Select theme — PASS
-- [x] NET-005: Toggle developer mode — PASS
-- [x] NET-006: Select user mode — N/A (Gap, not implemented)
+- [x] NET-005: Unlock advanced features by interface mode — PASS (retitled/redefined from
+      "Toggle developer mode" in the reconciled doc; original testing — Default view hides
+      Masternodes nav + several Advanced Settings sections, Developer view adds a "Developer
+      Tools" section, Expert view sits in between — already demonstrates the monotonic
+      feature-unlock behavior this story now describes; carried forward as PASS, revisit only
+      if a future pass wants to explicitly re-verify the "monotonic" wording)
+- [ ] NET-006: Select interface mode — *status changed from `[Gap]` ("Select user mode") to
+      `[Implemented]` in the reconciled doc — this is new testable scope, not a carry-forward;
+      needs the Welcome-screen-vs-Settings-screen consistency and persistence-across-restart
+      checks specifically*
 - [x] NET-007: Granular refresh controls — PASS (partial; only 2 modes exist —
       "Core + Platform" / "Platform Only" — not the 3 described in the story text; see note)
-- [x] NET-008: Select Core backend mode — FAIL (explicitly retired in code: "chain sync is
-      SPV-only now"; no SPV/RPC/Auto selector exists anywhere in the UI)
+- [x] NET-008: Select Core backend mode — N/A (reclassified to Removed in the reconciled doc;
+      original FAIL finding — explicitly retired in code, "chain sync is SPV-only now" —
+      consistent with the removal)
 - [x] NET-009: Toggle ZMQ — FAIL (`disable_zmq` field exists in settings model, zero UI
       surface, no `SystemTask` variant to update it)
 - [x] NET-010: Onboarding wizard — PASS
 - [x] NET-011: Wipe Platform data — BLOCKED (deliberately not run: destructive/irreversible
       against the campaign's shared, evidence-bearing data dir; the agent permission system
       independently halted the attempt and requires explicit human confirmation — see
-      `scenarios/NET.md` and `summary-report.md` for details)
+      `scenarios/NET.md` and `summary-report.md` for details; test LAST alongside NET-019/020)
 - [x] NET-012: Configure Devnet through the UI — N/A (Gap, not implemented)
 - [x] NET-013: Testnet faucet integration — N/A (Gap, not implemented)
 - [x] NET-014: Bulk fund addresses — N/A (Gap, not implemented)
 - [x] NET-015: Use Dash Evo Tool without a local Dash Core node — PASS (with a UX note:
       the default-view global banner still says "SPV sync failed", leaking jargon the
       story says the everyday-user UI should avoid)
+- [ ] NET-016: Refresh Platform (DAPI) node list
+- [ ] NET-017: View live connection status (indicator and Platform endpoints)
+- [ ] NET-018: Auto-start SPV sync on startup
+- [ ] NET-019: Clear all local data for a network — **destructive — test LAST, alongside NET-011/020**
+- [ ] NET-020: Clear cached SPV data to force a resync — **destructive — test LAST, alongside NET-011/019**
+- [ ] NET-021: App settings preserved across an app upgrade
 
 ## MCP
 
@@ -213,3 +277,38 @@ Verdicts: PASS / FAIL / BLOCKED (reason) / N/A (Gap/Superseded/Removed — not i
       handling, network-mismatch guard, dynamic tool discovery all work correctly; carries
       the same wallet-hydration caveat as MCP-001 but that is a wallet-tooling defect, not
       a transport/protocol defect)
+- [ ] MCP-003: Load a masternode/evonode identity via CLI
+- [ ] MCP-004: Withdraw masternode/evonode credits via CLI
+
+## UX
+
+- [ ] UX-001: Blocking progress overlay for unsafe-to-interrupt operations
+- [ ] UX-002: Blocking SPV-sync overlay with a "continue in the background" escape
+- [ ] UX-003: Global wallet/identity switcher across all tabs
+- [x] UX-004: One-time post-migration disclosure notice — N/A (Gap, not implemented)
+
+## IDH
+
+- [ ] IDH-001: First-time identity setup
+- [ ] IDH-002: Identity home at a glance
+- [ ] IDH-003: Multi-identity switching
+- [ ] IDH-004: Opt in to DashPay social profile
+- [x] IDH-005: Bulk identity creation — N/A (Gap, not implemented)
+- [x] IDH-006: Unified activity timeline — N/A (Gap, not implemented)
+- [ ] IDH-007: Manage contacts from the Identities hub
+- [ ] IDH-008: Name an identity on this device
+
+## MN
+
+- [ ] MN-001: Load a masternode by keys
+- [ ] MN-002: See my masternodes at a glance
+- [ ] MN-003: Open a masternode and vote
+- [ ] MN-004: Remove a masternode
+- [ ] MN-005: Keep the everyday surface clean
+- [ ] MN-006: Encrypt my node keys at load time
+- [ ] MN-007: Withdraw a node's credits
+- [ ] MN-008: Manage a node's keys
+- [ ] MN-009: Claim an evonode's token rewards
+- [ ] MN-010: Keep the Masternodes tab consistent across a network switch
+- [ ] MN-011: Refresh masternode and voting state
+- [ ] MN-012: Switch wallet/identity from the Masternodes header

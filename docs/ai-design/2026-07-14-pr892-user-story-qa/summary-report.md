@@ -1,16 +1,23 @@
 # PR892 User-Story QA — Summary Report
 
-**Status: COMPLETE.** All 123 stories in `docs/user-stories.md` are accounted for (see
-`progress.md` for the authoritative per-story checklist). One story (NET-011) is BLOCKED by
-design — see its dedicated section below — rather than tested; every other story was either
-executed end-to-end or definitively marked BLOCKED/FAIL/N-A with reasoning.
+**Status: IN PROGRESS (reopened after a catalog correction).** The campaign's first pass
+completed all 123 stories from an incorrect source catalog (see "Methodology notes" below).
+PR892's real catalog — `docs/user-stories.md` in the PR892-build worktree — has **175
+stories**; `progress.md` has been reconciled against it. Everything below that predates the
+reconciliation (verdicts, counts, the discrepancy note) reflects the original 123-story pass;
+it is being updated incrementally as the corrected catalog's new/changed stories are tested.
+See "Methodology notes" for what changed and why, and `progress.md` for the live,
+authoritative per-story checklist (175 stories: 155 `[Implemented]` to test, 20 N/A).
 
 Build under test: PR892 (`fix(wallets): show transaction history that predates the current
 session`) @ commit `57195d54`, built from worktree
 `/data/git-worktrees/home-ubuntu-git-dash-evo-tool-2-pr892-build`.
-Binary: `/data/target/debug/dash-evo-tool`. Data dir (isolated):
-`/data/tmp/det-qa-pr892-data`. Network: Testnet (Mainnet used only for a handful of
-cross-checks, explicitly noted where relevant).
+Binary: a private, hash-verified copy built directly from this worktree
+(`/data/tmp/det-qa-pr892-bin-myown/dash-evo-tool`, sha256
+`2931220e94871a0454ac56a43092aa87246b5a590d917645c025ddb1c7f9271a`) — see "Methodology
+notes" for why the shared `/data/target/debug/dash-evo-tool` path is no longer used. Data dir
+(isolated): `/data/tmp/det-qa-pr892-data`. Network: Testnet (Mainnet used only for a handful
+of cross-checks, explicitly noted where relevant).
 
 ## PR892 regression fix — CONFIRMED FIXED
 
@@ -207,14 +214,19 @@ QA-only rules.
 
 ## NET-011 (Wipe Platform data) — BLOCKED by design, not tested
 
-The very last story in the catalog. Deliberately reserved for the end since it is
-destructive against the same data directory every other category's evidence lives in. With
-everything else complete, an attempt was made to reach the control — the very first click
-(merely expanding an accordion, not yet a destructive button) was halted by the Claude Code
-agent permission system, which explicitly recommended deferring to a human rather than
-attempting to route around it. No workaround was attempted. Full reasoning and a step-by-step
-completion guide for a human (or an explicitly-authorized follow-up) are in
-`scenarios/NET.md` under NET-011.
+Reserved for the end of the campaign since it is destructive against the same data directory
+every other category's evidence lives in. With everything else in the original 123-story
+pass complete, an attempt was made to reach the control — the very first click (merely
+expanding an accordion, not yet a destructive button) was halted by the Claude Code agent
+permission system, which explicitly recommended deferring to a human rather than attempting
+to route around it. No workaround was attempted. Full reasoning and a step-by-step completion
+guide for a human (or an explicitly-authorized follow-up) are in `scenarios/NET.md` under
+NET-011.
+
+The corrected 175-story catalog adds two more destructive stories — **NET-019** ("Clear all
+local data for a network") and **NET-020** ("Clear cached SPV data to force a resync") — which
+map to the same "Clear Testnet Database" / "Clear SPV Data" controls NET-011 was blocked on.
+All three are grouped as a single final destructive pass, still pending human authorization.
 
 ## UX observations (non-blocking, don't affect verdicts above)
 
@@ -237,16 +249,53 @@ completion guide for a human (or an explicitly-authorized follow-up) are in
   This reads as a documentation-vs-architecture drift, not a product gap — worth a
   `user-stories.md` wording update.
 
-## Discrepancy vs. the campaign brief
+## Methodology notes
 
-The task brief referenced 152 stories across categories WAL/SND/ALK/IDN/DPN/DPY/TOK/DOC/
-DEV/NET/MCP/UX/IDH/MN. The actual `docs/user-stories.md` at the PR892 base (`v1.0-dev`)
-contains 123 stories (112 `[Implemented]`, 11 `[Gap]`) across only WAL/SND/ALK/IDN/DPN/DPY/
-TOK/DOC/DEV/NET/MCP — no UX, IDH, or MN category exists in this document version.
-Masternode/evonode aspects that would fall under "MN" are covered by IDN-003 (Load evonode/
-masternode identity) and DEV-006 (View masternode list diff), both in-scope and tracked
-under their actual categories. This campaign proceeded against the document as it actually
-exists.
+### Story-catalog correction (175 stories, not 123)
+
+The campaign's first pass tested against `docs/user-stories.md` in the **qa-docs worktree**
+(this report's own worktree), which tracks `v1.0-dev` — 123 stories (112 `[Implemented]`,
+11 `[Gap]`). That was a coordinator pointing error, not a stale-doc problem: the catalog that
+should have been used from the start is the one **inside the code actually under test** —
+`docs/user-stories.md` in the PR892-build worktree
+(`/data/git-worktrees/home-ubuntu-git-dash-evo-tool-2-pr892-build`, verified via
+`git show 57195d54:docs/user-stories.md`). PR892 is ahead of `v1.0-dev`, not behind it: its
+real catalog is a strict superset — **175 stories** (155 `[Implemented]`, 17 `[Gap]`, 2
+`[Removed]`, 1 `[Superseded by MN-001]`) — spanning the original 11 categories plus three new
+ones (**UX**, **IDH**, **MN**) that don't exist in the `v1.0-dev` version of the document at
+all. `progress.md` has been reconciled: every story tested in the first pass whose
+definition is unchanged keeps its original verdict; a handful (SND-002, IDN-003, DEV-002,
+DEV-006, NET-008) were reclassified `[Gap]`/`[Removed]`/`[Superseded]` in the real catalog —
+in every one of those cases the original FAIL finding (no implementation found, or an
+explicit not-supported error) is fully consistent with the reclassification, so nothing here
+was invalidated, only relabeled correctly. The remaining ~20 new/redefined stories are
+unchecked in `progress.md`, pending testing. The verdict counts, FAIL list, and BLOCKED
+analysis elsewhere in this report predate this reconciliation and describe the first
+123-story pass; they will be updated as the corrected catalog's new scope is worked through.
+
+Also worth flagging: the corrected catalog itself has a genuine documentation defect — the ID
+`IDN-013` is used for two different, unrelated stories ("Password-protect an identity's
+signing keys (SEC-001)" and "Top up identity from Platform addresses"). Tracked
+disambiguated as `IDN-013a`/`IDN-013b` in `progress.md`; worth a fix in
+`docs/user-stories.md` upstream.
+
+### Binary-provenance incident (brief window, not re-tested)
+
+Partway through the reconciliation above, a second, unrelated issue surfaced: the shared,
+machine-wide cargo target dir (`/data/target`, used by multiple concurrent worktrees/sessions
+on this box) had its `dash-evo-tool` binary overwritten by an unrelated concurrent build for
+a period of roughly 18:30–19:00 UTC on 2026-07-14. Any testing run against
+`/data/target/debug/dash-evo-tool` during that window would have been exercising different
+code than PR892. Two things followed: (1) the binary this campaign launches from was switched
+to a private, hash-verified copy built directly from the known-clean PR892 worktree
+(`/data/tmp/det-qa-pr892-bin-myown/dash-evo-tool`, sha256
+`2931220e94871a0454ac56a43092aa87246b5a590d917645c025ddb1c7f9271a`) rather than the shared
+path, and every future relaunch in this campaign uses that copy; (2) per coordinator
+judgment, the affected window was assessed as low-risk (the concurrent builds sharing the box
+are other feature-branch variants of the same app, close enough that the exposure was brief
+and narrow) and was **deliberately not re-tested** — verdicts recorded during that stretch
+are kept as-is. No PR892 testing had actually landed in the clobbered window by the time it
+was caught, so in practice nothing was re-run or discarded either way.
 
 ## Recommendations
 

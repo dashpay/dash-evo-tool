@@ -28,9 +28,26 @@ local-only.**
 
 ## Environment
 
-- **Binary under test**: `/data/target/debug/dash-evo-tool`, built from PR892's head commit
-  `57195d54` (worktree `/data/git-worktrees/home-ubuntu-git-dash-evo-tool-2-pr892-build` —
-  do not touch its source; you should not need to rebuild).
+- **Binary under test**: `/data/tmp/det-qa-pr892-bin-myown/dash-evo-tool` — a private,
+  hash-verified copy built from PR892's head commit `57195d54` (worktree
+  `/data/git-worktrees/home-ubuntu-git-dash-evo-tool-2-pr892-build` — do not touch its
+  source; you should not need to rebuild). **Do NOT launch
+  `/data/target/debug/dash-evo-tool` directly** — that shared, machine-wide cargo target dir
+  is also used by other concurrent worktrees/sessions on this box and has previously been
+  silently overwritten by an unrelated build mid-campaign (see `summary-report.md`'s
+  "Methodology notes" for the incident). Before trusting any binary path, verify:
+  ```bash
+  sha256sum /data/tmp/det-qa-pr892-bin-myown/dash-evo-tool
+  # expect: 2931220e94871a0454ac56a43092aa87246b5a590d917645c025ddb1c7f9271a
+  ```
+  If that file is missing or the hash doesn't match, rebuild it yourself rather than trusting
+  an unverified path: confirm the PR892-build worktree is clean and on `57195d54`
+  (`git -C /data/git-worktrees/home-ubuntu-git-dash-evo-tool-2-pr892-build status --short`
+  and `git -C ... rev-parse HEAD`), run a plain `cargo build --bin dash-evo-tool` from that
+  worktree (no `CARGO_TARGET_DIR`/`--target-dir` override — that's blocked by a
+  cargo-discipline hook), then immediately `cp` the resulting
+  `/data/target/debug/dash-evo-tool` to your own private path before a concurrent session can
+  clobber it again, and confirm its sha256 before launching.
 - **Data dir (isolated, already has state)**: `DASH_EVO_DATA_DIR=/data/tmp/det-qa-pr892-data`.
   This machine also has a live, separate `~/.config/dash-evo-tool` in concurrent use by other
   unrelated work — never touch it, never launch without the `DASH_EVO_DATA_DIR` override.
@@ -43,10 +60,12 @@ local-only.**
   If yes, reuse it (find its window via `DISPLAY=:99 xdotool search --name "Dash Evo Tool"`,
   `windowactivate`, resize to `1260x780` with `xdotool windowsize` if it's still at the
   default 800×600 — the default is too small, many controls get cut off). If not running,
-  launch it fresh:
+  launch it fresh (using the private, hash-verified binary — see above, NOT the shared
+  `/data/target/debug/dash-evo-tool` path):
   ```bash
+  sha256sum /data/tmp/det-qa-pr892-bin-myown/dash-evo-tool   # confirm before every relaunch
   DISPLAY=:99 DASH_EVO_TOOL_ACCESSIBILITY=1 DASH_EVO_DATA_DIR=/data/tmp/det-qa-pr892-data \
-    nohup /data/target/debug/dash-evo-tool >/tmp/app-run.log 2>&1 &
+    nohup /data/tmp/det-qa-pr892-bin-myown/dash-evo-tool >/tmp/app-run.log 2>&1 &
   disown
   ```
   **Do not `kill` the app between stories unless a story specifically requires a restart**
@@ -130,8 +149,14 @@ this investigation and left in place — ignore it, it's not part of your test m
 
 ## Docs to read before starting
 
-- `docs/user-stories.md` (in this worktree) — the source of truth for acceptance criteria.
-  Read only the entries for your assigned category/categories.
+- `docs/user-stories.md` — **the source of truth for acceptance criteria is the copy in the
+  PR892-build worktree**
+  (`/data/git-worktrees/home-ubuntu-git-dash-evo-tool-2-pr892-build/docs/user-stories.md`,
+  175 stories), NOT the copy in this qa-docs worktree (which tracks `v1.0-dev` and is stale —
+  123 stories, missing the UX/IDH/MN categories and several newer/redefined stories; an
+  earlier coordinator misdirection pointed agents at the wrong copy, since corrected — see
+  `summary-report.md`'s "Methodology notes"). Read only the entries for your assigned
+  category/categories, from the PR892-build worktree copy.
 - `docs/ai-design/2026-07-14-pr892-user-story-qa/progress.md` — the live checklist, and your
   resumability checkpoint.
 - `docs/ai-design/2026-07-14-pr892-user-story-qa/scenarios/WAL.md`,

@@ -6,7 +6,8 @@
 //! needing a full `AppState` harness.
 
 use dash_evo_tool::app::{
-    MIGRATION_RETRY_ACTION_ID, MIGRATION_VOTES_ACK_ACTION_ID,
+    MIGRATION_IDENTITIES_ACK_ACTION_ID, MIGRATION_RETRY_ACTION_ID,
+    MIGRATION_UNREADABLE_ACK_ACTION_ID, MIGRATION_VOTES_ACK_ACTION_ID,
     migration_failed_with_unreadable_identities_text, migration_running_text,
     migration_unreadable_identities_and_votes_text, migration_unreadable_identities_text,
     migration_unreadable_votes_text,
@@ -216,27 +217,27 @@ fn unreadable_votes_banner_acknowledgement_enqueues_action() {
     );
 }
 
-/// The identity sibling of `unreadable_votes_banner_warns_without_a_retry_action`.
-/// A drain that landed but could not decode some identities warns, names the one
-/// action that recovers the keys, and offers NO "Retry now" — the rows are still in
-/// the previous version's storage and a re-read decodes them no better.
+/// The unreadable-identity warning is acknowledgeable, exactly like its vote
+/// sibling. It used to render as a sticky, action-less banner: the user was told
+/// their keys had not come across and given no way to say "I understand" — so the
+/// warning returned on every launch with no gesture that could ever retire it.
+/// Supersedes the pre-fix "warns without a retry action" coverage: it re-asserts
+/// the same "no Retry now" fact (the drain is done; a corrupt row decodes no
+/// better) and adds the acknowledgement round-trip the fix introduced.
 #[test]
-fn unreadable_identities_banner_warns_without_a_retry_action() {
-    let text = migration_unreadable_identities_text(3);
+fn unreadable_identities_banner_acknowledgement_enqueues_action() {
+    let text = migration_unreadable_identities_text(2);
     assert!(
         text.ends_with('.'),
         "banner copy must be a complete sentence for i18n extraction: `{text}`",
     );
-    assert!(
-        text.contains('3'),
-        "the copy must name how many identities were left behind: `{text}`",
-    );
 
     let label = text.clone();
     let mut harness = Harness::builder()
-        .with_size(egui::vec2(600.0, 200.0))
+        .with_size(egui::vec2(600.0, 220.0))
         .build_ui(move |ui| {
-            MessageBanner::set_global(ui.ctx(), label.clone(), MessageType::Warning);
+            let handle = MessageBanner::set_global(ui.ctx(), label.clone(), MessageType::Warning);
+            handle.with_action("Got it", MIGRATION_IDENTITIES_ACK_ACTION_ID);
             MessageBanner::show_global(ui);
         });
     harness.run();
@@ -249,38 +250,6 @@ fn unreadable_identities_banner_warns_without_a_retry_action() {
         harness.query_by_label("Retry now").is_none(),
         "a completed drain must not offer a retry the user cannot benefit from",
     );
-}
-
-/// Both DET-owned passes left rows behind. One Warning banner names both counts and
-/// both remedies, and carries the vote acknowledgement — the identity half recurs on
-/// every launch, so it must never be the reason a live vote deadline goes unseen.
-/// Still no "Retry now": neither corrupt row decodes better on a second pass.
-#[test]
-fn unreadable_identities_and_votes_banner_names_both_and_acknowledges() {
-    let text = migration_unreadable_identities_and_votes_text(3, 2);
-    assert!(
-        text.contains('3') && text.contains('2'),
-        "the copy must name both counts so neither signal is hidden: `{text}`",
-    );
-
-    let label = text.clone();
-    let mut harness = Harness::builder()
-        .with_size(egui::vec2(600.0, 240.0))
-        .build_ui(move |ui| {
-            let handle = MessageBanner::set_global(ui.ctx(), label.clone(), MessageType::Warning);
-            handle.with_action("Got it", MIGRATION_VOTES_ACK_ACTION_ID);
-            MessageBanner::show_global(ui);
-        });
-    harness.run();
-
-    assert!(
-        harness.query_by_label(text.as_str()).is_some(),
-        "the combined banner must render both remedies verbatim",
-    );
-    assert!(
-        harness.query_by_label("Retry now").is_none(),
-        "neither corrupt row decodes better on a retry, so no retry is offered",
-    );
     assert!(MessageBanner::take_action(&harness.ctx).is_none());
 
     harness.get_by_label("Got it").click();
@@ -288,8 +257,36 @@ fn unreadable_identities_and_votes_banner_names_both_and_acknowledges() {
 
     assert_eq!(
         MessageBanner::take_action(&harness.ctx).as_deref(),
-        Some(MIGRATION_VOTES_ACK_ACTION_ID),
-        "acknowledging retires the durable vote half of the combined warning",
+        Some(MIGRATION_IDENTITIES_ACK_ACTION_ID),
+        "the acknowledgement must reach the app loop, or the warning can never be retired",
+    );
+}
+
+/// The combined banner names both problems, so its single "Got it" must enqueue
+/// the combined acknowledgement — the one that retires BOTH durable records.
+/// Routing it to either single-signal ack would leave the other half to re-raise
+/// on the next launch, as a notice the user has already read. Supersedes the
+/// pre-fix coverage that routed this banner's "Got it" to the vote-only ack —
+/// that routing no longer matches the combined-ack design this ships.
+#[test]
+fn combined_unreadable_banner_acknowledgement_enqueues_the_combined_action() {
+    let text = migration_unreadable_identities_and_votes_text(2, 3);
+    let label = text.clone();
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(600.0, 260.0))
+        .build_ui(move |ui| {
+            let handle = MessageBanner::set_global(ui.ctx(), label.clone(), MessageType::Warning);
+            handle.with_action("Got it", MIGRATION_UNREADABLE_ACK_ACTION_ID);
+            MessageBanner::show_global(ui);
+        });
+    harness.run();
+
+    harness.get_by_label("Got it").click();
+    harness.run();
+
+    assert_eq!(
+        MessageBanner::take_action(&harness.ctx).as_deref(),
+        Some(MIGRATION_UNREADABLE_ACK_ACTION_ID),
     );
 }
 

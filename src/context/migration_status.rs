@@ -73,10 +73,10 @@ pub enum MigrationState {
     /// The wallet drain completed, but `count` legacy identities could not be
     /// decoded and did not come across — so the keys they held (a masternode's
     /// owner / voting key, say) are not loaded. Terminal and non-fatal: the
-    /// legacy rows are never deleted and the import sentinel stays unwritten,
-    /// so a later build with a fixed decoder retries automatically. Separate
-    /// from [`Self::SucceededWithUnreadableVotes`] because the remedy differs —
-    /// re-import a key, not re-schedule a vote.
+    /// legacy rows are never deleted, so they remain recoverable. Re-published
+    /// from a durable record on every launch until the user acknowledges it, and
+    /// separate from [`Self::SucceededWithUnreadableVotes`] because the remedy
+    /// differs — re-import a key, not re-schedule a vote.
     SucceededWithUnreadableIdentities { count: u32 },
     /// The wallet drain completed, but both DET-owned passes left undecodable
     /// rows behind on the same launch: `identities` legacy identities and
@@ -84,27 +84,28 @@ pub enum MigrationState {
     /// non-fatal — like the two single-signal variants it combines, and for the
     /// same reason: a corrupt row decodes no better on a retry.
     ///
-    /// It exists because neither signal may eat the other. The identity import
-    /// leaves its sentinel unwritten while any row fails to decode, so the
-    /// identity outcome is republished on *every* launch — which, with only the
-    /// single-signal variants available, would permanently outrank the vote
-    /// warning and cost the user a vote whose deadline is still live. One banner
-    /// names both remedies: load the identities again, re-schedule the votes.
+    /// It exists because neither signal may eat the other. Both warnings are
+    /// durable and re-published on every launch until acknowledged, so with only
+    /// the single-signal variants available the identity half would permanently
+    /// outrank the vote half and cost the user a vote whose deadline is still
+    /// live. One banner names both remedies instead: load the identities again,
+    /// re-schedule the votes.
     ///
-    /// The acknowledge action retires only the durable vote half (see
-    /// [`acknowledge_unreadable_votes`](crate::backend_task::migration::finish_unwire::acknowledge_unreadable_votes));
-    /// the identity half then keeps arriving as a plain
-    /// [`Self::SucceededWithUnreadableIdentities`] until a build with a fixed
-    /// decoder imports the rows.
+    /// Because that single banner names both problems, its single acknowledge
+    /// action retires *both* durable records (see
+    /// [`acknowledge_unreadable_votes`](crate::backend_task::migration::finish_unwire::acknowledge_unreadable_votes)
+    /// and
+    /// [`acknowledge_unreadable_identities`](crate::backend_task::migration::finish_unwire::acknowledge_unreadable_identities)).
     SucceededWithUnreadableIdentitiesAndVotes { identities: u32, votes: u32 },
     /// Both DET-owned passes are damaged on the same launch: the wallet drain
     /// landed, but `count` legacy identities could not be decoded AND the
     /// app-data import hit a hard failure. Rendered as a single retryable error
     /// banner naming both problems, so neither masks the other — the plain
     /// [`Self::SucceededWithUnreadableIdentities`] would have swallowed the
-    /// app-data failure and left the user no retry. Both the identity rows and
-    /// the app-data sentinel stay unwritten, so a retry (or the next launch)
-    /// re-attempts both. Terminal until then.
+    /// app-data failure and left the user no retry. The app-data sentinel stays
+    /// unwritten, so a retry (or the next launch) re-attempts that import; the
+    /// undecodable identity rows stay in the previous version's storage, named by
+    /// a durable warning. Terminal until then.
     ///
     /// A *hard* app-data failure is the only producer. An app-data pass that
     /// completed and merely left a later notice-record read failing is not one:

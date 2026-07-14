@@ -624,6 +624,14 @@ impl SecretAccess {
     /// prompt-free, so the last one out does the forgetting. Taking a lease does
     /// not itself promote anything — the caller promotes first (e.g. via
     /// [`Self::promote_hd_seed_with_passphrase`]), then leases the lifetime.
+    ///
+    /// **Refcounting is per lease *object*, not per `scope`.** Each call to
+    /// `lease()` mints an independent `Arc` with its own refcount — it does
+    /// NOT join an existing lease on the same scope. If two unrelated
+    /// consumers each call `lease(scope)` directly, the first one's lease
+    /// drops and forgets the secret while the second is still relying on it.
+    /// When a second consumer of an already-leased scope shows up, hand it a
+    /// **clone of the existing `SecretLease`** — don't call `lease()` again.
     pub fn lease(&self, scope: SecretScope) -> SecretLease {
         SecretLease(Arc::new(SecretLeaseInner {
             access: self.clone(),

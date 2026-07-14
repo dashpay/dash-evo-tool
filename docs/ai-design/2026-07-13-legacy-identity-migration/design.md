@@ -211,7 +211,7 @@ rehydrated on load. None of them need migrating.
 
 | Case | Behaviour | Rationale |
 |---|---|---|
-| **Row already in the k/v store** | Fetch the modern record. Reconcile **only when it holds no private keys at all** (a bare ProTxHash-only load): take the legacy key set and fill the missing masternode role associations, re-persist in place (`update_local_qualified_identity`), count `reconciled`. Any record that already holds keys is left untouched (`skipped_existing`). Alias is never merged. | Presence is not proof every key survived — a bare masternode load strands its owner/voting/payout keys in the legacy blob, uncounted, so the sentinel lands and never retries. But field *absence* alone cannot prove a partial load: an identity that already holds keys may be missing one because the user removed it ("Remove private key from DET"), and refilling from the stale blob would resurrect it; likewise a cleared alias. An empty key map is the one unambiguous "loaded without its keys" signal, and it also guarantees no protected key exists — so the reconcile can never trip `encode_identity_blob_vault_first`'s `IdentityKeyProtectionDowngrade` guard. A keyed-but-partial or protected identity is recovered instead through the interactive load (which has the identity password). |
+| **Row already in the k/v store** | Skip the row wholesale (`skipped_existing`). The present record is never re-persisted, and legacy-only keys are **not** reconciled into it. **Known limitation** — see below. | Field *absence* cannot be told apart from a deliberate removal: an identity missing a key may have had it removed by the user ("Remove private key from DET", no tombstone), and a cleared alias persists as `None`; refilling from the stale legacy blob would resurrect either. A protected identity would additionally trip `encode_identity_blob_vault_first`'s `IdentityKeyProtectionDowngrade` guard if a plaintext legacy key were merged in, failing the whole pass. Provenance the model does not carry would be needed to reconcile safely, so the importer stays conservative and skips. |
 | **Linked wallet failed to migrate / absent** | Import the identity anyway, **preserving `wallet_hash` + `wallet_index` verbatim**. Log at `warn`. | The link is what `load_local_qualified_identities_for_wallet` uses to re-attach the identity when the wallet is later restored or unlocked. Nulling it would orphan the identity permanently. A protected (locked) wallet is the *normal* case here — its seed is in the vault but it is not in `ctx.wallets` until the user unlocks. |
 | **`data IS NULL` or `is_local = 0`** | Skip silently, do not count as failure. | Not user identity data; v0.9.3's own readers ignore these rows. |
 | **`data` fails to decode** | Count `unreadable`, log at `warn` with the identity id, **withhold the sentinel**, publish a terminal warning state. Do **not** fail the pass. | Diverges from the scheduled-vote policy (which writes the sentinel anyway) on purpose: a corrupt vote row is unrecoverable, but an undecodable identity blob may be a *decoder* defect (bincode drift, §4.1) that a later build fixes. Withholding the sentinel keeps the retry door open at the cost of one cheap re-attempt per launch; the skip-if-present rule makes the retry a no-op for everything that already landed. Failing the pass instead would be wrong — it would gate nothing useful and shout at a user who cannot act. |
@@ -219,6 +219,29 @@ rehydrated on load. None of them need migrating.
 | **Identity type the fixture doesn't cover (`User`, `Evonode`)** | Handled with no extra code — the type lives in the blob and round-trips. | See §2.3. The *test* must cover it; the *code* need not branch on it. |
 | **Second launch** | Sentinel short-circuits; nothing is read, nothing is written. | Mirrors `drain_wallets`. |
 | **Legacy rows** | **Never deleted.** | Repo-wide migration rule: a migration that deletes its source can never be retried. |
+
+### Known limitation — a partially-loaded identity strands its legacy-only keys
+
+If a v0.9.3 identity was already loaded into the modern store *before* migration
+but only partially — the canonical case is a masternode brought in from just its
+ProTxHash, which persists a **bare** record (no private keys) plus, possibly,
+missing owner/voting/payout associations — the importer skips it and does **not**
+backfill the keys still sitting in the legacy blob. Those keys become
+inaccessible through the current UI: the record shows as present but keyless.
+
+No data is destroyed. The legacy `data.db` is preserved verbatim (rows are never
+deleted), so a future recovery flow can read those keys back. The conservative
+skip is deliberate — as the edge-case rationale explains, field absence cannot be
+distinguished from a deliberate user removal without provenance the model does
+not carry, and merging a plaintext legacy key into a protected identity would
+trip the vault-first downgrade guard. Rather than a heuristic that risks
+resurrecting removed keys or failing the whole pass, the safe behaviour is to
+skip and defer recovery to a dedicated, provenance-aware flow.
+
+The proper recovery flow — an interactive, opt-in re-import that reads the
+preserved legacy blob and merges only genuinely-missing key material under the
+identity password — is tracked as a follow-up (see the GitHub issue referenced
+from PR #885).
 
 ---
 
@@ -273,12 +296,11 @@ Ordered; each is independently reviewable.
 
 - **T-ID-03 — `finish_unwire::migrate_identities`.** Sentinel
   `identities_sentinel_key_for(network)` → `det:migration:identities:<net>:v1`.
-  Pure body `migrate_identities_from_conn(conn, network, wallet_known, get_existing, insert, update) -> Result<IdentityMigrationOutcome, MigrationError>`
+  Pure body `migrate_identities_from_conn(conn, network, wallet_known, is_present, insert) -> Result<IdentityMigrationOutcome, MigrationError>`
   with closure seams (matching `migrate_app_data_from_conn`) so it unit-tests
-  without an `AppContext`. `get_existing` returns the already-stored modern
-  identity (so a *bare* record's keys can be recovered rather than skipped);
-  `update` re-persists a reconciled record in place. Counters: `imported`,
-  `reconciled`, `skipped_existing`, `unreadable`. Sentinel written **iff
+  without an `AppContext`. `is_present` is the skip-if-already-imported check; a
+  present identity is skipped wholesale (see the §7 known limitation). Counters:
+  `imported`, `skipped_existing`, `unreadable`. Sentinel written **iff
   `unreadable == 0`**.
   *Depends on:* T-ID-01, T-ID-02.
 
@@ -347,10 +369,10 @@ this design consumes — keep it, then add the outcome):
 **Assertions in `second_launch_after_a_v093_upgrade_changes_nothing`:**
 
 9. Edit A's alias post-migration (`ctx.set_identity_alias`), re-run
-   `finish_unwire::run` ⇒ the alias survives. This is the reconcile rule (§7):
-   an imported identity already holds keys, so it is not bare and is left
-   untouched — never re-persisted with the stale legacy blob. It must go **RED**
-   against a naive implementation that re-inserts unconditionally.
+   `finish_unwire::run` ⇒ the alias survives. This is the skip-if-present rule
+   (§7): an identity already in the store is skipped wholesale — never
+   re-persisted with the stale legacy blob. It must go **RED** against a naive
+   implementation that re-inserts unconditionally.
 10. Identity count is unchanged; `run()` returns `false`.
 11. The legacy `identity` rows are still in `data.db` (count unchanged).
 

@@ -79,9 +79,9 @@ needed).
 - [x] SND-011: Transfer identity credits to another identity — BLOCKED (no identity exists yet — IDN not run)
 - [x] SND-012: Withdraw identity credits to Core address — BLOCKED (same reasoning as SND-011)
 - [x] SND-013: Transfer identity credits to Platform address — BLOCKED (same reasoning as SND-011)
-- [ ] SND-014: Send maximum from a Core wallet
-- [ ] SND-015: Unshield credits to a Platform address
-- [ ] SND-016: Send privately within the shielded pool
+- [x] SND-014: Send maximum from a Core wallet — FAIL (fee-reserve math correct, but the fee-shown-next-to-amount label and the too-low-balance message are both dead code in the render path; source-confirmed, root-causes SND-005)
+- [x] SND-015: Unshield credits to a Platform address — FAIL (button exists in source, correctly wired to the unified Send screen preset, but unconditionally hidden behind a hardcoded not-yet-activated `ShieldedOperations` capability gate — never reachable live on any network in this build)
+- [x] SND-016: Send privately within the shielded pool — FAIL (same reachability gap as SND-015; spend-lock/verification-in-progress UX for the button is correctly implemented in source but unobservable live for the same reason)
 
 ## ALK
 

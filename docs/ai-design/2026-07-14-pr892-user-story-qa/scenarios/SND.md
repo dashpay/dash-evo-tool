@@ -316,3 +316,217 @@ never be funded — WAL-017 and SND-007 root causes) and SND-011/012/013 (no ide
 exists yet — IDN category not run). Final app state left by this pass: network Testnet,
 Expert view, `QA Wallet 1` intact at 2.99999288 DASH (Core), no leftover throwaway
 wallets.*
+
+## Environment note for SND-014/015/016 (this pass)
+
+This pass hit the same unresolved Testnet wallet-backend blocker documented in
+`scenarios/ALK.md` and `scenarios/DEV.md`, and re-encountered by the immediately
+preceding agent testing WAL-025–029: on launch, four persistent red banners appeared
+("We couldn't finish preparing your wallet.", "SPV sync failed.", "Your wallet is still
+starting up.", "Could not load your identities from this device.") and `det.log` showed
+`Wallet backend initialization deferred error=Could not access wallet data. Check
+available disk space and restart the application.` repeatedly, with the Send screen's
+"Show details" on the "still starting up" banner revealing the structured cause
+`WalletBackendNotYetWired`. `QA Wallet 1`'s Core balance displayed as `0 DASH` for the
+entire session (not the ~2.99999288 DASH left by the prior pass) as a direct symptom —
+per instructions, this was not restart-looped or "fixed"; a single non-destructive
+top-bar "Refresh" click was tried once and made no difference, consistent with ALK.md's
+finding that this failure is currently ~100% reproducible in this data dir. Where the
+live UI could not be exercised, PR892's source (`/data/git-worktrees/
+home-ubuntu-git-dash-evo-tool-2-pr892-build`) was read directly to determine what the
+UI does when reachable — cited inline below with file:line references. Final app state
+was left clean (Cancel on the Send form, no broadcast, no wallet changes).
+
+## SND-014: Send maximum from a Core wallet — FAIL
+
+Steps: Wallet screen (`QA Wallet 1`, Testnet) → Send → "Send to" = a Core address
+(`yYCWtyP2mSLzGkZqL9a6G5rpPQQRs1fT5f`, recognized as "Wallet address") → clicked "Max".
+
+Observed (live): the Amount field stayed completely empty (placeholder "Enter amount"
+still showing) — no value, no fee figure, no message of any kind appeared next to the
+field or anywhere else on the screen. `det.log` shows no new line at all around the
+click (Max is purely client-side here — nothing dispatched). Screenshot:
+`SND-014-1-max-empty-no-message-env-blocked.png`. Because `QA Wallet 1`'s Core balance
+displayed as `0 DASH` this session (see environment note above), this result cannot by
+itself distinguish "balance genuinely too low" from "balance never loaded" — so the
+live click alone does not settle the story's first two bullets. Source review below
+does settle them.
+
+**Source-level findings** (`src/ui/wallets/send_screen.rs`,
+`src/model/fee_estimation.rs`, `src/ui/components/amount_input.rs`):
+
+- Bullet 1 ("Max sets amount to balance minus fee") — **the underlying math is
+  implemented correctly.** `core_max_send_amount_duffs()` / `core_max_send_reserve_duffs()`
+  (`model/fee_estimation.rs:1025-1054`) compute `balance − estimated_L1_fee`, scaled by
+  UTXO count, and the Core-to-Core branch of `render_amount_input()`
+  (`send_screen.rs:2264-2306`) wires this in: on success it sets
+  `max = Some(send_amount_duffs)` and builds a hint string
+  `"~{fee} reserved for the network fee"`; on failure (balance can't cover the fee) it
+  sets `max = None` with hint `"Your balance is too low to cover the network fee."` —
+  this is precisely the story's own spec, including the exact "reserve the fee, show a
+  calm message" language from `core_max_send_amount_duffs`'s own doc comment.
+- Bullet 2 ("fee reserved is shown next to the amount") — **FAILS, structurally, not
+  just as an observed gap.** Both hint strings above are threaded only into
+  `AmountInput::set_max_exceeded_hint()` (`send_screen.rs:2413`). Reading
+  `amount_input.rs:280-312`, that hint is used in exactly one place: inside the
+  `Err(...)` branch of `validate_amount()`, appended to an "Amount X exceeds maximum Y"
+  message — and *only* when the currently-typed amount is strictly greater than
+  `max_amount`. Clicking "Max" sets `amount_str` to *exactly* `max_amount`
+  (`amount_input.rs:346-351`), so `amount.value() > max_amount` is false and the error
+  branch never fires. The fee-reserved label is therefore dead code from the user's
+  perspective on the normal "click Max, see the result" path — it can only ever appear
+  if the user manually types a number bigger than what Max would have filled in, wrapped
+  inside a validation-error sentence rather than a clean fee label. This matches, and
+  root-causes, SND-005's finding that Max "silently deducts a fee" that's "never
+  labeled/shown anywhere in the UI."
+- Bullet 3 ("too low → no amount + calm message") — **half holds, half fails.** "No
+  amount" is correct: when `core_max_send_amount_duffs` returns `None`, `max_amount`
+  stays `None` and the Max-button code path in `amount_input.rs:352-355` does not set
+  `amount_str` at all, matching the live observation of an empty field. But the "calm
+  message explains why" half fails for the identical structural reason as bullet 2: the
+  "Your balance is too low..." hint is stored in the same `max_exceeded_hint` field,
+  whose only rendering site is gated by `if let Some(max_amount) = self.max_amount` —
+  when `max_amount` is `None` (the exact case this message is meant to explain), that
+  `if let` never matches, so the message can *never* render, under any input, in this
+  case. It is unreachable code from the UI's perspective, not merely untriggered in this
+  session.
+
+**Verdict: FAIL.** The reserve-the-fee math (bullet 1) is implemented correctly and
+matches the story's intent, but bullets 2 and 3's messaging half are both dead code —
+confirmed by reading the exact rendering path, not merely inferred from one session's
+balance-unavailable state. Live confirmation of the *positive* path (a genuine non-zero
+balance producing a filled, fee-reduced amount) was prevented by this session's
+`WalletBackendNotYetWired` environment blocker, but that blocker does not affect this
+verdict: the messaging gap exists in the code regardless of whether any balance ever
+loads. No transaction was broadcast; the form was cancelled after this test.
+
+## SND-015: Unshield credits to a Platform address — FAIL
+
+**What was checked**: the Shielded tab specifically (not the generic Send screen's
+Source Type selector, which SND-009/010 already found has no "Shielded Pool" option) for
+a dedicated "Unshield" button, per this story's distinct entry point.
+
+**Live**: navigated to Wallet screen → Shielded tab. The tab never advanced past
+`is_initialized == false` for the entire session — it showed only a spinner and
+"Preparing shielded wallet..." (or, when the wallet-lock state was checked, "Unlock the
+wallet to enable the shielded pool.") — the same stuck state WAL-029 already documented
+for this data dir. No action buttons of any kind (Shield / Send (Private) / Unshield)
+ever rendered. Screenshot:
+`SND-015-016-1-shielded-tab-stuck-preparing-env-blocked.png`. Root cause: the same
+`WalletBackendNotYetWired` blocker described in the environment note above — the tab's
+`ui()` method returns early whenever `!self.is_initialized`
+(`src/ui/wallets/shielded_tab.rs:528-558`), before the action-buttons block is ever
+reached, so this session could not distinguish "button exists but is disabled" from
+"button doesn't render at all" purely from the live screen.
+
+**Source review settles it** (`src/ui/wallets/shielded_tab.rs`,
+`src/context/feature_gate.rs`): the "Unshield" button *does* exist in code
+(`shielded_tab.rs:679-694`), fills exactly the role the story describes — it calls
+`self.open_send_flow(SendFlow::Unshield)`, which opens
+`ScreenType::WalletSendScreen(wallet, SendFlow::Unshield)`, the same unified Send screen
+used everywhere else, preset with `SendFlow::Unshield.preset_destination_kinds() ==
+[Platform, Core]` and heading "Unshield Credits" (`send_screen.rs:75-118`); the source
+is auto-locked to the wallet's shielded pool via `sync_flow_state()`
+(`send_screen.rs:1200-1206`, `SourceSelection::Shielded(seed_hash, balance)`). This is
+exactly "Select Shielded Pool as source and enter a Platform address as destination,"
+correctly wired.
+
+However, the entire action-button row — including "Unshield" — is only rendered when
+`FeatureGate::ShieldedOperations.is_available(&self.app_context)` is true
+(`shielded_tab.rs:630`); otherwise the tab shows `SHIELDED_OPERATIONS_UNAVAILABLE_LABEL`
+("Shielded sending is not available on this network yet...") in its place
+(`shielded_tab.rs:711-717`) — the exact text SND-007 already found on this same tab in a
+prior, successfully-initialized session. That gate requires
+`Capability::ShieldedProtocol`, which is controlled by
+`SHIELDED_ACTIVATION_PROTOCOL_VERSION: Option<u32> = None` — a **hardcoded compile-time
+constant** in `feature_gate.rs:18`, with an explicit doc comment: "Not shipped anywhere
+yet, so no network can offer it" / "unmet on every network." This is not a per-session
+or per-network runtime condition — it means the "Unshield" button cannot be shown to any
+user, on any network, in this exact build, until upstream ships the shielded state
+transitions and this constant is changed. SND-007's independent, earlier-session
+observation of the "not available on this network yet" label corroborates this reading
+of the code.
+
+**Verdict: FAIL.** Distinguishing per this story's instructions: this is not "button
+doesn't exist" (the code is present and correctly implemented for the eventual
+capability) and not simply "button exists but blocked by 0 balance" (balance is
+irrelevant here — the entire row is gated off before balance is even considered). The
+accurate characterization is: the button exists in source and is correctly wired to the
+unified Send screen preset, but is unconditionally hidden behind a hardcoded
+not-yet-activated protocol-capability gate in this build, so it is never reachable by a
+live user on any network today — a deliberate, disclosed limitation, but still a FAIL
+against the story's "reachable from the Shielded tab's Unshield button" acceptance
+criterion, consistent with the FAIL verdict already recorded for the analogous SND-007
+shielded-destination gap. The balance-decrease/Platform-balance-increase bullet is moot
+on top of this — shielded balance is documented permanently 0 in this environment
+regardless (SND-009/010).
+
+## SND-016: Send privately within the shielded pool — FAIL (with one confirmed correct sub-behavior)
+
+**What was checked**: the Shielded tab specifically for a dedicated "Send (Private)"
+button, per this story's distinct entry point, and — since it was reachable via source
+even though not via the live UI — whether the spend-lock/verification-in-progress
+behavior described in the third bullet is actually implemented.
+
+**Live**: identical situation to SND-015 — the Shielded tab stayed stuck at "Preparing
+shielded wallet..." (`is_initialized == false`) for the whole session, so no button,
+disabled or otherwise, ever rendered. Same screenshot:
+`SND-015-016-1-shielded-tab-stuck-preparing-env-blocked.png`.
+
+**Source review** (`src/ui/wallets/shielded_tab.rs:656-710`): the "Send (Private)"
+button exists, calls `self.open_send_flow(SendFlow::ShieldedSend)`, which opens the
+unified Send screen preset with heading "Send (Private)"
+(`send_screen.rs:89`), destination locked to `[Shielded]`
+(`send_screen.rs:115`), and source auto-locked to the shielded pool via
+`sync_flow_state()` — matching bullets 1 and 2 exactly, same as SND-015. It is subject
+to the identical hardcoded `FeatureGate::ShieldedOperations` gate described in SND-015
+above (`SHIELDED_ACTIVATION_PROTOCOL_VERSION = None`), so it is likewise never reachable
+by a live user in this build today.
+
+**Bullet 3 ("Spending is paused until the shielded balance is verified, and the button
+is disabled with a clear reason while verification is in progress") — confirmed
+correctly implemented in source, independent of the reachability gate above.** In
+`shielded_tab.rs:630-696`: `spend_locked` is derived from the migration-status-driven
+`ShieldedIndicator` (`Verifying` or `Failed` → locked); the "Send (Private)" button is
+rendered via `ui.add_enabled(can_spend, send_btn)` where
+`can_spend = !syncing && tree_synced && shielded_balance > 0 && !spend_locked`, and its
+hover tooltip is the constant `SHIELDED_SPEND_LOCKED_TOOLTIP = "Spending paused until
+shielded balance is verified."` whenever `spend_locked` is true; a second, always-visible
+row below the buttons additionally shows a lock icon plus
+`SHIELDED_SPEND_LOCKED_LABEL = "Spending paused."` in the same state
+(`shielded_tab.rs:700-709`) — a dedicated accessibility test,
+`tc_a11y_006_locked_spend_state_uses_icon_and_text`, guards that both the icon and the
+text are always present together (not colour alone). This is a precise, well-built match
+for the story's third bullet — a genuinely good implementation — it just cannot be
+observed live today because the button row it lives on is itself gated off (see above).
+
+**Verdict: FAIL** overall, for the same "not reachable by any live user in this build"
+reasoning as SND-015 — the button exists and is correctly wired to the unified Send
+screen preset (bullets 1–2), and its spend-lock behavior is correctly implemented
+in source (bullet 3), but none of it is currently visible or clickable because
+`FeatureGate::ShieldedOperations` is hardcoded closed pending an upstream protocol
+version that doesn't exist yet. Recorded as FAIL rather than PASS because the story is
+tagged `[Implemented]` and none of its criteria are actually observable/usable by a live
+user today; recorded as FAIL rather than BLOCKED because the reachability gap is a
+deterministic, compile-time condition (not a flaky environment issue) that source review
+settles conclusively even though this session's own `WalletBackendNotYetWired` blocker
+independently prevented reaching that gate live.
+
+---
+
+*SND-014/015/016 addendum (this pass): all three verdicts are **FAIL**. SND-014: the
+Max-button fee math is correct but the fee-reserved label and the low-balance message are
+both dead code in the render path (confirmed by source, not just by one session's
+zero-balance state) — root-causes SND-005. SND-015/016: the Shielded tab's dedicated
+"Unshield" and "Send (Private)" buttons exist and are correctly wired to the unified Send
+screen preset (and, for SND-016, the spend-lock/verification-in-progress UX is correctly
+implemented), but the entire action-button row is unconditionally hidden behind a
+hardcoded `SHIELDED_ACTIVATION_PROTOCOL_VERSION = None` capability gate — consistent
+with, and root-causing, SND-007's "not available on this network yet" finding. This
+pass's own live testing was additionally constrained by the unresolved Testnet
+`WalletBackendNotYetWired` wallet-backend blocker (see `scenarios/ALK.md`/`DEV.md`,
+re-encountered by the WAL-025–029 pass immediately prior) — `QA Wallet 1`'s Core balance
+showed `0 DASH` all session and the Shielded tab never finished initializing — so live
+UI evidence was supplemented with direct source review throughout. No funds were moved;
+no transaction was broadcast; the app was left in a clean state (Send form cancelled,
+Wallets > QA Wallet 1, Shielded tab).*

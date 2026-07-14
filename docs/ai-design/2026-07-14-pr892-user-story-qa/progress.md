@@ -111,8 +111,9 @@ needed).
 - [x] IDN-006: Transfer credits between identities — BLOCKED (same reasoning as IDN-004)
 - [x] IDN-007: Add key to identity — BLOCKED (same reasoning as IDN-004)
 - [x] IDN-008: View identity keys and details — BLOCKED (same reasoning as IDN-004)
-- [ ] IDN-013a: Password-protect an identity's signing keys (SEC-001) — *disambiguated ID,
-      see duplicate-ID note above; this is the story between IDN-008 and IDN-009 in the doc*
+- [x] IDN-013a: Password-protect an identity's signing keys (SEC-001) — BLOCKED for live UI (no
+      identity reachable, see scenarios/IDN.md); read-only source review confirms the feature is
+      fully implemented, matching every acceptance-criteria bullet
 - [x] IDN-009: Refresh identity state — BLOCKED (same reasoning as IDN-004)
 - [x] IDN-010: Search identity by DPNS name — BLOCKED (dispatches and fails cleanly on the
       known masternode-list/quorum-sync error, same signature as DEV.md)
@@ -122,9 +123,15 @@ needed).
 - [x] IDN-013b: Top up identity from Platform addresses — BLOCKED (no identity reachable;
       *disambiguated ID, see duplicate-ID note above — this is the story in its expected
       numeric position after IDN-012*)
-- [ ] IDN-014: Fund identity by receiving a deposit to a shown QR/address
-- [ ] IDN-015: Automatic identity discovery after sync
-- [ ] IDN-016: Identities and their keys preserved across an app upgrade
+- [x] IDN-014: Fund identity by receiving a deposit to a shown QR/address — FAIL (deposit-address
+      step renders zero content — no QR, no address, no amount field, no error; directly
+      reachable without a pre-existing identity, re-verified fresh this session)
+- [x] IDN-015: Automatic identity discovery after sync — PASS (live det.log from this exact
+      running process shows the once-per-session auto-trigger firing and completing on Platform
+      readiness; source review confirms rolling 5-index window and alias-preserving refresh)
+- [x] IDN-016: Identities and their keys preserved across an app upgrade — BLOCKED (no
+      pre-upgrade legacy identity-storage fixture exists to exercise this migration path; would
+      require running a prior app version first, out of scope for this QA pass)
 
 ## DPN
 

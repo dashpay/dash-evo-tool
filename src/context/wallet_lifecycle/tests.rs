@@ -1903,7 +1903,11 @@ async fn protected_wallet_registers_upstream_on_unlock_without_restart() {
         .wallet_seed
         .open(passphrase)
         .expect("correct passphrase opens the wallet");
-    ctx.handle_wallet_unlocked(&wallet_arc, passphrase);
+    ctx.handle_wallet_unlocked(
+        &wallet_arc,
+        passphrase,
+        crate::context::WalletUnlockRetention::UntilAppClose,
+    );
     ctx.migration_status().notify_wallet_password_submitted();
 
     migration

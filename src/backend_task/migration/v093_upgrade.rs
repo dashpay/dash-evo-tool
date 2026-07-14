@@ -697,7 +697,11 @@ async fn run_migration_with_wallet_passwords(
                         .wallet_seed
                         .open(PROTECTED_PASSWORD)
                         .expect("fixture password opens protected wallet");
-                    ctx.handle_wallet_unlocked(&wallet, PROTECTED_PASSWORD);
+                    ctx.handle_wallet_unlocked(
+                        &wallet,
+                        PROTECTED_PASSWORD,
+                        crate::context::WalletUnlockRetention::UntilAppClose,
+                    );
                     ctx.migration_status().notify_wallet_password_submitted();
                 }
             }

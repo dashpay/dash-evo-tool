@@ -76,8 +76,8 @@ As a user, I want my wallet protected by a passphrase so that others cannot acce
 - The passphrase is requested just-in-time, when an operation actually needs the secret (sending funds, registering an identity, signing).
 - The prompt offers a "Keep this wallet unlocked until I close the app" option so a busy session is asked only once.
 - That option defaults to off: unless the user actively ticks it, every secret access re-prompts, and the seed is not cached.
-- The seed is never held in memory between operations: it is decrypted on demand and wiped as soon as the operation finishes.
-- After the storage-seam migration, a previously password-protected wallet's secret is re-sealed in the on-device vault under the same password (Tier-2 per-secret encryption: Argon2id + XChaCha20-Poly1305). The wallet continues to prompt just-in-time; the migration is silent (no disclosure notice).
+- The seed is never held in memory between operations: it is decrypted on demand and wiped as soon as the operation finishes. An explicit unlock without the keep-unlocked option retains it only until that wallet is ready to use, then wipes it.
+- During a storage update, each previously password-protected wallet asks for its password so its secret can be re-sealed in the on-device vault under the same password. The user may skip a wallet they cannot unlock without blocking the rest of the app; the wallet stays locked and protected, and its update finishes the next time the user unlocks it. The prompt makes clear that skipping does not lose any coins.
 
 ### WAL-007: Remove a wallet [Implemented]
 **Persona:** Priya, Jordan
@@ -1346,7 +1346,7 @@ As a user, while a long operation that is unsafe to interrupt is running (broadc
 
 - A full-window dimming overlay with an indeterminate spinner and an optional "Step N of M" counter and description appears while the operation runs, and lowers automatically when it finishes (success or error).
 - All interaction beneath the block is suppressed: pointer clicks hit a sink, and keyboard/text input is claimed at frame start so nothing reaches a focused field beneath (FR-8 / QA-001). The block is never dismissable by Esc, Enter, Space, or Tab.
-- The block yields to a passphrase prompt: when a secret prompt is shown above the overlay it keeps the keyboard (Enter/Esc/Tab) so the user can still authenticate or cancel (SEC-004).
+- The block yields completely to a passphrase prompt: it remains active but paints no dimmer, pointer sink, card, or focus trap until the prompt resolves, so the user can type and use every prompt action (SEC-004).
 - Honest escalation, never a fake exit: after 30 s a calm "This is taking longer than usual." line appears; after 120 s with no progress it escalates to "This is taking much longer than expected…" and logs a one-shot developer error. For these unsafe-to-interrupt operations there is no background/dismiss button — the safety guarantee is that every blocked operation is bounded and always lowers the block through the normal path. _(Exception: the startup/Connect SPV-sync block of UX-002 is unbounded but read-only, so it ships an always-visible "Continue in the background" escape instead.)_
 
 ### UX-002: Blocking SPV-sync overlay with a "continue in the background" escape [Implemented]

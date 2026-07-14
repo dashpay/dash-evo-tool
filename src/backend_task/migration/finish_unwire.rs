@@ -698,9 +698,10 @@ fn terminal_state(moved_data: bool) -> MigrationState {
 }
 
 /// Re-hydrates just-migrated wallets into `ctx.wallets`, registers open wallets,
-/// and waits for the UI to unlock every protected wallet before returning.
-/// [`run`] calls this immediately before [`write_sentinel`], so completion can
-/// never be recorded while a migrated wallet is still locked or unregistered.
+/// and waits for the UI to unlock or explicitly skip each protected wallet.
+/// [`run`] calls this immediately before [`write_sentinel`], so every open wallet
+/// is registered before completion; a skipped wallet remains closed in its
+/// legacy protected envelope until a later ordinary unlock reconciles it.
 /// Idempotent.
 async fn register_migrated_wallets(app_context: &Arc<AppContext>) -> Result<(), MigrationError> {
     let backend = app_context
@@ -723,8 +724,13 @@ async fn register_migrated_wallets(app_context: &Arc<AppContext>) -> Result<(), 
     // without a restart.
     app_context.bootstrap_loaded_wallets().await;
 
+    app_context
+        .migration_status()
+        .begin_wallet_password_collection();
     loop {
-        let wallets = app_context.locked_wallet_hashes();
+        let wallets = app_context
+            .migration_status()
+            .pending_wallet_passwords(app_context.locked_wallet_hashes());
         if wallets.is_empty() {
             break;
         }
@@ -4519,6 +4525,151 @@ mod tests {
         )
         .expect("insert legacy wallet row");
         seed_hash
+    }
+
+    fn seed_legacy_protected_wallet(
+        app_context: &Arc<AppContext>,
+        seed: &[u8; 64],
+        password: &str,
+        alias: &str,
+        network: dash_sdk::dpp::dashcore::Network,
+    ) -> crate::model::wallet::WalletSeedHash {
+        use crate::model::wallet::encryption::{EncryptedEnvelope, encrypt_message};
+
+        let seed_hash = crate::model::wallet::ClosedKeyItem::compute_seed_hash(seed);
+        let epk = crate::database::test_helpers::legacy_master_epk_bytes(seed, network);
+        let EncryptedEnvelope {
+            ciphertext,
+            salt,
+            nonce,
+        } = encrypt_message(seed, password).expect("encrypt protected fixture seed");
+        crate::database::test_helpers::seed_legacy_protected_hd_wallet_row(
+            &app_context.db,
+            &seed_hash,
+            &ciphertext,
+            &salt,
+            &nonce,
+            &epk,
+            alias,
+            Some("the saved hint"),
+            network,
+        )
+        .expect("insert protected legacy wallet row");
+        seed_hash
+    }
+
+    /// A user who skips every protected wallet can finish the migration without
+    /// changing that wallet's protection. A later ordinary unlock without
+    /// session retention must still populate the upstream id map before dropping
+    /// the temporary secret, closing the original WalletNotLoaded failure mode.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn skipped_protected_wallet_completes_and_registers_on_later_ordinary_unlock() {
+        use crate::context::WalletUnlockRetention;
+        use crate::wallet_backend::SecretScope;
+        use crate::wallet_backend::poison::RwLockRecover;
+        use dash_sdk::dpp::dashcore::Network;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = fresh_app_context(tmp.path());
+        let network = Network::Testnet;
+        let seed = [0xC5; 64];
+        let password = "correct horse battery staple";
+        let seed_hash = seed_legacy_protected_wallet(&ctx, &seed, password, "Savings", network);
+
+        wire_backend(&ctx).await;
+        let backend = ctx.wallet_backend().expect("backend wired");
+        let migration_context = Arc::clone(&ctx);
+        let migration = tokio::spawn(async move { run(&migration_context).await });
+
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !matches!(
+            ctx.migration_status().state().as_ref(),
+            MigrationState::AwaitingWalletPasswords { wallets } if wallets == &vec![seed_hash]
+        ) {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "migration must publish the protected wallet password prompt",
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+
+        let wallet = ctx
+            .wallet_arc(&seed_hash)
+            .expect("hydrated protected wallet");
+        assert!(!wallet.read_recover().is_open());
+        assert!(!backend.is_wallet_registered(&seed_hash));
+
+        ctx.migration_status().skip_wallet(seed_hash);
+        assert!(
+            migration
+                .await
+                .expect("migration task must not panic")
+                .expect("skipping must not fail migration"),
+            "the migration moved legacy wallet data",
+        );
+
+        assert_eq!(*ctx.migration_status().state(), MigrationState::Success);
+        assert!(
+            read_sentinel(&ctx.app_kv(), network)
+                .expect("read sentinel")
+                .is_some(),
+            "skipping every remaining wallet must still write the completion sentinel",
+        );
+        assert!(!wallet.read_recover().is_open());
+        assert_eq!(ctx.unregistered_open_wallet_count(), 0);
+        let secret_store = ctx.secret_store();
+        let seed_view = crate::wallet_backend::WalletSeedView::new(&secret_store);
+        let legacy_envelope = seed_view
+            .legacy_envelope_get(&seed_hash)
+            .expect("read legacy protected envelope")
+            .expect("a skipped wallet must keep its legacy protected envelope");
+        assert!(legacy_envelope.uses_password);
+        assert!(!legacy_envelope.salt.is_empty());
+        assert!(!legacy_envelope.nonce.is_empty());
+        assert_eq!(
+            seed_view
+                .scheme(&seed_hash)
+                .expect("current envelope scheme"),
+            crate::wallet_backend::secret_seam::SecretScheme::Absent,
+            "skipping must not re-encrypt the seed into the current envelope",
+        );
+
+        wallet
+            .write_recover()
+            .wallet_seed
+            .open(password)
+            .expect("ordinary unlock verifies the saved password");
+        ctx.handle_wallet_unlocked(&wallet, password, WalletUnlockRetention::OperationOnly);
+
+        let scope = SecretScope::HdSeed { seed_hash };
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+        loop {
+            let registered = backend.is_wallet_registered(&seed_hash);
+            let forgotten = !backend.secret_access().is_session_cached(&scope);
+            if registered && forgotten {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "ordinary unlock must register the skipped wallet and then forget its seed",
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+
+        assert_eq!(backend.wallet_count().await, 1);
+        assert!(
+            seed_view
+                .legacy_envelope_get(&seed_hash)
+                .expect("read legacy envelope after unlock")
+                .is_none(),
+            "the later unlock, not the skip, finishes the envelope update",
+        );
+        assert_eq!(
+            seed_view.scheme(&seed_hash).expect("scheme after unlock"),
+            crate::wallet_backend::secret_seam::SecretScheme::Protected,
+        );
+
+        backend.shutdown().await;
     }
 
     /// Stage an identity row whose blob will never decode, so `read_identities`

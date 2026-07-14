@@ -193,6 +193,7 @@ impl UnlockState {
             hint: None,
             error: self.error.map(UnlockError::message),
             submit_label: "Unlock",
+            secondary_action_label: None,
             input_placeholder: "Enter passphrase",
             remember_label: None,
             cancellable: true,
@@ -201,6 +202,7 @@ impl UnlockState {
         match passphrase_modal(ctx, &config, |_ui| {}) {
             PassphraseModalOutcome::Pending => UnlockOutcome::Pending,
             PassphraseModalOutcome::Cancel => UnlockOutcome::Cancel,
+            PassphraseModalOutcome::SecondaryAction => UnlockOutcome::Pending,
             PassphraseModalOutcome::Submit(text) => {
                 let passphrase = SecretString::new(text.to_string());
                 if passphrase.is_blank() {

@@ -1301,15 +1301,14 @@ impl AppState {
             .ok();
     }
 
-    /// Claim all keyboard + text input for an active blocking overlay at frame
-    /// start unless a secret or migration-password prompt is active above it.
-    /// The prompt needs the keyboard, so the overlay must yield to it.
-    /// Extracted from `update` so the gate is exercised by a kittest (RQ-1):
-    /// removing the `active_secret_prompt.is_none()` guard must fail that test.
+    /// Whether a passphrase prompt owns the frame's full interaction surface.
+    fn has_blocking_secret_prompt(&self) -> bool {
+        self.active_secret_prompt.is_some()
+            || self.migration.is_prompting(self.current_app_context())
+    }
+
     fn claim_overlay_input(&self, ctx: &egui::Context) {
-        if self.active_secret_prompt.is_none()
-            && !self.migration.is_prompting(self.current_app_context())
-        {
+        if !self.has_blocking_secret_prompt() {
             ProgressOverlay::claim_input(ctx);
         }
     }
@@ -1388,17 +1387,17 @@ impl AppState {
         }
     }
 
-    /// Drain at most one pending passphrase request and render the active
-    /// prompt modal. Exactly one prompt is shown at a time; on submit/cancel
-    /// the host's one-shot is answered (inside [`ActivePrompt`]) and the slot
-    /// frees for the next queued request next frame.
-    fn render_secret_prompt(&mut self, ctx: &egui::Context) {
+    /// Promote at most one queued passphrase request before overlay handling.
+    fn activate_secret_prompt(&mut self, ctx: &egui::Context) {
         if self.active_secret_prompt.is_none()
             && let Ok(queued) = self.secret_prompt_receiver.try_recv()
         {
             self.active_secret_prompt = Some(ActivePrompt::new(queued));
+            ctx.request_repaint();
         }
+    }
 
+    fn render_secret_prompt(&mut self, ctx: &egui::Context) {
         if let Some(prompt) = &mut self.active_secret_prompt {
             let resolved = prompt.show(ctx);
             if resolved {
@@ -1744,6 +1743,10 @@ impl App for AppState {
         // Connecting/Syncing copy while the block is up).
         self.spv_block.update(ctx, &active_context);
 
+        // Promote a queued prompt before the overlay input/render decision so
+        // its first visible frame never shares a pointer sink or focus trap.
+        self.activate_secret_prompt(ctx);
+
         // Total input block at frame start: while a blocking overlay is up, claim
         // all keyboard + text input BEFORE the panels run — unless a
         // secret prompt is active above the overlay (it needs the keyboard).
@@ -1759,13 +1762,10 @@ impl App for AppState {
             actions.push(self.visible_screen_mut().ui(ui));
         };
 
-        // Blocking progress overlay: above banners, below the secret prompt.
-        // It consumes Esc/Tab/Enter while active, so it must render before the
-        // secret prompt (which is focus-raised and stays interactive above it)
-        // and before the migration banner's Esc handling so the overlay wins Esc.
-        // The secret-prompt flag (mirroring the `claim_overlay_input` gate) tells
-        // the block to suppress its focus management so the prompt keeps the keyboard.
-        ProgressOverlay::render_global(ctx, self.active_secret_prompt.is_some());
+        // A blocking progress overlay remains active underneath a secret prompt,
+        // but renders no dimmer, pointer sink, card, or focus trap until the
+        // prompt resolves.
+        ProgressOverlay::render_global(ctx, self.has_blocking_secret_prompt());
 
         // Render any just-in-time passphrase prompt on top of the screen.
         self.render_secret_prompt(ctx);

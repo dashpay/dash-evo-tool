@@ -4,21 +4,20 @@
 use super::*;
 
 impl AppContext {
-    /// Honor the "keep unlocked" gesture for a password-protected wallet.
+    /// Reconcile a password-protected wallet after an explicit unlock gesture.
     ///
     /// Since the JIT migration this is **not** a seed-distribution point —
     /// signing pulls the seed just-in-time from the encrypted vault through
     /// the [`SecretAccess`](crate::wallet_backend::SecretAccess) chokepoint.
-    /// Its only job is to promote the just-verified seed into the session cache
-    /// (`UntilAppClose`) so the rest of the session's operations on this wallet
-    /// do not re-prompt, then re-drive the JIT bootstrap so the wallet is
-    /// upstream-registered this session.
+    /// It promotes the just-verified seed through the secret chokepoint, then
+    /// re-drives the JIT bootstrap so the wallet is upstream-registered this
+    /// session. Operation-only unlocks forget the temporary cache entry once
+    /// that reconciliation finishes.
     ///
     /// `passphrase` is the secret the UI just validated via
     /// [`WalletSeed::open`](crate::model::wallet::WalletSeed::open). Callers
-    /// invoke this only when the user opted to keep a password wallet unlocked;
-    /// a non-remember unlock simply does not call here, and a no-password wallet
-    /// resolves prompt-free through the chokepoint's unprotected fast-path.
+    /// invoke this after every successful password-wallet unlock. `retention`
+    /// controls whether the temporary seed remains available afterwards.
     ///
     /// The seed is obtained ONLY by decrypting the stored envelope through the
     /// chokepoint — no parked seed is read, because an open `Wallet` parks none
@@ -28,6 +27,7 @@ impl AppContext {
         self: &Arc<Self>,
         wallet: &Arc<RwLock<Wallet>>,
         passphrase: &str,
+        retention: WalletUnlockRetention,
     ) {
         let (seed_hash, uses_password) = match wallet.read() {
             Ok(guard) => (guard.seed_hash(), guard.uses_password),
@@ -44,24 +44,22 @@ impl AppContext {
             return;
         };
         let secret = platform_wallet_storage::secrets::SecretString::new(passphrase);
-        match backend.secret_access().promote_hd_seed_with_passphrase(
+        if let Err(error) = backend.secret_access().promote_hd_seed_with_passphrase(
             &seed_hash,
             Some(&secret),
             crate::wallet_backend::RememberPolicy::UntilAppClose,
         ) {
-            // Tier-2 keep-protection: the seed re-wraps under the same password
-            // inside the chokepoint — no downgrade to finalize, `uses_password`
-            // stays accurate. The verified-open just promotes it to the cache.
-            Ok(()) => tracing::trace!(
-                wallet = %hex::encode(seed_hash),
-                "Verified-open seed promoted to the session cache on unlock"
-            ),
-            Err(error) => tracing::debug!(
+            tracing::debug!(
                 wallet = %hex::encode(seed_hash),
                 %error,
                 "Unlock seed promotion skipped"
-            ),
+            );
+            return;
         }
+        tracing::trace!(
+            wallet = %hex::encode(seed_hash),
+            "Verified-open seed promoted to the session cache on unlock"
+        );
 
         // W2 reconciliation on the unlock gesture. A
         // password-protected wallet hydrates `Closed` at cold boot, so
@@ -75,12 +73,7 @@ impl AppContext {
         // already-registered wallet is a no-op) and resolved prompt-free from the
         // session cache. The in-memory wallet is already flipped `Open` by the
         // unlock callsite before this runs, so the JIT `is_open()` gate passes.
-        self.drive_unlock_registration(wallet);
-
-        // The background all-wallets sweep skips a wallet that is locked at
-        // Platform-ready time, so a just-unlocked wallet is searched here. This
-        // is the "searched after unlock" path the all-wallets sweep documents.
-        self.queue_unlocked_wallet_identity_discovery(wallet);
+        self.drive_unlock_registration(wallet, retention);
     }
 
     /// Spawn the unlock-triggered JIT bootstrap/registration for a wallet whose
@@ -91,12 +84,25 @@ impl AppContext {
     /// runs on a tracked subtask — mirroring [`Self::register_wallet_upstream`].
     /// Best-effort: the JIT bootstrap logs and swallows its own failures, and a
     /// missing-backend cold-boot path is covered by `bootstrap_loaded_wallets`.
-    fn drive_unlock_registration(self: &Arc<Self>, wallet: &Arc<RwLock<Wallet>>) {
+    fn drive_unlock_registration(
+        self: &Arc<Self>,
+        wallet: &Arc<RwLock<Wallet>>,
+        retention: WalletUnlockRetention,
+    ) {
         let ctx = Arc::clone(self);
         let wallet = Arc::clone(wallet);
         self.subtasks
             .spawn_sync("wallet_unlock_registration", async move {
                 ctx.bootstrap_wallet_addresses_jit(&wallet).await;
+                ctx.discover_unlocked_wallet_identities(&wallet).await;
+                if retention == WalletUnlockRetention::OperationOnly
+                    && let Ok(backend) = ctx.wallet_backend()
+                    && let Ok(seed_hash) = wallet.read().map(|wallet| wallet.seed_hash())
+                {
+                    backend
+                        .secret_access()
+                        .forget(&crate::wallet_backend::SecretScope::HdSeed { seed_hash });
+                }
             });
     }
 

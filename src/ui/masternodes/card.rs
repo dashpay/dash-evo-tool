@@ -3,6 +3,7 @@
 //! key-presence, and DPNS-status rows (colour always paired with text, NFR-6).
 
 use crate::model::contested_name::MasternodeContestSummary;
+use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::{IdentityStatus, IdentityType, MasternodeKeyPresence};
 use crate::ui::identity::identity_picker_card::{
     CARD_HEIGHT, CARD_MIN_WIDTH, draw_monogram, draw_type_badge,
@@ -31,6 +32,11 @@ pub fn card_sub_line(alias: Option<&str>, shortened_pro_tx_hash: &str) -> Option
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(|_| shortened_pro_tx_hash.to_string())
+}
+
+/// Format a masternode Platform balance for display.
+pub fn balance_label(credits: u64) -> String {
+    format_credits_as_dash(credits)
 }
 
 /// Voter-readiness label. Green + `Voting ready` when a voting key is loaded,
@@ -71,6 +77,7 @@ pub struct MasternodeCard {
     node_id: String,
     node_id_short: String,
     alias: Option<String>,
+    balance_credits: Option<u64>,
     node_type: IdentityType,
     key_presence: MasternodeKeyPresence,
     contest_summary: MasternodeContestSummary,
@@ -90,6 +97,7 @@ impl MasternodeCard {
             node_id: node_id.into(),
             node_id_short: node_id_short.into(),
             alias: None,
+            balance_credits: None,
             node_type,
             key_presence,
             contest_summary,
@@ -99,6 +107,12 @@ impl MasternodeCard {
 
     pub fn with_alias(mut self, alias: Option<String>) -> Self {
         self.alias = alias.filter(|s| !s.trim().is_empty());
+        self
+    }
+
+    /// Attach the Platform balance shown on the card.
+    pub fn with_balance_credits(mut self, credits: u64) -> Self {
+        self.balance_credits = Some(credits);
         self
     }
 
@@ -161,6 +175,16 @@ impl MasternodeCard {
                     ui.label(
                         RichText::new(sub)
                             .color(DashColors::text_secondary(dark_mode))
+                            .size(13.0),
+                    );
+                }
+                if let Some(credits) = self.balance_credits {
+                    ui.add_space(8.0);
+                    ui.label(
+                        RichText::new(balance_label(credits))
+                            .monospace()
+                            .color(DashColors::text_primary(dark_mode))
+                            .strong()
                             .size(13.0),
                     );
                 }
@@ -289,6 +313,17 @@ mod tests {
     fn blank_alias_falls_through_to_pro_tx_hash() {
         assert_eq!(card_heading(Some("   "), "9a3f…d7e2"), "9a3f…d7e2");
         assert_eq!(card_sub_line(Some("   "), "9a3f…d7e2"), None);
+    }
+
+    #[test]
+    fn balance_label_uses_canonical_dash_formatting() {
+        for (credits, expected) in [
+            (0, "0 DASH"),
+            (2_890_000_000, "0.0289 DASH"),
+            (100_000_000_000, "1 DASH"),
+        ] {
+            assert_eq!(balance_label(credits), expected);
+        }
     }
 
     #[test]

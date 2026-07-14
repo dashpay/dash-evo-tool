@@ -24,6 +24,7 @@ use crate::backend_task::contested_names::ContestedResourceTask;
 use crate::backend_task::identity::{IdentityInputToLoad, IdentityLoadMode, IdentityTask};
 use crate::context::AppContext;
 use crate::model::contested_name::{ContestedName, MasternodeContestSummary};
+use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::{
     IdentityType, MasternodeKeyPresence, PrivateKeyTarget, QualifiedIdentity,
 };
@@ -472,6 +473,14 @@ impl MasternodeDetailView {
             }
             draw_type_badge(ui, self.badge_label(), dark_mode);
         });
+        let balance = format_credits_as_dash(self.identity.identity.balance());
+        ui.label(
+            RichText::new(format!("Balance: {balance}"))
+                .monospace()
+                .strong()
+                .size(14.0)
+                .color(DashColors::text_primary(dark_mode)),
+        );
         // Status dot + label (never colour-only — TC-FR5-05 / NFR-6).
         ui.horizontal(|ui| {
             let (rect, _) =

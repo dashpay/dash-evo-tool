@@ -26,7 +26,7 @@ use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel_with_global_nav_capturing;
 use crate::ui::identity::identity_pill::shorten_id;
 use crate::ui::identity::picker::compute_column_count;
-use crate::ui::masternodes::card::MasternodeCard;
+use crate::ui::masternodes::card::{MasternodeCard, card_heading};
 use crate::ui::masternodes::detail_screen::{DetailOutcome, MasternodeDetailView};
 use crate::ui::masternodes::load_form::{LoadFormOutcome, MasternodeLoadForm};
 use crate::ui::state::global_nav::PageNavSpec;
@@ -44,6 +44,7 @@ struct NodeCardData {
     node_id: Identifier,
     node_id_short: String,
     alias: Option<String>,
+    balance_credits: u64,
     node_type: IdentityType,
     key_presence: MasternodeKeyPresence,
     contest_summary: MasternodeContestSummary,
@@ -100,6 +101,17 @@ pub struct MasternodesScreen {
     pending_load: Option<PendingLoad>,
 }
 
+#[cfg(test)]
+impl MasternodesScreen {
+    /// Return card headings in the same order shown by the grid and node pill.
+    pub(crate) fn node_headings_for_test(&self) -> Vec<String> {
+        self.nodes
+            .iter()
+            .map(|node| card_heading(node.alias.as_deref(), &node.node_id_short))
+            .collect()
+    }
+}
+
 impl MasternodesScreen {
     /// Construct the Masternodes screen. Follows the project convention:
     /// constructors handle errors internally and return `Self` (degraded to an
@@ -142,6 +154,7 @@ impl MasternodesScreen {
                     node_id,
                     node_id_short,
                     alias: qi.alias.clone(),
+                    balance_credits: qi.identity.balance(),
                     node_type: qi.identity_type,
                     key_presence: qi.masternode_key_presence(),
                     contest_summary,
@@ -149,6 +162,9 @@ impl MasternodesScreen {
                 }
             })
             .collect();
+        self.nodes.sort_by_key(|node| {
+            card_heading(node.alias.as_deref(), &node.node_id_short).to_lowercase()
+        });
     }
 
     /// Settle the submitted load against the phase its own task reported, and
@@ -273,7 +289,8 @@ impl MasternodesScreen {
                             node.contest_summary,
                             node.status,
                         )
-                        .with_alias(node.alias.clone());
+                        .with_alias(node.alias.clone())
+                        .with_balance_credits(node.balance_credits);
                         if card.show(ui).clicked {
                             clicked = Some(node.node_id);
                         }
@@ -615,7 +632,7 @@ mod tests {
         (ctx, temp_dir)
     }
 
-    fn seed_masternode(ctx: &Arc<AppContext>, byte: u8) {
+    fn seed_masternode(ctx: &Arc<AppContext>, byte: u8, alias: Option<&str>) {
         let pv = PlatformVersion::latest();
         let identity = Identity::create_basic_identity(Identifier::from([byte; 32]), pv)
             .expect("basic identity");
@@ -625,7 +642,7 @@ mod tests {
             associated_operator_identity: None,
             associated_owner_key_id: None,
             identity_type: IdentityType::Masternode,
-            alias: None,
+            alias: alias.map(str::to_owned),
             private_keys: KeyStorage::default(),
             dpns_names: vec![],
             associated_wallets: BTreeMap::new(),
@@ -637,6 +654,24 @@ mod tests {
         };
         ctx.insert_local_qualified_identity(&qi, &None)
             .expect("seed masternode");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn nodes_are_sorted_case_insensitively_by_display_heading() {
+        let (ctx, _tmp) = offline_ctx().await;
+        seed_masternode(&ctx, 0x11, Some("Zulu"));
+        seed_masternode(&ctx, 0x22, Some("alpha"));
+        seed_masternode(&ctx, 0x44, None);
+
+        let fallback_heading = shorten_id(&Identifier::from([0x44; 32]).to_string(Encoding::Hex));
+        let screen = MasternodesScreen::new(&ctx);
+
+        assert_eq!(
+            screen.node_headings_for_test(),
+            vec![fallback_heading, "alpha".to_string(), "Zulu".to_string()]
+        );
+
+        ctx.wallet_backend().expect("backend").shutdown().await;
     }
 
     /// The list Refresh builds one `RefreshIdentity` per loaded node plus a
@@ -654,8 +689,8 @@ mod tests {
         );
 
         // Two nodes loaded → two RefreshIdentity + one trailing QueryDPNSContests.
-        seed_masternode(&ctx, 0x11);
-        seed_masternode(&ctx, 0x22);
+        seed_masternode(&ctx, 0x11, None);
+        seed_masternode(&ctx, 0x22, None);
         let screen = MasternodesScreen::new(&ctx);
         let AppAction::BackendTasks(tasks, mode) = screen.refresh_from_network() else {
             panic!("expected BackendTasks");
@@ -691,8 +726,8 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn node_pill_is_two_way_bound_with_the_detail_view() {
         let (ctx, _tmp) = offline_ctx().await;
-        seed_masternode(&ctx, 0x11);
-        seed_masternode(&ctx, 0x22);
+        seed_masternode(&ctx, 0x11, None);
+        seed_masternode(&ctx, 0x22, None);
         let mut screen = MasternodesScreen::new(&ctx);
 
         // On the grid, no node is in view: the pill offers both, selects none.
@@ -904,7 +939,7 @@ mod tests {
         // in the store and the task reported success, but this screen's
         // `display_task_result` never fired.
         let running = claim_dispatched_load(&ctx, &screen);
-        seed_masternode(&ctx, 0x33);
+        seed_masternode(&ctx, 0x33, None);
         running.loaded();
 
         screen.refresh_on_arrival();
@@ -957,7 +992,7 @@ mod tests {
         let (ctx, _tmp) = offline_ctx().await;
 
         // `other` is already loaded; `submitted` is the node whose load is running.
-        seed_masternode(&ctx, 0x66);
+        seed_masternode(&ctx, 0x66, None);
         let other = Identifier::from([0x66; 32]);
         let submitted = Identifier::from([0x55; 32]);
         let mut screen = MasternodesScreen::new(&ctx);
@@ -1083,7 +1118,7 @@ mod tests {
 
         // The task ran, inserted the node, then failed while sealing its keys.
         let running = claim_dispatched_load(&ctx, &screen);
-        seed_masternode(&ctx, 0xb2);
+        seed_masternode(&ctx, 0xb2, None);
         drop(running);
 
         screen.refresh_on_arrival();
@@ -1198,7 +1233,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn leaving_the_tab_discards_an_unsubmitted_voting_key() {
         let (ctx, _tmp) = offline_ctx().await;
-        seed_masternode(&ctx, 0xc5);
+        seed_masternode(&ctx, 0xc5, None);
         let mut screen = MasternodesScreen::new(&ctx);
         screen.open_detail(Identifier::from([0xc5; 32]));
 

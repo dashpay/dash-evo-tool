@@ -194,6 +194,9 @@ impl MasternodeLoadForm {
             // A fresh load rejects an already-loaded ProTxHash (§10.9) rather
             // than silently overwriting the existing node.
             load_mode: IdentityLoadMode::RejectIfExists,
+            // Stamped by the screen at dispatch: only it knows the record this
+            // submission opened, and only a parseable ProTxHash gets one.
+            load_token: None,
         }
     }
 

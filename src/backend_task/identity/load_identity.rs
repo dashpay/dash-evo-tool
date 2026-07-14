@@ -81,6 +81,7 @@ impl AppContext {
             selected_wallet_seed_hash,
             encryption_password,
             load_mode,
+            load_token,
         } = input;
 
         // Parse the identity ID. It names the load, so it has to be resolved before
@@ -117,7 +118,10 @@ impl AppContext {
         // only the explicit `loaded()` after the last fallible step records success.
         // Validating before the claim would leave a rejected load unreportable, and
         // the screen waiting on it stuck on "Loading…" for the rest of the session.
-        let load_guard = self.begin_identity_load(identity_id)?;
+        //
+        // The claim is made under this load's own token, so it reports into the
+        // record its dispatcher is waiting on — never one another load owns.
+        let load_guard = self.begin_identity_load(identity_id, load_token)?;
 
         // FR-8: validate the load-time encryption password up front, before the
         // network fetch, so a too-short password fails fast. The seal path
@@ -1002,6 +1006,7 @@ mod tests {
             selected_wallet_seed_hash: None,
             encryption_password: None,
             load_mode: IdentityLoadMode::RejectIfExists,
+            load_token: None,
         };
 
         let sdk = ctx.sdk();
@@ -1201,6 +1206,7 @@ mod tests {
             selected_wallet_seed_hash: None,
             encryption_password: None,
             load_mode: IdentityLoadMode::MergeIntoExisting,
+            load_token: None,
         };
 
         // The verify happens before the SDK fetch, so this resolves offline.
@@ -1265,6 +1271,7 @@ mod tests {
             selected_wallet_seed_hash: None,
             encryption_password: None,
             load_mode: IdentityLoadMode::Overwrite,
+            load_token: None,
         };
 
         let sdk = ctx.sdk();
@@ -1339,6 +1346,7 @@ mod tests {
             selected_wallet_seed_hash: None,
             encryption_password: Some(Secret::new("x")),
             load_mode: IdentityLoadMode::RejectIfExists,
+            load_token: Some(token),
         };
 
         let sdk = ctx.sdk();

@@ -456,7 +456,7 @@ impl MasternodesScreen {
                 self.view = MasternodesView::List;
                 AppAction::None
             }
-            LoadFormOutcome::Submit(input) => {
+            LoadFormOutcome::Submit(mut input) => {
                 // Gate on the identity actually submitted, not on what the form
                 // shows later: every field but the Load button stays editable
                 // while the load runs.
@@ -478,6 +478,9 @@ impl MasternodesScreen {
                                 .mark_identity_load_submitted(identity_id)
                                 .map(|token| PendingLoad { identity_id, token })
                         });
+                // Send the token with the load, so the task claims the record this
+                // screen is waiting on — and so no other load can claim it.
+                input.load_token = self.pending_load.map(|pending| pending.token);
                 AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::LoadIdentity(
                     *input,
                 )))
@@ -734,6 +737,19 @@ mod tests {
         screen.apply_load_outcome(outcome);
     }
 
+    /// Claim the identity for the load this screen dispatched, exactly as its own
+    /// task does: under the token the screen is waiting on. A claim taken under any
+    /// other token is a *foreign* load — the registry rejects it while this one is
+    /// outstanding, and it could never report into this screen's record.
+    fn claim_dispatched_load(
+        ctx: &Arc<AppContext>,
+        screen: &MasternodesScreen,
+    ) -> crate::context::identity_load_registry::IdentityLoadGuard {
+        let pending = screen.pending_load.expect("the screen dispatched a load");
+        ctx.begin_identity_load(pending.identity_id, Some(pending.token))
+            .expect("claim the load")
+    }
+
     /// Point the open form at another node — every field but the Load button
     /// stays editable while a load runs.
     fn retarget_open_form(screen: &mut MasternodesScreen, target: Identifier) {
@@ -786,7 +802,7 @@ mod tests {
         // The task ran and failed; it reported `Failed` before its error reached
         // the UI. The screen defers to the global banner, keeps the form open, and
         // re-enables submit.
-        drop(ctx.begin_identity_load(target).expect("claim the load"));
+        drop(claim_dispatched_load(&ctx, &screen));
         let handled = screen.display_task_error(&TaskError::MalformedProTxHash {
             input: "not-a-hash".to_string(),
         });
@@ -805,9 +821,7 @@ mod tests {
 
         // Resubmit, then succeed: the form closes and drops back to the list.
         submit_load(&mut screen, target);
-        ctx.begin_identity_load(target)
-            .expect("claim the load")
-            .loaded();
+        claim_dispatched_load(&ctx, &screen).loaded();
         screen.display_task_result(BackendTaskSuccessResult::LoadedIdentity(
             masternode_identity(&ctx, target),
         ));
@@ -869,7 +883,7 @@ mod tests {
         // The load fully applied while another screen was visible: the node landed
         // in the store and the task reported success, but this screen's
         // `display_task_result` never fired.
-        let running = ctx.begin_identity_load(target).expect("claim the load");
+        let running = claim_dispatched_load(&ctx, &screen);
         seed_masternode(&ctx, 0x33);
         running.loaded();
 
@@ -897,7 +911,7 @@ mod tests {
         let target = Identifier::from([0x44; 32]);
         submit_load(&mut screen, target);
         // The load task is running: it holds the identity's claim.
-        let _running = ctx.begin_identity_load(target).expect("claim the load");
+        let _running = claim_dispatched_load(&ctx, &screen);
 
         screen.refresh_on_arrival();
         assert!(
@@ -929,7 +943,7 @@ mod tests {
         let mut screen = MasternodesScreen::new(&ctx);
 
         submit_load(&mut screen, submitted);
-        let _running = ctx.begin_identity_load(submitted).expect("claim the load");
+        let _running = claim_dispatched_load(&ctx, &screen);
         retarget_open_form(&mut screen, other);
 
         screen.refresh_on_arrival();
@@ -958,7 +972,7 @@ mod tests {
 
         let target = Identifier::from([0x77; 32]);
         submit_load(&mut screen, target);
-        let _running = ctx.begin_identity_load(target).expect("claim the load");
+        let _running = claim_dispatched_load(&ctx, &screen);
 
         screen.apply_load_outcome(LoadFormOutcome::Cancel);
 
@@ -990,7 +1004,7 @@ mod tests {
         submit_load(&mut screen, target);
 
         // The load ran and failed while away; the node never landed.
-        drop(ctx.begin_identity_load(target).expect("claim the load"));
+        drop(claim_dispatched_load(&ctx, &screen));
         screen.refresh_on_arrival();
 
         assert!(
@@ -1048,7 +1062,7 @@ mod tests {
         submit_load(&mut screen, target);
 
         // The task ran, inserted the node, then failed while sealing its keys.
-        let running = ctx.begin_identity_load(target).expect("claim the load");
+        let running = claim_dispatched_load(&ctx, &screen);
         seed_masternode(&ctx, 0xb2);
         drop(running);
 

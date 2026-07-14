@@ -16,6 +16,7 @@ mod withdraw_from_identity;
 use super::{BackendTaskSuccessResult, FeeResult, TaskError};
 use crate::app::TaskResult;
 use crate::context::AppContext;
+use crate::context::identity_load_registry::IdentityLoadToken;
 use crate::model::qualified_identity::encrypted_key_storage::{KeyStorage, WalletDerivationPath};
 use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
 use crate::model::qualified_identity::{IdentityType, PrivateKeyTarget, QualifiedIdentity};
@@ -81,6 +82,13 @@ pub struct IdentityInputToLoad {
     pub encryption_password: Option<Secret>,
     /// How this load resolves against an already-stored identity of the same id.
     pub load_mode: IdentityLoadMode,
+    /// The registry record this load was dispatched under, for a caller that
+    /// marked it [`Submitted`](crate::context::identity_load_registry::IdentityLoadPhase::Submitted)
+    /// and is gating on it (the Masternodes load form). The load claims *that*
+    /// record and reports its outcome there, so the waiting screen follows this
+    /// task and no other. `None` for a caller that gates on nothing: the load then
+    /// opens a record of its own and can never adopt someone else's.
+    pub load_token: Option<IdentityLoadToken>,
 }
 
 /// One chosen identity key, public-only.

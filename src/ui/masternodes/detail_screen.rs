@@ -776,6 +776,9 @@ impl MasternodeDetailView {
             // In-place update: merge the new voting key into the already-loaded
             // node, preserving its Owner/Payout keys (§10.8). Never overwrite.
             load_mode: IdentityLoadMode::MergeIntoExisting,
+            // This view gates on nothing: the load opens a record of its own rather
+            // than adopting one another caller is waiting on.
+            load_token: None,
         };
         Some(AppAction::BackendTask(BackendTask::IdentityTask(
             IdentityTask::LoadIdentity(input),

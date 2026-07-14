@@ -404,12 +404,9 @@ impl ScreenLike for IdentityHubScreen {
                     MessageType::Success,
                 );
             }
-            // The counterpart answered while the row was on screen. Nothing to
-            // withdraw or accept — reload into the truth. The result names the
-            // contact, not the request, so every request guard is released and
-            // the reloaded lists decide what is still actionable.
+            // The counterpart answered while the row was on screen. Reload the
+            // authoritative lists; the unnamed request guard expires by timeout.
             BackendTaskSuccessResult::DashPayContactAlreadyEstablished(_) => {
-                self.contacts_state.clear_in_flight();
                 self.contacts_state.invalidate();
                 MessageBanner::set_global(
                     self.app_context.egui_ctx(),
@@ -421,11 +418,8 @@ impl ScreenLike for IdentityHubScreen {
         }
     }
 
-    fn display_task_error(&mut self, _error: &TaskError) -> bool {
-        // A failed Accept / Decline / Cancel must leave its row clickable again.
-        // The error carries no request ID, so every guard is released: the worst
-        // case is a row the user can retry, against a row stuck forever.
-        self.contacts_state.clear_in_flight();
+    fn display_task_error(&mut self, error: &TaskError) -> bool {
+        release_request_guard_for_error(&mut self.contacts_state, error);
 
         // Clear any dangling pending_save so a failed UpdateProfile doesn't
         // leave a stale snapshot around. If a later DashPayProfileUpdated from
@@ -438,6 +432,14 @@ impl ScreenLike for IdentityHubScreen {
         // Let AppState render the default error banner — the hub has no
         // other special-case error handling of its own yet.
         false
+    }
+}
+
+/// Release only the request-card guard named by a typed task error. Unmatched
+/// guards remain protected until their result arrives or their timeout expires.
+fn release_request_guard_for_error(state: &mut super::contacts::ContactsState, error: &TaskError) {
+    if let TaskError::DashPayContactRequestActionFailed { request_id, .. } = error {
+        state.release_request(request_id);
     }
 }
 
@@ -458,6 +460,7 @@ fn applies_to_selected_identity(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::state::contacts_view::ContactsState;
 
     // Unit tests for the screen's pure state manipulation. Rendering is
     // covered by the kittest integration tests under
@@ -520,5 +523,34 @@ mod tests {
     #[test]
     fn a_result_arriving_with_no_identity_selected_is_discarded() {
         assert!(!applies_to_selected_identity(None, &id(1)));
+    }
+
+    #[test]
+    fn unrelated_task_error_does_not_release_in_flight_paid_accept_guard() {
+        let mut state = ContactsState::default();
+        state.begin_request(id(2));
+
+        release_request_guard_for_error(&mut state, &TaskError::DocumentNotFound);
+
+        assert!(
+            state.is_in_flight(&id(2)),
+            "a concurrent load error must not enable a second paid Accept"
+        );
+    }
+
+    #[test]
+    fn matching_request_error_releases_only_its_guard() {
+        let mut state = ContactsState::default();
+        state.begin_request(id(2));
+        state.begin_request(id(3));
+        let error = TaskError::DashPayContactRequestActionFailed {
+            request_id: id(2),
+            source: Box::new(TaskError::DocumentNotFound),
+        };
+
+        release_request_guard_for_error(&mut state, &error);
+
+        assert!(!state.is_in_flight(&id(2)));
+        assert!(state.is_in_flight(&id(3)));
     }
 }

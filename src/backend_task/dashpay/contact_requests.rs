@@ -860,26 +860,30 @@ pub async fn reject_contact_request(
     )
     .await?;
 
-    // Mirror the decline into the DET-local sidecar so `DashpayView` surfaces
-    // the request as "rejected" until a fresh outgoing/incoming pair
-    // establishes a contact. DashPay has no on-chain "rejected" flag, so the
-    // sidecar is the source of truth here.
-    //
-    // The reader keys on the counterparty's identity id under the acting
-    // identity's own scope (see `DashpayView::contact_requests`), so we pass
-    // both `owner_id` and the original sender identity, not the request
-    // document id. The marker is incoming-only: it must not silence a request
-    // we later send to that same person.
-    if let Ok(backend) = app_context.wallet_backend()
-        && let Err(e) = backend.dashpay_mark_declined(&owner_id, &from_identity_id)
-    {
-        tracing::debug!(
-            from = %from_identity_id.to_string(Encoding::Base58),
-            error = ?e,
-            "DashPay decline sidecar write failed; request will still display as pending"
-        );
-    }
+    // DashPay has no on-chain "rejected" flag, so a DET-local marker retires the
+    // row. `DashpayView::contact_requests` reads it by counterparty id under the
+    // acting identity's scope, and it is incoming-only: it must not silence a
+    // request we later send to that same person.
+    complete_rejection(request_id, || {
+        app_context
+            .wallet_backend()?
+            .dashpay_mark_declined(&owner_id, &from_identity_id)
+    })
+}
 
+/// Return rejection success only after the local marker that retires the row
+/// has been stored. The closure seam keeps the failure path deterministic in tests.
+///
+/// # Errors
+///
+/// The marker is the only thing that retires the row — Platform keeps the
+/// `contactRequest` document forever — so a failed write must surface rather
+/// than be reported as a completed rejection.
+fn complete_rejection(
+    request_id: Identifier,
+    mark_declined: impl FnOnce() -> Result<(), TaskError>,
+) -> Result<BackendTaskSuccessResult, TaskError> {
+    mark_declined()?;
     Ok(BackendTaskSuccessResult::DashPayContactRequestRejected(
         request_id,
     ))
@@ -1391,5 +1395,19 @@ mod tests {
             cancel_flow(&ops).await.is_err(),
             "a withdrawal the sidecar refused must surface as an error, not as success"
         );
+    }
+
+    #[test]
+    fn failed_mark_declined_write_surfaces_error_instead_of_rejected() {
+        let result = complete_rejection(id(7), || {
+            Err(TaskError::DashpaySidecarStorage {
+                source: crate::wallet_backend::KvAdapterError::Truncated,
+            })
+        });
+
+        assert!(matches!(
+            result,
+            Err(TaskError::DashpaySidecarStorage { .. })
+        ));
     }
 }

@@ -1035,6 +1035,9 @@ impl ScreenLike for ContactRequests {
 /// report the error.
 fn classify_request_error(error: &TaskError) -> Option<DashPayError> {
     match error {
+        TaskError::DashPayContactRequestActionFailed { source, .. } => {
+            classify_request_error(source)
+        }
         TaskError::DashPay(DashPayError::MissingEncryptionKey) => {
             Some(DashPayError::MissingEncryptionKey)
         }
@@ -1061,6 +1064,18 @@ mod tests {
         let mapped =
             classify_request_error(&TaskError::DashPay(DashPayError::MissingDecryptionKey));
         assert!(matches!(mapped, Some(DashPayError::MissingDecryptionKey)));
+    }
+
+    #[test]
+    fn classifies_a_missing_key_carried_by_a_request_action_failure() {
+        let mapped = classify_request_error(&TaskError::DashPayContactRequestActionFailed {
+            request_id: Identifier::from([2; 32]),
+            source: Box::new(TaskError::DashPay(DashPayError::MissingEncryptionKey)),
+        });
+        assert!(
+            matches!(mapped, Some(DashPayError::MissingEncryptionKey)),
+            "wrapping an accept failure must not cost the user the Add Encryption Key button"
+        );
     }
 
     #[test]

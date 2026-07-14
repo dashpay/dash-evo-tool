@@ -1112,9 +1112,7 @@ mod tests {
         let clicked = Some((id(2), RequestAction::Cancelled));
 
         dispatch_request(&mut state, &identity, clicked);
-        // What the hub does when a task fails: it has no request ID to key on,
-        // so it releases every guard rather than stranding a row.
-        state.clear_in_flight();
+        state.release_request(&id(2));
 
         assert_ne!(
             dispatch_request(&mut state, &identity, clicked),

@@ -1,6 +1,6 @@
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::dashpay::errors::DashPayError;
-use crate::backend_task::error::TaskError;
+use crate::backend_task::error::{ContactInfoReadError, TaskError};
 use crate::context::AppContext;
 use crate::model::dashpay::AcceptedAccounts;
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -168,28 +168,40 @@ impl ContactInfoPrivateData {
 /// [`AcceptedAccounts`] choice against the document already on Platform.
 ///
 /// [`AcceptedAccounts::Preserve`] reads the stored list back out of the existing
-/// document's encrypted `privateData`. A document that is absent, unreadable, or
-/// written in an unknown format yields an empty list: this is a brand-new
-/// contact, or one whose accounts this client could never have shown the user
-/// anyway — neither is a reason to fail the unhide or rename the user asked for.
+/// document's encrypted `privateData`. Only an absent document yields an empty
+/// list. A present document that cannot be read aborts the write so its existing
+/// accepted-account list is never replaced with defaults.
 fn resolve_accepted_accounts(
     requested: AcceptedAccounts,
     existing: Option<&Document>,
     private_data_key: &[u8; 32],
-) -> Vec<u32> {
+) -> Result<Vec<u32>, TaskError> {
     match requested {
-        AcceptedAccounts::Replace(accounts) => accounts,
+        AcceptedAccounts::Replace(accounts) => Ok(accounts),
         AcceptedAccounts::Preserve => {
-            let Some(Value::Bytes(encrypted)) =
-                existing.and_then(|doc| doc.properties().get("privateData"))
-            else {
-                return Vec::new();
+            let Some(existing) = existing else {
+                return Ok(Vec::new());
             };
-            super::contacts::decrypt_private_data(encrypted, private_data_key)
-                .ok()
-                .and_then(|plaintext| ContactInfoPrivateData::deserialize(&plaintext))
-                .map(|data| data.accepted_accounts)
-                .unwrap_or_default()
+            let Value::Bytes(encrypted) = existing.properties().get("privateData").ok_or(
+                TaskError::DashPayContactInfoRead {
+                    source: ContactInfoReadError::MissingPrivateData,
+                },
+            )?
+            else {
+                return Err(TaskError::DashPayContactInfoRead {
+                    source: ContactInfoReadError::MissingPrivateData,
+                });
+            };
+            let plaintext = super::contacts::decrypt_private_data(encrypted, private_data_key)
+                .map_err(|_| TaskError::DashPayContactInfoRead {
+                    source: ContactInfoReadError::DecryptFailed,
+                })?;
+            let data = ContactInfoPrivateData::deserialize(&plaintext).ok_or(
+                TaskError::DashPayContactInfoRead {
+                    source: ContactInfoReadError::DeserializeFailed,
+                },
+            )?;
+            Ok(data.accepted_accounts)
         }
     }
 }
@@ -439,7 +451,7 @@ pub async fn create_or_update_contact_info(
         accepted_accounts.into(),
         found_existing_doc.as_ref(),
         &private_data_key,
-    );
+    )?;
 
     // Encrypt private data
     let encrypted_private_data =
@@ -621,8 +633,14 @@ mod tests {
         let encrypted = encrypt_private_data(&private_data.serialize().expect("serialize"), key)
             .expect("encrypt");
 
+        contact_info_document(Some(Value::Bytes(encrypted)))
+    }
+
+    fn contact_info_document(private_data: Option<Value>) -> Document {
         let mut properties = BTreeMap::new();
-        properties.insert("privateData".to_string(), Value::Bytes(encrypted));
+        if let Some(private_data) = private_data {
+            properties.insert("privateData".to_string(), private_data);
+        }
         DppDocument::V0(DocumentV0 {
             id: id(1),
             owner_id: id(2),
@@ -703,7 +721,8 @@ mod tests {
         let existing = stored_contact_info(vec![0, 4, 9], &KEY);
 
         assert_eq!(
-            resolve_accepted_accounts(AcceptedAccounts::Preserve, Some(&existing), &KEY),
+            resolve_accepted_accounts(AcceptedAccounts::Preserve, Some(&existing), &KEY)
+                .expect("stored accounts must be readable"),
             vec![0, 4, 9],
             "preserving must return the whole stored list, not the first entry"
         );
@@ -714,12 +733,14 @@ mod tests {
         let existing = stored_contact_info(vec![0, 4, 9], &KEY);
 
         assert_eq!(
-            resolve_accepted_accounts(AcceptedAccounts::Replace(vec![2]), Some(&existing), &KEY),
+            resolve_accepted_accounts(AcceptedAccounts::Replace(vec![2]), Some(&existing), &KEY)
+                .expect("an explicit replacement does not read stored data"),
             vec![2],
             "a caller that supplies a list owns it outright"
         );
         assert!(
             resolve_accepted_accounts(AcceptedAccounts::Replace(vec![]), Some(&existing), &KEY)
+                .expect("an explicit replacement does not read stored data")
                 .is_empty(),
             "an explicit empty list clears the stored accounts"
         );
@@ -728,19 +749,51 @@ mod tests {
     #[test]
     fn preserving_a_contact_with_no_stored_document_yields_no_accounts() {
         assert!(
-            resolve_accepted_accounts(AcceptedAccounts::Preserve, None, &KEY).is_empty(),
+            resolve_accepted_accounts(AcceptedAccounts::Preserve, None, &KEY)
+                .expect("an absent document is the only empty preserve case")
+                .is_empty(),
             "a first-ever contactInfo has nothing to preserve"
         );
     }
 
     #[test]
-    fn unreadable_private_data_preserves_nothing_instead_of_failing_the_write() {
+    fn unreadable_private_data_aborts_the_write() {
         let existing = stored_contact_info(vec![0, 4, 9], &OTHER_KEY);
 
         assert!(
-            resolve_accepted_accounts(AcceptedAccounts::Preserve, Some(&existing), &KEY).is_empty(),
-            "a privateData blob this client cannot decrypt must not block the write"
+            matches!(
+                resolve_accepted_accounts(AcceptedAccounts::Preserve, Some(&existing), &KEY),
+                Err(TaskError::DashPayContactInfoRead {
+                    source: ContactInfoReadError::DecryptFailed,
+                })
+            ),
+            "an undecryptable present payload must abort before it can be overwritten"
         );
+    }
+
+    #[test]
+    fn missing_private_data_aborts_the_write() {
+        let existing = contact_info_document(None);
+
+        assert!(matches!(
+            resolve_accepted_accounts(AcceptedAccounts::Preserve, Some(&existing), &KEY),
+            Err(TaskError::DashPayContactInfoRead {
+                source: ContactInfoReadError::MissingPrivateData,
+            })
+        ));
+    }
+
+    #[test]
+    fn undecodable_private_data_aborts_the_write() {
+        let encrypted = encrypt_private_data(&[0, 0, 0, 0], &KEY).expect("encrypt malformed data");
+        let existing = contact_info_document(Some(Value::Bytes(encrypted)));
+
+        assert!(matches!(
+            resolve_accepted_accounts(AcceptedAccounts::Preserve, Some(&existing), &KEY),
+            Err(TaskError::DashPayContactInfoRead {
+                source: ContactInfoReadError::DeserializeFailed,
+            })
+        ));
     }
 
     #[test]

@@ -221,21 +221,30 @@ impl AppContext {
             DashPayTask::AcceptContactRequest {
                 identity,
                 request_id,
-            } => Ok(
-                contact_requests::accept_contact_request(self, sdk, identity, request_id).await?,
-            ),
+            } => contact_requests::accept_contact_request(self, sdk, identity, request_id)
+                .await
+                .map_err(|source| TaskError::DashPayContactRequestActionFailed {
+                    request_id,
+                    source: Box::new(source),
+                }),
             DashPayTask::RejectContactRequest {
                 identity,
                 request_id,
-            } => Ok(
-                contact_requests::reject_contact_request(self, sdk, identity, request_id).await?,
-            ),
+            } => contact_requests::reject_contact_request(self, sdk, identity, request_id)
+                .await
+                .map_err(|source| TaskError::DashPayContactRequestActionFailed {
+                    request_id,
+                    source: Box::new(source),
+                }),
             DashPayTask::CancelContactRequest {
                 identity,
                 request_id,
-            } => Ok(
-                contact_requests::cancel_contact_request(self, sdk, identity, request_id).await?,
-            ),
+            } => contact_requests::cancel_contact_request(self, sdk, identity, request_id)
+                .await
+                .map_err(|source| TaskError::DashPayContactRequestActionFailed {
+                    request_id,
+                    source: Box::new(source),
+                }),
             DashPayTask::LoadPaymentHistory { identity } => {
                 let identity_id = identity.identity.id();
                 // Refresh-style action: kick upstream before reading so the

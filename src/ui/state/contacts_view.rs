@@ -12,7 +12,10 @@ use crate::ui::identity::identity_pill::display_label;
 use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::{Document, Identifier};
-use std::collections::HashSet;
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
+
+const REQUEST_IN_FLIGHT_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
 /// A single cached contact-request entry, derived from a raw
 /// `DashPayContactRequests` result document.
@@ -58,7 +61,7 @@ pub struct ContactsState {
     /// request ID. Each of those actions is a signed, paid-for state transition,
     /// so a row keeps its buttons disabled until its result lands — a second
     /// click would buy a second transition.
-    in_flight: HashSet<Identifier>,
+    in_flight: HashMap<Identifier, Instant>,
 }
 
 impl ContactsState {
@@ -211,24 +214,27 @@ impl ContactsState {
     /// dispatch; `false` means an action for that request is already running and
     /// the caller must not dispatch a second one.
     pub fn begin_request(&mut self, request_id: Identifier) -> bool {
-        self.in_flight.insert(request_id)
+        let now = Instant::now();
+        if self.in_flight.get(&request_id).is_some_and(|started| {
+            now.saturating_duration_since(*started) < REQUEST_IN_FLIGHT_TIMEOUT
+        }) {
+            return false;
+        }
+        self.in_flight.insert(request_id, now);
+        true
     }
 
     /// Whether an action for this request is already running. Drives the row's
     /// disabled state, so the user sees why the buttons do not respond.
     pub fn is_in_flight(&self, request_id: &Identifier) -> bool {
-        self.in_flight.contains(request_id)
+        self.in_flight.get(request_id).is_some_and(|started| {
+            Instant::now().saturating_duration_since(*started) < REQUEST_IN_FLIGHT_TIMEOUT
+        })
     }
 
-    /// Release every in-flight guard.
-    ///
-    /// Success releases a single request by ID through [`remove_request`]. A
-    /// failure carries no request ID, so the hub releases all of them: a row the
-    /// user can click again is right, a row stuck forever is not.
-    ///
-    /// [`remove_request`]: Self::remove_request
-    pub fn clear_in_flight(&mut self) {
-        self.in_flight.clear();
+    /// Release one request's guard after its matching task reports a failure.
+    pub fn release_request(&mut self, request_id: &Identifier) {
+        self.in_flight.remove(request_id);
     }
 }
 
@@ -603,16 +609,29 @@ mod tests {
     }
 
     #[test]
-    fn clearing_the_guards_makes_every_row_actionable_again() {
+    fn releasing_one_guard_leaves_other_requests_protected() {
         let mut state = ContactsState::default();
         state.begin_request(id(2));
+        state.begin_request(id(3));
 
-        state.clear_in_flight();
+        state.release_request(&id(2));
+
+        assert!(!state.is_in_flight(&id(2)));
+        assert!(state.is_in_flight(&id(3)));
+    }
+
+    #[test]
+    fn an_unmatched_guard_expires_after_the_timeout() {
+        let mut state = ContactsState::default();
+        state.in_flight.insert(
+            id(2),
+            Instant::now() - REQUEST_IN_FLIGHT_TIMEOUT - Duration::from_secs(1),
+        );
 
         assert!(!state.is_in_flight(&id(2)));
         assert!(
             state.begin_request(id(2)),
-            "after a failure the user must be able to retry the row"
+            "a lost task result must not disable the request forever"
         );
     }
 

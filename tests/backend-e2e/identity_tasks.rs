@@ -431,6 +431,7 @@ async fn tc_027_load_identity() {
         selected_wallet_seed_hash: Some(si.wallet_seed_hash),
         encryption_password: None,
         load_mode: IdentityLoadMode::Overwrite,
+        load_token: None,
     };
 
     let result = run_task(
@@ -538,6 +539,7 @@ async fn tc_030_load_nonexistent_identity() {
         selected_wallet_seed_hash: None,
         encryption_password: None,
         load_mode: IdentityLoadMode::Overwrite,
+        load_token: None,
     };
 
     let result = run_task(

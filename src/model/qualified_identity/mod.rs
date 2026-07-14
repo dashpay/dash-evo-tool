@@ -104,6 +104,18 @@ pub struct MasternodeKeyPresence {
     pub payout: bool,
 }
 
+/// An `OWNER`-key withdrawal was asked to pay an address other than the
+/// identity's registered payout address, which Platform does not permit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OwnerKeyWithdrawalNotAllowed;
+
+/// No key could be resolved to sign an identity credit withdrawal: the
+/// explicitly requested key is unknown, disabled, or not one this app can sign
+/// with, or — when no key was requested — the identity holds no active,
+/// locally-signable `TRANSFER`/`OWNER` key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NoUsableWithdrawalKey;
+
 #[derive(Debug, Encode, Decode, Clone, Hash, Ord, PartialOrd, Eq, PartialEq)]
 #[allow(clippy::enum_variant_names)]
 pub enum PrivateKeyTarget {
@@ -845,6 +857,12 @@ impl QualifiedIdentity {
 
         // Check the main identity's public keys
         for (target, public_key) in self.private_keys.identity_public_keys() {
+            // Platform rejects signing with a disabled key. Rotating a masternode
+            // payout address disables the old TRANSFER key and appends a new active
+            // one, so a rotated identity holds both — only the active key is signable.
+            if public_key.identity_public_key.is_disabled() {
+                continue;
+            }
             match (self.identity_type, target) {
                 (IdentityType::User, PrivateKeyTarget::PrivateKeyOnMainIdentity) => {
                     if public_key.identity_public_key.purpose() == Purpose::TRANSFER {
@@ -885,6 +903,93 @@ impl QualifiedIdentity {
                     .find(|qk| qk.identity_public_key.purpose() == Purpose::OWNER)
             })
             .copied()
+    }
+
+    /// Resolves the effective key to sign an identity credit withdrawal,
+    /// returning its [`KeyID`].
+    ///
+    /// `requested` is the caller's explicit key choice, or `None` to auto-select.
+    /// Resolution runs against `self.identity`, which the caller must have
+    /// refreshed from Platform first: a key disabled on-chain since the identity
+    /// was last loaded is rejected here rather than reaching signing. Only keys
+    /// whose private material this app holds and whose purpose is `TRANSFER`
+    /// (preferred) or `OWNER` are eligible, mirroring Platform's
+    /// `TransferPreferred` selection.
+    ///
+    /// An explicit `requested` id that is unknown, disabled, or not locally
+    /// signable is rejected — never silently replaced with a different key.
+    /// Returns [`NoUsableWithdrawalKey`] when nothing eligible remains, so the
+    /// caller can surface a clear error instead of letting the SDK pick a key
+    /// (which would allow a disabled key or an unintended `OWNER` fallback).
+    pub fn resolve_withdrawal_signing_key(
+        &self,
+        requested: Option<KeyID>,
+    ) -> Result<KeyID, NoUsableWithdrawalKey> {
+        // Locally-held TRANSFER/OWNER keys that are also active in the current
+        // (refreshed) identity snapshot. `available_withdrawal_keys` filters on
+        // the stored copy's disabled flag; the extra check catches a key that was
+        // disabled on-chain after this identity was loaded.
+        let usable: Vec<&QualifiedIdentityPublicKey> = self
+            .available_withdrawal_keys()
+            .into_iter()
+            .filter(|qk| {
+                matches!(
+                    self.identity.get_public_key_by_id(qk.identity_public_key.id()),
+                    Some(current) if !current.is_disabled()
+                )
+            })
+            .collect();
+
+        if let Some(requested_id) = requested {
+            return usable
+                .iter()
+                .any(|qk| qk.identity_public_key.id() == requested_id)
+                .then_some(requested_id)
+                .ok_or(NoUsableWithdrawalKey);
+        }
+
+        usable
+            .iter()
+            .find(|qk| qk.identity_public_key.purpose() == Purpose::TRANSFER)
+            .or_else(|| {
+                usable
+                    .iter()
+                    .find(|qk| qk.identity_public_key.purpose() == Purpose::OWNER)
+            })
+            .map(|qk| qk.identity_public_key.id())
+            .ok_or(NoUsableWithdrawalKey)
+    }
+
+    /// Resolves the output address to pass to a withdrawal, enforcing Platform's
+    /// rule that an `OWNER`-key withdrawal must carry no output script and is
+    /// routed to the identity's registered payout address.
+    ///
+    /// For a non-`OWNER` signing key the requested address passes through
+    /// unchanged. For an `OWNER` key: a `None` request, or one that already
+    /// equals the registered payout address, resolves to `None` (Platform pays
+    /// the registered payout address). A request for any other address returns
+    /// [`OwnerKeyWithdrawalNotAllowed`] — the owner key cannot pay it, and
+    /// silently redirecting to the payout address would send funds elsewhere
+    /// than the user asked.
+    pub fn resolve_withdrawal_output(
+        &self,
+        signing_key_purpose: Option<Purpose>,
+        requested: Option<Address>,
+        network: Network,
+    ) -> Result<Option<Address>, OwnerKeyWithdrawalNotAllowed> {
+        if signing_key_purpose != Some(Purpose::OWNER) {
+            return Ok(requested);
+        }
+        match requested {
+            None => Ok(None),
+            Some(address) => {
+                if self.masternode_payout_address(network).as_ref() == Some(&address) {
+                    Ok(None)
+                } else {
+                    Err(OwnerKeyWithdrawalNotAllowed)
+                }
+            }
+        }
     }
 
     pub fn available_transfer_keys(&self) -> Vec<&QualifiedIdentityPublicKey> {
@@ -1197,6 +1302,249 @@ mod withdrawal_key_tests {
         );
         let selected = qi.default_withdrawal_key().expect("a key");
         assert_eq!(selected.identity_public_key.purpose(), Purpose::TRANSFER);
+    }
+
+    fn disabled_key(id: KeyID, purpose: Purpose) -> IdentityPublicKey {
+        let mut k = key(id, purpose);
+        k.set_disabled_at(1);
+        k
+    }
+
+    /// Repro for the withdrawal disabled-key bug: rotating a masternode payout
+    /// address disables the original `TRANSFER` key (id 0) and appends a new
+    /// active one at a higher id. The disabled key must be skipped so the
+    /// withdrawal signs with the active key Platform still accepts.
+    #[test]
+    fn disabled_transfer_key_is_skipped_for_active() {
+        let disabled = disabled_key(0, Purpose::TRANSFER);
+        let active = key(1, Purpose::TRANSFER);
+        let qi = build_identity(
+            IdentityType::Masternode,
+            vec![disabled.clone(), active.clone()],
+            vec![disabled, active],
+        );
+        let selected = qi.default_withdrawal_key().expect("a key");
+        assert_eq!(selected.identity_public_key.id(), 1);
+        assert!(!selected.identity_public_key.is_disabled());
+    }
+
+    #[test]
+    fn available_withdrawal_keys_excludes_disabled() {
+        let disabled = disabled_key(0, Purpose::TRANSFER);
+        let active = key(1, Purpose::TRANSFER);
+        let qi = build_identity(
+            IdentityType::Masternode,
+            vec![disabled.clone(), active.clone()],
+            vec![disabled, active],
+        );
+        let ids: Vec<KeyID> = qi
+            .available_withdrawal_keys()
+            .iter()
+            .map(|qk| qk.identity_public_key.id())
+            .collect();
+        assert_eq!(ids, vec![1]);
+    }
+
+    /// A wholly disabled key set leaves no signable withdrawal key.
+    #[test]
+    fn all_disabled_yields_no_withdrawal_key() {
+        let disabled = disabled_key(0, Purpose::TRANSFER);
+        let qi = build_identity(
+            IdentityType::Masternode,
+            vec![disabled.clone()],
+            vec![disabled],
+        );
+        assert!(qi.default_withdrawal_key().is_none());
+        assert!(qi.available_withdrawal_keys().is_empty());
+    }
+
+    /// A loaded enabled TRANSFER key is preferred over a lower-id OWNER key, so
+    /// an arbitrary-address withdrawal never defaults to the OWNER key (which
+    /// Platform rejects when an output script is present).
+    #[test]
+    fn active_transfer_preferred_over_lower_id_owner() {
+        let disabled_transfer = disabled_key(0, Purpose::TRANSFER);
+        let owner = key(1, Purpose::OWNER);
+        let active_transfer = key(2, Purpose::TRANSFER);
+        let qi = build_identity(
+            IdentityType::Masternode,
+            vec![
+                disabled_transfer.clone(),
+                owner.clone(),
+                active_transfer.clone(),
+            ],
+            vec![disabled_transfer, owner, active_transfer],
+        );
+        let selected = qi.default_withdrawal_key().expect("a key");
+        assert_eq!(selected.identity_public_key.id(), 2);
+        assert_eq!(selected.identity_public_key.purpose(), Purpose::TRANSFER);
+    }
+
+    /// Auto-select (no explicit id) resolves the active TRANSFER key, matching
+    /// the SDK's `TransferPreferred` intent but restricted to keys the signer
+    /// can actually use.
+    #[test]
+    fn resolve_signing_key_auto_selects_active_transfer() {
+        let transfer = key(1, Purpose::TRANSFER);
+        let qi = build_identity(IdentityType::User, vec![transfer.clone()], vec![transfer]);
+        assert_eq!(qi.resolve_withdrawal_signing_key(None), Ok(1));
+    }
+
+    /// A key active in the stored copy but disabled in the refreshed on-chain
+    /// identity must not be auto-selected — the exact case the SDK's own
+    /// selection would sign with and fail. The active key is chosen instead.
+    #[test]
+    fn resolve_signing_key_skips_key_disabled_after_refresh() {
+        // On-chain (refreshed): id 1 disabled, id 2 active.
+        // Stored copy: both look active (stale) — the resolver must consult the
+        // refreshed identity, not the stored disabled flag.
+        let qi = build_identity(
+            IdentityType::User,
+            vec![
+                disabled_key(1, Purpose::TRANSFER),
+                key(2, Purpose::TRANSFER),
+            ],
+            vec![key(1, Purpose::TRANSFER), key(2, Purpose::TRANSFER)],
+        );
+        assert_eq!(qi.resolve_withdrawal_signing_key(None), Ok(2));
+    }
+
+    /// An explicitly requested key that is disabled on-chain after refresh is
+    /// rejected, never silently swapped for another key.
+    #[test]
+    fn resolve_signing_key_rejects_explicit_disabled_key() {
+        let qi = build_identity(
+            IdentityType::User,
+            vec![
+                disabled_key(1, Purpose::TRANSFER),
+                key(2, Purpose::TRANSFER),
+            ],
+            vec![key(1, Purpose::TRANSFER), key(2, Purpose::TRANSFER)],
+        );
+        assert_eq!(
+            qi.resolve_withdrawal_signing_key(Some(1)),
+            Err(NoUsableWithdrawalKey)
+        );
+    }
+
+    /// An explicitly requested key the signer does not hold locally is rejected.
+    #[test]
+    fn resolve_signing_key_rejects_unknown_explicit_key() {
+        let transfer = key(1, Purpose::TRANSFER);
+        let qi = build_identity(IdentityType::User, vec![transfer.clone()], vec![transfer]);
+        assert_eq!(
+            qi.resolve_withdrawal_signing_key(Some(99)),
+            Err(NoUsableWithdrawalKey)
+        );
+    }
+
+    /// A valid explicit request resolves to that same key.
+    #[test]
+    fn resolve_signing_key_honors_valid_explicit_request() {
+        let owner = key(1, Purpose::OWNER);
+        let transfer = key(2, Purpose::TRANSFER);
+        let qi = build_identity(
+            IdentityType::Masternode,
+            vec![owner.clone(), transfer.clone()],
+            vec![owner, transfer],
+        );
+        assert_eq!(qi.resolve_withdrawal_signing_key(Some(1)), Ok(1));
+    }
+
+    /// With no usable key at all, resolution fails so the caller surfaces a
+    /// clear error instead of the SDK picking a key that cannot sign.
+    #[test]
+    fn resolve_signing_key_errors_when_none_usable() {
+        let ghost = key(1, Purpose::TRANSFER);
+        // On-chain only; no private material held.
+        let qi = build_identity(IdentityType::User, vec![ghost], vec![]);
+        assert_eq!(
+            qi.resolve_withdrawal_signing_key(None),
+            Err(NoUsableWithdrawalKey)
+        );
+    }
+
+    fn payout_key(id: KeyID, hash: [u8; 20]) -> IdentityPublicKey {
+        let mut k = key(id, Purpose::TRANSFER);
+        k.set_key_type(KeyType::ECDSA_HASH160);
+        k.set_data(BinaryData::new(hash.to_vec()));
+        k
+    }
+
+    fn addr(hash: [u8; 20]) -> Address {
+        Address::new(
+            Network::Testnet,
+            Payload::PubkeyHash(PubkeyHash::from_byte_array(hash)),
+        )
+    }
+
+    /// Repro for the owner-key withdrawal bug: Platform rejects an owner-key
+    /// withdrawal that carries an output script. When only the OWNER key is
+    /// loaded and the user targets the registered payout address, the output
+    /// script must be omitted so Platform routes to the payout address.
+    #[test]
+    fn owner_key_withdrawal_to_payout_omits_output_script() {
+        let owner = key(1, Purpose::OWNER);
+        let payout = payout_key(2, [0x11; 20]);
+        let qi = build_identity(
+            IdentityType::Masternode,
+            vec![owner.clone(), payout],
+            vec![owner],
+        );
+        let payout_addr = qi
+            .masternode_payout_address(Network::Testnet)
+            .expect("payout address");
+
+        assert_eq!(
+            qi.resolve_withdrawal_output(
+                Some(Purpose::OWNER),
+                Some(payout_addr),
+                Network::Testnet,
+            ),
+            Ok(None),
+        );
+        assert_eq!(
+            qi.resolve_withdrawal_output(Some(Purpose::OWNER), None, Network::Testnet),
+            Ok(None),
+        );
+    }
+
+    #[test]
+    fn owner_key_withdrawal_to_other_address_is_rejected() {
+        let owner = key(1, Purpose::OWNER);
+        let payout = payout_key(2, [0x11; 20]);
+        let qi = build_identity(
+            IdentityType::Masternode,
+            vec![owner.clone(), payout],
+            vec![owner],
+        );
+        assert_eq!(
+            qi.resolve_withdrawal_output(
+                Some(Purpose::OWNER),
+                Some(addr([0x22; 20])),
+                Network::Testnet,
+            ),
+            Err(OwnerKeyWithdrawalNotAllowed),
+        );
+    }
+
+    #[test]
+    fn transfer_key_withdrawal_passes_requested_address_through() {
+        let transfer = payout_key(2, [0x11; 20]);
+        let qi = build_identity(
+            IdentityType::Masternode,
+            vec![transfer.clone()],
+            vec![transfer],
+        );
+        let requested = addr([0x22; 20]);
+        assert_eq!(
+            qi.resolve_withdrawal_output(
+                Some(Purpose::TRANSFER),
+                Some(requested.clone()),
+                Network::Testnet,
+            ),
+            Ok(Some(requested)),
+        );
     }
 }
 

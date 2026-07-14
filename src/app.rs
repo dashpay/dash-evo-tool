@@ -92,6 +92,15 @@ pub const MIGRATION_UNREADABLE_ACK_ACTION_ID: &str =
 /// coverage.
 pub const SPV_CONTINUE_BACKGROUND_ACTION: &str = "spv:sync:continue_background";
 
+/// The root screen every fallback route lands on: an unregistered persisted
+/// screen at startup, and live de-gating of a role-gated tab.
+///
+/// It must be a screen the left nav actually carries, and carries at every role
+/// — a user dropped onto a screen with no nav entry has no highlighted tab and
+/// no way onward. `left_panel::tests::fallback_root_screen_has_an_ungated_nav_entry`
+/// locks that invariant.
+pub(crate) const FALLBACK_ROOT_SCREEN: RootScreenType = RootScreenType::RootScreenIdentityHub;
+
 /// Plain, jargon-free descriptions for the SPV-sync block (Everyday-User rule:
 /// no "SPV"/"headers"/"masternodes"/raw heights/percentages — the jargon-free
 /// "Step N of 5" counter carries the granularity). Complete sentences (NFR-2).
@@ -175,15 +184,16 @@ pub fn migration_unreadable_votes_text(count: u32) -> String {
 
 /// User-facing banner copy for a migration that finished the wallet drain but
 /// could not decode `count` identities. Their keys are therefore not loaded, so
-/// the sentence names the action that restores them. Kept separate from the
-/// scheduled-votes copy because the remedy is different — load an identity, not
-/// re-schedule a vote. The previous version's data is never deleted, so the
-/// re-import is always possible. Exposed for kittest coverage.
+/// the sentence names both the screen and the control that restore them — a user
+/// who has never opened that flow cannot act on "load them again" alone. Kept
+/// separate from the scheduled-votes copy because the remedy is different — load
+/// an identity, not re-schedule a vote. The previous version's data is never
+/// deleted, so the re-import is always possible. Exposed for kittest coverage.
 pub fn migration_unreadable_identities_text(count: u32) -> String {
     format!(
         "Some identities from the previous version could not be read and were not carried over \
-         ({count} in total). Your previous data is untouched. Load these identities again to \
-         restore their keys."
+         ({count} in total). Your previous data is untouched. Choose Load Identity on the \
+         Identities screen to load them again and restore their keys."
     )
 }
 
@@ -198,8 +208,8 @@ pub fn migration_unreadable_identities_and_votes_text(identities: u32, votes: u3
     format!(
         "Some identities ({identities} in total) and some scheduled votes ({votes} in total) from \
          the previous version could not be read and were not carried over. Your previous data is \
-         untouched. Load these identities again to restore their keys, and schedule the votes \
-         again on the Scheduled Votes screen."
+         untouched. Choose Load Identity on the Identities screen to load the identities again, \
+         and schedule the votes again on the Scheduled Votes screen."
     )
 }
 
@@ -213,8 +223,8 @@ pub fn migration_failed_with_unreadable_identities_text(count: u32) -> String {
     format!(
         "Some identities from the previous version could not be read and were not carried over \
          ({count} in total), and updating the rest of your previous data did not finish. Your \
-         previous data is untouched. Choose Retry now to finish updating, then load these \
-         identities again to restore their keys."
+         previous data is untouched. Choose Retry now to finish updating, then choose Load \
+         Identity on the Identities screen to load them again and restore their keys."
     )
 }
 
@@ -258,6 +268,7 @@ fn cold_start_backend_wait_timed_out(waited: Option<Duration>, timeout: Duration
 
 #[derive(Debug, From)]
 pub enum TaskResult {
+    Repaint,
     Refresh,
     Success(Box<BackendTaskSuccessResult>),
     Error(TaskError),
@@ -959,7 +970,7 @@ impl AppState {
                 // Always registered — the Masternodes tab is gated at runtime by
                 // Expert Mode (the nav entry + route), not by a Cargo feature, so
                 // the screen must always exist to switch into when Expert Mode
-                // is on. Live de-gating falls back to Identities (see below).
+                // is on. Live de-gating falls back to `FALLBACK_ROOT_SCREEN`.
                 RootScreenType::RootScreenMasternodes,
                 Screen::MasternodesScreen(crate::ui::masternodes::MasternodesScreen::new(
                     &active_context,
@@ -977,13 +988,13 @@ impl AppState {
         })
         .collect();
 
-        // Resolve the effective selected root screen. If the persisted value
-        // is no longer registered, fall back to the `Identities` screen so
+        // Resolve the effective selected root screen. If the persisted value is
+        // no longer registered, fall back to `FALLBACK_ROOT_SCREEN` so
         // `active_root_screen_mut()` does not panic on first frame.
         let selected_main_screen = if main_screens.contains_key(&persisted_main_screen) {
             persisted_main_screen
         } else {
-            RootScreenType::RootScreenIdentities
+            FALLBACK_ROOT_SCREEN
         };
 
         let mut app_state = Self {
@@ -1161,17 +1172,31 @@ impl AppState {
 
     pub fn active_root_screen_mut(&mut self) -> &mut Screen {
         // Live de-gating (§10.11): if the role dropped below Power while the
-        // Masternodes tab was active, fall back to the neutral Identities tab so
-        // the gated screen is never shown without its gate. Identities is always
+        // Masternodes tab was active, fall back to `FALLBACK_ROOT_SCREEN` so the
+        // gated screen is never shown without its gate. That screen is always
         // registered, so the subsequent lookup cannot fail.
         if self.selected_main_screen == RootScreenType::RootScreenMasternodes
             && !FeatureGate::Masternodes.is_available(self.current_app_context())
         {
-            self.selected_main_screen = RootScreenType::RootScreenIdentities;
+            self.select_main_screen(FALLBACK_ROOT_SCREEN);
         }
         self.main_screens
             .get_mut(&self.selected_main_screen)
             .expect("expected to get screen")
+    }
+
+    /// Make `root_screen_type` the selected root screen, telling the screen being
+    /// left that it is losing visibility. Root screens are never dropped, so a
+    /// screen holding secrets (the Masternodes load form's keys) depends on this
+    /// notification to zeroize them.
+    fn select_main_screen(&mut self, root_screen_type: RootScreenType) {
+        if self.selected_main_screen == root_screen_type {
+            return;
+        }
+        if let Some(left) = self.main_screens.get_mut(&self.selected_main_screen) {
+            left.on_leave();
+        }
+        self.selected_main_screen = root_screen_type;
     }
 
     pub fn change_network(&mut self, network: Network) {
@@ -1386,7 +1411,7 @@ impl AppState {
     }
 
     fn set_main_screen(&mut self, root_screen_type: RootScreenType) {
-        self.selected_main_screen = root_screen_type;
+        self.select_main_screen(root_screen_type);
         self.active_root_screen_mut().refresh_on_arrival();
         self.current_app_context()
             .update_settings(root_screen_type)
@@ -1680,6 +1705,10 @@ impl App for AppState {
                 }
                 TaskResult::Refresh => {
                     self.visible_screen_mut().refresh();
+                }
+                TaskResult::Repaint => {
+                    // SenderAsync/SenderSync already requested a repaint when sending; avoid
+                    // state-clearing screen refreshes for ambient events such as sync ticks.
                 }
             }
         }

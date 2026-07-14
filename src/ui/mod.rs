@@ -769,6 +769,15 @@ pub trait ScreenLike {
     fn refresh_on_arrival(&mut self) {
         self.refresh()
     }
+
+    /// Called by `AppState` when this root screen stops being the selected one.
+    ///
+    /// The counterpart of [`refresh_on_arrival`](ScreenLike::refresh_on_arrival).
+    /// Root screens live in `AppState.main_screens` for the whole process, so any
+    /// state that must not outlive the screen's visibility — plaintext keys and
+    /// passwords above all — is dropped here. The default is a **no-op**.
+    fn on_leave(&mut self) {}
+
     fn ui(&mut self, ui: &mut egui::Ui) -> AppAction;
     /// Called by `AppState` **after** the global banner has already been set.
     ///
@@ -1051,6 +1060,10 @@ impl ScreenLike for Screen {
 
     fn refresh_on_arrival(&mut self) {
         delegate_to_screen!(self, screen => screen.refresh_on_arrival())
+    }
+
+    fn on_leave(&mut self) {
+        delegate_to_screen!(self, screen => screen.on_leave())
     }
 
     fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {

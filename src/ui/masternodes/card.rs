@@ -3,15 +3,28 @@
 //! key-presence, and DPNS-status rows (colour always paired with text, NFR-6).
 
 use crate::model::contested_name::MasternodeContestSummary;
+use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::{IdentityStatus, IdentityType, MasternodeKeyPresence};
+use crate::model::user_role::UserRole;
 use crate::ui::identity::identity_picker_card::{
     CARD_HEIGHT, CARD_MIN_WIDTH, draw_monogram, draw_type_badge,
 };
+use crate::ui::masternodes::key_status_tokens;
 use crate::ui::theme::DashColors;
 use eframe::egui::{
     self, Color32, CornerRadius, Frame, Margin, Response, RichText, Sense, Stroke, Ui, Vec2,
     WidgetInfo, WidgetType,
 };
+
+pub(crate) const PLATFORM_IDENTITY_STATUS_TOOLTIP: &str = "This shows whether this masternode's Platform identity can currently be found. It does not show Core network or PoSe status.";
+
+pub(crate) fn platform_identity_status_label(status: IdentityStatus) -> String {
+    format!("Platform identity: {status}")
+}
+
+pub(crate) fn show_platform_identity_status(role: UserRole) -> bool {
+    role.at_least(UserRole::Power)
+}
 
 /// Heading for a masternode card: the alias when set, otherwise the shortened
 /// ProTxHash. Mirrors TC-FR3-02 / TC-FR3-03.
@@ -30,6 +43,11 @@ pub fn card_sub_line(alias: Option<&str>, shortened_pro_tx_hash: &str) -> Option
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(|_| shortened_pro_tx_hash.to_string())
+}
+
+/// Format a masternode Platform balance for display.
+pub fn balance_label(credits: u64) -> String {
+    format_credits_as_dash(credits)
 }
 
 /// Voter-readiness label. Green + `Voting ready` when a voting key is loaded,
@@ -54,16 +72,6 @@ pub fn dpns_status_line(summary: MasternodeContestSummary) -> String {
     }
 }
 
-/// The three `Keys:` role tokens in display order, each paired with whether it
-/// is present. Present roles render as their letter, absent roles as `·`.
-pub fn key_status_tokens(presence: MasternodeKeyPresence) -> [(&'static str, bool); 3] {
-    [
-        ("V", presence.voting),
-        ("O", presence.owner),
-        ("P", presence.payout),
-    ]
-}
-
 /// Response from [`MasternodeCard::show`]: whether the card was activated, plus
 /// the node id echoed from construction so a grid can route selection without
 /// tracking indices.
@@ -80,6 +88,7 @@ pub struct MasternodeCard {
     node_id: String,
     node_id_short: String,
     alias: Option<String>,
+    balance_credits: Option<u64>,
     node_type: IdentityType,
     key_presence: MasternodeKeyPresence,
     contest_summary: MasternodeContestSummary,
@@ -99,6 +108,7 @@ impl MasternodeCard {
             node_id: node_id.into(),
             node_id_short: node_id_short.into(),
             alias: None,
+            balance_credits: None,
             node_type,
             key_presence,
             contest_summary,
@@ -108,6 +118,12 @@ impl MasternodeCard {
 
     pub fn with_alias(mut self, alias: Option<String>) -> Self {
         self.alias = alias.filter(|s| !s.trim().is_empty());
+        self
+    }
+
+    /// Attach the Platform balance shown on the card.
+    pub fn with_balance_credits(mut self, credits: u64) -> Self {
+        self.balance_credits = Some(credits);
         self
     }
 
@@ -130,7 +146,11 @@ impl MasternodeCard {
         }
     }
 
-    pub fn show(&self, ui: &mut Ui) -> MasternodeCardResponse {
+    pub fn show(
+        &self,
+        ui: &mut Ui,
+        platform_identity_status_visible: bool,
+    ) -> MasternodeCardResponse {
         let dark_mode = ui.ctx().global_style().visuals.dark_mode;
         let border = Stroke::new(1.0, DashColors::border(dark_mode));
         let fill = DashColors::surface(dark_mode);
@@ -144,6 +164,7 @@ impl MasternodeCard {
             .inner_margin(Margin::symmetric(16, 16));
 
         let desired_size = Vec2::new(CARD_MIN_WIDTH, CARD_HEIGHT);
+        let mut platform_identity_status_rect = None;
 
         let inner = frame.show(ui, |ui| {
             ui.set_min_size(desired_size);
@@ -173,6 +194,16 @@ impl MasternodeCard {
                             .size(13.0),
                     );
                 }
+                if let Some(credits) = self.balance_credits {
+                    ui.add_space(8.0);
+                    ui.label(
+                        RichText::new(balance_label(credits))
+                            .monospace()
+                            .color(DashColors::text_primary(dark_mode))
+                            .strong()
+                            .size(13.0),
+                    );
+                }
                 ui.add_space(8.0);
 
                 // Voter readiness (colour + text — NFR-6).
@@ -197,10 +228,14 @@ impl MasternodeCard {
                             .color(DashColors::text_secondary(dark_mode))
                             .size(13.0),
                     );
-                    for (letter, present) in key_status_tokens(self.key_presence) {
-                        if present {
+                    // The whole card is a `Sense::click()` target, so the letters
+                    // carry no per-letter tooltip here — a Help cursor inside a
+                    // clickable card would fight its PointingHand affordance. The
+                    // role explanations live on the detail screen's `Roles:` row.
+                    for token in key_status_tokens(self.key_presence) {
+                        if token.present {
                             ui.label(
-                                RichText::new(letter)
+                                RichText::new(token.letter)
                                     .color(DashColors::text_primary(dark_mode))
                                     .strong()
                                     .size(13.0),
@@ -223,13 +258,15 @@ impl MasternodeCard {
                 );
                 ui.add_space(4.0);
 
-                // Identity status dot + label (all five states).
-                draw_status_row(
-                    ui,
-                    Color32::from(self.status),
-                    &self.status.to_string(),
-                    dark_mode,
-                );
+                if platform_identity_status_visible {
+                    let status_response = draw_status_row(
+                        ui,
+                        Color32::from(self.status),
+                        &platform_identity_status_label(self.status),
+                        dark_mode,
+                    );
+                    platform_identity_status_rect = Some(status_response.rect);
+                }
             });
         });
 
@@ -237,6 +274,18 @@ impl MasternodeCard {
         let rect = inner.response.rect;
         let id = ui.id().with(("masternode-card", &self.node_id));
         let response: Response = ui.interact(rect, id, Sense::click());
+        let response = if platform_identity_status_rect.is_some_and(|status_rect| {
+            ui.input(|input| {
+                input
+                    .pointer
+                    .hover_pos()
+                    .is_some_and(|pointer| status_rect.contains(pointer))
+            })
+        }) {
+            response.on_hover_text(PLATFORM_IDENTITY_STATUS_TOOLTIP)
+        } else {
+            response
+        };
         if response.hovered() {
             ui.painter().rect_stroke(
                 rect,
@@ -258,7 +307,7 @@ impl MasternodeCard {
 
 /// Paint a small status dot followed by its text label. The label is always
 /// present, so status is never conveyed by colour alone (NFR-6).
-fn draw_status_row(ui: &mut Ui, color: Color32, label: &str, dark_mode: bool) {
+fn draw_status_row(ui: &mut Ui, color: Color32, label: &str, dark_mode: bool) -> Response {
     ui.horizontal(|ui| {
         let (rect, _) = ui.allocate_exact_size(Vec2::new(10.0, 10.0), Sense::hover());
         ui.painter().circle_filled(rect.center(), 4.0, color);
@@ -268,12 +317,32 @@ fn draw_status_row(ui: &mut Ui, color: Color32, label: &str, dark_mode: bool) {
                 .color(DashColors::text_primary(dark_mode))
                 .size(13.0),
         );
-    });
+    })
+    .response
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn platform_identity_status_copy_is_explicit() {
+        assert_eq!(
+            platform_identity_status_label(IdentityStatus::Active),
+            "Platform identity: Active"
+        );
+        assert_eq!(
+            platform_identity_status_label(IdentityStatus::NotFound),
+            "Platform identity: Not Found"
+        );
+    }
+
+    #[test]
+    fn platform_identity_status_visibility_follows_expert_mode() {
+        assert!(!show_platform_identity_status(UserRole::Everyday));
+        assert!(show_platform_identity_status(UserRole::Power));
+        assert!(show_platform_identity_status(UserRole::Developer));
+    }
 
     #[test]
     fn tc_fr3_02_heading_is_shortened_pro_tx_hash_when_no_alias() {
@@ -294,6 +363,17 @@ mod tests {
     fn blank_alias_falls_through_to_pro_tx_hash() {
         assert_eq!(card_heading(Some("   "), "9a3f…d7e2"), "9a3f…d7e2");
         assert_eq!(card_sub_line(Some("   "), "9a3f…d7e2"), None);
+    }
+
+    #[test]
+    fn balance_label_uses_canonical_dash_formatting() {
+        for (credits, expected) in [
+            (0, "0 DASH"),
+            (2_890_000_000, "0.0289 DASH"),
+            (100_000_000_000, "1 DASH"),
+        ] {
+            assert_eq!(balance_label(credits), expected);
+        }
     }
 
     #[test]
@@ -336,19 +416,6 @@ mod tests {
             has_scheduled_vote: true,
         };
         assert_eq!(dpns_status_line(summary), "Vote scheduled");
-    }
-
-    #[test]
-    fn tc_fr3_08_key_tokens_reflect_presence() {
-        let presence = MasternodeKeyPresence {
-            voting: true,
-            owner: false,
-            payout: true,
-        };
-        assert_eq!(
-            key_status_tokens(presence),
-            [("V", true), ("O", false), ("P", true)]
-        );
     }
 
     #[test]

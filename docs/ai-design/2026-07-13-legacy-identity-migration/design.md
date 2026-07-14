@@ -1,9 +1,14 @@
 # Legacy identity import (v0.9.3 → v1.0)
 
-**Status:** design, ready for implementation.
-**Base:** `feat/legacy-identity-migration` @ `0fcb6e7e` (PR #882 tip).
+**Status:** implemented and shipped — PR #885 (`feat/legacy-identity-migration`),
+with QA follow-ups in PR #891. All tasks in §9 (T-ID-01 … T-ID-06) landed. This
+document is retained as the design record: it describes shipped behaviour, not a
+pending proposal.
 **Scope:** carry the legacy `data.db` `identity` rows into the modern
 `StoredQualifiedIdentity` k/v store during the cold-start migration.
+**Known limitation:** a partially-loaded identity strands its legacy-only keys
+(§7); an opt-in recovery flow is tracked in
+[issue #889](https://github.com/dashpay/dash-evo-tool/issues/889).
 
 ---
 
@@ -281,8 +286,8 @@ skip and defer recovery to a dedicated, provenance-aware flow.
 
 The proper recovery flow — an interactive, opt-in re-import that reads the
 preserved legacy blob and merges only genuinely-missing key material under the
-identity password — is tracked as a follow-up (see the GitHub issue referenced
-from PR #885).
+identity password — is tracked as a follow-up in
+[issue #889](https://github.com/dashpay/dash-evo-tool/issues/889).
 
 ---
 
@@ -319,7 +324,8 @@ Consequences the implementer must respect:
 
 ## 9. Implementation tasks
 
-Ordered; each is independently reviewable.
+Ordered; each is independently reviewable. **All six shipped** — see the status
+header.
 
 - **T-ID-01 — `database/legacy_import.rs`: `read_identities`.**
   `pub(crate) fn read_identities(conn: &Connection, network: Network) -> rusqlite::Result<LegacyIdentities>`
@@ -444,6 +450,12 @@ sentinel is **not** written.
 
 ## 11. Part 2 — the bincode / standalone-crate question
 
+> **Settled.** This was a feasibility spike run during design; its verdict (§11.3)
+> was adopted. The golden hex blob it recommended shipped as **T-ID-06** —
+> `V093_MASTERNODE_BLOB_HEX` in `src/backend_task/migration/v093_upgrade.rs`, whose
+> comment documents how to regenerate it. The section is kept for that rationale and
+> for the regeneration recipe; the question itself is closed.
+
 ### 11.1 Is bincode really the only blocker?
 
 **Yes.** Verified empirically. A standalone crate (`/data/tmp/v093-fixture-probe`,
@@ -520,9 +532,12 @@ good trade. The full-`.sqlite`-fixture version of the same idea is not.
 
 ---
 
-## 12. Candy tally
+## 12. Design-review findings (historical)
 
-Confirmed defects and design gaps surfaced by this investigation:
+> **Closed.** These are the defects and gaps the design investigation surfaced
+> *before* implementation, kept as the record of why the shipped design looks the
+> way it does. Every row below was addressed by the design in §§5–10 and shipped in
+> PR #885. Nothing here is an open question or a live defect list.
 
 | Severity | Count | Items |
 |---|---|---|

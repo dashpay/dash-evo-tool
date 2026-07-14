@@ -7,13 +7,13 @@ revealing more advanced controls than the one before it:
 | Mode | What it shows |
 | - | - |
 | **Default view** | Your balance, send and receive, and usernames. |
-| **Detailed view** | Adds account details, address tables, and masternode tools. |
-| **Developer tools** | Adds raw protocol data, Devnet, and signing overrides. |
+| **Expert view** | Adds account details, address tables, and masternode tools. |
+| **Developer view** | Adds raw protocol data, Devnet, and signing overrides. |
 
-Each mode includes everything the one before it does — Developer tools has
-everything Detailed view has, plus more. **Detailed view** is the starting
+Each mode includes everything the one before it does — Developer view has
+everything Expert view has, plus more. **Expert view** is the starting
 point until you pick a mode yourself; switch down to Default view for a
-simpler screen, or up to Developer tools when you need raw protocol data.
+simpler screen, or up to Developer view when you need raw protocol data.
 
 ## Where to set it
 
@@ -39,7 +39,7 @@ with no restart required.
 
 Earlier versions had a **Developer mode** on/off switch instead of the three
 interface modes. If you are upgrading, and you have not picked an interface
-mode yet, the app starts you in **Detailed view** — the mode that matches the
+mode yet, the app starts you in **Expert view** — the mode that matches the
 account details, address tables and masternode tools those builds exposed.
 Nothing you had is hidden, and you can move to another mode at any time from
 **Network Settings**.

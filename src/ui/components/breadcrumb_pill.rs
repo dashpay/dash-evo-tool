@@ -219,7 +219,7 @@ impl BreadcrumbPill {
         }
         display.push_str(&self.label);
         if matches!(self.mode, BreadcrumbPillMode::Interactive) {
-            display.push_str(" ▾");
+            display.push_str(" ›");
         }
 
         let mut rich = RichText::new(display).color(text_color);

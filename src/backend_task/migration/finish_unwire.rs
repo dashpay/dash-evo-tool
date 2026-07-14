@@ -9,6 +9,7 @@
 use std::sync::Arc;
 
 use dash_sdk::dpp::dashcore::Network;
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::platform::Identifier;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
@@ -230,6 +231,17 @@ pub enum MigrationError {
     #[error("wallet backend not available during migration")]
     WalletBackendUnavailable,
 
+    /// A pass reported an error that is not a [`MigrationError`]. Every pass is
+    /// meant to report through one of the typed variants above; this catch-all
+    /// exists so a stray error still reaches a terminal banner. Leaving one
+    /// unpublished would strand the status on `Running`, which gates every
+    /// wallet-touching task behind `WalletStorageNotReady` and offers no retry.
+    #[error("could not finish updating the previous version's data")]
+    Unexpected {
+        #[source]
+        source: Box<TaskError>,
+    },
+
     /// Returned by [`guard_single_key_table_droppable`] when dropping the
     /// legacy single-key table would destroy a password-protected key that
     /// has no copy anywhere else. `remaining` is the un-restored row count.
@@ -277,16 +289,19 @@ impl MigrationError {
     }
 }
 
-/// Coerce the app-data pass error into the shared `Arc<MigrationError>` chain the
-/// combined failure banner renders. `migrate_app_data`'s own failures already
-/// arrive as [`TaskError::MigrationFailed`], so their typed chain is reused
-/// verbatim; a stray non-migration error (a k/v read while probing existing
-/// votes) is wrapped in [`MigrationError::AppDataImport`] so the banner still has
-/// a typed chain to show and `is_backend_not_ready` stays reachable.
-fn app_data_error_chain(error: TaskError) -> Arc<MigrationError> {
+/// Coerce any migration failure into the `Arc<MigrationError>` chain the failure
+/// banners render. Total by design: every error the orchestrator can produce must
+/// end up publishable, or it leaves the status on `Running` — which gates every
+/// wallet-touching task behind `WalletStorageNotReady`, with no retry to escape.
+///
+/// A [`TaskError::MigrationFailed`] chain is reused verbatim, so the banner shows
+/// the same typed source and a wrapped [`MigrationError::WalletBackendUnavailable`]
+/// still classifies as backend-not-ready. Anything else is wrapped in
+/// [`MigrationError::Unexpected`] rather than dropped.
+pub(crate) fn migration_error_chain(error: TaskError) -> Arc<MigrationError> {
     match error {
         TaskError::MigrationFailed { source } => source,
-        other => Arc::new(MigrationError::AppDataImport {
+        other => Arc::new(MigrationError::Unexpected {
             source: Box::new(other),
         }),
     }
@@ -311,16 +326,22 @@ fn app_data_error_chain(error: TaskError) -> Arc<MigrationError> {
 ///    needs the drain's output: a wired backend, a reachable vault, and a
 ///    hydrated `ctx.wallets` for wallet-derived identity keys to attach to.
 ///
-/// **No pass gates another.** The wallet drain runs regardless of the app-data
-/// outcome, and the identity import runs regardless of *both* — its result is
-/// judged only at the end, alongside theirs. A legacy vote row that cannot be
-/// imported must never stand between the user and their seeds, nor between the
-/// user and their identity keys: an app-data failure is deterministic, so
-/// letting it short-circuit the identity import would strand those keys outside
-/// the vault on every launch, not just this one.
+/// **Neither DET-owned pass gates the other.** The wallet drain runs regardless
+/// of the app-data outcome, and the identity import runs regardless of it too —
+/// both results are held, never propagated on the spot, and judged together at
+/// the end. A legacy vote row that cannot be imported must never stand between
+/// the user and their seeds, nor between the user and their identity keys: an
+/// app-data failure is deterministic, so letting it short-circuit the identity
+/// import would strand those keys outside the vault on every launch, not just
+/// this one.
 ///
-/// Both passes write their sentinel unconditionally, so their counters exist for
-/// exactly one launch. What outlives them are the durable
+/// The wallet drain is the one deliberate prerequisite: a drain failure returns
+/// early, so the identity import does not run on that launch. It cannot — that
+/// pass needs the drain's output (pass 3 above), and both retry on the next
+/// launch, neither sentinel having been written.
+///
+/// Both DET-owned passes write their sentinel unconditionally, so their counters
+/// exist for exactly one launch. What outlives them are the durable
 /// [`UnreadableVotesWarning`] and [`UnreadableIdentitiesWarning`] records, and
 /// those — never the counters — are what this function publishes: each is
 /// re-raised on every launch, not only the one that discovered it, until
@@ -537,7 +558,7 @@ pub async fn run(app_context: &Arc<AppContext>) -> Result<bool, TaskError> {
                 );
                 status.set_state(MigrationState::FailedWithUnreadableIdentities {
                     count: unreadable,
-                    error: app_data_error_chain(app_data_error),
+                    error: migration_error_chain(app_data_error),
                 });
                 return Ok(moved_data);
             }
@@ -942,7 +963,7 @@ fn migrate_app_data(app_context: &Arc<AppContext>) -> Result<AppDataMigrationOut
     // must complete without the backend being wired, or a cold start with no
     // legacy data would fail on a dependency it never actually needs.
     if !table_has_rows(&conn, "scheduled_votes")? && !table_has_rows(&conn, "top_up")? {
-        write_completion_sentinel(&app_kv, &sentinel_key)?;
+        write_completion_sentinel(&app_kv, &sentinel_key, 1)?;
         return Ok(AppDataMigrationOutcome::default());
     }
 
@@ -955,8 +976,15 @@ fn migrate_app_data(app_context: &Arc<AppContext>) -> Result<AppDataMigrationOut
 
     // Votes already in the k/v store win over their legacy row: a retry must
     // not push a stale `executed = 0` over a vote the user has since cast.
+    //
+    // The read is typed into `AppDataImport` rather than propagated raw: every
+    // error leaving this pass must be a `MigrationError`, or the terminal banner
+    // has no typed chain to render.
     let existing_votes: std::collections::BTreeSet<([u8; 32], String)> = app_context
-        .get_scheduled_votes()?
+        .get_scheduled_votes()
+        .map_err(|source| MigrationError::AppDataImport {
+            source: Box::new(source),
+        })?
         .into_iter()
         .map(|v| (v.voter_id.to_buffer(), v.contested_name))
         .collect();
@@ -990,22 +1018,27 @@ fn migrate_app_data(app_context: &Arc<AppContext>) -> Result<AppDataMigrationOut
     // row is now in the k/v store, and the undecodable ones will never decode. A
     // withheld sentinel would re-run this import on every launch, which would
     // resurrect votes the user has since cast and cleared from the queue.
-    write_completion_sentinel(&app_kv, &sentinel_key)?;
+    write_completion_sentinel(&app_kv, &sentinel_key, 1)?;
 
     Ok(outcome)
 }
 
-/// Record one import pass as complete for one network. Shared by the app-data
-/// and identity sentinels, which reuse the [`MigrationCompletion`] payload so
-/// every sentinel has the same codec.
+/// Record one import pass as complete under `sentinel_key`. The sole writer of
+/// [`MigrationCompletion`]: every pass — wallet drain, app data, identities —
+/// records completion through here, so all sentinels share one codec.
+///
+/// `network_count` is diagnostic only — logged when the sentinel is read back,
+/// never branched on. The wallet drain uses it to tell a no-op launch (`0`) from
+/// a real drain (`1`); the other passes always record `1`.
 fn write_completion_sentinel(
     app_kv: &crate::wallet_backend::DetKv,
     sentinel_key: &str,
+    network_count: u32,
 ) -> Result<(), MigrationError> {
     let completion = MigrationCompletion {
         completed_at: now_epoch_seconds(),
         sha: env!("CARGO_PKG_VERSION").to_string(),
-        network_count: 1,
+        network_count,
     };
     app_kv
         .put(DetScope::Global, sentinel_key, &completion)
@@ -1169,7 +1202,7 @@ fn migrate_identities(
     // its identities even though the wallet family is empty. Probing first also
     // keeps a fresh install from needing the backend it has no data for.
     if !table_has_rows(&conn, "identity")? {
-        write_completion_sentinel(&app_kv, &sentinel_key)?;
+        write_completion_sentinel(&app_kv, &sentinel_key, 1)?;
         return Ok(IdentityMigrationOutcome::default());
     }
 
@@ -1180,9 +1213,21 @@ fn migrate_identities(
     let outcome = migrate_identities_from_conn(
         &conn,
         network,
-        |seed_hash| backend.wallet_meta().get(network, seed_hash).is_some(),
         |id| app_context.has_local_qualified_identity(id),
-        |qi, wallet| app_context.insert_local_qualified_identity(qi, wallet),
+        |qi, wallet| {
+            // Diagnostic only — the link is imported either way (see the pure
+            // body). An absent wallet means it failed to migrate or is locked.
+            if let Some((seed_hash, _)) = wallet
+                && backend.wallet_meta().get(network, seed_hash).is_none()
+            {
+                tracing::warn!(
+                    target = "migration::finish_unwire",
+                    identity = %hex::encode(qi.identity.id().to_buffer()),
+                    "Importing an identity whose wallet is not present; the link is kept so it re-attaches when that wallet is restored",
+                );
+            }
+            app_context.insert_local_qualified_identity(qi, wallet)
+        },
     )?;
 
     tracing::info!(
@@ -1210,25 +1255,22 @@ fn migrate_identities(
     // undecodable rows stay in `data.db` and are reported by the durable warning
     // above; re-importing them after a decoder fix is an explicit user gesture
     // (dashpay/dash-evo-tool#889), not an automatic retry that costs a deletion.
-    write_completion_sentinel(&app_kv, &sentinel_key)?;
+    write_completion_sentinel(&app_kv, &sentinel_key, 1)?;
 
     Ok(outcome)
 }
 
 /// Pure identity-import body (testable without an `AppContext`).
 ///
-/// `wallet_known` reports whether the identity's linked wallet actually made it
-/// across; `is_present` is the skip-if-already-imported check; `insert` is the
+/// `is_present` is the skip-if-already-imported check; `insert` is the
 /// vault-routing writer.
-fn migrate_identities_from_conn<W, P, I>(
+fn migrate_identities_from_conn<P, I>(
     conn: &Connection,
     network: Network,
-    wallet_known: W,
     mut is_present: P,
     mut insert: I,
 ) -> Result<IdentityMigrationOutcome, MigrationError>
 where
-    W: Fn(&WalletSeedHash) -> bool,
     P: FnMut(&Identifier) -> Result<bool, TaskError>,
     I: FnMut(&QualifiedIdentity, &Option<(WalletSeedHash, u32)>) -> Result<(), TaskError>,
 {
@@ -1260,24 +1302,21 @@ where
         // identity trips the vault-first downgrade guard. The legacy `data.db`
         // is preserved, so those keys are recoverable by a later build. See the
         // known limitation in the design doc (§7) and the tracked follow-up.
+        //
+        // Check-and-insert needs no transaction despite `insert` being
+        // INSERT-OR-REPLACE: no other writer can interleave. Every production
+        // identity writer is a `BackendTask::IdentityTask`, and
+        // `run_backend_task` rejects all `is_wallet_touching` tasks with
+        // `WalletStorageNotReady` for as long as the migration holds
+        // `MigrationState::Running` — which spans this whole pass.
         if is_present(&id).map_err(import_failed)? {
             outcome.skipped_existing = outcome.skipped_existing.saturating_add(1);
             continue;
         }
 
-        // A link to a wallet that did not come across (or was never there) is
-        // preserved verbatim, never nulled: it is what re-attaches the identity
-        // when that wallet is restored or unlocked later.
-        if let Some((seed_hash, _)) = row.wallet
-            && !wallet_known(&seed_hash)
-        {
-            tracing::warn!(
-                target = "migration::finish_unwire",
-                identity = %hex::encode(row.id),
-                "Importing an identity whose wallet is not present; the link is kept so it re-attaches when that wallet is restored",
-            );
-        }
-
+        // The wallet link travels verbatim, never nulled — even when that wallet
+        // did not come across: it is what re-attaches the identity when the
+        // wallet is restored or unlocked later.
         insert(&row.qi, &row.wallet).map_err(import_failed)?;
         outcome.imported = outcome.imported.saturating_add(1);
     }
@@ -2301,21 +2340,14 @@ fn read_sentinel(
         .map_err(|e| MigrationError::Sentinel { source: e })
 }
 
-/// Write the completion sentinel for `network`, marking the migration
+/// Write the wallet-drain completion sentinel for `network`, marking the drain
 /// as finished for this network on this install.
 fn write_sentinel(
     app_kv: &crate::wallet_backend::DetKv,
     network: Network,
     network_count: u32,
 ) -> Result<(), MigrationError> {
-    let completion = MigrationCompletion {
-        completed_at: now_epoch_seconds(),
-        sha: env!("CARGO_PKG_VERSION").to_string(),
-        network_count,
-    };
-    app_kv
-        .put(DetScope::Global, &sentinel_key_for(network), &completion)
-        .map_err(|e| MigrationError::Sentinel { source: e })
+    write_completion_sentinel(app_kv, &sentinel_key_for(network), network_count)
 }
 
 fn now_epoch_seconds() -> i64 {
@@ -2603,56 +2635,22 @@ mod tests {
 
     mod identities {
         use super::*;
-        use crate::model::qualified_identity::IdentityType;
+        use crate::database::test_helpers::{
+            LegacyIdentityFixture, basic_legacy_identity_blob, create_legacy_identity_table,
+        };
         use dash_sdk::dpp::dashcore::Network;
         use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-        use dash_sdk::dpp::version::PlatformVersion;
         use std::cell::RefCell;
 
         const NETWORK: Network = Network::Testnet;
 
         fn create_identity_table(conn: &Connection) {
-            conn.execute_batch(
-                "CREATE TABLE identity (
-                    id BLOB PRIMARY KEY,
-                    data BLOB,
-                    status INTEGER NOT NULL DEFAULT 0,
-                    is_local INTEGER NOT NULL,
-                    alias TEXT,
-                    info TEXT,
-                    wallet BLOB,
-                    wallet_index INTEGER,
-                    identity_type TEXT,
-                    network TEXT NOT NULL
-                );",
-            )
-            .expect("create identity table");
+            create_legacy_identity_table(conn).expect("create identity table");
         }
 
         /// A minimal, genuinely-encodable identity blob.
         pub(super) fn identity_blob(id: [u8; 32]) -> Vec<u8> {
-            let identity = dash_sdk::dpp::identity::Identity::create_basic_identity(
-                Identifier::from(id),
-                PlatformVersion::latest(),
-            )
-            .expect("basic identity");
-            QualifiedIdentity {
-                identity,
-                associated_voter_identity: None,
-                associated_operator_identity: None,
-                associated_owner_key_id: None,
-                identity_type: IdentityType::User,
-                alias: None,
-                private_keys: Default::default(),
-                dpns_names: vec![],
-                associated_wallets: std::collections::BTreeMap::new(),
-                secret_access: None,
-                wallet_index: None,
-                top_ups: Default::default(),
-                status: Default::default(),
-                network: NETWORK,
-            }
-            .to_bytes()
+            basic_legacy_identity_blob(id, None, NETWORK)
         }
 
         pub(super) fn insert_identity(
@@ -2661,17 +2659,10 @@ mod tests {
             data: Option<Vec<u8>>,
             is_local: bool,
         ) {
-            conn.execute(
-                "INSERT INTO identity (id, data, status, is_local, network)
-                 VALUES (?1, ?2, 2, ?3, ?4)",
-                rusqlite::params![
-                    id.as_slice(),
-                    data,
-                    i64::from(is_local),
-                    NETWORK.to_string()
-                ],
-            )
-            .expect("insert identity");
+            LegacyIdentityFixture::new(id, data, NETWORK.to_string())
+                .with_is_local(is_local)
+                .insert(conn)
+                .expect("insert identity");
         }
 
         /// Collects what the importer tried to write, so a test can assert on the
@@ -2697,7 +2688,6 @@ mod tests {
             let outcome = migrate_identities_from_conn(
                 &conn,
                 NETWORK,
-                |_| true,
                 |_| Ok(false),
                 |qi, _| {
                     recorder
@@ -2740,7 +2730,6 @@ mod tests {
             let outcome = migrate_identities_from_conn(
                 &conn,
                 NETWORK,
-                |_| true,
                 |id| Ok(id.to_buffer() == existing),
                 |qi, _| {
                     recorder
@@ -2778,7 +2767,6 @@ mod tests {
             let outcome = migrate_identities_from_conn(
                 &conn,
                 NETWORK,
-                |_| true,
                 |_| Ok(false),
                 |qi, _| {
                     recorder
@@ -2811,24 +2799,15 @@ mod tests {
             create_identity_table(&conn);
             let id = [0xAA; 32];
             let orphan_wallet = [0x77; 32];
-            conn.execute(
-                "INSERT INTO identity (id, data, status, is_local, wallet, wallet_index, network)
-                 VALUES (?1, ?2, 2, 1, ?3, 4, ?4)",
-                rusqlite::params![
-                    id.as_slice(),
-                    identity_blob(id),
-                    orphan_wallet.as_slice(),
-                    NETWORK.to_string()
-                ],
-            )
-            .expect("insert identity");
+            LegacyIdentityFixture::new(id, Some(identity_blob(id)), NETWORK.to_string())
+                .with_wallet(orphan_wallet.to_vec(), 4)
+                .insert(&conn)
+                .expect("insert identity");
 
             let links: RefCell<Vec<Option<(WalletSeedHash, u32)>>> = RefCell::new(Vec::new());
             let outcome = migrate_identities_from_conn(
                 &conn,
                 NETWORK,
-                // The wallet is unknown — it failed to migrate, or is locked.
-                |_| false,
                 |_| Ok(false),
                 |_, wallet| {
                     links.borrow_mut().push(*wallet);
@@ -4426,15 +4405,14 @@ mod tests {
         );
     }
 
-    /// `app_data_error_chain` reuses a `MigrationFailed` chain verbatim (so the
+    /// `migration_error_chain` reuses a `MigrationFailed` chain verbatim (so the
     /// combined banner shows the same typed source, and a wrapped
     /// `WalletBackendUnavailable` still classifies as backend-not-ready), and
-    /// wraps any stray non-migration `TaskError` in `AppDataImport` rather than
-    /// dropping it.
+    /// wraps any stray non-migration `TaskError` rather than dropping it.
     #[test]
-    fn app_data_error_chain_preserves_migration_source_and_wraps_others() {
+    fn migration_error_chain_preserves_migration_source_and_wraps_others() {
         let inner = Arc::new(MigrationError::WalletBackendUnavailable);
-        let chain = app_data_error_chain(TaskError::MigrationFailed {
+        let chain = migration_error_chain(TaskError::MigrationFailed {
             source: Arc::clone(&inner),
         });
         assert!(
@@ -4446,15 +4424,41 @@ mod tests {
             "the reused chain keeps its backend-not-ready classification",
         );
 
-        let wrapped = app_data_error_chain(TaskError::WalletNotFound);
+        let wrapped = migration_error_chain(TaskError::WalletNotFound);
         assert!(
-            matches!(*wrapped, MigrationError::AppDataImport { .. }),
+            matches!(*wrapped, MigrationError::Unexpected { .. }),
             "a non-migration error is wrapped, never dropped",
         );
         assert!(
             !wrapped.is_backend_not_ready(),
-            "a wrapped app-data error is terminal, offered with a retry",
+            "a wrapped stray error is terminal, offered with a retry",
         );
+    }
+
+    /// The coercion is TOTAL — every `TaskError` yields a publishable chain that
+    /// still carries the original error as its `#[source]`. This is what keeps a
+    /// failed migration from stranding the status on `Running`: while it is
+    /// running, `run_backend_task` rejects every wallet-touching task with
+    /// `WalletStorageNotReady` and the banner offers no retry, so an error that
+    /// published nothing would wedge the wallet surface until the app restarts.
+    #[test]
+    fn every_task_error_yields_a_publishable_chain_with_its_source_intact() {
+        for stray in [
+            TaskError::WalletNotFound,
+            TaskError::WalletStorageNotReady,
+            TaskError::IdentityNotFound,
+        ] {
+            let expected = stray.to_string();
+            let chain = migration_error_chain(stray);
+
+            let source = std::error::Error::source(&*chain)
+                .expect("the stray error must survive as the chain's source");
+            assert_eq!(
+                source.to_string(),
+                expected,
+                "the original error must reach the details panel, not be replaced",
+            );
+        }
     }
 
     /// Wire the real wallet seam onto a fixture context. Offline: the backend
@@ -4515,6 +4519,19 @@ mod tests {
         )
         .expect("insert legacy wallet row");
         seed_hash
+    }
+
+    /// Stage an identity row whose blob will never decode, so `read_identities`
+    /// counts it unreadable. Written into the *modern* `identity` table the app
+    /// context already created — not the legacy fixture shape — so the NULL wallet
+    /// link is what satisfies that table's both-or-neither `CHECK`.
+    fn insert_corrupt_identity_row(conn: &Connection, id: [u8; 32]) {
+        conn.execute(
+            "INSERT INTO identity (id, data, status, is_local, network)
+             VALUES (?1, ?2, 2, 1, 'testnet')",
+            rusqlite::params![id.as_slice(), vec![0xFFu8; 8]],
+        )
+        .expect("corrupt identity row");
     }
 
     /// QA-101 — the headline funds regression. A single undecodable legacy vote
@@ -4727,15 +4744,7 @@ mod tests {
 
         {
             let conn = Connection::open(tmp.path().join("data.db")).expect("open data.db");
-            // A corrupt identity blob → `read_identities` counts it unreadable. The
-            // modern schema already has the `identity` table; a NULL wallet link
-            // satisfies its both-or-neither CHECK.
-            conn.execute(
-                "INSERT INTO identity (id, data, status, is_local, network)
-                 VALUES (?1, ?2, 2, 1, 'testnet')",
-                rusqlite::params![[0x44u8; 32].as_slice(), vec![0xFFu8; 8]],
-            )
-            .expect("corrupt identity row");
+            insert_corrupt_identity_row(&conn, [0x44u8; 32]);
             // A structurally-damaged legacy `top_up` (no `amount` column) with a
             // row → the app-data pass hard-fails when its reader's prepare fails.
             conn.execute_batch(
@@ -4831,12 +4840,7 @@ mod tests {
             // A corrupt identity blob → unreadable == 1, which is what steers the run
             // into the branch under test. The legacy `top_up` table is left alone, so
             // the app-data pass runs clean and writes its sentinel.
-            conn.execute(
-                "INSERT INTO identity (id, data, status, is_local, network)
-                 VALUES (?1, ?2, 2, 1, 'testnet')",
-                rusqlite::params![[0x45u8; 32].as_slice(), vec![0xFFu8; 8]],
-            )
-            .expect("corrupt identity row");
+            insert_corrupt_identity_row(&conn, [0x45u8; 32]);
         }
 
         // Poison the warning record: a unit value encodes to an empty bincode body,
@@ -4958,12 +4962,7 @@ mod tests {
             // A corrupt identity blob → the identity pass counts it unreadable and
             // records a durable warning, so the identity branch recurs on every launch.
             let conn = Connection::open(tmp.path().join("data.db")).expect("open data.db");
-            conn.execute(
-                "INSERT INTO identity (id, data, status, is_local, network)
-                 VALUES (?1, ?2, 2, 1, 'testnet')",
-                rusqlite::params![[0x66u8; 32].as_slice(), vec![0xFFu8; 8]],
-            )
-            .expect("corrupt identity row");
+            insert_corrupt_identity_row(&conn, [0x66u8; 32]);
         }
 
         wire_backend(&ctx).await;
@@ -5225,6 +5224,51 @@ mod tests {
                 .expect("read sentinel")
                 .is_none(),
             "the completion sentinel must not be written when the migration aborts",
+        );
+    }
+
+    /// A failed migration must always leave a terminal state behind. `Running`
+    /// makes `run_backend_task` reject every wallet-touching task with
+    /// `WalletStorageNotReady`, and the banner offers a retry only from
+    /// `Failed` — so a failure that published nothing would wedge wallets,
+    /// identities and sends until the app is restarted, with no way out.
+    #[tokio::test]
+    async fn a_failed_migration_never_strands_the_status_on_running() {
+        use crate::backend_task::migration::MigrationTask;
+        use dash_sdk::dpp::dashcore::Network;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = fresh_app_context(tmp.path());
+
+        // Same shape as the abort above: a legacy row trips detection, and the
+        // unwired backend fails the first backend-dependent step.
+        {
+            let conn = Connection::open(tmp.path().join("data.db")).expect("open data.db");
+            seed_legacy_row(
+                &conn,
+                &[7u8; 32],
+                &[1u8; 32],
+                &[],
+                &[],
+                "addr",
+                None,
+                false,
+                Network::Testnet,
+            );
+        }
+
+        let result = ctx.run_migration_task(MigrationTask::FinishUnwire).await;
+        assert!(result.is_err(), "the migration must report its failure");
+
+        let state = ctx.migration_status().state();
+        assert!(
+            !state.is_running(),
+            "a failed migration left the status on `Running`, which gates every \
+             wallet-touching task with no retry to escape it",
+        );
+        assert!(
+            matches!(*state, MigrationState::Failed { .. }),
+            "the failure must reach the user as a retryable banner",
         );
     }
 }

@@ -4,6 +4,7 @@ use crate::backend_task::identity::{IdentityInputToLoad, IdentityLoadMode};
 use crate::context::AppContext;
 use crate::model::identity_key_protection::validate_protection_password;
 use crate::model::key_input::verify_key_input;
+use crate::model::masternode_input::decode_identity_id;
 use crate::model::qualified_identity::PrivateKeyTarget::{
     self, PrivateKeyOnMainIdentity, PrivateKeyOnVoterIdentity,
 };
@@ -28,7 +29,6 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::key_wallet::bip32::{DerivationPath, KeyDerivationType};
 use dash_sdk::dpp::platform_value::Value;
-use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::drive::query::{SelectProjection, WhereClause, WhereOperator};
 use dash_sdk::platform::{Document, DocumentQuery, Fetch, FetchMany, Identifier, Identity};
 use std::collections::BTreeMap;
@@ -86,7 +86,47 @@ impl AppContext {
             selected_wallet_seed_hash,
             encryption_password,
             load_mode,
+            load_token,
         } = input;
+
+        // Parse the identity ID. It names the load, so it has to be resolved before
+        // anything that can fail — a load that failed has to be reportable, and a
+        // load is only reportable once it is claimed under its identity.
+        let identity_id = match decode_identity_id(&identity_id_input) {
+            Ok(id) => id,
+            Err(_e) => {
+                // For masternodes/evonodes the identity id field IS a ProTxHash
+                // (hex) or Base58 identity id — surface the ProTxHash-specific
+                // message so the user is told the exact accepted formats.
+                if identity_type != IdentityType::User {
+                    return Err(TaskError::MalformedProTxHash {
+                        input: identity_id_input,
+                    });
+                }
+                return Err(TaskError::IdentifierParsingError {
+                    input: identity_id_input,
+                });
+            }
+        };
+
+        // Claim the identity before the first fallible step. Two jobs:
+        //
+        // The duplicate check below, the network fetch, the insert and the key seal
+        // are not one atomic step: two overlapping loads of this identity could both
+        // pass the check and both insert, the last one clobbering the first's alias,
+        // keys and protection tier. The claim excludes a second load of it, from any
+        // screen, tool or CLI, for that whole span.
+        //
+        // The guard is also how this load reports its outcome to a screen that
+        // navigated away (task results reach only the visible screen): dropped on
+        // any error path — including the validation below — it records `Failed`, and
+        // only the explicit `loaded()` after the last fallible step records success.
+        // Validating before the claim would leave a rejected load unreportable, and
+        // the screen waiting on it stuck on "Loading…" for the rest of the session.
+        //
+        // The claim is made under this load's own token, so it reports into the
+        // record its dispatcher is waiting on — never one another load owns.
+        let load_guard = self.begin_identity_load(identity_id, load_token)?;
 
         // FR-8: validate the load-time encryption password up front, before the
         // network fetch, so a too-short password fails fast. The seal path
@@ -103,26 +143,6 @@ impl AppContext {
 
         let payout_address_private_key_bytes =
             verify_key_input(payout_address_private_key_input, "Payout Address")?;
-
-        // Parse the identity ID
-        let identity_id = match Identifier::from_string(&identity_id_input, Encoding::Base58)
-            .or_else(|_| Identifier::from_string(&identity_id_input, Encoding::Hex))
-        {
-            Ok(id) => id,
-            Err(_e) => {
-                // For masternodes/evonodes the identity id field IS a ProTxHash
-                // (hex) or Base58 identity id — surface the ProTxHash-specific
-                // message so the user is told the exact accepted formats.
-                if identity_type != IdentityType::User {
-                    return Err(TaskError::MalformedProTxHash {
-                        input: identity_id_input,
-                    });
-                }
-                return Err(TaskError::IdentifierParsingError {
-                    input: identity_id_input,
-                });
-            }
-        };
 
         // §10.9 / TC-EDGE-07: a fresh load rejects a ProTxHash already stored,
         // before any network fetch — so the existing node's alias/keys/protection
@@ -491,6 +511,11 @@ impl AppContext {
             self.protect_identity_keys(qualified_identity.identity.id(), password, None)?;
         }
 
+        // Past the last fallible step: the node is stored with its keys as
+        // requested. Anything that failed before this — including a key seal that
+        // left the insert behind — reported `Failed` when the guard dropped.
+        load_guard.loaded();
+
         Ok(BackendTaskSuccessResult::LoadedIdentity(qualified_identity))
     }
 
@@ -749,6 +774,7 @@ mod tests {
     use dash_sdk::dpp::dashcore::Network;
     use dash_sdk::dpp::identity::Identity;
     use dash_sdk::dpp::identity::KeyID;
+    use dash_sdk::dpp::platform_value::string_encoding::Encoding;
     use dash_sdk::dpp::version::PlatformVersion;
     use dash_sdk::platform::IdentityPublicKey;
     use platform_wallet_storage::secrets::SecretString;
@@ -985,6 +1011,7 @@ mod tests {
             selected_wallet_seed_hash: None,
             encryption_password: None,
             load_mode: IdentityLoadMode::RejectIfExists,
+            load_token: None,
         };
 
         let sdk = ctx.sdk();
@@ -1184,6 +1211,7 @@ mod tests {
             selected_wallet_seed_hash: None,
             encryption_password: None,
             load_mode: IdentityLoadMode::MergeIntoExisting,
+            load_token: None,
         };
 
         // The verify happens before the SDK fetch, so this resolves offline.
@@ -1248,6 +1276,7 @@ mod tests {
             selected_wallet_seed_hash: None,
             encryption_password: None,
             load_mode: IdentityLoadMode::Overwrite,
+            load_token: None,
         };
 
         let sdk = ctx.sdk();
@@ -1265,6 +1294,73 @@ mod tests {
         assert!(
             matches!(user_result, Err(TaskError::IdentifierParsingError { .. })),
             "a User load with a malformed id must report IdentifierParsingError, got {user_result:?}",
+        );
+
+        ctx.wallet_backend().expect("backend").shutdown().await;
+    }
+
+    /// Regression: a load that fails its own input validation must still report a
+    /// terminal phase. The dispatching screen marks the load `Submitted` before
+    /// the task exists, and only the load can close that out — so the claim, which
+    /// records the outcome when it drops, has to be established before the first
+    /// fallible step. Validating first strands the load as forever-outstanding and
+    /// leaves the form stuck on "Loading…" for the rest of the session.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_load_that_fails_validation_still_reports_a_terminal_phase() {
+        use crate::context::identity_load_registry::IdentityLoadPhase;
+
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = temp_dir.path().to_path_buf();
+        ensure_env_file(&data_dir);
+        let db = Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
+        let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
+        let secret_store = AppContext::open_secret_store(&data_dir).expect("secret store");
+        let ctx = AppContext::new(
+            data_dir,
+            Network::Testnet,
+            db,
+            Arc::new(TaskManager::new()),
+            Arc::new(ConnectionStatus::new()),
+            egui::Context::default(),
+            app_kv,
+            secret_store,
+            crate::model::user_role::UserRoleCell::default(),
+        )
+        .expect("offline testnet AppContext::new");
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("wire wallet backend offline");
+
+        let identity_id = Identifier::from([0x5a; 32]);
+        let token = ctx
+            .mark_identity_load_submitted(identity_id)
+            .expect("nothing else is loading this identity");
+
+        // A too-short at-load password fails validation before any network use.
+        let input = IdentityInputToLoad {
+            identity_id_input: identity_id.to_string(Encoding::Hex),
+            identity_type: IdentityType::Masternode,
+            alias_input: String::new(),
+            voting_private_key_input: Secret::new(""),
+            owner_private_key_input: Secret::new(""),
+            payout_address_private_key_input: Secret::new(""),
+            keys_input: vec![],
+            derive_keys_from_wallets: false,
+            selected_wallet_seed_hash: None,
+            encryption_password: Some(Secret::new("x")),
+            load_mode: IdentityLoadMode::RejectIfExists,
+            load_token: Some(token),
+        };
+
+        let sdk = ctx.sdk();
+        let result = ctx.load_identity(&sdk, input).await;
+        assert!(result.is_err(), "a one-character password must be rejected");
+        assert_eq!(
+            ctx.identity_load_phase(&identity_id, token),
+            Some(IdentityLoadPhase::Failed),
+            "a load that fails validation must report Failed, not stay outstanding forever"
         );
 
         ctx.wallet_backend().expect("backend").shutdown().await;

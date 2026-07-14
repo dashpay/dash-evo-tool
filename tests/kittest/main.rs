@@ -21,6 +21,7 @@ mod network_chooser;
 mod progress_overlay;
 mod register_dpns_name_screen;
 mod restore_single_key;
+mod role_indicator;
 mod secret_prompt;
 mod startup;
 mod support;

@@ -442,6 +442,13 @@ fn render_key_combo(
             for key_ref in qi.private_keys.identity_public_keys() {
                 let key = &key_ref.1.identity_public_key;
 
+                // Platform rejects signing with a disabled key, so never offer one
+                // — not even in dev mode, where the override only relaxes purpose and
+                // security-level filters, not signability.
+                if key.is_disabled() {
+                    continue;
+                }
+
                 let is_allowed = is_dev_mode
                     || (allowed_purposes.contains(&key.purpose())
                         && allowed_security_levels.contains(&key.security_level()));

@@ -8,6 +8,7 @@ use dash_sdk::dashcore_rpc::dashcore::address::NetworkUnchecked;
 use dash_sdk::dashcore_rpc::dashcore::{Address, Network};
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::Identifier;
 use egui::{Color32, InnerResponse, Response, Ui, WidgetText};
@@ -283,13 +284,19 @@ impl ComponentResponse for AddressInputResponse {
     }
 }
 
-/// A wallet paired with its display-only `WalletBackend`-snapshot per-address
-/// balances (`AppContext::snapshot_address_balances`). The component takes
-/// balances explicitly so it never reaches into wallet state for funds
-/// (A04 — snapshot is display-only).
-pub type WalletWithBalances = (
+/// A wallet paired with its display-only `WalletBackend`-snapshot views:
+/// per-address balances (`AppContext::snapshot_address_balances`) and the
+/// authoritative per-address derivation paths
+/// (`AppContext::snapshot_address_paths`).
+///
+/// The component takes both explicitly so it never reaches into wallet state
+/// for funds (A04 — snapshot is display-only). The paths are what the wallet
+/// actually owns and SPV watches, so they, not the wallet's own bookkeeping,
+/// decide which addresses autocomplete may offer.
+pub type WalletWithSnapshot = (
     Arc<RwLock<Wallet>>,
     std::collections::BTreeMap<Address, u64>,
+    std::collections::BTreeMap<Address, DerivationPath>,
 );
 
 /// Unified address input with autocomplete, type detection, and validation.
@@ -303,7 +310,11 @@ pub type WalletWithBalances = (
 /// ```rust,ignore
 /// let addr_input = self.address_input.get_or_insert_with(|| {
 ///     AddressInput::new(network)
-///         .with_wallets(&[(wallet, app_context.snapshot_address_balances(&seed_hash))])
+///         .with_wallets(&[(
+///             wallet,
+///             app_context.snapshot_address_balances(&seed_hash),
+///             app_context.snapshot_address_paths(&seed_hash),
+///         )])
 ///         .with_label("Destination address")
 ///         .with_hint_text("Enter address or username")
 /// });
@@ -378,10 +389,10 @@ impl AddressInput {
 
     /// Provide wallet data for **Core and Platform** autocomplete only.
     ///
-    /// This extracts BIP44 (Core) addresses from `known_addresses` and
-    /// PlatformPayment addresses from `watched_addresses`. It does NOT
-    /// extract identities or shielded addresses — those live outside the
-    /// `Wallet` struct and must be added separately:
+    /// This extracts BIP-44 (Core) and DIP-17 (Platform) addresses from each
+    /// wallet's snapshot `address_paths`. It does NOT extract identities or
+    /// shielded addresses — those live outside the `Wallet` struct and must be
+    /// added separately:
     ///
     /// - **Identities**: call [`with_identities()`] with `QualifiedIdentity`
     ///   data from `AppContext::load_local_qualified_identities()`.
@@ -391,13 +402,9 @@ impl AddressInput {
     /// Entries are extracted immediately (read lock acquired once per wallet).
     /// Skips gracefully if a wallet lock is poisoned. Each Core/Platform entry
     /// carries its wallet's name for the wallet pill and `wallet:` search tag.
-    /// Each entry pairs a wallet with its display-only
-    /// `WalletBackend`-snapshot per-address balances
-    /// (`AppContext::snapshot_address_balances`); the component never reaches
-    /// into wallet state for balances (A04 — snapshot is display-only).
-    pub fn with_wallets(mut self, wallets: &[WalletWithBalances]) -> Self {
-        for (wallet, balances) in wallets {
-            self.extract_wallet_entries(wallet, balances);
+    pub fn with_wallets(mut self, wallets: &[WalletWithSnapshot]) -> Self {
+        for (wallet, balances, paths) in wallets {
+            self.extract_wallet_entries(wallet, balances, paths);
         }
         self
     }
@@ -493,12 +500,12 @@ impl AddressInput {
     // --- Mutable setters for runtime reconfiguration ---
 
     /// Update wallet data after initialization (e.g., balance refresh).
-    pub fn set_wallets(&mut self, wallets: &[WalletWithBalances]) {
+    pub fn set_wallets(&mut self, wallets: &[WalletWithSnapshot]) {
         self.all_entries.retain(|e| {
             e.address_kind != AddressKind::Core && e.address_kind != AddressKind::Platform
         });
-        for (wallet, balances) in wallets {
-            self.extract_wallet_entries(wallet, balances);
+        for (wallet, balances, paths) in wallets {
+            self.extract_wallet_entries(wallet, balances, paths);
         }
     }
 
@@ -518,10 +525,19 @@ impl AddressInput {
 
     // --- Entry extraction ---
 
+    /// Extract this wallet's Core and Platform autocomplete entries from the
+    /// display snapshot's `address_paths` — the addresses the upstream wallet
+    /// actually generated and SPV watches.
+    ///
+    /// Whitelist approach: an address is offered only when its derivation path
+    /// matches a kind we recognise (BIP-44 for Core, DIP-17 for Platform).
+    /// Unknown or unrecognised paths are excluded — safer to hide an address
+    /// than to offer it under the wrong type.
     fn extract_wallet_entries(
         &mut self,
         wallet: &Arc<RwLock<Wallet>>,
         address_balances: &std::collections::BTreeMap<Address, u64>,
+        address_paths: &std::collections::BTreeMap<Address, DerivationPath>,
     ) {
         let guard = match wallet.read().ok() {
             Some(g) => g,
@@ -530,49 +546,33 @@ impl AddressInput {
 
         let wallet_name = Some(guard.alias.as_deref().unwrap_or("Wallet").to_string());
 
-        // Whitelist approach: only include addresses whose derivation path
-        // matches the expected type. Unknown or unrecognized paths are excluded
-        // — safer to hide an address than to show it with the wrong type.
-
-        // Core addresses: only BIP44 paths (m/44'/coin'/account'/change/index).
-        for (address, derivation_path) in &guard.known_addresses {
-            if !derivation_path.is_bip44(self.network) {
-                continue;
-            }
-            let is_change = derivation_path.is_bip44_change(self.network);
-            if self.exclude_change && is_change {
-                continue;
-            }
-            let balance = address_balances.get(address).copied().unwrap_or(0);
-            self.all_entries.push(AddressEntry {
-                address_string: address.to_string(),
-                address_kind: AddressKind::Core,
-                name_label: is_change.then(|| "change".to_string()),
-                wallet_name: wallet_name.clone(),
-                balance,
-                validated: ValidatedAddress::Core(address.clone()),
-            });
-        }
-
-        // Platform addresses: whitelist only PlatformPayment paths from
-        // watched_addresses, with balance from platform_address_info.
-        // This ensures fresh wallets with no on-chain activity still show
-        // their derived platform addresses.
-        use crate::model::wallet::DerivationPathReference;
-        let mut seen_platform = std::collections::HashSet::new();
-        for addr_info in guard.watched_addresses.values() {
-            if addr_info.path_reference != DerivationPathReference::PlatformPayment {
-                continue;
-            }
-            let core_addr = &addr_info.address;
-            if let Ok(platform_addr) = PlatformAddress::try_from(core_addr.clone()) {
-                let addr_str = platform_addr.to_bech32m_string(self.network);
-                if !seen_platform.insert(addr_str.clone()) {
+        for (address, derivation_path) in address_paths {
+            if derivation_path.is_bip44(self.network) {
+                let is_change = derivation_path.is_bip44_change(self.network);
+                if self.exclude_change && is_change {
                     continue;
                 }
+                self.all_entries.push(AddressEntry {
+                    address_string: address.to_string(),
+                    address_kind: AddressKind::Core,
+                    name_label: is_change.then(|| "change".to_string()),
+                    wallet_name: wallet_name.clone(),
+                    balance: address_balances.get(address).copied().unwrap_or(0),
+                    validated: ValidatedAddress::Core(address.clone()),
+                });
+                continue;
+            }
+
+            // DIP-17 platform-payment addresses hold credits, not Core UTXOs, so
+            // their balance comes from the platform-address cache rather than
+            // the UTXO-derived `address_balances`.
+            if derivation_path.is_platform_payment(self.network)
+                && let Ok(platform_addr) = PlatformAddress::try_from(address.clone())
+            {
+                let addr_str = platform_addr.to_bech32m_string(self.network);
                 let balance = guard
                     .platform_address_info
-                    .get(core_addr)
+                    .get(address)
                     .map(|info| info.balance)
                     .unwrap_or(0);
                 let bech32m = addr_str.clone();
@@ -1471,6 +1471,21 @@ mod tests {
         (addr.to_string(), addr)
     }
 
+    /// A testnet BIP-44 external (receive) path `m/44'/1'/0'/0/index`.
+    fn bip44_receive_path(index: u32) -> DerivationPath {
+        use dash_sdk::dpp::key_wallet::bip32::ChildNumber;
+        DerivationPath::from(
+            [
+                ChildNumber::Hardened { index: 44 },
+                ChildNumber::Hardened { index: 1 },
+                ChildNumber::Hardened { index: 0 },
+                ChildNumber::Normal { index: 0 },
+                ChildNumber::Normal { index },
+            ]
+            .as_slice(),
+        )
+    }
+
     /// Generate a valid mainnet P2PKH address for testing.
     fn mainnet_core_address() -> (String, Address) {
         let secp = Secp256k1::new();
@@ -2114,13 +2129,19 @@ mod tests {
 
     // --- Entry population ---
 
+    /// An input fed one snapshot-sourced BIP-44 receive address.
     fn core_wallet_input(alias: Option<&str>) -> AddressInput {
         use std::collections::BTreeMap;
         let wallet =
             Wallet::new_from_seed([7u8; 64], Network::Testnet, alias.map(String::from), None)
                 .expect("wallet from seed");
-        AddressInput::new(Network::Testnet)
-            .with_wallets(&[(Arc::new(RwLock::new(wallet)), BTreeMap::new())])
+        let (_, address) = testnet_core_address();
+        let paths = BTreeMap::from([(address, bip44_receive_path(0))]);
+        AddressInput::new(Network::Testnet).with_wallets(&[(
+            Arc::new(RwLock::new(wallet)),
+            BTreeMap::new(),
+            paths,
+        )])
     }
 
     fn identity_input(alias: Option<&str>, dpns: Option<&str>) -> AddressInput {
@@ -2184,17 +2205,10 @@ mod tests {
         assert_eq!(core.wallet_name.as_deref(), Some("Wallet"));
     }
 
-    #[test]
-    fn core_change_entry_gets_change_name_label() {
-        use dash_sdk::dpp::key_wallet::bip32::{ChildNumber, DerivationPath};
-        use std::collections::BTreeMap;
-
-        let mut wallet =
-            Wallet::new_from_seed([7u8; 64], Network::Testnet, Some("W".to_string()), None)
-                .expect("wallet from seed");
-        let (_, change_addr) = testnet_core_address();
-        // BIP44 change path (m/44'/1'/0'/1/0): components[3] == Normal(1).
-        let change_path = DerivationPath::from(
+    /// A testnet BIP-44 change path `m/44'/1'/0'/1/0` (components[3] == Normal(1)).
+    fn bip44_change_path() -> DerivationPath {
+        use dash_sdk::dpp::key_wallet::bip32::ChildNumber;
+        DerivationPath::from(
             [
                 ChildNumber::Hardened { index: 44 },
                 ChildNumber::Hardened { index: 1 },
@@ -2203,11 +2217,24 @@ mod tests {
                 ChildNumber::Normal { index: 0 },
             ]
             .as_slice(),
-        );
-        wallet.known_addresses.insert(change_addr, change_path);
+        )
+    }
 
-        let input = AddressInput::new(Network::Testnet)
-            .with_wallets(&[(Arc::new(RwLock::new(wallet)), BTreeMap::new())]);
+    #[test]
+    fn core_change_entry_gets_change_name_label() {
+        use std::collections::BTreeMap;
+
+        let wallet =
+            Wallet::new_from_seed([7u8; 64], Network::Testnet, Some("W".to_string()), None)
+                .expect("wallet from seed");
+        let (_, change_addr) = testnet_core_address();
+        let paths = BTreeMap::from([(change_addr, bip44_change_path())]);
+
+        let input = AddressInput::new(Network::Testnet).with_wallets(&[(
+            Arc::new(RwLock::new(wallet)),
+            BTreeMap::new(),
+            paths,
+        )]);
         let change = input
             .all_entries
             .iter()
@@ -2219,34 +2246,136 @@ mod tests {
 
     #[test]
     fn core_change_entry_excluded_when_requested() {
-        use dash_sdk::dpp::key_wallet::bip32::{ChildNumber, DerivationPath};
         use std::collections::BTreeMap;
 
-        let mut wallet =
+        let wallet =
             Wallet::new_from_seed([7u8; 64], Network::Testnet, Some("W".to_string()), None)
                 .expect("wallet from seed");
         let (_, change_addr) = testnet_core_address();
-        let change_path = DerivationPath::from(
-            [
-                ChildNumber::Hardened { index: 44 },
-                ChildNumber::Hardened { index: 1 },
-                ChildNumber::Hardened { index: 0 },
-                ChildNumber::Normal { index: 1 },
-                ChildNumber::Normal { index: 0 },
-            ]
-            .as_slice(),
-        );
-        wallet.known_addresses.insert(change_addr, change_path);
+        let paths = BTreeMap::from([(change_addr, bip44_change_path())]);
 
         let input = AddressInput::new(Network::Testnet)
             .with_exclude_change(true)
-            .with_wallets(&[(Arc::new(RwLock::new(wallet)), BTreeMap::new())]);
+            .with_wallets(&[(Arc::new(RwLock::new(wallet)), BTreeMap::new(), paths)]);
         assert!(
             input
                 .all_entries
                 .iter()
                 .all(|e| e.name_label.as_deref() != Some("change")),
             "change address must be excluded when with_exclude_change(true)"
+        );
+    }
+
+    /// A BIP-44 path present only in the snapshot — the wallet's legacy
+    /// `known_addresses` never saw it — must still surface a Core entry. The
+    /// snapshot is the source of truth for what the autocomplete may offer.
+    #[test]
+    fn core_entries_are_sourced_from_the_snapshot_paths() {
+        use std::collections::BTreeMap;
+
+        let mut wallet =
+            Wallet::new_from_seed([7u8; 64], Network::Testnet, Some("W".to_string()), None)
+                .expect("wallet from seed");
+        wallet.known_addresses.clear();
+        wallet.watched_addresses.clear();
+
+        let (addr_str, address) = testnet_core_address();
+        let paths = BTreeMap::from([(address, bip44_receive_path(0))]);
+
+        let input = AddressInput::new(Network::Testnet).with_wallets(&[(
+            Arc::new(RwLock::new(wallet)),
+            BTreeMap::new(),
+            paths,
+        )]);
+
+        let core = input
+            .all_entries
+            .iter()
+            .find(|e| e.address_kind == AddressKind::Core)
+            .expect("snapshot-sourced core entry present");
+        assert_eq!(core.address_string, addr_str);
+        assert_eq!(core.wallet_name.as_deref(), Some("W"));
+    }
+
+    /// A DIP-17 platform-payment path present only in the snapshot — the
+    /// wallet's legacy `watched_addresses` never saw it — must still surface a
+    /// Platform entry, rendered in DIP-18 bech32m.
+    #[test]
+    fn platform_entries_are_sourced_from_the_snapshot_paths() {
+        use std::collections::BTreeMap;
+
+        let mut wallet =
+            Wallet::new_from_seed([7u8; 64], Network::Testnet, Some("W".to_string()), None)
+                .expect("wallet from seed");
+        wallet.known_addresses.clear();
+        wallet.watched_addresses.clear();
+
+        let (_, address) = testnet_core_address();
+        let expected = PlatformAddress::try_from(address.clone())
+            .expect("core address converts to a platform address")
+            .to_bech32m_string(Network::Testnet);
+        let paths = BTreeMap::from([(
+            address,
+            DerivationPath::platform_payment_path(Network::Testnet, 0, 0, 0),
+        )]);
+
+        let input = AddressInput::new(Network::Testnet).with_wallets(&[(
+            Arc::new(RwLock::new(wallet)),
+            BTreeMap::new(),
+            paths,
+        )]);
+
+        let platform = input
+            .all_entries
+            .iter()
+            .find(|e| e.address_kind == AddressKind::Platform)
+            .expect("snapshot-sourced platform entry present");
+        assert_eq!(platform.address_string, expected);
+        assert_eq!(platform.wallet_name.as_deref(), Some("W"));
+    }
+
+    /// FUNDS-SAFETY: the legacy `known_addresses`/`watched_addresses` maps are
+    /// no longer an autocomplete source. DET's own bootstrap can derive
+    /// addresses upstream does not watch (past the gap limit, or a stale
+    /// rehydrate); offering one would invite funds to an address SPV never sees.
+    /// With an empty snapshot, a fully-populated legacy map must yield nothing.
+    #[test]
+    fn legacy_maps_never_source_autocomplete_entries() {
+        use crate::model::wallet::{AddressInfo, DerivationPathReference, DerivationPathType};
+        use std::collections::BTreeMap;
+
+        // `new_from_seed` seeds `known_addresses` with the first BIP-44 receive
+        // address; add a platform-payment entry so both legacy branches are live.
+        let mut wallet =
+            Wallet::new_from_seed([7u8; 64], Network::Testnet, Some("W".to_string()), None)
+                .expect("wallet from seed");
+        assert!(
+            !wallet.known_addresses.is_empty(),
+            "precondition: the legacy map is populated, so this test can prove it is ignored"
+        );
+        let (_, address) = testnet_core_address();
+        let platform_path = DerivationPath::platform_payment_path(Network::Testnet, 0, 0, 0);
+        wallet.watched_addresses.insert(
+            platform_path.clone(),
+            AddressInfo {
+                address,
+                path_reference: DerivationPathReference::PlatformPayment,
+                path_type: DerivationPathType::CLEAR_FUNDS,
+            },
+        );
+
+        let input = AddressInput::new(Network::Testnet).with_wallets(&[(
+            Arc::new(RwLock::new(wallet)),
+            BTreeMap::new(),
+            BTreeMap::new(),
+        )]);
+
+        assert!(
+            !input
+                .all_entries
+                .iter()
+                .any(|e| matches!(e.address_kind, AddressKind::Core | AddressKind::Platform)),
+            "an empty snapshot must yield no wallet entries, whatever the legacy maps hold"
         );
     }
 
@@ -2324,7 +2453,8 @@ mod tests {
     #[test]
     fn dynamic_hint_includes_and_trims_wallets() {
         use std::collections::BTreeMap;
-        let wallets: Vec<WalletWithBalances> = (0u8..6)
+        let (_, address) = testnet_core_address();
+        let wallets: Vec<WalletWithSnapshot> = (0u8..6)
             .map(|i| {
                 let wallet = Wallet::new_from_seed(
                     [i + 1; 64],
@@ -2333,7 +2463,8 @@ mod tests {
                     None,
                 )
                 .expect("wallet from seed");
-                (Arc::new(RwLock::new(wallet)), BTreeMap::new())
+                let paths = BTreeMap::from([(address.clone(), bip44_receive_path(0))]);
+                (Arc::new(RwLock::new(wallet)), BTreeMap::new(), paths)
             })
             .collect();
         let input = AddressInput::new(Network::Testnet).with_wallets(&wallets);

@@ -340,7 +340,6 @@ impl<'a> Widget for IdentitySelector<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::AppState;
     use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
     use crate::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
     use dash_sdk::dpp::identity::Identity;
@@ -349,7 +348,7 @@ mod tests {
 
     // ── Isolation helpers ─────────────────────────────────────────────────────
     //
-    // `AppState::new()` resolves its data dir through `DASH_EVO_DATA_DIR`. Tests
+    // `make_ctx` resolves its data dir through `DASH_EVO_DATA_DIR`. Tests
     // that construct an `AppContext` must serialize on a process-global lock and
     // redirect to a throwaway temp dir to avoid opening the real user data dir or
     // racing with parallel test threads.
@@ -363,8 +362,8 @@ mod tests {
 
     /// Runs `f` in a unique temp data dir with a Tokio runtime in context.
     /// Serialized by a module-level lock so that parallel test threads don't
-    /// race on `DASH_EVO_DATA_DIR`. `AppState::new()` internally drives tokio
-    /// tasks, so a runtime must be entered before calling it.
+    /// race on `DASH_EVO_DATA_DIR`. `make_ctx` wires the wallet backend via an
+    /// `.await`, so a multi-thread runtime must be entered before calling it.
     fn with_isolated_dir<R>(f: impl FnOnce() -> R) -> R {
         let lock = data_dir_lock();
         let tmp = tempfile::tempdir().expect("create temp data dir");
@@ -389,14 +388,54 @@ mod tests {
         result
     }
 
-    /// Build a minimal `AppContext` from a bare `AppState`. The wallet backend
-    /// is NOT wired (no Harness needed). `set_selected_identity` still works:
-    /// it updates the in-memory mutex and gracefully skips KV persistence
-    /// (see `persist_selected_identity_kv`: early-return with a debug log when
-    /// `wallet_backend()` returns `Err`).
+    /// Build an `AppContext` with the wallet backend wired synchronously, in the
+    /// temp data dir set by [`with_isolated_dir`].
+    ///
+    /// This mirrors `context::tests::offline_ctx`: it constructs `AppContext`
+    /// directly and `.await`s `ensure_wallet_backend` to completion — so the
+    /// one-time `restore_selected_identity_from_kv` runs (settling the in-memory
+    /// selection from the empty k/v) BEFORE the context is returned. Building via
+    /// `AppState::new()` instead would spawn that wiring in the background, and
+    /// its restore could land AFTER a test's `set_selected_identity`, clobbering
+    /// the selection to `None` (a timing-sensitive false failure). With the
+    /// backend already wired here, `set_selected_identity` also persists to k/v.
     fn make_ctx() -> Arc<AppContext> {
-        let app = AppState::new(egui::Context::default()).expect("AppState builds");
-        app.current_app_context().clone()
+        use crate::app::TaskResult;
+        use crate::app_dir::ensure_env_file;
+        use crate::context::connection_status::ConnectionStatus;
+        use crate::database::test_helpers::create_database_at_path;
+        use crate::utils::egui_mpsc::SenderAsync;
+        use crate::utils::tasks::TaskManager;
+
+        let data_dir = std::path::PathBuf::from(
+            std::env::var("DASH_EVO_DATA_DIR").expect("with_isolated_dir sets DASH_EVO_DATA_DIR"),
+        );
+        ensure_env_file(&data_dir);
+        let db = Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
+        let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
+        let secret_store = AppContext::open_secret_store(&data_dir).expect("secret store");
+        let ctx = AppContext::new(
+            data_dir,
+            dash_sdk::dpp::dashcore::Network::Testnet,
+            db,
+            Arc::new(TaskManager::new()),
+            Arc::new(ConnectionStatus::new()),
+            egui::Context::default(),
+            app_kv,
+            secret_store,
+            crate::model::user_role::UserRoleCell::default(),
+        )
+        .expect("offline testnet AppContext::new");
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
+        // `with_isolated_dir` entered a multi-thread runtime; `block_in_place`
+        // lets us drive the async wiring to completion from this worker thread.
+        tokio::task::block_in_place(|| {
+            tokio::runtime::Handle::current()
+                .block_on(ctx.ensure_wallet_backend(sender))
+                .expect("wire wallet backend offline");
+        });
+        ctx
     }
 
     /// Create a wallet-less `QualifiedIdentity` from a raw id byte. Constructed

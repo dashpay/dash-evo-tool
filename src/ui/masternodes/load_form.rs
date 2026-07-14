@@ -12,6 +12,8 @@ use crate::ui::components::password_input::PasswordInput;
 use crate::ui::masternodes::testnet_fixture::TestnetNodes;
 use crate::ui::masternodes::{TIP_OWNER_KEY, TIP_PAYOUT_KEY, TIP_VOTING_KEY};
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
+use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+use dash_sdk::platform::Identifier;
 use eframe::egui::{self, RichText, Ui};
 
 const KEY_PLACEHOLDER: &str = "Private key (WIF or hex)";
@@ -54,6 +56,14 @@ pub struct MasternodeLoadForm {
 impl Default for MasternodeLoadForm {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+impl MasternodeLoadForm {
+    /// Seed the ProTxHash field so a test can point the form at a specific node.
+    pub(crate) fn set_pro_tx_hash_for_test(&mut self, value: impl Into<String>) {
+        self.pro_tx_hash_input = value.into();
     }
 }
 
@@ -156,6 +166,23 @@ impl MasternodeLoadForm {
     /// field is the only hard gate on submission (TC-FR4-05/07).
     fn can_submit(&self) -> bool {
         !self.pro_tx_hash_input.trim().is_empty()
+    }
+
+    /// The identity id this form would load, parsed from the ProTxHash field the
+    /// same way the backend resolves it (`load_identity` tries Base58 then hex).
+    /// For a masternode/evonode the identity id *is* the ProTxHash, so once the
+    /// load succeeds this is the id under which the node appears in the local
+    /// store. `None` when the field is empty or not a valid identifier. Lets the
+    /// screen detect a load that finished while another tab was visible (whose
+    /// result never reached this screen) and reconcile the still-open form.
+    pub fn target_identity_id(&self) -> Option<Identifier> {
+        let input = self.pro_tx_hash_input.trim();
+        if input.is_empty() {
+            return None;
+        }
+        Identifier::from_string(input, Encoding::Base58)
+            .or_else(|_| Identifier::from_string(input, Encoding::Hex))
+            .ok()
     }
 
     /// Build the backend load input from the current field state. Clones the

@@ -126,6 +126,36 @@ impl MasternodesScreen {
             .collect();
     }
 
+    /// Reconcile a load form left open while its result was delivered to another
+    /// screen. Task results reach only the visible screen, so a load that
+    /// finished while this tab was away never cleared the gate through
+    /// `display_task_result`/`display_task_error`.
+    ///
+    /// If the node being loaded is now in the local store, the load finished —
+    /// close the form and release the gate. If it is not yet present, the load
+    /// is still in flight (or failed away): keep the gate locked so the
+    /// still-open form cannot dispatch a second concurrent load that would race
+    /// the non-atomic existence check. The form's always-available Cancel escapes
+    /// a load that failed while away.
+    fn reconcile_pending_load(&mut self) {
+        if !self.load_in_flight {
+            return;
+        }
+        let MasternodesView::Load(form) = &self.view else {
+            // A gate with no load form open can never be cleared by the form's
+            // own result; release it so the entry points do not stay disabled.
+            self.load_in_flight = false;
+            return;
+        };
+        let Some(target) = form.target_identity_id() else {
+            return;
+        };
+        if self.nodes.iter().any(|node| node.node_id == target) {
+            self.load_in_flight = false;
+            self.view = MasternodesView::List;
+        }
+    }
+
     /// Reset the screen after a network switch. A load form or detail
     /// view left open belongs to the previous network's node — keeping it
     /// actionable would let the user submit a cross-network operation. Drop back
@@ -388,7 +418,12 @@ impl MasternodesScreen {
         match outcome {
             LoadFormOutcome::None => AppAction::None,
             LoadFormOutcome::Cancel => {
+                // Cancel abandons the load intent. Release the gate too: the
+                // result may never reach this screen (it goes to whatever screen
+                // is visible when it lands), so leaving the gate set would keep
+                // `+ Load` disabled indefinitely after the form is gone.
                 self.view = MasternodesView::List;
+                self.load_in_flight = false;
                 AppAction::None
             }
             LoadFormOutcome::Submit(input) => {
@@ -411,12 +446,8 @@ impl ScreenLike for MasternodesScreen {
     }
 
     fn refresh_on_arrival(&mut self) {
-        // Backstop for a stranded load gate: if the load result was routed to a
-        // different screen while this tab was away (tab switched mid-load),
-        // `display_task_result` never fired here to clear the gate. Clear it on
-        // return so `+ Load` can never sit at "Loading…" forever.
-        self.load_in_flight = false;
         self.reload();
+        self.reconcile_pending_load();
     }
 
     fn display_task_result(&mut self, result: crate::backend_task::BackendTaskSuccessResult) {
@@ -714,6 +745,71 @@ mod tests {
         assert!(
             !screen.load_in_flight,
             "the in-flight gate must clear on success"
+        );
+
+        ctx.wallet_backend().expect("backend").shutdown().await;
+    }
+
+    /// Regression: a load whose result was delivered to another visible screen
+    /// (task results reach only the visible screen) must still close the form on
+    /// return to the tab. Revisiting reconciles the still-open form against the
+    /// store: the node is now present, so the form closes and the gate clears —
+    /// without ever routing the result through this screen's callbacks.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn arrival_reconciles_form_when_load_finished_while_away() {
+        let (ctx, _tmp) = offline_ctx().await;
+        let mut screen = MasternodesScreen::new(&ctx);
+
+        // Open the form targeting a node and mark the load in flight.
+        let target = Identifier::from([0x33; 32]);
+        let mut form = screen.new_load_form();
+        form.set_pro_tx_hash_for_test(target.to_string(Encoding::Base58));
+        screen.view = MasternodesView::Load(form);
+        screen.load_in_flight = true;
+
+        // The load completed while another screen was visible: the node landed in
+        // the store, but this screen's `display_task_result` never fired.
+        seed_masternode(&ctx, 0x33);
+
+        // Returning to the tab reconciles the stranded form.
+        screen.refresh_on_arrival();
+        assert!(
+            matches!(screen.view, MasternodesView::List),
+            "a load that finished while away must close the form on return"
+        );
+        assert!(
+            !screen.load_in_flight,
+            "the gate must clear once the loaded node is in the store"
+        );
+
+        ctx.wallet_backend().expect("backend").shutdown().await;
+    }
+
+    /// Regression: while a load is still pending, revisiting the tab must NOT
+    /// unlock the form. The blunt "clear the gate on arrival" backstop let the
+    /// preserved form dispatch a second concurrent load that could race the
+    /// non-atomic existence check. The node is not yet in the store, so the gate
+    /// stays locked and the form keeps showing "Loading…".
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn arrival_keeps_form_locked_while_load_still_pending() {
+        let (ctx, _tmp) = offline_ctx().await;
+        let mut screen = MasternodesScreen::new(&ctx);
+
+        let target = Identifier::from([0x44; 32]);
+        let mut form = screen.new_load_form();
+        form.set_pro_tx_hash_for_test(target.to_string(Encoding::Base58));
+        screen.view = MasternodesView::Load(form);
+        screen.load_in_flight = true;
+
+        // The load has not finished: the target node is absent from the store.
+        screen.refresh_on_arrival();
+        assert!(
+            matches!(screen.view, MasternodesView::Load(_)),
+            "a still-pending load must keep the form open"
+        );
+        assert!(
+            screen.load_in_flight,
+            "the gate must stay locked so a second concurrent load cannot be submitted"
         );
 
         ctx.wallet_backend().expect("backend").shutdown().await;

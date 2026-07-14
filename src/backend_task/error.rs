@@ -1362,6 +1362,15 @@ pub enum TaskError {
     )]
     WalletKeyLookupFailed,
 
+    /// A wallet-key derivation was requested at the empty derivation path. The
+    /// empty path IS the BIP-32 root, so deriving there yields the wallet's
+    /// master key rather than an address key — refused at the chokepoint every
+    /// key-bearing wallet task shares, never at an individual caller.
+    #[error(
+        "This address has no known derivation path, so its private key cannot be shown or used. Choose an address with a known derivation path."
+    )]
+    RootKeyDerivationRefused,
+
     /// A wallet address or identity-auth key could not be derived. The upstream
     /// detail (a legacy `String`) is logged at the call site, never stored here.
     #[error("Could not generate a wallet address. Please check your wallet and retry.")]

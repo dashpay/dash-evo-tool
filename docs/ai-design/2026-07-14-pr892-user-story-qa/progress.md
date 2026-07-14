@@ -145,8 +145,10 @@ needed).
       itself requires a masternode/evonode identity)
 - [x] DPN-006: Schedule votes — BLOCKED (same as DPN-003)
 - [x] DPN-007: Batch voting across contests — BLOCKED (same as DPN-003)
-- [ ] DPN-008: Set an alias for an owned username
-- [ ] DPN-009: Scheduled votes preserved across an app upgrade
+- [x] DPN-008: Set an alias for an owned username — BLOCKED (no identity reachable; "Set Alias"
+      on the "My usernames" table confirmed fully implemented via source)
+- [x] DPN-009: Scheduled votes preserved across an app upgrade — BLOCKED (no pre-upgrade legacy
+      scheduled-votes fixture exists; source review confirms mature, tested implementation)
 
 ## DPY
 
@@ -163,9 +165,15 @@ needed).
       unreachable)
 - [x] DPY-010: Remove a contact — N/A (Gap, not implemented)
 - [x] DPY-011: Auto-accept contact requests — BLOCKED (no identity reachable)
-- [ ] DPY-012: Detect payments received from contacts
-- [ ] DPY-013: View contacts and avatars offline
-- [ ] DPY-014: Cancel a sent contact request
+- [x] DPY-012: Detect payments received from contacts — BLOCKED (no identity reachable;
+      address-to-contact matching + tx_id/vout dedup confirmed implemented and live-wired via
+      source)
+- [x] DPY-013: View contacts and avatars offline — BLOCKED (no identity reachable;
+      offline-first-read/avatar-cache/explicit-refresh confirmed implemented, but in a
+      nav-unreachable sibling screen rather than the reachable Contacts tab — see scenarios/DPY.md)
+- [x] DPY-014: Cancel a sent contact request — BLOCKED (needs a sent request + two identities,
+      neither reachable; every acceptance-criteria bullet confirmed implemented and unit-tested
+      via source)
 
 ## TOK
 
@@ -191,7 +199,9 @@ needed).
 - [x] TOK-016: Estimate perpetual token rewards — BLOCKED (no tracked token to estimate for)
 - [x] TOK-017: Pay for document operations with tokens — BLOCKED (transitively, via DOC's
       contract-add environment blocker)
-- [ ] TOK-018: Stop tracking a token balance
+- [x] TOK-018: Stop tracking a token balance — BLOCKED (no tracked token/identity reachable;
+      "Stop Tracking Balance" confirmed fully implemented — per-pair persistence, un-watch, and
+      both restoration paths — via source)
 
 ## DOC
 

@@ -285,6 +285,77 @@ exercise.
 
 ---
 
+## Follow-up pass (2026-07-14, later same session): TOK-018
+
+Same running app instance (PID 1580158, hash-verified against
+`2931220e94871a0454ac56a43092aa87246b5a590d917645c025ddb1c7f9271a`), same data dir. Per campaign
+instructions, the environment blocker was rechecked live rather than assumed: navigated to Tokens
+> My Tokens, reproduced the identical **"No Tracked Tokens" / "You don't have any tokens yet." /
+"Import Token"** empty state, with the same four red banners as the rest of this file overlaid
+above it. Direct SQLite check of `det-app.sqlite` confirms `identities`: 0 rows, `token_balances`:
+0 rows, `meta_token`: 0 rows. Screenshot: `screenshots/TOK-018-1-my-tokens-empty-state-recheck.png`.
+Unchanged from TOK-001's original finding.
+
+---
+
+## TOK-018: Stop tracking a token balance — **BLOCKED**
+
+**Persona:** Alex, Priya. Acceptance criteria: "'Stop Tracking Balance' removes the chosen
+identity-token pair from the list. The balance is un-watched so the background sync stops
+fetching it and the row does not reappear. The dismissal is remembered: 'Refresh My Tokens'
+leaves the row gone, and only that identity-token pair is affected — other identities keep
+tracking the same token. The row comes back when the user asks for it again: re-importing the
+token restores it for every identity that dismissed it, and checking that one balance restores
+just that pair."
+
+### Reachability
+
+"Stop Tracking Balance" is a row action inside "My Tokens," reached only once a specific
+identity-token pair is being tracked. "My Tokens" is confirmed empty in this environment
+(TOK-001, rechecked above), so this action has no reachable entry point — same reasoning as
+TOK-004/006–013/015/016.
+
+### Source review (implementation confirmed, not live-exercised)
+
+`src/ui/tokens/tokens_screen/mod.rs` wires a confirmation dialog titled **"Confirm Stop Tracking
+Balance"** to `TokenTask::StopTrackingTokenBalance(IdentityTokenIdentifier { identity_id,
+token_id })`. The handler (`backend_task/tokens/query_my_token_balances.rs`'s
+`stop_tracking_token_balance`) is doc-commented plainly: "Un-watches the pair in the upstream sync
+loop so its background pass stops fetching the balance and the pair leaves the published
+snapshot, records the dismissal so later refreshes do not re-watch it, then drops it from the
+saved My Tokens ordering" — covering the story's first two bullets directly (row removed,
+background sync un-watched).
+
+**Dismissal persistence + per-pair scoping**: `context/contract_token_db.rs` stores dismissals as
+`det:token_untracked:v2:<token_id>:<identity_id>` keys in a `BTreeSet<IdentityTokenIdentifier>`
+(`mark_token_balance_untracked` / `untracked_token_balances`), keyed by the **pair**, not just the
+token — so dismissing one identity's tracking of a token cannot affect another identity's tracking
+of the same token, matching "only that identity-token pair is affected." `token_watch_sets()`
+rebuilds each identity's upstream watch set on every refresh as "every token in the local
+registry, minus the pairs the user stopped tracking" — directly satisfying "'Refresh My Tokens'
+leaves the row gone."
+
+**Restoration paths**: `clear_untracked_token(&token_id)` is called from
+`TokenTask::SaveTokenLocally` (i.e. re-importing a token), with the comment "Importing a token is
+intent to track it, so it overrides an earlier 'stop tracking' of the same token" — clearing the
+dismissal for **every** identity that had dismissed it, matching "re-importing the token restores
+it for every identity that dismissed it." A narrower `clear_untracked_token_balance` (single pair)
+is called from the balance-check path with the comment "Asking for a balance is intent to track
+it" — matching "checking that one balance restores just that pair."
+
+Three targeted unit tests were found directly asserting these acceptance-criteria bullets:
+`stopped_pair_is_not_rewatched_by_a_refresh` (asserts only the dismissing identity is affected),
+`retracking_a_pair_restores_it_to_the_watch_set`, and `reimporting_a_token_retracks_it_for_every_identity`.
+
+**Verdict: BLOCKED** — reasoning: "blocked: no Platform identity reachable in this environment,
+see scenarios/IDN.md — root cause is the known Testnet masternode-list/quorum-sync/wallet-storage
+failure, see CAMPAIGN-CONTEXT.md" (specifically: no tracked identity-token pair exists to exercise
+"Stop Tracking Balance" on). Source review confirms the implementation, DB-layer persistence, UI
+confirmation dialog, and three targeted unit tests all align precisely with every
+acceptance-criteria bullet — not a stub.
+
+---
+
 ## Summary
 
 | Story | Verdict |
@@ -306,6 +377,7 @@ exercise.
 | TOK-015 | BLOCKED (same as TOK-006) |
 | TOK-016 | BLOCKED (no tracked token to estimate rewards for) |
 | TOK-017 | BLOCKED (transitively, via DOC's contract-add environment blocker) |
+| TOK-018 | BLOCKED (no tracked token/identity reachable; "Stop Tracking Balance" confirmed fully implemented — per-pair persistence, un-watch, and both restoration paths — with 3 targeted unit tests, via source) |
 
 **One real, environment-independent-looking defect found**: **TOK-003** — the "Import Token"
 screen's well-formed-ID search path dispatches a genuine network query, the query genuinely
@@ -327,3 +399,12 @@ The app crashed once during this overall pass, but that crash occurred in the DO
 tested (including the six with empty selector states) degraded cleanly. QA Wallet 1 and the DIAG
 throwaway wallet were left untouched; SQLite confirms zero rows added to `identities`,
 `token_balances`, or `meta_token` across this entire pass (0 before, 0 after).
+
+**Follow-up pass (TOK-018)**: same environment blocker confirmed unchanged via a fresh live
+recheck; "Stop Tracking Balance" was confirmed via source review to be a complete, non-stub
+implementation (per-pair dismissal persistence, upstream un-watch, and both the
+re-import-restores-all-identities and check-balance-restores-one-pair recovery paths), backed by
+three targeted unit tests — consistent with this campaign's pattern of finding mature,
+already-shipped features gated behind an environment blocker rather than missing functionality.
+No PR892 application source was modified; no persistent state was changed by this follow-up
+(read-only navigation and source review only).

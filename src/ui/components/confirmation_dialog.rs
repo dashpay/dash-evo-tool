@@ -151,6 +151,7 @@ impl ConfirmationDialog {
                 window_order: egui::Order::Middle,
                 resizable: false,
                 show_close_button: true,
+                blocks_input: false,
                 inner_margin: 16,
             },
             |ui| {

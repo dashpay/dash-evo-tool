@@ -186,6 +186,7 @@ impl SelectionDialog {
                 window_order: egui::Order::Foreground,
                 resizable: false,
                 show_close_button: true,
+                blocks_input: false,
                 inner_margin: 16,
             },
             |ui| {

@@ -159,6 +159,7 @@ pub fn passphrase_modal(
             window_order: egui::Order::Foreground,
             resizable: false,
             show_close_button: config.cancellable,
+            blocks_input: !config.cancellable,
             inner_margin: 20,
         },
         |ui| {

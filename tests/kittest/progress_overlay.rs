@@ -1612,6 +1612,47 @@ fn migration_password_prompt_is_hittable_while_spv_overlay_is_active() {
     });
 }
 
+/// A non-dismissible migration password prompt absorbs clicks everywhere
+/// outside its own window while leaving the prompt controls interactive.
+#[test]
+fn migration_password_prompt_blocks_underlying_clicks() {
+    let underlying_clicked = Rc::new(Cell::new(false));
+    let underlying_clicked_ui = Rc::clone(&underlying_clicked);
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(800.0, 600.0))
+        .build_ui(move |ui| {
+            if ui.button("Underlying wallet action").clicked() {
+                underlying_clicked_ui.set(true);
+            }
+            let config = PassphraseModalConfig {
+                state_id: egui::Id::new("migration_click_barrier"),
+                window_title: "Continue the storage update",
+                body: "Enter the password for this wallet to continue.",
+                hint: None,
+                error: None,
+                submit_label: "Continue",
+                secondary_action_label: Some("Skip this wallet"),
+                input_placeholder: "Enter your password.",
+                remember_label: None,
+                cancellable: false,
+            };
+            let _ = passphrase_modal(ui.ctx(), &config, |_| {});
+        });
+
+    harness.step();
+    harness.get_by_label("Underlying wallet action").click();
+    harness.step();
+
+    assert!(
+        !underlying_clicked.get(),
+        "a click outside the migration prompt reached the wallet action beneath it",
+    );
+    assert!(
+        harness.query_by_label("Skip this wallet").is_some(),
+        "the migration prompt remains interactive above its click barrier",
+    );
+}
+
 /// Drives the REAL `AppState::update` loop with BOTH a passphrase
 /// prompt active AND a `with_keyboard_escape` block beneath it (the SPV-sync pattern).
 /// The escape must NOT steal focus from the prompt: the prompt stays focused across

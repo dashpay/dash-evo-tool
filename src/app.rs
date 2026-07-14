@@ -1769,8 +1769,8 @@ impl App for AppState {
         };
 
         // A blocking progress overlay remains active underneath a secret prompt,
-        // but renders no dimmer, pointer sink, card, or focus trap until the
-        // prompt resolves.
+        // but renders no dimmer, card, or focus trap until the prompt resolves.
+        // The blocking prompt supplies its own outside-window input barrier.
         ProgressOverlay::render_global(ctx, self.has_blocking_secret_prompt());
 
         // Render any just-in-time passphrase prompt on top of the screen.

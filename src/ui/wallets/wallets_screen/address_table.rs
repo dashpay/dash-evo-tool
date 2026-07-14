@@ -18,6 +18,10 @@ use super::WalletsBalancesScreen;
 const NO_KNOWN_PATH_KEY_TOOLTIP: &str =
     "This address has no known derivation path, so its private key cannot be shown.";
 
+/// Cell text for a path-derived attribute of an address whose derivation path is
+/// unknown. Shown instead of the value a placeholder path would have implied.
+const UNKNOWN_LABEL: &str = "Unknown";
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum SortColumn {
     Address,
@@ -43,15 +47,57 @@ pub(super) struct AddressData {
     /// Platform address nonce (for Platform Payment addresses)
     nonce: u32,
     address_type: String,
-    index: u32,
-    derivation_path: DerivationPath,
-    /// Whether the address has a verified derivation path. `false` for a funded
-    /// address surfaced without a known path — key export must be disabled for
-    /// it, since deriving at its placeholder (empty) path yields the HD master
-    /// key, not this address's key.
-    has_known_path: bool,
+    /// The address's index within its derivation branch. `None` for a pathless
+    /// address — there is no index to report.
+    index: Option<u32>,
+    /// The address's verified derivation path, or `None` for a funded address
+    /// surfaced without one. `None` is the single source of truth for "unknown
+    /// path": it disables key export (deriving at a placeholder empty path
+    /// yields the HD master key, not this address's key) and keeps every
+    /// path-derived cell honest instead of showing values inferred from a
+    /// placeholder.
+    derivation_path: Option<DerivationPath>,
     account_category: AccountCategory,
     account_index: Option<u32>,
+}
+
+/// The Type-column label for a listed address. Derived from the derivation
+/// path's shape, so a pathless address reports `Unknown` — no shape matches it,
+/// and every predicate below would silently reject a placeholder empty path and
+/// mislabel it as a system address.
+fn address_type_label(path: Option<&DerivationPath>, network: Network) -> String {
+    let Some(path) = path else {
+        return UNKNOWN_LABEL.to_string();
+    };
+    if path.is_bip44_external(network) {
+        "Funds".to_string()
+    } else if path.is_bip44_change(network) {
+        "Change".to_string()
+    } else if path.is_asset_lock_funding(network) {
+        "Identity Creation".to_string()
+    } else if path.is_platform_payment(network) {
+        "Platform".to_string()
+    } else {
+        "System".to_string()
+    }
+}
+
+/// The address's index within its derivation branch: the path's last child
+/// number. `None` for a pathless address, which has no index — an empty path's
+/// last component does not exist, and defaulting it to 0 invents a position the
+/// address does not hold.
+fn address_index(path: Option<&DerivationPath>) -> Option<u32> {
+    let last = path?.into_iter().last()?;
+    match last {
+        ChildNumber::Normal { index } | ChildNumber::Hardened { index } => Some(*index),
+        _ => None,
+    }
+}
+
+/// The Full Path column's text: the path itself, or `Unknown` when there is
+/// none. Never renders a pathless address as the HD root (`m`).
+fn display_path(path: Option<&DerivationPath>) -> String {
+    path.map_or_else(|| UNKNOWN_LABEL.to_string(), |path| path.to_string())
 }
 
 /// The authoritative set of addresses to list for a wallet, each paired with
@@ -147,12 +193,22 @@ impl WalletsBalancesScreen {
         });
     }
 
+    /// The account bucket a listed address belongs to. A pathless address
+    /// buckets as `Other(Unknown)` — the same bucket `collect_account_summaries`
+    /// gives a funded address outside the generated-path set, so its row lands
+    /// in the tab whose total already counts it.
     pub(super) fn categorize_path(
-        path: &DerivationPath,
+        path: Option<&DerivationPath>,
         reference: DerivationPathReference,
         network: Network,
     ) -> (AccountCategory, Option<u32>) {
-        categorize_account_path(path, network, reference)
+        match path {
+            Some(path) => categorize_account_path(path, network, reference),
+            None => (
+                AccountCategory::Other(DerivationPathReference::Unknown),
+                None,
+            ),
+        }
     }
 
     pub(super) fn render_address_table(
@@ -211,48 +267,19 @@ impl WalletsBalancesScreen {
             listed_addresses
                 .iter()
                 .map(|(address, maybe_path)| {
-                    let has_known_path = maybe_path.is_some();
-                    // Placeholder for a pathless (unknown-path) address. Used only
-                    // for display and categorization; `has_known_path` gates key
-                    // export so this empty path is never derived into a key.
-                    let derivation_path = maybe_path
-                        .clone()
-                        .unwrap_or_else(|| DerivationPath::from(Vec::new()));
+                    let derivation_path = maybe_path.clone();
+                    let path = derivation_path.as_ref();
                     let utxo_count = snap_utxo_counts.get(address).copied().unwrap_or(0);
 
-                    let index = (&derivation_path)
-                        .into_iter()
-                        .last()
-                        .cloned()
-                        .unwrap_or(ChildNumber::Normal { index: 0 });
-                    let index = match index {
-                        ChildNumber::Normal { index } => index,
-                        ChildNumber::Hardened { index } => index,
-                        _ => 0,
-                    };
-                    let address_type =
-                        if derivation_path.is_bip44_external(self.app_context.network) {
-                            "Funds".to_string()
-                        } else if derivation_path.is_bip44_change(self.app_context.network) {
-                            "Change".to_string()
-                        } else if derivation_path.is_asset_lock_funding(self.app_context.network) {
-                            "Identity Creation".to_string()
-                        } else if derivation_path.is_platform_payment(self.app_context.network) {
-                            "Platform".to_string()
-                        } else {
-                            "System".to_string()
-                        };
+                    let index = address_index(path);
+                    let address_type = address_type_label(path, self.app_context.network);
 
-                    let path_reference = wallet
-                        .watched_addresses
-                        .get(&derivation_path)
+                    let path_reference = path
+                        .and_then(|path| wallet.watched_addresses.get(path))
                         .map(|info| info.path_reference)
                         .unwrap_or(DerivationPathReference::Unknown);
-                    let (account_category, account_index) = Self::categorize_path(
-                        &derivation_path,
-                        path_reference,
-                        self.app_context.network,
-                    );
+                    let (account_category, account_index) =
+                        Self::categorize_path(path, path_reference, self.app_context.network);
 
                     // Get Platform credits balance and nonce for Platform Payment addresses only.
                     // Skip the lookup for non-platform addresses to avoid unnecessary linear
@@ -280,7 +307,6 @@ impl WalletsBalancesScreen {
                         address_type,
                         index,
                         derivation_path,
-                        has_known_path,
                         account_category,
                         account_index,
                     }
@@ -482,19 +508,23 @@ impl WalletsBalancesScreen {
                             ui.label(&data.address_type);
                         });
                         row.col(|ui| {
-                            ui.label(format!("{}", data.index));
+                            ui.label(data.index.map(|i| i.to_string()).unwrap_or_default());
                         });
                         row.col(|ui| {
-                            ui.label(format!("{}", data.derivation_path));
+                            ui.label(display_path(data.derivation_path.as_ref()));
                         });
                         row.col(|ui| {
                             // A pathless address has no derivable key: deriving at
-                            // its placeholder (empty) path would yield the HD master
+                            // a placeholder (empty) path would yield the HD master
                             // key, not this address's key. Disable export for it.
-                            if !data.has_known_path {
+                            // The backend chokepoint refuses the root path too;
+                            // this only spares the user a doomed round trip.
+                            let Some(path) = data.derivation_path.as_ref() else {
                                 ui.add_enabled(false, egui::Button::new("View Key"))
                                     .on_disabled_hover_text(NO_KNOWN_PATH_KEY_TOOLTIP);
-                            } else if ui.button("View Key").clicked() {
+                                return;
+                            };
+                            if ui.button("View Key").clicked() {
                                 // Check if wallet is locked first
                                 let wallet_locked = self
                                     .selected_wallet
@@ -511,14 +541,11 @@ impl WalletsBalancesScreen {
                                 if wallet_locked {
                                     // Store pending info and show unlock popup
                                     self.private_key_dialog.pending_derivation_path =
-                                        Some(data.derivation_path.clone());
+                                        Some(path.clone());
                                     self.private_key_dialog.pending_address = Some(display_address);
                                     self.wallet_unlock_popup.open();
                                 } else {
-                                    self.queue_view_key_request(
-                                        &data.derivation_path,
-                                        display_address,
-                                    );
+                                    self.queue_view_key_request(path, display_address);
                                 }
                             }
                         });
@@ -651,6 +678,79 @@ mod tests {
             !combined.contains_key(&zero_stray),
             "a zero-balance pathless address is not fabricated into a row"
         );
+    }
+
+    /// Every path-derived cell of a pathless address reads as unknown. The row
+    /// used to be built from a placeholder empty path, which no `is_bip44_*`
+    /// predicate matches and whose last component does not exist — so a funded
+    /// address of unknown provenance rendered as a confident "System, index 0,
+    /// path m". Nothing about that was true.
+    #[test]
+    fn pathless_address_reports_unknown_not_fabricated_metadata() {
+        assert_eq!(address_type_label(None, Network::Testnet), "Unknown");
+        assert_eq!(address_index(None), None);
+        assert_eq!(display_path(None), "Unknown");
+
+        // The placeholder the row builder used to substitute — pinned here so
+        // the fabricated values can never quietly come back as the real ones.
+        let placeholder = DerivationPath::from(Vec::new());
+        assert_eq!(
+            address_type_label(Some(&placeholder), Network::Testnet),
+            "System",
+            "an empty path masquerades as a System address — it must never reach the cells"
+        );
+        assert_eq!(display_path(Some(&placeholder)), "m");
+    }
+
+    /// A pathless address buckets into the same `Other(Unknown)` account as the
+    /// funded-but-unindexed addresses `collect_account_summaries` totals there,
+    /// so its row appears under the tab whose balance already counts it.
+    #[test]
+    fn pathless_address_buckets_as_other_unknown() {
+        let (category, index) = WalletsBalancesScreen::categorize_path(
+            None,
+            DerivationPathReference::Unknown,
+            Network::Testnet,
+        );
+        assert_eq!(
+            category,
+            AccountCategory::Other(DerivationPathReference::Unknown)
+        );
+        assert_eq!(index, None);
+    }
+
+    /// A real path still reports its true type, index and full path — the
+    /// unknown-path handling must not blunt the addresses that do have one.
+    #[test]
+    fn known_path_reports_its_real_metadata() {
+        let path = bip44_external(7);
+
+        assert_eq!(address_type_label(Some(&path), Network::Testnet), "Funds");
+        assert_eq!(address_index(Some(&path)), Some(7));
+        assert_eq!(display_path(Some(&path)), path.to_string());
+
+        let (category, index) = WalletsBalancesScreen::categorize_path(
+            Some(&path),
+            DerivationPathReference::BIP44,
+            Network::Testnet,
+        );
+        assert_eq!(category, AccountCategory::Bip44);
+        assert_eq!(
+            index,
+            Some(0),
+            "BIP-44 account index, not the address index"
+        );
+    }
+
+    /// A hardened last component reports its raw index, unchanged from the
+    /// pre-`Option` behaviour.
+    #[test]
+    fn hardened_last_component_reports_its_index() {
+        let path = DerivationPath::from(vec![
+            ChildNumber::Hardened { index: 9 },
+            ChildNumber::Hardened { index: 3 },
+        ]);
+        assert_eq!(address_index(Some(&path)), Some(3));
     }
 
     /// A known address keeps its verified path as `Some`, distinguishing it from

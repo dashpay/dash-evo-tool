@@ -377,4 +377,28 @@ mod tests {
             "exactly one nav entry is labeled Identities"
         );
     }
+
+    /// Every fallback route (unregistered persisted screen, live de-gating of a
+    /// role-gated tab) lands on `app::FALLBACK_ROOT_SCREEN`. A fallback is only
+    /// an escape if the user can navigate onward from it, so that screen must
+    /// have a nav entry — and an ungated one, or the fallback could itself be
+    /// filtered out of the rail at the very role that triggered the fallback.
+    #[test]
+    fn fallback_root_screen_has_an_ungated_nav_entry() {
+        let entry = nav_button_specs()
+            .iter()
+            .find(|(_, screen, _, _)| *screen == crate::app::FALLBACK_ROOT_SCREEN);
+
+        let (_, _, _, gate) = entry.unwrap_or_else(|| {
+            panic!(
+                "the fallback root screen ({:?}) must have a nav entry — falling back to a \
+                 screen the nav does not carry strands the user with no way back",
+                crate::app::FALLBACK_ROOT_SCREEN
+            )
+        });
+        assert!(
+            gate.is_none(),
+            "the fallback root screen's nav entry must be ungated so it is reachable at every role"
+        );
+    }
 }

@@ -76,6 +76,15 @@ pub const MIGRATION_VOTES_ACK_ACTION_ID: &str = "migration:ack:unreadable_votes"
 /// coverage.
 pub const SPV_CONTINUE_BACKGROUND_ACTION: &str = "spv:sync:continue_background";
 
+/// The root screen every fallback route lands on: an unregistered persisted
+/// screen at startup, and live de-gating of a role-gated tab.
+///
+/// It must be a screen the left nav actually carries, and carries at every role
+/// — a user dropped onto a screen with no nav entry has no highlighted tab and
+/// no way onward. `left_panel::tests::fallback_root_screen_has_an_ungated_nav_entry`
+/// locks that invariant.
+pub(crate) const FALLBACK_ROOT_SCREEN: RootScreenType = RootScreenType::RootScreenIdentityHub;
+
 /// Plain, jargon-free descriptions for the SPV-sync block (Everyday-User rule:
 /// no "SPV"/"headers"/"masternodes"/raw heights/percentages — the jargon-free
 /// "Step N of 5" counter carries the granularity). Complete sentences (NFR-2).
@@ -943,7 +952,7 @@ impl AppState {
                 // Always registered — the Masternodes tab is gated at runtime by
                 // Expert Mode (the nav entry + route), not by a Cargo feature, so
                 // the screen must always exist to switch into when Expert Mode
-                // is on. Live de-gating falls back to Identities (see below).
+                // is on. Live de-gating falls back to `FALLBACK_ROOT_SCREEN`.
                 RootScreenType::RootScreenMasternodes,
                 Screen::MasternodesScreen(crate::ui::masternodes::MasternodesScreen::new(
                     &active_context,
@@ -961,13 +970,13 @@ impl AppState {
         })
         .collect();
 
-        // Resolve the effective selected root screen. If the persisted value
-        // is no longer registered, fall back to the `Identities` screen so
+        // Resolve the effective selected root screen. If the persisted value is
+        // no longer registered, fall back to `FALLBACK_ROOT_SCREEN` so
         // `active_root_screen_mut()` does not panic on first frame.
         let selected_main_screen = if main_screens.contains_key(&persisted_main_screen) {
             persisted_main_screen
         } else {
-            RootScreenType::RootScreenIdentities
+            FALLBACK_ROOT_SCREEN
         };
 
         let mut app_state = Self {
@@ -1145,13 +1154,13 @@ impl AppState {
 
     pub fn active_root_screen_mut(&mut self) -> &mut Screen {
         // Live de-gating (§10.11): if the role dropped below Power while the
-        // Masternodes tab was active, fall back to the neutral Identities tab so
-        // the gated screen is never shown without its gate. Identities is always
+        // Masternodes tab was active, fall back to `FALLBACK_ROOT_SCREEN` so the
+        // gated screen is never shown without its gate. That screen is always
         // registered, so the subsequent lookup cannot fail.
         if self.selected_main_screen == RootScreenType::RootScreenMasternodes
             && !FeatureGate::Masternodes.is_available(self.current_app_context())
         {
-            self.select_main_screen(RootScreenType::RootScreenIdentities);
+            self.select_main_screen(FALLBACK_ROOT_SCREEN);
         }
         self.main_screens
             .get_mut(&self.selected_main_screen)

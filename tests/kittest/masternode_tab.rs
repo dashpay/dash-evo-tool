@@ -163,12 +163,17 @@ fn nav_gated_by_expert_mode() {
 }
 
 /// TC-EDGE-05/06 (§10.11) — live de-gating: with the Masternodes tab active,
-/// flipping Expert Mode off falls the active tab back to the neutral Identities
-/// tab (the gated screen is never shown without its gate). Drives the guard in
+/// flipping Expert Mode off falls the active tab back to the Identities hub
+/// (the gated screen is never shown without its gate). Drives the guard in
 /// `active_root_screen_mut` directly by selecting the tab, then revoking the
 /// gate.
+///
+/// The fallback must land on a tab the nav still carries. It used to land on
+/// the legacy standalone `Identities` screen, which no nav entry points at any
+/// more — a de-gated user was stranded there with no highlighted nav entry and
+/// no way back, the same dead end the "Just Explore" landing hit.
 #[test]
-fn de_gating_falls_back_to_identities() {
+fn de_gating_falls_back_to_identity_hub() {
     with_isolated_data_dir(|| {
         let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
         let _guard = rt.enter();
@@ -186,13 +191,14 @@ fn de_gating_falls_back_to_identities() {
             "the Masternodes tab stays active at the Power role"
         );
 
-        // Drop below Power — the active tab must fall back to Identities.
+        // Drop below Power — the active tab must fall back to the Identities hub.
         app_context.set_user_role(UserRole::Everyday);
         harness.run_steps(3);
         assert_eq!(
             harness.state().selected_main_screen,
-            RootScreenType::RootScreenIdentities,
-            "de-gating must fall the active tab back to Identities"
+            RootScreenType::RootScreenIdentityHub,
+            "de-gating must fall the active tab back to the Identities hub, the \
+             single identity entry the nav still carries"
         );
     });
 }

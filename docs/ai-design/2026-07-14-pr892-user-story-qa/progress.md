@@ -12,27 +12,27 @@ Verdicts: PASS / FAIL / BLOCKED (reason) / N/A (Gap/Superseded/Removed — not i
 ## WAL
 
 - [x] WAL-001: Create a new wallet — PASS
-- [ ] WAL-002: Import wallet via mnemonic
-- [ ] WAL-003: Import single private key
-- [x] WAL-004: Switch between wallets — PASS (per-network isolation noted, not a defect)
-- [ ] WAL-005: Rename a wallet
-- [ ] WAL-006: Lock and unlock wallet
-- [ ] WAL-007: Remove a wallet
-- [ ] WAL-008: View wallet balances
+- [x] WAL-002: Import wallet via mnemonic — PASS
+- [x] WAL-003: Import single private key — PASS (send-from-SK is a documented product limitation, not a bug)
+- [x] WAL-004: Switch between wallets — PASS (per-network isolation noted, not a defect; multi-wallet switching confirmed)
+- [x] WAL-005: Rename a wallet — FAIL (Rename button is completely inert on both HD and SK wallets)
+- [x] WAL-006: Lock and unlock wallet — FAIL (Lock works; Unlock never opens a password prompt — self-lockout bug)
+- [x] WAL-007: Remove a wallet — FAIL (confirmation prompt missing for single-key wallets; present for HD wallets)
+- [x] WAL-008: View wallet balances — PASS (Default view does not actually simplify the Wallet screen — UX gap noted)
 - [x] WAL-009: View fiat equivalent of balances — N/A (Gap, not implemented)
 - [x] WAL-010: Generate receive address — PASS
 - [x] WAL-011: View address table — PASS
-- [ ] WAL-012: View and export private keys
-- [ ] WAL-013: View SPV sync status
+- [x] WAL-012: View and export private keys — PASS
+- [x] WAL-013: View SPV sync status — PASS
 - [x] WAL-014: Label addresses — N/A (Gap, not implemented)
 - [x] WAL-015: Create throwaway wallet without mnemonic backup — N/A (Gap, not implemented)
 - [x] WAL-016: View transaction history — PASS (PR892 cold-boot regression test confirmed fixed)
-- [ ] WAL-017: Fund Platform address from wallet
-- [ ] WAL-018: Fund Platform address from asset lock
-- [ ] WAL-019: Transfer credits between Platform addresses
-- [ ] WAL-020: Withdraw from Platform address to Core
-- [ ] WAL-021: Navigate wallet accounts via tabs
-- [ ] WAL-022: View system accounts in developer mode
+- [x] WAL-017: Fund Platform address from wallet — FAIL (asset-lock coin selection: "No UTXOs available for selection" despite funded wallet)
+- [x] WAL-018: Fund Platform address from asset lock — BLOCKED (no asset lock can ever be created due to WAL-017 bug)
+- [x] WAL-019: Transfer credits between Platform addresses — BLOCKED (no Platform address ever holds balance due to WAL-017 bug)
+- [x] WAL-020: Withdraw from Platform address to Core — BLOCKED (same root cause as WAL-019)
+- [x] WAL-021: Navigate wallet accounts via tabs — PASS
+- [x] WAL-022: View system accounts in developer mode — PASS (System tab gated on "not Default view", i.e. Expert or Developer)
 - [x] WAL-023: Collapsible transaction history — PASS
 - [x] WAL-024: Collapsible balance breakdown — PASS
 

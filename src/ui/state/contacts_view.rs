@@ -246,6 +246,18 @@ impl ContactsState {
     pub fn release_request(&mut self, request_id: &Identifier) {
         self.in_flight.remove(request_id);
     }
+
+    /// Release every guard at once.
+    ///
+    /// Only for a caller that can prove **nothing is running** — a dispatch
+    /// refused before the task started, which therefore names no request. A
+    /// guard protects a signed, paid-for state transition, so clearing one whose
+    /// action may still be in flight would re-enable a row the user can pay for
+    /// twice; clearing guards no task will ever report on strands the row until
+    /// [`REQUEST_IN_FLIGHT_TIMEOUT`].
+    pub fn clear_in_flight(&mut self) {
+        self.in_flight.clear();
+    }
 }
 
 /// The handles a contact search matches against, borrowed from whichever contact

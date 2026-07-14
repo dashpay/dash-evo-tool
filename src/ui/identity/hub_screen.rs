@@ -571,11 +571,19 @@ impl ScreenLike for IdentityHubScreen {
     }
 }
 
-/// Release only the request-card guard named by a typed task error. Unmatched
-/// guards remain protected until their own typed terminal outcome arrives.
+/// Release the request-card guards a failure proves are stale. Unmatched guards
+/// remain protected until their own typed terminal outcome arrives.
 fn release_request_guard_for_error(state: &mut super::contacts::ContactsState, error: &TaskError) {
-    if let TaskError::DashPayContactRequestActionFailed { request_id, .. } = error {
-        state.release_request(request_id);
+    match error {
+        TaskError::DashPayContactRequestActionFailed { request_id, .. } => {
+            state.release_request(request_id);
+        }
+        // Refused by the storage-update gate before the task reached the DashPay
+        // handler, so no request_id was ever attached to it. Nothing is running:
+        // every claimed guard is stale, and holding them would leave the rows
+        // dead until they time out.
+        TaskError::WalletStorageNotReady => state.clear_in_flight(),
+        _ => {}
     }
 }
 
@@ -785,6 +793,41 @@ mod tests {
     #[test]
     fn a_result_arriving_with_no_identity_selected_is_discarded() {
         assert!(!applies_to_selected_identity(None, &id(1)));
+    }
+
+    /// A task refused *before* dispatch — the storage-update gate rejects every
+    /// wallet-touching task, `DashPayTask` included — never reaches the DashPay
+    /// handler, the only place that names a failure's `request_id`. Nothing ran,
+    /// so every claimed guard is stale: releasing them all is exactly right, and
+    /// leaving them set strands the row's buttons for the full in-flight timeout.
+    #[test]
+    fn a_refusal_that_names_no_request_releases_every_guard() {
+        let mut state = ContactsState::default();
+        assert!(state.begin_request(id(1)));
+        assert!(state.begin_request(id(2)));
+
+        release_request_guard_for_error(&mut state, &TaskError::WalletStorageNotReady);
+
+        assert!(
+            !state.is_in_flight(&id(1)) && !state.is_in_flight(&id(2)),
+            "a pre-dispatch refusal leaves nothing running, so no guard may survive it",
+        );
+    }
+
+    /// The blanket release is scoped to refusals that prove nothing is running.
+    /// Any other failure keeps its guard: an unrelated error must not re-enable a
+    /// row whose paid action may still be in flight.
+    #[test]
+    fn an_unrelated_error_preserves_the_request_guards() {
+        let mut state = ContactsState::default();
+        assert!(state.begin_request(id(1)));
+
+        release_request_guard_for_error(&mut state, &TaskError::WalletLocked);
+
+        assert!(
+            state.is_in_flight(&id(1)),
+            "only the request's own typed failure, or a pre-dispatch refusal, releases a guard",
+        );
     }
 
     #[test]

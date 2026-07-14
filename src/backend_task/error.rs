@@ -1672,6 +1672,13 @@ pub enum TaskError {
     // ──────────────────────────────────────────────────────────────────────────
     // Shielded pool errors
     // ──────────────────────────────────────────────────────────────────────────
+    /// A fund-moving shielded operation was requested while the shielded
+    /// operations feature gate was closed.
+    #[error(
+        "Shielding, sending, or withdrawing shielded funds is not available right now. Use a regular payment instead, or try again after a future update."
+    )]
+    ShieldedOperationsUnavailable,
+
     /// No unspent shielded notes are available.
     #[error("You have no shielded funds available. Please shield some credits first.")]
     ShieldedNoUnspentNotes,

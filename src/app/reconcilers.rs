@@ -30,11 +30,13 @@ use crate::ui::components::{
 };
 
 use super::{
-    COLD_START_BACKEND_READY_TIMEOUT, COLD_START_STUCK_MESSAGE, MIGRATION_RETRY_ACTION_ID,
-    MIGRATION_VOTES_ACK_ACTION_ID, SPV_CONNECTING_DESCRIPTION, SPV_CONTINUE_BACKGROUND_ACTION,
-    SPV_SYNCING_DESCRIPTION, SpvBlockStep, cold_start_backend_wait_timed_out,
-    migration_running_text, migration_unreadable_votes_text, should_dispatch_cold_start,
-    spv_block_step,
+    COLD_START_BACKEND_READY_TIMEOUT, COLD_START_STUCK_MESSAGE, MIGRATION_IDENTITIES_ACK_ACTION_ID,
+    MIGRATION_RETRY_ACTION_ID, MIGRATION_UNREADABLE_ACK_ACTION_ID, MIGRATION_VOTES_ACK_ACTION_ID,
+    SPV_CONNECTING_DESCRIPTION, SPV_CONTINUE_BACKGROUND_ACTION, SPV_SYNCING_DESCRIPTION,
+    SpvBlockStep, cold_start_backend_wait_timed_out,
+    migration_failed_with_unreadable_identities_text, migration_running_text,
+    migration_unreadable_identities_and_votes_text, migration_unreadable_identities_text,
+    migration_unreadable_votes_text, should_dispatch_cold_start, spv_block_step,
 };
 
 /// Drives platform-level accessibility (AccessKit) activation on the first
@@ -491,6 +493,63 @@ impl MigrationReconciler {
                 handle.with_action("Got it", MIGRATION_VOTES_ACK_ACTION_ID);
                 self.banner_handle = Some(handle);
             }
+            MigrationState::SucceededWithUnreadableIdentities { count } => {
+                // Same shape as the vote warning: the drain is done and the rows
+                // are still in the previous version's storage, so no retry action
+                // — but the keys those identities held are not loaded, so the user
+                // must be told even if they stepped away. Sticky, and re-raised on
+                // every launch until the "Got it" action retires the durable
+                // record: a dismissal is not an acknowledgement.
+                let handle = MessageBanner::set_global(
+                    ctx,
+                    migration_unreadable_identities_text(count),
+                    MessageType::Warning,
+                );
+                handle.disable_auto_dismiss();
+                handle.with_action("Got it", MIGRATION_IDENTITIES_ACK_ACTION_ID);
+                self.banner_handle = Some(handle);
+            }
+            MigrationState::SucceededWithUnreadableIdentitiesAndVotes { identities, votes } => {
+                // Both kinds of row were left behind. One Warning banner names both
+                // remedies — no retry, since neither corrupt row decodes better on a
+                // second pass. Sticky and acknowledgeable: because this single banner
+                // names both problems, its one "Got it" retires both durable records
+                // — re-raising either half afterwards would be a notice the user has
+                // already read and acted on.
+                let handle = MessageBanner::set_global(
+                    ctx,
+                    migration_unreadable_identities_and_votes_text(identities, votes),
+                    MessageType::Warning,
+                );
+                handle.disable_auto_dismiss();
+                handle.with_action("Got it", MIGRATION_UNREADABLE_ACK_ACTION_ID);
+                self.banner_handle = Some(handle);
+            }
+            MigrationState::FailedWithUnreadableIdentities { count, error } => {
+                // Both DET-owned passes broke on the same launch. One Error banner
+                // (retryable, sticky) names both problems — the identities need
+                // reloading AND the app-data update must be retried — so neither
+                // silently hides the other.
+                if error.is_backend_not_ready() {
+                    // Transient app-data backend-not-ready: reset to Idle so the
+                    // frame loop re-dispatches once ready, no failure flash.
+                    self.dispatched.remove(&app_context.network);
+                    app_context
+                        .migration_status()
+                        .set_state(MigrationState::Idle);
+                    self.last_state = Some(MigrationState::Idle);
+                    return;
+                }
+                let handle = MessageBanner::set_global(
+                    ctx,
+                    migration_failed_with_unreadable_identities_text(count),
+                    MessageType::Error,
+                );
+                handle.disable_auto_dismiss();
+                handle.with_details(error.as_ref());
+                handle.with_action("Retry now", MIGRATION_RETRY_ACTION_ID);
+                self.banner_handle = Some(handle);
+            }
             MigrationState::Failed { error } => {
                 if error.is_backend_not_ready() {
                     // Transient: the wallet backend had not finished wiring when
@@ -537,10 +596,12 @@ impl MigrationReconciler {
         }
     }
 
-    /// Drain pending banner-action clicks. Two actions are registered: the
-    /// migration Retry, which re-dispatches `FinishUnwire` after resetting the
-    /// cold-start guard, and the unreadable-vote acknowledgement, which clears the
-    /// durable warning. Both are returned for `AppState` to dispatch.
+    /// Drain pending banner-action clicks. Two kinds of action are registered:
+    /// the migration Retry, which re-dispatches `FinishUnwire` after resetting the
+    /// cold-start guard, and the three unreadable-row acknowledgements (votes,
+    /// identities, or the combined banner naming both), each of which clears the
+    /// durable warning records its banner named. All are returned for `AppState`
+    /// to dispatch.
     pub(super) fn drain_actions(
         &mut self,
         ctx: &egui::Context,
@@ -569,6 +630,24 @@ impl MigrationReconciler {
                 task = Some(BackendTask::MigrationTask(
                     MigrationTask::AcknowledgeUnreadableVotes,
                 ));
+            } else if action_id == MIGRATION_IDENTITIES_ACK_ACTION_ID {
+                tracing::info!(
+                    target = "migration::cold_start",
+                    ?network,
+                    "User acknowledged the unreadable-identity warning",
+                );
+                task = Some(BackendTask::MigrationTask(
+                    MigrationTask::AcknowledgeUnreadableIdentities,
+                ));
+            } else if action_id == MIGRATION_UNREADABLE_ACK_ACTION_ID {
+                tracing::info!(
+                    target = "migration::cold_start",
+                    ?network,
+                    "User acknowledged the combined unreadable-identity and unreadable-vote warning",
+                );
+                task = Some(BackendTask::MigrationTask(
+                    MigrationTask::AcknowledgeUnreadableIdentitiesAndVotes,
+                ));
             } else {
                 tracing::warn!(
                     target = "ui::banner",
@@ -578,5 +657,114 @@ impl MigrationReconciler {
             }
         }
         task
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use egui_kittest::Harness;
+    use egui_kittest::kittest::Queryable;
+
+    fn test_app_context(dir: &std::path::Path) -> Arc<AppContext> {
+        crate::app_dir::ensure_env_file(dir);
+        let db = Arc::new(crate::database::Database::new(dir.join("data.db")).expect("db"));
+        db.create_tables(true).expect("create tables");
+        db.set_default_version().expect("set version");
+
+        let app_kv = AppContext::open_app_kv(dir).expect("open app k/v");
+        let secret_store = AppContext::open_secret_store(dir).expect("open secret store");
+        AppContext::new(
+            dir.to_path_buf(),
+            Network::Testnet,
+            db,
+            Default::default(),
+            Default::default(),
+            egui::Context::default(),
+            app_kv,
+            secret_store,
+            crate::model::user_role::UserRoleCell::default(),
+        )
+        .expect("AppContext")
+    }
+
+    /// Publish `state`, let the reconciler build its banner, click the named
+    /// button, and return whatever task the click routed to. Drives the real
+    /// `update_banner` → render → click → `drain_actions` chain, so a banner that
+    /// never wires its action fails here instead of passing a test that hand-rolls
+    /// the wiring it was supposed to prove.
+    fn click_banner_action(state: MigrationState, label: &str) -> Option<BackendTask> {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let app_context = test_app_context(tmp.path());
+        app_context.migration_status().set_state(state);
+
+        let mut reconciler = MigrationReconciler::new();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(600.0, 260.0))
+            .build_ui(MessageBanner::show_global);
+
+        reconciler.update_banner(&harness.ctx, &app_context);
+        harness.run();
+        harness.get_by_label(label).click();
+        harness.run();
+
+        reconciler.drain_actions(&harness.ctx, app_context.network)
+    }
+
+    /// The unreadable-identity warning is acknowledgeable. It used to render as a
+    /// sticky banner with NO action button at all: the user was told their signing
+    /// keys had not come across and given no way to say "I understand", so the
+    /// warning returned on every launch with no gesture that could retire it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn unreadable_identities_banner_acknowledgement_routes_to_its_task() {
+        let task = click_banner_action(
+            MigrationState::SucceededWithUnreadableIdentities { count: 2 },
+            "Got it",
+        );
+        assert_eq!(
+            task,
+            Some(BackendTask::MigrationTask(
+                MigrationTask::AcknowledgeUnreadableIdentities
+            )),
+            "the identity warning must offer an acknowledgement that reaches its backend task",
+        );
+    }
+
+    /// The combined banner names both problems in one message, so its single
+    /// acknowledgement must retire BOTH records. Routing it to either single-signal
+    /// task would leave the other half to re-raise on the next launch — a notice the
+    /// user has already read and acted on.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn combined_unreadable_banner_acknowledgement_routes_to_the_combined_task() {
+        let task = click_banner_action(
+            MigrationState::SucceededWithUnreadableIdentitiesAndVotes {
+                identities: 2,
+                votes: 3,
+            },
+            "Got it",
+        );
+        assert_eq!(
+            task,
+            Some(BackendTask::MigrationTask(
+                MigrationTask::AcknowledgeUnreadableIdentitiesAndVotes
+            )),
+            "one banner naming both problems must retire both warnings on one click",
+        );
+    }
+
+    /// The vote warning keeps its own acknowledgement — the identity work above
+    /// must not have re-routed the sibling banner to the wrong task.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn unreadable_votes_banner_acknowledgement_routes_to_its_task() {
+        let task = click_banner_action(
+            MigrationState::SucceededWithUnreadableVotes { count: 2 },
+            "Got it",
+        );
+        assert_eq!(
+            task,
+            Some(BackendTask::MigrationTask(
+                MigrationTask::AcknowledgeUnreadableVotes
+            )),
+        );
     }
 }

@@ -45,6 +45,11 @@ type WalletMatchResult = Option<(WalletSeedHash, u32, WalletKeyMap)>;
 /// win on collision; keys it omits (e.g. Owner/Payout on a voting-key-only
 /// update) are carried over from `existing` rather than lost. The existing
 /// alias and identity associations are kept only when the new build lacks them.
+///
+/// Load-path only: this fills gaps from field *absence*, which is safe when a
+/// user is actively re-loading (the missing field is genuinely being resupplied)
+/// but is NOT valid for the background legacy migration, where an absent field
+/// can be a deliberate removal (a cleared alias, a "Remove private key from DET").
 fn merge_existing_keys_into(new: &mut QualifiedIdentity, existing: QualifiedIdentity) {
     for (key, value) in existing.private_keys.private_keys {
         new.private_keys.private_keys.entry(key).or_insert(value);

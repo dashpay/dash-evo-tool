@@ -505,6 +505,32 @@ impl Signer<IdentityPublicKey> for QualifiedIdentity {
     }
 }
 
+/// Cap on any single allocation `from_bytes` will make while decoding a
+/// `QualifiedIdentity` blob. A real identity — including its private keys,
+/// DPNS names, and wallet links — is far under this. The cap exists only as a
+/// decode-time safety net: bincode's default `NoLimit` config trusts a
+/// length-prefixed field's claimed size and pre-allocates it *before* reading
+/// anything, so a single flipped bit or a truncated blob can claim gigabytes
+/// and abort the process (`handle_alloc_error`, uncatchable, not a
+/// `Result::Err`) rather than fail the decode gracefully. `Limit` makes
+/// bincode check the claimed size against this cap first and return
+/// `DecodeError::LimitExceeded` instead — see
+/// `a_length_inflated_collection_prefix_is_rejected_not_preallocated` below
+/// for the regression coverage. Encoding is unaffected: this only bounds
+/// decode-time allocation and does not change the wire format, so it stays
+/// compatible with blobs `to_bytes` already wrote.
+const IDENTITY_BLOB_DECODE_LIMIT: usize = 16 * 1024 * 1024; // 16 MiB
+
+/// The bincode configuration [`QualifiedIdentity::from_bytes`] decodes under.
+/// Pulled into its own function (rather than inlined at the one call site) so
+/// the decode-limit regression test below exercises the *exact* configuration
+/// production uses — sharing this function, not a second hand-typed copy of
+/// `.with_limit()` — so a future edit that weakens or drops the limit here is
+/// caught by that test rather than silently diverging from it.
+fn identity_blob_decode_config() -> impl bincode::config::Config {
+    bincode::config::standard().with_limit::<{ IDENTITY_BLOB_DECODE_LIMIT }>()
+}
+
 impl QualifiedIdentity {
     /// Serializes the QualifiedIdentity to a vector of bytes.
     pub fn to_bytes(&self) -> Vec<u8> {
@@ -519,8 +545,12 @@ impl QualifiedIdentity {
     /// than skipping corrupted entries, because identities hold private keys
     /// and balance information — silently ignoring a corrupted identity could
     /// lead to loss of funds.
+    ///
+    /// Decodes under [`identity_blob_decode_config`] rather than bincode's
+    /// unbounded default, so a corrupted or length-inflated blob returns this
+    /// `Err` instead of aborting the process.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, String> {
-        bincode::decode_from_slice(bytes, bincode::config::standard())
+        bincode::decode_from_slice(bytes, identity_blob_decode_config())
             .map(|(identity, _)| identity)
             .map_err(|e| format!("Failed to decode QualifiedIdentity: {}", e))
     }
@@ -1167,5 +1197,83 @@ mod withdrawal_key_tests {
         );
         let selected = qi.default_withdrawal_key().expect("a key");
         assert_eq!(selected.identity_public_key.purpose(), Purpose::TRANSFER);
+    }
+}
+
+/// Regression coverage for the `from_bytes` decode-limit fix (SEC-001 from the
+/// PR #885 grumpy-review): a corrupted or length-inflated blob must decode to
+/// a graceful `Err`, never abort the process.
+///
+/// This deliberately does NOT decode a full `QualifiedIdentity` blob. Crafting
+/// a byte-exact corruption of a real encoded identity is fragile — it would
+/// tie the test to the current field order of a struct with many nested
+/// types, and it does not need to succeed through `Identity`'s own encoding
+/// to prove the point. `from_bytes`'s vulnerability lived entirely in its
+/// bincode *configuration*, not in `QualifiedIdentity`'s shape: any
+/// length-prefixed collection decoded under that configuration was exposed.
+/// Exercising the exact same configuration directly against a minimal,
+/// hand-built length-inflated prefix pins the actual fix (the config change)
+/// precisely, and stays valid regardless of future changes to
+/// `QualifiedIdentity`'s fields.
+///
+/// The prefix construction mirrors the live reproduction from the review: a
+/// `u64` varint length header (bincode's `U64_BYTE` marker, 253) claiming an
+/// enormous element count, followed by only a couple of trailing bytes --
+/// exactly what a single flipped continuation bit or a truncated file
+/// produces on a real blob. Before the fix (decoding under
+/// `bincode::config::standard()`, i.e. `NoLimit`), decoding this buffer as
+/// `Vec<u8>` pre-allocates the claimed length and aborts the process --
+/// confirmed by a standalone probe run outside the test harness during
+/// review, since an in-process abort cannot be asserted as a normal test
+/// failure (it takes the whole test binary down with it). After the fix
+/// (decoding under `IDENTITY_BLOB_DECODE_LIMIT`), the same buffer must return
+/// `DecodeError::LimitExceeded` instead.
+#[cfg(test)]
+mod decode_limit_tests {
+    use super::identity_blob_decode_config;
+
+    #[test]
+    fn a_length_inflated_collection_prefix_is_rejected_not_preallocated() {
+        // bincode 2.0.1's varint scheme: 253 (`U64_BYTE`) marks "the next 8
+        // bytes are a little-endian u64 length". Claim far more than the
+        // configured limit, then supply only 2 trailing bytes -- ordinary
+        // bit-flip/truncation corruption never has the claimed payload
+        // actually present.
+        const U64_VARINT_MARKER: u8 = 253;
+        let claimed_len: u64 = 1 << 40; // 1 TiB -- larger than any real identity blob
+        let mut corrupted = vec![U64_VARINT_MARKER];
+        corrupted.extend_from_slice(&claimed_len.to_le_bytes());
+        corrupted.extend_from_slice(&[0xAA, 0xBB]);
+
+        // Uses the SAME config function `from_bytes` calls -- not a second
+        // hand-typed `.with_limit()` -- so a regression in that shared
+        // function is what this test actually catches.
+        let result: Result<(Vec<u8>, usize), bincode::error::DecodeError> =
+            bincode::decode_from_slice(&corrupted, identity_blob_decode_config());
+
+        match result {
+            Err(bincode::error::DecodeError::LimitExceeded) => {}
+            other => panic!(
+                "expected DecodeError::LimitExceeded for a length-inflated prefix, got \
+                 {other:?} -- if from_bytes's decode config regresses to NoLimit this \
+                 same buffer would instead pre-allocate 1 TiB and abort the process"
+            ),
+        }
+    }
+
+    /// Sanity check that the limit is not so tight it rejects ordinary
+    /// legitimate data -- a real `QualifiedIdentity` with keys is far under
+    /// 16 MiB (the golden v0.9.3 fixture blob decoded elsewhere in this crate
+    /// is a few hundred bytes), so a plain in-bounds `Vec<u8>` must still
+    /// round-trip under the same limited config.
+    #[test]
+    fn an_ordinary_small_payload_still_decodes_under_the_limit() {
+        let payload = vec![0xABu8; 4096];
+        let encoded = bincode::encode_to_vec(&payload, identity_blob_decode_config())
+            .expect("encode under the limit");
+        let (decoded, _): (Vec<u8>, usize) =
+            bincode::decode_from_slice(&encoded, identity_blob_decode_config())
+                .expect("decode under the limit");
+        assert_eq!(decoded, payload);
     }
 }

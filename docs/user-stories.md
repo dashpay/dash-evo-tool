@@ -621,6 +621,18 @@ As a user, I want my wallet's identities to be found and loaded automatically on
 - Already-loaded identities are refreshed (new keys, new DPNS names) while any alias the user assigned is preserved.
 - Locked, password-protected wallets are skipped without prompting; they are searched after the user unlocks them.
 
+### IDN-016: Identities and their keys preserved across an app upgrade [Implemented]
+**Persona:** Alex, Priya
+
+As a user, I want the identities I loaded before an upgrade — and the keys they hold, such as a masternode's owner and voting keys — to still be there after updating, so that I can keep signing and voting without re-importing anything.
+
+- Identities stored before the upgrade are imported from the previous version's storage on the first launch afterward, keeping each identity's keys, alias, and wallet link. Progress is shown as its own step.
+- An identity that cannot be read is reported in a banner naming the recovery action (load it again), rather than dropped silently. The previous version's data is never deleted, so a later build can still import it.
+- A single unreadable identity costs only itself: the readable identities in the same batch still import, and neither the wallet migration that restores access to funds nor the scheduled-vote import is blocked by it.
+- The report of unreadable identities returns on every launch until it is explicitly acknowledged, so a user who stepped away cannot lose the only notice that some of their keys were not carried over.
+- When identities and scheduled votes are both unreadable on the same launch, one banner names both remedies, and acknowledging it retires both reports — neither report can bury the other.
+- An identity the user deletes after the upgrade stays deleted. The import runs once, so a later launch never restores a removed identity, its alias, or its keys.
+
 ---
 
 ## DPNS (DPN)

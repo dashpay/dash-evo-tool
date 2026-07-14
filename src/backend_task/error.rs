@@ -37,8 +37,13 @@ pub enum TaskError {
     /// [`Self::WalletBackendNotYetWired`]: the backend is ready, but this
     /// particular wallet is not yet registered with it (still loading, or
     /// skipped during load). User-actionable — waiting and retrying resolves it.
-    #[error("This wallet is still loading. Please wait a moment and try again.")]
-    WalletNotLoaded,
+    #[error("The wallet \"{wallet_label}\" is still loading. Please wait a moment and try again.")]
+    WalletNotLoaded {
+        /// Display alias for the affected wallet, or a fallback hex prefix of
+        /// the seed hash when no alias has been set. With several wallets
+        /// loaded, this is the only thing that says *which* one to wait for.
+        wallet_label: String,
+    },
 
     /// An internal wallet-state inconsistency: the wallet backend's records
     /// disagree with each other in a way that should never happen (a wallet

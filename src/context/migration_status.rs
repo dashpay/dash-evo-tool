@@ -38,6 +38,11 @@ pub enum MigrationStep {
     /// / master xpub) into the DET wallet-metadata sidecar in
     /// `det-app.sqlite`.
     WalletMeta,
+    /// Importing legacy `identity` rows — and the owner / voting / payout
+    /// keys they carry — into the modern identity store. Runs after the
+    /// wallet drain so each identity's key lands against a wallet that
+    /// already exists.
+    Identities,
     /// Writing the completion sentinel and cleaning up.
     Finalize,
 }
@@ -65,6 +70,52 @@ pub enum MigrationState {
     /// the legacy rows are never deleted, and a retry cannot decode a corrupt
     /// row, so the user is told once rather than offered a futile retry.
     SucceededWithUnreadableVotes { count: u32 },
+    /// The wallet drain completed, but `count` legacy identities could not be
+    /// decoded and did not come across — so the keys they held (a masternode's
+    /// owner / voting key, say) are not loaded. Terminal and non-fatal: the
+    /// legacy rows are never deleted, so they remain recoverable. Re-published
+    /// from a durable record on every launch until the user acknowledges it, and
+    /// separate from [`Self::SucceededWithUnreadableVotes`] because the remedy
+    /// differs — re-import a key, not re-schedule a vote.
+    SucceededWithUnreadableIdentities { count: u32 },
+    /// The wallet drain completed, but both DET-owned passes left undecodable
+    /// rows behind on the same launch: `identities` legacy identities and
+    /// `votes` legacy scheduled votes did not come across. Terminal and
+    /// non-fatal — like the two single-signal variants it combines, and for the
+    /// same reason: a corrupt row decodes no better on a retry.
+    ///
+    /// It exists because neither signal may eat the other. Both warnings are
+    /// durable and re-published on every launch until acknowledged, so with only
+    /// the single-signal variants available the identity half would permanently
+    /// outrank the vote half and cost the user a vote whose deadline is still
+    /// live. One banner names both remedies instead: load the identities again,
+    /// re-schedule the votes.
+    ///
+    /// Because that single banner names both problems, its single acknowledge
+    /// action retires *both* durable records (see
+    /// [`acknowledge_unreadable_votes`](crate::backend_task::migration::finish_unwire::acknowledge_unreadable_votes)
+    /// and
+    /// [`acknowledge_unreadable_identities`](crate::backend_task::migration::finish_unwire::acknowledge_unreadable_identities)).
+    SucceededWithUnreadableIdentitiesAndVotes { identities: u32, votes: u32 },
+    /// Both DET-owned passes are damaged on the same launch: the wallet drain
+    /// landed, but `count` legacy identities could not be decoded AND the
+    /// app-data import hit a hard failure. Rendered as a single retryable error
+    /// banner naming both problems, so neither masks the other — the plain
+    /// [`Self::SucceededWithUnreadableIdentities`] would have swallowed the
+    /// app-data failure and left the user no retry. The app-data sentinel stays
+    /// unwritten, so a retry (or the next launch) re-attempts that import; the
+    /// undecodable identity rows stay in the previous version's storage, named by
+    /// a durable warning. Terminal until then.
+    ///
+    /// A *hard* app-data failure is the only producer. An app-data pass that
+    /// completed and merely left a later notice-record read failing is not one:
+    /// its sentinel is written, so this state's "we did not finish updating the
+    /// rest of your data — retry" copy would be false and its retry a no-op. That
+    /// path publishes [`Self::SucceededWithUnreadableIdentities`] instead.
+    FailedWithUnreadableIdentities {
+        count: u32,
+        error: Arc<crate::backend_task::migration::MigrationError>,
+    },
     /// Migration failed. The wrapped error is rendered for the user via
     /// its `Display` impl at banner-render time; the typed chain is
     /// preserved for the details panel and logs.
@@ -89,7 +140,31 @@ impl PartialEq for MigrationState {
                 MigrationState::SucceededWithUnreadableVotes { count: a },
                 MigrationState::SucceededWithUnreadableVotes { count: b },
             ) => a == b,
+            (
+                MigrationState::SucceededWithUnreadableIdentities { count: a },
+                MigrationState::SucceededWithUnreadableIdentities { count: b },
+            ) => a == b,
+            (
+                MigrationState::SucceededWithUnreadableIdentitiesAndVotes {
+                    identities: ia,
+                    votes: va,
+                },
+                MigrationState::SucceededWithUnreadableIdentitiesAndVotes {
+                    identities: ib,
+                    votes: vb,
+                },
+            ) => ia == ib && va == vb,
             (MigrationState::Running { step: a }, MigrationState::Running { step: b }) => a == b,
+            (
+                MigrationState::FailedWithUnreadableIdentities {
+                    count: a,
+                    error: ea,
+                },
+                MigrationState::FailedWithUnreadableIdentities {
+                    count: b,
+                    error: eb,
+                },
+            ) => a == b && Arc::ptr_eq(ea, eb),
             (MigrationState::Failed { error: a }, MigrationState::Failed { error: b }) => {
                 Arc::ptr_eq(a, b)
             }
@@ -176,6 +251,7 @@ mod tests {
             MigrationStep::Shielded,
             MigrationStep::WalletSeeds,
             MigrationStep::WalletMeta,
+            MigrationStep::Identities,
             MigrationStep::Finalize,
         ] {
             status.set_state(MigrationState::Running { step });
@@ -202,5 +278,40 @@ mod tests {
         });
         assert!(!status.state().is_running());
         assert!(matches!(*status.state(), MigrationState::Failed { .. }));
+    }
+
+    /// The combined failure state compares by `count` AND error identity, like
+    /// `Failed`: two combined states with the same count but distinct error
+    /// `Arc`s are unequal, so the per-frame reconciler treats a fresh failure as
+    /// a transition and re-renders instead of suppressing it as a duplicate.
+    #[test]
+    fn combined_failure_state_compares_count_and_error_identity() {
+        use crate::backend_task::migration::MigrationError;
+
+        let shared = Arc::new(MigrationError::WalletBackendUnavailable);
+        let a = MigrationState::FailedWithUnreadableIdentities {
+            count: 2,
+            error: Arc::clone(&shared),
+        };
+        let same = MigrationState::FailedWithUnreadableIdentities {
+            count: 2,
+            error: Arc::clone(&shared),
+        };
+        assert_eq!(a, same, "same count and same error Arc compare equal");
+
+        let different_error = MigrationState::FailedWithUnreadableIdentities {
+            count: 2,
+            error: Arc::new(MigrationError::WalletBackendUnavailable),
+        };
+        assert_ne!(
+            a, different_error,
+            "a fresh error Arc is a new transition even at the same count",
+        );
+
+        let different_count = MigrationState::FailedWithUnreadableIdentities {
+            count: 3,
+            error: Arc::clone(&shared),
+        };
+        assert_ne!(a, different_count, "a changed count is a transition");
     }
 }

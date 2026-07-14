@@ -9,12 +9,16 @@
 use std::sync::Arc;
 
 use dash_sdk::dpp::dashcore::Network;
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+use dash_sdk::platform::Identifier;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::context::migration_status::{MigrationState, MigrationStep};
+use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::wallet::WalletSeedHash;
 use crate::wallet_backend::{DetScope, KvAdapterError, network_prefix};
 
 /// Sentinel key format string. The migration body filters every
@@ -42,16 +46,18 @@ pub fn sentinel_key_for(network: Network) -> String {
 /// migration into the `Running` state. Ordered so the cheapest check
 /// (the single-row `wallet` table) runs first.
 ///
-/// `scheduled_votes` and `top_up` are in the list because an install can
-/// hold them with no wallet rows at all — a masternode voter who imported
-/// identity keys directly has queued votes but no HD wallet. Omitting them
-/// would leave the detection gate closed and drop those votes.
+/// `scheduled_votes`, `top_up` and `identity` are in the list because an
+/// install can hold them with no wallet rows at all — a masternode voter who
+/// imported identity keys directly has identities and queued votes but no HD
+/// wallet. Omitting them would leave the detection gate closed and drop that
+/// user's keys.
 const LEGACY_TABLES: &[&str] = &[
     "wallet",
     "single_key_wallet",
     "utxos",
     "scheduled_votes",
     "top_up",
+    "identity",
 ];
 
 /// Persisted sentinel payload. Lives in `det-app.sqlite` under the
@@ -166,6 +172,26 @@ pub enum MigrationError {
         source: Box<TaskError>,
     },
 
+    /// The app-data pass failed with an error that did not already originate in
+    /// the migration layer (a k/v read while checking which votes exist, say).
+    /// Wrapped so the combined [`MigrationState::FailedWithUnreadableIdentities`]
+    /// banner keeps a typed chain when both DET-owned passes break together.
+    #[error("could not import the previous version's app data")]
+    AppDataImport {
+        #[source]
+        source: Box<TaskError>,
+    },
+
+    /// A decoded legacy identity could not be written into the identity store.
+    /// Hard failure: the identity sentinel stays unwritten so the next launch
+    /// retries the idempotent import. Never blocks the wallet drain — [`run`]
+    /// judges this only after the seeds are safe.
+    #[error("could not save an identity from the previous version")]
+    IdentityImportFailed {
+        #[source]
+        source: Box<TaskError>,
+    },
+
     /// The legacy top-up history could not be carried across — the legacy table
     /// is unreadable, or the k/v store rejected the write. Audit trail, not
     /// funds, so it never blocks the wallet drain; but the app-data sentinel
@@ -187,6 +213,16 @@ pub enum MigrationError {
         source: KvAdapterError,
     },
 
+    /// Could not read, write or clear the durable unreadable-identity warning.
+    /// That record is the only thing that survives the identity sentinel, so a
+    /// failure here is surfaced rather than dropped — a silently-lost warning is
+    /// a user who never learns their signing keys did not come across.
+    #[error("could not access the unreadable-identity warning")]
+    IdentityWarningRecord {
+        #[source]
+        source: KvAdapterError,
+    },
+
     /// The wallet backend was not yet wired when the migration ran.
     /// This is a hard configuration bug: the orchestrator runs after
     /// `ensure_wallet_backend`, so this should never fire in
@@ -194,6 +230,17 @@ pub enum MigrationError {
     /// caught immediately instead of silently no-oping.
     #[error("wallet backend not available during migration")]
     WalletBackendUnavailable,
+
+    /// A pass reported an error that is not a [`MigrationError`]. Every pass is
+    /// meant to report through one of the typed variants above; this catch-all
+    /// exists so a stray error still reaches a terminal banner. Leaving one
+    /// unpublished would strand the status on `Running`, which gates every
+    /// wallet-touching task behind `WalletStorageNotReady` and offers no retry.
+    #[error("could not finish updating the previous version's data")]
+    Unexpected {
+        #[source]
+        source: Box<TaskError>,
+    },
 
     /// Returned by [`guard_single_key_table_droppable`] when dropping the
     /// legacy single-key table would destroy a password-protected key that
@@ -243,6 +290,24 @@ impl MigrationError {
     }
 }
 
+/// Coerce any migration failure into the `Arc<MigrationError>` chain the failure
+/// banners render. Total by design: every error the orchestrator can produce must
+/// end up publishable, or it leaves the status on `Running` — which gates every
+/// wallet-touching task behind `WalletStorageNotReady`, with no retry to escape.
+///
+/// A [`TaskError::MigrationFailed`] chain is reused verbatim, so the banner shows
+/// the same typed source and a wrapped [`MigrationError::WalletBackendUnavailable`]
+/// still classifies as backend-not-ready. Anything else is wrapped in
+/// [`MigrationError::Unexpected`] rather than dropped.
+pub(crate) fn migration_error_chain(error: TaskError) -> Arc<MigrationError> {
+    match error {
+        TaskError::MigrationFailed { source } => source,
+        other => Arc::new(MigrationError::Unexpected {
+            source: Box::new(other),
+        }),
+    }
+}
+
 /// Run the FinishUnwire migration. Idempotent — completes a no-op when
 /// the sentinels are already present.
 ///
@@ -252,31 +317,63 @@ impl MigrationError {
 /// decide whether to surface a "storage update complete" banner — a no-op
 /// launch must not show one.
 ///
-/// Two independent passes, in this order:
+/// Three independent passes, each under its own sentinel, in this order:
 ///
 /// 1. **App data** (scheduled votes, top-up history) — DET-owned rows the
-///    wallet drain never touched, under their own sentinel.
+///    wallet drain never touched.
 /// 2. **Wallet drain** (single keys, HD seeds, wallet metadata, upstream
 ///    registration) — the pass that restores access to funds.
+/// 3. **Identities** (identity rows and the keys they hold) — last, because it
+///    needs the drain's output: a wired backend, a reachable vault, and a
+///    hydrated `ctx.wallets` for wallet-derived identity keys to attach to.
 ///
-/// The wallet drain runs **regardless of the app-data outcome**. The two are
-/// only coupled at the end, when the terminal state is published: a legacy vote
-/// row that cannot be imported must never stand between the user and their
-/// seeds.
+/// **Neither DET-owned pass gates the other.** The wallet drain runs regardless
+/// of the app-data outcome, and the identity import runs regardless of it too —
+/// both results are held, never propagated on the spot, and judged together at
+/// the end. A legacy vote row that cannot be imported must never stand between
+/// the user and their seeds, nor between the user and their identity keys: an
+/// app-data failure is deterministic, so letting it short-circuit the identity
+/// import would strand those keys outside the vault on every launch, not just
+/// this one.
 ///
-/// A pending [`UnreadableVotesWarning`] is re-published on every launch — not
-/// only the one that discovered it — until [`acknowledge_unreadable_votes`]
-/// clears it.
+/// The wallet drain is the one deliberate prerequisite: a drain failure returns
+/// early, so the identity import does not run on that launch. It cannot — that
+/// pass needs the drain's output (pass 3 above), and both retry on the next
+/// launch, neither sentinel having been written.
+///
+/// Both DET-owned passes write their sentinel unconditionally, so their counters
+/// exist for exactly one launch. What outlives them are the durable
+/// [`UnreadableVotesWarning`] and [`UnreadableIdentitiesWarning`] records, and
+/// those — never the counters — are what this function publishes: each is
+/// re-raised on every launch, not only the one that discovered it, until
+/// [`acknowledge_unreadable_votes`] / [`acknowledge_unreadable_identities`]
+/// retires it. When both are pending they ride one
+/// [`MigrationState::SucceededWithUnreadableIdentitiesAndVotes`], so a lone
+/// identity warning can never outrank the vote warning and silently cost the
+/// user a live vote deadline. If reading the vote-warning record fails, the vote
+/// half is withheld until a later launch reads it successfully — the identity
+/// half still reaches the user, and neither is reported as a failed migration —
+/// a *hard* app-data failure (not merely a failed later read of this record) is
+/// the only thing that publishes [`MigrationState::FailedWithUnreadableIdentities`]
+/// instead; see the `# Errors` section below.
 ///
 /// # Errors
 ///
 /// [`TaskError::MigrationFailed`] when the wallet drain fails (the completion
 /// sentinel stays unwritten, so the next launch retries), or when the wallet
-/// drain succeeded but the app-data pass hit a hard failure — an unreadable
-/// legacy file, a k/v write error. Undecodable vote rows are *not* an error:
-/// they are counted and reported on [`MigrationState::SucceededWithUnreadableVotes`],
-/// because a retry cannot decode a corrupt row and failing here would wedge the
-/// wallet drain on every launch.
+/// drain succeeded but the app-data or identity pass hit a hard failure — an
+/// unreadable legacy file, a k/v write error. Undecodable *rows* are not an
+/// error: they are counted and reported on
+/// [`MigrationState::SucceededWithUnreadableVotes`] /
+/// [`MigrationState::SucceededWithUnreadableIdentities`], because failing here
+/// would wedge the wallet drain behind a row the user cannot repair.
+///
+/// One case returns `Ok` while publishing a failure banner itself: a hard
+/// app-data failure that coincides with unreadable identities on the same
+/// launch. Both must reach the user, so the terminal state is
+/// [`MigrationState::FailedWithUnreadableIdentities`] (published here, carrying
+/// both signals) rather than a returned `Err` that the caller would re-publish
+/// as a plain `Failed`, dropping the identity count.
 pub async fn run(app_context: &Arc<AppContext>) -> Result<bool, TaskError> {
     let status = app_context.migration_status();
 
@@ -308,12 +405,171 @@ pub async fn run(app_context: &Arc<AppContext>) -> Result<bool, TaskError> {
         }
     };
 
-    // Funds are reachable from here on, so the app-data outcome can now decide
-    // the terminal state. A hard failure leaves the app-data sentinel unwritten
-    // and reaches the user's "Retry now" banner; that retry re-runs the import
-    // alone, since the wallet drain short-circuits on its own sentinel.
+    // Funds are reachable from here on. The identity import runs next, and its
+    // result — like the app-data one — is held rather than propagated, because
+    // the two DET-owned passes must not gate each other.
+    //
+    // The identity pass needs the drain's output (backend wired, vault reachable,
+    // `ctx.wallets` hydrated) so a wallet-derived key lands against a wallet that
+    // exists. It must NOT wait on the app-data result: a hard app-data failure —
+    // one malformed vote-index blob is enough — is deterministic, so unwrapping
+    // it first would skip the identity import on this launch *and every retry*
+    // (the app-data sentinel is never written, so the failure recurs forever).
+    // That would strand a masternode owner's private keys outside the vault
+    // permanently, over a corrupt vote queue.
+    status.set_state(MigrationState::Running {
+        step: MigrationStep::Identities,
+    });
+    let identities = migrate_identities(app_context);
+
+    // Both DET-owned passes have now run. A hard failure in either still reaches
+    // the user's "Retry now" banner, but only after neither could block the
+    // other. The identity failure takes precedence when both fail: keys outrank
+    // votes.
+    let identities = match identities {
+        Ok(outcome) => outcome,
+        Err(identity_error) => {
+            if let Err(app_data_error) = &app_data {
+                tracing::warn!(
+                    target = "migration::finish_unwire",
+                    error = ?app_data_error,
+                    "App-data import failed on the same launch as the identity import; both retry on the next launch",
+                );
+            }
+            return Err(identity_error);
+        }
+    };
+
+    // The identity warning is read back from storage rather than taken from this
+    // pass's counters: the identity sentinel is written unconditionally, so every
+    // launch after the discovery run short-circuits the import and honestly
+    // reports zero unreadable rows — while the rows it could not decode still
+    // hold keys the user cannot sign with. Re-published until
+    // [`acknowledge_unreadable_identities`] retires it.
+    //
+    // A read failure here is surfaced, never dropped: this record is the only
+    // thing standing between the user and the news about their own keys.
+    let identities_warning = match read_identities_warning(
+        &app_context.app_kv(),
+        app_context.network,
+    ) {
+        Ok(warning) => warning,
+        Err(warning_error) => {
+            if let Err(app_data_error) = &app_data {
+                tracing::warn!(
+                    target = "migration::finish_unwire",
+                    error = ?app_data_error,
+                    "App-data import failed on the launch where the identity-warning record could not be read; the app-data import retries on the next launch",
+                );
+            }
+            return Err(warning_error.into());
+        }
+    };
+
+    // Unreadable identities outrank a *readable* app-data pass: an identity that
+    // did not come across took its keys with it, so the user cannot sign — let
+    // alone vote — until it is loaded again. But a *hard* app-data failure on the
+    // same launch is not something the identity warning may swallow: it would
+    // leave the user no retry for their scheduled votes, silently and every
+    // launch (the app-data sentinel is never written, so it recurs). So when both
+    // break together, a single combined banner names each — the app-data half
+    // retryable — instead of one eating the other.
+    //
+    // This branch runs BEFORE `app_data` is unwrapped with `?`: unwrapping first
+    // would return the deterministic app-data error and permanently mask the
+    // identity outcome. `app_data` is moved here by value; the fall-through path
+    // below (no pending identity warning) still owns it because this branch always
+    // returns.
+    if let Some(identities_warning) = identities_warning {
+        let unreadable = identities_warning.count;
+        match app_data {
+            Ok(outcome) => {
+                let moved_data = wallet_moved || outcome.moved_data() || identities.moved_data();
+
+                // A pending vote warning must ride along, or the identity signal
+                // buries it forever: the identity warning is re-published on every
+                // launch until acknowledged, so this branch would otherwise return
+                // ahead of the `read_vote_warning` re-publish below. Both counts
+                // come from storage, not from this launch's counters: after the
+                // discovery run both passes short-circuit on their sentinels and
+                // honestly report zero — exactly on the launches where this branch
+                // is the only one the user ever sees.
+                //
+                // A k/v read that itself fails costs only the vote half of the
+                // banner, never the identity half: the record is durable and this
+                // branch re-runs on every launch (the identity sentinel stays
+                // unwritten), so the next successful read re-publishes it. Reporting
+                // the read error as a *failure* state instead would tell the user the
+                // app-data pass did not finish — it did, and wrote its sentinel — and
+                // offer a retry that re-runs nothing.
+                match read_vote_warning(&app_context.app_kv(), app_context.network) {
+                    Ok(Some(warning)) => {
+                        tracing::warn!(
+                            target = "migration::finish_unwire",
+                            unreadable,
+                            imported = identities.imported,
+                            votes_unreadable = warning.count,
+                            network = ?app_context.network,
+                            "Some legacy identities and some legacy scheduled votes could not be decoded; they stay in the previous version's data.db and must be loaded / scheduled again",
+                        );
+                        status.set_state(
+                            MigrationState::SucceededWithUnreadableIdentitiesAndVotes {
+                                identities: unreadable,
+                                votes: warning.count,
+                            },
+                        );
+                    }
+                    Ok(None) => {
+                        tracing::warn!(
+                            target = "migration::finish_unwire",
+                            unreadable,
+                            imported = identities.imported,
+                            network = ?app_context.network,
+                            "Some legacy identities could not be decoded; they stay in the previous version's data.db and must be loaded again",
+                        );
+                        status.set_state(MigrationState::SucceededWithUnreadableIdentities {
+                            count: unreadable,
+                        });
+                    }
+                    Err(warning_error) => {
+                        tracing::warn!(
+                            target = "migration::finish_unwire",
+                            unreadable,
+                            imported = identities.imported,
+                            error = ?warning_error,
+                            network = ?app_context.network,
+                            "Some legacy identities could not be decoded, and the pending vote-warning record could not be read so any vote notice is withheld until the next launch; the identity rows stay in the previous version's data.db and must be loaded again",
+                        );
+                        status.set_state(MigrationState::SucceededWithUnreadableIdentities {
+                            count: unreadable,
+                        });
+                    }
+                }
+                return Ok(moved_data);
+            }
+            Err(app_data_error) => {
+                let moved_data = wallet_moved || identities.moved_data();
+                tracing::warn!(
+                    target = "migration::finish_unwire",
+                    unreadable,
+                    imported = identities.imported,
+                    error = ?app_data_error,
+                    network = ?app_context.network,
+                    "Both DET-owned passes failed on the same launch: some legacy identities could not be decoded and the app-data import hit a hard error; both retry on the next launch",
+                );
+                status.set_state(MigrationState::FailedWithUnreadableIdentities {
+                    count: unreadable,
+                    error: migration_error_chain(app_data_error),
+                });
+                return Ok(moved_data);
+            }
+        }
+    }
+
+    // No identity warning is pending, so app-data no longer masks anything
+    // critical: a hard failure here is the user's "Retry now" banner.
     let app_data = app_data?;
-    let moved_data = wallet_moved || app_data.moved_data();
+    let moved_data = wallet_moved || app_data.moved_data() || identities.moved_data();
 
     // The warning is read back from storage rather than taken from this pass's
     // counters: on every launch after the discovery run the import short-circuits
@@ -565,6 +821,89 @@ pub fn acknowledge_unreadable_votes(app_context: &Arc<AppContext>) -> Result<(),
     Ok(())
 }
 
+/// Per-network key of the un-acknowledged unreadable-identity warning. Distinct
+/// from the identity sentinel: the sentinel records that the import *ran*, this
+/// record that the user has not yet been *told* what it could not carry across.
+fn identities_warning_key_for(network: Network) -> String {
+    format!(
+        "det:migration:unreadable_identities:{}:v1",
+        network_prefix(network)
+    )
+}
+
+/// Durable "some identities could not be read" warning.
+///
+/// The import runs once (the identity sentinel short-circuits every later
+/// launch), so the pass counters exist for exactly one launch. A user who was
+/// away, or who dismissed the banner without reading it, would otherwise never
+/// hear that the keys those identities held — a masternode's owner / voting key,
+/// say — are not loaded. This record outlives the pass: [`run`] re-publishes it
+/// on every launch until [`acknowledge_unreadable_identities`] clears it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct UnreadableIdentitiesWarning {
+    /// Legacy identity rows the import could not decode. Never `0` — a
+    /// zero-count warning is not written at all.
+    pub count: u32,
+}
+
+/// The pending unreadable-identity warning for `network`, if the user has not
+/// acknowledged it yet.
+fn read_identities_warning(
+    app_kv: &crate::wallet_backend::DetKv,
+    network: Network,
+) -> Result<Option<UnreadableIdentitiesWarning>, MigrationError> {
+    app_kv
+        .get::<UnreadableIdentitiesWarning>(DetScope::Global, &identities_warning_key_for(network))
+        .map_err(|source| MigrationError::IdentityWarningRecord { source })
+}
+
+/// Record `count` unreadable identity rows as a pending warning. A zero count
+/// writes nothing — there is nothing to tell the user.
+///
+/// Written BEFORE the identity sentinel: a crash between the two re-runs the
+/// idempotent import, whereas the reverse order would lose the warning for good.
+fn write_identities_warning(
+    app_kv: &crate::wallet_backend::DetKv,
+    network: Network,
+    count: u32,
+) -> Result<(), MigrationError> {
+    if count == 0 {
+        return Ok(());
+    }
+    app_kv
+        .put(
+            DetScope::Global,
+            &identities_warning_key_for(network),
+            &UnreadableIdentitiesWarning { count },
+        )
+        .map_err(|source| MigrationError::IdentityWarningRecord { source })
+}
+
+/// Retire the unreadable-identity warning for the active network: the user has
+/// read it. Clears the durable record so later launches stay quiet, and drops
+/// the banner. The legacy rows in `data.db` are untouched — only the notice is
+/// retired, so a build with a better decoder can still recover the identities.
+///
+/// This gesture does not gate the import loop: [`migrate_identities`] writes its
+/// sentinel unconditionally, so the import is already a once-only event whether
+/// or not the user ever clicks. Acknowledgement retires the notice, nothing more.
+pub fn acknowledge_unreadable_identities(app_context: &Arc<AppContext>) -> Result<(), TaskError> {
+    let network = app_context.network;
+    app_context
+        .app_kv()
+        .delete(DetScope::Global, &identities_warning_key_for(network))
+        .map_err(|source| MigrationError::IdentityWarningRecord { source })?;
+    tracing::info!(
+        target = "migration::finish_unwire",
+        network = ?network,
+        "User acknowledged the unreadable-identity warning",
+    );
+    app_context
+        .migration_status()
+        .set_state(MigrationState::Idle);
+    Ok(())
+}
+
 /// Import the DET-owned rows the wallet drain never touched: scheduled DPNS
 /// votes (deadline-critical) and top-up history (audit trail).
 ///
@@ -612,7 +951,7 @@ fn migrate_app_data(app_context: &Arc<AppContext>) -> Result<AppDataMigrationOut
     // must complete without the backend being wired, or a cold start with no
     // legacy data would fail on a dependency it never actually needs.
     if !table_has_rows(&conn, "scheduled_votes")? && !table_has_rows(&conn, "top_up")? {
-        write_app_data_sentinel(&app_kv, &sentinel_key)?;
+        write_completion_sentinel(&app_kv, &sentinel_key, 1)?;
         return Ok(AppDataMigrationOutcome::default());
     }
 
@@ -625,8 +964,15 @@ fn migrate_app_data(app_context: &Arc<AppContext>) -> Result<AppDataMigrationOut
 
     // Votes already in the k/v store win over their legacy row: a retry must
     // not push a stale `executed = 0` over a vote the user has since cast.
+    //
+    // The read is typed into `AppDataImport` rather than propagated raw: every
+    // error leaving this pass must be a `MigrationError`, or the terminal banner
+    // has no typed chain to render.
     let existing_votes: std::collections::BTreeSet<([u8; 32], String)> = app_context
-        .get_scheduled_votes()?
+        .get_scheduled_votes()
+        .map_err(|source| MigrationError::AppDataImport {
+            source: Box::new(source),
+        })?
         .into_iter()
         .map(|v| (v.voter_id.to_buffer(), v.contested_name))
         .collect();
@@ -660,21 +1006,27 @@ fn migrate_app_data(app_context: &Arc<AppContext>) -> Result<AppDataMigrationOut
     // row is now in the k/v store, and the undecodable ones will never decode. A
     // withheld sentinel would re-run this import on every launch, which would
     // resurrect votes the user has since cast and cleared from the queue.
-    write_app_data_sentinel(&app_kv, &sentinel_key)?;
+    write_completion_sentinel(&app_kv, &sentinel_key, 1)?;
 
     Ok(outcome)
 }
 
-/// Record the app-data import as complete for one network. Reuses the
-/// [`MigrationCompletion`] payload so both sentinels share a codec.
-fn write_app_data_sentinel(
+/// Record one import pass as complete under `sentinel_key`. The sole writer of
+/// [`MigrationCompletion`]: every pass — wallet drain, app data, identities —
+/// records completion through here, so all sentinels share one codec.
+///
+/// `network_count` is diagnostic only — logged when the sentinel is read back,
+/// never branched on. The wallet drain uses it to tell a no-op launch (`0`) from
+/// a real drain (`1`); the other passes always record `1`.
+fn write_completion_sentinel(
     app_kv: &crate::wallet_backend::DetKv,
     sentinel_key: &str,
+    network_count: u32,
 ) -> Result<(), MigrationError> {
     let completion = MigrationCompletion {
         completed_at: now_epoch_seconds(),
         sha: env!("CARGO_PKG_VERSION").to_string(),
-        network_count: 1,
+        network_count,
     };
     app_kv
         .put(DetScope::Global, sentinel_key, &completion)
@@ -771,6 +1123,214 @@ where
     }
 
     Ok(outcome)
+}
+
+/// Per-network sentinel for the legacy identity import. Distinct from the
+/// wallet-drain sentinel on purpose: every install that already drained its
+/// wallets under an earlier build (which had no identity import) still has its
+/// identities — and their owner / voting keys — sitting in `data.db`. Sharing
+/// the drain's sentinel would declare exactly those installs "done" and drop
+/// them.
+pub fn identities_sentinel_key_for(network: Network) -> String {
+    format!("det:migration:identities:{}:v1", network_prefix(network))
+}
+
+/// Import the legacy `identity` rows — and the private keys they carry — into
+/// the modern identity store.
+///
+/// Runs after the wallet drain: the k/v store, the secret vault and a hydrated
+/// `ctx.wallets` all have to exist first. Idempotent — an identity already in
+/// the store is left alone, so a retry can never overwrite an alias the user has
+/// since edited with the stale legacy copy.
+///
+/// Key material is never handled here. Each decoded identity goes straight to
+/// [`AppContext::insert_local_qualified_identity`], which routes the keys
+/// through the vault seam and writes only `InVault` placeholders to disk.
+///
+/// Runs exactly once: the sentinel is written even when rows were unreadable, so
+/// a deletion the user makes afterwards is durable. Undecodable rows are counted
+/// into a durable [`UnreadableIdentitiesWarning`] and left in `data.db`, never
+/// deleted — recovering them after a decoder fix is an explicit user gesture
+/// (dashpay/dash-evo-tool#889), not an automatic retry.
+///
+/// # Errors
+///
+/// [`TaskError::MigrationFailed`] when the legacy file cannot be opened or read,
+/// or a decoded identity cannot be written to the store. Undecodable rows are
+/// not an error — they are counted and reported to the user by [`run`].
+fn migrate_identities(
+    app_context: &Arc<AppContext>,
+) -> Result<IdentityMigrationOutcome, TaskError> {
+    let app_kv = app_context.app_kv();
+    let network = app_context.network;
+    let sentinel_key = identities_sentinel_key_for(network);
+
+    let done = app_kv
+        .get::<MigrationCompletion>(DetScope::Global, &sentinel_key)
+        .map_err(|source| MigrationError::Sentinel { source })?
+        .is_some();
+    if done {
+        return Ok(IdentityMigrationOutcome::default());
+    }
+
+    let Some(path) = app_context.db.db_file_path() else {
+        // In-memory / headless: no legacy file to import from.
+        return Ok(IdentityMigrationOutcome::default());
+    };
+    if !path.exists() {
+        return Ok(IdentityMigrationOutcome::default());
+    }
+    let conn = Connection::open(&path).map_err(|e| MigrationError::LegacyDbOpen {
+        path: path.to_string_lossy().to_string(),
+        source: e,
+    })?;
+
+    // Own probe rather than the drain's [`detect_legacy_rows`] gate: an
+    // identity-only install (a masternode voter with no HD wallet) has to import
+    // its identities even though the wallet family is empty. Probing first also
+    // keeps a fresh install from needing the backend it has no data for.
+    if !table_has_rows(&conn, "identity")? {
+        write_completion_sentinel(&app_kv, &sentinel_key, 1)?;
+        return Ok(IdentityMigrationOutcome::default());
+    }
+
+    let backend = app_context
+        .wallet_backend()
+        .map_err(|_| MigrationError::WalletBackendUnavailable)?;
+
+    let outcome = migrate_identities_from_conn(
+        &conn,
+        network,
+        |id| app_context.has_local_qualified_identity(id),
+        |qi, wallet| {
+            // Diagnostic only — the link is imported either way (see the pure
+            // body). An absent wallet means it failed to migrate or is locked.
+            if let Some((seed_hash, _)) = wallet
+                && backend.wallet_meta().get(network, seed_hash).is_none()
+            {
+                tracing::warn!(
+                    target = "migration::finish_unwire",
+                    identity = %hex::encode(qi.identity.id().to_buffer()),
+                    "Importing an identity whose wallet is not present; the link is kept so it re-attaches when that wallet is restored",
+                );
+            }
+            app_context.insert_local_qualified_identity(qi, wallet)
+        },
+    )?;
+
+    tracing::info!(
+        target = "migration::finish_unwire",
+        imported = outcome.imported,
+        skipped_existing = outcome.skipped_existing,
+        unreadable = outcome.unreadable,
+        network = ?network,
+        "Identity migration pass complete",
+    );
+
+    // Persist the warning before the sentinel: this pass counts the undecodable
+    // rows exactly once (the sentinel short-circuits every later launch), so the
+    // count has to outlive it or the user gets one banner and no second chance.
+    // Ordered before the sentinel so a crash in between re-runs the idempotent
+    // import rather than losing the warning.
+    write_identities_warning(&app_kv, network, outcome.unreadable)?;
+
+    // The sentinel is written even when rows were unreadable — the same rule the
+    // app-data pass follows, for the same reason. Every *importable* row is now
+    // in the store, and a withheld sentinel would re-run this import on every
+    // launch: harmless for an identity the user has edited (skip-if-present), but
+    // it would resurrect one the user has DELETED, restoring its alias and
+    // re-writing its legacy plaintext keys into the vault, forever. The
+    // undecodable rows stay in `data.db` and are reported by the durable warning
+    // above; re-importing them after a decoder fix is an explicit user gesture
+    // (dashpay/dash-evo-tool#889), not an automatic retry that costs a deletion.
+    write_completion_sentinel(&app_kv, &sentinel_key, 1)?;
+
+    Ok(outcome)
+}
+
+/// Pure identity-import body (testable without an `AppContext`).
+///
+/// `is_present` is the skip-if-already-imported check; `insert` is the
+/// vault-routing writer.
+fn migrate_identities_from_conn<P, I>(
+    conn: &Connection,
+    network: Network,
+    mut is_present: P,
+    mut insert: I,
+) -> Result<IdentityMigrationOutcome, MigrationError>
+where
+    P: FnMut(&Identifier) -> Result<bool, TaskError>,
+    I: FnMut(&QualifiedIdentity, &Option<(WalletSeedHash, u32)>) -> Result<(), TaskError>,
+{
+    let import_failed = |source: TaskError| MigrationError::IdentityImportFailed {
+        source: Box::new(source),
+    };
+
+    let legacy =
+        crate::database::legacy_import::read_identities(conn, network).map_err(|source| {
+            MigrationError::LegacyDbRead {
+                table: "identity",
+                source,
+            }
+        })?;
+
+    let mut outcome = IdentityMigrationOutcome {
+        unreadable: legacy.unreadable,
+        ..Default::default()
+    };
+
+    for row in legacy.identities {
+        let id = Identifier::from(row.id);
+
+        // Skip an identity already in the store, wholesale. Reconciling
+        // legacy-only keys into a present record is deliberately NOT attempted:
+        // field absence cannot be told apart from a deliberate removal (a
+        // cleared alias, "Remove private key from DET") without provenance the
+        // model does not carry, and a plaintext key merged into a protected
+        // identity trips the vault-first downgrade guard. The legacy `data.db`
+        // is preserved, so those keys are recoverable by a later build. See the
+        // known limitation in the design doc (§7) and the tracked follow-up.
+        //
+        // Check-and-insert needs no transaction despite `insert` being
+        // INSERT-OR-REPLACE: no other writer can interleave. Every production
+        // identity writer is a `BackendTask::IdentityTask`, and
+        // `run_backend_task` rejects all `is_wallet_touching` tasks with
+        // `WalletStorageNotReady` for as long as the migration holds
+        // `MigrationState::Running` — which spans this whole pass.
+        if is_present(&id).map_err(import_failed)? {
+            outcome.skipped_existing = outcome.skipped_existing.saturating_add(1);
+            continue;
+        }
+
+        // The wallet link travels verbatim, never nulled — even when that wallet
+        // did not come across: it is what re-attaches the identity when the
+        // wallet is restored or unlocked later.
+        insert(&row.qi, &row.wallet).map_err(import_failed)?;
+        outcome.imported = outcome.imported.saturating_add(1);
+    }
+
+    Ok(outcome)
+}
+
+/// Outcome counters from one [`migrate_identities`] pass.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct IdentityMigrationOutcome {
+    /// Identities written into the per-network identity store, keys vaulted.
+    imported: u32,
+    /// Identities already in the store and therefore left untouched.
+    skipped_existing: u32,
+    /// Legacy rows that could not be decoded. Recorded as a durable
+    /// [`UnreadableIdentitiesWarning`] so the user still hears about them, but
+    /// never fails the pass — the identities that *did* decode must not be held
+    /// hostage by one that did not.
+    unreadable: u32,
+}
+
+impl IdentityMigrationOutcome {
+    /// `true` when this pass actually moved an identity across.
+    fn moved_data(&self) -> bool {
+        self.imported > 0
+    }
 }
 
 /// Returns `true` when any of the [`LEGACY_TABLES`] holds at least one
@@ -1768,21 +2328,14 @@ fn read_sentinel(
         .map_err(|e| MigrationError::Sentinel { source: e })
 }
 
-/// Write the completion sentinel for `network`, marking the migration
+/// Write the wallet-drain completion sentinel for `network`, marking the drain
 /// as finished for this network on this install.
 fn write_sentinel(
     app_kv: &crate::wallet_backend::DetKv,
     network: Network,
     network_count: u32,
 ) -> Result<(), MigrationError> {
-    let completion = MigrationCompletion {
-        completed_at: now_epoch_seconds(),
-        sha: env!("CARGO_PKG_VERSION").to_string(),
-        network_count,
-    };
-    app_kv
-        .put(DetScope::Global, &sentinel_key_for(network), &completion)
-        .map_err(|e| MigrationError::Sentinel { source: e })
+    write_completion_sentinel(app_kv, &sentinel_key_for(network), network_count)
 }
 
 fn now_epoch_seconds() -> i64 {
@@ -2063,6 +2616,219 @@ mod tests {
         fn detection_gate_covers_the_app_data_tables() {
             assert!(LEGACY_TABLES.contains(&"scheduled_votes"));
             assert!(LEGACY_TABLES.contains(&"top_up"));
+        }
+    }
+
+    // ── Identity import ──────────────────────────────────────────────
+
+    mod identities {
+        use super::*;
+        use crate::database::test_helpers::{
+            LegacyIdentityFixture, basic_legacy_identity_blob, create_legacy_identity_table,
+        };
+        use dash_sdk::dpp::dashcore::Network;
+        use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+        use std::cell::RefCell;
+
+        const NETWORK: Network = Network::Testnet;
+
+        fn create_identity_table(conn: &Connection) {
+            create_legacy_identity_table(conn).expect("create identity table");
+        }
+
+        /// A minimal, genuinely-encodable identity blob.
+        pub(super) fn identity_blob(id: [u8; 32]) -> Vec<u8> {
+            basic_legacy_identity_blob(id, None, NETWORK)
+        }
+
+        pub(super) fn insert_identity(
+            conn: &Connection,
+            id: [u8; 32],
+            data: Option<Vec<u8>>,
+            is_local: bool,
+        ) {
+            LegacyIdentityFixture::new(id, data, NETWORK.to_string())
+                .with_is_local(is_local)
+                .insert(conn)
+                .expect("insert identity");
+        }
+
+        /// Collects what the importer tried to write, so a test can assert on the
+        /// identities that reached the (vault-routing) writer.
+        #[derive(Default)]
+        struct Recorder {
+            imported: RefCell<Vec<[u8; 32]>>,
+        }
+
+        /// A blob that will never decode must not take the identities around it
+        /// down with it: the readable rows still import, and the failure is
+        /// counted so the caller can record a durable warning for the user.
+        #[test]
+        fn an_undecodable_blob_never_blocks_the_identities_that_do_decode() {
+            let conn = Connection::open_in_memory().expect("in-memory db");
+            create_identity_table(&conn);
+            let good = [0xAA; 32];
+            let corrupt = [0xBB; 32];
+            insert_identity(&conn, good, Some(identity_blob(good)), true);
+            insert_identity(&conn, corrupt, Some(vec![0xFF; 16]), true);
+
+            let recorder = Recorder::default();
+            let outcome = migrate_identities_from_conn(
+                &conn,
+                NETWORK,
+                |_| Ok(false),
+                |qi, _| {
+                    recorder
+                        .imported
+                        .borrow_mut()
+                        .push(qi.identity.id().to_buffer());
+                    Ok(())
+                },
+            )
+            .expect("an undecodable row must not fail the pass");
+
+            assert_eq!(outcome.imported, 1, "the readable identity still imports");
+            assert_eq!(outcome.unreadable, 1, "the corrupt row is reported");
+            assert_eq!(
+                *recorder.imported.borrow(),
+                vec![good],
+                "only the decodable identity reaches the writer",
+            );
+            assert!(
+                outcome.unreadable > 0,
+                "a non-zero `unreadable` is what raises the durable warning that tells \
+                 the user which keys did not come across",
+            );
+        }
+
+        /// An identity already in the store is left untouched — skipped
+        /// wholesale, never re-inserted. Re-writing would risk overwriting
+        /// whatever the user has done to it since (renamed it, removed a key)
+        /// with the stale legacy copy.
+        #[test]
+        fn an_identity_already_in_the_store_is_never_reimported() {
+            let conn = Connection::open_in_memory().expect("in-memory db");
+            create_identity_table(&conn);
+            let existing = [0xAA; 32];
+            let fresh = [0xBB; 32];
+            insert_identity(&conn, existing, Some(identity_blob(existing)), true);
+            insert_identity(&conn, fresh, Some(identity_blob(fresh)), true);
+
+            let recorder = Recorder::default();
+            let outcome = migrate_identities_from_conn(
+                &conn,
+                NETWORK,
+                |id| Ok(id.to_buffer() == existing),
+                |qi, _| {
+                    recorder
+                        .imported
+                        .borrow_mut()
+                        .push(qi.identity.id().to_buffer());
+                    Ok(())
+                },
+            )
+            .expect("import");
+
+            assert_eq!(outcome.imported, 1);
+            assert_eq!(outcome.skipped_existing, 1);
+            assert_eq!(
+                *recorder.imported.borrow(),
+                vec![fresh],
+                "the already-present identity must never reach the insert writer",
+            );
+        }
+
+        /// Observed (`is_local = 0`) rows are v0.9.3's lookup cache and NULL-blob
+        /// rows have nothing in them. Neither is user data: both are skipped, and
+        /// neither counts as unreadable — so neither raises a warning about keys
+        /// that were never there.
+        #[test]
+        fn observed_and_null_blob_rows_are_skipped_without_failing_the_pass() {
+            let conn = Connection::open_in_memory().expect("in-memory db");
+            create_identity_table(&conn);
+            let observed = [0xAA; 32];
+            let null_blob = [0xBB; 32];
+            insert_identity(&conn, observed, Some(identity_blob(observed)), false);
+            insert_identity(&conn, null_blob, None, true);
+
+            let recorder = Recorder::default();
+            let outcome = migrate_identities_from_conn(
+                &conn,
+                NETWORK,
+                |_| Ok(false),
+                |qi, _| {
+                    recorder
+                        .imported
+                        .borrow_mut()
+                        .push(qi.identity.id().to_buffer());
+                    Ok(())
+                },
+            )
+            .expect("import");
+
+            assert_eq!(
+                (
+                    outcome.imported,
+                    outcome.unreadable,
+                    outcome.skipped_existing
+                ),
+                (0, 0, 0),
+                "neither row is user data, and neither is a failure",
+            );
+            assert!(recorder.imported.borrow().is_empty());
+        }
+
+        /// A link to a wallet that did not come across is kept verbatim, never
+        /// nulled: it is what re-attaches the identity when the user finally
+        /// unlocks (or restores) that wallet.
+        #[test]
+        fn a_link_to_an_absent_wallet_is_preserved_not_nulled() {
+            let conn = Connection::open_in_memory().expect("in-memory db");
+            create_identity_table(&conn);
+            let id = [0xAA; 32];
+            let orphan_wallet = [0x77; 32];
+            LegacyIdentityFixture::new(id, Some(identity_blob(id)), NETWORK.to_string())
+                .with_wallet(orphan_wallet.to_vec(), 4)
+                .insert(&conn)
+                .expect("insert identity");
+
+            let links: RefCell<Vec<Option<(WalletSeedHash, u32)>>> = RefCell::new(Vec::new());
+            let outcome = migrate_identities_from_conn(
+                &conn,
+                NETWORK,
+                |_| Ok(false),
+                |_, wallet| {
+                    links.borrow_mut().push(*wallet);
+                    Ok(())
+                },
+            )
+            .expect("import");
+
+            assert_eq!(outcome.imported, 1, "the identity imports anyway");
+            assert_eq!(
+                *links.borrow(),
+                vec![Some((orphan_wallet, 4))],
+                "the wallet link must survive verbatim — nulling it would orphan the \
+                 identity from its keys permanently",
+            );
+        }
+
+        /// An identity-only install (a masternode voter with no HD wallet) must
+        /// still trip the detection gate, or its keys are never even looked at.
+        #[test]
+        fn detection_gate_covers_the_identity_table() {
+            assert!(LEGACY_TABLES.contains(&"identity"));
+        }
+
+        /// The identity sentinel is per network and distinct from the wallet
+        /// drain's: reusing the latter would skip the import for every install
+        /// that already drained under a build without an identity importer.
+        #[test]
+        fn sentinel_is_per_network_and_distinct_from_the_other_sentinels() {
+            let testnet = identities_sentinel_key_for(Network::Testnet);
+            assert_ne!(testnet, identities_sentinel_key_for(Network::Mainnet));
+            assert_ne!(testnet, sentinel_key_for(Network::Testnet));
+            assert_ne!(testnet, app_data_sentinel_key_for(Network::Testnet));
         }
     }
 
@@ -3627,6 +4393,62 @@ mod tests {
         );
     }
 
+    /// `migration_error_chain` reuses a `MigrationFailed` chain verbatim (so the
+    /// combined banner shows the same typed source, and a wrapped
+    /// `WalletBackendUnavailable` still classifies as backend-not-ready), and
+    /// wraps any stray non-migration `TaskError` rather than dropping it.
+    #[test]
+    fn migration_error_chain_preserves_migration_source_and_wraps_others() {
+        let inner = Arc::new(MigrationError::WalletBackendUnavailable);
+        let chain = migration_error_chain(TaskError::MigrationFailed {
+            source: Arc::clone(&inner),
+        });
+        assert!(
+            Arc::ptr_eq(&chain, &inner),
+            "a MigrationFailed chain must be reused, not re-wrapped",
+        );
+        assert!(
+            chain.is_backend_not_ready(),
+            "the reused chain keeps its backend-not-ready classification",
+        );
+
+        let wrapped = migration_error_chain(TaskError::WalletNotFound);
+        assert!(
+            matches!(*wrapped, MigrationError::Unexpected { .. }),
+            "a non-migration error is wrapped, never dropped",
+        );
+        assert!(
+            !wrapped.is_backend_not_ready(),
+            "a wrapped stray error is terminal, offered with a retry",
+        );
+    }
+
+    /// The coercion is TOTAL — every `TaskError` yields a publishable chain that
+    /// still carries the original error as its `#[source]`. This is what keeps a
+    /// failed migration from stranding the status on `Running`: while it is
+    /// running, `run_backend_task` rejects every wallet-touching task with
+    /// `WalletStorageNotReady` and the banner offers no retry, so an error that
+    /// published nothing would wedge the wallet surface until the app restarts.
+    #[test]
+    fn every_task_error_yields_a_publishable_chain_with_its_source_intact() {
+        for stray in [
+            TaskError::WalletNotFound,
+            TaskError::WalletStorageNotReady,
+            TaskError::IdentityNotFound,
+        ] {
+            let expected = stray.to_string();
+            let chain = migration_error_chain(stray);
+
+            let source = std::error::Error::source(&*chain)
+                .expect("the stray error must survive as the chain's source");
+            assert_eq!(
+                source.to_string(),
+                expected,
+                "the original error must reach the details panel, not be replaced",
+            );
+        }
+    }
+
     /// Wire the real wallet seam onto a fixture context. Offline: the backend
     /// builds its sidecars and hydrates from them without touching the network,
     /// so an end-to-end `run()` can be driven to completion in a unit test. The
@@ -3685,6 +4507,19 @@ mod tests {
         )
         .expect("insert legacy wallet row");
         seed_hash
+    }
+
+    /// Stage an identity row whose blob will never decode, so `read_identities`
+    /// counts it unreadable. Written into the *modern* `identity` table the app
+    /// context already created — not the legacy fixture shape — so the NULL wallet
+    /// link is what satisfies that table's both-or-neither `CHECK`.
+    fn insert_corrupt_identity_row(conn: &Connection, id: [u8; 32]) {
+        conn.execute(
+            "INSERT INTO identity (id, data, status, is_local, network)
+             VALUES (?1, ?2, 2, 1, 'testnet')",
+            rusqlite::params![id.as_slice(), vec![0xFFu8; 8]],
+        )
+        .expect("corrupt identity row");
     }
 
     /// QA-101 — the headline funds regression. A single undecodable legacy vote
@@ -3873,6 +4708,167 @@ mod tests {
         backend.shutdown().await;
     }
 
+    /// Both DET-owned passes broken on the SAME launch must surface BOTH signals,
+    /// not have one silently eat the other. Here an undecodable identity row
+    /// (unreadable identities) and a structurally-damaged legacy `top_up` table
+    /// (a hard app-data failure) coincide. Before the fix the run published
+    /// `SucceededWithUnreadableIdentities` and returned `Ok`, so the app-data
+    /// failure never reached a banner — no retry, swallowed every launch. Now the
+    /// combined `FailedWithUnreadableIdentities` carries the identity count AND
+    /// the app-data error chain: the user sees both, with a retry for the
+    /// app-data half. Funds are still safe (the wallet drain ran regardless), and
+    /// neither DET-owned sentinel is written, so both retry on the next launch.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn both_app_data_and_identity_failures_surface_together() {
+        use crate::wallet_backend::poison::RwLockRecover;
+        use dash_sdk::dpp::dashcore::Network;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = fresh_app_context(tmp.path());
+        let network = Network::Testnet;
+
+        // Funds: a normal legacy wallet, so the drain completes and `moved_data`.
+        let seed_hash = seed_legacy_wallet(&ctx, &[0xD6u8; 64], "funds", network);
+
+        {
+            let conn = Connection::open(tmp.path().join("data.db")).expect("open data.db");
+            insert_corrupt_identity_row(&conn, [0x44u8; 32]);
+            // A structurally-damaged legacy `top_up` (no `amount` column) with a
+            // row → the app-data pass hard-fails when its reader's prepare fails.
+            conn.execute_batch(
+                "CREATE TABLE top_up (
+                    identity_id BLOB NOT NULL,
+                    top_up_index INTEGER NOT NULL
+                 );",
+            )
+            .expect("broken legacy top-up schema");
+            conn.execute(
+                "INSERT INTO top_up (identity_id, top_up_index) VALUES (?1, 0)",
+                rusqlite::params![[0x44u8; 32].as_slice()],
+            )
+            .expect("top-up row");
+        }
+
+        wire_backend(&ctx).await;
+        let backend = ctx.wallet_backend().expect("backend wired");
+
+        let did_work = run(&ctx)
+            .await
+            .expect("both failures are non-fatal to the run — it publishes its own terminal state");
+        assert!(did_work, "the wallet drain moved data");
+
+        // Both signals in one terminal state: the identity count AND the app-data
+        // error chain. The pre-fix `SucceededWithUnreadableIdentities` would have
+        // hidden the app-data failure — `matches!` here would fail on it.
+        assert!(
+            matches!(
+                &*ctx.migration_status().state(),
+                MigrationState::FailedWithUnreadableIdentities { count: 1, .. }
+            ),
+            "both failures must surface together, got {:?}",
+            ctx.migration_status().state(),
+        );
+
+        // Funds stay safe: the drain ran despite both DET-owned passes breaking.
+        assert!(
+            ctx.wallets.read_recover().contains_key(&seed_hash),
+            "the migrated wallet must be visible — neither DET-owned failure may block funds",
+        );
+        assert!(
+            backend.is_wallet_registered(&seed_hash),
+            "the migrated wallet must be reachable",
+        );
+
+        // The app-data pass hard-failed, so its sentinel stays unwritten and the
+        // import retries next launch. The identity pass did NOT fail — it imported
+        // what decoded and counted what did not — so it completes, and the
+        // undecodable row is carried forward by its durable warning instead of by
+        // an endlessly-retried import that would resurrect deleted identities.
+        assert!(
+            ctx.app_kv()
+                .get::<MigrationCompletion>(DetScope::Global, &app_data_sentinel_key_for(network))
+                .expect("read app-data sentinel")
+                .is_none(),
+            "the app-data sentinel must stay unwritten so the failure retries",
+        );
+        assert!(
+            ctx.app_kv()
+                .get::<MigrationCompletion>(DetScope::Global, &identities_sentinel_key_for(network))
+                .expect("read identity sentinel")
+                .is_some(),
+            "an unreadable row is not a pass failure: the import completes, and the row is \
+             reported by the durable warning rather than retried forever",
+        );
+
+        backend.shutdown().await;
+    }
+
+    /// A failed *vote-warning read* is not an app-data failure, and the banner may
+    /// not say it is. Here the app-data pass SUCCEEDS (its sentinel is written) and
+    /// only the follow-up warning-record read fails, alongside an undecodable
+    /// identity row. `FailedWithUnreadableIdentities` tells the user "updating the
+    /// rest of your previous data did not finish" and offers a "Retry now" that
+    /// re-runs a pass which already completed — false on both counts. The identity
+    /// signal is the one the user must act on, so the run falls through to the
+    /// honest `SucceededWithUnreadableIdentities` and the unreadable notice record
+    /// is left for the next launch to re-read.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_unreadable_vote_warning_record_does_not_claim_the_app_data_pass_failed() {
+        use dash_sdk::dpp::dashcore::Network;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = fresh_app_context(tmp.path());
+        let network = Network::Testnet;
+
+        // Funds: a normal legacy wallet, so the drain completes and `moved_data`.
+        seed_legacy_wallet(&ctx, &[0xD7u8; 64], "funds", network);
+
+        {
+            let conn = Connection::open(tmp.path().join("data.db")).expect("open data.db");
+            // A corrupt identity blob → unreadable == 1, which is what steers the run
+            // into the branch under test. The legacy `top_up` table is left alone, so
+            // the app-data pass runs clean and writes its sentinel.
+            insert_corrupt_identity_row(&conn, [0x45u8; 32]);
+        }
+
+        // Poison the warning record: a unit value encodes to an empty bincode body,
+        // so decoding it back as an `UnreadableVotesWarning` hits an unexpected end
+        // of input. The app-data pass decodes zero unreadable votes and therefore
+        // never overwrites it.
+        ctx.app_kv()
+            .put(DetScope::Global, &vote_warning_key_for(network), &())
+            .expect("poison the vote-warning record");
+        assert!(
+            read_vote_warning(&ctx.app_kv(), network).is_err(),
+            "precondition: the poisoned record must make the warning read fail, \
+             otherwise this test would pass for the wrong reason",
+        );
+
+        wire_backend(&ctx).await;
+        let backend = ctx.wallet_backend().expect("backend wired");
+
+        let did_work = run(&ctx).await.expect("a failed notice read is not fatal");
+        assert!(did_work, "the wallet drain moved data");
+
+        assert_eq!(
+            *ctx.migration_status().state(),
+            MigrationState::SucceededWithUnreadableIdentities { count: 1 },
+            "an unreadable notice record must not be reported as an app-data failure",
+        );
+
+        // The fact the old banner denied: the app-data pass really did finish.
+        assert!(
+            ctx.app_kv()
+                .get::<MigrationCompletion>(DetScope::Global, &app_data_sentinel_key_for(network))
+                .expect("read app-data sentinel")
+                .is_some(),
+            "the app-data sentinel proves the pass completed — a banner offering to \
+             'finish updating' it would be lying",
+        );
+
+        backend.shutdown().await;
+    }
+
     /// Fix-8 — the unreadable-vote warning is durable. The discovery run records
     /// it; every later launch re-publishes it from that record even though both
     /// sentinels short-circuit the passes, so a user who was away when the
@@ -3910,6 +4906,253 @@ mod tests {
         );
 
         acknowledge_unreadable_votes(&ctx).expect("acknowledge");
+        assert!(
+            matches!(*ctx.migration_status().state(), MigrationState::Idle),
+            "acknowledging clears the banner immediately",
+        );
+
+        ctx.migration_status().set_state(MigrationState::Idle);
+        run(&ctx).await.expect("third launch");
+        assert!(
+            matches!(*ctx.migration_status().state(), MigrationState::Idle),
+            "an acknowledged warning must never come back",
+        );
+
+        backend.shutdown().await;
+    }
+
+    /// An unreadable identity must not permanently hide an unreadable *vote*.
+    /// Both damaged on the same launch is the trap: the identity branch returns
+    /// early, ahead of the durable vote-warning read, so a lone identity signal
+    /// would bury the vote half — and the user would silently miss a vote whose
+    /// deadline is still live. Both counts ride one terminal state instead, both
+    /// halves survive a restart (each re-read from its own durable record, since
+    /// both sentinels short-circuit their passes by then), and acknowledging the
+    /// vote half retires only that half.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn unreadable_identities_do_not_hide_the_unreadable_vote_warning() {
+        use dash_sdk::dpp::dashcore::Network;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = fresh_app_context(tmp.path());
+        let network = Network::Testnet;
+
+        seed_legacy_wallet(&ctx, &[0xE7u8; 64], "funds", network);
+        // One vote decodes, one does not → the app-data pass succeeds AND records
+        // a durable unreadable-vote warning.
+        seed_legacy_votes(
+            &ctx,
+            &[0x55u8; 32],
+            &[("alice", "Lock"), ("corrupt", "Nonsense")],
+            network,
+        );
+        {
+            // A corrupt identity blob → the identity pass counts it unreadable and
+            // records a durable warning, so the identity branch recurs on every launch.
+            let conn = Connection::open(tmp.path().join("data.db")).expect("open data.db");
+            insert_corrupt_identity_row(&conn, [0x66u8; 32]);
+        }
+
+        wire_backend(&ctx).await;
+        let backend = ctx.wallet_backend().expect("backend wired");
+
+        run(&ctx).await.expect("neither damaged row is fatal");
+        assert_eq!(
+            *ctx.migration_status().state(),
+            MigrationState::SucceededWithUnreadableIdentitiesAndVotes {
+                identities: 1,
+                votes: 1,
+            },
+            "the discovery run must name BOTH remedies — the identity warning may \
+             not swallow a vote with a live deadline",
+        );
+
+        // The readable vote still came across; only the corrupt one did not.
+        let votes = ctx.get_scheduled_votes().expect("read scheduled votes");
+        assert_eq!(votes.len(), 1, "the readable vote must still be imported");
+
+        // Both sentinels are now written, which is what makes the next launch a
+        // real test of the durable reads: both passes short-circuit and report
+        // zero unreadable rows, so *neither* half of the banner can come from a
+        // counter — each must be re-read from its own durable warning record.
+        assert!(
+            ctx.app_kv()
+                .get::<MigrationCompletion>(DetScope::Global, &app_data_sentinel_key_for(network))
+                .expect("read app-data sentinel")
+                .is_some(),
+            "precondition: the app-data pass completed, so its counters go quiet from now on",
+        );
+        assert!(
+            ctx.app_kv()
+                .get::<MigrationCompletion>(DetScope::Global, &identities_sentinel_key_for(network))
+                .expect("read identity sentinel")
+                .is_some(),
+            "precondition: the identity pass completed too — a withheld sentinel would re-run \
+             the import forever and resurrect identities the user has deleted",
+        );
+
+        // Later launch: both sentinels short-circuit their passes, so both halves
+        // of the combined banner must come from the durable records, not counters.
+        ctx.migration_status().set_state(MigrationState::Idle);
+        run(&ctx).await.expect("second launch");
+        assert_eq!(
+            *ctx.migration_status().state(),
+            MigrationState::SucceededWithUnreadableIdentitiesAndVotes {
+                identities: 1,
+                votes: 1,
+            },
+            "the vote warning must survive a restart even while identities stay unreadable",
+        );
+
+        // Acknowledging retires the vote half only: the identities are still
+        // unreadable, so their warning must keep coming back on its own.
+        acknowledge_unreadable_votes(&ctx).expect("acknowledge");
+        ctx.migration_status().set_state(MigrationState::Idle);
+        run(&ctx).await.expect("third launch");
+        assert_eq!(
+            *ctx.migration_status().state(),
+            MigrationState::SucceededWithUnreadableIdentities { count: 1 },
+            "an acknowledged vote warning must not come back, but the identity one must",
+        );
+
+        backend.shutdown().await;
+    }
+
+    /// The resurrection regression. One genuinely corrupt legacy row must not
+    /// make the identity import re-run forever: while it did, an identity the
+    /// user had deliberately DELETED — a routine security gesture, offered on
+    /// both the Identities and the Masternode screens — was silently re-imported
+    /// on the very next launch, its alias restored and its legacy plaintext keys
+    /// re-written into the vault. The skip-if-present rule cannot help here: a
+    /// deleted identity is, by construction, no longer present.
+    ///
+    /// The import now writes its sentinel unconditionally, exactly like the
+    /// app-data pass, so it is a once-only event and a deletion is durable. The
+    /// unreadable row is still reported — from a record that outlives the pass.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_deleted_identity_is_not_resurrected_by_an_unreadable_sibling_row() {
+        use dash_sdk::dpp::dashcore::Network;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = fresh_app_context(tmp.path());
+        let network = Network::Testnet;
+
+        seed_legacy_wallet(&ctx, &[0x9Au8; 64], "funds", network);
+
+        // One identity that decodes, and one genuinely corrupt row beside it —
+        // the row that used to hold the sentinel hostage forever.
+        let deleted = [0x11u8; 32];
+        {
+            let conn = Connection::open(tmp.path().join("data.db")).expect("open data.db");
+            identities::insert_identity(
+                &conn,
+                deleted,
+                Some(identities::identity_blob(deleted)),
+                true,
+            );
+            identities::insert_identity(&conn, [0x22u8; 32], Some(vec![0xFFu8; 8]), true);
+        }
+
+        wire_backend(&ctx).await;
+        let backend = ctx.wallet_backend().expect("backend wired");
+
+        run(&ctx).await.expect("first launch");
+
+        let deleted_id = Identifier::from(deleted);
+        assert!(
+            ctx.has_local_qualified_identity(&deleted_id)
+                .expect("read identity store"),
+            "precondition: the readable identity is imported by the discovery run",
+        );
+        assert_eq!(
+            *ctx.migration_status().state(),
+            MigrationState::SucceededWithUnreadableIdentities { count: 1 },
+            "precondition: the corrupt row is reported to the user",
+        );
+
+        // The user deliberately removes the identity — the gesture whose entire
+        // point is that those keys stop living in this install.
+        ctx.delete_local_qualified_identity(&deleted_id)
+            .expect("delete identity");
+        assert!(
+            !ctx.has_local_qualified_identity(&deleted_id)
+                .expect("read identity store"),
+            "precondition: the delete took effect",
+        );
+
+        // The next launch, with the corrupt row still sitting in `data.db`.
+        ctx.migration_status().set_state(MigrationState::Idle);
+        run(&ctx).await.expect("second launch");
+
+        assert!(
+            !ctx.has_local_qualified_identity(&deleted_id)
+                .expect("read identity store"),
+            "a deleted identity must STAY deleted: re-importing it would restore the alias \
+             the user cleared and re-write their legacy plaintext keys into the vault, on \
+             every launch, with no banner to explain it and no way to stop it",
+        );
+
+        // Closing the retry door must not cost the user the notice about the row
+        // that never decoded.
+        assert_eq!(
+            *ctx.migration_status().state(),
+            MigrationState::SucceededWithUnreadableIdentities { count: 1 },
+            "the unreadable row is still reported once the import itself is complete",
+        );
+
+        backend.shutdown().await;
+    }
+
+    /// The unreadable-identity warning is acknowledgeable, and durable until it
+    /// is. Before, it was a sticky banner with no action button: the user could
+    /// not retire it, and the only thing keeping it on screen was an import that
+    /// re-ran forever. The record now outlives the (once-only) import, is
+    /// re-published on every launch, and only an explicit acknowledgement stops
+    /// it — the legacy rows themselves are never touched.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn unreadable_identity_warning_is_republished_until_acknowledged() {
+        use dash_sdk::dpp::dashcore::Network;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = fresh_app_context(tmp.path());
+        let network = Network::Testnet;
+
+        seed_legacy_wallet(&ctx, &[0xB4u8; 64], "funds", network);
+        {
+            let conn = Connection::open(tmp.path().join("data.db")).expect("open data.db");
+            identities::insert_identity(&conn, [0x44u8; 32], Some(vec![0xFFu8; 8]), true);
+        }
+
+        wire_backend(&ctx).await;
+        let backend = ctx.wallet_backend().expect("backend wired");
+
+        run(&ctx).await.expect("first launch");
+        assert_eq!(
+            *ctx.migration_status().state(),
+            MigrationState::SucceededWithUnreadableIdentities { count: 1 },
+            "the discovery run surfaces the warning",
+        );
+
+        assert!(
+            ctx.app_kv()
+                .get::<MigrationCompletion>(DetScope::Global, &identities_sentinel_key_for(network))
+                .expect("read identity sentinel")
+                .is_some(),
+            "the import completes even with an unreadable row: a withheld sentinel would \
+             re-run it on every launch and resurrect identities the user has deleted",
+        );
+
+        // The import is done, so the pass reports zero from here on — the warning
+        // has to come from storage or the user never hears it again.
+        ctx.migration_status().set_state(MigrationState::Idle);
+        run(&ctx).await.expect("second launch");
+        assert_eq!(
+            *ctx.migration_status().state(),
+            MigrationState::SucceededWithUnreadableIdentities { count: 1 },
+            "a warning the user may have missed must survive a restart",
+        );
+
+        acknowledge_unreadable_identities(&ctx).expect("acknowledge");
         assert!(
             matches!(*ctx.migration_status().state(), MigrationState::Idle),
             "acknowledging clears the banner immediately",
@@ -3969,6 +5212,51 @@ mod tests {
                 .expect("read sentinel")
                 .is_none(),
             "the completion sentinel must not be written when the migration aborts",
+        );
+    }
+
+    /// A failed migration must always leave a terminal state behind. `Running`
+    /// makes `run_backend_task` reject every wallet-touching task with
+    /// `WalletStorageNotReady`, and the banner offers a retry only from
+    /// `Failed` — so a failure that published nothing would wedge wallets,
+    /// identities and sends until the app is restarted, with no way out.
+    #[tokio::test]
+    async fn a_failed_migration_never_strands_the_status_on_running() {
+        use crate::backend_task::migration::MigrationTask;
+        use dash_sdk::dpp::dashcore::Network;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = fresh_app_context(tmp.path());
+
+        // Same shape as the abort above: a legacy row trips detection, and the
+        // unwired backend fails the first backend-dependent step.
+        {
+            let conn = Connection::open(tmp.path().join("data.db")).expect("open data.db");
+            seed_legacy_row(
+                &conn,
+                &[7u8; 32],
+                &[1u8; 32],
+                &[],
+                &[],
+                "addr",
+                None,
+                false,
+                Network::Testnet,
+            );
+        }
+
+        let result = ctx.run_migration_task(MigrationTask::FinishUnwire).await;
+        assert!(result.is_err(), "the migration must report its failure");
+
+        let state = ctx.migration_status().state();
+        assert!(
+            !state.is_running(),
+            "a failed migration left the status on `Running`, which gates every \
+             wallet-touching task with no retry to escape it",
+        );
+        assert!(
+            matches!(*state, MigrationState::Failed { .. }),
+            "the failure must reach the user as a retryable banner",
         );
     }
 }

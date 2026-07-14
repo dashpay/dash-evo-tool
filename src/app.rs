@@ -64,6 +64,22 @@ pub const MIGRATION_RETRY_ACTION_ID: &str = "migration:retry:finish_unwire";
 /// still have a live deadline. Exposed for kittest coverage.
 pub const MIGRATION_VOTES_ACK_ACTION_ID: &str = "migration:ack:unreadable_votes";
 
+/// Banner action id pushed when the user acknowledges the unreadable-identity
+/// warning. Until it fires, the warning is re-raised on every launch — a
+/// dismissed banner is not an acknowledgement, because the identities it names
+/// hold keys the user cannot sign with until they are loaded again. Exposed for
+/// kittest coverage.
+pub const MIGRATION_IDENTITIES_ACK_ACTION_ID: &str = "migration:ack:unreadable_identities";
+
+/// Banner action id pushed when the user acknowledges the combined warning — the
+/// launch where both unreadable identities and unreadable votes were left behind.
+/// One banner names both problems, so its single acknowledgement retires both
+/// records: re-raising either half after the user has read and dismissed the
+/// sentence describing it would be a notice they have already acted on. Exposed
+/// for kittest coverage.
+pub const MIGRATION_UNREADABLE_ACK_ACTION_ID: &str =
+    "migration:ack:unreadable_identities_and_votes";
+
 /// Action id for the SPV-sync block's "Continue in the background" escape button.
 /// SPV sync is **unbounded** — with no peers it stays Connecting/Syncing forever
 /// with no terminal signal — so a button-less hard block would trap the user
@@ -139,6 +155,7 @@ pub fn migration_running_text(step: MigrationStep) -> &'static str {
         MigrationStep::Shielded => "Verifying shielded balance.",
         MigrationStep::WalletSeeds => "Moving your wallets into the new vault.",
         MigrationStep::WalletMeta => "Updating wallet names.",
+        MigrationStep::Identities => "Restoring your identities and their keys.",
         MigrationStep::Finalize => "Finishing storage update.",
     }
 }
@@ -153,6 +170,52 @@ pub fn migration_unreadable_votes_text(count: u32) -> String {
     format!(
         "Some scheduled votes from the previous version could not be read and were not carried \
          over ({count} in total). Schedule them again on the Scheduled Votes screen."
+    )
+}
+
+/// User-facing banner copy for a migration that finished the wallet drain but
+/// could not decode `count` identities. Their keys are therefore not loaded, so
+/// the sentence names both the screen and the control that restore them — a user
+/// who has never opened that flow cannot act on "load them again" alone. Kept
+/// separate from the scheduled-votes copy because the remedy is different — load
+/// an identity, not re-schedule a vote. The previous version's data is never
+/// deleted, so the re-import is always possible. Exposed for kittest coverage.
+pub fn migration_unreadable_identities_text(count: u32) -> String {
+    format!(
+        "Some identities from the previous version could not be read and were not carried over \
+         ({count} in total). Your previous data is untouched. Choose Load Identity on the \
+         Identities screen to load them again and restore their keys."
+    )
+}
+
+/// User-facing banner copy for the launch where both DET-owned passes left rows
+/// behind: `identities` identities and `votes` scheduled votes could not be read.
+/// One sentence per problem, each naming its own remedy — the remedies differ
+/// (load an identity vs re-schedule a vote), and the identity warning recurs on
+/// every launch, so it must never be the reason the deadline-critical vote notice
+/// goes unseen. No "Retry now": neither corrupt row decodes better on a second
+/// pass. Exposed for kittest coverage.
+pub fn migration_unreadable_identities_and_votes_text(identities: u32, votes: u32) -> String {
+    format!(
+        "Some identities ({identities} in total) and some scheduled votes ({votes} in total) from \
+         the previous version could not be read and were not carried over. Your previous data is \
+         untouched. Choose Load Identity on the Identities screen to load the identities again, \
+         and schedule the votes again on the Scheduled Votes screen."
+    )
+}
+
+/// User-facing banner copy for the rare launch where both DET-owned passes broke:
+/// `count` identities could not be read AND updating the rest of the previous
+/// version's data (such as scheduled votes) hit a hard error. Names each problem
+/// in its own sentence and offers the retry the app-data half needs — the
+/// identity half recovers by loading the identities again. The previous version's
+/// data is never deleted, so both are recoverable. Exposed for kittest coverage.
+pub fn migration_failed_with_unreadable_identities_text(count: u32) -> String {
+    format!(
+        "Some identities from the previous version could not be read and were not carried over \
+         ({count} in total), and updating the rest of your previous data did not finish. Your \
+         previous data is untouched. Choose Retry now to finish updating, then choose Load \
+         Identity on the Identities screen to load them again and restore their keys."
     )
 }
 
@@ -1850,6 +1913,7 @@ mod migration_banner_tests {
             MigrationStep::Shielded,
             MigrationStep::WalletSeeds,
             MigrationStep::WalletMeta,
+            MigrationStep::Identities,
             MigrationStep::Finalize,
         ] {
             let text = migration_running_text(step);
@@ -1873,6 +1937,7 @@ mod migration_banner_tests {
             migration_running_text(MigrationStep::Shielded),
             migration_running_text(MigrationStep::WalletSeeds),
             migration_running_text(MigrationStep::WalletMeta),
+            migration_running_text(MigrationStep::Identities),
             migration_running_text(MigrationStep::Finalize),
         ];
         let unique: std::collections::HashSet<&str> = labels.iter().copied().collect();
@@ -1889,6 +1954,51 @@ mod migration_banner_tests {
     #[test]
     fn migration_retry_action_id_is_stable() {
         assert_eq!(MIGRATION_RETRY_ACTION_ID, "migration:retry:finish_unwire");
+    }
+
+    /// Every banner action id is distinct. `drain_actions` dispatches on these
+    /// strings, so a collision would silently route one banner's acknowledgement
+    /// to another's task — retiring a warning the user was never shown.
+    #[test]
+    fn migration_action_ids_are_distinct() {
+        let ids = [
+            MIGRATION_RETRY_ACTION_ID,
+            MIGRATION_VOTES_ACK_ACTION_ID,
+            MIGRATION_IDENTITIES_ACK_ACTION_ID,
+            MIGRATION_UNREADABLE_ACK_ACTION_ID,
+        ];
+        let unique: std::collections::BTreeSet<_> = ids.iter().collect();
+        assert_eq!(
+            unique.len(),
+            ids.len(),
+            "banner action ids must not collide"
+        );
+    }
+
+    /// The combined-failure banner must surface BOTH signals in one message: the
+    /// unreadable-identity count AND the app-data failure, plus the retry the
+    /// app-data half needs. If it named only one, the other would be silently
+    /// swallowed — exactly the bug this copy exists to prevent.
+    #[test]
+    fn migration_combined_failure_text_names_both_problems_and_the_retry() {
+        let text = migration_failed_with_unreadable_identities_text(3);
+        assert!(
+            text.contains("identities"),
+            "must name the identity problem"
+        );
+        assert!(
+            text.contains('3'),
+            "must carry the unreadable-identity count"
+        );
+        assert!(
+            text.contains("did not finish"),
+            "must name the app-data failure, not only the identities",
+        );
+        assert!(
+            text.contains("Retry now"),
+            "must offer the retry the app-data half needs",
+        );
+        assert!(text.ends_with('.'), "one complete sentence-shaped message");
     }
 
     /// Cold-start dispatch gate (the startup-race fix): dispatch only when the

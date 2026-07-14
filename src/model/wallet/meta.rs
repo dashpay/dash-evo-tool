@@ -17,7 +17,32 @@
 //!   into the sidecar so an existing install keeps its names after
 //!   the upgrade.
 
+use super::WalletSeedHash;
 use serde::{Deserialize, Serialize};
+
+/// Seed-hash bytes rendered in a fallback wallet label — 6 bytes, 12 hex
+/// chars: long enough to tell two wallets apart, short enough to read out.
+const LABEL_HASH_PREFIX_BYTES: usize = 6;
+
+/// Human-readable label for a wallet: its alias when the user set one,
+/// otherwise a truncated hex prefix of its seed hash.
+///
+/// The single source of truth for how a wallet is named in user-facing
+/// errors raised where only the seed hash is at hand (the wallet may not
+/// even be loaded yet).
+///
+/// ```
+/// # use dash_evo_tool::model::wallet::meta::wallet_label;
+/// assert_eq!(wallet_label("paycheque", &[0x9E; 32]), "paycheque");
+/// assert_eq!(wallet_label("", &[0x9E; 32]), "9e9e9e9e9e9e…");
+/// ```
+pub fn wallet_label(alias: &str, seed_hash: &WalletSeedHash) -> String {
+    if alias.is_empty() {
+        format!("{}…", hex::encode(&seed_hash[..LABEL_HASH_PREFIX_BYTES]))
+    } else {
+        alias.to_string()
+    }
+}
 
 /// The original (pre-`uses_password`) [`WalletMeta`] on-disk shape, decode-only.
 ///
@@ -200,6 +225,30 @@ mod tests {
         let (decoded, _): (WalletMeta, _) =
             bincode::serde::decode_from_slice(&new_blob, cfg).expect("decode v2");
         assert_eq!(decoded, v2);
+    }
+
+    /// A named wallet is labelled by its alias verbatim, whatever its seed
+    /// hash — the alias is what the user recognises.
+    #[test]
+    fn wallet_label_uses_the_alias_when_set() {
+        assert_eq!(wallet_label("paycheque", &[0x9E; 32]), "paycheque");
+        assert_eq!(wallet_label("a", &[0x00; 32]), "a");
+    }
+
+    /// An unnamed wallet degrades to 12 hex chars of its seed hash plus an
+    /// ellipsis — never to an anonymous "this wallet". Two distinct wallets
+    /// get two distinct labels.
+    #[test]
+    fn wallet_label_falls_back_to_truncated_seed_hash_hex() {
+        assert_eq!(wallet_label("", &[0x9E; 32]), "9e9e9e9e9e9e…");
+
+        let mut other = [0x9Eu8; 32];
+        other[5] = 0x01;
+        assert_ne!(
+            wallet_label("", &other),
+            wallet_label("", &[0x9E; 32]),
+            "wallets differing inside the prefix must not share a label"
+        );
     }
 
     /// TS-NOLEAK-02 (WalletMeta) — the encoded sidecar blob carries NO secret.

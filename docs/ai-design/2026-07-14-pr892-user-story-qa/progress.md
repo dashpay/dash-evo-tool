@@ -167,5 +167,15 @@ Verdicts: PASS / FAIL / BLOCKED (reason) / N/A (Gap/Superseded/Removed — not i
 
 ## MCP
 
-- [ ] MCP-001: Manage wallets via CLI
-- [ ] MCP-002: MCP server access for AI agents
+- [x] MCP-001: Manage wallets via CLI — FAIL (imported wallets are invisible to every
+      subsequent `det-cli` command — `core_wallets_list`/`core_address_create`/
+      `core_balances_get` all return "Wallet not found" for a wallet imported by a prior
+      process, or even by an earlier `already_imported:true` import in the same process;
+      root cause confirmed in source: `ListWalletsTool` reads only the in-memory
+      `ctx.wallets` map, which is never hydrated from the DB/vault outside the
+      SPV-gated path)
+- [x] MCP-002: MCP server access for AI agents — PASS (stdio via `det-cli serve` and HTTP
+      via `det-cli headless` both verified: protocol lifecycle, bearer auth, session
+      handling, network-mismatch guard, dynamic tool discovery all work correctly; carries
+      the same wallet-hydration caveat as MCP-001 but that is a wallet-tooling defect, not
+      a transport/protocol defect)

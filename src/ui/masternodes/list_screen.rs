@@ -1178,9 +1178,7 @@ mod tests {
         open_form_with_secrets(&mut screen, target, "wif");
         let outcome = form_input(&screen);
         screen.apply_load_outcome(LoadFormOutcome::Submit(outcome));
-        let _running = ctx
-            .begin_identity_load(target, None)
-            .expect("claim the load");
+        let _running = claim_dispatched_load(&ctx, &screen);
 
         screen.on_leave();
 

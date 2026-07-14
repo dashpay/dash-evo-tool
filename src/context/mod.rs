@@ -1398,6 +1398,22 @@ impl AppContext {
             .map(|wb| wb.address_balances(seed_hash))
             .unwrap_or_default()
     }
+
+    /// Authoritative per-address derivation paths from the snapshot: every
+    /// address the upstream wallet generated, across its Core-chain accounts and
+    /// the DIP-17 platform-payment pool. The set an address autocomplete may
+    /// offer from — it can never surface an address upstream does not watch.
+    pub fn snapshot_address_paths(
+        &self,
+        seed_hash: &WalletSeedHash,
+    ) -> std::collections::BTreeMap<
+        dash_sdk::dpp::dashcore::Address,
+        dash_sdk::dpp::key_wallet::bip32::DerivationPath,
+    > {
+        self.wallet_backend()
+            .map(|wb| wb.address_paths(seed_hash))
+            .unwrap_or_default()
+    }
 }
 
 /// Test-only accessors for fields that are normally `pub(crate)`.

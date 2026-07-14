@@ -14,7 +14,7 @@ use dash_evo_tool::model::qualified_identity::encrypted_key_storage::KeyStorage;
 use dash_evo_tool::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
 use dash_evo_tool::model::wallet::Wallet;
 use dash_evo_tool::ui::components::Component;
-use dash_evo_tool::ui::components::address_input::{AddressInput, WalletWithBalances};
+use dash_evo_tool::ui::components::address_input::{AddressInput, WalletWithSnapshot};
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::Identity;
 use dash_sdk::dpp::version::PlatformVersion;
@@ -26,12 +26,40 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 use std::sync::{Arc, RwLock};
 
-/// Build an in-memory wallet with a single derived receive address, paired with
-/// empty display balances.
-fn wallet(seed: u8, alias: &str) -> WalletWithBalances {
+/// Build an in-memory wallet paired with its display snapshot: empty balances
+/// and exactly one BIP-44 receive address, distinct per `seed`. The snapshot
+/// paths — not the wallet's own bookkeeping — are what the component offers.
+fn wallet(seed: u8, alias: &str) -> WalletWithSnapshot {
+    use dash_sdk::dpp::dashcore::secp256k1::{Secp256k1, SecretKey};
+    use dash_sdk::dpp::dashcore::{Address, PublicKey};
+    use dash_sdk::dpp::key_wallet::bip32::{ChildNumber, DerivationPath};
+
     let wallet = Wallet::new_from_seed([seed; 64], Network::Testnet, Some(alias.to_string()), None)
         .expect("wallet from seed");
-    (Arc::new(RwLock::new(wallet)), BTreeMap::new())
+
+    let secp = Secp256k1::new();
+    let mut sk_bytes = [1u8; 32];
+    sk_bytes[31] = seed.max(1);
+    let sk = SecretKey::from_slice(&sk_bytes).expect("valid secret key");
+    let address = Address::p2pkh(&PublicKey::new(sk.public_key(&secp)), Network::Testnet);
+
+    // m/44'/1'/0'/0/0 — a BIP-44 external receive path.
+    let path = DerivationPath::from(
+        [
+            ChildNumber::Hardened { index: 44 },
+            ChildNumber::Hardened { index: 1 },
+            ChildNumber::Hardened { index: 0 },
+            ChildNumber::Normal { index: 0 },
+            ChildNumber::Normal { index: 0 },
+        ]
+        .as_slice(),
+    );
+
+    (
+        Arc::new(RwLock::new(wallet)),
+        BTreeMap::new(),
+        BTreeMap::from([(address, path)]),
+    )
 }
 
 /// Build a wallet-less `QualifiedIdentity` whose display name is its alias.
@@ -120,7 +148,7 @@ fn hint_lists_single_and_few_wallets() {
 
 #[test]
 fn hint_trims_wallets_above_five() {
-    let six: Vec<WalletWithBalances> = (0u8..6).map(|i| wallet(i + 1, &format!("w{i}"))).collect();
+    let six: Vec<WalletWithSnapshot> = (0u8..6).map(|i| wallet(i + 1, &format!("w{i}"))).collect();
     with_rendered(
         AddressInput::new(Network::Testnet).with_wallets(&six),
         |input| {
@@ -130,7 +158,7 @@ fn hint_trims_wallets_above_five() {
         },
     );
 
-    let five: Vec<WalletWithBalances> = (0u8..5).map(|i| wallet(i + 1, &format!("w{i}"))).collect();
+    let five: Vec<WalletWithSnapshot> = (0u8..5).map(|i| wallet(i + 1, &format!("w{i}"))).collect();
     with_rendered(
         AddressInput::new(Network::Testnet).with_wallets(&five),
         |input| {

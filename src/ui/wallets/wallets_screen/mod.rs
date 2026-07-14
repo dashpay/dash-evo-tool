@@ -3302,8 +3302,9 @@ mod tests {
         assert_eq!(platform_tab_count(&tabs), 0);
     }
 
-    /// QA-006: if a future upstream bump ever makes the primary loop emit a
-    /// `PlatformPayment` tab, the dedicated push must not add a second one.
+    /// The snapshot carries the DIP-17 platform-payment pool, so the primary
+    /// loop emits a `PlatformPayment` tab from the summaries. The dedicated
+    /// push must not add a second one.
     #[test]
     fn platform_tab_is_never_duplicated() {
         let summaries = vec![summary(AccountCategory::PlatformPayment, None, 1_000)];

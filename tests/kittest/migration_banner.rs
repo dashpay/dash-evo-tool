@@ -6,7 +6,9 @@
 //! needing a full `AppState` harness.
 
 use dash_evo_tool::app::{
-    MIGRATION_RETRY_ACTION_ID, MIGRATION_VOTES_ACK_ACTION_ID, migration_running_text,
+    MIGRATION_RETRY_ACTION_ID, MIGRATION_VOTES_ACK_ACTION_ID,
+    migration_failed_with_unreadable_identities_text, migration_running_text,
+    migration_unreadable_identities_and_votes_text, migration_unreadable_identities_text,
     migration_unreadable_votes_text,
 };
 use dash_evo_tool::context::migration_status::MigrationStep;
@@ -49,6 +51,7 @@ fn tc_mig_014_running_text_covers_every_step_with_sentence() {
         MigrationStep::Shielded,
         MigrationStep::WalletSeeds,
         MigrationStep::WalletMeta,
+        MigrationStep::Identities,
         MigrationStep::Finalize,
     ] {
         let text = migration_running_text(step);
@@ -210,5 +213,115 @@ fn unreadable_votes_banner_acknowledgement_enqueues_action() {
     assert_eq!(
         MessageBanner::take_action(&harness.ctx).as_deref(),
         Some(MIGRATION_VOTES_ACK_ACTION_ID),
+    );
+}
+
+/// The identity sibling of `unreadable_votes_banner_warns_without_a_retry_action`.
+/// A drain that landed but could not decode some identities warns, names the one
+/// action that recovers the keys, and offers NO "Retry now" — the rows are still in
+/// the previous version's storage and a re-read decodes them no better.
+#[test]
+fn unreadable_identities_banner_warns_without_a_retry_action() {
+    let text = migration_unreadable_identities_text(3);
+    assert!(
+        text.ends_with('.'),
+        "banner copy must be a complete sentence for i18n extraction: `{text}`",
+    );
+    assert!(
+        text.contains('3'),
+        "the copy must name how many identities were left behind: `{text}`",
+    );
+
+    let label = text.clone();
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(600.0, 200.0))
+        .build_ui(move |ui| {
+            MessageBanner::set_global(ui.ctx(), label.clone(), MessageType::Warning);
+            MessageBanner::show_global(ui);
+        });
+    harness.run();
+
+    assert!(
+        harness.query_by_label(text.as_str()).is_some(),
+        "the warning banner must render the unreadable-identities copy verbatim",
+    );
+    assert!(
+        harness.query_by_label("Retry now").is_none(),
+        "a completed drain must not offer a retry the user cannot benefit from",
+    );
+}
+
+/// Both DET-owned passes left rows behind. One Warning banner names both counts and
+/// both remedies, and carries the vote acknowledgement — the identity half recurs on
+/// every launch, so it must never be the reason a live vote deadline goes unseen.
+/// Still no "Retry now": neither corrupt row decodes better on a second pass.
+#[test]
+fn unreadable_identities_and_votes_banner_names_both_and_acknowledges() {
+    let text = migration_unreadable_identities_and_votes_text(3, 2);
+    assert!(
+        text.contains('3') && text.contains('2'),
+        "the copy must name both counts so neither signal is hidden: `{text}`",
+    );
+
+    let label = text.clone();
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(600.0, 240.0))
+        .build_ui(move |ui| {
+            let handle = MessageBanner::set_global(ui.ctx(), label.clone(), MessageType::Warning);
+            handle.with_action("Got it", MIGRATION_VOTES_ACK_ACTION_ID);
+            MessageBanner::show_global(ui);
+        });
+    harness.run();
+
+    assert!(
+        harness.query_by_label(text.as_str()).is_some(),
+        "the combined banner must render both remedies verbatim",
+    );
+    assert!(
+        harness.query_by_label("Retry now").is_none(),
+        "neither corrupt row decodes better on a retry, so no retry is offered",
+    );
+    assert!(MessageBanner::take_action(&harness.ctx).is_none());
+
+    harness.get_by_label("Got it").click();
+    harness.run();
+
+    assert_eq!(
+        MessageBanner::take_action(&harness.ctx).as_deref(),
+        Some(MIGRATION_VOTES_ACK_ACTION_ID),
+        "acknowledging retires the durable vote half of the combined warning",
+    );
+}
+
+/// The one identity outcome that IS a failure: unreadable identities alongside a
+/// hard app-data failure. Unlike its Warning siblings this renders as an Error with
+/// a working "Retry now" — the app-data half genuinely did not finish, and its
+/// sentinel is unwritten, so the retry re-runs it.
+#[test]
+fn failed_with_unreadable_identities_banner_offers_a_working_retry() {
+    let text = migration_failed_with_unreadable_identities_text(1);
+    let label = text.clone();
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(600.0, 240.0))
+        .build_ui(move |ui| {
+            let handle = MessageBanner::set_global(ui.ctx(), label.clone(), MessageType::Error);
+            handle.with_action("Retry now", MIGRATION_RETRY_ACTION_ID);
+            MessageBanner::show_global(ui);
+        });
+    harness.run();
+
+    assert!(
+        harness.query_by_label(text.as_str()).is_some(),
+        "the error banner must render the combined-failure copy verbatim",
+    );
+    assert!(MessageBanner::take_action(&harness.ctx).is_none());
+
+    harness.get_by_label("Retry now").click();
+    harness.run();
+
+    assert_eq!(
+        MessageBanner::take_action(&harness.ctx).as_deref(),
+        Some(MIGRATION_RETRY_ACTION_ID),
+        "the app-data half is retryable, so its banner's retry must enqueue the action",
     );
 }

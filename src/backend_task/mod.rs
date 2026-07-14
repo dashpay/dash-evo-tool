@@ -1006,6 +1006,50 @@ mod tests {
         }
     }
 
+    /// The shielded family is gated by the same storage-update short-circuit as
+    /// every other wallet-touching task, and is refused before it can reach
+    /// `run_shielded_task`'s own feature gate.
+    ///
+    /// Sibling of [`wallet_task_is_rejected_while_migration_awaits_password`]:
+    /// that one pins `WalletTask`, this one pins that `ShieldedTask` is still a
+    /// member of `is_wallet_touching`. Nothing but this test fails if a future
+    /// refactor gives shielded dispatch its own path and drops that membership.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn shielded_task_is_rejected_while_migration_awaits_password() {
+        use crate::backend_task::shielded::ShieldedTask;
+        use crate::context::migration_status::MigrationState;
+        use crate::context::test_support::test_app_context;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(tmp.path());
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
+        let seed_hash = [0x5a; 32];
+
+        ctx.migration_status()
+            .set_state(MigrationState::AwaitingWalletPasswords {
+                wallets: vec![seed_hash],
+            });
+
+        let result = ctx
+            .run_backend_task(
+                BackendTask::ShieldedTask(ShieldedTask::ShieldFromBalance {
+                    seed_hash,
+                    amount: 100_000,
+                }),
+                sender,
+            )
+            .await;
+        assert!(
+            matches!(result, Err(TaskError::WalletStorageNotReady)),
+            "a shielded write must stay gated during password collection, got {result:?}",
+        );
+
+        if let Ok(backend) = ctx.wallet_backend() {
+            backend.shutdown().await;
+        }
+    }
+
     /// Only the storage-open variants (data from a newer/incompatible
     /// build) are terminal; every other init error is a transient deferral.
     #[test]

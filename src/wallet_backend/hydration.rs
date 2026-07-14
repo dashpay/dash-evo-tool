@@ -23,7 +23,7 @@ use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::key_wallet::bip32::ExtendedPubKey;
 
 use crate::backend_task::error::TaskError;
-use crate::model::wallet::meta::WalletMeta;
+use crate::model::wallet::meta::{WalletMeta, wallet_label};
 use crate::model::wallet::seed_envelope::StoredSeedEnvelope;
 use crate::model::wallet::{ClosedKeyItem, OpenWalletSeed, Wallet, WalletSeed, WalletSeedHash};
 use crate::wallet_backend::secret_seam::SecretScheme;
@@ -268,14 +268,8 @@ fn wallet_from_envelope(
         // envelope is only length-checked to prove it is well-formed; the
         // open wallet parks no plaintext seed (R3).
         if encrypted_seed.len() != EXPECTED_SEED_LEN as usize {
-            let label = if meta.alias.is_empty() {
-                let hex_hash = hex::encode(seed_hash);
-                format!("{}…", &hex_hash[..hex_hash.len().min(12)])
-            } else {
-                meta.alias.clone()
-            };
             return Err(TaskError::SeedLengthInvalid {
-                wallet_label: label,
+                wallet_label: wallet_label(&meta.alias, &seed_hash),
                 got: encrypted_seed.len() as u32,
                 expected: EXPECTED_SEED_LEN,
             });

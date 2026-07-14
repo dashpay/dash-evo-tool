@@ -7,21 +7,28 @@
 //! answer holds up:
 //!
 //! - **"the task holds a claim"** does not mean "running": a load is outstanding
-//!   from the moment it is dispatched, and only claims its identity once the task
-//!   starts and validates its input.
-//! - **"the node is in the store"** does not mean "succeeded":
-//!   `load_identity` inserts the node before sealing its keys, so a seal failure
-//!   leaves the node persisted by a load that errored.
+//!   from the moment it is dispatched, and only claims its identity once its task
+//!   starts.
+//! - **"the node is in the store"** does not mean "succeeded": `load_identity`
+//!   inserts the node before sealing its keys, so a failed seal leaves the node
+//!   persisted by a load that errored.
 //!
-//! So the load reports its own phase here, at every transition, and the registry
-//! is the single source of truth for it. The same records give the load exclusive
-//! use of its identity for the whole check → fetch → insert → seal span, which is
-//! what makes `IdentityLoadMode::RejectIfExists` safe: those steps are not one
-//! atomic operation, so two overlapping loads of one identity would otherwise
-//! both pass the duplicate check and clobber each other's insert.
+//! So each load reports its own phase here, and the registry is the single source
+//! of truth for it. Loads are dispatched from several places — the Masternodes
+//! form, Add Existing, the detail screen, MCP tools — so a record is stamped with
+//! a [`IdentityLoadToken`] identifying the one load it belongs to, and every write
+//! checks that stamp first. Without it a later submission could erase a running
+//! load's record, and the two loads would then race each other's storage writes,
+//! or publish each other's outcome.
 //!
-//! Records outlive their load and are overwritten by the next load of that
-//! identity — the map holds at most one entry per identity loaded this session.
+//! The records also give a load exclusive use of its identity for its whole
+//! check → fetch → insert → seal span, which is what makes
+//! `IdentityLoadMode::RejectIfExists` safe: those steps are not one atomic
+//! operation, so two overlapping loads of one identity would otherwise both pass
+//! the duplicate check and clobber each other's insert.
+//!
+//! A record outlives its load and is replaced by the next load of that identity —
+//! the map holds at most one entry per identity loaded this session.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -34,7 +41,7 @@ use crate::context::AppContext;
 /// How far a dispatched identity load has got.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IdentityLoadPhase {
-    /// Dispatched. Its task has not started, or has not reached its claim yet.
+    /// Dispatched. Its task has not started, or has not claimed the identity yet.
     Submitted,
     /// Running: the task holds this identity's exclusive claim.
     Running,
@@ -54,8 +61,42 @@ impl IdentityLoadPhase {
     }
 }
 
-/// The phase of the most recent load of each identity.
-pub(crate) type IdentityLoadPhases = Arc<Mutex<HashMap<Identifier, IdentityLoadPhase>>>;
+/// Identifies one load of one identity. Every registry write is checked against
+/// it, so a load can only ever report its own phase — never overwrite the record
+/// of a load that superseded it, and never be overwritten by a later submission
+/// while it is still outstanding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IdentityLoadToken(u64);
+
+/// The current load of one identity.
+#[derive(Debug, Clone, Copy)]
+struct LoadRecord {
+    token: IdentityLoadToken,
+    phase: IdentityLoadPhase,
+}
+
+/// The most recent load of each identity, and the source of load tokens.
+#[derive(Debug, Default)]
+pub(crate) struct LoadRegistry {
+    records: HashMap<Identifier, LoadRecord>,
+    next_token: u64,
+}
+
+impl LoadRegistry {
+    fn mint(&mut self) -> IdentityLoadToken {
+        self.next_token = self.next_token.wrapping_add(1);
+        IdentityLoadToken(self.next_token)
+    }
+
+    /// Whether `identity_id` is claimed by a load that is currently running.
+    fn is_running(&self, identity_id: &Identifier) -> bool {
+        self.records
+            .get(identity_id)
+            .is_some_and(|record| record.phase == IdentityLoadPhase::Running)
+    }
+}
+
+pub(crate) type SharedLoadRegistry = Arc<Mutex<LoadRegistry>>;
 
 /// A load's exclusive claim on one identity. Records the load's terminal phase
 /// when dropped: [`Loaded`](IdentityLoadPhase::Loaded) if the task called
@@ -64,8 +105,9 @@ pub(crate) type IdentityLoadPhases = Arc<Mutex<HashMap<Identifier, IdentityLoadP
 /// a truthful record.
 #[derive(Debug)]
 pub struct IdentityLoadGuard {
-    phases: IdentityLoadPhases,
+    registry: SharedLoadRegistry,
     identity_id: Identifier,
+    token: IdentityLoadToken,
     loaded: bool,
 }
 
@@ -79,36 +121,64 @@ impl IdentityLoadGuard {
 
 impl Drop for IdentityLoadGuard {
     fn drop(&mut self) {
-        let mut phases = self.phases.lock().unwrap_or_else(|e| e.into_inner());
-        // A `Running` record for this identity can only be this guard's own claim:
-        // `begin_identity_load` refuses a second one. Any other phase means a newer
-        // load superseded this record, and its outcome is not this guard's to write.
-        if phases.get(&self.identity_id) != Some(&IdentityLoadPhase::Running) {
+        let mut registry = self.registry.lock().unwrap_or_else(|e| e.into_inner());
+        // Report only on this load's own record. A record carrying another token
+        // belongs to a load that superseded this one, and its outcome is not this
+        // guard's to publish.
+        let Some(record) = registry.records.get_mut(&self.identity_id) else {
+            return;
+        };
+        if record.token != self.token {
             return;
         }
-        let phase = if self.loaded {
+        record.phase = if self.loaded {
             IdentityLoadPhase::Loaded
         } else {
             IdentityLoadPhase::Failed
         };
-        phases.insert(self.identity_id, phase);
     }
 }
 
 impl AppContext {
     /// Record that a load of `identity_id` has been dispatched, before its task
-    /// runs. Callers that gate on the load must mark it here: until the task
-    /// claims the identity there is nothing else that says the load is
-    /// outstanding.
-    pub fn mark_identity_load_submitted(&self, identity_id: Identifier) {
-        self.identity_load_phases
+    /// runs, and return the token identifying it. Callers that gate on a load must
+    /// mark it here: until its task claims the identity, nothing else records that
+    /// the load is outstanding.
+    ///
+    /// Returns `None` when a load of this identity is already outstanding — that
+    /// load owns the record, and its task will reject the new one. Never disturbs
+    /// it.
+    pub fn mark_identity_load_submitted(
+        &self,
+        identity_id: Identifier,
+    ) -> Option<IdentityLoadToken> {
+        let mut registry = self
+            .identity_loads
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(identity_id, IdentityLoadPhase::Submitted);
+            .unwrap_or_else(|e| e.into_inner());
+
+        if registry
+            .records
+            .get(&identity_id)
+            .is_some_and(|record| record.phase.is_outstanding())
+        {
+            return None;
+        }
+        let token = registry.mint();
+        registry.records.insert(
+            identity_id,
+            LoadRecord {
+                token,
+                phase: IdentityLoadPhase::Submitted,
+            },
+        );
+        Some(token)
     }
 
     /// Claim `identity_id` for a load, excluding any concurrent load of the same
-    /// identity until the returned guard drops.
+    /// identity until the returned guard drops. Adopts the record of the
+    /// submission this task is running, or opens one for a load dispatched without
+    /// a prior submission (Add Existing, an MCP tool).
     ///
     /// # Errors
     ///
@@ -118,33 +188,53 @@ impl AppContext {
         &self,
         identity_id: Identifier,
     ) -> Result<IdentityLoadGuard, TaskError> {
-        let mut phases = self
-            .identity_load_phases
+        let mut registry = self
+            .identity_loads
             .lock()
             .unwrap_or_else(|e| e.into_inner());
 
-        if phases.get(&identity_id) == Some(&IdentityLoadPhase::Running) {
+        if registry.is_running(&identity_id) {
             return Err(TaskError::IdentityLoadInProgress { identity_id });
         }
-        phases.insert(identity_id, IdentityLoadPhase::Running);
-        drop(phases);
+        // A `Submitted` record is this load's own dispatch: keep its token so the
+        // screen that is waiting on it follows this task through to its outcome.
+        let token = match registry.records.get(&identity_id) {
+            Some(record) if record.phase == IdentityLoadPhase::Submitted => record.token,
+            _ => registry.mint(),
+        };
+        registry.records.insert(
+            identity_id,
+            LoadRecord {
+                token,
+                phase: IdentityLoadPhase::Running,
+            },
+        );
+        drop(registry);
 
         Ok(IdentityLoadGuard {
-            phases: self.identity_load_phases.clone(),
+            registry: self.identity_loads.clone(),
             identity_id,
+            token,
             loaded: false,
         })
     }
 
-    /// How far this session's most recent load of `identity_id` got, or `None`
-    /// when no load of it was dispatched. Cheap enough to call from the frame
-    /// loop.
-    pub fn identity_load_phase(&self, identity_id: &Identifier) -> Option<IdentityLoadPhase> {
-        self.identity_load_phases
+    /// How far the load identified by `token` got, or `None` when the record was
+    /// replaced by a newer load of the same identity — in which case the load
+    /// `token` names is over and its outcome is no longer observable. Cheap enough
+    /// to call from the frame loop.
+    pub fn identity_load_phase(
+        &self,
+        identity_id: &Identifier,
+        token: IdentityLoadToken,
+    ) -> Option<IdentityLoadPhase> {
+        self.identity_loads
             .lock()
             .unwrap_or_else(|e| e.into_inner())
+            .records
             .get(identity_id)
-            .copied()
+            .filter(|record| record.token == token)
+            .map(|record| record.phase)
     }
 }
 
@@ -160,12 +250,17 @@ mod tests {
         let id = Identifier::from([0x01; 32]);
         let other = Identifier::from([0x02; 32]);
 
-        assert_eq!(ctx.identity_load_phase(&id), None);
+        let token = ctx.mark_identity_load_submitted(id).expect("submitted");
+        assert_eq!(
+            ctx.identity_load_phase(&id, token),
+            Some(IdentityLoadPhase::Submitted)
+        );
 
         let guard = ctx.begin_identity_load(id).expect("first claim");
         assert_eq!(
-            ctx.identity_load_phase(&id),
-            Some(IdentityLoadPhase::Running)
+            ctx.identity_load_phase(&id, token),
+            Some(IdentityLoadPhase::Running),
+            "claiming a submitted load keeps its token, so its screen still follows it"
         );
         assert!(
             matches!(
@@ -178,13 +273,13 @@ mod tests {
         // A different identity is unrelated — it may load concurrently.
         let other_guard = ctx.begin_identity_load(other).expect("unrelated claim");
         drop(other_guard);
-        assert_eq!(
-            ctx.identity_load_phase(&other),
-            Some(IdentityLoadPhase::Failed)
-        );
 
         // Releasing the claim re-opens the identity for another load.
         drop(guard);
+        assert_eq!(
+            ctx.identity_load_phase(&id, token),
+            Some(IdentityLoadPhase::Failed)
+        );
         ctx.begin_identity_load(id)
             .expect("a finished identity can be loaded again");
     }
@@ -199,9 +294,8 @@ mod tests {
         let ctx = test_app_context(tmp.path());
         let id = Identifier::from([0x03; 32]);
 
-        ctx.mark_identity_load_submitted(id);
-        let phase = ctx.identity_load_phase(&id).expect("submitted");
-        assert_eq!(phase, IdentityLoadPhase::Submitted);
+        let token = ctx.mark_identity_load_submitted(id).expect("submitted");
+        let phase = ctx.identity_load_phase(&id, token).expect("submitted");
         assert!(
             phase.is_outstanding(),
             "a dispatched load is outstanding before its task claims it"
@@ -209,41 +303,83 @@ mod tests {
 
         let guard = ctx.begin_identity_load(id).expect("claim");
         assert!(
-            ctx.identity_load_phase(&id)
+            ctx.identity_load_phase(&id, token)
                 .expect("running")
                 .is_outstanding()
         );
 
         // Failure path: the guard drops without a `loaded` report.
         drop(guard);
-        let phase = ctx.identity_load_phase(&id).expect("failed");
+        let phase = ctx.identity_load_phase(&id, token).expect("failed");
         assert_eq!(phase, IdentityLoadPhase::Failed);
         assert!(!phase.is_outstanding(), "a failed load is finished");
 
         // Success path: the task reports after its last fallible step.
-        ctx.mark_identity_load_submitted(id);
+        let token = ctx.mark_identity_load_submitted(id).expect("resubmitted");
         ctx.begin_identity_load(id).expect("re-claim").loaded();
-        let phase = ctx.identity_load_phase(&id).expect("loaded");
+        let phase = ctx.identity_load_phase(&id, token).expect("loaded");
         assert_eq!(phase, IdentityLoadPhase::Loaded);
         assert!(!phase.is_outstanding(), "a loaded identity is finished");
     }
 
-    /// A guard whose record was superseded by a newer load must not overwrite that
-    /// newer load's phase with its own outcome.
+    /// Regression: submitting must never erase an active claim. Another caller —
+    /// Add Existing, the detail screen, an MCP tool — may already be loading this
+    /// identity; overwriting its `Running` record would let a second task claim
+    /// the same identity and race the first one's storage writes.
+    #[test]
+    fn submitting_does_not_erase_an_active_claim() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(tmp.path());
+        let id = Identifier::from([0x05; 32]);
+
+        let running = ctx.begin_identity_load(id).expect("another caller's claim");
+        assert!(
+            ctx.mark_identity_load_submitted(id).is_none(),
+            "a load of this identity is already outstanding: the submission gets no token"
+        );
+        assert!(
+            matches!(
+                ctx.begin_identity_load(id),
+                Err(TaskError::IdentityLoadInProgress { .. })
+            ),
+            "a submission must not erase a running claim: a second guard would race the first"
+        );
+
+        // The running load still owns its record and reports its own outcome.
+        running.loaded();
+        let token = ctx.mark_identity_load_submitted(id).expect("now free");
+        assert_eq!(
+            ctx.identity_load_phase(&id, token),
+            Some(IdentityLoadPhase::Submitted)
+        );
+    }
+
+    /// A guard whose record was superseded by a newer load must not publish its
+    /// outcome over that newer load's phase, and the superseded load's own token
+    /// must stop resolving — its outcome is no longer observable.
     #[test]
     fn a_superseded_guard_does_not_report_over_the_load_that_replaced_it() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let ctx = test_app_context(tmp.path());
         let id = Identifier::from([0x04; 32]);
 
+        let stale_token = ctx.mark_identity_load_submitted(id).expect("submitted");
         let stale = ctx.begin_identity_load(id).expect("claim");
-        ctx.mark_identity_load_submitted(id);
+        // The stale load finishes, and a newer load of the same identity starts.
         drop(stale);
+        let fresh_token = ctx.mark_identity_load_submitted(id).expect("resubmitted");
+        let fresh = ctx.begin_identity_load(id).expect("re-claim");
 
         assert_eq!(
-            ctx.identity_load_phase(&id),
-            Some(IdentityLoadPhase::Submitted),
-            "the newer load's phase must survive the older guard's drop"
+            ctx.identity_load_phase(&id, stale_token),
+            None,
+            "a superseded load's outcome is no longer observable"
         );
+        assert_eq!(
+            ctx.identity_load_phase(&id, fresh_token),
+            Some(IdentityLoadPhase::Running),
+            "the newer load owns the record"
+        );
+        drop(fresh);
     }
 }

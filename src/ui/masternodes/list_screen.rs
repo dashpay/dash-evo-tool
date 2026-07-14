@@ -15,7 +15,7 @@ use crate::backend_task::BackendTask;
 use crate::backend_task::contested_names::ContestedResourceTask;
 use crate::backend_task::identity::IdentityTask;
 use crate::context::AppContext;
-use crate::context::identity_load_registry::IdentityLoadPhase;
+use crate::context::identity_load_registry::{IdentityLoadPhase, IdentityLoadToken};
 use crate::model::contested_name::MasternodeContestSummary;
 use crate::model::masternode_input::decode_identity_id;
 use crate::model::qualified_identity::{IdentityStatus, IdentityType, MasternodeKeyPresence};
@@ -61,6 +61,15 @@ enum MasternodesView {
     Detail(Box<MasternodeDetailView>),
 }
 
+/// A load this screen dispatched and has not yet seen finish. The token names
+/// that one load, so a later load of the same node — dispatched from anywhere —
+/// can never be mistaken for it.
+#[derive(Debug, Clone, Copy)]
+struct PendingLoad {
+    identity_id: Identifier,
+    token: IdentityLoadToken,
+}
+
 /// Root screen for the Masternodes section.
 pub struct MasternodesScreen {
     pub app_context: Arc<AppContext>,
@@ -69,24 +78,26 @@ pub struct MasternodesScreen {
     nodes: Vec<NodeCardData>,
     /// The active sub-view (list / load / detail).
     view: MasternodesView,
-    /// The identity whose load this screen dispatched and has not yet seen
-    /// finish, captured from the ProTxHash that was *submitted* — never re-read
-    /// from the form, whose fields stay editable while the load runs. Gates the
-    /// load entry points (`+ Load`, the empty-state CTA, the form's submit
-    /// button) so a load cannot be dispatched twice.
+    /// The load this screen dispatched and has not yet seen finish, identified by
+    /// the ProTxHash that was *submitted* — never re-read from the form, whose
+    /// fields stay editable while the load runs. Gates the load entry points
+    /// (`+ Load`, the empty-state CTA, the form's submit button) so a load cannot
+    /// be dispatched twice.
     ///
     /// Cleared by [`reconcile_pending_load`](Self::reconcile_pending_load) once
     /// the load's own task reports it finished — never on a guess from the store
-    /// or from which callbacks happened to fire. Also `None` when the submitted
-    /// ProTxHash did not parse: the backend rejects such a load before touching
-    /// the store, so there is nothing to gate.
+    /// or from which callbacks happened to fire. `None` when there is nothing to
+    /// gate: a submitted ProTxHash that did not parse (the backend rejects such a
+    /// load before touching the store), or a node another caller is already
+    /// loading (that load owns the record, and this screen's dispatch is rejected
+    /// with a message rather than gating on someone else's work).
     ///
     /// This gate is the UX layer — it keeps the buttons honest. The exclusion
     /// that actually protects the store is the load task's own claim on the
     /// identity, so a duplicate dispatch that slips through fails closed with
     /// [`TaskError::IdentityLoadInProgress`](crate::backend_task::error::TaskError::IdentityLoadInProgress)
     /// instead of racing.
-    pending_load: Option<Identifier>,
+    pending_load: Option<PendingLoad>,
 }
 
 impl MasternodesScreen {
@@ -154,10 +165,12 @@ impl MasternodesScreen {
     /// field in it, ready for a corrected resubmit; the error was already shown as
     /// a global banner wherever it landed.
     fn reconcile_pending_load(&mut self) {
-        let Some(target) = self.pending_load else {
+        let Some(pending) = self.pending_load else {
             return;
         };
-        let phase = self.app_context.identity_load_phase(&target);
+        let phase = self
+            .app_context
+            .identity_load_phase(&pending.identity_id, pending.token);
         if phase.is_some_and(IdentityLoadPhase::is_outstanding) {
             return;
         }
@@ -453,10 +466,18 @@ impl MasternodesScreen {
                 // records that. Keep the form open with its fields intact
                 // meanwhile — `reconcile_pending_load` settles it against the phase
                 // the task reports, closing it only on a load that fully applied.
-                self.pending_load = decode_identity_id(&input.identity_id_input).ok();
-                if let Some(target) = self.pending_load {
-                    self.app_context.mark_identity_load_submitted(target);
-                }
+                //
+                // No token means another caller is already loading this node: that
+                // load owns the record, so gate on nothing and let the dispatch come
+                // back with `IdentityLoadInProgress` for the banner to explain.
+                self.pending_load =
+                    decode_identity_id(&input.identity_id_input)
+                        .ok()
+                        .and_then(|identity_id| {
+                            self.app_context
+                                .mark_identity_load_submitted(identity_id)
+                                .map(|token| PendingLoad { identity_id, token })
+                        });
                 AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::LoadIdentity(
                     *input,
                 )))
@@ -696,6 +717,13 @@ mod tests {
         ctx.wallet_backend().expect("backend").shutdown().await;
     }
 
+    impl MasternodesScreen {
+        /// The identity of the load being gated on, if any.
+        fn pending_identity(&self) -> Option<Identifier> {
+            self.pending_load.map(|pending| pending.identity_id)
+        }
+    }
+
     /// Drive the real submit path: open the form on `target` and apply the
     /// outcome a Load click produces, exactly as `render_load_view` would.
     fn submit_load(screen: &mut MasternodesScreen, target: Identifier) {
@@ -750,7 +778,7 @@ mod tests {
         let target = Identifier::from([0x33; 32]);
         submit_load(&mut screen, target);
         assert_eq!(
-            screen.pending_load,
+            screen.pending_identity(),
             Some(target),
             "the gate must record the submitted identity"
         );
@@ -813,7 +841,7 @@ mod tests {
         ));
 
         assert_eq!(
-            screen.pending_load,
+            screen.pending_identity(),
             Some(target),
             "only the submitted identity's own result releases the gate"
         );
@@ -877,7 +905,7 @@ mod tests {
             "a still-pending load must keep the form open"
         );
         assert_eq!(
-            screen.pending_load,
+            screen.pending_identity(),
             Some(target),
             "the gate must stay locked so a second concurrent load cannot be submitted"
         );
@@ -907,7 +935,7 @@ mod tests {
         screen.refresh_on_arrival();
 
         assert_eq!(
-            screen.pending_load,
+            screen.pending_identity(),
             Some(submitted),
             "the submitted load is still running: the gate must stay locked"
         );
@@ -939,7 +967,7 @@ mod tests {
             "Cancel must dismiss the form"
         );
         assert_eq!(
-            screen.pending_load,
+            screen.pending_identity(),
             Some(target),
             "Cancel does not cancel the task: the gate must hold until the load finishes"
         );
@@ -994,7 +1022,7 @@ mod tests {
         screen.refresh_on_arrival();
 
         assert_eq!(
-            screen.pending_load,
+            screen.pending_identity(),
             Some(target),
             "a submitted load is outstanding before its task claims it"
         );

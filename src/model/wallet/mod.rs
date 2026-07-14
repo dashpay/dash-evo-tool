@@ -748,6 +748,15 @@ impl std::fmt::Debug for ClosedKeyItem {
 pub type ClosedWalletSeed = ClosedKeyItem;
 
 impl WalletSeed {
+    /// Mark this seed open after the wallet secret chokepoint verified its password.
+    pub(crate) fn mark_open_after_verification(&mut self) {
+        if let WalletSeed::Closed(closed_seed) = self {
+            *self = WalletSeed::Open(OpenWalletSeed {
+                wallet_info: closed_seed.clone(),
+            });
+        }
+    }
+
     /// Verify the passphrase and mark the wallet unlocked, **without parking
     /// the seed**.
     ///
@@ -773,10 +782,7 @@ impl WalletSeed {
                 // Decrypt to PROVE the password is correct, then drop the
                 // plaintext (`Zeroizing`) without parking it.
                 let _verified = closed_seed.decrypt_seed(password)?;
-                let open_wallet_seed = OpenWalletSeed {
-                    wallet_info: closed_seed.clone(),
-                };
-                *self = WalletSeed::Open(open_wallet_seed);
+                self.mark_open_after_verification();
                 Ok(())
             }
         }

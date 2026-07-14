@@ -1,7 +1,6 @@
 use crate::backend_task::error::TaskError;
 use crate::context::{AppContext, WalletUnlockRetention};
 use crate::model::wallet::Wallet;
-use crate::model::wallet::encryption::EncryptionError;
 use crate::ui::components::passphrase_modal::{
     KEEP_UNLOCKED_LABEL, PassphraseModalConfig, PassphraseModalOutcome,
     clear_passphrase_modal_state, passphrase_modal,
@@ -35,7 +34,8 @@ pub enum MigrationWalletUnlockResult {
     Skipped,
 }
 
-enum UnlockInteraction {
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum UnlockInteraction {
     Pending,
     Unlocked,
     Cancelled,
@@ -64,7 +64,7 @@ pub struct WalletUnlockPopup {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum UnlockMode {
+pub(crate) enum UnlockMode {
     Standard,
     Migration,
 }
@@ -235,52 +235,83 @@ impl WalletUnlockPopup {
                 UnlockInteraction::Skipped
             }
             PassphraseModalOutcome::Submit(text) => {
-                let mut wallet_guard = wallet.write_recover();
-                match wallet_guard.wallet_seed.open(&text) {
-                    Ok(_) => {
-                        drop(wallet_guard);
-                        let retention = if self.remember || mode == UnlockMode::Migration {
-                            WalletUnlockRetention::UntilAppClose
-                        } else {
-                            WalletUnlockRetention::OperationOnly
-                        };
-                        let passphrase = Zeroizing::new((*text).clone());
-                        match app_context.handle_wallet_unlocked(wallet, &passphrase, retention) {
-                            Ok(()) => {
-                                self.close();
-                                UnlockInteraction::Unlocked
-                            }
-                            Err(error) => {
-                                self.error = None;
-                                self.storage_error = Some(error);
-                                UnlockInteraction::Pending
-                            }
-                        }
-                    }
-                    Err(error) => {
-                        self.storage_error = None;
-                        self.error = Some(unlock_failure_message(
-                            error,
-                            wallet_guard.password_hint().as_deref(),
-                        ));
-                        UnlockInteraction::Pending
-                    }
+                let passphrase = Zeroizing::new((*text).clone());
+                self.submit_passphrase(app_context, wallet, &passphrase, mode)
+            }
+        }
+    }
+
+    /// Verify `passphrase` against the vault and record any failure for the
+    /// next frame's error line.
+    ///
+    /// The password is checked **only** through
+    /// [`AppContext::handle_wallet_unlocked`], which reads the real stored
+    /// secret through the wallet-secret chokepoint. The popup must never
+    /// pre-check it against the in-memory wallet model: a cold-booted Tier-2
+    /// wallet carries a secret-free placeholder envelope, so verifying against
+    /// the model would reject the correct password and lock the user out of
+    /// their funds.
+    pub(crate) fn submit_passphrase(
+        &mut self,
+        app_context: &Arc<AppContext>,
+        wallet: &Arc<RwLock<Wallet>>,
+        passphrase: &str,
+        mode: UnlockMode,
+    ) -> UnlockInteraction {
+        let retention = unlock_retention(mode, self.remember);
+        match app_context.handle_wallet_unlocked(wallet, passphrase, retention) {
+            Ok(()) => {
+                self.close();
+                UnlockInteraction::Unlocked
+            }
+            Err(error) => {
+                let password_hint = wallet.read_recover().password_hint().clone();
+                if let Some(message) = unlock_task_failure_message(&error, password_hint.as_deref())
+                {
+                    self.storage_error = None;
+                    self.error = Some(message);
+                } else {
+                    self.error = None;
+                    self.storage_error = Some(error);
                 }
+                UnlockInteraction::Pending
             }
         }
     }
 }
 
-fn unlock_failure_message(error: EncryptionError, password_hint: Option<&str>) -> String {
-    match error {
-        EncryptionError::WrongPassword => match password_hint {
+fn unlock_task_failure_message(error: &TaskError, password_hint: Option<&str>) -> Option<String> {
+    use platform_wallet_storage::secrets::SecretStoreError;
+
+    let wrong_password = matches!(error, TaskError::HdPassphraseIncorrect)
+        || matches!(
+            error,
+            TaskError::SecretSeam { source }
+                if matches!(source.as_ref(), SecretStoreError::WrongPassword)
+        );
+    if wrong_password {
+        return Some(match password_hint {
             Some(hint) => {
                 format!("That password did not match. Check it and try again. Hint: {hint}")
             }
             None => "That password did not match. Check it and try again.".to_string(),
-        },
-        EncryptionError::Malformed => DAMAGED_WALLET_MESSAGE.to_string(),
-        EncryptionError::KeyDerivation | EncryptionError::Encryption => error.to_string(),
+        });
+    }
+
+    let malformed = matches!(error, TaskError::SecretDecryptFailed)
+        || matches!(
+            error,
+            TaskError::SecretSeam { source } | TaskError::WalletSeedStorage { source }
+                if matches!(source.as_ref(), SecretStoreError::MalformedVault)
+        );
+    malformed.then(|| DAMAGED_WALLET_MESSAGE.to_string())
+}
+
+fn unlock_retention(mode: UnlockMode, remember: bool) -> WalletUnlockRetention {
+    if mode == UnlockMode::Standard && remember {
+        WalletUnlockRetention::UntilAppClose
+    } else {
+        WalletUnlockRetention::OperationOnly
     }
 }
 
@@ -358,6 +389,15 @@ mod tests {
             migration_skip_body(),
             "You can skip this wallet if you do not know its password. It will stay locked and will not be updated now. Its storage update will finish the next time you unlock it with its password. Your coins are not lost.",
         );
+        assert_eq!(
+            WalletUnlockRetention::OperationOnly,
+            unlock_retention(UnlockMode::Migration, true),
+            "migration unlocks use operation-only retention because no keep-unlocked choice is shown",
+        );
+        assert_eq!(
+            WalletUnlockRetention::UntilAppClose,
+            unlock_retention(UnlockMode::Standard, true),
+        );
     }
 
     #[test]
@@ -389,7 +429,11 @@ mod tests {
         };
         assert_eq!(error, EncryptionError::Malformed);
 
-        let message = unlock_failure_message(error, item.password_hint.as_deref());
+        let message = unlock_task_failure_message(
+            &TaskError::SecretDecryptFailed,
+            item.password_hint.as_deref(),
+        )
+        .expect("malformed envelope has dedicated user copy");
         assert_eq!(
             message,
             "This wallet's saved data looks damaged and could not be opened. Re-add it from its recovery phrase to restore it.",

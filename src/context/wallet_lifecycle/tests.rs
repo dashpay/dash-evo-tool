@@ -1060,6 +1060,167 @@ async fn unlock_seed_promotion_failure_is_returned_and_wallet_is_relocked() {
         .await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn tier2_wallet_cold_boot_unlock_uses_the_real_vault_envelope() {
+    use platform_wallet_storage::secrets::{
+        SecretBytes, SecretStoreError, SecretString, WalletId as SecretWalletId,
+    };
+
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let seed = [0x8du8; 64];
+    let password_text = "correct-wallet-password";
+    let password_secret = Secret::new(password_text);
+    let (first_ctx, _first_sender) = offline_testnet_context_at(temp_dir.path());
+    let wallet = crate::model::wallet::Wallet::new_from_seed(
+        seed,
+        Network::Testnet,
+        Some("Cold boot Tier-2".to_string()),
+        Some(&password_secret),
+    )
+    .expect("build protected wallet");
+    let (seed_hash, _) = first_ctx
+        .register_wallet(wallet, &seed, WalletOrigin::Imported)
+        .expect("register protected wallet");
+    let password = SecretString::new(password_text);
+    WalletSeedView::new(&first_ctx.secret_store())
+        .set_protected(&seed_hash, &seed, &password)
+        .expect("write Tier-2 envelope");
+    drop(first_ctx);
+
+    let cold_boot_dir = tempfile::tempdir().expect("cold boot tempdir");
+    copy_dir_recursive(temp_dir.path(), cold_boot_dir.path());
+    let (ctx, sender) = offline_testnet_context_at(cold_boot_dir.path());
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("hydrate cold-boot wallet");
+    let wallet = ctx.wallet_arc(&seed_hash).expect("hydrated wallet");
+    assert!(
+        !wallet.read_recover().is_open(),
+        "a password-protected Tier-2 wallet must cold-boot locked",
+    );
+
+    let wrong = ctx
+        .handle_wallet_unlocked(
+            &wallet,
+            "wrong-wallet-password",
+            WalletUnlockRetention::UntilAppClose,
+        )
+        .expect_err("wrong password must fail");
+    assert!(
+        matches!(
+            &wrong,
+            TaskError::SecretSeam { source }
+                if matches!(source.as_ref(), SecretStoreError::WrongPassword)
+        ),
+        "wrong password must retain the WrongPassword taxonomy, got {wrong:?}",
+    );
+    assert!(!wallet.read_recover().is_open());
+
+    crate::wallet_backend::SecretSeam::new(&ctx.secret_store())
+        .put_secret_protected(
+            &SecretWalletId::from(seed_hash),
+            crate::wallet_backend::secret_access::SEED_RAW_LABEL,
+            &SecretBytes::from_slice(&[0x44; 8]),
+            &password,
+        )
+        .expect("write truncated Tier-2 plaintext fixture");
+    let malformed = ctx
+        .handle_wallet_unlocked(&wallet, password_text, WalletUnlockRetention::UntilAppClose)
+        .expect_err("a truncated Tier-2 seed must fail");
+    assert!(
+        matches!(
+            &malformed,
+            TaskError::WalletSeedStorage { source }
+                if matches!(source.as_ref(), SecretStoreError::MalformedVault)
+        ),
+        "a genuinely truncated Tier-2 seed must retain the Malformed taxonomy, got {malformed:?}",
+    );
+    assert!(!wallet.read_recover().is_open());
+
+    WalletSeedView::new(&ctx.secret_store())
+        .set_protected(&seed_hash, &seed, &password)
+        .expect("restore valid Tier-2 envelope");
+    ctx.handle_wallet_unlocked(&wallet, password_text, WalletUnlockRetention::UntilAppClose)
+        .expect("correct password must unlock the cold-booted Tier-2 wallet");
+    assert!(wallet.read_recover().is_open());
+
+    ctx.wallet_backend()
+        .expect("backend wired")
+        .shutdown()
+        .await;
+}
+
+/// Cold-boot lockout regression, at the gesture the owner actually performs:
+/// submitting the correct password to the unlock popup.
+///
+/// A Tier-2 wallet hydrates carrying a secret-free placeholder envelope, so a
+/// popup that pre-checks the password against the in-memory wallet model reads
+/// that placeholder, reports the wallet as damaged, and locks the owner out of
+/// their funds with the CORRECT password. The popup must verify only through
+/// the secret chokepoint, which reads the real stored envelope.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn tier2_cold_boot_unlock_popup_accepts_the_correct_password() {
+    use crate::ui::components::wallet_unlock_popup::{
+        UnlockInteraction, UnlockMode, WalletUnlockPopup,
+    };
+    use platform_wallet_storage::secrets::SecretString;
+
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let seed = [0x3cu8; 64];
+    let password_text = "correct-wallet-password";
+    let password_secret = Secret::new(password_text);
+    let (first_ctx, _first_sender) = offline_testnet_context_at(temp_dir.path());
+    let wallet = crate::model::wallet::Wallet::new_from_seed(
+        seed,
+        Network::Testnet,
+        Some("Cold boot popup".to_string()),
+        Some(&password_secret),
+    )
+    .expect("build protected wallet");
+    let (seed_hash, _) = first_ctx
+        .register_wallet(wallet, &seed, WalletOrigin::Imported)
+        .expect("register protected wallet");
+    WalletSeedView::new(&first_ctx.secret_store())
+        .set_protected(&seed_hash, &seed, &SecretString::new(password_text))
+        .expect("write Tier-2 envelope");
+    drop(first_ctx);
+
+    let cold_boot_dir = tempfile::tempdir().expect("cold boot tempdir");
+    copy_dir_recursive(temp_dir.path(), cold_boot_dir.path());
+    let (ctx, sender) = offline_testnet_context_at(cold_boot_dir.path());
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("hydrate cold-boot wallet");
+    let wallet = ctx.wallet_arc(&seed_hash).expect("hydrated wallet");
+    assert!(
+        !wallet.read_recover().is_open(),
+        "a password-protected Tier-2 wallet must cold-boot locked",
+    );
+
+    let mut popup = WalletUnlockPopup::new();
+    popup.open();
+
+    // Acceptance is earned, not blanket: a wrong password still keeps it shut.
+    assert_eq!(
+        UnlockInteraction::Pending,
+        popup.submit_passphrase(&ctx, &wallet, "wrong-wallet-password", UnlockMode::Standard),
+        "a wrong password must not unlock a cold-booted Tier-2 wallet",
+    );
+    assert!(!wallet.read_recover().is_open());
+
+    assert_eq!(
+        UnlockInteraction::Unlocked,
+        popup.submit_passphrase(&ctx, &wallet, password_text, UnlockMode::Standard),
+        "the correct password must unlock a cold-booted Tier-2 wallet through the popup",
+    );
+    assert!(wallet.read_recover().is_open());
+
+    ctx.wallet_backend()
+        .expect("backend wired")
+        .shutdown()
+        .await;
+}
+
 /// Root-cause regression: `register_wallet` persists the
 /// seed-envelope sidecar **before** the wallet backend is wired.
 ///
@@ -2127,7 +2288,7 @@ async fn protected_wallet_registers_upstream_on_unlock_without_restart() {
     // Tier-2 keep-protection migration post-conditions. The
     // unlock decrypted the legacy AES-GCM envelope and RE-WRAPPED the seed
     // as a Tier-2 object-password envelope (protection KEPT, not downgraded
-    // to a raw secret), while retaining the recovery envelope.
+    // to a raw secret), then removes the redundant legacy envelope.
     let store = ctx.secret_store();
     let seed_view = WalletSeedView::new(&store);
     // Steady state is Tier-2 protected.
@@ -2155,8 +2316,8 @@ async fn protected_wallet_registers_upstream_on_unlock_without_restart() {
         seed_view
             .legacy_envelope_get(&seed_hash)
             .expect("legacy read")
-            .is_some(),
-        "the legacy recovery envelope must remain after the storage update"
+            .is_none(),
+        "the protected seed must have exactly one vault copy after the storage update"
     );
     // The sidecar password flag STAYS true — protection was kept, so the
     // metadata stays accurate (no downgrade flip).

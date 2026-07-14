@@ -783,7 +783,8 @@ As a user, I want to edit contact details (nickname, note, hidden status) so tha
 - Toggle contact visibility (hidden/visible).
 - Hidden contacts stay listed in a collapsed "Show hidden contacts" section of the Identity Hub
   Contacts tab, and can be unhidden from there — including contacts hidden as a side effect of
-  declining or cancelling a request.
+  declining or cancelling a request. If another client saved details this app cannot read, the app
+  warns that continuing will replace those details and asks for confirmation before unhiding.
 - Changes persist locally.
 
 ### DPY-010: Remove a contact [Gap]

@@ -22,9 +22,9 @@ use thiserror::Error;
 /// Why an existing DashPay `contactInfo` payload could not be preserved.
 #[derive(Debug, Error)]
 pub enum ContactInfoReadError {
-    /// A fetched `contactInfo` document did not contain its required private payload.
-    #[error("contactInfo privateData is missing or has an unexpected type")]
-    MissingPrivateData,
+    /// The private payload was present with a shape this client does not understand.
+    #[error("contactInfo privateData has an unexpected type")]
+    UnexpectedPrivateDataType,
     /// The private payload was present but could not be decrypted with its derived key.
     #[error("contactInfo privateData decryption failed")]
     DecryptFailed,
@@ -639,14 +639,23 @@ pub enum TaskError {
         source: crate::wallet_backend::KvAdapterError,
     },
 
-    /// An existing contact's accepted-account list could not be read safely.
-    /// The write is aborted so unreadable data is never replaced with defaults.
+    /// An existing contact's encrypted details could not be read safely.
     #[error(
-        "Your saved contact details could not be read, so no changes were made. Refresh your contacts and try again."
+        "Your saved contact details could not be read, so no changes were made. Use a compatible DashPay client, or try again and confirm replacing the saved details when asked."
     )]
     DashPayContactInfoRead {
         #[source]
         source: ContactInfoReadError,
+    },
+
+    /// A direct contact-details update failed. The identity/contact envelope
+    /// lets screens correlate a delayed failure with the exact pending write.
+    #[error("{source}")]
+    DashPayContactInfoActionFailed {
+        identity_id: Identifier,
+        contact_id: Identifier,
+        #[source]
+        source: Box<TaskError>,
     },
 
     /// A request-card action failed after the UI disabled that request's paid
@@ -2659,6 +2668,22 @@ mod tests {
             cause.to_string(),
             "the request ID is for the screen; the user must still read why the action failed"
         );
+    }
+
+    #[test]
+    fn a_contact_info_action_failure_shows_the_underlying_reason_to_the_user() {
+        let cause = TaskError::DashPayContactInfoRead {
+            source: ContactInfoReadError::DeserializeFailed,
+        };
+        let wrapped = TaskError::DashPayContactInfoActionFailed {
+            identity_id: Identifier::from([6; 32]),
+            contact_id: Identifier::from([7; 32]),
+            source: Box::new(TaskError::DashPayContactInfoRead {
+                source: ContactInfoReadError::DeserializeFailed,
+            }),
+        };
+
+        assert_eq!(wrapped.to_string(), cause.to_string());
     }
 
     #[test]

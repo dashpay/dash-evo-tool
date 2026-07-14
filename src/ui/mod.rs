@@ -676,7 +676,7 @@ impl Screen {
                 // load guard, profile cache, search state). Without this refresh
                 // the Contacts tab would stay permanently "already loaded" after
                 // switching networks (T28).
-                screen.refresh();
+                screen.reset_for_context_change();
                 return;
             }
             Screen::MasternodesScreen(screen) => {

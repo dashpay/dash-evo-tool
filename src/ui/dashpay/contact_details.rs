@@ -1,11 +1,14 @@
 use crate::app::AppAction;
 use crate::backend_task::dashpay::DashPayTask;
+use crate::backend_task::error::TaskError;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::context::feature_gate::FeatureGate;
-use crate::model::dashpay::AcceptedAccounts;
+use crate::model::dashpay::{AcceptedAccounts, ContactInfoField, ContactInfoUpdate};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::components::MessageBanner;
+use crate::ui::components::component_trait::Component;
+use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::dashpay_subscreen_chooser_panel::add_dashpay_subscreen_chooser_panel;
 use crate::ui::components::info_popup::InfoPopup;
 use crate::ui::components::left_panel::add_left_panel;
@@ -61,6 +64,8 @@ pub struct ContactDetailsScreen {
     loading: bool,
     show_info_popup: bool,
     needs_backend_fetch: bool,
+    overwrite_dialog: Option<ConfirmationDialog>,
+    pending_update: Option<ContactInfoUpdate>,
 }
 
 impl ContactDetailsScreen {
@@ -82,6 +87,8 @@ impl ContactDetailsScreen {
             loading: false,
             show_info_popup: false,
             needs_backend_fetch: true,
+            overwrite_dialog: None,
+            pending_update: None,
         };
         screen.load_from_database();
         screen
@@ -165,38 +172,23 @@ impl ContactDetailsScreen {
     }
 
     fn save_contact_info(&mut self) -> AppAction {
-        // Update local state immediately for responsive UI
-        if let Some(info) = &mut self.contact_info {
-            info.nickname = if self.edit_nickname.is_empty() {
+        let update = ContactInfoUpdate {
+            nickname: ContactInfoField::Replace(if self.edit_nickname.is_empty() {
                 None
             } else {
                 Some(self.edit_nickname.clone())
-            };
-            info.note = if self.edit_note.is_empty() {
+            }),
+            note: ContactInfoField::Replace(if self.edit_note.is_empty() {
                 None
             } else {
                 Some(self.edit_note.clone())
-            };
-            info.is_hidden = self.edit_hidden;
-        }
+            }),
+            display_hidden: self.edit_hidden,
+            accepted_accounts: AcceptedAccounts::Preserve,
+            unreadable: Default::default(),
+        };
+        self.pending_update = Some(update.clone());
 
-        // Persist the memo to the per-network k/v sidecar so the UI has
-        // instant feedback while the (encrypted) Platform write below is
-        // in flight. Best-effort: a sidecar miss never blocks the user
-        // action.
-        let identity_id = self.identity.identity.id();
-        if let Err(e) = crate::ui::dashpay::persist_contact_private_info(
-            &self.app_context,
-            &identity_id,
-            &self.contact_id,
-            self.edit_nickname.clone(),
-            self.edit_note.clone(),
-            self.edit_hidden,
-        ) {
-            tracing::warn!("DashPay private-info sidecar write failed: {e:?}");
-        }
-
-        self.editing_info = false;
         self.loading = true;
 
         // Dispatch backend task to persist to Platform (encrypted)
@@ -204,22 +196,50 @@ impl ContactDetailsScreen {
             DashPayTask::UpdateContactInfo {
                 identity: self.identity.clone(),
                 contact_id: self.contact_id,
-                nickname: if self.edit_nickname.is_empty() {
-                    None
-                } else {
-                    Some(self.edit_nickname.clone())
-                },
-                note: if self.edit_note.is_empty() {
-                    None
-                } else {
-                    Some(self.edit_note.clone())
-                },
-                is_hidden: self.edit_hidden,
-                // This form edits the nickname, note, and hidden flag — it has
-                // no say over which accounts the user accepted.
-                accepted_accounts: AcceptedAccounts::Preserve,
+                update,
             },
         )))
+    }
+
+    fn commit_pending_update(&mut self) {
+        let Some(update) = self.pending_update.take() else {
+            return;
+        };
+        let current_nickname = self
+            .contact_info
+            .as_ref()
+            .and_then(|info| info.nickname.clone());
+        let current_note = self
+            .contact_info
+            .as_ref()
+            .and_then(|info| info.note.clone());
+        let nickname = match update.nickname {
+            ContactInfoField::Preserve => current_nickname,
+            ContactInfoField::Replace(value) => value,
+        };
+        let note = match update.note {
+            ContactInfoField::Preserve => current_note,
+            ContactInfoField::Replace(value) => value,
+        };
+
+        if let Some(info) = &mut self.contact_info {
+            info.nickname = nickname.clone();
+            info.note = note.clone();
+            info.is_hidden = update.display_hidden;
+        }
+
+        let identity_id = self.identity.identity.id();
+        if let Err(e) = crate::ui::dashpay::persist_contact_private_info(
+            &self.app_context,
+            &identity_id,
+            &self.contact_id,
+            nickname.unwrap_or_default(),
+            note.unwrap_or_default(),
+            update.display_hidden,
+        ) {
+            tracing::warn!("DashPay private-info sidecar write failed after Platform save: {e:?}");
+        }
+        self.editing_info = false;
     }
 
     fn cancel_editing(&mut self) {
@@ -544,6 +564,29 @@ impl ScreenLike for ContactDetailsScreen {
 
         action |= island_central_panel(ui, |ui| self.render(ui));
 
+        if let Some(dialog) = &mut self.overwrite_dialog {
+            match dialog.show(ui).inner.dialog_response {
+                Some(ConfirmationStatus::Confirmed) => {
+                    if let Some(update) = self.pending_update.clone() {
+                        self.loading = true;
+                        action |= AppAction::BackendTask(BackendTask::DashPayTask(Box::new(
+                            DashPayTask::UpdateContactInfo {
+                                identity: self.identity.clone(),
+                                contact_id: self.contact_id,
+                                update: update.overwrite_unreadable(),
+                            },
+                        )));
+                    }
+                    self.overwrite_dialog = None;
+                }
+                Some(ConfirmationStatus::Canceled) => {
+                    self.pending_update = None;
+                    self.overwrite_dialog = None;
+                }
+                None => {}
+            }
+        }
+
         // Show info popup if requested
         if self.show_info_popup {
             egui::CentralPanel::default()
@@ -620,11 +663,15 @@ impl ScreenLike for ContactDetailsScreen {
                     });
                 }
             }
-            BackendTaskSuccessResult::DashPayContactInfoUpdated(contact_id) => {
-                if contact_id == self.contact_id {
+            BackendTaskSuccessResult::DashPayContactInfoUpdated {
+                identity,
+                contact_id,
+            } => {
+                if identity == self.identity.identity.id() && contact_id == self.contact_id {
+                    self.commit_pending_update();
                     MessageBanner::set_global(
                         self.app_context.egui_ctx(),
-                        "Contact info saved to Platform",
+                        "Contact information saved.",
                         MessageType::Success,
                     );
                 }
@@ -667,5 +714,41 @@ impl ScreenLike for ContactDetailsScreen {
             }
             _ => {}
         }
+    }
+
+    fn display_task_error(&mut self, error: &TaskError) -> bool {
+        self.loading = false;
+        let is_matching_read_error = matches!(
+            error,
+            TaskError::DashPayContactInfoActionFailed {
+                identity_id,
+                contact_id,
+                source,
+            } if *identity_id == self.identity.identity.id()
+                && *contact_id == self.contact_id
+                && matches!(source.as_ref(), TaskError::DashPayContactInfoRead { .. })
+        );
+        if is_matching_read_error && self.pending_update.is_some() {
+            self.overwrite_dialog = Some(
+                ConfirmationDialog::new(
+                    "Replace saved contact details?",
+                    "This contact's saved details cannot be read. Continuing will save the nickname and note shown here and clear the accepted-account settings. You cannot undo this change.",
+                )
+                .confirm_text(Some("Replace saved details"))
+                .danger_mode(true),
+            );
+            return true;
+        }
+        if matches!(
+            error,
+            TaskError::DashPayContactInfoActionFailed {
+                identity_id,
+                contact_id,
+                ..
+            } if *identity_id == self.identity.identity.id() && *contact_id == self.contact_id
+        ) {
+            self.pending_update = None;
+        }
+        false
     }
 }

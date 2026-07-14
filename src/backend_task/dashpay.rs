@@ -19,7 +19,7 @@ pub mod validation;
 
 pub use contacts::ContactData;
 
-use crate::model::dashpay::AcceptedAccounts;
+use crate::model::dashpay::{ContactInfoUpdate, UnreadableContactInfoPolicy};
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
@@ -96,6 +96,7 @@ pub enum DashPayTask {
     RejectContactRequest {
         identity: QualifiedIdentity,
         request_id: Identifier,
+        unreadable: UnreadableContactInfoPolicy,
     },
     /// Withdraw a still-pending contact request this identity sent.
     ///
@@ -105,6 +106,7 @@ pub enum DashPayTask {
     CancelContactRequest {
         identity: QualifiedIdentity,
         request_id: Identifier,
+        unreadable: UnreadableContactInfoPolicy,
     },
     LoadPaymentHistory {
         identity: QualifiedIdentity,
@@ -118,14 +120,8 @@ pub enum DashPayTask {
     UpdateContactInfo {
         identity: QualifiedIdentity,
         contact_id: Identifier,
-        nickname: Option<String>,
-        note: Option<String>,
-        is_hidden: bool,
-        /// The write replaces the whole `contactInfo` document, so a caller that
-        /// only flips `is_hidden` or edits a nickname must say
-        /// [`AcceptedAccounts::Preserve`] — otherwise the accounts the user
-        /// accepted are erased.
-        accepted_accounts: AcceptedAccounts,
+        /// Explicit intent for every field in the whole encrypted payload.
+        update: ContactInfoUpdate,
     },
     /// Register DashPay receiving addresses for incoming payment detection
     RegisterDashPayAddresses {
@@ -230,21 +226,27 @@ impl AppContext {
             DashPayTask::RejectContactRequest {
                 identity,
                 request_id,
-            } => contact_requests::reject_contact_request(self, sdk, identity, request_id)
-                .await
-                .map_err(|source| TaskError::DashPayContactRequestActionFailed {
-                    request_id,
-                    source: Box::new(source),
-                }),
+                unreadable,
+            } => contact_requests::reject_contact_request(
+                self, sdk, identity, request_id, unreadable,
+            )
+            .await
+            .map_err(|source| TaskError::DashPayContactRequestActionFailed {
+                request_id,
+                source: Box::new(source),
+            }),
             DashPayTask::CancelContactRequest {
                 identity,
                 request_id,
-            } => contact_requests::cancel_contact_request(self, sdk, identity, request_id)
-                .await
-                .map_err(|source| TaskError::DashPayContactRequestActionFailed {
-                    request_id,
-                    source: Box::new(source),
-                }),
+                unreadable,
+            } => contact_requests::cancel_contact_request(
+                self, sdk, identity, request_id, unreadable,
+            )
+            .await
+            .map_err(|source| TaskError::DashPayContactRequestActionFailed {
+                request_id,
+                source: Box::new(source),
+            }),
             DashPayTask::LoadPaymentHistory { identity } => {
                 let identity_id = identity.identity.id();
                 // Refresh-style action: kick upstream before reading so the
@@ -323,21 +325,17 @@ impl AppContext {
             DashPayTask::UpdateContactInfo {
                 identity,
                 contact_id,
-                nickname,
-                note,
-                is_hidden,
-                accepted_accounts,
-            } => Ok(contact_info::create_or_update_contact_info(
-                self,
-                sdk,
-                identity,
-                contact_id,
-                nickname,
-                note,
-                is_hidden,
-                accepted_accounts,
-            )
-            .await?),
+                update,
+            } => {
+                let identity_id = identity.identity.id();
+                contact_info::create_or_update_contact_info(self, sdk, identity, contact_id, update)
+                    .await
+                    .map_err(|source| TaskError::DashPayContactInfoActionFailed {
+                        identity_id,
+                        contact_id,
+                        source: Box::new(source),
+                    })
+            }
             DashPayTask::RegisterDashPayAddresses { identity } => {
                 let result =
                     incoming_payments::register_dashpay_addresses_for_identity(self, &identity)

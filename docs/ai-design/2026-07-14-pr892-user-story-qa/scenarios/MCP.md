@@ -232,3 +232,103 @@ transport/protocol/auth defect, so it does not sink the MCP-002 story on its own
   reading source (`src/mcp/tools/wallet.rs`,
   `src/context/wallet_lifecycle/registration.rs`) and cross-checking with direct SQLite
   inspection of the throwaway data dir — no fixes attempted, per campaign instructions.
+
+## MCP-003: Load a masternode/evonode identity via CLI — BLOCKED (full happy path); plumbing tested clean
+
+Acceptance criteria: identity fetched by ProTxHash over the network and persisted locally;
+private keys accepted as WIF or hex, never echoed back, redacted in logs; output reports
+which keys loaded, available withdrawal modes, and the registered payout address; `network`
+required and must match the active network.
+
+No real masternode/evonode fixture exists in this environment (confirmed absent in
+`scenarios/IDN.md`/`scenarios/DEV.md`), so the full happy path (real ProTxHash → real fetch →
+real key binding) cannot be exercised. Tested the CLI's plumbing and error-handling quality
+instead, using a throwaway data dir (`/data/tmp/det-qa-mcp003-data`, deleted after the pass)
+and a syntactically-plausible but fake ProTxHash (`f4bda60b...fb061`, 64 hex chars) and a
+well-formed fake testnet WIF (`cN9spWsv...dwavaw`, generated locally, never a real key).
+
+### Schema (`det-cli tool-describe name=masternode_identity_load`)
+
+Confirms the tool exists with `pro_tx_hash`, `node_type`, `network` required; `owner_private_key`
+/`voting_private_key`/`payout_private_key` typed as `Secret` (collapses to a bare
+`{"type":"string"}` in the schema — no leaked length/format constraints that would hint at key
+material, same pattern MCP-001/002 found for other `Secret` fields). Output schema reports
+`owner_key_loaded`/`voting_key_loaded`/`payout_key_loaded` (booleans, never the key value),
+`available_withdrawal_keys`, `payout_address`, and `dpns_names` — matches the acceptance
+criteria's reporting requirements exactly.
+
+### Live behavior
+
+1. **Network mismatch rejected cleanly**: this fresh data dir defaults to Mainnet (no network
+   ever configured). Calling with `network=testnet` was rejected immediately:
+   `Network mismatch: expected testnet, got mainnet (code -32002)` — no dispatch attempted,
+   no hang. Confirms the network-matching acceptance criterion.
+2. **Missing `network` rejected cleanly**: omitting `network` entirely failed instantly with
+   `failed to deserialize parameters: missing field 'network' (code -32602)` — confirms
+   `network` is a required parameter, enforced before any dispatch.
+3. **No keys at all rejected cleanly**: omitting all three private-key parameters failed
+   instantly with a well-worded, role-based error: *"Provide at least one of the owner or
+   payout private key. The owner key withdraws to the registered payout address; the payout
+   key withdraws to any address."* (code -32602) — no key values involved, clean validation.
+4. **Valid-network dispatch with fake ProTxHash/WIF**: called with `network=mainnet`
+   (matching the data dir's active network) — the tool did **not** fail fast; it proceeded
+   into a real Mainnet SPV sync from scratch (headers/filter-headers/filters/masternode-list
+   progressing normally in the log, ~25% headers synced within 20s), matching MCP-001's
+   established positive-control precedent exactly (`core-address-create` on a fresh Mainnet
+   dir behaves identically). This confirms `masternode_identity_load` is SPV-gated per
+   `docs/MCP.md`'s "SPV requirements" section (it is not listed among the SPV-gate-skipping
+   tools) — the "hang" is expected chain-sync wait, not a bug. The run was capped at 20-60s
+   (well short of a full from-scratch Mainnet sync) so no final "identity not found" result
+   was observed, but the dispatch itself was clean: no crash, no panic, no stall without
+   progress.
+5. **No key leakage anywhere**: `grep`-checked all captured stdout/stderr from every run
+   above for the fake WIF string (`cN9spWsv...dwavaw`) — zero matches in any run, including
+   the ~20s of real SPV-sync logging in step 4. No `det.log` file was even created in the
+   throwaway data dir (standalone CLI logs to stderr only, already checked). Confirms the
+   redaction acceptance criterion held throughout every observed code path.
+6. **Minor observation (not a story-blocking defect)**: a syntactically-garbage
+   `owner-private-key` value (not a valid WIF or hex) was *not* rejected before the SPV wait —
+   it took the same long-running dispatch path as the well-formed fake key, rather than
+   failing fast on an obviously malformed key. Key-format validation appears to happen inside
+   the task (after the SPV gate), not as an early parameter check. This is a UX-efficiency
+   observation (a user with a typo'd key waits through a full sync before finding out), not a
+   redaction or network-matching violation, so it does not change the verdict.
+
+**Verdict: BLOCKED** for the full happy-path (no real masternode/evonode fixture available in
+this environment — matches the established reasoning for IDN-003/DEV-006/MN-001-adjacent
+stories). The testable plumbing — network-required, network-must-match, key-redaction, clean
+parameter validation, and clean SPV-gated dispatch with no crash/hang-without-progress/key-leak
+— all passed. No FAIL-triggering defect (key leakage or network-matching violation) was found.
+
+## MCP-004: Withdraw masternode/evonode credits via CLI — BLOCKED (no loaded identity)
+
+Acceptance criteria: owner-key mode forces the destination to the registered payout address
+(rejecting a different address); payout/transfer-key mode allows withdrawal to any Core
+address; withdrawal queues on Platform and settles after confirmation, reporting destination
+and estimated/actual fees; `network` required and must match the active network.
+
+**Verdict: BLOCKED.** Reasoning: no masternode/evonode identity loaded (MCP-003 prerequisite
+BLOCKED — no fixture available). This tool operates on an already-loaded identity
+(`identity_id` of a prior `masternode_identity_load` call), which cannot exist in this
+environment.
+
+### Supporting context (schema only, not a live test)
+
+`det-cli tools` confirms `masternode-credits-withdraw` exists. Its full schema
+(`det-cli tool-describe name=masternode_credits_withdraw`) directly mirrors every acceptance-
+criteria bullet:
+
+- `key_mode`: `"owner"` (destination forced to the payout address) or `"transfer"` (withdraw
+  to any Core address) — matches bullets 1 and 2 verbatim.
+- `to_address`: *"Required for 'transfer' mode; forbidden for 'owner' mode (the destination is
+  the registered payout address)."* — confirms the owner-key/payout-address restriction is
+  enforced at the parameter level, not just descriptively.
+- `network`: required (*"required for destructive operations"*).
+- Output schema: `to_address` (*"the Core address the funds were actually sent to"*),
+  `estimated_fee`, `actual_fee` — matches bullet 3's "reports the destination used and the
+  estimated and actual fees" exactly.
+- Tool annotations: `destructiveHint: true` — correctly flagged as a fund-moving operation.
+
+This confirms the tool is implemented with the correct shape and restrictions at the schema
+level, but this is supporting context only — no live call was made (no identity to operate
+on), so this does not upgrade the verdict beyond BLOCKED.

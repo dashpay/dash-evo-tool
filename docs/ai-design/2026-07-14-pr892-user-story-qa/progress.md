@@ -251,10 +251,9 @@ needed).
       Tools" section, Expert view sits in between — already demonstrates the monotonic
       feature-unlock behavior this story now describes; carried forward as PASS, revisit only
       if a future pass wants to explicitly re-verify the "monotonic" wording)
-- [ ] NET-006: Select interface mode — *status changed from `[Gap]` ("Select user mode") to
-      `[Implemented]` in the reconciled doc — this is new testable scope, not a carry-forward;
-      needs the Welcome-screen-vs-Settings-screen consistency and persistence-across-restart
-      checks specifically*
+- [x] NET-006: Select interface mode — PASS (same three labels/descriptions on Welcome
+      screen and Settings card, confirmed live via a throwaway instance; choice applies
+      immediately and persists across a full quit + cold-boot restart)
 - [x] NET-007: Granular refresh controls — PASS (partial; only 2 modes exist —
       "Core + Platform" / "Platform Only" — not the 3 described in the story text; see note)
 - [x] NET-008: Select Core backend mode — N/A (reclassified to Removed in the reconciled doc;
@@ -273,12 +272,22 @@ needed).
 - [x] NET-015: Use Dash Evo Tool without a local Dash Core node — PASS (with a UX note:
       the default-view global banner still says "SPV sync failed", leaking jargon the
       story says the everyday-user UI should avoid)
-- [ ] NET-016: Refresh Platform (DAPI) node list
-- [ ] NET-017: View live connection status (indicator and Platform endpoints)
-- [ ] NET-018: Auto-start SPV sync on startup
+- [x] NET-016: Refresh Platform (DAPI) node list — PASS (control present on Mainnet/Testnet,
+      confirmation dialog appears with correct wording, Cancel aborts cleanly with no side
+      effects; note: a fast synthetic click can self-dismiss the dialog same-frame, a
+      testing-methodology/robustness note, not a story-blocking defect — see scenarios/NET.md)
+- [x] NET-017: View live connection status (indicator and Platform endpoints) — PASS
+      (five-state top-panel indicator with hover tooltip confirmed; Connection Status panel
+      shows jargon-free SPV/DAPI labels with the raw SPV error revealed only on hover)
+- [x] NET-018: Auto-start SPV sync on startup — PASS (toggle persists across full quit +
+      cold-boot restart in both directions; sync behavior matched the toggle exactly each
+      time — restored to Enabled/baseline before finishing)
 - [ ] NET-019: Clear all local data for a network — **destructive — test LAST, alongside NET-011/020**
 - [ ] NET-020: Clear cached SPV data to force a resync — **destructive — test LAST, alongside NET-011/019**
-- [ ] NET-021: App settings preserved across an app upgrade
+- [x] NET-021: App settings preserved across an app upgrade — BLOCKED (no pre-upgrade legacy
+      settings-storage fixture exists; source review of `legacy_settings.rs` and the
+      `v093_upgrade.rs` composite regression test found strong evidence the feature is fully
+      implemented and matches this story's acceptance criteria almost verbatim)
 
 ## MCP
 
@@ -294,8 +303,15 @@ needed).
       handling, network-mismatch guard, dynamic tool discovery all work correctly; carries
       the same wallet-hydration caveat as MCP-001 but that is a wallet-tooling defect, not
       a transport/protocol defect)
-- [ ] MCP-003: Load a masternode/evonode identity via CLI
-- [ ] MCP-004: Withdraw masternode/evonode credits via CLI
+- [x] MCP-003: Load a masternode/evonode identity via CLI — BLOCKED (full happy path — no
+      masternode/evonode fixture available); CLI plumbing tested clean with a fake
+      ProTxHash/WIF: network-required and network-must-match both enforced, no key leakage
+      in any output, clean parameter validation, SPV-gated dispatch behaves per docs (no
+      crash/hang-without-progress)
+- [x] MCP-004: Withdraw masternode/evonode credits via CLI — BLOCKED (no masternode/evonode
+      identity loaded — MCP-003 prerequisite BLOCKED); tool schema confirmed to match the
+      owner-key/payout-address restriction and fee-reporting acceptance criteria (supporting
+      context only, not a live test)
 
 ## UX
 

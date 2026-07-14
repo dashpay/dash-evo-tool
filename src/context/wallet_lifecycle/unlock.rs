@@ -157,24 +157,6 @@ impl AppContext {
             .unwrap_or_default()
     }
 
-    /// Snapshot password-protected wallets that are still closed.
-    pub(crate) fn locked_wallet_hashes(self: &Arc<Self>) -> Vec<WalletSeedHash> {
-        let wallets = match self.wallets.read() {
-            Ok(wallets) => wallets,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        wallets
-            .iter()
-            .filter_map(|(seed_hash, wallet)| {
-                wallet
-                    .read()
-                    .ok()
-                    .filter(|wallet| wallet.uses_password && !wallet.is_open())
-                    .map(|_| *seed_hash)
-            })
-            .collect()
-    }
-
     /// Count wallets that block the cold-start completion sentinel: an OPEN
     /// wallet not yet registered with the upstream wallet backend, OR any
     /// wallet whose lock cannot be read.
@@ -190,9 +172,10 @@ impl AppContext {
     /// - any wallet whose `RwLock` cannot be read — fail-safe, so a poisoned
     ///   lock can never green-light a premature "completed".
     ///
-    /// Excluded (handled before this check):
-    /// - a readable, `Closed` / locked password-protected wallet — migration's
-    ///   awaiting-password state collects and unlocks these first.
+    /// Excluded (does not block):
+    /// - a readable, `Closed` / locked password-protected wallet — it registers
+    ///   on its unlock gesture, so requiring it would wedge the sentinel on a
+    ///   protected install.
     ///
     /// Counts over the raw `self.wallets` map, NOT the [`Self::open_wallets`]
     /// snapshot — that snapshot already drops a poisoned-lock wallet before the
@@ -212,8 +195,8 @@ impl AppContext {
                 // Unreadable per-wallet lock: cannot prove it is registered, so
                 // fail safe and count it (withholds the sentinel).
                 Err(_) => true,
-                // Readable Closed / locked-protected: the migration password gate
-                // handles it before calling this registration check.
+                // Readable Closed / locked-protected: excluded — it registers on
+                // its unlock gesture, so requiring it would wedge the sentinel.
                 Ok(g) if !g.is_open() => false,
                 // Readable and open: unregistered unless the wired backend knows
                 // it. With no backend wired nothing is registered, so it counts.

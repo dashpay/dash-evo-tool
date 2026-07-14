@@ -37,12 +37,6 @@ pub struct WalletUnlockPopup {
     remember: bool,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum UnlockMode {
-    Standard,
-    Migration,
-}
-
 impl Default for WalletUnlockPopup {
     fn default() -> Self {
         Self::new()
@@ -85,26 +79,6 @@ impl WalletUnlockPopup {
         wallet: &Arc<RwLock<Wallet>>,
         app_context: &Arc<AppContext>,
     ) -> WalletUnlockResult {
-        self.show_with_mode(ctx, wallet, app_context, UnlockMode::Standard)
-    }
-
-    /// Show a non-dismissible unlock prompt required by wallet migration.
-    pub fn show_for_migration(
-        &mut self,
-        ctx: &egui::Context,
-        wallet: &Arc<RwLock<Wallet>>,
-        app_context: &Arc<AppContext>,
-    ) -> WalletUnlockResult {
-        self.show_with_mode(ctx, wallet, app_context, UnlockMode::Migration)
-    }
-
-    fn show_with_mode(
-        &mut self,
-        ctx: &egui::Context,
-        wallet: &Arc<RwLock<Wallet>>,
-        app_context: &Arc<AppContext>,
-        mode: UnlockMode,
-    ) -> WalletUnlockResult {
         if !self.is_open {
             return WalletUnlockResult::Pending;
         }
@@ -115,49 +89,28 @@ impl WalletUnlockPopup {
             .and_then(|w| w.alias.clone())
             .unwrap_or_else(|| "Wallet".to_string());
 
-        let (window_title, body, submit_label, cancellable) = match mode {
-            UnlockMode::Standard => (
-                "Unlock Wallet",
-                format!("Enter password to unlock \"{wallet_alias}\":"),
-                "Unlock",
-                true,
-            ),
-            UnlockMode::Migration => (
-                "Continue the storage update.",
-                migration_prompt_body(&wallet_alias),
-                "Continue",
-                false,
-            ),
-        };
-
         let config = PassphraseModalConfig {
-            window_title,
-            body: &body,
+            window_title: "Unlock Wallet",
+            body: &format!("Enter password to unlock \"{wallet_alias}\":"),
             hint: None,
             error: self.error.as_deref(),
-            submit_label,
+            submit_label: "Unlock",
             input_placeholder: "Enter password",
             remember_label: None,
-            cancellable,
         };
 
         let mut remember = self.remember;
         let outcome = passphrase_modal(ctx, &config, |ui| {
-            if mode == UnlockMode::Standard {
-                ui.checkbox(
-                    &mut remember,
-                    config.remember_label.unwrap_or(KEEP_UNLOCKED_LABEL),
-                );
-            }
+            ui.checkbox(
+                &mut remember,
+                config.remember_label.unwrap_or(KEEP_UNLOCKED_LABEL),
+            );
         });
         self.remember = remember;
 
         match outcome {
             PassphraseModalOutcome::Pending => WalletUnlockResult::Pending,
             PassphraseModalOutcome::Cancel => {
-                if mode == UnlockMode::Migration {
-                    return WalletUnlockResult::Pending;
-                }
                 self.close();
                 WalletUnlockResult::Cancelled
             }
@@ -166,10 +119,11 @@ impl WalletUnlockPopup {
                 match wallet_guard.wallet_seed.open(&text) {
                     Ok(_) => {
                         drop(wallet_guard);
-                        // Migration must promote and re-wrap the seed before it
-                        // can finish. Standard unlocks promote only when the user
-                        // opts to keep the wallet unlocked.
-                        if self.remember || mode == UnlockMode::Migration {
+                        // The wallet is already flipped open for display. Promote
+                        // the just-verified seed into the session cache only when
+                        // the user opted to keep it unlocked; the copy is zeroized
+                        // on drop.
+                        if self.remember {
                             let passphrase = Zeroizing::new((*text).clone());
                             app_context.handle_wallet_unlocked(wallet, &passphrase);
                         } else {
@@ -204,12 +158,6 @@ impl WalletUnlockPopup {
             }
         }
     }
-}
-
-fn migration_prompt_body(wallet_alias: &str) -> String {
-    format!(
-        "Migration requires re-encrypting the wallet \"{wallet_alias}\". Enter its password now to continue."
-    )
 }
 
 /// Helper function to check if a wallet needs unlocking
@@ -269,14 +217,6 @@ mod tests {
         assert!(
             !popup.remember,
             "reopening the popup must reset the keep-unlocked choice to off"
-        );
-    }
-
-    #[test]
-    fn migration_prompt_explains_why_the_password_is_required_now() {
-        assert_eq!(
-            migration_prompt_body("Savings"),
-            "Migration requires re-encrypting the wallet \"Savings\". Enter its password now to continue.",
         );
     }
 }

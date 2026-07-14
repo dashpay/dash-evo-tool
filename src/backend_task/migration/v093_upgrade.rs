@@ -195,10 +195,17 @@ fn wallet_derived_key(seed_hash: WalletSeedHash) -> PrivateKeyData {
     })
 }
 
-/// The seed hashes of the two migrated wallets.
+/// The seed vault + metadata sidecar state of the two migrated wallets, plus
+/// the envelope bytes the fixture wrote, so a test can assert the protected
+/// envelope travelled byte-for-byte.
 struct Fixture {
     unprotected: WalletSeedHash,
     protected: WalletSeedHash,
+    /// Exactly what the v0.9.3 `wallet` row holds for the protected wallet:
+    /// AES-256-GCM ciphertext, 16-byte Argon2 salt, 12-byte GCM nonce.
+    protected_ciphertext: Vec<u8>,
+    protected_salt: Vec<u8>,
+    protected_nonce: Vec<u8>,
 }
 
 /// Insert one row into the legacy `identity` table, in v0.9.3's column shape.
@@ -609,6 +616,9 @@ fn write_v093_database(dir: &std::path::Path) -> Fixture {
     Fixture {
         unprotected,
         protected,
+        protected_ciphertext: envelope.ciphertext,
+        protected_salt: envelope.salt,
+        protected_nonce: envelope.nonce,
     }
 }
 
@@ -669,47 +679,6 @@ async fn wire_backend(ctx: &Arc<AppContext>) -> Arc<WalletBackend> {
         .await
         .expect("wallet backend must wire offline");
     ctx.wallet_backend().expect("backend wired")
-}
-
-/// Run the migration while acting as its blocking password-entry UI.
-async fn run_migration_with_wallet_passwords(
-    ctx: &Arc<AppContext>,
-) -> Result<bool, crate::backend_task::error::TaskError> {
-    let migration_context = Arc::clone(ctx);
-    let migration = tokio::spawn(async move { finish_unwire::run(&migration_context).await });
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
-
-    while !migration.is_finished() {
-        if let crate::context::migration_status::MigrationState::AwaitingWalletPasswords {
-            wallets,
-        } = ctx.migration_status().state().as_ref()
-        {
-            for seed_hash in wallets {
-                let wallet = ctx.wallet_arc(seed_hash).expect("migrated wallet");
-                let needs_password = {
-                    let wallet = wallet.read().expect("wallet lock");
-                    wallet.uses_password && !wallet.is_open()
-                };
-                if needs_password {
-                    wallet
-                        .write()
-                        .expect("wallet lock")
-                        .wallet_seed
-                        .open(PROTECTED_PASSWORD)
-                        .expect("fixture password opens protected wallet");
-                    ctx.handle_wallet_unlocked(&wallet, PROTECTED_PASSWORD);
-                    ctx.migration_status().notify_wallet_password_submitted();
-                }
-            }
-        }
-        assert!(
-            tokio::time::Instant::now() < deadline,
-            "migration must finish after every fixture password is submitted",
-        );
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
-
-    migration.await.expect("migration task must not panic")
 }
 
 fn schema_version_at(db_file: &std::path::Path) -> u16 {
@@ -806,9 +775,7 @@ async fn v093_install_upgrades_with_wallets_settings_votes_and_history_intact() 
     let backend = wire_backend(&ctx).await;
 
     assert!(
-        run_migration_with_wallet_passwords(&ctx)
-            .await
-            .expect("migration"),
+        finish_unwire::run(&ctx).await.expect("migration"),
         "a v0.9.3 install has data to move, so the launch must report work done",
     );
 
@@ -881,20 +848,34 @@ async fn v093_install_upgrades_with_wallets_settings_votes_and_history_intact() 
         "the promoted legacy envelope must be dropped, not left as a second at-rest copy",
     );
 
-    // The password gate opens the protected wallet through the normal unlock
-    // path, which re-encrypts the seed into the current Tier-2 envelope and
-    // deletes the legacy AES-GCM copy before migration can complete.
-    assert!(
-        seeds
-            .legacy_envelope_get(&fixture.protected)
-            .expect("read protected envelope")
-            .is_none(),
-        "migration must delete the legacy protected envelope after re-encrypting it",
+    // The protected wallet cannot be promoted — that needs the user's password —
+    // so its legacy envelope stays put and must be byte-identical to what v0.9.3
+    // wrote. Re-encrypting or truncating it would lock the user out permanently.
+    let protected = seeds
+        .legacy_envelope_get(&fixture.protected)
+        .expect("read protected envelope")
+        .expect("the protected seed must reach the vault");
+    assert_eq!(
+        (
+            protected.encrypted_seed,
+            protected.salt,
+            protected.nonce,
+            protected.uses_password,
+            protected.password_hint
+        ),
+        (
+            fixture.protected_ciphertext,
+            fixture.protected_salt,
+            fixture.protected_nonce,
+            true,
+            Some("the usual".to_string())
+        ),
+        "the legacy AES-GCM envelope must be copied byte-for-byte",
     );
     assert_eq!(
         seeds.scheme(&fixture.protected).expect("scheme"),
-        SecretScheme::Protected,
-        "the migrated seed must stay password-protected under the current envelope",
+        SecretScheme::Absent,
+        "a locked wallet must stay locked — no silent unseal of a protected seed",
     );
 
     // ── Wallet metadata + registration ───────────────────────────────
@@ -1167,9 +1148,7 @@ async fn second_launch_after_a_v093_upgrade_changes_nothing() {
 
     let (ctx, _) = boot(tmp.path());
     let backend = wire_backend(&ctx).await;
-    run_migration_with_wallet_passwords(&ctx)
-        .await
-        .expect("first migration");
+    finish_unwire::run(&ctx).await.expect("first migration");
 
     let sentinel_after_first = ctx
         .app_kv()
@@ -1204,9 +1183,7 @@ async fn second_launch_after_a_v093_upgrade_changes_nothing() {
         "the settings sentinel must stop the import from running twice",
     );
     assert!(
-        !run_migration_with_wallet_passwords(&ctx)
-            .await
-            .expect("second migration"),
+        !finish_unwire::run(&ctx).await.expect("second migration"),
         "a second launch must move no data",
     );
 
@@ -1293,9 +1270,7 @@ async fn the_import_never_writes_a_plaintext_key_to_disk() {
 
     let (ctx, _) = boot(tmp.path());
     let backend = wire_backend(&ctx).await;
-    run_migration_with_wallet_passwords(&ctx)
-        .await
-        .expect("migration");
+    finish_unwire::run(&ctx).await.expect("migration");
 
     // Deliberately no `load_*` call before these reads.
     for (id, label) in [
@@ -1383,7 +1358,7 @@ async fn a_corrupt_vote_index_never_strands_the_identity_keys() {
 
     // The failure still reaches the user — it is not swallowed…
     assert!(
-        run_migration_with_wallet_passwords(&ctx).await.is_err(),
+        finish_unwire::run(&ctx).await.is_err(),
         "a hard app-data failure must still surface, so the user gets a retry",
     );
 
@@ -1444,9 +1419,7 @@ async fn a_second_launch_after_an_unreadable_identity_preserves_user_edits_and_d
 
     let (ctx, _) = boot(tmp.path());
     let backend = wire_backend(&ctx).await;
-    run_migration_with_wallet_passwords(&ctx)
-        .await
-        .expect("first migration");
+    finish_unwire::run(&ctx).await.expect("first migration");
 
     // The readable identities landed regardless of the corrupt row…
     assert_eq!(
@@ -1488,9 +1461,7 @@ async fn a_second_launch_after_an_unreadable_identity_preserves_user_edits_and_d
         .expect("delete identity");
 
     // Second launch.
-    run_migration_with_wallet_passwords(&ctx)
-        .await
-        .expect("second migration");
+    finish_unwire::run(&ctx).await.expect("second migration");
 
     assert_eq!(
         ctx.get_identity_alias(&Identifier::from(IDENTITY_ID))

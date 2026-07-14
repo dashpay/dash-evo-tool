@@ -23,8 +23,6 @@ pub struct ModalChromeConfig {
     pub window_order: egui::Order,
     /// Whether the user can resize the window.
     pub resizable: bool,
-    /// Whether the title bar shows a close button.
-    pub show_close_button: bool,
     /// Inner padding of the window frame, in points.
     pub inner_margin: i8,
 }
@@ -54,11 +52,12 @@ pub fn modal_chrome<R>(
     painter.rect_filled(screen_rect, 0.0, DashColors::modal_overlay());
 
     let mut is_open = true;
-    let mut window = egui::Window::new(config.title)
+    let window_response = egui::Window::new(config.title)
         .collapsible(false)
         .resizable(config.resizable)
         .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
         .order(config.window_order)
+        .open(&mut is_open)
         .frame(egui::Frame {
             inner_margin: egui::Margin::same(config.inner_margin),
             outer_margin: egui::Margin::same(0),
@@ -71,11 +70,8 @@ pub fn modal_chrome<R>(
             },
             fill: ctx.global_style().visuals.window_fill,
             stroke: egui::Stroke::new(1.0, DashColors::popup_border_glow()),
-        });
-    if config.show_close_button {
-        window = window.open(&mut is_open);
-    }
-    let window_response = window.show(ctx, body);
+        })
+        .show(ctx, body);
 
     let (window_response, inner) = match window_response {
         Some(r) => (Some(r.response), r.inner),

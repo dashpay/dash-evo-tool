@@ -1302,14 +1302,13 @@ impl AppState {
     }
 
     /// Claim all keyboard + text input for an active blocking overlay at frame
-    /// start unless a secret or migration-password prompt is active above it.
-    /// The prompt needs the keyboard, so the overlay must yield to it.
+    /// start — UNLESS a secret prompt is active above it. The prompt
+    /// renders above the overlay and needs the keyboard (Enter to submit, Esc to
+    /// cancel, Tab to navigate), so the overlay must yield to it.
     /// Extracted from `update` so the gate is exercised by a kittest (RQ-1):
     /// removing the `active_secret_prompt.is_none()` guard must fail that test.
     fn claim_overlay_input(&self, ctx: &egui::Context) {
-        if self.active_secret_prompt.is_none()
-            && !self.migration.is_prompting(self.current_app_context())
-        {
+        if self.active_secret_prompt.is_none() {
             ProgressOverlay::claim_input(ctx);
         }
     }

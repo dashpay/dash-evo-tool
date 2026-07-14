@@ -195,7 +195,6 @@ impl UnlockState {
             submit_label: "Unlock",
             input_placeholder: "Enter passphrase",
             remember_label: None,
-            cancellable: true,
         };
 
         match passphrase_modal(ctx, &config, |_ui| {}) {

@@ -960,7 +960,10 @@ impl WalletsBalancesScreen {
         // race ahead with Create/Import CTAs that the rehydrated wallet
         // list might invalidate seconds later.
         let migration_state = (*self.app_context.migration_status().state()).clone();
-        let migration_running = migration_state.is_running();
+        let migration_running = matches!(
+            migration_state,
+            crate::context::migration_status::MigrationState::Running { .. }
+        );
 
         // Optionally put everything in a framed "card"-like container
         Frame::group(ui.style())

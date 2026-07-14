@@ -9,8 +9,8 @@
 //! optional `extra` body (e.g. a "remember" checkbox), and the Cancel / Submit
 //! button row.
 //!
-//! Cancellable callers resolve Cancel / Escape / X / click-outside uniformly
-//! to [`PassphraseModalOutcome::Cancel`]. Blocking callers omit every dismissal.
+//! It resolves Cancel / Escape / X / click-outside uniformly to
+//! [`PassphraseModalOutcome::Cancel`] so callers never re-implement dismissal.
 //!
 //! ## State ownership
 //!
@@ -90,9 +90,6 @@ pub struct PassphraseModalConfig<'a> {
     /// `Some(...)` for non-wallet prompts (e.g. an identity key) so the
     /// checkbox copy is not wallet-specific (Diziet D-2).
     pub remember_label: Option<&'a str>,
-    /// Whether Cancel, Escape, click-outside, and the title-bar close button
-    /// may dismiss the modal.
-    pub cancellable: bool,
 }
 
 /// Per-modal mutable state stored in egui's data cache between frames.
@@ -147,7 +144,6 @@ pub fn passphrase_modal(
             overlay_order: egui::Order::Background,
             window_order: egui::Order::Foreground,
             resizable: false,
-            show_close_button: config.cancellable,
             inner_margin: 20,
         },
         |ui| {
@@ -195,9 +191,7 @@ pub fn passphrase_modal(
                     if ComponentStyles::add_primary_button(ui, config.submit_label).clicked() {
                         should_submit = true;
                     }
-                    if config.cancellable
-                        && ComponentStyles::add_secondary_button(ui, "Cancel", dark_mode).clicked()
-                    {
+                    if ComponentStyles::add_secondary_button(ui, "Cancel", dark_mode).clicked() {
                         should_cancel = true;
                     }
                     ui.add_space(8.0);
@@ -207,14 +201,13 @@ pub fn passphrase_modal(
     );
 
     // X button on the window title bar.
-    if config.cancellable && chrome.closed_via_x {
+    if chrome.closed_via_x {
         should_cancel = true;
     }
 
     // Escape key. Consume it so a second passphrase modal in the same frame
     // does not also dismiss on the same keypress.
-    if config.cancellable
-        && !should_submit
+    if !should_submit
         && !should_cancel
         && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
     {
@@ -222,8 +215,7 @@ pub fn passphrase_modal(
     }
 
     // Click outside the window.
-    if config.cancellable
-        && let Some(ref wr) = chrome.window_response
+    if let Some(ref wr) = chrome.window_response
         && !should_submit
         && !should_cancel
         && clicked_outside_window(ctx, wr.rect)

@@ -263,8 +263,9 @@ struct Inner {
     dashpay_address_index_lock: std::sync::Mutex<()>,
     /// Encrypted secret vault. Holds imported single-key WIFs
     /// (`single_key_priv.*` labels, see [`single_key`]) and HD-wallet
-    /// BIP-39 seeds (`envelope.v1` labels under `WalletId(seed_hash)`, see
-    /// [`wallet_seed_store`]). [`Self::secret_access`] decrypts seeds
+    /// BIP-39 seeds (`seed.raw.v1`, with `envelope.v1` only during migration,
+    /// under `WalletId(seed_hash)`; see [`wallet_seed_store`]).
+    /// [`Self::secret_access`] decrypts seeds
     /// just-in-time from this vault for each signing operation; no
     /// long-lived plaintext seed cache exists.
     secret_store: Arc<SecretStore>,

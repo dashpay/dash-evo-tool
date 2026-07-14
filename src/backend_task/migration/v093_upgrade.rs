@@ -855,8 +855,8 @@ async fn v093_install_upgrades_with_wallets_settings_votes_and_history_intact() 
 
     // ── Wallet seeds: the funds path ─────────────────────────────────
     // The drain copies each legacy envelope into the vault; hydration then
-    // promotes the unprotected one to the raw seam (`seed.raw.v1`) while retaining
-    // the recovery copy. So the seed is asserted where it is used — as the raw
+    // promotes the unprotected one to the raw seam (`seed.raw.v1`) and collects
+    // the redundant copy. So the seed is asserted where it is used — as the raw
     // 64 bytes the wallet is made of.
     let seeds = backend.wallet_seeds();
     let raw_seed = seeds
@@ -877,19 +877,19 @@ async fn v093_install_upgrades_with_wallets_settings_votes_and_history_intact() 
         seeds
             .legacy_envelope_get(&fixture.unprotected)
             .expect("read legacy envelope")
-            .is_some(),
-        "the promoted legacy recovery envelope must remain available",
+            .is_none(),
+        "the unprotected seed must have exactly one vault copy after migration",
     );
 
     // The password gate opens the protected wallet through the normal unlock
-    // path, which re-encrypts the seed into the current Tier-2 envelope while
-    // retaining the legacy recovery copy.
+    // path, which re-encrypts the seed into the current Tier-2 envelope and
+    // removes the redundant legacy copy.
     assert!(
         seeds
             .legacy_envelope_get(&fixture.protected)
             .expect("read protected envelope")
-            .is_some(),
-        "the storage update must retain the legacy protected recovery envelope",
+            .is_none(),
+        "the protected seed must have exactly one vault copy after migration",
     );
     assert_eq!(
         seeds.scheme(&fixture.protected).expect("scheme"),

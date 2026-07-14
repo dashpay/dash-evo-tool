@@ -16,11 +16,10 @@
 //! hint, master xpub) lives in `WalletMeta`, not next to the seed.
 //!
 //! The legacy `envelope.v1` row — a bincode-encoded [`StoredSeedEnvelope`]
-//! whose ciphertext was DET's own AES-GCM envelope — is retained DECODE-ONLY as
-//! a migration reader ([`WalletSeedView::get`] /
-//! [`WalletSeedView::legacy_envelope_get`]). Every production write goes
-//! through the raw/`set_protected` seam; a legacy envelope is rewritten to the
-//! raw label on the first load/unlock and then deleted.
+//! whose ciphertext was DET's own AES-GCM envelope — is a decode-only migration
+//! reader ([`WalletSeedView::get`] / [`WalletSeedView::legacy_envelope_get`]).
+//! Every successful current-format write best-effort deletes that redundant
+//! copy; a cold-boot scheme probe repeats the cleanup after an interrupted run.
 //!
 //! The `WalletSeedHash` is reused directly as the upstream `WalletId`
 //! (both are `[u8; 32]`).
@@ -138,6 +137,18 @@ impl<'a> WalletSeedView<'a> {
             .map_err(map_err)
     }
 
+    /// Best-effort garbage collection after the current seed copy is durable.
+    pub(crate) fn delete_legacy_best_effort(&self, seed_hash: &WalletSeedHash) {
+        if let Err(error) = self.delete(seed_hash) {
+            tracing::warn!(
+                target = "wallet_backend::wallet_seed_store",
+                seed_hash = %hex::encode(seed_hash),
+                error = ?error,
+                "Current seed is durable but its redundant legacy envelope could not be removed",
+            );
+        }
+    }
+
     /// Retained decode-only legacy reader: read the `envelope.v1` row. Alias
     /// for [`Self::get`] under the migration-reader name — the loader and the
     /// chokepoint reach for it explicitly when the raw seed is absent.
@@ -156,7 +167,9 @@ impl<'a> WalletSeedView<'a> {
             &scope_for(seed_hash),
             SEED_RAW_LABEL,
             &SecretBytes::from_slice(seed),
-        )
+        )?;
+        self.delete_legacy_best_effort(seed_hash);
+        Ok(())
     }
 
     /// Read the RAW 64-byte seed under `seed.raw.v1`, or `None` if it has not
@@ -207,7 +220,9 @@ impl<'a> WalletSeedView<'a> {
             SEED_RAW_LABEL,
             &SecretBytes::from_slice(seed),
             password,
-        )
+        )?;
+        self.delete_legacy_best_effort(seed_hash);
+        Ok(())
     }
 
     /// Read the Tier-2-protected 64-byte seed under `seed.raw.v1`, unsealing

@@ -7,7 +7,6 @@ use crate::context::AppContext;
 use crate::context::connection_status::OverallConnectionState;
 use crate::model::spv_status::{SpvStatus, SpvStatusSnapshot};
 use crate::model::user_role::UserRole;
-use crate::model::wallet::DerivationPathHelpers;
 use crate::ui::components::MessageBanner;
 use crate::ui::components::component_trait::Component;
 use crate::ui::components::left_panel::add_left_panel;
@@ -635,59 +634,14 @@ impl NetworkChooserScreen {
                     ui.add_space(6.0);
 
                     ui.horizontal(|ui| {
-                        if ui.button("Clear Platform Addresses").clicked() {
-                            // TODO(C10): consolidate wallet_addresses + per-wallet k/v
-                            // clearing once the wallet table itself migrates out of data.db.
-                            let current_context = self.current_app_context();
-                            let wallet_hashes: Vec<_> = current_context
-                                .wallets
-                                .read()
-                                .map(|guard| guard.keys().copied().collect())
-                                .unwrap_or_default();
-                            // Drop each wallet's pushed sync cursor so the
-                            // "Addresses synced" label reverts to "never synced"
-                            // until the next coordinator pass repopulates it.
-                            for hash in &wallet_hashes {
-                                current_context.clear_platform_sync_info(hash);
-                            }
-                            // Clear the in-memory wallet maps so the UI never
-                            // stays inconsistent with a half-completed clear.
-                            if let Ok(wallets) = current_context.wallets.read() {
-                                for wallet_arc in wallets.values() {
-                                    if let Ok(mut wallet) = wallet_arc.write() {
-                                        wallet.platform_address_info.clear();
-                                        wallet.known_addresses.retain(|_, path| {
-                                            !path.is_platform_payment(current_context.network)
-                                        });
-                                        wallet.watched_addresses.retain(|path, _| {
-                                            !path.is_platform_payment(current_context.network)
-                                        });
-                                    }
-                                }
-                            }
-
-                            match current_context
-                                .db
-                                .clear_all_platform_addresses(&current_context.network)
-                            {
-                                Ok(count) => {
-                                    tracing::info!(
-                                        "Cleared {} platform addresses from database",
-                                        count
-                                    );
-                                }
-                                Err(e) => {
-                                    MessageBanner::set_global(
-                                        ui.ctx(),
-                                        "Could not clear the saved Platform addresses. Restart the application and try again.",
-                                        MessageType::Error,
-                                    )
-                                    .with_details(e);
-                                }
-                            }
-                        }
+                        ui.add_enabled(false, egui::Button::new("Clear Platform Addresses"))
+                            .on_hover_text(
+                                "This tool is unavailable because earlier-version recovery data is kept read-only.",
+                            );
                         ui.label(
-                            egui::RichText::new("Removes all Platform addresses for testing sync")
+                            egui::RichText::new(
+                                "This tool is unavailable while earlier-version recovery data is kept read-only.",
+                            )
                                 .color(DashColors::TEXT_SECONDARY)
                                 .italics(),
                         );
@@ -768,7 +722,7 @@ impl NetworkChooserScreen {
 
                 if ui.add(clear_button).clicked() {
                     let message = format!(
-                        "This permanently deletes all local database entries for {}. This includes wallets, tokens, contacts, and cached identity data. This cannot be undone.",
+                        "This removes the data used by this version for {}, including wallets, tokens, contacts, and cached identity data. If you updated from an earlier version, its read-only recovery database stays on this device and may still contain wallet recovery data. Continue?",
                         self.current_network_label()
                     );
                     self.db_clear_dialog = Some(

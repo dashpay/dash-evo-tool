@@ -117,7 +117,10 @@ impl Database {
         conn.execute(sql, params)
     }
 
-    /// Removes all application data tied to a specific Dash network.
+    /// Legacy-database writer retained only for isolated compatibility tests.
+    ///
+    /// Production opens a pre-update `data.db` read-only and must never call
+    /// this method; current network data is cleared through its owning stores.
     pub fn clear_network_data(&self, network: Network) -> rusqlite::Result<()> {
         let network_str = network.to_string();
 

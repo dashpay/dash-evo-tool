@@ -451,13 +451,12 @@ impl SecretAccess {
     /// Decrypt an HD-seed envelope with an explicitly-supplied passphrase and
     /// promote the result into the session cache — **without prompting**.
     ///
-    /// This is the unlock-gesture bridge: the UI has just verified the
-    /// passphrase (via [`WalletSeed::open`](crate::model::wallet::WalletSeed::open)),
-    /// so the seed is re-decrypted here through the same chokepoint decrypt
-    /// path every signing op uses, then cached so the rest of the session does
-    /// not re-prompt. `passphrase` is `None` for unprotected wallets (the
-    /// envelope decrypts verbatim). The plaintext is borrowed only to seed the
-    /// cache and zeroizes on return.
+    /// This is the unlock-gesture verification boundary: the supplied
+    /// passphrase is checked against the actual vault object through the same
+    /// chokepoint decrypt path every signing operation uses, then the seed is
+    /// cached according to `policy`. `passphrase` is `None` for unprotected
+    /// wallets (the envelope decrypts verbatim). The plaintext is moved into
+    /// the cache when retained and otherwise zeroizes on return.
     ///
     /// The lazy legacy→steady-state re-wrap happens inside [`Self::decrypt_jit`]:
     /// a protected seed re-wraps to **Tier-2 under the same password** (protection
@@ -778,8 +777,8 @@ impl SecretAccess {
                         Ok(Plaintext::HdSeed(seed))
                     }
                     // Legacy AES-GCM envelope: decode-only reader, then LAZY
-                    // re-wrap to the steady-state form while retaining the
-                    // recovery envelope. A protected seed re-wraps to Tier-2 under the
+                    // re-wrap to the steady-state form and garbage-collect the
+                    // redundant envelope. A protected seed re-wraps to Tier-2 under the
                     // SAME user password (protection KEPT, not downgraded to
                     // raw); an unprotected one goes to the raw label. An absent
                     // envelope ⇒ the secret is gone (loud, never a silent miss).
@@ -2536,7 +2535,7 @@ mod tests {
     /// TS-T2-01 — lazy re-wrap KEEPS protection. A protected legacy AES-GCM
     /// envelope, on first unlock, migrates to a Tier-2 object-password envelope
     /// at the raw label (NOT downgraded to a password-free raw secret), the
-    /// recovery envelope is retained, and the seed reads back only with its
+    /// redundant envelope is removed, and the seed reads back only with its
     /// password.
     #[tokio::test]
     async fn ts_t2_01_protected_seed_rewraps_to_tier2_on_first_unlock() {
@@ -2560,10 +2559,10 @@ mod tests {
         let view = WalletSeedView::new(&store);
         // Steady state is Tier-2 protected, NOT raw.
         assert_eq!(view.scheme(&seed_hash).unwrap(), SecretScheme::Protected);
-        // Recovery envelope retained.
+        // Exactly one current protected copy remains.
         assert!(
-            view.get(&seed_hash).unwrap().is_some(),
-            "legacy recovery envelope retained after re-wrap"
+            view.get(&seed_hash).unwrap().is_none(),
+            "legacy envelope must be collected after the Tier-2 write"
         );
         // Reads back only WITH the object password ...
         let pw = SecretString::new(SENTINEL_PASSPHRASE);

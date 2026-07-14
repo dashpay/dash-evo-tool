@@ -881,7 +881,7 @@ impl WalletsBalancesScreen {
                 self.pending_wallet_removal_alias = Some(alias.clone());
 
                 let message = format!(
-                    "Removing wallet \"{}\" will delete its local data, including addresses, balances, and asset locks stored on this device. Identities linked to it will remain but the keys derived from this wallet will no longer work unless the wallet is re-imported. Continue?",
+                    "Removing wallet \"{}\" clears the data used by this version, including its addresses, balances, and asset locks. Identities linked to it will remain, but keys derived from this wallet will not work unless the wallet is imported again. If this wallet came from an earlier version, that version's read-only recovery database stays on this device. Continue?",
                     alias
                 );
 

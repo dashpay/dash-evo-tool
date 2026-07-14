@@ -4267,8 +4267,8 @@ mod tests {
             seed_view
                 .legacy_envelope_get(&seed_hash)
                 .expect("read legacy envelope after unlock")
-                .is_some(),
-            "a later unlock must retain the legacy recovery envelope",
+                .is_none(),
+            "a later unlock must collect the redundant legacy envelope",
         );
         assert_eq!(
             seed_view.scheme(&seed_hash).expect("scheme after unlock"),
@@ -4412,8 +4412,8 @@ mod tests {
         assert!(
             view.legacy_envelope_get(&unlock_hash)
                 .expect("read unlocked legacy envelope")
-                .is_some(),
-            "unlocking must retain the copied legacy recovery envelope",
+                .is_none(),
+            "unlocking must collect the copied legacy recovery envelope",
         );
         assert!(
             view.legacy_envelope_get(&skip_hash)

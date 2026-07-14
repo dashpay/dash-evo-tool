@@ -41,6 +41,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- **The first launch after an upgrade asks for each password-protected wallet's
+  password**: the app moves your wallets into a new storage format on that first
+  launch, and it needs each protected wallet's password to finish the move for
+  that wallet. You are asked once per wallet, one at a time. If you don't have a
+  password to hand, you can skip that wallet: it stays locked, no coins are lost,
+  and its move finishes the next time you unlock it with its password. The
+  password is used for the update and is not kept unlocked afterwards.
+
+- **The previous version's database is kept on this device as a read-only
+  recovery copy**: it is never written to, and it is no longer erased by "Clear
+  Database" or "Remove Wallet". Those actions remove the data *this* version
+  uses; the older recovery database remains and may still contain wallet recovery
+  data, which both confirmation dialogs now say before you confirm. Because that
+  database is read-only, the "Clear Platform Addresses" developer tool is
+  unavailable, and says why.
+
 - **Masternode and evonode identities no longer appear in the Identity Hub or
   Identities picker**: they now live exclusively on the new Masternodes tab,
   so you're never offered actions (like registering a username) that don't
@@ -163,6 +179,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   cannot be populated.
 
 ### Fixed
+
+- **Shielded actions now say when they are unavailable instead of failing
+  obscurely**: if shielding, sending, or withdrawing shielded funds is not
+  available on your network yet, the app says so and points you at a regular
+  payment, rather than starting the action and failing part-way through.
 
 - **DashPay contact details and request actions are protected from accidental loss or duplicate
   fees**: declining, cancelling, unhiding, or renaming a contact now preserves every unrelated

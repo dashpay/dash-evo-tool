@@ -1281,9 +1281,10 @@ As an expert user, I want the app to automatically begin SPV sync when it opens 
 ### NET-019: Clear all local data for a network [Implemented]
 **Persona:** Jordan, Priya
 
-As a user, I want to permanently delete all local data for the current network — wallets, tokens, contacts, and cached identity data — so that I can reset the app to a clean state.
+As a user, I want to delete the local data this version uses for the current network — wallets, tokens, contacts, and cached identity data — so that I can reset the app to a clean state.
 
-- Danger-mode confirmation dialog before deletion; the action cannot be undone.
+- Danger-mode confirmation dialog before deletion; the deleted data cannot be recovered from within the app.
+- If an older recovery database exists, it remains untouched and may still contain wallet recovery data. The confirmation dialog says so before the user confirms.
 - Available for the currently selected network, including Mainnet.
 - Distinct from NET-011 (Wipe Platform data), which clears only cached Platform state on Devnet/Testnet.
 
@@ -1358,6 +1359,7 @@ As a user, while a long operation that is unsafe to interrupt is running (broadc
 - A full-window dimming overlay with an indeterminate spinner and an optional "Step N of M" counter and description appears while the operation runs, and lowers automatically when it finishes (success or error).
 - All interaction beneath the block is suppressed: pointer clicks hit a sink, and keyboard/text input is claimed at frame start so nothing reaches a focused field beneath (FR-8 / QA-001). The block is never dismissable by Esc, Enter, Space, or Tab.
 - The block yields completely to a passphrase prompt: it remains active but paints no dimmer, pointer sink, card, or focus trap until the prompt resolves, so the user can type and use every prompt action (SEC-004).
+- The prompt installs its own pointer sink in the block's place, so interaction beneath it stays blocked while the block is yielding. This holds for every passphrase prompt, dismissible or not: being able to cancel a prompt is not the same as being able to click past it.
 - Honest escalation, never a fake exit: after 30 s a calm "This is taking longer than usual." line appears; after 120 s with no progress it escalates to "This is taking much longer than expected…" and logs a one-shot developer error. For these unsafe-to-interrupt operations there is no background/dismiss button — the safety guarantee is that every blocked operation is bounded and always lowers the block through the normal path. _(Exception: the startup/Connect SPV-sync block of UX-002 is unbounded but read-only, so it ships an always-visible "Continue in the background" escape instead.)_
 
 ### UX-002: Blocking SPV-sync overlay with a "continue in the background" escape [Implemented]

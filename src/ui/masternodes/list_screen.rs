@@ -26,7 +26,7 @@ use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel_with_global_nav_capturing;
 use crate::ui::identity::identity_pill::shorten_id;
 use crate::ui::identity::picker::compute_column_count;
-use crate::ui::masternodes::card::{MasternodeCard, card_heading, show_platform_identity_status};
+use crate::ui::masternodes::card::{MasternodeCard, card_heading};
 use crate::ui::masternodes::detail_screen::{DetailOutcome, MasternodeDetailView};
 use crate::ui::masternodes::load_form::{LoadFormOutcome, MasternodeLoadForm};
 use crate::ui::state::global_nav::PageNavSpec;
@@ -269,8 +269,6 @@ impl MasternodesScreen {
         let available_width = ui.available_width();
         let columns = compute_column_count(available_width).max(1);
         let count = self.nodes.len();
-        let platform_identity_status_visible =
-            show_platform_identity_status(self.app_context.user_role());
         // Capture the clicked node id locally so the render loop only borrows
         // `self.nodes` immutably; `selected_node` is written after the loop.
         let mut clicked: Option<Identifier> = None;
@@ -293,7 +291,7 @@ impl MasternodesScreen {
                         )
                         .with_alias(node.alias.clone())
                         .with_balance_credits(node.balance_credits);
-                        if card.show(ui, platform_identity_status_visible).clicked {
+                        if card.show(ui).clicked {
                             clicked = Some(node.node_id);
                         }
                     }

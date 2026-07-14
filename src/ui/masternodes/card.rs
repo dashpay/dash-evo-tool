@@ -5,7 +5,6 @@
 use crate::model::contested_name::MasternodeContestSummary;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::{IdentityStatus, IdentityType, MasternodeKeyPresence};
-use crate::model::user_role::UserRole;
 use crate::ui::identity::identity_picker_card::{
     CARD_HEIGHT, CARD_MIN_WIDTH, draw_monogram, draw_type_badge,
 };
@@ -20,10 +19,6 @@ pub(crate) const PLATFORM_IDENTITY_STATUS_TOOLTIP: &str = "This shows whether th
 
 pub(crate) fn platform_identity_status_label(status: IdentityStatus) -> String {
     format!("Platform identity: {status}")
-}
-
-pub(crate) fn show_platform_identity_status(role: UserRole) -> bool {
-    role.at_least(UserRole::Power)
 }
 
 /// Heading for a masternode card: the alias when set, otherwise the shortened
@@ -146,11 +141,7 @@ impl MasternodeCard {
         }
     }
 
-    pub fn show(
-        &self,
-        ui: &mut Ui,
-        platform_identity_status_visible: bool,
-    ) -> MasternodeCardResponse {
+    pub fn show(&self, ui: &mut Ui) -> MasternodeCardResponse {
         let dark_mode = ui.ctx().global_style().visuals.dark_mode;
         let border = Stroke::new(1.0, DashColors::border(dark_mode));
         let fill = DashColors::surface(dark_mode);
@@ -258,15 +249,13 @@ impl MasternodeCard {
                 );
                 ui.add_space(4.0);
 
-                if platform_identity_status_visible {
-                    let status_response = draw_status_row(
-                        ui,
-                        Color32::from(self.status),
-                        &platform_identity_status_label(self.status),
-                        dark_mode,
-                    );
-                    platform_identity_status_rect = Some(status_response.rect);
-                }
+                let status_response = draw_status_row(
+                    ui,
+                    Color32::from(self.status),
+                    &platform_identity_status_label(self.status),
+                    dark_mode,
+                );
+                platform_identity_status_rect = Some(status_response.rect);
             });
         });
 
@@ -335,13 +324,6 @@ mod tests {
             platform_identity_status_label(IdentityStatus::NotFound),
             "Platform identity: Not Found"
         );
-    }
-
-    #[test]
-    fn platform_identity_status_visibility_follows_expert_mode() {
-        assert!(!show_platform_identity_status(UserRole::Everyday));
-        assert!(show_platform_identity_status(UserRole::Power));
-        assert!(show_platform_identity_status(UserRole::Developer));
     }
 
     #[test]

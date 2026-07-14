@@ -36,7 +36,7 @@ use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::identity::identity_picker_card::draw_type_badge;
 use crate::ui::identity::identity_pill::shorten_id;
 use crate::ui::masternodes::card::{
-    PLATFORM_IDENTITY_STATUS_TOOLTIP, platform_identity_status_label, show_platform_identity_status,
+    PLATFORM_IDENTITY_STATUS_TOOLTIP, platform_identity_status_label,
 };
 use crate::ui::masternodes::{TIP_OWNER_KEY, TIP_PAYOUT_KEY, TIP_VOTING_KEY, key_status_tokens};
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
@@ -484,21 +484,19 @@ impl MasternodeDetailView {
                 .size(14.0)
                 .color(DashColors::text_primary(dark_mode)),
         );
-        if show_platform_identity_status(self.app_context.user_role()) {
-            ui.horizontal(|ui| {
-                let (rect, _) =
-                    ui.allocate_exact_size(egui::Vec2::new(10.0, 10.0), egui::Sense::hover());
-                ui.painter()
-                    .circle_filled(rect.center(), 4.0, Color32::from(self.identity.status));
-                ui.add_space(4.0);
-                ui.label(
-                    RichText::new(platform_identity_status_label(self.identity.status))
-                        .color(DashColors::text_primary(dark_mode)),
-                );
-            })
-            .response
-            .on_hover_text(PLATFORM_IDENTITY_STATUS_TOOLTIP);
-        }
+        ui.horizontal(|ui| {
+            let (rect, _) =
+                ui.allocate_exact_size(egui::Vec2::new(10.0, 10.0), egui::Sense::hover());
+            ui.painter()
+                .circle_filled(rect.center(), 4.0, Color32::from(self.identity.status));
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new(platform_identity_status_label(self.identity.status))
+                    .color(DashColors::text_primary(dark_mode)),
+            );
+        })
+        .response
+        .on_hover_text(PLATFORM_IDENTITY_STATUS_TOOLTIP);
     }
 
     fn render_actions_row(&self, ui: &mut Ui, dark_mode: bool) -> Option<AppAction> {

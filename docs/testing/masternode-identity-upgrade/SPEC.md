@@ -51,6 +51,27 @@ mainnet protocol upgrade between the two DET versions.
   RFC6979), and (c) is accepted by `dashd verifymessage`. This proves the private
   key material survived migration and still signs correctly.
 
+## Additional scenario: password-encrypted wallet survives the upgrade
+
+Separately verifies that a **password-protected wallet** created in DET 0.9.3
+survives the upgrade and can still be unlocked with the same password.
+
+**What we did.** In DET 0.9.3, created an HD wallet with a strong password
+(0.9.3 encrypts the seed with AES-256-GCM, key derived from the password via
+Argon2). Confirmed at the storage layer — `data.db` `wallet.uses_password = 1`
+for that wallet (vs `0` for a no-password wallet). Snapshotted the profile, then
+ran the new DET on a copy.
+
+**Result: pass.** After the DB migration the wallet appears in the new DET as
+`HD: <name>`, is correctly recognized as encrypted (it starts **locked** with an
+**Unlock** button), and **unlocks with the original password** (the button flips
+to **Lock** and address-derivation controls appear). Because the seed is stored
+with *authenticated* encryption (AES-256-GCM), a successful unlock is conclusive:
+a wrong password or a seed corrupted by migration would fail the GCM auth tag and
+refuse to unlock. So the encrypted seed and the password both survive the
+migration intact. (Address rows don't populate in the UI while SPV is unsynced —
+same dip0024 cause as below — but that's independent of the unlock proof.)
+
 ## Known limitation (candidate finding for the PR)
 
 A **withdrawal through the new DET cannot be exercised on a local network.** The

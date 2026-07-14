@@ -44,6 +44,33 @@ for its address. For a byte-for-byte cross-check, `dashd signmessage <address>
 "<message>"` (the address is in the local_seed `main` wallet) yields the
 identical signature — deterministic RFC6979 — proving DET holds the same key.
 
+## Additional check — encrypted wallet survives the upgrade
+
+Verifies a password-protected wallet created in 0.9.3 still unlocks in the new
+DET (see SPEC "Additional scenario"). No network is needed for the wallet itself;
+run it alongside or independently of the identity flow.
+
+1. **In DET 0.9.3** — Wallets -> **Create Wallet**. Hover the entropy grid, click
+   **Generate**, tick **"I wrote it down"**, give it a **name** and a **strong
+   password** (the strength meter must read at least "Strong"), then **Save
+   Wallet**. Record the name + password.
+2. **Confirm it's encrypted at the storage layer** (profile still on 0.9.3):
+   ```
+   sqlite3 "<profile>/Library/Application Support/Dash-Evo-Tool/data.db" \
+     "SELECT alias, uses_password FROM wallet;"
+   ```
+   The new wallet must show `uses_password = 1` (a no-password wallet shows `0`).
+3. **Snapshot** the profile dir, then **run the new DET on a copy** of it. Choose
+   *Just Explore*, dismiss the sync modal (*Continue in the background*), open
+   **Wallets**, and select the wallet.
+4. **Unlock it** — click **Unlock**, enter the original password, confirm. Pass =
+   the wallet is present and the **Unlock button flips to Lock** (authenticated
+   AES-256-GCM decryption succeeded, so the password + seed survived migration).
+   A wrong password shows an error and the button stays **Unlock**.
+
+Note: address rows may stay empty while SPV is unsynced (the dip0024 limitation
+below) — that does not affect the unlock result.
+
 ## Gotchas
 
 - **P2P port proxy (step 5).** The PR's SPV client hardcodes the regtest Core P2P

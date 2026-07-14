@@ -118,12 +118,12 @@ pub(crate) fn wallet_arc(
         })
 }
 
-/// Poll until the cold-start storage update is no longer executing.
+/// Poll until the cold-start storage update is fully complete.
 ///
 /// On a fresh standalone process, `ensure_wallet_backend_and_start_spv`
 /// kicks off a legacy-data migration before the backend is fully usable.
 /// `AppContext::run_backend_task` short-circuits wallet-touching tasks while
-/// `migration_status().state().is_executing()`, returning
+/// `migration_status().state().is_in_progress()`, returning
 /// [`TaskError::WalletStorageNotReady`]. Waiting here covers an active run that
 /// started between dispatch and this check.
 ///
@@ -135,8 +135,8 @@ pub(crate) fn wallet_arc(
 /// with the desktop-app instruction and never enters this polling loop.
 async fn ensure_storage_ready(ctx: &Arc<AppContext>) -> Result<(), McpToolError> {
     let migration = ctx.migration_status();
-    // Fast path — not running; nothing to wait for.
-    if !migration.state().is_executing() {
+    // Fast path — complete; nothing to wait for.
+    if !migration.state().is_in_progress() {
         return Ok(());
     }
 
@@ -144,7 +144,7 @@ async fn ensure_storage_ready(ctx: &Arc<AppContext>) -> Result<(), McpToolError>
 
     let poll = async {
         loop {
-            if !migration.state().is_executing() {
+            if !migration.state().is_in_progress() {
                 return Ok(());
             }
             tokio::time::sleep(std::time::Duration::from_millis(250)).await;
@@ -216,7 +216,7 @@ pub(crate) async fn ensure_spv_synced(ctx: &Arc<AppContext>) -> Result<(), McpTo
     // exist. In a standalone context the explicit prompt capability makes a
     // protected install fail immediately.
     let migration_state = ctx.migration_status().state();
-    if migration_state.is_executing() {
+    if migration_state.is_in_progress() {
         ensure_storage_ready(ctx).await?;
         if let crate::context::migration_status::MigrationState::Failed { error } =
             ctx.migration_status().state().as_ref()
@@ -225,8 +225,6 @@ pub(crate) async fn ensure_spv_synced(ctx: &Arc<AppContext>) -> Result<(), McpTo
                 crate::backend_task::migration::migration_task_error(Arc::clone(error)),
             ));
         }
-    } else if migration_state.is_awaiting_user_input() {
-        tracing::debug!("The desktop storage update is awaiting a wallet password");
     } else if matches!(
         migration_state.as_ref(),
         crate::context::migration_status::MigrationState::Idle

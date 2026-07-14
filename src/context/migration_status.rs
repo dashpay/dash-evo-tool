@@ -197,10 +197,9 @@ impl MigrationState {
         matches!(self, MigrationState::AwaitingWalletPasswords { .. })
     }
 
-    /// Compatibility alias for execution-only status. Equivalent to
-    /// [`Self::is_executing`]; waiting for input returns `false`.
-    pub fn is_running(&self) -> bool {
-        self.is_executing()
+    /// Returns `true` until execution and any required password wait finish.
+    pub fn is_in_progress(&self) -> bool {
+        self.is_executing() || self.is_awaiting_user_input()
     }
 }
 
@@ -309,11 +308,13 @@ mod tests {
         let status = MigrationStatus::new_idle();
         assert_eq!(*status.state(), MigrationState::Idle);
         assert!(!status.state().is_executing());
+        assert!(!status.state().is_in_progress());
 
         status.set_state(MigrationState::Running {
             step: MigrationStep::Detecting,
         });
         assert!(status.state().is_executing());
+        assert!(status.state().is_in_progress());
         assert_eq!(
             *status.state(),
             MigrationState::Running {
@@ -332,11 +333,13 @@ mod tests {
             status.set_state(MigrationState::Running { step });
             assert_eq!(*status.state(), MigrationState::Running { step });
             assert!(status.state().is_executing());
+            assert!(status.state().is_in_progress());
         }
 
         status.set_state(MigrationState::Success);
         assert_eq!(*status.state(), MigrationState::Success);
         assert!(!status.state().is_executing());
+        assert!(!status.state().is_in_progress());
     }
 
     #[test]
@@ -350,6 +353,7 @@ mod tests {
 
         assert!(!status.state().is_executing());
         assert!(status.state().is_awaiting_user_input());
+        assert!(status.state().is_in_progress());
         assert_eq!(
             *status.state(),
             MigrationState::AwaitingWalletPasswords { wallets },
@@ -407,6 +411,7 @@ mod tests {
             error: Arc::new(MigrationError::WalletBackendUnavailable),
         });
         assert!(!status.state().is_executing());
+        assert!(!status.state().is_in_progress());
         assert!(matches!(*status.state(), MigrationState::Failed { .. }));
     }
 

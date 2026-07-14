@@ -64,7 +64,7 @@ pub mod wallet;
 /// `WalletBackend` (and therefore the upstream `SecretStore` / sidecar
 /// k/v). These tasks must short-circuit with
 /// [`TaskError::WalletStorageNotReady`] while the cold-start migration
-/// (`FinishUnwire`) is still running so the user sees the "data is
+/// (`FinishUnwire`) is still in progress so the user sees the "data is
 /// still being updated" banner instead of a misleading SDK timeout.
 ///
 /// The list mirrors the family check above the `match` in
@@ -596,7 +596,7 @@ impl AppContext {
         // or produces a misleading SDK timeout. `WalletStorageNotReady`
         // is a typed, user-friendly variant whose banner mirrors the
         // migration banner ("data is still being updated").
-        if is_wallet_touching(&task) && self.migration_status().state().is_executing() {
+        if is_wallet_touching(&task) && self.migration_status().state().is_in_progress() {
             tracing::debug!(
                 target = "migration::gate",
                 task = ?task,
@@ -956,6 +956,41 @@ mod tests {
             ctx.identity_load_phase(&identity_id, token),
             Some(IdentityLoadPhase::Failed),
             "a load short-circuited before its task ran reports Failed, offering the user a retry"
+        );
+
+        if let Ok(backend) = ctx.wallet_backend() {
+            backend.shutdown().await;
+        }
+    }
+
+    /// A shared MCP request dispatches through `run_backend_task`, so a wallet
+    /// task must remain gated while migration is paused for a desktop password.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn wallet_task_is_rejected_while_migration_awaits_password() {
+        use crate::backend_task::wallet::WalletTask;
+        use crate::context::migration_status::MigrationState;
+        use crate::context::test_support::test_app_context;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(tmp.path());
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
+        let seed_hash = [0x5a; 32];
+
+        ctx.migration_status()
+            .set_state(MigrationState::AwaitingWalletPasswords {
+                wallets: vec![seed_hash],
+            });
+
+        let result = ctx
+            .run_backend_task(
+                BackendTask::WalletTask(WalletTask::GenerateReceiveAddress { seed_hash }),
+                sender,
+            )
+            .await;
+        assert!(
+            matches!(result, Err(TaskError::WalletStorageNotReady)),
+            "an MCP-style wallet dispatch must stay gated during password collection, got {result:?}",
         );
 
         if let Ok(backend) = ctx.wallet_backend() {

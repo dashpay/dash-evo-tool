@@ -1094,6 +1094,14 @@ pub enum TaskError {
     )]
     DuplicateProTxHash { identity_id: Identifier },
 
+    /// A load of this identity is already running. Carries the resolved identity
+    /// id so the caller can name the node. Excludes the concurrent load that
+    /// would race the duplicate check above.
+    #[error(
+        "This node is already being loaded. Wait for that load to finish before loading it again."
+    )]
+    IdentityLoadInProgress { identity_id: Identifier },
+
     /// The ProTxHash could not be read as a hex ProTxHash or a Base58 identity
     /// id. Carries the offending input (data, not a message).
     #[error(

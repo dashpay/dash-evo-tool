@@ -4,6 +4,7 @@ use crate::backend_task::identity::{IdentityInputToLoad, IdentityLoadMode};
 use crate::context::AppContext;
 use crate::model::identity_key_protection::validate_protection_password;
 use crate::model::key_input::verify_key_input;
+use crate::model::masternode_input::decode_identity_id;
 use crate::model::qualified_identity::PrivateKeyTarget::{
     self, PrivateKeyOnMainIdentity, PrivateKeyOnVoterIdentity,
 };
@@ -28,7 +29,6 @@ use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::key_wallet::bip32::{DerivationPath, KeyDerivationType};
 use dash_sdk::dpp::platform_value::Value;
-use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::drive::query::{SelectProjection, WhereClause, WhereOperator};
 use dash_sdk::platform::{Document, DocumentQuery, Fetch, FetchMany, Identifier, Identity};
 use std::collections::BTreeMap;
@@ -100,9 +100,7 @@ impl AppContext {
             verify_key_input(payout_address_private_key_input, "Payout Address")?;
 
         // Parse the identity ID
-        let identity_id = match Identifier::from_string(&identity_id_input, Encoding::Base58)
-            .or_else(|_| Identifier::from_string(&identity_id_input, Encoding::Hex))
-        {
+        let identity_id = match decode_identity_id(&identity_id_input) {
             Ok(id) => id,
             Err(_e) => {
                 // For masternodes/evonodes the identity id field IS a ProTxHash
@@ -118,6 +116,14 @@ impl AppContext {
                 });
             }
         };
+
+        // The duplicate check below, the network fetch and the insert are not one
+        // atomic step: two overlapping loads of this identity could both pass the
+        // check and both insert, the last one clobbering the first's alias, keys
+        // and protection tier. Claim the identity for that whole span — a second
+        // load of it, from any screen, tool or CLI, is rejected up front. Released
+        // when the guard drops, on every return path.
+        let _load_guard = self.begin_identity_load(identity_id)?;
 
         // §10.9 / TC-EDGE-07: a fresh load rejects a ProTxHash already stored,
         // before any network fetch — so the existing node's alias/keys/protection
@@ -744,6 +750,7 @@ mod tests {
     use dash_sdk::dpp::dashcore::Network;
     use dash_sdk::dpp::identity::Identity;
     use dash_sdk::dpp::identity::KeyID;
+    use dash_sdk::dpp::platform_value::string_encoding::Encoding;
     use dash_sdk::dpp::version::PlatformVersion;
     use dash_sdk::platform::IdentityPublicKey;
     use platform_wallet_storage::secrets::SecretString;

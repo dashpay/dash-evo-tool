@@ -138,14 +138,14 @@ Verdicts: PASS / FAIL / BLOCKED (reason) / N/A (Gap/Superseded/Removed — not i
 
 ## DEV
 
-- [ ] DEV-001: Decode state transitions
-- [ ] DEV-002: View proof request log
-- [ ] DEV-003: Inspect ZK proofs
-- [ ] DEV-004: View document and contract JSON
-- [ ] DEV-005: View Platform info
-- [ ] DEV-006: View masternode list diff
-- [ ] DEV-007: Check any address balance
-- [ ] DEV-008: Mine blocks on Regtest
+- [x] DEV-001: Decode state transitions — PASS
+- [x] DEV-002: View proof request log — FAIL (no UI implementation found; only a failure-only tracing target, no browsable log)
+- [x] DEV-003: Inspect ZK proofs — FAIL (Proof deserializer works; GroveSTARK gen/verification deliberately hidden from all UI navigation)
+- [x] DEV-004: View document and contract JSON — BLOCKED (Contract deserializer PASS; Document deserializer's contract-loading path blocked by known Testnet masternode-list/quorum-sync issue, see ALK.md)
+- [x] DEV-005: View Platform info — FAIL (2/8 sub-tools work — Basic Platform Info, Validator Set Info; rest blocked by known masternode-list-sync issue)
+- [x] DEV-006: View masternode list diff — FAIL (no UI implementation found; Masternodes screen only supports per-node load-by-ProTxHash, not list diff/monitoring)
+- [x] DEV-007: Check any address balance — BLOCKED (address-format validation PASS; balance fetch blocked by known masternode-list-sync issue)
+- [x] DEV-008: Mine blocks on Regtest — BLOCKED (Regtest-only, no regtest node running in this environment)
 
 ## NET
 

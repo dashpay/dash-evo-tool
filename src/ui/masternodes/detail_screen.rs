@@ -252,6 +252,21 @@ pub struct MasternodeDetailView {
     remove_dialog: Option<ConfirmationDialog>,
 }
 
+#[cfg(test)]
+impl MasternodeDetailView {
+    /// Open the `Add voting key` prompt on a key, as typing into it would.
+    pub(crate) fn set_voter_key_prompt_for_test(&mut self, value: &str) {
+        let mut prompt = PasswordInput::new();
+        prompt.set_text(value);
+        self.voter_key_prompt = Some(prompt);
+    }
+
+    /// Whether the `Add voting key` prompt is open — and thus holding a key.
+    pub(crate) fn has_voter_key_prompt_for_test(&self) -> bool {
+        self.voter_key_prompt.is_some()
+    }
+}
+
 impl MasternodeDetailView {
     pub fn new(app_context: &Arc<AppContext>, identity: QualifiedIdentity) -> Self {
         let node_id_hex_full = identity.identity.id().to_string(Encoding::Hex);
@@ -753,6 +768,13 @@ impl MasternodeDetailView {
             }
         }
         action
+    }
+
+    /// Close the `Add voting key` prompt, zeroizing the key typed into it. Called
+    /// when the Masternodes tab is left: the tab is a root screen that outlives
+    /// navigation, and an unsubmitted key must not.
+    pub fn clear_secrets(&mut self) {
+        self.voter_key_prompt = None;
     }
 
     /// Build the scoped voter-key update: re-load THIS node (context pre-bound)

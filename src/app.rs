@@ -1151,11 +1151,25 @@ impl AppState {
         if self.selected_main_screen == RootScreenType::RootScreenMasternodes
             && !FeatureGate::Masternodes.is_available(self.current_app_context())
         {
-            self.selected_main_screen = RootScreenType::RootScreenIdentities;
+            self.select_main_screen(RootScreenType::RootScreenIdentities);
         }
         self.main_screens
             .get_mut(&self.selected_main_screen)
             .expect("expected to get screen")
+    }
+
+    /// Make `root_screen_type` the selected root screen, telling the screen being
+    /// left that it is losing visibility. Root screens are never dropped, so a
+    /// screen holding secrets (the Masternodes load form's keys) depends on this
+    /// notification to zeroize them.
+    fn select_main_screen(&mut self, root_screen_type: RootScreenType) {
+        if self.selected_main_screen == root_screen_type {
+            return;
+        }
+        if let Some(left) = self.main_screens.get_mut(&self.selected_main_screen) {
+            left.on_leave();
+        }
+        self.selected_main_screen = root_screen_type;
     }
 
     pub fn change_network(&mut self, network: Network) {
@@ -1369,7 +1383,7 @@ impl AppState {
     }
 
     fn set_main_screen(&mut self, root_screen_type: RootScreenType) {
-        self.selected_main_screen = root_screen_type;
+        self.select_main_screen(root_screen_type);
         self.active_root_screen_mut().refresh_on_arrival();
         self.current_app_context()
             .update_settings(root_screen_type)

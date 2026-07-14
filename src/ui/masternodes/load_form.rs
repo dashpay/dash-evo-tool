@@ -21,6 +21,8 @@ const WARNING_NOTE: &str = "Set an optional password to encrypt these keys on th
 const PRO_TX_HASH_FORMAT_ERROR: &str = "This doesn't look like a valid ProTxHash. Enter a hex or Base58 ProTxHash from your \
      masternode configuration.";
 const LOAD_DISABLED_TOOLTIP: &str = "Enter a ProTxHash to continue.";
+const SECRETS_CLEARED_NOTE: &str = "The keys and password you entered were cleared when you left this page. Enter them again to \
+     load this node with its keys, or load it read-only without them.";
 
 /// Outcome of rendering the load form for one frame.
 pub enum LoadFormOutcome {
@@ -46,6 +48,10 @@ pub struct MasternodeLoadForm {
     owner_key: PasswordInput,
     payout_key: PasswordInput,
     encryption_password: PasswordInput,
+    /// Set when [`clear_secrets`](Self::clear_secrets) dropped filled secret
+    /// fields, so the form can say so instead of silently losing what the user
+    /// entered. Retired as soon as any secret is entered again.
+    secrets_cleared: bool,
     /// Testnet-only Fill-Random fixture (FR-12). `None` off Testnet or when the
     /// `.testnet_nodes.yml` file is missing/malformed — the button never shows.
     testnet_nodes: Option<TestnetNodes>,
@@ -62,6 +68,15 @@ impl MasternodeLoadForm {
     /// Seed the ProTxHash field so a test can point the form at a specific node.
     pub(crate) fn set_pro_tx_hash_for_test(&mut self, value: impl Into<String>) {
         self.pro_tx_hash_input = value.into();
+    }
+
+    /// Fill every secret field — the three keys and the encryption password — so
+    /// a test can assert what survives a given transition.
+    pub(crate) fn set_secrets_for_test(&mut self, value: &str) {
+        self.voting_key.set_text(value);
+        self.owner_key.set_text(value);
+        self.payout_key.set_text(value);
+        self.encryption_password.set_text(value);
     }
 
     /// The outcome a Load click produces for the current field state, so a test
@@ -89,8 +104,34 @@ impl MasternodeLoadForm {
                 .with_monospace(),
             encryption_password: PasswordInput::new()
                 .with_hint_text("Password to encrypt these keys"),
+            secrets_cleared: false,
             testnet_nodes: None,
         }
+    }
+
+    /// Whether every secret field is empty.
+    fn secrets_are_empty(&self) -> bool {
+        self.voting_key.is_empty()
+            && self.owner_key.is_empty()
+            && self.payout_key.is_empty()
+            && self.encryption_password.is_empty()
+    }
+
+    /// Zeroize the three keys and the encryption password, keeping the fields
+    /// that carry no secret (ProTxHash, alias, node type) so an interrupted load
+    /// can be resumed. Called when the Masternodes tab is left: the tab is a root
+    /// screen that outlives navigation, and entered keys must not.
+    ///
+    /// The keys and the password go together on purpose. Dropping the password
+    /// alone would leave the form one click from storing the retained keys
+    /// unencrypted; with no keys left to store, a resubmit loads the node
+    /// read-only instead — the safe outcome the form already supports.
+    pub fn clear_secrets(&mut self) {
+        self.secrets_cleared |= !self.secrets_are_empty();
+        self.voting_key.clear();
+        self.owner_key.clear();
+        self.payout_key.clear();
+        self.encryption_password.clear();
     }
 
     /// Attach the Testnet Fill-Random fixture (FR-12). Pass `None` off Testnet.
@@ -213,6 +254,11 @@ impl MasternodeLoadForm {
         let dark_mode = ui.style().visuals.dark_mode;
         let mut outcome = LoadFormOutcome::None;
 
+        // The user has started re-entering the secrets that were cleared on leave.
+        if self.secrets_cleared && !self.secrets_are_empty() {
+            self.secrets_cleared = false;
+        }
+
         // Back row (content-panel, not the global header) — matches the detail
         // view's `‹ All masternodes` link so both views return to the card list
         // the same way. Emits `Cancel`, the existing "return to list" outcome.
@@ -316,6 +362,18 @@ impl MasternodeLoadForm {
                     .desired_width(f32::INFINITY),
             );
             ui.add_space(12.0);
+
+            // Say that the secrets were dropped on leave — a pasted key that
+            // vanished without a word reads as a bug, and a user who does not
+            // notice would load the node read-only without meaning to.
+            if self.secrets_cleared {
+                ui.label(
+                    RichText::new(SECRETS_CLEARED_NOTE)
+                        .size(12.0)
+                        .color(DashColors::warning_color(dark_mode)),
+                );
+                ui.add_space(8.0);
+            }
 
             // Optional V/O/P key inputs (WIF or hex, hold-to-reveal). Labels and
             // tooltips follow the Dash Core DIP-3 ProRegTx key roles.

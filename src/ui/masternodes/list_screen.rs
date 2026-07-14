@@ -499,6 +499,25 @@ impl ScreenLike for MasternodesScreen {
         self.reconcile_pending_load();
     }
 
+    /// Drop every secret the open view holds — the load form's keys and
+    /// encryption password, the detail view's unsubmitted voting key. This screen
+    /// is a root screen: it lives for the whole process, so nothing else would
+    /// ever zeroize them, and a failed load deliberately keeps its form (and its
+    /// fields) for a corrected resubmit.
+    ///
+    /// Unconditional, in-flight load or not. The load's own copy of the submitted
+    /// input already travelled with the task, and a load that fails while the user
+    /// is elsewhere is exactly the case that would otherwise strand plaintext keys
+    /// on a screen nobody is looking at. What survives is what is tedious to
+    /// re-enter and secret to nobody: ProTxHash, alias, node type.
+    fn on_leave(&mut self) {
+        match &mut self.view {
+            MasternodesView::Load(form) => form.clear_secrets(),
+            MasternodesView::Detail(detail) => detail.clear_secrets(),
+            MasternodesView::List => {}
+        }
+    }
+
     fn display_task_result(&mut self, _result: crate::backend_task::BackendTaskSuccessResult) {
         self.reload();
         // Settle the submitted load against the phase its task reported. This
@@ -555,6 +574,7 @@ mod tests {
     use super::*;
     use crate::app::TaskResult;
     use crate::app_dir::ensure_env_file;
+    use crate::backend_task::identity::IdentityInputToLoad;
     use crate::context::connection_status::ConnectionStatus;
     use crate::database::test_helpers::create_database_at_path;
     use crate::model::qualified_identity::QualifiedIdentity;
@@ -1075,6 +1095,126 @@ mod tests {
         assert!(
             matches!(screen.view, MasternodesView::Load(_)),
             "a failed load keeps its form open for a retry, even though the node was persisted"
+        );
+
+        ctx.wallet_backend().expect("backend").shutdown().await;
+    }
+
+    /// Open the load form on `target` with every secret field filled.
+    fn open_form_with_secrets(screen: &mut MasternodesScreen, target: Identifier, secret: &str) {
+        let mut form = screen.new_load_form();
+        form.set_pro_tx_hash_for_test(target.to_string(Encoding::Base58));
+        form.set_secrets_for_test(secret);
+        screen.view = MasternodesView::Load(form);
+    }
+
+    /// What the open form would submit right now — the values it still holds.
+    fn form_input(screen: &MasternodesScreen) -> Box<IdentityInputToLoad> {
+        let MasternodesView::Load(form) = &screen.view else {
+            panic!("the load form must still be open");
+        };
+        let LoadFormOutcome::Submit(input) = form.submit_for_test() else {
+            panic!("a form holding a ProTxHash must still submit");
+        };
+        input
+    }
+
+    fn assert_holds_no_secrets(screen: &MasternodesScreen) {
+        let input = form_input(screen);
+        assert!(
+            input.voting_private_key_input.is_blank(),
+            "the voting key must not outlive the tab"
+        );
+        assert!(
+            input.owner_private_key_input.is_blank(),
+            "the owner key must not outlive the tab"
+        );
+        assert!(
+            input.payout_address_private_key_input.is_blank(),
+            "the payout key must not outlive the tab"
+        );
+        assert!(
+            input.encryption_password.is_none(),
+            "the encryption password must not outlive the tab"
+        );
+    }
+
+    /// SEC — the Masternodes tab is a root screen: it outlives navigation. The
+    /// plaintext V/O/P keys and the at-load encryption password entered into its
+    /// load form must not stay resident once the user leaves the tab. The fields
+    /// that are tedious to re-enter and carry no secret — ProTxHash, alias, node
+    /// type — survive, so the load can be resumed on return.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn leaving_the_tab_zeroizes_the_load_forms_secrets() {
+        let (ctx, _tmp) = offline_ctx().await;
+        let mut screen = MasternodesScreen::new(&ctx);
+
+        let target = Identifier::from([0xc3; 32]);
+        open_form_with_secrets(&mut screen, target, "wif");
+
+        screen.on_leave();
+
+        assert_holds_no_secrets(&screen);
+        assert_eq!(
+            form_input(&screen).identity_id_input,
+            target.to_string(Encoding::Base58),
+            "the non-secret fields survive so the load can be resumed",
+        );
+
+        ctx.wallet_backend().expect("backend").shutdown().await;
+    }
+
+    /// SEC — the reported case: the user submits, navigates away while the load
+    /// runs, and the load fails behind their back. The form is kept open for a
+    /// corrected resubmit, so nothing else would ever drop its secrets. Leaving
+    /// clears them even with the load still outstanding — the gate is unaffected,
+    /// and the backend already holds its own copy of the submitted input.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn leaving_the_tab_zeroizes_secrets_of_an_outstanding_load() {
+        let (ctx, _tmp) = offline_ctx().await;
+        let mut screen = MasternodesScreen::new(&ctx);
+
+        let target = Identifier::from([0xc4; 32]);
+        open_form_with_secrets(&mut screen, target, "wif");
+        let outcome = form_input(&screen);
+        screen.apply_load_outcome(LoadFormOutcome::Submit(outcome));
+        let _running = ctx.begin_identity_load(target).expect("claim the load");
+
+        screen.on_leave();
+
+        assert_holds_no_secrets(&screen);
+        assert_eq!(
+            screen.pending_identity(),
+            Some(target),
+            "leaving the tab does not cancel the load: the gate must still hold",
+        );
+
+        ctx.wallet_backend().expect("backend").shutdown().await;
+    }
+
+    /// SEC — the detail view's in-place `Add voting key` prompt holds a plaintext
+    /// WIF too, and lives in the very same root screen. A prompt left filled but
+    /// unsubmitted must not survive the user leaving the tab.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn leaving_the_tab_discards_an_unsubmitted_voting_key() {
+        let (ctx, _tmp) = offline_ctx().await;
+        seed_masternode(&ctx, 0xc5);
+        let mut screen = MasternodesScreen::new(&ctx);
+        screen.open_detail(Identifier::from([0xc5; 32]));
+
+        let MasternodesView::Detail(detail) = &mut screen.view else {
+            panic!("the detail view must be open");
+        };
+        detail.set_voter_key_prompt_for_test("voter-wif");
+
+        screen.on_leave();
+
+        let MasternodesView::Detail(detail) = &screen.view else {
+            panic!("leaving must not discard the detail view");
+        };
+        assert!(
+            !detail.has_voter_key_prompt_for_test(),
+            "an unsubmitted voting key must not outlive the tab"
         );
 
         ctx.wallet_backend().expect("backend").shutdown().await;

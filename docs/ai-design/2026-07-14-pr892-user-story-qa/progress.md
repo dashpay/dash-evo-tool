@@ -117,35 +117,46 @@ Verdicts: PASS / FAIL / BLOCKED (reason) / N/A (Gap/Superseded/Removed — not i
 
 ## TOK
 
-- [ ] TOK-001: View token balances
-- [ ] TOK-002: Search and discover tokens
-- [ ] TOK-003: Add token by contract or token ID
-- [ ] TOK-004: Transfer tokens
-- [ ] TOK-005: Create token contract
-- [ ] TOK-006: Mint tokens
-- [ ] TOK-007: Burn tokens
-- [ ] TOK-008: Freeze and unfreeze token recipients
-- [ ] TOK-009: Pause and resume token transfers
-- [ ] TOK-010: Destroy frozen funds
-- [ ] TOK-011: Claim distributed tokens
-- [ ] TOK-012: Set token pricing and purchase tokens
-- [ ] TOK-013: Update token configuration
-- [ ] TOK-014: Group actions for multi-party governance
-- [ ] TOK-015: View available token claims
-- [ ] TOK-016: Estimate perpetual token rewards
-- [ ] TOK-017: Pay for document operations with tokens
+- [x] TOK-001: View token balances — BLOCKED (empty state confirmed reachable and correct)
+- [x] TOK-002: Search and discover tokens — BLOCKED (confirmed reachable without identity;
+      dispatches + fails cleanly on known quorum-sync error)
+- [x] TOK-003: Add token by contract or token ID — FAIL (format validation + dispatch both
+      work; well-formed-ID request fails but result is silently dropped, zero user feedback)
+- [x] TOK-004: Transfer tokens — BLOCKED (no tracked token/identity reachable)
+- [x] TOK-005: Create token contract — BLOCKED (live-tested: clean typed error, Advanced
+      Options doesn't bypass the identity gate)
+- [x] TOK-006: Mint tokens — BLOCKED (no tracked token/identity reachable)
+- [x] TOK-007: Burn tokens — BLOCKED (same as TOK-006)
+- [x] TOK-008: Freeze and unfreeze token recipients — BLOCKED (same as TOK-006)
+- [x] TOK-009: Pause and resume token transfers — BLOCKED (same as TOK-006)
+- [x] TOK-010: Destroy frozen funds — BLOCKED (same as TOK-006)
+- [x] TOK-011: Claim distributed tokens — BLOCKED (same as TOK-006)
+- [x] TOK-012: Set token pricing and purchase tokens — BLOCKED (same as TOK-006)
+- [x] TOK-013: Update token configuration — BLOCKED (same as TOK-006)
+- [x] TOK-014: Group actions for multi-party governance — BLOCKED (live-tested: clean empty
+      states for contract/identity selectors, no crash)
+- [x] TOK-015: View available token claims — BLOCKED (same as TOK-006)
+- [x] TOK-016: Estimate perpetual token rewards — BLOCKED (no tracked token to estimate for)
+- [x] TOK-017: Pay for document operations with tokens — BLOCKED (transitively, via DOC's
+      contract-add environment blocker)
 
 ## DOC
 
-- [ ] DOC-001: Register a new data contract
-- [ ] DOC-002: Update an existing data contract
-- [ ] DOC-003: Import and manage contracts
-- [ ] DOC-004: Query and browse documents
-- [ ] DOC-005: Create a document
-- [ ] DOC-006: Replace or update a document
-- [ ] DOC-007: Delete a document
-- [ ] DOC-008: Transfer document ownership
-- [ ] DOC-009: Purchase a document and set document pricing
+- [x] DOC-001: Register a new data contract — BLOCKED (live-tested: clean typed "No identities
+      loaded" message, no crash)
+- [x] DOC-002: Update an existing data contract — FAIL — **application crash**: `.expect()` on
+      `get_contracts()` panics on `WalletBackendNotYetWired`; app relaunched, zero persistent
+      state lost
+- [x] DOC-003: Import and manage contracts — BLOCKED (confirmed reachable without identity;
+      dispatches + fails cleanly on known quorum-sync error)
+- [x] DOC-004: Query and browse documents — FAIL (dispatches a real query that hangs silently
+      forever, with a misleading ever-counting "Querying documents..." progress banner)
+- [x] DOC-005: Create a document — BLOCKED (reachable, clean empty state, no crash)
+- [x] DOC-006: Replace or update a document — BLOCKED (same as DOC-005)
+- [x] DOC-007: Delete a document — BLOCKED (same as DOC-005)
+- [x] DOC-008: Transfer document ownership — BLOCKED (same as DOC-005)
+- [x] DOC-009: Purchase a document and set document pricing — BLOCKED (same as DOC-005; both
+      "Purchase Document" and "Set Document Price" menu items tested)
 
 ## DEV
 

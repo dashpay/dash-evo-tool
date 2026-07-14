@@ -634,13 +634,13 @@ impl NetworkChooserScreen {
                     ui.add_space(6.0);
 
                     ui.horizontal(|ui| {
-                        ui.add_enabled(false, egui::Button::new("Clear Platform Addresses"))
-                            .on_hover_text(
-                                "This tool is unavailable because earlier-version recovery data is kept read-only.",
-                            );
+                        // The reason is carried by the always-visible label beside the
+                        // button, not by a tooltip on a disabled control that is easy to
+                        // miss — and it is one string, so it stays one translation unit.
+                        ui.add_enabled(false, egui::Button::new("Clear Platform Addresses"));
                         ui.label(
                             egui::RichText::new(
-                                "This tool is unavailable while earlier-version recovery data is kept read-only.",
+                                "This tool is unavailable because earlier-version recovery data is kept read-only.",
                             )
                                 .color(DashColors::TEXT_SECONDARY)
                                 .italics(),

@@ -307,11 +307,17 @@ fn unlock_task_failure_message(error: &TaskError, password_hint: Option<&str>) -
     malformed.then(|| DAMAGED_WALLET_MESSAGE.to_string())
 }
 
+/// The retention a submitted password buys.
+///
+/// A migration prompt shows no keep-unlocked choice, so its seed never survives
+/// the app session — but it must survive the *storage update*, which re-enters
+/// the seed scope of every wallet it prompted for after the unlock's own
+/// reconciliation is done.
 fn unlock_retention(mode: UnlockMode, remember: bool) -> WalletUnlockRetention {
-    if mode == UnlockMode::Standard && remember {
-        WalletUnlockRetention::UntilAppClose
-    } else {
-        WalletUnlockRetention::OperationOnly
+    match mode {
+        UnlockMode::Migration => WalletUnlockRetention::UntilStorageUpdateComplete,
+        UnlockMode::Standard if remember => WalletUnlockRetention::UntilAppClose,
+        UnlockMode::Standard => WalletUnlockRetention::OperationOnly,
     }
 }
 
@@ -390,13 +396,22 @@ mod tests {
             "You can skip this wallet if you do not know its password. It will stay locked and will not be updated now. Its storage update will finish the next time you unlock it with its password. Your coins are not lost.",
         );
         assert_eq!(
-            WalletUnlockRetention::OperationOnly,
+            WalletUnlockRetention::UntilStorageUpdateComplete,
             unlock_retention(UnlockMode::Migration, true),
-            "migration unlocks use operation-only retention because no keep-unlocked choice is shown",
+            "a migration unlock lives exactly as long as the storage update, whatever the checkbox says",
+        );
+        assert_eq!(
+            WalletUnlockRetention::UntilStorageUpdateComplete,
+            unlock_retention(UnlockMode::Migration, false),
+            "a migration unlock shows no keep-unlocked choice, so `remember` cannot extend it",
         );
         assert_eq!(
             WalletUnlockRetention::UntilAppClose,
             unlock_retention(UnlockMode::Standard, true),
+        );
+        assert_eq!(
+            WalletUnlockRetention::OperationOnly,
+            unlock_retention(UnlockMode::Standard, false),
         );
     }
 

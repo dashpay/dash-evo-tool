@@ -702,13 +702,33 @@ fn terminal_state(moved_data: bool) -> MigrationState {
     }
 }
 
+/// Releases, on every exit path, the seed leases this run's password prompts
+/// took. Each seed is forgotten as soon as the unlock's own reconciliation
+/// subtask is also done with it, so an unlock granted for the storage update
+/// never silently outlives the update.
+struct RunSeedLeases<'a>(&'a Arc<AppContext>);
+
+impl Drop for RunSeedLeases<'_> {
+    fn drop(&mut self) {
+        self.0.migration_status().release_seed_leases();
+    }
+}
+
 /// Re-hydrates just-migrated wallets into `ctx.wallets`, registers open wallets,
 /// and waits for the UI to unlock or explicitly skip each protected wallet.
 /// [`run`] calls this immediately before [`write_sentinel`], so every open wallet
 /// is registered before completion; a skipped wallet remains closed in its
 /// legacy protected envelope until a later ordinary unlock reconciles it.
 /// Idempotent.
+///
+/// Each wallet unlocked for this run is bootstrapped twice — once by the unlock
+/// gesture's own subtask, once by the `bootstrap_loaded_wallets` pass below —
+/// and neither ordering is guaranteed. The run therefore holds its own lease on
+/// every seed it prompted for (`WalletUnlockRetention::UntilStorageUpdateComplete`)
+/// rather than depending on the unlock subtask still being alive.
 async fn register_migrated_wallets(app_context: &Arc<AppContext>) -> Result<(), MigrationError> {
+    let _seed_leases = RunSeedLeases(app_context);
+
     let backend = app_context
         .wallet_backend()
         .map_err(|_| MigrationError::WalletBackendUnavailable)?;

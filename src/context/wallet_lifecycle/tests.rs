@@ -1150,6 +1150,117 @@ async fn tier2_wallet_cold_boot_unlock_uses_the_real_vault_envelope() {
         .await;
 }
 
+/// A seed unlocked for the storage update must outlive the unlock's own
+/// reconciliation subtask, because the update itself is a second consumer of it.
+///
+/// The unlock gesture spawns `wallet_unlock_registration` (bootstrap + identity
+/// discovery) and the storage update independently re-drives
+/// `bootstrap_loaded_wallets()` for the same just-unlocked wallet. Both enter the
+/// seed scope; neither ordering is guaranteed. When the subtask owned the seed's
+/// lifetime outright, finishing first evicted the seed, and the update's pass
+/// cache-missed into a background passphrase prompt for a wallet the user had
+/// just unlocked — which, if the user ticked "keep unlocked" on that second
+/// prompt, also silently restored the session-long retention the migration
+/// prompt deliberately withholds.
+///
+/// Here the unlock subtask is driven to completion *first* (the losing
+/// interleaving), and only then does the update's pass run: it must resolve the
+/// seed from the session cache, prompting nobody. Releasing the run's lease
+/// afterwards must still forget the seed — the unlock does not outlive the update.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn storage_update_seed_outlives_the_unlock_subtask_that_promoted_it() {
+    use crate::wallet_backend::SecretScope;
+    use crate::wallet_backend::secret_prompt::test_support::{ScriptedAnswer, TestPrompt};
+    use platform_wallet_storage::secrets::SecretString;
+
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let seed = [0x9cu8; 64];
+    let password_text = "storage-update-password";
+    let password_secret = Secret::new(password_text);
+    let (first_ctx, _first_sender) = offline_testnet_context_at(temp_dir.path());
+    let wallet = crate::model::wallet::Wallet::new_from_seed(
+        seed,
+        Network::Testnet,
+        Some("Storage update".to_string()),
+        Some(&password_secret),
+    )
+    .expect("build protected wallet");
+    let (seed_hash, _) = first_ctx
+        .register_wallet(wallet, &seed, WalletOrigin::Imported)
+        .expect("register protected wallet");
+    let password = SecretString::new(password_text);
+    WalletSeedView::new(&first_ctx.secret_store())
+        .set_protected(&seed_hash, &seed, &password)
+        .expect("write Tier-2 envelope");
+    drop(first_ctx);
+
+    // Cold boot: the protected wallet hydrates locked, exactly as it does on the
+    // launch that runs the storage update.
+    let cold_boot_dir = tempfile::tempdir().expect("cold boot tempdir");
+    copy_dir_recursive(temp_dir.path(), cold_boot_dir.path());
+    let (ctx, sender) = offline_testnet_context_at(cold_boot_dir.path());
+
+    // A prompt scripted to cancel: any background re-prompt is recorded and then
+    // declined, so the test fails on the `ask_count` assertion rather than
+    // deadlocking or panicking deep inside the chokepoint.
+    let prompt = Arc::new(TestPrompt::new([ScriptedAnswer::Cancel]));
+    ctx.install_secret_prompt(Arc::clone(&prompt) as Arc<dyn crate::wallet_backend::SecretPrompt>);
+
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("hydrate cold-boot wallet");
+    let backend = ctx.wallet_backend().expect("backend wired");
+    let wallet = ctx.wallet_arc(&seed_hash).expect("hydrated wallet");
+    assert!(
+        !wallet.read_recover().is_open(),
+        "precondition: a password-protected wallet cold-boots locked",
+    );
+
+    // The storage update's password prompt, as the popup submits it.
+    ctx.handle_wallet_unlocked(
+        &wallet,
+        password_text,
+        WalletUnlockRetention::UntilStorageUpdateComplete,
+    )
+    .expect("the correct password must unlock the wallet");
+
+    // Let the unlock's reconciliation subtask reach its own seed scope (it
+    // registers the wallet upstream from inside it), then join it to completion:
+    // the point at which it drops its claim on the seed.
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !backend.is_wallet_registered(&seed_hash) {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the unlock subtask must register the wallet upstream from the promoted seed",
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    let _ = ctx.subtasks.shutdown_async().await;
+
+    let scope = SecretScope::HdSeed { seed_hash };
+    assert!(
+        backend.secret_access().can_resolve_without_prompt(&scope),
+        "the storage update still needs this seed: the unlock subtask must not have forgotten it",
+    );
+
+    // The storage update's own pass over the just-unlocked wallet.
+    ctx.bootstrap_loaded_wallets().await;
+    assert_eq!(
+        prompt.ask_count(),
+        0,
+        "the storage update must resolve the seed it just prompted for from the session cache",
+    );
+
+    // The run ends: its claim on the seed goes with it.
+    ctx.migration_status().release_seed_leases();
+    assert!(
+        !backend.secret_access().can_resolve_without_prompt(&scope),
+        "a storage-update unlock must not outlive the storage update",
+    );
+
+    backend.shutdown().await;
+}
+
 /// Cold-boot lockout regression, at the gesture the owner actually performs:
 /// submitting the correct password to the unlock popup.
 ///

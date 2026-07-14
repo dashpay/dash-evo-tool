@@ -17,6 +17,7 @@ use arc_swap::ArcSwap;
 use tokio::sync::Notify;
 
 use crate::model::wallet::WalletSeedHash;
+use crate::wallet_backend::SecretLease;
 
 /// Which legacy domain the migration is currently working on.
 ///
@@ -214,6 +215,7 @@ pub struct MigrationStatus {
     state: ArcSwap<MigrationState>,
     wallet_password_submitted: Notify,
     skipped_wallets: Mutex<BTreeSet<WalletSeedHash>>,
+    seed_leases: Mutex<Vec<SecretLease>>,
 }
 
 impl MigrationStatus {
@@ -223,7 +225,43 @@ impl MigrationStatus {
             state: ArcSwap::from_pointee(MigrationState::Idle),
             wallet_password_submitted: Notify::new(),
             skipped_wallets: Mutex::new(BTreeSet::new()),
+            seed_leases: Mutex::new(Vec::new()),
         }
+    }
+
+    /// Hold a seed the storage update's password prompt just unlocked, so it
+    /// stays resolvable prompt-free for the rest of the run.
+    ///
+    /// The update re-enters the seed scope of each wallet it prompted for (its
+    /// own `bootstrap_loaded_wallets` pass), independently of the unlock
+    /// gesture's reconciliation subtask. Both hold a clone of the same
+    /// [`SecretLease`], so neither can forget the seed while the other is still
+    /// working. [`Self::release_seed_leases`] ends the run's claim.
+    pub fn hold_seed_lease(&self, lease: SecretLease) {
+        tracing::trace!(
+            scope = ?lease.scope(),
+            "Storage update holds an unlocked seed until the run ends"
+        );
+        self.seed_leases
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push(lease);
+    }
+
+    /// Drop the run's claim on every seed its password prompts unlocked.
+    ///
+    /// Each seed is forgotten as soon as no other consumer still holds a lease
+    /// on it, so a storage-update unlock never silently outlives the update —
+    /// the wallet returns to needing a passphrase for its next operation.
+    /// Idempotent.
+    pub fn release_seed_leases(&self) {
+        let leases: Vec<SecretLease> = self
+            .seed_leases
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .drain(..)
+            .collect();
+        drop(leases);
     }
 
     /// Load the current state. Cheap — no lock, just a single atomic load.

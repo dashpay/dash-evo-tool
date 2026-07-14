@@ -178,6 +178,44 @@ impl SessionEntry {
     }
 }
 
+/// A ref-counted claim on one session-cached scope, forgotten when the last
+/// holder drops.
+///
+/// A secret promoted for an operation usually has more than one consumer, and
+/// their lifetimes overlap in an order nobody controls — the unlock gesture's
+/// own reconciliation subtask and the storage update's bootstrap pass both need
+/// the seed the same unlock promoted. Handing the lifetime to whichever consumer
+/// happens to finish first evicts the secret from under the other, which then
+/// cache-misses and raises a passphrase prompt the user did not ask for. Each
+/// consumer holds a clone of this lease instead, so the scope survives exactly
+/// as long as someone still needs it.
+///
+/// Dropping every clone is equivalent to [`SecretAccess::forget`]; a scope
+/// promoted with [`RememberPolicy::UntilAppClose`] and never leased is
+/// unaffected.
+#[derive(Clone, Debug)]
+pub struct SecretLease(Arc<SecretLeaseInner>);
+
+impl SecretLease {
+    /// The scope this lease keeps resolvable. Carries no secret material — an
+    /// `HdSeed` scope names the seed's *hash*.
+    pub fn scope(&self) -> &SecretScope {
+        &self.0.scope
+    }
+}
+
+#[derive(Debug)]
+struct SecretLeaseInner {
+    access: SecretAccess,
+    scope: SecretScope,
+}
+
+impl Drop for SecretLeaseInner {
+    fn drop(&mut self) {
+        self.access.forget(&self.scope);
+    }
+}
+
 /// O(1)-clone handle to the JIT secret chokepoint (M-SERVICES-CLONE).
 #[derive(Clone)]
 pub struct SecretAccess {
@@ -577,6 +615,20 @@ impl SecretAccess {
                 &password.0,
             )
             .map_err(identity_flavored)
+    }
+
+    /// Take a ref-counted [`SecretLease`] on `scope`: the session-cached secret
+    /// is forgotten once this lease and every clone of it are dropped.
+    ///
+    /// Give one clone to each consumer that needs the scope resolvable
+    /// prompt-free, so the last one out does the forgetting. Taking a lease does
+    /// not itself promote anything — the caller promotes first (e.g. via
+    /// [`Self::promote_hd_seed_with_passphrase`]), then leases the lifetime.
+    pub fn lease(&self, scope: SecretScope) -> SecretLease {
+        SecretLease(Arc::new(SecretLeaseInner {
+            access: self.clone(),
+            scope,
+        }))
     }
 
     /// Forget the session-cached secret for `scope`, zeroizing it.

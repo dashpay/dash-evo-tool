@@ -54,6 +54,12 @@ const SPV_CHAIN_STORAGE_ENTRIES: [&str; 7] = [
 pub enum WalletUnlockRetention {
     /// Keep the seed only until unlock-triggered registration finishes.
     OperationOnly,
+    /// Keep the seed until the storage update finishes. The update's own
+    /// bootstrap pass re-enters the seed scope for the wallet it just prompted
+    /// for, so the unlock's reconciliation subtask must not be the sole owner of
+    /// the seed's lifetime — whichever of the two finishes first would otherwise
+    /// evict the seed the other still needs, and the loser re-prompts.
+    UntilStorageUpdateComplete,
     /// Keep the seed available until the application closes.
     UntilAppClose,
 }

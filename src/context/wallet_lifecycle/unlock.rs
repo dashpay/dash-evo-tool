@@ -3,16 +3,7 @@
 
 use super::*;
 
-struct OperationSecretGuard {
-    access: crate::wallet_backend::SecretAccess,
-    scope: crate::wallet_backend::SecretScope,
-}
-
-impl Drop for OperationSecretGuard {
-    fn drop(&mut self) {
-        self.access.forget(&self.scope);
-    }
-}
+use crate::wallet_backend::SecretLease;
 
 impl AppContext {
     /// Verify and open a password-protected wallet through the secret chokepoint.
@@ -23,8 +14,10 @@ impl AppContext {
     /// It verifies the supplied password against whichever at-rest scheme the
     /// vault reports, marks the secret-free wallet model open only after that
     /// succeeds, then re-drives the JIT bootstrap so the wallet is
-    /// upstream-registered this session. Operation-only unlocks forget the
-    /// temporary cache entry once that reconciliation finishes.
+    /// upstream-registered this session. Unlocks with a retention shorter than
+    /// the session hold the cache entry under a ref-counted
+    /// [`SecretLease`](crate::wallet_backend::SecretLease) and forget it once
+    /// every consumer of that unlock is done with the seed.
     ///
     /// `passphrase` is verified here, not in the model's legacy-envelope-only
     /// reader. `retention` controls whether the temporary seed remains
@@ -74,11 +67,27 @@ impl AppContext {
             wallet = %hex::encode(seed_hash),
             "Verified-open seed promoted to the session cache on unlock"
         );
-        let operation_guard =
-            (retention == WalletUnlockRetention::OperationOnly).then(|| OperationSecretGuard {
-                access: backend.secret_access(),
-                scope: crate::wallet_backend::SecretScope::HdSeed { seed_hash },
-            });
+        // A retention shorter than the session is enforced by a ref-counted
+        // lease, not by a single owner: the seed is forgotten once every
+        // consumer has dropped its clone. The storage update is a second,
+        // unsynchronised consumer of the very seed its own prompt unlocked
+        // (`register_migrated_wallets` re-enters the scope through
+        // `bootstrap_loaded_wallets`), so it takes a clone of the same lease and
+        // releases it when the update finishes.
+        let lease = match retention {
+            WalletUnlockRetention::UntilAppClose => None,
+            WalletUnlockRetention::OperationOnly
+            | WalletUnlockRetention::UntilStorageUpdateComplete => Some(
+                backend
+                    .secret_access()
+                    .lease(crate::wallet_backend::SecretScope::HdSeed { seed_hash }),
+            ),
+        };
+        if let Some(lease) = &lease
+            && retention == WalletUnlockRetention::UntilStorageUpdateComplete
+        {
+            self.migration_status().hold_seed_lease(lease.clone());
+        }
 
         // W2 reconciliation on the unlock gesture. A
         // password-protected wallet hydrates `Closed` at cold boot, so
@@ -92,7 +101,7 @@ impl AppContext {
         // already-registered wallet is a no-op) and resolved prompt-free from the
         // session cache. The in-memory wallet is flipped `Open` only after the
         // chokepoint succeeds above, so the JIT `is_open()` gate passes.
-        self.drive_unlock_registration(wallet, operation_guard);
+        self.drive_unlock_registration(wallet, lease);
         Ok(())
     }
 
@@ -104,19 +113,23 @@ impl AppContext {
     /// runs on a tracked subtask — mirroring [`Self::register_wallet_upstream`].
     /// Best-effort: the JIT bootstrap logs and swallows its own failures, and a
     /// missing-backend cold-boot path is covered by `bootstrap_loaded_wallets`.
+    ///
+    /// `lease` keeps the promoted seed resolvable for this subtask's own work.
+    /// It is only *a* holder of that lease, never the sole one: dropping it here
+    /// forgets the seed only if no other consumer still holds a clone.
     fn drive_unlock_registration(
         self: &Arc<Self>,
         wallet: &Arc<RwLock<Wallet>>,
-        operation_guard: Option<OperationSecretGuard>,
+        lease: Option<SecretLease>,
     ) {
         let ctx = Arc::clone(self);
         let wallet = Arc::clone(wallet);
         self.subtasks
             .spawn_sync("wallet_unlock_registration", async move {
-                let operation_guard = operation_guard;
+                let lease = lease;
                 ctx.bootstrap_wallet_addresses_jit(&wallet).await;
                 ctx.discover_unlocked_wallet_identities(&wallet).await;
-                drop(operation_guard);
+                drop(lease);
             });
     }
 

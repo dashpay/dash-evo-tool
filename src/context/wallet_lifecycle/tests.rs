@@ -2830,6 +2830,119 @@ async fn ensure_identity_funding_accounts_succeeds_on_cold_booted_watch_only_wal
     backend2.shutdown().await;
 }
 
+/// Persisted Core transactions must populate DET's display snapshot during a
+/// seedless cold boot, before any live wallet event can replay them.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cold_boot_hydrates_persisted_transaction_history_without_live_events() {
+    use dash_sdk::dpp::dashcore::hashes::Hash;
+    use dash_sdk::dpp::dashcore::{BlockHash, Transaction};
+    use dash_sdk::dpp::key_wallet::account::{AccountType, StandardAccountType};
+    use dash_sdk::dpp::key_wallet::managed_account::transaction_record::{
+        TransactionDirection, TransactionRecord,
+    };
+    use dash_sdk::dpp::key_wallet::transaction_checking::BlockInfo;
+    use dash_sdk::dpp::key_wallet::transaction_checking::transaction_router::TransactionType;
+    use platform_wallet::changeset::{
+        CoreChangeSet, PlatformWalletChangeSet, PlatformWalletPersistence,
+    };
+    use platform_wallet_storage::{SqlitePersister, SqlitePersisterConfig};
+
+    let _guard = backend_reopen_lock().await;
+    let source_dir = tempfile::tempdir().expect("source tempdir");
+    let seed = [0xD4u8; 64];
+
+    let (seed_hash, wallet_id) = {
+        let wallet =
+            crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
+                .expect("build wallet");
+        let seed_hash = wallet.seed_hash();
+        let (ctx, sender) = offline_testnet_context_at(source_dir.path());
+
+        ctx.register_wallet(wallet, &seed, WalletOrigin::Fresh)
+            .expect("persist DET wallet sidecars");
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("wire boot-1 backend");
+        let backend = ctx.wallet_backend().expect("boot-1 backend");
+        backend
+            .register_wallet_from_seed(&seed_hash, &seed, Some(0))
+            .await
+            .expect("persist upstream wallet");
+        let wallet_id = backend
+            .registered_wallet_id(&seed_hash)
+            .expect("registered upstream wallet id");
+        backend.shutdown().await;
+        let _ = ctx.subtasks.shutdown_async().await;
+        (seed_hash, wallet_id)
+    };
+
+    let timestamp = 1_720_000_123u32;
+    let transaction = Transaction {
+        version: 1,
+        lock_time: 17,
+        input: Vec::new(),
+        output: Vec::new(),
+        special_transaction_payload: None,
+    };
+    let record = TransactionRecord::new(
+        transaction,
+        AccountType::Standard {
+            index: 0,
+            standard_account_type: StandardAccountType::BIP44Account,
+        },
+        dash_sdk::dpp::key_wallet::transaction_checking::TransactionContext::InBlock(
+            BlockInfo::new(42, BlockHash::from_byte_array([0x42; 32]), timestamp),
+        ),
+        TransactionType::Standard,
+        TransactionDirection::Incoming,
+        Vec::new(),
+        Vec::new(),
+        250_000,
+    );
+    let expected_txid = record.txid;
+
+    let cold_dir = tempfile::tempdir().expect("cold tempdir");
+    copy_dir_recursive(source_dir.path(), cold_dir.path());
+
+    let persister_path = cold_dir
+        .path()
+        .join("spv")
+        .join("testnet")
+        .join("platform-wallet.sqlite");
+    let persister = SqlitePersister::open(SqlitePersisterConfig::new(&persister_path))
+        .expect("reopen upstream persister");
+    persister
+        .store(
+            wallet_id,
+            PlatformWalletChangeSet {
+                core: Some(CoreChangeSet {
+                    records: vec![record],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        )
+        .expect("persist transaction record");
+    persister
+        .flush(wallet_id)
+        .expect("flush transaction record");
+    drop(persister);
+
+    let (ctx, sender) = offline_testnet_context_at(cold_dir.path());
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("wire cold-boot backend");
+    let backend = ctx.wallet_backend().expect("cold-boot backend");
+    let history = backend.transaction_history(&seed_hash);
+
+    assert_eq!(history.len(), 1, "persisted history must load at cold boot");
+    assert_eq!(history[0].txid, expected_txid);
+    assert_eq!(history[0].timestamp, u64::from(timestamp));
+    assert_eq!(history[0].net_amount, 250_000);
+
+    backend.shutdown().await;
+}
+
 /// Build a minimal basic identity for manager-reconcile tests — only its
 /// id() and (empty) public_keys() are read by `add_identity`.
 fn basic_test_identity() -> dash_sdk::dpp::identity::Identity {

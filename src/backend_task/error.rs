@@ -19,6 +19,20 @@ use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::Identifier;
 use thiserror::Error;
 
+/// Typed failures while restoring persisted Core transaction history.
+#[derive(Debug, Error)]
+pub enum WalletTransactionHistoryError {
+    /// The upstream persistence implementation could not read or decode data.
+    #[error("upstream transaction persistence failed")]
+    Persistence {
+        #[source]
+        source: platform_wallet::changeset::PersistenceError,
+    },
+    /// A record was removed between key enumeration and the record lookup.
+    #[error("transaction record {txid} disappeared during hydration")]
+    RecordMissing { txid: dash_sdk::dpp::dashcore::Txid },
+}
+
 /// Dash Core RPC error code: wallet file not specified (multi-wallet node).
 const RPC_WALLET_NOT_SPECIFIED: i32 = -19;
 
@@ -205,6 +219,16 @@ pub enum TaskError {
     WalletStorage {
         #[source]
         source: platform_wallet_storage::WalletStorageError,
+    },
+
+    /// Persisted Core transaction rows could not be read through the upstream
+    /// wallet persistence API during wallet registration.
+    #[error(
+        "Could not load this wallet's transaction history. Restart the application and try again."
+    )]
+    WalletTransactionHistoryLoad {
+        #[source]
+        source: WalletTransactionHistoryError,
     },
 
     /// The on-disk wallet database was written by a newer build of the app

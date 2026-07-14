@@ -581,6 +581,7 @@ mod tests {
     /// Shorthand for the platform sync-cursor snapshot handle the helpers wire.
     type PlatformCursorsHandle = Arc<Mutex<HashMap<WalletSeedHash, (u64, u64)>>>;
     use crate::utils::egui_mpsc::EguiMpscAsync;
+    use dash_sdk::dpp::dashcore::hashes::Hash;
     use dash_sdk::dpp::dashcore::{Address, Network, PublicKey, Transaction, TxOut};
     use dash_sdk::dpp::key_wallet::WalletCoreBalance;
     use dash_sdk::dpp::key_wallet::account::{AccountType, StandardAccountType};
@@ -990,6 +991,49 @@ mod tests {
             "the InstantLock event must upgrade the accumulated record's status"
         );
         assert!(drained_repaint(&mut rx));
+    }
+
+    #[test]
+    fn live_event_for_hydrated_txid_upserts_without_duplicate() {
+        let (bridge, _cs, _rx) = make_bridge();
+        let wallet_id = [9u8; 32];
+        let funding = funding_address();
+        let record = received_record(&funding, 100_000);
+        let txid = record.txid;
+
+        bridge
+            .snapshots
+            .hydrate_transactions(&wallet_id, std::iter::once(&record));
+        let mut confirmed = record;
+        confirmed.context = TransactionContext::InBlock(
+            dash_sdk::dpp::key_wallet::transaction_checking::BlockInfo::new(
+                12,
+                dash_sdk::dpp::dashcore::BlockHash::all_zeros(),
+                1_720_000_456,
+            ),
+        );
+        bridge.on_wallet_event(&WalletEvent::BlockProcessed {
+            wallet_id,
+            height: 12,
+            chain_lock: None,
+            inserted: Vec::new(),
+            updated: vec![confirmed],
+            matured: Vec::new(),
+            balance: WalletCoreBalance::default(),
+            account_balances: BTreeMap::new(),
+            addresses_derived: Vec::new(),
+        });
+
+        assert_eq!(
+            bridge.snapshots.transaction_count(&wallet_id),
+            1,
+            "a live event for a persisted txid must update the hydrated row, not append another"
+        );
+        assert_eq!(
+            bridge.snapshots.transaction_status(&wallet_id, &txid),
+            Some(crate::model::wallet::TransactionStatus::Confirmed),
+            "the live record must replace the hydrated version of the same txid"
+        );
     }
 
     #[test]

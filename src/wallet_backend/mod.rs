@@ -183,11 +183,11 @@ const DEFAULT_BIP44_ACCOUNT: u32 = 0;
 /// Tolerates the brief window where a concurrent registration has created the
 /// wallet upstream but the manager has not finished exposing it via
 /// `get_wallet` — the loser of that race must not spuriously fail.
-const REGISTRATION_RESOLVE_RETRIES: u32 = 5;
+const REGISTRATION_RESOLVE_RETRIES: u32 = 50;
 
 /// Delay between the re-probes counted by [`REGISTRATION_RESOLVE_RETRIES`].
-/// Five tries at 20ms bound the wait to ~80ms in the (rare) genuinely-absent
-/// case while comfortably covering the in-flight-registration window.
+/// Fifty tries at 20ms bound the wait below one second in the (rare)
+/// genuinely-absent case while covering slower concurrent registrations.
 const REGISTRATION_RESOLVE_BACKOFF: std::time::Duration = std::time::Duration::from_millis(20);
 
 /// Upstream `WalletId` = `SHA256(root_xpub || root_chain_code)`, distinct
@@ -571,6 +571,7 @@ impl WalletBackend {
                 continue;
             };
 
+            self.hydrate_persisted_transactions(&wallet_id)?;
             self.inner.id_map.write()?.insert(seed_hash, wallet_id);
             self.inner
                 .wallets
@@ -579,6 +580,7 @@ impl WalletBackend {
             self.inner
                 .snapshots
                 .register_wallet(seed_hash, wallet_id, pw);
+            self.inner.snapshots.recompute(&wallet_id);
             tracing::debug!(
                 wallet = %hex::encode(seed_hash),
                 "Watch-only wallet registered with backend (seedless)"
@@ -832,6 +834,7 @@ impl WalletBackend {
             return Err(TaskError::WalletRegistrationXpubMismatch);
         }
 
+        self.hydrate_persisted_transactions(&wallet_id)?;
         self.inner.id_map.write()?.insert(seed_hash, wallet_id);
         self.inner
             .wallets
@@ -840,6 +843,73 @@ impl WalletBackend {
         self.inner
             .snapshots
             .register_wallet(seed_hash, wallet_id, pw);
+        self.inner.snapshots.recompute(&wallet_id);
+        Ok(())
+    }
+
+    /// Restore persisted public transaction records before publishing a
+    /// wallet's first display snapshot. This path never touches wallet secrets.
+    fn hydrate_persisted_transactions(&self, wallet_id: &WalletId) -> Result<(), TaskError> {
+        use crate::backend_task::error::WalletTransactionHistoryError;
+        use dash_sdk::dpp::dashcore::hashes::Hash;
+        use platform_wallet::changeset::PlatformWalletPersistence;
+        use platform_wallet_storage::WalletStorageError;
+
+        let storage_error = |source: rusqlite::Error| TaskError::WalletTransactionHistoryLoad {
+            source: WalletTransactionHistoryError::Persistence {
+                source: WalletStorageError::Sqlite(source).into(),
+            },
+        };
+        let database_path = self.inner.spv_storage_dir.join("platform-wallet.sqlite");
+        let connection = rusqlite::Connection::open_with_flags(
+            database_path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+        )
+        .map_err(&storage_error)?;
+        let txid_bytes = {
+            // Upstream's public API decodes full records one txid at a time.
+            // Enumerate only its keys here, then delegate every record read.
+            // Project invalid widths to an empty blob before materialization;
+            // `Txid::from_slice` below then returns the typed hash error.
+            let mut statement = connection
+                .prepare(
+                    "SELECT CASE WHEN length(txid) = 32 THEN txid ELSE X'' END \
+                     FROM core_transactions WHERE wallet_id = ?1 ORDER BY txid",
+                )
+                .map_err(&storage_error)?;
+            let rows = statement
+                .query_map([wallet_id.as_slice()], |row| row.get::<_, Vec<u8>>(0))
+                .map_err(&storage_error)?;
+            rows.collect::<Result<Vec<_>, _>>()
+                .map_err(&storage_error)?
+        };
+        drop(connection);
+
+        let mut records = Vec::with_capacity(txid_bytes.len());
+        for bytes in txid_bytes {
+            let txid = dash_sdk::dpp::dashcore::Txid::from_slice(&bytes).map_err(|source| {
+                TaskError::WalletTransactionHistoryLoad {
+                    source: WalletTransactionHistoryError::Persistence {
+                        source: WalletStorageError::HashDecode { source }.into(),
+                    },
+                }
+            })?;
+            let record = self
+                .inner
+                .persister
+                .get_core_tx_record(*wallet_id, &txid)
+                .map_err(|source| TaskError::WalletTransactionHistoryLoad {
+                    source: WalletTransactionHistoryError::Persistence { source },
+                })?
+                .ok_or(TaskError::WalletTransactionHistoryLoad {
+                    source: WalletTransactionHistoryError::RecordMissing { txid },
+                })?;
+            records.push(record);
+        }
+
+        self.inner
+            .snapshots
+            .hydrate_transactions(wallet_id, records.iter());
         Ok(())
     }
 

@@ -51,11 +51,73 @@ pub enum AcceptedAccounts {
     Replace(Vec<u32>),
 }
 
-impl From<Vec<u32>> for AcceptedAccounts {
-    /// A bare account list is a full overwrite — the caller supplied the whole
-    /// list, so it owns it.
-    fn from(accounts: Vec<u32>) -> Self {
-        Self::Replace(accounts)
+/// What a whole-document write does to one optional contact detail.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum ContactInfoField<T> {
+    /// Keep the value already stored in the encrypted payload.
+    #[default]
+    Preserve,
+    /// Store this value, including `None` when clearing an optional field.
+    Replace(T),
+}
+
+/// How a write handles a present encrypted payload this client cannot read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum UnreadableContactInfoPolicy {
+    /// Abort before overwriting data this client cannot preserve.
+    #[default]
+    Abort,
+    /// Replace the unreadable payload after the user explicitly confirms.
+    Overwrite,
+}
+
+/// Explicit field-by-field intent for a whole encrypted `contactInfo` write.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContactInfoUpdate {
+    /// Nickname update intent.
+    pub nickname: ContactInfoField<Option<String>>,
+    /// Note update intent.
+    pub note: ContactInfoField<Option<String>>,
+    /// New hidden state.
+    pub display_hidden: bool,
+    /// Accepted-account update intent.
+    pub accepted_accounts: AcceptedAccounts,
+    /// Policy for a present payload that cannot be read.
+    pub unreadable: UnreadableContactInfoPolicy,
+}
+
+impl ContactInfoUpdate {
+    /// Change visibility while preserving every unrelated contact detail.
+    pub fn visibility(display_hidden: bool) -> Self {
+        Self {
+            nickname: ContactInfoField::Preserve,
+            note: ContactInfoField::Preserve,
+            display_hidden,
+            accepted_accounts: AcceptedAccounts::Preserve,
+            unreadable: UnreadableContactInfoPolicy::Abort,
+        }
+    }
+
+    /// Replace every editable field with caller-owned values.
+    pub fn replace_all(
+        nickname: Option<String>,
+        note: Option<String>,
+        display_hidden: bool,
+        accepted_accounts: Vec<u32>,
+    ) -> Self {
+        Self {
+            nickname: ContactInfoField::Replace(nickname),
+            note: ContactInfoField::Replace(note),
+            display_hidden,
+            accepted_accounts: AcceptedAccounts::Replace(accepted_accounts),
+            unreadable: UnreadableContactInfoPolicy::Abort,
+        }
+    }
+
+    /// Allow replacement of unreadable stored data after explicit confirmation.
+    pub fn overwrite_unreadable(mut self) -> Self {
+        self.unreadable = UnreadableContactInfoPolicy::Overwrite;
+        self
     }
 }
 

@@ -19,6 +19,20 @@ use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::Identifier;
 use thiserror::Error;
 
+/// Why an existing DashPay `contactInfo` payload could not be preserved.
+#[derive(Debug, Error)]
+pub enum ContactInfoReadError {
+    /// The private payload was present with a shape this client does not understand.
+    #[error("contactInfo privateData has an unexpected type")]
+    UnexpectedPrivateDataType,
+    /// The private payload was present but could not be decrypted with its derived key.
+    #[error("contactInfo privateData decryption failed")]
+    DecryptFailed,
+    /// Decryption succeeded, but the plaintext is not a format this client understands.
+    #[error("contactInfo privateData deserialization failed")]
+    DeserializeFailed,
+}
+
 /// Typed failures while restoring persisted Core transaction history.
 #[derive(Debug, Error)]
 pub enum WalletTransactionHistoryError {
@@ -623,6 +637,38 @@ pub enum TaskError {
     DashpaySidecarStorage {
         #[source]
         source: crate::wallet_backend::KvAdapterError,
+    },
+
+    /// An existing contact's encrypted details could not be read safely.
+    #[error(
+        "Your saved contact details could not be read, so no changes were made. Use a compatible DashPay client, or try again and confirm replacing the saved details when asked."
+    )]
+    DashPayContactInfoRead {
+        #[source]
+        source: ContactInfoReadError,
+    },
+
+    /// A direct contact-details update failed. The identity/contact envelope
+    /// lets screens correlate a delayed failure with the exact pending write.
+    #[error("{source}")]
+    DashPayContactInfoActionFailed {
+        identity_id: Identifier,
+        contact_id: Identifier,
+        #[source]
+        source: Box<TaskError>,
+    },
+
+    /// A request-card action failed after the UI disabled that request's paid
+    /// action buttons. The request ID lets the screen release only its guard.
+    ///
+    /// A naming envelope only: it adds the request ID the screen needs and
+    /// forwards the underlying failure's own message, which already tells the
+    /// user what went wrong and what to do about it.
+    #[error("{source}")]
+    DashPayContactRequestActionFailed {
+        request_id: Identifier,
+        #[source]
+        source: Box<TaskError>,
     },
 
     /// Chain sync could not be started.
@@ -2608,6 +2654,37 @@ mod tests {
     use dash_sdk::dpp::consensus::state::identity::identity_public_key_already_exists_for_unique_contract_bounds_error::IdentityPublicKeyAlreadyExistsForUniqueContractBoundsError;
     use dash_sdk::dpp::identity::Purpose;
     use dash_sdk::platform::Identifier;
+
+    #[test]
+    fn a_request_action_failure_shows_the_underlying_reason_to_the_user() {
+        let cause = TaskError::DocumentNotFound;
+        let wrapped = TaskError::DashPayContactRequestActionFailed {
+            request_id: Identifier::from([7; 32]),
+            source: Box::new(TaskError::DocumentNotFound),
+        };
+
+        assert_eq!(
+            wrapped.to_string(),
+            cause.to_string(),
+            "the request ID is for the screen; the user must still read why the action failed"
+        );
+    }
+
+    #[test]
+    fn a_contact_info_action_failure_shows_the_underlying_reason_to_the_user() {
+        let cause = TaskError::DashPayContactInfoRead {
+            source: ContactInfoReadError::DeserializeFailed,
+        };
+        let wrapped = TaskError::DashPayContactInfoActionFailed {
+            identity_id: Identifier::from([6; 32]),
+            contact_id: Identifier::from([7; 32]),
+            source: Box::new(TaskError::DashPayContactInfoRead {
+                source: ContactInfoReadError::DeserializeFailed,
+            }),
+        };
+
+        assert_eq!(wrapped.to_string(), cause.to_string());
+    }
 
     #[test]
     fn wrong_passphrase_classifier_matches_only_secret_store_wrong_passphrase() {

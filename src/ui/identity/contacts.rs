@@ -21,7 +21,7 @@ use crate::backend_task::BackendTask;
 use crate::backend_task::dashpay::{ContactData, DashPayTask};
 use crate::context::AppContext;
 use crate::context::feature_gate::FeatureGate;
-use crate::model::dashpay::AcceptedAccounts;
+use crate::model::dashpay::{ContactInfoUpdate, UnreadableContactInfoPolicy};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::ScreenType;
 use crate::ui::identity::identity_pill::shorten_id;
@@ -216,10 +216,12 @@ pub fn request_task(
         RequestAction::Declined => DashPayTask::RejectContactRequest {
             identity,
             request_id,
+            unreadable: UnreadableContactInfoPolicy::Abort,
         },
         RequestAction::Cancelled => DashPayTask::CancelContactRequest {
             identity,
             request_id,
+            unreadable: UnreadableContactInfoPolicy::Abort,
         },
     }
 }
@@ -235,10 +237,7 @@ pub fn unhide_task(identity: QualifiedIdentity, contact: &ContactData) -> DashPa
     DashPayTask::UpdateContactInfo {
         identity,
         contact_id: contact.identity_id,
-        nickname: contact.nickname.clone(),
-        note: contact.note.clone(),
-        is_hidden: false,
-        accepted_accounts: AcceptedAccounts::Preserve,
+        update: ContactInfoUpdate::visibility(false),
     }
 }
 
@@ -958,13 +957,13 @@ mod tests {
             DashPayTask::UpdateContactInfo {
                 identity,
                 contact_id,
-                is_hidden,
+                update,
                 ..
             } => {
                 assert_eq!(identity.identity.id(), id(1));
                 assert_eq!(contact_id, id(5), "the clicked contact must be unhidden");
                 assert!(
-                    !is_hidden,
+                    !update.display_hidden,
                     "unhiding must broadcast contactInfo with the hidden flag cleared"
                 );
             }
@@ -979,13 +978,15 @@ mod tests {
             &hidden_contact(Some("Bao"), Some("Met at the meetup")),
         );
         match task {
-            DashPayTask::UpdateContactInfo { nickname, note, .. } => {
+            DashPayTask::UpdateContactInfo { update, .. } => {
                 assert_eq!(
-                    nickname.as_deref(),
-                    Some("Bao"),
-                    "restoring visibility must not wipe the contact's nickname"
+                    update.nickname,
+                    crate::model::dashpay::ContactInfoField::Preserve
                 );
-                assert_eq!(note.as_deref(), Some("Met at the meetup"));
+                assert_eq!(
+                    update.note,
+                    crate::model::dashpay::ContactInfoField::Preserve
+                );
             }
             other => panic!("expected UpdateContactInfo, got {other:?}"),
         }
@@ -998,11 +999,9 @@ mod tests {
         // volunteer an empty list — that would erase every one of them.
         let task = unhide_task(qualified_identity(id(1)), &hidden_contact(None, None));
         match task {
-            DashPayTask::UpdateContactInfo {
-                accepted_accounts, ..
-            } => assert_eq!(
-                accepted_accounts,
-                AcceptedAccounts::Preserve,
+            DashPayTask::UpdateContactInfo { update, .. } => assert_eq!(
+                update.accepted_accounts,
+                crate::model::dashpay::AcceptedAccounts::Preserve,
                 "unhiding must preserve the contact's accepted accounts, not overwrite them"
             ),
             other => panic!("expected UpdateContactInfo, got {other:?}"),
@@ -1112,9 +1111,7 @@ mod tests {
         let clicked = Some((id(2), RequestAction::Cancelled));
 
         dispatch_request(&mut state, &identity, clicked);
-        // What the hub does when a task fails: it has no request ID to key on,
-        // so it releases every guard rather than stranding a row.
-        state.clear_in_flight();
+        state.release_request(&id(2));
 
         assert_ne!(
             dispatch_request(&mut state, &identity, clicked),

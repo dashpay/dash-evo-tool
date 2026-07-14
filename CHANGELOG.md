@@ -164,6 +164,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **DashPay contact details and request actions are protected from accidental loss or duplicate
+  fees**: declining, cancelling, unhiding, or renaming a contact now preserves every unrelated
+  encrypted detail. If another client saved details this app cannot read, the app offers a clear,
+  confirmed replacement path instead of silently erasing them or leaving the contact permanently
+  hidden. Switching Identity Hub tabs also keeps paid request actions disabled until their original
+  task finishes.
+
 - **Your settings and scheduled votes now survive an upgrade**: upgrading from an
   earlier version no longer starts the app with a blank configuration. The first
   launch after the upgrade brings across your selected network, start screen,

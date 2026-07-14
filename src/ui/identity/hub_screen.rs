@@ -9,9 +9,14 @@
 use super::breadcrumb_switcher::{self, BreadcrumbEffect};
 use super::identity_hub_tab_bar::IdentityHubTabBar;
 use crate::app::AppAction;
+use crate::backend_task::BackendTask;
 use crate::backend_task::BackendTaskSuccessResult;
+use crate::backend_task::dashpay::DashPayTask;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
+use crate::model::dashpay::UnreadableContactInfoPolicy;
+use crate::ui::components::component_trait::Component;
+use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::message_banner::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::components::styled::island_central_panel;
@@ -21,6 +26,7 @@ use crate::ui::{MessageType, RootScreenType, ScreenLike, ScreenType};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::platform::Identifier;
 use eframe::egui::{self, Context};
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
 use super::home::HomeState;
@@ -63,6 +69,18 @@ pub struct IdentityHubScreen {
     /// Breadcrumb-switcher view state (picker override + dropdown search
     /// buffers). The active identity itself is app-scoped on `AppContext`.
     selection: HubSelection,
+    contact_info_overwrite_dialog: Option<(ConfirmationDialog, ContactInfoTaskKey)>,
+    pending_contact_info_tasks: HashMap<ContactInfoTaskKey, DashPayTask>,
+    pending_contact_info_confirmations: VecDeque<ContactInfoTaskKey>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum ContactInfoTaskKey {
+    Direct {
+        identity_id: Identifier,
+        contact_id: Identifier,
+    },
+    Request(Identifier),
 }
 
 impl IdentityHubScreen {
@@ -80,7 +98,71 @@ impl IdentityHubScreen {
             contacts_state: super::contacts::ContactsState::default(),
             profile_cache: super::profile_cache::ProfileCache::default(),
             selection: HubSelection::default(),
+            contact_info_overwrite_dialog: None,
+            pending_contact_info_tasks: HashMap::new(),
+            pending_contact_info_confirmations: VecDeque::new(),
         }
+    }
+
+    fn capture_contact_info_update(&mut self, action: &AppAction) {
+        let AppAction::BackendTask(BackendTask::DashPayTask(task)) = action else {
+            return;
+        };
+        if can_confirm_contact_info_overwrite(task)
+            && let Some(key) = contact_info_task_key(task)
+        {
+            self.pending_contact_info_tasks
+                .insert(key, task.as_ref().clone());
+        }
+    }
+
+    fn reset_contacts_for_identity_change(&mut self) {
+        self.contacts_state.reset_for_identity_change();
+        self.pending_contact_info_tasks.clear();
+        self.pending_contact_info_confirmations.clear();
+        self.contact_info_overwrite_dialog = None;
+    }
+
+    fn queue_contact_info_confirmation(&mut self, key: ContactInfoTaskKey) {
+        let already_showing = self
+            .contact_info_overwrite_dialog
+            .as_ref()
+            .is_some_and(|(_, shown_key)| *shown_key == key);
+        if already_showing || self.pending_contact_info_confirmations.contains(&key) {
+            return;
+        }
+
+        self.pending_contact_info_confirmations.push_back(key);
+    }
+
+    fn prepare_contact_info_dialog(&mut self) {
+        if self.contact_info_overwrite_dialog.is_some() {
+            return;
+        }
+        while let Some(key) = self.pending_contact_info_confirmations.pop_front() {
+            if let Some(task) = self.pending_contact_info_tasks.get(&key) {
+                let (title, message) = contact_info_confirmation_copy(task);
+                self.contact_info_overwrite_dialog = Some((
+                    ConfirmationDialog::new(title, message)
+                        .confirm_text(Some("Replace saved details"))
+                        .danger_mode(true),
+                    key,
+                ));
+                break;
+            }
+        }
+    }
+
+    /// Reset all identity-scoped state after the owning application context
+    /// changes (for example, on a network switch). Unlike [`ScreenLike::refresh`]
+    /// this also drops the paid-action guards and pending confirmations, which
+    /// belong to the identities of the context being left.
+    pub(crate) fn reset_for_context_change(&mut self) {
+        self.reset_contacts_for_identity_change();
+        self.profile_cache.reset();
+        self.selection.clear_picker_override();
+        self.selection.clear_searches();
+        self.load_error_banner.take_and_clear();
     }
 
     /// Resolve the current landing state from the active-network identity
@@ -135,6 +217,8 @@ impl IdentityHubScreen {
     /// cancelled), confirm it to the user, and re-arm the Contacts load so the
     /// authoritative lists replace the local edit.
     fn resolve_request(&mut self, request_id: &Identifier, confirmation: &str) {
+        self.pending_contact_info_tasks
+            .remove(&ContactInfoTaskKey::Request(*request_id));
         self.contacts_state.remove_request(request_id);
         self.contacts_state.invalidate();
         MessageBanner::set_global(
@@ -157,14 +241,14 @@ impl IdentityHubScreen {
             BreadcrumbEffect::SwitchWallet(hash) => {
                 self.app_context.set_selected_hd_wallet(Some(hash));
                 self.selection.clear_picker_override();
-                self.contacts_state.reset();
+                self.reset_contacts_for_identity_change();
                 self.profile_cache.reset();
                 AppAction::None
             }
             BreadcrumbEffect::SelectIdentity(id) => {
                 self.app_context.set_selected_identity(Some(id));
                 self.selection.clear_picker_override();
-                self.contacts_state.reset();
+                self.reset_contacts_for_identity_change();
                 self.profile_cache.reset();
                 AppAction::None
             }
@@ -317,6 +401,7 @@ impl ScreenLike for IdentityHubScreen {
                 }
             }
         });
+        self.capture_contact_info_update(&action);
 
         // A picker card click sets the active identity and routes to Home.
         if let Some(id_str) = picked_identity
@@ -324,7 +409,7 @@ impl ScreenLike for IdentityHubScreen {
         {
             self.app_context.set_selected_identity(Some(id));
             self.selection.clear_picker_override();
-            self.contacts_state.reset();
+            self.reset_contacts_for_identity_change();
             self.profile_cache.reset();
         }
 
@@ -334,6 +419,34 @@ impl ScreenLike for IdentityHubScreen {
         // in flight; the local profile cache was removed in the platform-wallet
         // migration, so profiles resolve asynchronously via the backend).
         action |= self.profile_cache.dispatch_pending();
+
+        self.prepare_contact_info_dialog();
+        if let Some((dialog, key)) = &mut self.contact_info_overwrite_dialog {
+            let key = *key;
+            match dialog.show(ui).inner.dialog_response {
+                Some(ConfirmationStatus::Confirmed) => {
+                    if let Some(task) = self
+                        .pending_contact_info_tasks
+                        .get(&key)
+                        .cloned()
+                        .and_then(overwrite_unreadable_task)
+                    {
+                        self.pending_contact_info_tasks.insert(key, task.clone());
+                        action = AppAction::BackendTask(BackendTask::DashPayTask(Box::new(task)));
+                    }
+                    self.contact_info_overwrite_dialog = None;
+                }
+                Some(ConfirmationStatus::Canceled) => {
+                    if let ContactInfoTaskKey::Request(request_id) = key {
+                        self.contacts_state.release_request(&request_id);
+                    }
+                    self.pending_contact_info_tasks.remove(&key);
+                    self.contacts_state.invalidate();
+                    self.contact_info_overwrite_dialog = None;
+                }
+                None => {}
+            }
+        }
 
         action
     }
@@ -396,20 +509,29 @@ impl ScreenLike for IdentityHubScreen {
             // A confirmed contactInfo write — on this tab that is an unhide.
             // Re-arm the load so the restored contact comes back from the
             // authoritative list, not just the optimistic local move.
-            BackendTaskSuccessResult::DashPayContactInfoUpdated(_) => {
-                self.contacts_state.invalidate();
-                MessageBanner::set_global(
-                    self.app_context.egui_ctx(),
-                    "This contact is back in your list.",
-                    MessageType::Success,
-                );
+            BackendTaskSuccessResult::DashPayContactInfoUpdated {
+                identity,
+                contact_id,
+            } => {
+                let key = ContactInfoTaskKey::Direct {
+                    identity_id: *identity,
+                    contact_id: *contact_id,
+                };
+                if self.pending_contact_info_tasks.remove(&key).is_some() {
+                    self.contacts_state.invalidate();
+                    MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
+                        "This contact is back in your list.",
+                        MessageType::Success,
+                    );
+                }
             }
-            // The counterpart answered while the row was on screen. Nothing to
-            // withdraw or accept — reload into the truth. The result names the
-            // contact, not the request, so every request guard is released and
-            // the reloaded lists decide what is still actionable.
-            BackendTaskSuccessResult::DashPayContactAlreadyEstablished(_) => {
-                self.contacts_state.clear_in_flight();
+            // The counterpart answered while the row was on screen. Retire the
+            // exact request guard and reload the authoritative lists.
+            BackendTaskSuccessResult::DashPayContactAlreadyEstablished { request_id, .. } => {
+                self.pending_contact_info_tasks
+                    .remove(&ContactInfoTaskKey::Request(*request_id));
+                self.contacts_state.remove_request(request_id);
                 self.contacts_state.invalidate();
                 MessageBanner::set_global(
                     self.app_context.egui_ctx(),
@@ -421,11 +543,19 @@ impl ScreenLike for IdentityHubScreen {
         }
     }
 
-    fn display_task_error(&mut self, _error: &TaskError) -> bool {
-        // A failed Accept / Decline / Cancel must leave its row clickable again.
-        // The error carries no request ID, so every guard is released: the worst
-        // case is a row the user can retry, against a row stuck forever.
-        self.contacts_state.clear_in_flight();
+    fn display_task_error(&mut self, error: &TaskError) -> bool {
+        if let Some(key) = contact_info_read_error_key(error)
+            && self.pending_contact_info_tasks.contains_key(&key)
+        {
+            self.contacts_state.invalidate();
+            self.queue_contact_info_confirmation(key);
+            return true;
+        }
+
+        if let Some(key) = contact_info_error_key(error) {
+            self.pending_contact_info_tasks.remove(&key);
+        }
+        release_request_guard_for_error(&mut self.contacts_state, error);
 
         // Clear any dangling pending_save so a failed UpdateProfile doesn't
         // leave a stale snapshot around. If a later DashPayProfileUpdated from
@@ -438,6 +568,140 @@ impl ScreenLike for IdentityHubScreen {
         // Let AppState render the default error banner — the hub has no
         // other special-case error handling of its own yet.
         false
+    }
+}
+
+/// Release only the request-card guard named by a typed task error. Unmatched
+/// guards remain protected until their own typed terminal outcome arrives.
+fn release_request_guard_for_error(state: &mut super::contacts::ContactsState, error: &TaskError) {
+    if let TaskError::DashPayContactRequestActionFailed { request_id, .. } = error {
+        state.release_request(request_id);
+    }
+}
+
+fn can_confirm_contact_info_overwrite(task: &DashPayTask) -> bool {
+    match task {
+        DashPayTask::UpdateContactInfo { update, .. } => {
+            update.unreadable == UnreadableContactInfoPolicy::Abort
+        }
+        DashPayTask::RejectContactRequest { unreadable, .. }
+        | DashPayTask::CancelContactRequest { unreadable, .. } => {
+            *unreadable == UnreadableContactInfoPolicy::Abort
+        }
+        _ => false,
+    }
+}
+
+/// Title and body for the overwrite confirmation, one complete message per
+/// action so each stays a single translatable sentence group. Only the contact
+/// case names an identifier: a request ID is not something the user has seen,
+/// and the details at risk belong to the contact, not to the request.
+fn contact_info_confirmation_copy(task: &DashPayTask) -> (&'static str, String) {
+    use crate::ui::identity::identity_pill::shorten_id;
+    use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+
+    match task {
+        DashPayTask::UpdateContactInfo { contact_id, .. } => {
+            let contact = shorten_id(&contact_id.to_string(Encoding::Base58));
+            (
+                "Unhide contact and replace saved details?",
+                format!(
+                    "The saved details for contact {contact} cannot be read. Unhiding this contact will clear its saved nickname, note, and accepted-account settings. You cannot undo this change."
+                ),
+            )
+        }
+        DashPayTask::RejectContactRequest { .. } => (
+            "Decline request and replace saved details?",
+            "The saved details for this contact cannot be read. Declining the request will clear the contact's saved nickname, note, and accepted-account settings. You cannot undo this change.".to_string(),
+        ),
+        DashPayTask::CancelContactRequest { .. } => (
+            "Cancel request and replace saved details?",
+            "The saved details for this contact cannot be read. Withdrawing the request will clear the contact's saved nickname, note, and accepted-account settings. You cannot undo this change.".to_string(),
+        ),
+        _ => (
+            "Replace saved contact details?",
+            "The saved details for this contact cannot be read. Continuing will clear the contact's saved nickname, note, and accepted-account settings. You cannot undo this change.".to_string(),
+        ),
+    }
+}
+
+fn contact_info_task_key(task: &DashPayTask) -> Option<ContactInfoTaskKey> {
+    match task {
+        DashPayTask::UpdateContactInfo {
+            identity,
+            contact_id,
+            ..
+        } => Some(ContactInfoTaskKey::Direct {
+            identity_id: identity.identity.id(),
+            contact_id: *contact_id,
+        }),
+        DashPayTask::RejectContactRequest { request_id, .. }
+        | DashPayTask::CancelContactRequest { request_id, .. } => {
+            Some(ContactInfoTaskKey::Request(*request_id))
+        }
+        _ => None,
+    }
+}
+
+fn overwrite_unreadable_task(task: DashPayTask) -> Option<DashPayTask> {
+    match task {
+        DashPayTask::UpdateContactInfo {
+            identity,
+            contact_id,
+            update,
+        } => Some(DashPayTask::UpdateContactInfo {
+            identity,
+            contact_id,
+            update: update.overwrite_unreadable(),
+        }),
+        DashPayTask::RejectContactRequest {
+            identity,
+            request_id,
+            ..
+        } => Some(DashPayTask::RejectContactRequest {
+            identity,
+            request_id,
+            unreadable: UnreadableContactInfoPolicy::Overwrite,
+        }),
+        DashPayTask::CancelContactRequest {
+            identity,
+            request_id,
+            ..
+        } => Some(DashPayTask::CancelContactRequest {
+            identity,
+            request_id,
+            unreadable: UnreadableContactInfoPolicy::Overwrite,
+        }),
+        _ => None,
+    }
+}
+
+fn contact_info_error_key(error: &TaskError) -> Option<ContactInfoTaskKey> {
+    match error {
+        TaskError::DashPayContactInfoActionFailed {
+            identity_id,
+            contact_id,
+            ..
+        } => Some(ContactInfoTaskKey::Direct {
+            identity_id: *identity_id,
+            contact_id: *contact_id,
+        }),
+        TaskError::DashPayContactRequestActionFailed { request_id, .. } => {
+            Some(ContactInfoTaskKey::Request(*request_id))
+        }
+        _ => None,
+    }
+}
+
+fn contact_info_read_error_key(error: &TaskError) -> Option<ContactInfoTaskKey> {
+    match error {
+        TaskError::DashPayContactInfoActionFailed { source, .. }
+        | TaskError::DashPayContactRequestActionFailed { source, .. }
+            if matches!(source.as_ref(), TaskError::DashPayContactInfoRead { .. }) =>
+        {
+            contact_info_error_key(error)
+        }
+        _ => None,
     }
 }
 
@@ -458,6 +722,7 @@ fn applies_to_selected_identity(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::state::contacts_view::ContactsState;
 
     // Unit tests for the screen's pure state manipulation. Rendering is
     // covered by the kittest integration tests under
@@ -520,5 +785,65 @@ mod tests {
     #[test]
     fn a_result_arriving_with_no_identity_selected_is_discarded() {
         assert!(!applies_to_selected_identity(None, &id(1)));
+    }
+
+    #[test]
+    fn unrelated_task_error_does_not_release_in_flight_paid_accept_guard() {
+        let mut state = ContactsState::default();
+        assert!(state.begin_request(id(2)));
+
+        release_request_guard_for_error(&mut state, &TaskError::DocumentNotFound);
+
+        assert!(
+            state.is_in_flight(&id(2)),
+            "a concurrent load error must not enable a second paid Accept"
+        );
+    }
+
+    #[test]
+    fn matching_request_error_releases_only_its_guard() {
+        let mut state = ContactsState::default();
+        assert!(state.begin_request(id(2)));
+        assert!(state.begin_request(id(3)));
+        let error = TaskError::DashPayContactRequestActionFailed {
+            request_id: id(2),
+            source: Box::new(TaskError::DocumentNotFound),
+        };
+
+        release_request_guard_for_error(&mut state, &error);
+
+        assert!(!state.is_in_flight(&id(2)));
+        assert!(state.is_in_flight(&id(3)));
+    }
+
+    #[test]
+    fn concurrent_contact_info_errors_keep_distinct_retry_keys() {
+        use crate::backend_task::error::ContactInfoReadError;
+
+        let request_error = TaskError::DashPayContactRequestActionFailed {
+            request_id: id(2),
+            source: Box::new(TaskError::DashPayContactInfoRead {
+                source: ContactInfoReadError::DeserializeFailed,
+            }),
+        };
+        let direct_error = TaskError::DashPayContactInfoActionFailed {
+            identity_id: id(3),
+            contact_id: id(4),
+            source: Box::new(TaskError::DashPayContactInfoRead {
+                source: ContactInfoReadError::DeserializeFailed,
+            }),
+        };
+
+        assert_eq!(
+            contact_info_read_error_key(&request_error),
+            Some(ContactInfoTaskKey::Request(id(2)))
+        );
+        assert_eq!(
+            contact_info_read_error_key(&direct_error),
+            Some(ContactInfoTaskKey::Direct {
+                identity_id: id(3),
+                contact_id: id(4),
+            })
+        );
     }
 }

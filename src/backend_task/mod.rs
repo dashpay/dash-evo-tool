@@ -260,8 +260,16 @@ pub enum BackendTaskSuccessResult {
     DashPayContactRequestAccepted(Identifier), // Request ID that was accepted
     DashPayContactRequestRejected(Identifier), // Request ID that was rejected
     DashPayContactRequestCancelled(Identifier), // Request ID whose sent request was withdrawn
-    DashPayContactAlreadyEstablished(Identifier), // Contact ID that already exists
-    DashPayContactInfoUpdated(Identifier), // Contact ID whose info was updated
+    DashPayContactAlreadyEstablished {
+        request_id: Identifier,
+        contact_id: Identifier,
+    },
+    DashPayContactInfoUpdated {
+        /// Identity that owns the encrypted `contactInfo` document.
+        identity: Identifier,
+        /// Contact whose private details were updated.
+        contact_id: Identifier,
+    },
     DashPayPaymentSent(String, String, u64), // (recipient, address, amount in duffs)
     /// Result of a [`FetchAvatar`](crate::backend_task::dashpay::DashPayTask::FetchAvatar):
     /// the validated image bytes for `url`, or `None` when the fetch failed. Routed

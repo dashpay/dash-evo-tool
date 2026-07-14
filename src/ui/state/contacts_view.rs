@@ -12,7 +12,16 @@ use crate::ui::identity::identity_pill::display_label;
 use dash_sdk::dpp::document::DocumentV0Getters;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::{Document, Identifier};
-use std::collections::HashSet;
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
+
+/// Backstop for a guard whose task result never arrives. Results are delivered
+/// only to the screen that is visible when they land, so an action resolved
+/// while the user is on another screen leaves its guard behind; without an
+/// expiry that request's buttons would stay disabled for the rest of the
+/// session. It is far longer than any state transition takes, so it never
+/// re-enables an action that is genuinely still running.
+const REQUEST_IN_FLIGHT_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
 /// A single cached contact-request entry, derived from a raw
 /// `DashPayContactRequests` result document.
@@ -31,9 +40,9 @@ pub struct ContactRequestEntry {
 
 /// Contacts-tab state owned by the hub screen.
 ///
-/// The load guard debounces the backend fetch to one dispatch per tab entry;
-/// the hub clears it via [`ContactsState::reset`] on refresh, tab switch, and
-/// identity/network change.
+/// The load guard debounces the backend fetch to one dispatch per tab entry.
+/// Routine resets retain paid-action guards; identity/network changes clear
+/// them via [`ContactsState::reset_for_identity_change`].
 #[derive(Debug, Default, Clone)]
 pub struct ContactsState {
     /// `true` once the populated shell has dispatched its loads for this tab
@@ -55,10 +64,12 @@ pub struct ContactsState {
     /// Live search query bound to the Contacts search box.
     search: String,
     /// Requests whose Accept / Decline / Cancel is already running, keyed by
-    /// request ID. Each of those actions is a signed, paid-for state transition,
-    /// so a row keeps its buttons disabled until its result lands — a second
-    /// click would buy a second transition.
-    in_flight: HashSet<Identifier>,
+    /// request ID and stamped with the dispatch time. Each of those actions is a
+    /// signed, paid-for state transition, so a row keeps its buttons disabled
+    /// until its result lands — a second click would buy a second transition.
+    /// Only that result, an identity change, or [`REQUEST_IN_FLIGHT_TIMEOUT`]
+    /// releases the guard.
+    in_flight: HashMap<Identifier, Instant>,
 }
 
 impl ContactsState {
@@ -72,8 +83,7 @@ impl ContactsState {
         true
     }
 
-    /// Clear the load guard, cached lists, and search query so the next paint
-    /// re-issues the load. Called on refresh, tab switch, and identity change.
+    /// Clear cached view data while retaining guards for backend work still running.
     pub fn reset(&mut self) {
         self.load_requested = false;
         self.incoming.clear();
@@ -82,6 +92,11 @@ impl ContactsState {
         self.hidden.clear();
         self.show_hidden = false;
         self.search.clear();
+    }
+
+    /// Reset identity-scoped data, including guards that belong to the old identity.
+    pub fn reset_for_identity_change(&mut self) {
+        self.reset();
         self.in_flight.clear();
     }
 
@@ -210,25 +225,26 @@ impl ContactsState {
     /// Claim the in-flight slot for a request. `true` means the caller owns the
     /// dispatch; `false` means an action for that request is already running and
     /// the caller must not dispatch a second one.
+    #[must_use]
     pub fn begin_request(&mut self, request_id: Identifier) -> bool {
-        self.in_flight.insert(request_id)
+        if self.is_in_flight(&request_id) {
+            return false;
+        }
+        self.in_flight.insert(request_id, Instant::now());
+        true
     }
 
     /// Whether an action for this request is already running. Drives the row's
     /// disabled state, so the user sees why the buttons do not respond.
     pub fn is_in_flight(&self, request_id: &Identifier) -> bool {
-        self.in_flight.contains(request_id)
+        self.in_flight.get(request_id).is_some_and(|started| {
+            Instant::now().saturating_duration_since(*started) < REQUEST_IN_FLIGHT_TIMEOUT
+        })
     }
 
-    /// Release every in-flight guard.
-    ///
-    /// Success releases a single request by ID through [`remove_request`]. A
-    /// failure carries no request ID, so the hub releases all of them: a row the
-    /// user can click again is right, a row stuck forever is not.
-    ///
-    /// [`remove_request`]: Self::remove_request
-    pub fn clear_in_flight(&mut self) {
-        self.in_flight.clear();
+    /// Release one request's guard after its matching task reports a failure.
+    pub fn release_request(&mut self, request_id: &Identifier) {
+        self.in_flight.remove(request_id);
     }
 }
 
@@ -590,8 +606,8 @@ mod tests {
     #[test]
     fn resolving_a_request_releases_its_guard_and_leaves_the_others() {
         let mut state = ContactsState::default();
-        state.begin_request(id(2));
-        state.begin_request(id(3));
+        assert!(state.begin_request(id(2)));
+        assert!(state.begin_request(id(3)));
 
         state.remove_request(&id(2));
 
@@ -603,30 +619,72 @@ mod tests {
     }
 
     #[test]
-    fn clearing_the_guards_makes_every_row_actionable_again() {
+    fn releasing_one_guard_leaves_other_requests_protected() {
         let mut state = ContactsState::default();
-        state.begin_request(id(2));
+        assert!(state.begin_request(id(2)));
+        assert!(state.begin_request(id(3)));
 
-        state.clear_in_flight();
+        state.release_request(&id(2));
 
         assert!(!state.is_in_flight(&id(2)));
+        assert!(state.is_in_flight(&id(3)));
+    }
+
+    #[test]
+    fn a_guard_survives_long_enough_to_outlast_any_real_state_transition() {
+        let mut state = ContactsState::default();
+        state.in_flight.insert(
+            id(2),
+            Instant::now() - REQUEST_IN_FLIGHT_TIMEOUT + Duration::from_secs(1),
+        );
+
+        assert!(state.is_in_flight(&id(2)));
         assert!(
-            state.begin_request(id(2)),
-            "after a failure the user must be able to retry the row"
+            !state.begin_request(id(2)),
+            "a still-running paid action must not be dispatched a second time"
         );
     }
 
     #[test]
-    fn reset_clears_the_in_flight_guards() {
+    fn a_guard_whose_result_never_arrived_expires_instead_of_stranding_the_request() {
         let mut state = ContactsState::default();
-        state.begin_request(id(2));
+        state.in_flight.insert(
+            id(2),
+            Instant::now() - REQUEST_IN_FLIGHT_TIMEOUT - Duration::from_secs(1),
+        );
+
+        assert!(!state.is_in_flight(&id(2)));
+        assert!(
+            state.begin_request(id(2)),
+            "a result delivered to another screen must not disable the request forever"
+        );
+    }
+
+    #[test]
+    fn routine_reset_preserves_the_in_flight_guards() {
+        let mut state = ContactsState::default();
+        assert!(state.begin_request(id(2)));
 
         state.reset();
 
         assert!(
-            !state.is_in_flight(&id(2)),
-            "leaving the tab must not carry a guard into the next entry"
+            state.is_in_flight(&id(2)),
+            "leaving the tab must not enable a second paid action while the first is still running"
         );
+        assert!(
+            !state.begin_request(id(2)),
+            "the same request must not be dispatched again after returning to the tab"
+        );
+    }
+
+    #[test]
+    fn identity_change_reset_clears_the_in_flight_guards() {
+        let mut state = ContactsState::default();
+        assert!(state.begin_request(id(2)));
+
+        state.reset_for_identity_change();
+
+        assert!(!state.is_in_flight(&id(2)));
     }
 
     #[test]

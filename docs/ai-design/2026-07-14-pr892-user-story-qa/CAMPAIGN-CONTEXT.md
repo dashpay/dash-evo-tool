@@ -82,6 +82,38 @@ local-only.**
   second wallet/cross-network scenario.
 - **Crash logs**: `/data/tmp/det-qa-pr892-data/det.log` and `det-stderr.log`.
 
+## ⚠️ KNOWN ENVIRONMENT BLOCKER: Testnet wallet-backend currently fails to connect
+
+As of ~2026-07-14 19:10 UTC, **Testnet chain-sync/wallet-backend wiring fails on every launch**
+in this data dir (`/data/tmp/det-qa-pr892-data`), ~50-100ms after SDK init, with
+`Failed to start chain sync error=The wallet service could not complete this operation.`
+Reproduced across 10+ full process restarts and via the in-app Settings > Networks reconnect
+path. **Mainnet works fine in the same process** (full sync confirmed), so this is Testnet-
+specific, not a general backend/network/resource problem. Full diagnostic history (including
+two disproven hypotheses) is in `scenarios/ALK.md`'s "App-restart failure" section and its
+addendum — **read that before spending time re-diagnosing**. Root cause not found; further
+investigation needs either destructive DB access or a debug-instrumented rebuild, both
+appropriately gated behind explicit human authorization (the permission system has already
+correctly blocked two non-destructive-in-intent repair attempts).
+
+**What this means for your work**: if you hit this (SPV sync failing on Testnet, wallet
+balance stuck at 0/stale, "SPV sync failed" banners), **don't burn time re-diagnosing or
+re-attempting fixes** — it's a known, open issue. For any story that strictly requires a live
+Testnet wallet-backend connection (funding, sending, identity registration requiring a fresh
+asset lock, anything that needs current chain state), mark it BLOCKED with reasoning
+`"blocked by known environment issue: Testnet wallet-backend fails to connect in this data dir
+as of 2026-07-14, see scenarios/ALK.md for full diagnosis"`. Still test whatever UI/validation/
+navigation is reachable without live connectivity (forms render, empty states, client-side
+validation, screens that only need cached/already-persisted DB state like `QA Wallet 1`'s
+already-confirmed 2.99999288 DASH balance and transaction history, which read from local SQLite
+and don't require an active SPV connection to display). If you have reason to believe the issue
+might have self-resolved (e.g., significant wall-clock time has passed since the timestamp
+above, or a prior agent in the chain notes it recovered), a single retry is reasonable — just
+don't loop on it.
+
+A harmless empty diagnostic wallet ("DIAG throwaway", Testnet, zero funds) was created during
+this investigation and left in place — ignore it, it's not part of your test matrix.
+
 ## Known findings so far (don't re-discover/re-report these — just reference them if relevant)
 
 - **PR892's regression fix is CONFIRMED WORKING** (WAL-016, full quit + cold-boot relaunch

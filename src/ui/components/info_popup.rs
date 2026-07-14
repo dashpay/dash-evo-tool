@@ -68,6 +68,7 @@ impl InfoPopup {
                 overlay_order: egui::Order::Background,
                 window_order: egui::Order::Middle,
                 resizable: is_markdown, // Allow resizing for markdown content
+                show_close_button: true,
                 inner_margin: 16,
             },
             |ui| {

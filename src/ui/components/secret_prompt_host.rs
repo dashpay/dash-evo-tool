@@ -141,6 +141,7 @@ impl ActivePrompt {
             submit_label: "Unlock",
             input_placeholder: "Enter passphrase",
             remember_label: Some(remember_label),
+            cancellable: true,
         };
 
         let mut remember = self.remember;

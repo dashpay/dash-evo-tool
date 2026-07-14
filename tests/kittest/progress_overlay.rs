@@ -1046,6 +1046,7 @@ fn tc_ovl_048_secret_prompt_renders_above_overlay() {
                 submit_label: "Unlock",
                 input_placeholder: "Enter passphrase",
                 remember_label: None,
+                cancellable: true,
             };
             passphrase_modal(ui.ctx(), &config, |_| {});
         });

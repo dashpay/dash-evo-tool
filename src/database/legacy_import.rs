@@ -604,6 +604,9 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::database::test_helpers::{
+        LegacyIdentityFixture, basic_legacy_identity_blob, create_legacy_identity_table,
+    };
     use crate::model::settings::ThemeMode;
 
     /// The v0.10-dev `settings` shape: every user-preference column the
@@ -1077,21 +1080,7 @@ mod tests {
     // ── Identities ───────────────────────────────────────────────────
 
     fn create_identity_table(conn: &Connection) {
-        conn.execute_batch(
-            "CREATE TABLE identity (
-                id BLOB PRIMARY KEY,
-                data BLOB,
-                status INTEGER NOT NULL DEFAULT 0,
-                is_local INTEGER NOT NULL,
-                alias TEXT,
-                info TEXT,
-                wallet BLOB,
-                wallet_index INTEGER,
-                identity_type TEXT,
-                network TEXT NOT NULL
-            );",
-        )
-        .unwrap();
+        create_legacy_identity_table(conn).expect("create identity table");
     }
 
     /// A genuinely-encodable identity blob, in the legacy `to_bytes()` shape.
@@ -1102,57 +1091,14 @@ mod tests {
     /// Like [`identity_blob`], but with an explicit alias — `None` yields a blob
     /// whose own alias is absent, which exercises the column fallback.
     fn identity_blob_with_alias(id: [u8; 32], alias: Option<&str>) -> Vec<u8> {
-        use crate::model::qualified_identity::IdentityType;
-        use dash_sdk::dpp::version::PlatformVersion;
-
-        let identity = dash_sdk::dpp::identity::Identity::create_basic_identity(
-            Identifier::from(id),
-            PlatformVersion::latest(),
-        )
-        .unwrap();
-        QualifiedIdentity {
-            identity,
-            associated_voter_identity: None,
-            associated_operator_identity: None,
-            associated_owner_key_id: None,
-            identity_type: IdentityType::User,
-            alias: alias.map(str::to_string),
-            private_keys: Default::default(),
-            dpns_names: vec![],
-            associated_wallets: BTreeMap::new(),
-            secret_access: None,
-            wallet_index: None,
-            top_ups: Default::default(),
-            status: Default::default(),
-            network: Network::Testnet,
-        }
-        .to_bytes()
+        basic_legacy_identity_blob(id, alias, Network::Testnet)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn insert_identity(
-        conn: &Connection,
-        id: [u8; 32],
-        data: Option<Vec<u8>>,
-        status: u8,
-        is_local: bool,
-        wallet: Option<(Vec<u8>, u32)>,
-        network: &str,
-    ) {
-        conn.execute(
-            "INSERT INTO identity (id, data, status, is_local, wallet, wallet_index, network)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            rusqlite::params![
-                id.as_slice(),
-                data,
-                status,
-                i64::from(is_local),
-                wallet.as_ref().map(|(hash, _)| hash.clone()),
-                wallet.as_ref().map(|(_, index)| *index),
-                network,
-            ],
-        )
-        .unwrap();
+    /// Stage one local, `Active` legacy identity row on testnet.
+    fn insert_identity(conn: &Connection, id: [u8; 32], data: Option<Vec<u8>>) {
+        LegacyIdentityFixture::new(id, data, "testnet")
+            .insert(conn)
+            .expect("insert identity");
     }
 
     /// The status column is the only source of an identity's status — the
@@ -1163,7 +1109,10 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         create_identity_table(&conn);
         let id = [0xAA; 32];
-        insert_identity(&conn, id, Some(identity_blob(id)), 2, true, None, "testnet");
+        LegacyIdentityFixture::new(id, Some(identity_blob(id)), "testnet")
+            .with_status(IdentityStatus::Active)
+            .insert(&conn)
+            .expect("insert identity");
 
         let read = read_identities(&conn, Network::Testnet).unwrap();
 
@@ -1184,25 +1133,12 @@ mod tests {
         let mine = [0xAA; 32];
         let observed = [0xBB; 32];
         let null_blob = [0xCC; 32];
-        insert_identity(
-            &conn,
-            mine,
-            Some(identity_blob(mine)),
-            2,
-            true,
-            None,
-            "testnet",
-        );
-        insert_identity(
-            &conn,
-            observed,
-            Some(identity_blob(observed)),
-            2,
-            false,
-            None,
-            "testnet",
-        );
-        insert_identity(&conn, null_blob, None, 2, true, None, "testnet");
+        insert_identity(&conn, mine, Some(identity_blob(mine)));
+        LegacyIdentityFixture::new(observed, Some(identity_blob(observed)), "testnet")
+            .with_is_local(false)
+            .insert(&conn)
+            .expect("insert identity");
+        insert_identity(&conn, null_blob, None);
 
         let read = read_identities(&conn, Network::Testnet).unwrap();
 
@@ -1223,15 +1159,10 @@ mod tests {
         create_identity_table(&conn);
         let id = [0xAA; 32];
         let seed_hash = [0x77; 32];
-        insert_identity(
-            &conn,
-            id,
-            Some(identity_blob(id)),
-            2,
-            true,
-            Some((seed_hash.to_vec(), 3)),
-            "testnet",
-        );
+        LegacyIdentityFixture::new(id, Some(identity_blob(id)), "testnet")
+            .with_wallet(seed_hash.to_vec(), 3)
+            .insert(&conn)
+            .expect("insert identity");
 
         let read = read_identities(&conn, Network::Testnet).unwrap();
         assert_eq!(read.identities[0].wallet, Some((seed_hash, 3)));
@@ -1245,24 +1176,8 @@ mod tests {
         create_identity_table(&conn);
         let good = [0xAA; 32];
         let corrupt = [0xBB; 32];
-        insert_identity(
-            &conn,
-            good,
-            Some(identity_blob(good)),
-            2,
-            true,
-            None,
-            "testnet",
-        );
-        insert_identity(
-            &conn,
-            corrupt,
-            Some(vec![0xFF; 8]),
-            2,
-            true,
-            None,
-            "testnet",
-        );
+        insert_identity(&conn, good, Some(identity_blob(good)));
+        insert_identity(&conn, corrupt, Some(vec![0xFF; 8]));
 
         let read = read_identities(&conn, Network::Testnet).unwrap();
 
@@ -1279,24 +1194,14 @@ mod tests {
         create_identity_table(&conn);
         let testnet_id = [0xAA; 32];
         let legacy_mainnet_id = [0xBB; 32];
-        insert_identity(
-            &conn,
-            testnet_id,
-            Some(identity_blob(testnet_id)),
-            2,
-            true,
-            None,
-            "testnet",
-        );
-        insert_identity(
-            &conn,
+        insert_identity(&conn, testnet_id, Some(identity_blob(testnet_id)));
+        LegacyIdentityFixture::new(
             legacy_mainnet_id,
             Some(identity_blob(legacy_mainnet_id)),
-            2,
-            true,
-            None,
             LEGACY_MAINNET_ALIAS,
-        );
+        )
+        .insert(&conn)
+        .expect("insert identity");
 
         let testnet = read_identities(&conn, Network::Testnet).unwrap();
         assert_eq!(testnet.identities.len(), 1);
@@ -1325,15 +1230,7 @@ mod tests {
         let bad_status = [0xBB; 32];
         let bad_index = [0xCC; 32];
 
-        insert_identity(
-            &conn,
-            good,
-            Some(identity_blob(good)),
-            2,
-            true,
-            None,
-            "testnet",
-        );
+        insert_identity(&conn, good, Some(identity_blob(good)));
         // `status` and `wallet_index` are bound as raw integers, past the u8/u32
         // range the modern types accept.
         conn.execute(
@@ -1381,15 +1278,7 @@ mod tests {
         let bad_alias = [0xCCu8; 32];
 
         // Ordered first so a `?`-escape would take it down with the bad rows.
-        insert_identity(
-            &conn,
-            good,
-            Some(identity_blob(good)),
-            2,
-            true,
-            None,
-            "testnet",
-        );
+        insert_identity(&conn, good, Some(identity_blob(good)));
         // `data` holds an INTEGER — `row.get::<Vec<u8>>` rejects it. It passes the
         // `data IS NOT NULL` filter, so the read reaches the decode and skips.
         conn.execute(
@@ -1513,25 +1402,9 @@ mod tests {
         let row_id = [0xBB; 32];
         let blob_id = [0xCC; 32];
 
-        insert_identity(
-            &conn,
-            good,
-            Some(identity_blob(good)),
-            2,
-            true,
-            None,
-            "testnet",
-        );
+        insert_identity(&conn, good, Some(identity_blob(good)));
         // Row `id` column and the blob's embedded id disagree.
-        insert_identity(
-            &conn,
-            row_id,
-            Some(identity_blob(blob_id)),
-            2,
-            true,
-            None,
-            "testnet",
-        );
+        insert_identity(&conn, row_id, Some(identity_blob(blob_id)));
 
         let read = read_identities(&conn, Network::Testnet).unwrap();
 

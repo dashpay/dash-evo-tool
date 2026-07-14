@@ -41,7 +41,9 @@ use crate::backend_task::migration::finish_unwire::{
 use crate::backend_task::migration::legacy_settings::{SettingsImport, import_legacy_settings};
 use crate::context::AppContext;
 use crate::database::Database;
-use crate::database::test_helpers::{create_database_at_path, legacy_master_epk_bytes};
+use crate::database::test_helpers::{
+    LegacyIdentityFixture, create_database_at_path, legacy_master_epk_bytes,
+};
 use crate::model::qualified_identity::encrypted_key_storage::{
     KeyStorage, PrivateKeyData, WalletDerivationPath,
 };
@@ -212,29 +214,21 @@ fn insert_identity(
     conn: &Connection,
     id: [u8; 32],
     data: Option<Vec<u8>>,
-    status: u8,
+    status: IdentityStatus,
     is_local: bool,
     alias: &str,
     wallet: Option<(WalletSeedHash, u32)>,
     identity_type: &str,
 ) {
-    conn.execute(
-        "INSERT INTO identity
-            (id, data, status, is_local, alias, wallet, wallet_index, identity_type, network)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-        params![
-            id.as_slice(),
-            data,
-            status,
-            i64::from(is_local),
-            alias,
-            wallet.map(|(seed_hash, _)| seed_hash.to_vec()),
-            wallet.map(|(_, index)| index),
-            identity_type,
-            USER_NETWORK.to_string(),
-        ],
-    )
-    .expect("insert identity row");
+    let mut row = LegacyIdentityFixture::new(id, data, USER_NETWORK.to_string())
+        .with_status(status)
+        .with_is_local(is_local)
+        .with_alias(alias)
+        .with_identity_type(identity_type);
+    if let Some((seed_hash, index)) = wallet {
+        row = row.with_wallet(seed_hash.to_vec(), index);
+    }
+    row.insert(conn).expect("insert identity row");
 }
 
 /// Write a `data.db` in the exact shape v0.9.3 left on disk, then hand back the
@@ -493,7 +487,7 @@ fn write_v093_database(dir: &std::path::Path) -> Fixture {
         &conn,
         IDENTITY_ID,
         Some(v093_masternode_blob()),
-        STATUS_ACTIVE,
+        IdentityStatus::Active,
         true,
         "my-masternode",
         Some((unprotected, 0)),
@@ -516,7 +510,7 @@ fn write_v093_database(dir: &std::path::Path) -> Fixture {
                 wallet_derived_key(unprotected),
             )],
         )),
-        STATUS_PENDING_CREATION,
+        IdentityStatus::PendingCreation,
         true,
         "my-username",
         Some((unprotected, 1)),
@@ -539,7 +533,7 @@ fn write_v093_database(dir: &std::path::Path) -> Fixture {
                 PrivateKeyData::Clear(EVONODE_PRIVATE_KEY),
             )],
         )),
-        STATUS_NOT_FOUND,
+        IdentityStatus::NotFound,
         true,
         "my-evonode",
         None,
@@ -557,7 +551,7 @@ fn write_v093_database(dir: &std::path::Path) -> Fixture {
             "someone-else",
             vec![],
         )),
-        STATUS_ACTIVE,
+        IdentityStatus::Active,
         false,
         "someone-else",
         None,
@@ -581,7 +575,7 @@ fn write_v093_database(dir: &std::path::Path) -> Fixture {
                 wallet_derived_key(protected),
             )],
         )),
-        STATUS_ACTIVE,
+        IdentityStatus::Active,
         true,
         "cold-username",
         Some((protected, 0)),
@@ -594,7 +588,7 @@ fn write_v093_database(dir: &std::path::Path) -> Fixture {
         &conn,
         NULL_BLOB_IDENTITY_ID,
         None,
-        STATUS_ACTIVE,
+        IdentityStatus::Active,
         true,
         "no-data",
         None,
@@ -1074,6 +1068,10 @@ async fn v093_install_upgrades_with_wallets_settings_votes_and_history_intact() 
         stored_identity(&ctx, USER_IDENTITY_ID).status,
         STATUS_PENDING_CREATION,
     );
+    assert_eq!(
+        stored_masternode.status, STATUS_ACTIVE,
+        "the status column reaches disk as the same discriminant v0.9.3 stored",
+    );
 
     // The top-up history already imported under the same identity scope must
     // still resolve — the two entries share a scope and must not collide.
@@ -1411,7 +1409,7 @@ async fn a_second_launch_after_an_unreadable_identity_preserves_user_edits_and_d
         &conn,
         corrupt_id,
         Some(vec![0xFF; 16]),
-        STATUS_ACTIVE,
+        IdentityStatus::Active,
         true,
         "corrupt",
         None,

@@ -2591,56 +2591,22 @@ mod tests {
 
     mod identities {
         use super::*;
-        use crate::model::qualified_identity::IdentityType;
+        use crate::database::test_helpers::{
+            LegacyIdentityFixture, basic_legacy_identity_blob, create_legacy_identity_table,
+        };
         use dash_sdk::dpp::dashcore::Network;
         use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-        use dash_sdk::dpp::version::PlatformVersion;
         use std::cell::RefCell;
 
         const NETWORK: Network = Network::Testnet;
 
         fn create_identity_table(conn: &Connection) {
-            conn.execute_batch(
-                "CREATE TABLE identity (
-                    id BLOB PRIMARY KEY,
-                    data BLOB,
-                    status INTEGER NOT NULL DEFAULT 0,
-                    is_local INTEGER NOT NULL,
-                    alias TEXT,
-                    info TEXT,
-                    wallet BLOB,
-                    wallet_index INTEGER,
-                    identity_type TEXT,
-                    network TEXT NOT NULL
-                );",
-            )
-            .expect("create identity table");
+            create_legacy_identity_table(conn).expect("create identity table");
         }
 
         /// A minimal, genuinely-encodable identity blob.
         pub(super) fn identity_blob(id: [u8; 32]) -> Vec<u8> {
-            let identity = dash_sdk::dpp::identity::Identity::create_basic_identity(
-                Identifier::from(id),
-                PlatformVersion::latest(),
-            )
-            .expect("basic identity");
-            QualifiedIdentity {
-                identity,
-                associated_voter_identity: None,
-                associated_operator_identity: None,
-                associated_owner_key_id: None,
-                identity_type: IdentityType::User,
-                alias: None,
-                private_keys: Default::default(),
-                dpns_names: vec![],
-                associated_wallets: std::collections::BTreeMap::new(),
-                secret_access: None,
-                wallet_index: None,
-                top_ups: Default::default(),
-                status: Default::default(),
-                network: NETWORK,
-            }
-            .to_bytes()
+            basic_legacy_identity_blob(id, None, NETWORK)
         }
 
         pub(super) fn insert_identity(
@@ -2649,17 +2615,10 @@ mod tests {
             data: Option<Vec<u8>>,
             is_local: bool,
         ) {
-            conn.execute(
-                "INSERT INTO identity (id, data, status, is_local, network)
-                 VALUES (?1, ?2, 2, ?3, ?4)",
-                rusqlite::params![
-                    id.as_slice(),
-                    data,
-                    i64::from(is_local),
-                    NETWORK.to_string()
-                ],
-            )
-            .expect("insert identity");
+            LegacyIdentityFixture::new(id, data, NETWORK.to_string())
+                .with_is_local(is_local)
+                .insert(conn)
+                .expect("insert identity");
         }
 
         /// Collects what the importer tried to write, so a test can assert on the
@@ -2799,17 +2758,10 @@ mod tests {
             create_identity_table(&conn);
             let id = [0xAA; 32];
             let orphan_wallet = [0x77; 32];
-            conn.execute(
-                "INSERT INTO identity (id, data, status, is_local, wallet, wallet_index, network)
-                 VALUES (?1, ?2, 2, 1, ?3, 4, ?4)",
-                rusqlite::params![
-                    id.as_slice(),
-                    identity_blob(id),
-                    orphan_wallet.as_slice(),
-                    NETWORK.to_string()
-                ],
-            )
-            .expect("insert identity");
+            LegacyIdentityFixture::new(id, Some(identity_blob(id)), NETWORK.to_string())
+                .with_wallet(orphan_wallet.to_vec(), 4)
+                .insert(&conn)
+                .expect("insert identity");
 
             let links: RefCell<Vec<Option<(WalletSeedHash, u32)>>> = RefCell::new(Vec::new());
             let outcome = migrate_identities_from_conn(
@@ -4505,6 +4457,19 @@ mod tests {
         seed_hash
     }
 
+    /// Stage an identity row whose blob will never decode, so `read_identities`
+    /// counts it unreadable. Written into the *modern* `identity` table the app
+    /// context already created — not the legacy fixture shape — so the NULL wallet
+    /// link is what satisfies that table's both-or-neither `CHECK`.
+    fn insert_corrupt_identity_row(conn: &Connection, id: [u8; 32]) {
+        conn.execute(
+            "INSERT INTO identity (id, data, status, is_local, network)
+             VALUES (?1, ?2, 2, 1, 'testnet')",
+            rusqlite::params![id.as_slice(), vec![0xFFu8; 8]],
+        )
+        .expect("corrupt identity row");
+    }
+
     /// QA-101 — the headline funds regression. A single undecodable legacy vote
     /// row must NOT stand between the user and their wallet: the drain runs to
     /// completion (seeds copied, wallet hydrated AND upstream-registered, the
@@ -4715,15 +4680,7 @@ mod tests {
 
         {
             let conn = Connection::open(tmp.path().join("data.db")).expect("open data.db");
-            // A corrupt identity blob → `read_identities` counts it unreadable. The
-            // modern schema already has the `identity` table; a NULL wallet link
-            // satisfies its both-or-neither CHECK.
-            conn.execute(
-                "INSERT INTO identity (id, data, status, is_local, network)
-                 VALUES (?1, ?2, 2, 1, 'testnet')",
-                rusqlite::params![[0x44u8; 32].as_slice(), vec![0xFFu8; 8]],
-            )
-            .expect("corrupt identity row");
+            insert_corrupt_identity_row(&conn, [0x44u8; 32]);
             // A structurally-damaged legacy `top_up` (no `amount` column) with a
             // row → the app-data pass hard-fails when its reader's prepare fails.
             conn.execute_batch(
@@ -4819,12 +4776,7 @@ mod tests {
             // A corrupt identity blob → unreadable == 1, which is what steers the run
             // into the branch under test. The legacy `top_up` table is left alone, so
             // the app-data pass runs clean and writes its sentinel.
-            conn.execute(
-                "INSERT INTO identity (id, data, status, is_local, network)
-                 VALUES (?1, ?2, 2, 1, 'testnet')",
-                rusqlite::params![[0x45u8; 32].as_slice(), vec![0xFFu8; 8]],
-            )
-            .expect("corrupt identity row");
+            insert_corrupt_identity_row(&conn, [0x45u8; 32]);
         }
 
         // Poison the warning record: a unit value encodes to an empty bincode body,
@@ -4946,12 +4898,7 @@ mod tests {
             // A corrupt identity blob → the identity pass counts it unreadable and
             // records a durable warning, so the identity branch recurs on every launch.
             let conn = Connection::open(tmp.path().join("data.db")).expect("open data.db");
-            conn.execute(
-                "INSERT INTO identity (id, data, status, is_local, network)
-                 VALUES (?1, ?2, 2, 1, 'testnet')",
-                rusqlite::params![[0x66u8; 32].as_slice(), vec![0xFFu8; 8]],
-            )
-            .expect("corrupt identity row");
+            insert_corrupt_identity_row(&conn, [0x66u8; 32]);
         }
 
         wire_backend(&ctx).await;

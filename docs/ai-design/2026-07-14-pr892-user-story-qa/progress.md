@@ -172,20 +172,29 @@ Verdicts: PASS / FAIL / BLOCKED (reason) / N/A (Gap/Superseded/Removed — not i
 ## NET
 
 - [x] NET-001: Switch networks — PASS
-- [ ] NET-002: Auto-update from dashmate config
-- [ ] NET-003: Configure Dash-Qt path
-- [ ] NET-004: Select theme
-- [ ] NET-005: Toggle developer mode
+- [x] NET-002: Auto-update from dashmate config — FAIL (no detection/import UI anywhere;
+      `.env.example` requires the user to manually run `dashmate config get
+      core.rpc.users.dashmate.password ...` and paste it in by hand)
+- [x] NET-003: Configure Dash-Qt path — FAIL (`dash_qt_path` exists in the settings model
+      with autodetection, but zero UI surface to view/edit/validate it; no `SystemTask`
+      variant to update it)
+- [x] NET-004: Select theme — PASS
+- [x] NET-005: Toggle developer mode — PASS
 - [x] NET-006: Select user mode — N/A (Gap, not implemented)
-- [ ] NET-007: Granular refresh controls
-- [ ] NET-008: Select Core backend mode
-- [ ] NET-009: Toggle ZMQ
-- [ ] NET-010: Onboarding wizard
+- [x] NET-007: Granular refresh controls — PASS (partial; only 2 modes exist —
+      "Core + Platform" / "Platform Only" — not the 3 described in the story text; see note)
+- [x] NET-008: Select Core backend mode — FAIL (explicitly retired in code: "chain sync is
+      SPV-only now"; no SPV/RPC/Auto selector exists anywhere in the UI)
+- [x] NET-009: Toggle ZMQ — FAIL (`disable_zmq` field exists in settings model, zero UI
+      surface, no `SystemTask` variant to update it)
+- [x] NET-010: Onboarding wizard — PASS
 - [ ] NET-011: Wipe Platform data
 - [x] NET-012: Configure Devnet through the UI — N/A (Gap, not implemented)
 - [x] NET-013: Testnet faucet integration — N/A (Gap, not implemented)
 - [x] NET-014: Bulk fund addresses — N/A (Gap, not implemented)
-- [ ] NET-015: Use Dash Evo Tool without a local Dash Core node
+- [x] NET-015: Use Dash Evo Tool without a local Dash Core node — PASS (with a UX note:
+      the default-view global banner still says "SPV sync failed", leaking jargon the
+      story says the everyday-user UI should avoid)
 
 ## MCP
 

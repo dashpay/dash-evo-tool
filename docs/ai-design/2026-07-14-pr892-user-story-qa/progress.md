@@ -88,27 +88,32 @@ Verdicts: PASS / FAIL / BLOCKED (reason) / N/A (Gap/Superseded/Removed — not i
 
 ## DPN
 
-- [ ] DPN-001: Register a DPNS username
-- [ ] DPN-002: View owned usernames
-- [ ] DPN-003: View active name contests
-- [ ] DPN-004: View past name contests
-- [ ] DPN-005: Vote on contested names
-- [ ] DPN-006: Schedule votes
-- [ ] DPN-007: Batch voting across contests
+- [x] DPN-001: Register a DPNS username — BLOCKED (no identity reachable; client-side
+      name-format validation + fee estimate confirmed implemented via source)
+- [x] DPN-002: View owned usernames — BLOCKED (no identity reachable)
+- [x] DPN-003: View active name contests — BLOCKED (no masternode/evonode identity
+      reachable — IDN-003)
+- [x] DPN-004: View past name contests — BLOCKED (same as DPN-003)
+- [x] DPN-005: Vote on contested names — BLOCKED (same as DPN-003; acceptance criteria
+      itself requires a masternode/evonode identity)
+- [x] DPN-006: Schedule votes — BLOCKED (same as DPN-003)
+- [x] DPN-007: Batch voting across contests — BLOCKED (same as DPN-003)
 
 ## DPY
 
-- [ ] DPY-001: View and edit DashPay profile
-- [ ] DPY-002: Search DashPay profiles
-- [ ] DPY-003: Send contact request
-- [ ] DPY-004: Accept or reject contact requests
-- [ ] DPY-005: View contact list and details
-- [ ] DPY-006: Send payment to contact
-- [ ] DPY-007: View payment history
-- [ ] DPY-008: Generate DashPay QR code
-- [ ] DPY-009: Edit contact info
+- [x] DPY-001: View and edit DashPay profile — BLOCKED (no identity reachable)
+- [x] DPY-002: Search DashPay profiles — BLOCKED (no identity reachable)
+- [x] DPY-003: Send contact request — BLOCKED (no identity reachable; self-testable via
+      second identity in principle, but a first identity can't be established either)
+- [x] DPY-004: Accept or reject contact requests — BLOCKED (same as DPY-003)
+- [x] DPY-005: View contact list and details — BLOCKED (no identity reachable)
+- [x] DPY-006: Send payment to contact — BLOCKED (same as DPY-003)
+- [x] DPY-007: View payment history — BLOCKED (no identity reachable)
+- [x] DPY-008: Generate DashPay QR code — BLOCKED (no identity reachable)
+- [x] DPY-009: Edit contact info — BLOCKED (needs an existing contact; two identities
+      unreachable)
 - [x] DPY-010: Remove a contact — N/A (Gap, not implemented)
-- [ ] DPY-011: Auto-accept contact requests
+- [x] DPY-011: Auto-accept contact requests — BLOCKED (no identity reachable)
 
 ## TOK
 

@@ -54,9 +54,14 @@ Verdicts: PASS / FAIL / BLOCKED (reason) / N/A (Gap/Superseded/Removed — not i
 
 ## ALK
 
-- [ ] ALK-001: Create an asset lock
-- [ ] ALK-002: View asset lock details
-- [ ] ALK-003: Recover unused asset locks
+- [x] ALK-001: Create an asset lock — PASS (also: differential re-test proves WAL-017's
+      coin-selection failure is NOT a global/persistent defect — see scope conclusion in
+      `scenarios/ALK.md`; IDN/DPN/DPY/TOK/DOC should NOT be pre-emptively marked BLOCKED)
+- [x] ALK-002: View asset lock details — FAIL ("Asset Locks" list never shows a just-created,
+      confirmed-usable lock, even after Refresh/renavigation — data is persisted correctly per
+      direct SQLite check, this is a UI/cache bug, not a coin-selection issue)
+- [x] ALK-003: Recover unused asset locks — BLOCKED (same list-population bug as ALK-002 blocks
+      reaching any recovery UI)
 - [x] ALK-004: Quick-fund workflow — N/A (Gap, not implemented)
 
 ## IDN

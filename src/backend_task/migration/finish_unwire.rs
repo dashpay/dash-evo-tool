@@ -231,6 +231,13 @@ pub enum MigrationError {
     #[error("wallet backend not available during migration")]
     WalletBackendUnavailable,
 
+    /// A password-protected wallet needs an egui frame loop to collect its
+    /// password, but the caller is a standalone MCP/CLI process.
+    #[error(
+        "Open the Dash Evo Tool desktop app once to finish the storage update, then try again."
+    )]
+    InteractivePromptUnavailable,
+
     /// A pass reported an error that is not a [`MigrationError`]. Every pass is
     /// meant to report through one of the typed variants above; this catch-all
     /// exists so a stray error still reaches a terminal banner. Leaving one
@@ -240,18 +247,6 @@ pub enum MigrationError {
     Unexpected {
         #[source]
         source: Box<TaskError>,
-    },
-
-    /// Returned by [`guard_single_key_table_droppable`] when dropping the
-    /// legacy single-key table would destroy a password-protected key that
-    /// has no copy anywhere else. `remaining` is the un-restored row count.
-    #[error(
-        "could not drop legacy single-key table: {remaining} protected key(s) not yet restored"
-    )]
-    ProtectedSingleKeysNotRestored {
-        /// Number of `uses_password=1` rows still present and not yet
-        /// restored into the modern vault.
-        remaining: u32,
     },
 
     /// Post-migration re-hydration of `ctx.wallets` from the freshly
@@ -287,6 +282,16 @@ impl MigrationError {
     pub fn is_backend_not_ready(&self) -> bool {
         matches!(self, MigrationError::WalletBackendUnavailable)
     }
+}
+
+/// Open the pre-update SQLite file with write operations disabled by SQLite.
+fn open_legacy_read_only(path: &std::path::Path) -> Result<Connection, MigrationError> {
+    Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(
+        |source| MigrationError::LegacyDbOpen {
+            path: path.to_string_lossy().to_string(),
+            source,
+        },
+    )
 }
 
 /// Coerce any migration failure into the `Arc<MigrationError>` chain the failure
@@ -734,6 +739,9 @@ async fn register_migrated_wallets(app_context: &Arc<AppContext>) -> Result<(), 
         if wallets.is_empty() {
             break;
         }
+        if !app_context.has_interactive_secret_prompt() {
+            return Err(MigrationError::InteractivePromptUnavailable);
+        }
         app_context
             .migration_status()
             .set_state(MigrationState::AwaitingWalletPasswords { wallets });
@@ -959,10 +967,7 @@ fn migrate_app_data(app_context: &Arc<AppContext>) -> Result<AppDataMigrationOut
     if !path.exists() {
         return Ok(AppDataMigrationOutcome::default());
     }
-    let conn = Connection::open(&path).map_err(|e| MigrationError::LegacyDbOpen {
-        path: path.to_string_lossy().to_string(),
-        source: e,
-    })?;
+    let conn = open_legacy_read_only(&path)?;
 
     // Probe before reaching for the wallet backend: an install with nothing to
     // import (a fresh one, or any build after C5 stopped creating these tables)
@@ -1198,10 +1203,7 @@ fn migrate_identities(
     if !path.exists() {
         return Ok(IdentityMigrationOutcome::default());
     }
-    let conn = Connection::open(&path).map_err(|e| MigrationError::LegacyDbOpen {
-        path: path.to_string_lossy().to_string(),
-        source: e,
-    })?;
+    let conn = open_legacy_read_only(&path)?;
 
     // Own probe rather than the drain's [`detect_legacy_rows`] gate: an
     // identity-only install (a masternode voter with no HD wallet) has to import
@@ -1362,11 +1364,7 @@ fn detect_legacy_rows(app_context: &AppContext) -> Result<bool, MigrationError> 
     if !path.exists() {
         return Ok(false);
     }
-    let path_str = path.to_string_lossy().to_string();
-    let conn = Connection::open(&path).map_err(|e| MigrationError::LegacyDbOpen {
-        path: path_str,
-        source: e,
-    })?;
+    let conn = open_legacy_read_only(&path)?;
     for &table in LEGACY_TABLES {
         if table_has_rows(&conn, table)? {
             tracing::debug!(
@@ -1468,11 +1466,7 @@ async fn migrate_single_key_rows(app_context: &Arc<AppContext>) -> Result<(), Ta
     if !path.exists() {
         return Ok(());
     }
-    let path_str = path.to_string_lossy().to_string();
-    let conn = Connection::open(&path).map_err(|e| MigrationError::LegacyDbOpen {
-        path: path_str,
-        source: e,
-    })?;
+    let conn = open_legacy_read_only(&path)?;
 
     let view = backend.single_key();
     let outcome = migrate_single_key_rows_from_conn(
@@ -1618,148 +1612,6 @@ where
     Ok(outcome)
 }
 
-/// Count legacy `single_key_wallet` rows for `network` that are
-/// password-protected (`uses_password=1`) and have NOT yet been restored
-/// into the modern vault.
-///
-/// **Data-loss gate (S3).** A protected row holds a private key encrypted
-/// under the user's OLD legacy password. Until the user supplies that
-/// password and the key is re-encrypted into the modern secret-store
-/// vault (T-SK-03), the legacy row is the ONLY copy. Dropping the table
-/// while any such row remains permanently destroys the key.
-///
-/// A row counts as **restored** when `is_restored(address)` returns
-/// `true` — in production that closure checks the modern single-key
-/// sidecar for a matching entry at the same address. The closure shape
-/// (mirroring [`migrate_single_key_rows_from_conn`]) keeps this body
-/// testable without standing up a `WalletBackend`.
-///
-/// **Missing table is not a hazard** — a fresh install (or one whose
-/// table was already cleaned up after all rows were restored) returns
-/// `0`. Rows with an unreadable `address`/`uses_password` are
-/// conservatively counted as un-restored so a corrupt row can never let
-/// the table be dropped.
-fn count_unrestored_protected_single_keys<F>(
-    conn: &Connection,
-    mut is_restored: F,
-    network: dash_sdk::dpp::dashcore::Network,
-) -> Result<u32, MigrationError>
-where
-    F: FnMut(&str) -> bool,
-{
-    if !legacy_table_exists_named(conn, "single_key_wallet")? {
-        return Ok(0);
-    }
-    let sql = "SELECT address, uses_password FROM single_key_wallet WHERE network = ?1";
-    let mut stmt = conn
-        .prepare(sql)
-        .map_err(|e| MigrationError::LegacyDbRead {
-            table: "single_key_wallet",
-            source: e,
-        })?;
-    let rows = stmt
-        .query_map(rusqlite::params![network.to_string()], |row| {
-            let address: Option<String> = row.get(0)?;
-            let uses_password: i32 = row.get(1)?;
-            Ok((address, uses_password))
-        })
-        .map_err(|e| MigrationError::LegacyDbRead {
-            table: "single_key_wallet",
-            source: e,
-        })?;
-
-    let mut remaining: u32 = 0;
-    for row in rows {
-        let (address, uses_password) = match row {
-            Ok(t) => t,
-            Err(e) => {
-                // An unreadable row can't be proven restored — count it
-                // so the table stays put rather than risk a silent drop.
-                tracing::warn!(
-                    target = "migration::finish_unwire",
-                    error = ?e,
-                    "Counting unreadable single_key_wallet row as un-restored (drop guard)",
-                );
-                remaining = remaining.saturating_add(1);
-                continue;
-            }
-        };
-        if uses_password == 0 {
-            // Unprotected rows migrate without the user's password and
-            // carry no data-loss hazard — they are out of scope here.
-            continue;
-        }
-        match address {
-            Some(addr) if is_restored(&addr) => {}
-            _ => remaining = remaining.saturating_add(1),
-        }
-    }
-    Ok(remaining)
-}
-
-/// Data-loss gate: returns `Ok(())` only when the legacy
-/// `single_key_wallet` table for `network` may be safely dropped — i.e.
-/// every password-protected row has been restored into the modern vault.
-/// Otherwise returns [`MigrationError::ProtectedSingleKeysNotRestored`]
-/// with the remaining count.
-///
-/// **Every cleanup path that drops the legacy single-key table MUST call
-/// this first and abort on error.** This is the single structural
-/// chokepoint that prevents the permanent-key-loss scenario described on
-/// [`MigrationError::ProtectedSingleKeysNotRestored`] (Smythe S3).
-fn guard_single_key_table_droppable<F>(
-    conn: &Connection,
-    is_restored: F,
-    network: dash_sdk::dpp::dashcore::Network,
-) -> Result<(), MigrationError>
-where
-    F: FnMut(&str) -> bool,
-{
-    let remaining = count_unrestored_protected_single_keys(conn, is_restored, network)?;
-    if remaining > 0 {
-        tracing::warn!(
-            target = "migration::finish_unwire",
-            remaining,
-            network = ?network,
-            "Refusing to drop legacy single-key table — protected keys not yet restored",
-        );
-        return Err(MigrationError::ProtectedSingleKeysNotRestored { remaining });
-    }
-    Ok(())
-}
-
-/// Drop the legacy `single_key_wallet` table for `network`, but ONLY
-/// after [`guard_single_key_table_droppable`] confirms no protected row
-/// remains un-restored. This is the one sanctioned way to remove the
-/// legacy single-key table; the drop is unconditionally gated so a
-/// future cleanup path cannot bypass the data-loss check (Smythe S3).
-///
-/// `is_restored` is the same predicate the guard uses — in production it
-/// checks the modern single-key sidecar for a matching restored entry.
-/// The table is dropped with `DROP TABLE IF EXISTS` so a re-run after a
-/// successful drop is a no-op.
-fn drop_legacy_single_key_table<F>(
-    conn: &Connection,
-    is_restored: F,
-    network: dash_sdk::dpp::dashcore::Network,
-) -> Result<(), MigrationError>
-where
-    F: FnMut(&str) -> bool,
-{
-    guard_single_key_table_droppable(conn, is_restored, network)?;
-    conn.execute("DROP TABLE IF EXISTS single_key_wallet", [])
-        .map_err(|e| MigrationError::LegacyDbRead {
-            table: "single_key_wallet",
-            source: e,
-        })?;
-    tracing::info!(
-        target = "migration::finish_unwire",
-        network = ?network,
-        "Dropped legacy single-key table (all protected keys restored)",
-    );
-    Ok(())
-}
-
 /// Salt expected by Argon2id during the legacy AES-GCM seed encryption
 /// (16 bytes, see `src/model/wallet/encryption.rs`).
 const LEGACY_SALT_LEN: usize = 16;
@@ -1854,11 +1706,7 @@ fn migrate_wallet_meta_rows(app_context: &Arc<AppContext>) -> Result<(), TaskErr
     if !path.exists() {
         return Ok(());
     }
-    let path_str = path.to_string_lossy().to_string();
-    let conn = Connection::open(&path).map_err(|e| MigrationError::LegacyDbOpen {
-        path: path_str,
-        source: e,
-    })?;
+    let conn = open_legacy_read_only(&path)?;
 
     let view = backend.wallet_meta();
     let outcome = migrate_wallet_meta_rows_from_conn(
@@ -2066,11 +1914,7 @@ fn migrate_wallet_seeds_rows(app_context: &Arc<AppContext>) -> Result<(), TaskEr
     if !path.exists() {
         return Ok(());
     }
-    let path_str = path.to_string_lossy().to_string();
-    let conn = Connection::open(&path).map_err(|e| MigrationError::LegacyDbOpen {
-        path: path_str,
-        source: e,
-    })?;
+    let conn = open_legacy_read_only(&path)?;
 
     let view = backend.wallet_seeds();
     let outcome = migrate_wallet_seeds_rows_from_conn(
@@ -2246,94 +2090,6 @@ where
     }
 
     Ok(outcome)
-}
-
-/// Public data-loss gate for the future legacy single-key table cleanup
-/// (T7). Returns `Ok(())` only when the legacy `single_key_wallet` table
-/// for the active network may be safely dropped — i.e. every
-/// password-protected row has a matching restored entry in the modern
-/// single-key sidecar. Otherwise returns
-/// [`TaskError::MigrationFailed`] wrapping
-/// [`MigrationError::ProtectedSingleKeysNotRestored`].
-///
-/// **Any cleanup path that removes the legacy single-key table MUST call
-/// this first and abort on error** (Smythe S3). The production
-/// `is_restored` predicate consults the modern single-key index: a
-/// legacy protected address counts as restored once an
-/// [`ImportedKey`](crate::model::single_key::ImportedKey) exists at the
-/// same address — regardless of whether the user re-protected it with a
-/// new passphrase. A key restored without a new passphrase is just as
-/// recovered as one with, so keying on address presence (not
-/// `has_passphrase`) is what makes the gate eventually release.
-pub fn ensure_legacy_single_key_table_droppable(
-    app_context: &Arc<AppContext>,
-) -> Result<(), TaskError> {
-    let backend = app_context
-        .wallet_backend()
-        .map_err(|_| MigrationError::WalletBackendUnavailable)?;
-    let Some(path) = app_context.db.db_file_path() else {
-        // In-memory / headless: no legacy file, nothing to gate.
-        return Ok(());
-    };
-    if !path.exists() {
-        return Ok(());
-    }
-    let conn = Connection::open(&path).map_err(|e| MigrationError::LegacyDbOpen {
-        path: path.to_string_lossy().to_string(),
-        source: e,
-    })?;
-
-    // Snapshot every restored address once so the per-row predicate is a
-    // cheap set lookup. Presence in the modern index — not the passphrase
-    // flag — is the restored signal: the import path always mirrors the
-    // recovered key into the index whether or not the user chose a new
-    // passphrase.
-    let restored: std::collections::BTreeSet<String> = backend
-        .single_key()
-        .list()
-        .into_iter()
-        .map(|k| k.address)
-        .collect();
-
-    guard_single_key_table_droppable(&conn, |addr| restored.contains(addr), app_context.network)?;
-    Ok(())
-}
-
-/// The ONE sanctioned production path to remove the legacy
-/// `single_key_wallet` table (future T7 cleanup). It drops the table ONLY
-/// after the data-loss gate confirms every protected row is restored; the
-/// gate is run inside this function, so a future cleanup caller cannot
-/// forget it (Smythe S3 / S5). On a blocked drop it returns
-/// [`TaskError::MigrationFailed`] wrapping
-/// [`MigrationError::ProtectedSingleKeysNotRestored`] and leaves the
-/// table — and every key — intact.
-///
-/// A re-run after a successful drop is a no-op (`DROP TABLE IF EXISTS`),
-/// and an in-memory / absent legacy file is a no-op success.
-pub fn drop_legacy_single_key_table_when_safe(
-    app_context: &Arc<AppContext>,
-) -> Result<(), TaskError> {
-    let backend = app_context
-        .wallet_backend()
-        .map_err(|_| MigrationError::WalletBackendUnavailable)?;
-    let Some(path) = app_context.db.db_file_path() else {
-        return Ok(());
-    };
-    if !path.exists() {
-        return Ok(());
-    }
-    let conn = Connection::open(&path).map_err(|e| MigrationError::LegacyDbOpen {
-        path: path.to_string_lossy().to_string(),
-        source: e,
-    })?;
-    let restored: std::collections::BTreeSet<String> = backend
-        .single_key()
-        .list()
-        .into_iter()
-        .map(|k| k.address)
-        .collect();
-    drop_legacy_single_key_table(&conn, |addr| restored.contains(addr), app_context.network)?;
-    Ok(())
 }
 
 /// Read the completion sentinel for `network` from `det-app.sqlite`.
@@ -3264,125 +3020,14 @@ mod tests {
         assert_eq!(outcome, SingleKeyMigrationOutcome::default());
     }
 
-    // ─────────────────────────────────────────────────────────────────
-    // T-SK-03 / S3 — legacy single-key table DROP data-loss gate.
-    // A password-protected (`uses_password=1`) row holds a key encrypted
-    // under the user's OLD legacy password. Dropping the table before
-    // that row is restored into the modern vault destroys the key
-    // permanently. These tests pin the gate that forbids the drop while
-    // any protected row remains un-restored.
-    // ─────────────────────────────────────────────────────────────────
-
-    /// Seed one protected and one unprotected legacy single-key row for
-    /// the same network so the gate tests operate on a realistic table.
-    fn seed_protected_and_unprotected(
-        conn: &Connection,
-        network: dash_sdk::dpp::dashcore::Network,
-    ) {
-        create_legacy_table(conn);
-        // Protected row — encrypted under the legacy password (salt/nonce
-        // present). The blob contents are irrelevant to the gate, which
-        // only reads `address` + `uses_password`.
-        seed_legacy_row(
-            conn,
-            &[1u8; 32],
-            &[0xAB; 48],
-            &[0x11; 16],
-            &[0x22; 12],
-            "yProtectedAddr",
-            Some("protected"),
-            true,
-            network,
-        );
-        // Unprotected row — out of scope for the gate.
-        seed_legacy_row(
-            conn,
-            &[2u8; 32],
-            &[0xCD; 32],
-            &[],
-            &[],
-            "yOpenAddr",
-            Some("open"),
-            false,
-            network,
-        );
-    }
-
-    /// S3 (must fail before the fix) — with a protected row present and
-    /// NOT restored, the drop guard refuses, the typed error reports the
-    /// remaining count, and the legacy rows survive the attempted drop.
+    /// Copying a legacy single key must not change its source table or rows.
     #[test]
-    fn protected_row_blocks_table_drop_and_rows_survive() {
+    fn single_key_copy_leaves_legacy_table_unchanged() {
         use dash_sdk::dpp::dashcore::Network;
 
         let dir = tempfile::tempdir().expect("tempdir");
-        let conn = Connection::open(dir.path().join("data.db")).expect("open legacy db");
-        seed_protected_and_unprotected(&conn, Network::Testnet);
-
-        // Nothing restored yet.
-        let nothing_restored = |_addr: &str| false;
-
-        let err = drop_legacy_single_key_table(&conn, nothing_restored, Network::Testnet)
-            .expect_err("drop must be blocked while a protected row is un-restored");
-        match err {
-            MigrationError::ProtectedSingleKeysNotRestored { remaining } => {
-                assert_eq!(remaining, 1, "exactly one protected row outstanding");
-            }
-            other => panic!("expected ProtectedSingleKeysNotRestored, got {other:?}"),
-        }
-
-        // The table — and crucially the protected row — must still be
-        // present. A premature drop here would be permanent key loss.
-        let row_count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM single_key_wallet", [], |r| r.get(0))
-            .expect("table still exists after blocked drop");
-        assert_eq!(row_count, 2, "no rows may be destroyed by a blocked drop");
-        let protected_count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM single_key_wallet WHERE uses_password = 1",
-                [],
-                |r| r.get(0),
-            )
-            .expect("query protected rows");
-        assert_eq!(protected_count, 1, "the protected row must survive");
-    }
-
-    /// Once every protected row is restored (the predicate returns
-    /// `true` for its address), the guard permits the drop and the table
-    /// is removed.
-    #[test]
-    fn drop_succeeds_after_all_protected_rows_restored() {
-        use dash_sdk::dpp::dashcore::Network;
-
-        let dir = tempfile::tempdir().expect("tempdir");
-        let conn = Connection::open(dir.path().join("data.db")).expect("open legacy db");
-        seed_protected_and_unprotected(&conn, Network::Testnet);
-
-        // The protected address is now present in the modern vault.
-        let restored = |addr: &str| addr == "yProtectedAddr";
-
-        drop_legacy_single_key_table(&conn, restored, Network::Testnet)
-            .expect("drop allowed once protected rows are restored");
-
-        let still_there: bool = conn
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master \
-                 WHERE type='table' AND name='single_key_wallet'",
-                [],
-                |r| r.get::<_, i64>(0).map(|c| c > 0),
-            )
-            .expect("query sqlite_master");
-        assert!(!still_there, "table must be dropped after restore");
-    }
-
-    /// A network with only unprotected rows carries no data-loss hazard,
-    /// so the guard permits the drop even though nothing is "restored".
-    #[test]
-    fn unprotected_only_table_is_droppable_without_restore() {
-        use dash_sdk::dpp::dashcore::Network;
-
-        let dir = tempfile::tempdir().expect("tempdir");
-        let conn = Connection::open(dir.path().join("data.db")).expect("open legacy db");
+        let path = dir.path().join("data.db");
+        let conn = Connection::open(&path).expect("open legacy db");
         create_legacy_table(&conn);
         seed_legacy_row(
             &conn,
@@ -3395,63 +3040,21 @@ mod tests {
             false,
             Network::Testnet,
         );
+        drop(conn);
+        let before = std::fs::read(&path).expect("snapshot before copy");
+        let conn = Connection::open(&path).expect("reopen legacy db");
+
+        let outcome =
+            migrate_single_key_rows_from_conn(&conn, |_wif, _alias| Ok(()), Network::Testnet)
+                .expect("copy single-key rows");
+        assert_eq!(outcome.imported, 1);
+        drop(conn);
 
         assert_eq!(
-            count_unrestored_protected_single_keys(&conn, |_| false, Network::Testnet)
-                .expect("count"),
-            0,
-            "unprotected rows never count against the drop guard"
+            std::fs::read(&path).expect("snapshot after copy"),
+            before,
+            "copying must not mutate the legacy SQLite file",
         );
-        drop_legacy_single_key_table(&conn, |_| false, Network::Testnet)
-            .expect("unprotected-only table is freely droppable");
-    }
-
-    /// A protected row on a DIFFERENT network must not block dropping the
-    /// active network's table — the gate is per-network, matching the
-    /// per-network migration scope.
-    #[test]
-    fn protected_row_on_other_network_does_not_block_drop() {
-        use dash_sdk::dpp::dashcore::Network;
-
-        let dir = tempfile::tempdir().expect("tempdir");
-        let conn = Connection::open(dir.path().join("data.db")).expect("open legacy db");
-        create_legacy_table(&conn);
-        // Protected on mainnet, but we gate testnet.
-        seed_legacy_row(
-            &conn,
-            &[4u8; 32],
-            &[0xAB; 48],
-            &[0x11; 16],
-            &[0x22; 12],
-            "XMainnetProtected",
-            Some("mainnet"),
-            true,
-            Network::Mainnet,
-        );
-
-        assert_eq!(
-            count_unrestored_protected_single_keys(&conn, |_| false, Network::Testnet)
-                .expect("count"),
-            0,
-            "a mainnet protected row must not count against a testnet drop"
-        );
-    }
-
-    /// A missing table is not a hazard — the guard reports zero remaining
-    /// and the drop is a no-op success (fresh install / already cleaned).
-    #[test]
-    fn missing_table_is_droppable_no_op() {
-        use dash_sdk::dpp::dashcore::Network;
-
-        let dir = tempfile::tempdir().expect("tempdir");
-        let conn = Connection::open(dir.path().join("empty.db")).expect("open empty db");
-        assert_eq!(
-            count_unrestored_protected_single_keys(&conn, |_| false, Network::Testnet)
-                .expect("count"),
-            0
-        );
-        drop_legacy_single_key_table(&conn, |_| false, Network::Testnet)
-            .expect("missing table drop is a benign no-op");
     }
 
     /// `table_has_rows` returns `false` for a missing table rather than
@@ -4406,9 +4009,7 @@ mod tests {
             }
             .is_backend_not_ready(),
         );
-        assert!(
-            !MigrationError::ProtectedSingleKeysNotRestored { remaining: 1 }.is_backend_not_ready(),
-        );
+        assert!(!MigrationError::InteractivePromptUnavailable.is_backend_not_ready());
     }
 
     /// `migration_error_chain` reuses a `MigrationFailed` chain verbatim (so the
@@ -4576,6 +4177,10 @@ mod tests {
         let password = "correct horse battery staple";
         let seed_hash = seed_legacy_protected_wallet(&ctx, &seed, password, "Savings", network);
 
+        ctx.install_secret_prompt(Arc::new(
+            crate::wallet_backend::secret_prompt::test_support::TestPrompt::never(),
+        ));
+
         wire_backend(&ctx).await;
         let backend = ctx.wallet_backend().expect("backend wired");
         let migration_context = Arc::clone(&ctx);
@@ -4639,7 +4244,8 @@ mod tests {
             .wallet_seed
             .open(password)
             .expect("ordinary unlock verifies the saved password");
-        ctx.handle_wallet_unlocked(&wallet, password, WalletUnlockRetention::OperationOnly);
+        ctx.handle_wallet_unlocked(&wallet, password, WalletUnlockRetention::OperationOnly)
+            .expect("ordinary unlock must save the seed in the current vault");
 
         let scope = SecretScope::HdSeed { seed_hash };
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
@@ -4661,8 +4267,8 @@ mod tests {
             seed_view
                 .legacy_envelope_get(&seed_hash)
                 .expect("read legacy envelope after unlock")
-                .is_none(),
-            "the later unlock, not the skip, finishes the envelope update",
+                .is_some(),
+            "a later unlock must retain the legacy recovery envelope",
         );
         assert_eq!(
             seed_view.scheme(&seed_hash).expect("scheme after unlock"),
@@ -4670,6 +4276,156 @@ mod tests {
         );
 
         backend.shutdown().await;
+    }
+
+    /// A standalone MCP/CLI context has no frame loop capable of rendering the
+    /// password prompt. A protected legacy wallet must therefore fail promptly
+    /// instead of parking on `Notify` forever.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn protected_wallet_fails_fast_without_an_interactive_prompt() {
+        use dash_sdk::dpp::dashcore::Network;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = fresh_app_context(tmp.path());
+        seed_legacy_protected_wallet(
+            &ctx,
+            &[0xD1; 64],
+            "headless-password",
+            "Headless savings",
+            Network::Testnet,
+        );
+        wire_backend(&ctx).await;
+
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            ctx.run_migration_task(crate::backend_task::migration::MigrationTask::FinishUnwire),
+        )
+        .await
+        .expect("headless storage update must never wait for a person")
+        .expect_err("a protected wallet requires the desktop app");
+
+        match &result {
+            TaskError::StorageUpdateNeedsDesktop { source } => assert!(matches!(
+                source.as_ref(),
+                MigrationError::InteractivePromptUnavailable
+            )),
+            other => panic!("expected the dedicated headless storage-update error, got {other:?}"),
+        }
+        assert!(
+            result
+                .to_string()
+                .contains("Open the Dash Evo Tool desktop app once")
+        );
+        assert!(
+            !matches!(
+                ctx.migration_status().state().as_ref(),
+                MigrationState::AwaitingWalletPasswords { .. }
+            ),
+            "a headless context must never publish a prompt nobody can render",
+        );
+
+        ctx.wallet_backend()
+            .expect("backend wired")
+            .shutdown()
+            .await;
+    }
+
+    /// The old SQLite file is a recovery artifact, not migration-owned state.
+    /// A complete run that unlocks one protected wallet and skips another must
+    /// leave the file byte-for-byte unchanged, and both copied legacy envelopes
+    /// must remain available after the run.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn full_unlock_and_skip_run_leaves_legacy_database_unchanged() {
+        use crate::context::WalletUnlockRetention;
+        use crate::wallet_backend::poison::RwLockRecover;
+        use dash_sdk::dpp::dashcore::Network;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = fresh_app_context(tmp.path());
+        let unlock_password = "unlock-this-wallet";
+        let unlock_hash = seed_legacy_protected_wallet(
+            &ctx,
+            &[0xD2; 64],
+            unlock_password,
+            "Unlock me",
+            Network::Testnet,
+        );
+        let skip_hash = seed_legacy_protected_wallet(
+            &ctx,
+            &[0xD3; 64],
+            "skip-this-wallet",
+            "Skip me",
+            Network::Testnet,
+        );
+        let legacy_path = tmp.path().join("data.db");
+        let before = std::fs::read(&legacy_path).expect("snapshot legacy database before run");
+
+        ctx.install_secret_prompt(Arc::new(
+            crate::wallet_backend::secret_prompt::test_support::TestPrompt::never(),
+        ));
+        wire_backend(&ctx).await;
+        let migration_context = Arc::clone(&ctx);
+        let migration = tokio::spawn(async move { run(&migration_context).await });
+
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            if let MigrationState::AwaitingWalletPasswords { wallets } =
+                ctx.migration_status().state().as_ref()
+                && wallets.contains(&unlock_hash)
+                && wallets.contains(&skip_hash)
+            {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "migration must publish both protected wallets",
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+
+        let unlock_wallet = ctx.wallet_arc(&unlock_hash).expect("wallet to unlock");
+        unlock_wallet
+            .write_recover()
+            .wallet_seed
+            .open(unlock_password)
+            .expect("fixture password opens wallet");
+        ctx.handle_wallet_unlocked(
+            &unlock_wallet,
+            unlock_password,
+            WalletUnlockRetention::UntilAppClose,
+        )
+        .expect("unlocked seed must land in the current vault");
+        ctx.migration_status().skip_wallet(skip_hash);
+        ctx.migration_status().notify_wallet_password_submitted();
+
+        assert!(
+            migration
+                .await
+                .expect("migration task must not panic")
+                .expect("unlock plus skip must complete"),
+        );
+        let after = std::fs::read(&legacy_path).expect("snapshot legacy database after run");
+        assert_eq!(after, before, "the legacy database bytes must never change");
+
+        let store = ctx.secret_store();
+        let view = crate::wallet_backend::WalletSeedView::new(&store);
+        assert!(
+            view.legacy_envelope_get(&unlock_hash)
+                .expect("read unlocked legacy envelope")
+                .is_some(),
+            "unlocking must retain the copied legacy recovery envelope",
+        );
+        assert!(
+            view.legacy_envelope_get(&skip_hash)
+                .expect("read skipped legacy envelope")
+                .is_some(),
+            "skipping must retain the copied legacy recovery envelope",
+        );
+
+        ctx.wallet_backend()
+            .expect("backend wired")
+            .shutdown()
+            .await;
     }
 
     /// Stage an identity row whose blob will never decode, so `read_identities`
@@ -5413,7 +5169,7 @@ mod tests {
 
         let state = ctx.migration_status().state();
         assert!(
-            !state.is_running(),
+            !state.is_executing(),
             "a failed migration left the status on `Running`, which gates every \
              wallet-touching task with no retry to escape it",
         );

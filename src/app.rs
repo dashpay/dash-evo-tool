@@ -158,14 +158,14 @@ fn spv_block_step(armed: bool, dismissed: bool, state: OverallConnectionState) -
 /// coverage so a regression in the label table fails the test suite.
 pub fn migration_running_text(step: MigrationStep) -> &'static str {
     match step {
-        MigrationStep::Detecting => "Checking your wallet data.",
-        MigrationStep::AppData => "Restoring your scheduled votes.",
-        MigrationStep::SingleKey => "Updating imported keys.",
-        MigrationStep::Shielded => "Verifying shielded balance.",
-        MigrationStep::WalletSeeds => "Moving your wallets into the new vault.",
-        MigrationStep::WalletMeta => "Updating wallet names.",
-        MigrationStep::Identities => "Restoring your identities and their keys.",
-        MigrationStep::Finalize => "Finishing storage update.",
+        MigrationStep::Detecting => "The app is checking your wallet data.",
+        MigrationStep::AppData => "The app is restoring your scheduled votes.",
+        MigrationStep::SingleKey => "The app is updating your imported keys.",
+        MigrationStep::Shielded => "The app is verifying your shielded balance.",
+        MigrationStep::WalletSeeds => "The app is moving your wallets into secure storage.",
+        MigrationStep::WalletMeta => "The app is updating your wallet names.",
+        MigrationStep::Identities => "The app is restoring your identities and their keys.",
+        MigrationStep::Finalize => "The app is finishing the storage update.",
     }
 }
 
@@ -600,16 +600,22 @@ impl AppState {
 
     /// Prepare the boot inputs (data dir, env file, logging, database).
     ///
-    /// The non-testing build opens and initializes the on-disk production
-    /// database; the `testing` build substitutes an in-memory database so
-    /// tests never read or write production data.
+    /// The non-testing build opens an existing pre-update database read-only.
+    /// A fresh install may create its empty compatibility database; the
+    /// `testing` build substitutes an in-memory database so tests never read or
+    /// write production data.
     #[cfg(not(feature = "testing"))]
     pub(crate) fn boot_inputs()
     -> Result<(PathBuf, Arc<Database>), Box<dyn std::error::Error + Send + Sync>> {
         let data_dir = crate::boot::prepare_environment()?;
         let db_file_path = data_file_path(&data_dir, "data.db")?;
-        let db = Arc::new(Database::new(&db_file_path)?);
-        db.initialize(&db_file_path)?;
+        let db = if db_file_path.exists() {
+            Arc::new(Database::open_legacy_read_only(&db_file_path)?)
+        } else {
+            let db = Arc::new(Database::new(&db_file_path)?);
+            db.initialize(&db_file_path)?;
+            db
+        };
         Ok((data_dir, db))
     }
 

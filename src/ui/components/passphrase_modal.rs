@@ -14,7 +14,8 @@
 //! ## State ownership
 //!
 //! Per-modal mutable state — the [`PasswordInput`] buffer and a focus-once flag
-//! — is stored in egui's data cache keyed by `window_title`. Callers carry only
+//! — is stored in egui's data cache keyed by the caller-provided `state_id`.
+//! Callers carry only
 //! domain state (`remember`, `error`). On [`PassphraseModalOutcome::Submit`] the
 //! typed text is extracted into a [`Zeroizing`] string and the cache entry is
 //! cleared; dismissal and secondary actions clear the cache too.
@@ -73,6 +74,8 @@ impl fmt::Debug for PassphraseModalOutcome {
 /// supplied by the caller so the same chrome serves "Unlock Wallet" and the
 /// JIT prompt.
 pub struct PassphraseModalConfig<'a> {
+    /// Stable identity for this specific secret, wallet, or boot prompt.
+    pub state_id: egui::Id,
     /// `Window` title (top bar). Stable across re-asks.
     pub window_title: &'a str,
     /// Body prompt line above the field, e.g. the wallet/key label.
@@ -101,13 +104,16 @@ pub struct PassphraseModalConfig<'a> {
 
 /// Per-modal mutable state stored in egui's data cache between frames.
 ///
-/// Keyed by `window_title` via [`egui::Id::new("passphrase_modal_state").with(title)`].
-/// Created on the first call with `config.input_placeholder`; cleared on
-/// Submit or Cancel.
+/// Keyed by the caller-provided per-secret identity. Created on the first call
+/// with `config.input_placeholder`; cleared whenever the prompt closes.
 #[derive(Clone)]
 struct PassphraseModalState {
     password_input: PasswordInput,
     focus_requested: bool,
+}
+
+fn modal_state_id(config_id: egui::Id) -> egui::Id {
+    egui::Id::new("passphrase_modal_state").with(config_id)
 }
 
 /// Render the shared passphrase modal and return what the user did.
@@ -125,7 +131,7 @@ pub fn passphrase_modal(
     config: &PassphraseModalConfig<'_>,
     extra: impl FnOnce(&mut egui::Ui),
 ) -> PassphraseModalOutcome {
-    let state_id = egui::Id::new("passphrase_modal_state").with(config.window_title);
+    let state_id = modal_state_id(config.state_id);
 
     // Load or initialise per-modal state from egui's data cache.  `get_temp`
     // returns a clone; we mutate the clone during rendering then write it back.
@@ -248,13 +254,64 @@ pub fn passphrase_modal(
         ctx.data_mut(|d| d.remove::<PassphraseModalState>(state_id));
         PassphraseModalOutcome::Submit(text)
     } else if secondary_action {
+        state.password_input.clear();
         ctx.data_mut(|d| d.remove::<PassphraseModalState>(state_id));
         PassphraseModalOutcome::SecondaryAction
     } else if should_cancel {
+        state.password_input.clear();
         ctx.data_mut(|d| d.remove::<PassphraseModalState>(state_id));
         PassphraseModalOutcome::Cancel
     } else {
         ctx.data_mut(|d| d.insert_temp(state_id, state));
         PassphraseModalOutcome::Pending
+    }
+}
+
+/// Clear and remove one modal's typed passphrase buffer.
+pub fn clear_passphrase_modal_state(ctx: &Context, config_id: egui::Id) {
+    let state_id = modal_state_id(config_id);
+    ctx.data_mut(|data| data.remove::<PassphraseModalState>(state_id));
+}
+
+#[cfg(test)]
+pub(crate) fn passphrase_modal_state_exists(ctx: &Context, config_id: egui::Id) -> bool {
+    ctx.data(|data| {
+        data.get_temp::<PassphraseModalState>(modal_state_id(config_id))
+            .is_some()
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wallet_specific_state_never_crosses_to_another_prompt() {
+        let ctx = egui::Context::default();
+        let wallet_a = egui::Id::new("wallet").with([0xA1u8; 32]);
+        let wallet_b = egui::Id::new("wallet").with([0xB2u8; 32]);
+        let mut password_input = PasswordInput::new();
+        password_input.set_text("wallet-a-password");
+        ctx.data_mut(|data| {
+            data.insert_temp(
+                modal_state_id(wallet_a),
+                PassphraseModalState {
+                    password_input,
+                    focus_requested: true,
+                },
+            );
+        });
+
+        assert!(
+            ctx.data(|data| data.get_temp::<PassphraseModalState>(modal_state_id(wallet_b)))
+                .is_none(),
+            "wallet B must not see wallet A's typed password",
+        );
+        clear_passphrase_modal_state(&ctx, wallet_a);
+        assert!(
+            ctx.data(|data| data.get_temp::<PassphraseModalState>(modal_state_id(wallet_a)))
+                .is_none(),
+            "closing the prompt must remove its typed buffer",
+        );
     }
 }

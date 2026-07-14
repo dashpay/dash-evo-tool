@@ -684,7 +684,7 @@ impl MigrationReconciler {
         if self
             .last_state
             .as_ref()
-            .is_some_and(MigrationState::is_running)
+            .is_some_and(MigrationState::is_executing)
         {
             return;
         }

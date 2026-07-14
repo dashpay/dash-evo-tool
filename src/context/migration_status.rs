@@ -187,12 +187,20 @@ impl PartialEq for MigrationState {
 impl Eq for MigrationState {}
 
 impl MigrationState {
-    /// Returns `true` while the migration task is mid-flight.
+    /// Returns `true` while the storage-update task is actively executing.
+    pub fn is_executing(&self) -> bool {
+        matches!(self, MigrationState::Running { .. })
+    }
+
+    /// Returns `true` while progress is paused for a person's password choice.
+    pub fn is_awaiting_user_input(&self) -> bool {
+        matches!(self, MigrationState::AwaitingWalletPasswords { .. })
+    }
+
+    /// Compatibility alias for execution-only status. Equivalent to
+    /// [`Self::is_executing`]; waiting for input returns `false`.
     pub fn is_running(&self) -> bool {
-        matches!(
-            self,
-            MigrationState::Running { .. } | MigrationState::AwaitingWalletPasswords { .. }
-        )
+        self.is_executing()
     }
 }
 
@@ -300,12 +308,12 @@ mod tests {
     fn state_transitions_success_path() {
         let status = MigrationStatus::new_idle();
         assert_eq!(*status.state(), MigrationState::Idle);
-        assert!(!status.state().is_running());
+        assert!(!status.state().is_executing());
 
         status.set_state(MigrationState::Running {
             step: MigrationStep::Detecting,
         });
-        assert!(status.state().is_running());
+        assert!(status.state().is_executing());
         assert_eq!(
             *status.state(),
             MigrationState::Running {
@@ -323,16 +331,16 @@ mod tests {
         ] {
             status.set_state(MigrationState::Running { step });
             assert_eq!(*status.state(), MigrationState::Running { step });
-            assert!(status.state().is_running());
+            assert!(status.state().is_executing());
         }
 
         status.set_state(MigrationState::Success);
         assert_eq!(*status.state(), MigrationState::Success);
-        assert!(!status.state().is_running());
+        assert!(!status.state().is_executing());
     }
 
     #[test]
-    fn awaiting_wallet_passwords_remains_running_and_preserves_wallet_order() {
+    fn awaiting_wallet_passwords_is_not_executing_and_preserves_wallet_order() {
         let status = MigrationStatus::new_idle();
         let wallets = vec![[0x11; 32], [0x22; 32]];
 
@@ -340,7 +348,8 @@ mod tests {
             wallets: wallets.clone(),
         });
 
-        assert!(status.state().is_running());
+        assert!(!status.state().is_executing());
+        assert!(status.state().is_awaiting_user_input());
         assert_eq!(
             *status.state(),
             MigrationState::AwaitingWalletPasswords { wallets },
@@ -397,7 +406,7 @@ mod tests {
         status.set_state(MigrationState::Failed {
             error: Arc::new(MigrationError::WalletBackendUnavailable),
         });
-        assert!(!status.state().is_running());
+        assert!(!status.state().is_executing());
         assert!(matches!(*status.state(), MigrationState::Failed { .. }));
     }
 

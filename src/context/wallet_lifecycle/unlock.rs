@@ -28,33 +28,32 @@ impl AppContext {
         wallet: &Arc<RwLock<Wallet>>,
         passphrase: &str,
         retention: WalletUnlockRetention,
-    ) {
-        let (seed_hash, uses_password) = match wallet.read() {
-            Ok(guard) => (guard.seed_hash(), guard.uses_password),
-            Err(_) => return,
+    ) -> Result<(), TaskError> {
+        let (seed_hash, uses_password) = {
+            let guard = wallet.read_recover();
+            (guard.seed_hash(), guard.uses_password)
         };
 
         // No-password wallets need no promotion — they resolve prompt-free
         // through the chokepoint's unprotected fast-path.
         if !uses_password {
-            return;
+            return Ok(());
         }
 
-        let Ok(backend) = self.wallet_backend() else {
-            return;
-        };
+        let backend = self.wallet_backend()?;
         let secret = platform_wallet_storage::secrets::SecretString::new(passphrase);
         if let Err(error) = backend.secret_access().promote_hd_seed_with_passphrase(
             &seed_hash,
             Some(&secret),
             crate::wallet_backend::RememberPolicy::UntilAppClose,
         ) {
-            tracing::debug!(
+            tracing::warn!(
                 wallet = %hex::encode(seed_hash),
-                %error,
-                "Unlock seed promotion skipped"
+                error = ?error,
+                "Unlocked wallet seed could not be saved in the current vault"
             );
-            return;
+            wallet.write_recover().wallet_seed.close();
+            return Err(error);
         }
         tracing::trace!(
             wallet = %hex::encode(seed_hash),
@@ -74,6 +73,7 @@ impl AppContext {
         // session cache. The in-memory wallet is already flipped `Open` by the
         // unlock callsite before this runs, so the JIT `is_open()` gate passes.
         self.drive_unlock_registration(wallet, retention);
+        Ok(())
     }
 
     /// Spawn the unlock-triggered JIT bootstrap/registration for a wallet whose
@@ -151,39 +151,29 @@ impl AppContext {
     /// background pass may touch without a passphrase prompt."
     pub(super) fn open_wallets(self: &Arc<Self>) -> Vec<Arc<RwLock<Wallet>>> {
         self.wallets
-            .read()
-            .ok()
-            .map(|wallets| {
-                wallets
-                    .values()
-                    .filter(|w| w.read().ok().map(|g| g.is_open()).unwrap_or(false))
-                    .cloned()
-                    .collect()
-            })
-            .unwrap_or_default()
+            .read_recover()
+            .values()
+            .filter(|wallet| wallet.read_recover().is_open())
+            .cloned()
+            .collect()
     }
 
     /// Snapshot password-protected wallets that are still closed.
     pub(crate) fn locked_wallet_hashes(self: &Arc<Self>) -> Vec<WalletSeedHash> {
-        let wallets = match self.wallets.read() {
-            Ok(wallets) => wallets,
-            Err(poisoned) => poisoned.into_inner(),
-        };
+        let wallets = self.wallets.read_recover();
         wallets
             .iter()
             .filter_map(|(seed_hash, wallet)| {
                 wallet
-                    .read()
-                    .ok()
-                    .filter(|wallet| wallet.uses_password && !wallet.is_open())
-                    .map(|_| *seed_hash)
+                    .read_recover()
+                    .requires_password_unlock()
+                    .then_some(*seed_hash)
             })
             .collect()
     }
 
-    /// Count wallets that block the cold-start completion sentinel: an OPEN
-    /// wallet not yet registered with the upstream wallet backend, OR any
-    /// wallet whose lock cannot be read.
+    /// Count open wallets that block the cold-start completion sentinel because
+    /// they are not yet registered with the upstream wallet backend.
     ///
     /// The migration writes its sentinel only when this is zero. Soundness for
     /// the registered set relies on the copy step rejecting exactly what
@@ -191,42 +181,24 @@ impl AppContext {
     /// `migration::finish_unwire::hd_seed_row_is_hydratable`), so every wallet
     /// that reached the vault is hydrated and seen here.
     ///
-    /// Counted (sentinel withheld):
-    /// - a readable, open, not-yet-registered wallet;
-    /// - any wallet whose `RwLock` cannot be read — fail-safe, so a poisoned
-    ///   lock can never green-light a premature "completed".
-    ///
-    /// Excluded (handled before this check):
-    /// - a readable, `Closed` / locked password-protected wallet — migration's
-    ///   awaiting-password state collects and unlocks these first.
-    ///
-    /// Counts over the raw `self.wallets` map, NOT the [`Self::open_wallets`]
-    /// snapshot — that snapshot already drops a poisoned-lock wallet before the
-    /// fail-safe could see it. A poisoned OUTER map lock is recovered via
-    /// `into_inner` so a prior panic elsewhere cannot zero the count. When the
-    /// backend is not yet wired nothing is registered, so every open (or
-    /// unreadable) wallet counts.
+    /// Poisoned outer and per-wallet locks are recovered consistently with
+    /// [`Self::open_wallets`] and [`Self::locked_wallet_hashes`], so a prior
+    /// panic never makes a wallet disappear from this decision.
     pub(crate) fn unregistered_open_wallet_count(self: &Arc<Self>) -> usize {
         let backend = self.wallet_backend().ok();
-        let guard = match self.wallets.read() {
-            Ok(g) => g,
-            Err(poisoned) => poisoned.into_inner(),
-        };
+        let guard = self.wallets.read_recover();
         guard
             .values()
-            .filter(|w| match w.read() {
-                // Unreadable per-wallet lock: cannot prove it is registered, so
-                // fail safe and count it (withholds the sentinel).
-                Err(_) => true,
-                // Readable Closed / locked-protected: the migration password gate
-                // handles it before calling this registration check.
-                Ok(g) if !g.is_open() => false,
-                // Readable and open: unregistered unless the wired backend knows
-                // it. With no backend wired nothing is registered, so it counts.
-                Ok(g) => backend
-                    .as_ref()
-                    .map(|b| b.registered_wallet_id(&g.seed_hash()).is_none())
-                    .unwrap_or(true),
+            .filter(|wallet| {
+                let wallet = wallet.read_recover();
+                if !wallet.is_open() {
+                    false
+                } else {
+                    backend
+                        .as_ref()
+                        .map(|backend| backend.registered_wallet_id(&wallet.seed_hash()).is_none())
+                        .unwrap_or(true)
+                }
             })
             .count()
     }

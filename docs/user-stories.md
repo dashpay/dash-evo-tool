@@ -85,7 +85,7 @@ As a user, I want my wallet protected by a passphrase so that others cannot acce
 As a user, I want to remove a wallet I no longer need so that it does not clutter my wallet list.
 
 - Confirmation prompt before removal.
-- Wallet data is deleted from local storage.
+- Current wallet data is deleted from local storage. If an older recovery database exists, it remains untouched.
 
 ### WAL-008: View wallet balances [Implemented]
 **Persona:** Alex, Priya, Jordan
@@ -298,6 +298,16 @@ As a user with an imported single-key wallet, I want its balance and UTXO list t
 
 - The imported address is monitored automatically, the same way recovery-phrase wallet addresses are. No manual refresh action is offered.
 - Currently blocked upstream: monitoring requires registering the imported address as a watch-only wallet, but `platform-wallet` exposes no seedless wallet-registration entry point (`register_wallet` is private; the public constructors all require a recovery-phrase seed). Unblocked by a public `register_watch_only_wallet`. Key data and receive still work.
+
+### WAL-032: Finish a storage update without risking old wallet data [Implemented]
+**Persona:** Alex, Priya, Jordan
+
+As a user opening an older wallet installation, I want the app to update its storage safely so that I can keep using every wallet without risking my recovery copy.
+
+- The desktop app asks for each password-protected wallet separately and never carries a typed password into another wallet's prompt.
+- The user can skip a wallet; skipped wallets stay locked, and the rest of the storage update can finish.
+- The previous database is read-only throughout the update, including unlock and skip paths.
+- Standalone command-line and MCP use never wait for a window that is not present. They ask the user to open the desktop app once, then try again.
 
 ---
 

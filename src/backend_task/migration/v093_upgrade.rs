@@ -3,11 +3,10 @@
 //! v0.9.3 is the newest released build, so its on-disk shape is what every
 //! upgrading user actually hands to v1.0. The three subsystems that carry that
 //! data across each have their own unit tests, but each starts from an
-//! already-normalised fixture — the schema ladder from v5 or v27, the settings
-//! import from a v0.10-dev `settings` table. Nothing proved they **compose**
-//! from real v0.9.3 raw data, in the order `AppState` actually runs them:
+//! already-normalised fixture. Nothing proved they **compose** from real v0.9.3
+//! raw data, in the order `AppState` actually runs them:
 //!
-//! 1. [`Database::initialize`] — the schema ladder, v11 → current.
+//! 1. [`Database::open_legacy_read_only`] — preserve the v11 source verbatim.
 //! 2. [`import_legacy_settings`] — user preferences, at boot, **before** the
 //!    active network is chosen (`AppState::new_inner`).
 //! 3. [`finish_unwire::run`] — the wallet drain plus the scheduled-vote and
@@ -41,9 +40,7 @@ use crate::backend_task::migration::finish_unwire::{
 use crate::backend_task::migration::legacy_settings::{SettingsImport, import_legacy_settings};
 use crate::context::AppContext;
 use crate::database::Database;
-use crate::database::test_helpers::{
-    LegacyIdentityFixture, create_database_at_path, legacy_master_epk_bytes,
-};
+use crate::database::test_helpers::{LegacyIdentityFixture, legacy_master_epk_bytes};
 use crate::model::qualified_identity::encrypted_key_storage::{
     KeyStorage, PrivateKeyData, WalletDerivationPath,
 };
@@ -612,9 +609,9 @@ fn write_v093_database(dir: &std::path::Path) -> Fixture {
     }
 }
 
-/// Boot over `dir` exactly as `AppState` does: run the ladder, import the legacy
-/// preferences, then build the `AppContext` **on the network those preferences
-/// named**. Returns the context and the imported settings blob.
+/// Boot over `dir` exactly as `AppState` does: open the pre-update database
+/// read-only, import its preferences, then build the `AppContext` **on the
+/// network those preferences named**. Returns the context and imported settings.
 ///
 /// Taking the network from the import (rather than hard-coding testnet) is the
 /// point: it is what makes this a composition test. If the import lost the
@@ -624,9 +621,7 @@ fn boot(dir: &std::path::Path) -> (Arc<AppContext>, AppSettings) {
     crate::app_dir::ensure_env_file(dir);
     let db_file = dir.join("data.db");
 
-    let db = Arc::new(Database::new(&db_file).expect("open data.db"));
-    db.initialize(&db_file)
-        .expect("schema ladder v11 -> current");
+    let db = Arc::new(Database::open_legacy_read_only(&db_file).expect("open data.db read-only"));
 
     let app_kv = AppContext::open_app_kv(dir).expect("open app k/v");
     let outcome = import_legacy_settings(&app_kv, &db).expect("import legacy settings");
@@ -675,6 +670,9 @@ async fn wire_backend(ctx: &Arc<AppContext>) -> Arc<WalletBackend> {
 async fn run_migration_with_wallet_passwords(
     ctx: &Arc<AppContext>,
 ) -> Result<bool, crate::backend_task::error::TaskError> {
+    ctx.install_secret_prompt(Arc::new(
+        crate::wallet_backend::secret_prompt::test_support::TestPrompt::never(),
+    ));
     let migration_context = Arc::clone(ctx);
     let migration = tokio::spawn(async move { finish_unwire::run(&migration_context).await });
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
@@ -688,7 +686,7 @@ async fn run_migration_with_wallet_passwords(
                 let wallet = ctx.wallet_arc(seed_hash).expect("migrated wallet");
                 let needs_password = {
                     let wallet = wallet.read().expect("wallet lock");
-                    wallet.uses_password && !wallet.is_open()
+                    wallet.requires_password_unlock()
                 };
                 if needs_password {
                     wallet
@@ -701,7 +699,8 @@ async fn run_migration_with_wallet_passwords(
                         &wallet,
                         PROTECTED_PASSWORD,
                         crate::context::WalletUnlockRetention::UntilAppClose,
-                    );
+                    )
+                    .expect("the protected seed must land in the current vault");
                     ctx.migration_status().notify_wallet_password_submitted();
                 }
             }
@@ -717,7 +716,7 @@ async fn run_migration_with_wallet_passwords(
 }
 
 fn schema_version_at(db_file: &std::path::Path) -> u16 {
-    Connection::open(db_file)
+    Connection::open_with_flags(db_file, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
         .expect("open database file")
         .query_row(
             "SELECT database_version FROM settings WHERE id = 1",
@@ -729,17 +728,6 @@ fn schema_version_at(db_file: &std::path::Path) -> u16 {
 
 fn schema_version(dir: &std::path::Path) -> u16 {
     schema_version_at(&dir.join("data.db"))
-}
-
-/// The schema version a **fresh** install lands on. Asserting the upgraded DB
-/// matches this — rather than a hard-coded number — states the real contract
-/// ("an upgraded v0.9.3 install is schema-identical to a new one") and cannot
-/// drift when the ladder grows another arm.
-fn fresh_install_schema_version() -> u16 {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let db_file = dir.path().join("fresh.db");
-    create_database_at_path(&db_file).expect("fresh install database");
-    schema_version_at(&db_file)
 }
 
 /// The persisted shape of an identity entry, mirroring the private
@@ -805,6 +793,8 @@ async fn v093_install_upgrades_with_wallets_settings_votes_and_history_intact() 
         V093_DB_VERSION,
         "precondition: the fixture is a v0.9.3-shaped database",
     );
+    let legacy_before = std::fs::read(tmp.path().join("data.db"))
+        .expect("snapshot the v0.9.3 database before boot");
 
     let (ctx, settings) = boot(tmp.path());
     let backend = wire_backend(&ctx).await;
@@ -816,11 +806,17 @@ async fn v093_install_upgrades_with_wallets_settings_votes_and_history_intact() 
         "a v0.9.3 install has data to move, so the launch must report work done",
     );
 
-    // ── Schema ladder ────────────────────────────────────────────────
+    // ── Read-only legacy source ─────────────────────────────────────
     assert_eq!(
         schema_version(tmp.path()),
-        fresh_install_schema_version(),
-        "the ladder must walk v11 all the way to the current version",
+        V093_DB_VERSION,
+        "the storage update must not change the legacy schema version",
+    );
+    assert_eq!(
+        std::fs::read(tmp.path().join("data.db"))
+            .expect("snapshot the v0.9.3 database after the storage update"),
+        legacy_before,
+        "boot and the complete storage update must leave data.db byte-unchanged",
     );
 
     // ── Settings: the safety-critical field ──────────────────────────
@@ -859,8 +855,8 @@ async fn v093_install_upgrades_with_wallets_settings_votes_and_history_intact() 
 
     // ── Wallet seeds: the funds path ─────────────────────────────────
     // The drain copies each legacy envelope into the vault; hydration then
-    // promotes the unprotected one to the raw seam (`seed.raw.v1`) and drops the
-    // legacy row. So the seed is asserted where it actually ends up — as the raw
+    // promotes the unprotected one to the raw seam (`seed.raw.v1`) while retaining
+    // the recovery copy. So the seed is asserted where it is used — as the raw
     // 64 bytes the wallet is made of.
     let seeds = backend.wallet_seeds();
     let raw_seed = seeds
@@ -881,19 +877,19 @@ async fn v093_install_upgrades_with_wallets_settings_votes_and_history_intact() 
         seeds
             .legacy_envelope_get(&fixture.unprotected)
             .expect("read legacy envelope")
-            .is_none(),
-        "the promoted legacy envelope must be dropped, not left as a second at-rest copy",
+            .is_some(),
+        "the promoted legacy recovery envelope must remain available",
     );
 
     // The password gate opens the protected wallet through the normal unlock
-    // path, which re-encrypts the seed into the current Tier-2 envelope and
-    // deletes the legacy AES-GCM copy before migration can complete.
+    // path, which re-encrypts the seed into the current Tier-2 envelope while
+    // retaining the legacy recovery copy.
     assert!(
         seeds
             .legacy_envelope_get(&fixture.protected)
             .expect("read protected envelope")
-            .is_none(),
-        "migration must delete the legacy protected envelope after re-encrypting it",
+            .is_some(),
+        "the storage update must retain the legacy protected recovery envelope",
     );
     assert_eq!(
         seeds.scheme(&fixture.protected).expect("scheme"),

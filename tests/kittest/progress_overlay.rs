@@ -1052,6 +1052,7 @@ fn tc_ovl_048_secret_prompt_renders_above_overlay() {
         .build_ui(|ui| {
             ProgressOverlay::render_global(ui.ctx(), false);
             let config = PassphraseModalConfig {
+                state_id: egui::Id::new("test_progress_overlay_passphrase"),
                 window_title: "Unlock to continue",
                 body: "Enter your passphrase to continue.",
                 hint: None,

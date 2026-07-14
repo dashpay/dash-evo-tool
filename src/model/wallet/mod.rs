@@ -841,6 +841,11 @@ impl Wallet {
     pub fn is_open(&self) -> bool {
         matches!(self.wallet_seed, WalletSeed::Open(_))
     }
+
+    /// Whether this password-protected wallet still needs an unlock gesture.
+    pub fn requires_password_unlock(&self) -> bool {
+        self.uses_password && !self.is_open()
+    }
     /// Derive and register the wallet's full bootstrap address set from a
     /// borrowed HD seed.
     ///

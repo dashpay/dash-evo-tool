@@ -75,6 +75,10 @@ impl SecretPrompt for EguiSecretPromptHost {
             Err(_) => Err(SecretPromptCancelled),
         }
     }
+
+    fn is_interactive(&self) -> bool {
+        true
+    }
 }
 
 /// The prompt `AppState` is currently rendering, holding the field state.
@@ -134,6 +138,7 @@ impl ActivePrompt {
         };
 
         let config = PassphraseModalConfig {
+            state_id: egui::Id::new("secret_prompt").with(&self.request.scope),
             window_title: "Unlock to continue",
             body: &self.request.display_label,
             hint: self.request.hint.as_deref(),

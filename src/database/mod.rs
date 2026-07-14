@@ -9,7 +9,7 @@ mod wallet;
 pub use wallet::WalletError;
 
 use dash_sdk::dpp::dashcore::Network;
-use rusqlite::{Connection, Params};
+use rusqlite::{Connection, OpenFlags, Params};
 use std::sync::{Arc, Mutex};
 
 /// Error indicating a corrupted data blob in the database.
@@ -73,6 +73,20 @@ impl Database {
     pub fn new<P: AsRef<std::path::Path>>(path: P) -> rusqlite::Result<Self> {
         let path_ref = path.as_ref();
         let conn = Connection::open(path_ref)?;
+        Ok(Self {
+            conn: Arc::new(Mutex::new(conn)),
+            path: Some(path_ref.to_path_buf()),
+        })
+    }
+
+    /// Open an existing pre-update database with SQLite write operations
+    /// disabled. The storage update treats this file as a recovery artifact;
+    /// all current state is written to the dedicated store and vault files.
+    pub(crate) fn open_legacy_read_only<P: AsRef<std::path::Path>>(
+        path: P,
+    ) -> rusqlite::Result<Self> {
+        let path_ref = path.as_ref();
+        let conn = Connection::open_with_flags(path_ref, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
         Ok(Self {
             conn: Arc::new(Mutex::new(conn)),
             path: Some(path_ref.to_path_buf()),

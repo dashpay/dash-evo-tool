@@ -596,7 +596,7 @@ impl AppContext {
         // or produces a misleading SDK timeout. `WalletStorageNotReady`
         // is a typed, user-friendly variant whose banner mirrors the
         // migration banner ("data is still being updated").
-        if is_wallet_touching(&task) && self.migration_status().state().is_running() {
+        if is_wallet_touching(&task) && self.migration_status().state().is_executing() {
             tracing::debug!(
                 target = "migration::gate",
                 task = ?task,

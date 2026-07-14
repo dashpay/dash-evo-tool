@@ -187,6 +187,7 @@ impl UnlockState {
     /// vault.
     fn show_modal(&mut self, ctx: &egui::Context) -> UnlockOutcome {
         let config = PassphraseModalConfig {
+            state_id: egui::Id::new("boot_secret_store_passphrase"),
             window_title: "Unlock your saved keys",
             body: "Your saved keys are protected by a passphrase set in an earlier version. \
                    Enter it to open them. The app asks for this passphrase every time it starts.",

@@ -30,6 +30,7 @@ fn modal_renders_body_hint_error_and_remember_checkbox() {
         .build_ui(move |ui| {
             let ctx = ui.ctx().clone();
             let config = PassphraseModalConfig {
+                state_id: egui::Id::new("test_prompt_body"),
                 window_title: "Unlock to continue",
                 body: "My Wallet",
                 hint: Some("granny's birthday"),
@@ -91,6 +92,7 @@ fn remember_checkbox_toggles() {
         .build_ui(move |ui| {
             let ctx = ui.ctx().clone();
             let config = PassphraseModalConfig {
+                state_id: egui::Id::new("test_prompt_remember"),
                 window_title: "Unlock to continue",
                 body: "My Wallet",
                 hint: None,
@@ -124,6 +126,7 @@ fn blocking_passphrase_modal_has_no_dismiss_control() {
         .with_size(egui::vec2(640.0, 480.0))
         .build_ui(|ui| {
             let config = PassphraseModalConfig {
+                state_id: egui::Id::new("test_storage_update_prompt"),
                 window_title: "Continue the storage update",
                 body: "Enter the password for \"Savings\" to update this wallet now.",
                 hint: None,

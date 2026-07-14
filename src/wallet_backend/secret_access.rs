@@ -775,31 +775,15 @@ impl SecretAccess {
                         let seed = view
                             .get_protected(seed_hash, pw)?
                             .ok_or(TaskError::SecretSeamMissing)?;
-                        // GC a legacy `envelope.v1` orphaned by a crash
-                        // or delete-failure between the migration's
-                        // `set_protected` and `delete`. The Absent branch (the
-                        // only other deleter) is never re-entered once the seed
-                        // is `Protected`, so the stale AES-GCM ciphertext — which
-                        // still decrypts under the seed's OLD password — would
-                        // otherwise survive forever. Idempotent + best-effort.
-                        if let Err(e) = view.delete(seed_hash) {
-                            tracing::warn!(
-                                target = "wallet_backend::secret_access",
-                                error = ?e,
-                                "Best-effort GC of a stale legacy seed envelope failed",
-                            );
-                        }
                         Ok(Plaintext::HdSeed(seed))
                     }
                     // Legacy AES-GCM envelope: decode-only reader, then LAZY
-                    // re-wrap to the steady-state form and drop the legacy
-                    // envelope. A protected seed re-wraps to Tier-2 under the
+                    // re-wrap to the steady-state form while retaining the
+                    // recovery envelope. A protected seed re-wraps to Tier-2 under the
                     // SAME user password (protection KEPT, not downgraded to
                     // raw); an unprotected one goes to the raw label. An absent
                     // envelope ⇒ the secret is gone (loud, never a silent miss).
-                    // Crash-safe: the re-store (upsert) precedes the delete, and
-                    // the scheme probe prefers the new label, so a crash between
-                    // leaves both forms and the next read takes the new one.
+                    // The scheme probe prefers the new label on subsequent reads.
                     SecretScheme::Absent => {
                         let envelope = view.get(seed_hash)?.ok_or(TaskError::SecretSeamMissing)?;
                         let seed = decrypt_hd_seed(&envelope, passphrase)?;
@@ -808,18 +792,6 @@ impl SecretAccess {
                             view.set_protected(seed_hash, &seed, pw)?;
                         } else {
                             view.set_raw(seed_hash, &seed)?;
-                        }
-                        // Best-effort GC of the legacy envelope, matching the
-                        // Protected branch above: the new value is already
-                        // written (upsert) and the scheme probe prefers it on the
-                        // next read, so a transient delete failure must not fail a
-                        // successful unlock. A stale envelope is cleaned up later.
-                        if let Err(e) = view.delete(seed_hash) {
-                            tracing::warn!(
-                                target = "wallet_backend::secret_access",
-                                error = ?e,
-                                "Best-effort GC of the legacy envelope deferred after migration",
-                            );
                         }
                         Ok(Plaintext::HdSeed(seed))
                     }
@@ -2563,7 +2535,7 @@ mod tests {
     /// TS-T2-01 — lazy re-wrap KEEPS protection. A protected legacy AES-GCM
     /// envelope, on first unlock, migrates to a Tier-2 object-password envelope
     /// at the raw label (NOT downgraded to a password-free raw secret), the
-    /// legacy envelope is dropped, and the seed reads back only with its
+    /// recovery envelope is retained, and the seed reads back only with its
     /// password.
     #[tokio::test]
     async fn ts_t2_01_protected_seed_rewraps_to_tier2_on_first_unlock() {
@@ -2587,10 +2559,10 @@ mod tests {
         let view = WalletSeedView::new(&store);
         // Steady state is Tier-2 protected, NOT raw.
         assert_eq!(view.scheme(&seed_hash).unwrap(), SecretScheme::Protected);
-        // Legacy envelope dropped.
+        // Recovery envelope retained.
         assert!(
-            view.get(&seed_hash).unwrap().is_none(),
-            "legacy envelope removed after re-wrap"
+            view.get(&seed_hash).unwrap().is_some(),
+            "legacy recovery envelope retained after re-wrap"
         );
         // Reads back only WITH the object password ...
         let pw = SecretString::new(SENTINEL_PASSPHRASE);

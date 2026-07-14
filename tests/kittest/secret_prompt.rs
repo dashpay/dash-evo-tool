@@ -37,6 +37,7 @@ fn modal_renders_body_hint_error_and_remember_checkbox() {
                 submit_label: "Unlock",
                 input_placeholder: "Enter passphrase",
                 remember_label: None,
+                cancellable: true,
             };
             passphrase_modal(&ctx, &config, |ui| {
                 ui.checkbox(&mut remember, KEEP_UNLOCKED_LABEL);
@@ -96,6 +97,7 @@ fn remember_checkbox_toggles() {
                 submit_label: "Unlock",
                 input_placeholder: "Enter passphrase",
                 remember_label: None,
+                cancellable: true,
             };
             let mut local = remember_for_ui.get();
             passphrase_modal(&ctx, &config, |ui| {
@@ -111,5 +113,32 @@ fn remember_checkbox_toggles() {
     assert!(
         remember.get(),
         "clicking the checkbox flips it on (maps to UntilAppClose)"
+    );
+}
+
+#[test]
+fn blocking_passphrase_modal_has_no_dismiss_control() {
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(640.0, 480.0))
+        .build_ui(|ui| {
+            let config = PassphraseModalConfig {
+                window_title: "Continue the storage update.",
+                body: "Migration requires re-encrypting the wallet \"Savings\". Enter its password now to continue.",
+                hint: None,
+                error: None,
+                submit_label: "Continue",
+                input_placeholder: "Enter password",
+                remember_label: None,
+                cancellable: false,
+            };
+            passphrase_modal(ui.ctx(), &config, |_| {});
+        });
+    harness.run();
+
+    assert!(harness.query_by_label("Cancel").is_none());
+    assert!(
+        harness
+            .query_by_label_contains("Migration requires re-encrypting the wallet")
+            .is_some()
     );
 }

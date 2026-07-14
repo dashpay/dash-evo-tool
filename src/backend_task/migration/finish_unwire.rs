@@ -269,9 +269,8 @@ pub enum MigrationError {
     /// At least one open (resolvable) wallet was migrated but did not land
     /// in the upstream wallet store after bootstrap registration. The
     /// completion sentinel is withheld so a re-run (the next cold start, or
-    /// the "Retry now" banner) retries the idempotent registration. Locked
-    /// password-protected wallets are excluded — they register on their
-    /// unlock gesture — so this never fires for a protected-only install.
+    /// the "Retry now" banner) retries the idempotent registration. Migration
+    /// collects every protected wallet password before reaching this check.
     #[error("could not finish wallet registration: {unregistered} wallet(s) not yet registered")]
     RegistrationIncomplete {
         /// Number of currently-open wallets still missing from the upstream
@@ -698,12 +697,11 @@ fn terminal_state(moved_data: bool) -> MigrationState {
     }
 }
 
-/// Re-hydrates just-migrated wallets into `ctx.wallets` and registers the
-/// resolvable (open/unprotected) ones upstream. [`run`] calls this
-/// immediately before [`write_sentinel`], so completion can never be
-/// recorded while a migratable unprotected wallet is still unregistered.
-/// Locked protected wallets and genuinely-unusable rows are excluded —
-/// both register or land safely elsewhere. Idempotent.
+/// Re-hydrates just-migrated wallets into `ctx.wallets`, registers open wallets,
+/// and waits for the UI to unlock every protected wallet before returning.
+/// [`run`] calls this immediately before [`write_sentinel`], so completion can
+/// never be recorded while a migrated wallet is still locked or unregistered.
+/// Idempotent.
 async fn register_migrated_wallets(app_context: &Arc<AppContext>) -> Result<(), MigrationError> {
     let backend = app_context
         .wallet_backend()
@@ -722,9 +720,23 @@ async fn register_migrated_wallets(app_context: &Arc<AppContext>) -> Result<(), 
 
     // Re-run the cold-boot W2 bridge now that `ctx.wallets` is populated, so the
     // just-migrated open wallets are registered upstream (`id_map` + persistor)
-    // without a restart. Idempotent and prompt-free; locked protected wallets
-    // are skipped and register on their unlock gesture.
+    // without a restart.
     app_context.bootstrap_loaded_wallets().await;
+
+    loop {
+        let wallets = app_context.locked_wallet_hashes();
+        if wallets.is_empty() {
+            break;
+        }
+        app_context
+            .migration_status()
+            .set_state(MigrationState::AwaitingWalletPasswords { wallets });
+        app_context
+            .migration_status()
+            .wait_for_wallet_password()
+            .await;
+        app_context.bootstrap_loaded_wallets().await;
+    }
 
     let unregistered = app_context.unregistered_open_wallet_count();
     if unregistered > 0 {

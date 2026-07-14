@@ -3,6 +3,7 @@ use crate::app::TaskResult;
 use crate::app_dir::ensure_env_file;
 use crate::context::AppContext;
 use crate::context::connection_status::ConnectionStatus;
+use crate::context::migration_status::MigrationState;
 use crate::database::test_helpers::create_database_at_path;
 use crate::utils::egui_mpsc::SenderAsync;
 use crate::utils::tasks::TaskManager;
@@ -1737,71 +1738,14 @@ async fn migrated_wallet_is_upstream_registered_without_second_restart() {
     backend.shutdown().await;
 }
 
-/// Protected cold-start hydration — a *password-protected* wallet migrated
-/// from legacy `data.db` at cold start must hydrate into `ctx.wallets` but
-/// must NOT be upstream-registered until the user unlocks it. The cold-start
-/// migration re-runs the W2 cold-boot bridge
-/// (`bootstrap_loaded_wallets` → `bootstrap_wallet_addresses_jit`), but that
-/// bridge gates on `Wallet::is_open()`: a protected wallet hydrates as
-/// `WalletSeed::Closed`, so `is_open()` is `false` and the bridge returns
-/// early — before any `with_secret_session` (no passphrase prompt) and
-/// before `ensure_upstream_registered` (no registration). The companion
-/// unprotected test above proves eager registration of unprotected wallets;
-/// this one locks in the deferral for protected wallets so it can't
-/// silently regress into a surprise startup prompt or a `WalletLocked`
-/// failure mid-migration.
-///
-/// It would FAIL if someone dropped the `is_open()` gate and made the
-/// bridge enter the seed scope for a locked protected wallet: the chokepoint
-/// would request a passphrase prompt during migration (the recording prompt
-/// double below would see a non-zero call count), which is exactly the
-/// surprise startup prompt the deferral exists to prevent.
+/// A migrated protected wallet keeps the migration task pending until its
+/// password is submitted through the UI-owned unlock flow.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn migrated_protected_wallet_registration_is_deferred_until_unlock() {
+async fn migrated_protected_wallet_blocks_migration_until_password_submission() {
     use crate::database::test_helpers::seed_legacy_protected_hd_wallet_row;
     use crate::model::wallet::encryption::encrypt_message;
-    use crate::wallet_backend::{
-        SecretPrompt, SecretPromptCancelled, SecretPromptReply, SecretPromptRequest,
-    };
-    use std::sync::atomic::AtomicUsize;
-
-    /// A `SecretPrompt` double that records how many times the chokepoint
-    /// asked the host to unlock a wallet, then declines like a headless
-    /// host. A still-locked protected wallet must NOT trigger any request
-    /// during cold-start migration — the count must stay zero.
-    #[derive(Default)]
-    struct RecordingPrompt {
-        requests: AtomicUsize,
-    }
-    #[async_trait::async_trait]
-    impl SecretPrompt for RecordingPrompt {
-        async fn request(
-            &self,
-            _request: SecretPromptRequest,
-        ) -> Result<SecretPromptReply, SecretPromptCancelled> {
-            self.requests.fetch_add(1, Ordering::Relaxed);
-            Err(SecretPromptCancelled)
-        }
-        fn is_interactive(&self) -> bool {
-            // Interactive on purpose: a non-interactive host would let the
-            // chokepoint short-circuit before requesting. We want any
-            // attempt to reach `request` so a dropped gate is observable.
-            true
-        }
-    }
 
     let (ctx, sender, _tmp) = offline_testnet_context();
-
-    // Install the recording prompt BEFORE the backend is built — that is
-    // when the chokepoint reads the host (see `install_secret_prompt`).
-    let prompt = Arc::new(RecordingPrompt::default());
-    ctx.install_secret_prompt(prompt.clone() as Arc<dyn SecretPrompt>);
-
-    // Stage a legacy PROTECTED `wallet` row: the seed is AES-GCM-encrypted
-    // under a passphrase the test never feeds back in, so the wallet stays
-    // locked across the whole migration. The published BIP44 xpub agrees
-    // with the seed so the W2 fund-routing gate would accept it *if* the
-    // gate were reached — it must not be.
     let seed = [0x42u8; 64];
     let passphrase = "correct-horse-battery-staple";
     let seed_hash: WalletSeedHash = crate::model::wallet::ClosedKeyItem::compute_seed_hash(&seed);
@@ -1824,75 +1768,41 @@ async fn migrated_protected_wallet_registration_is_deferred_until_unlock() {
     )
     .expect("insert legacy protected wallet row");
 
-    // Wire the backend: hydration + the cold-boot bootstrap run now against
-    // the EMPTY sidecars (migration has not run), so nothing is registered.
     ctx.ensure_wallet_backend(sender)
         .await
         .expect("ensure_wallet_backend should succeed offline");
     let backend = ctx.wallet_backend().expect("backend wired");
 
-    // (a) The cold-start migration must complete with NO error and NO panic.
-    // A passphrase prompt is impossible here (offline, headless) — if the
-    // deferral broke and the bridge entered the seed scope, the locked
-    // envelope would surface `WalletLocked` inside `bootstrap_*`. That path
-    // is best-effort/logged (it does not fail the migration), so the strong
-    // assertion is the deferred-registration check in (b).
-    crate::backend_task::migration::finish_unwire::run(&ctx)
-        .await
-        .expect("migration must succeed for a protected wallet (no error, no prompt)");
+    let migration_context = Arc::clone(&ctx);
+    let migration = tokio::spawn(async move {
+        crate::backend_task::migration::finish_unwire::run(&migration_context).await
+    });
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        if matches!(
+            ctx.migration_status().state().as_ref(),
+            MigrationState::AwaitingWalletPasswords { wallets } if wallets == &vec![seed_hash]
+        ) {
+            break;
+        }
+        assert!(tokio::time::Instant::now() < deadline);
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
 
-    // (b) The protected wallet is hydrated into `ctx.wallets` (visible in
-    // the picker, name preserved) but stays LOCKED — `is_open()` is false.
-    let wallet_arc = ctx
-        .wallets
-        .read()
-        .unwrap()
-        .get(&seed_hash)
-        .cloned()
-        .expect("protected wallet must be hydrated into ctx.wallets after migration");
-    assert!(
-        !wallet_arc.read_recover().is_open(),
-        "a migrated protected wallet must hydrate locked (WalletSeed::Closed)"
-    );
-    assert!(
-        wallet_arc.read_recover().uses_password,
-        "the hydrated wallet must carry the password flag"
-    );
+    assert!(!migration.is_finished());
+    assert_eq!(ctx.locked_wallet_hashes(), vec![seed_hash]);
+    assert!(!backend.is_wallet_registered(&seed_hash));
 
-    // (b cont.) Registration is DEFERRED: the wallet is present in
-    // `ctx.wallets` but NOT yet in the upstream `id_map` that
-    // `resolve_wallet` keys off. This is the regression trap — eager
-    // registration would flip this `true`.
-    assert!(
-        !backend.is_wallet_registered(&seed_hash),
-        "a still-locked protected wallet must NOT be upstream-registered by the migration (deferred to unlock)"
-    );
-
-    // (c) The migration itself must not register any wallet at all: with a
-    // single locked protected wallet, the watched-wallet set stays empty.
-    assert_eq!(
-        backend.wallet_count().await,
-        0,
-        "the migration must register no wallets while the only wallet is locked"
-    );
-
-    // (a, strong form) The deferral is prompt-free: the cold-boot bridge
-    // must never have asked the host to unlock the wallet. This is the
-    // regression trap — dropping the `is_open()` gate would make the bridge
-    // enter the seed scope and request a prompt, flipping this above zero.
-    assert_eq!(
-        prompt.requests.load(Ordering::Relaxed),
-        0,
-        "the migration must never prompt for a passphrase while a protected wallet is locked"
-    );
+    migration.abort();
+    let _ = migration.await;
 
     backend.shutdown().await;
 }
 
 /// Protected-unlock reconciliation (the delete-DB + re-import
 /// acceptance flow): a password-protected wallet that hydrates LOCKED at cold
-/// boot, and is therefore deferred by the W2 bridge (proven by
-/// [`migrated_protected_wallet_registration_is_deferred_until_unlock`]), MUST
+/// boot, and therefore pauses the migration for password entry (proven by
+/// [`migrated_protected_wallet_blocks_migration_until_password_submission`]), MUST
 /// become upstream-registered on the unlock gesture — without a second app
 /// restart.
 ///
@@ -1906,9 +1816,8 @@ async fn migrated_protected_wallet_registration_is_deferred_until_unlock() {
 /// `handle_wallet_unlocked` once the seed is in the session cache; this test
 /// asserts the post-unlock registration that fix enables.
 ///
-/// Staging mirrors the deferral test: a legacy PROTECTED `wallet` row is
-/// migrated so the wallet hydrates `Closed` (locked) with EMPTY persistor and
-/// is NOT registered. Then the wallet is opened with the real passphrase and
+/// A legacy protected `wallet` row hydrates `Closed` with an empty persistor,
+/// then the wallet is opened with the real passphrase and
 /// `handle_wallet_unlocked` is invoked exactly as the unlock popup does
 /// (`src/ui/components/wallet_unlock_popup.rs`), passing the passphrase so the
 /// seed resolves prompt-free from the session cache.
@@ -1951,9 +1860,19 @@ async fn protected_wallet_registers_upstream_on_unlock_without_restart() {
         .await
         .expect("ensure_wallet_backend should succeed offline");
     let backend = ctx.wallet_backend().expect("backend wired");
-    crate::backend_task::migration::finish_unwire::run(&ctx)
-        .await
-        .expect("migration must succeed for a protected wallet");
+    let migration_context = Arc::clone(&ctx);
+    let migration = tokio::spawn(async move {
+        crate::backend_task::migration::finish_unwire::run(&migration_context).await
+    });
+
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !matches!(
+        ctx.migration_status().state().as_ref(),
+        MigrationState::AwaitingWalletPasswords { wallets } if wallets == &vec![seed_hash]
+    ) {
+        assert!(tokio::time::Instant::now() < deadline);
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
 
     let wallet_arc = ctx
         .wallets
@@ -1985,6 +1904,12 @@ async fn protected_wallet_registers_upstream_on_unlock_without_restart() {
         .open(passphrase)
         .expect("correct passphrase opens the wallet");
     ctx.handle_wallet_unlocked(&wallet_arc, passphrase);
+    ctx.migration_status().notify_wallet_password_submitted();
+
+    migration
+        .await
+        .expect("migration task must not panic")
+        .expect("migration must complete after password submission");
 
     // `handle_wallet_unlocked` spawns the registration on a tracked subtask,
     // so poll the `id_map` (what `resolve_wallet` consults) with a bounded

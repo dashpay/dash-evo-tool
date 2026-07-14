@@ -185,6 +185,7 @@ impl SelectionDialog {
                 overlay_order: egui::Order::Middle,
                 window_order: egui::Order::Foreground,
                 resizable: false,
+                show_close_button: true,
                 inner_margin: 16,
             },
             |ui| {

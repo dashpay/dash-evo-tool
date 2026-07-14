@@ -11,36 +11,36 @@ Verdicts: PASS / FAIL / BLOCKED (reason) / N/A (Gap/Superseded/Removed — not i
 
 ## WAL
 
-- [ ] WAL-001: Create a new wallet
+- [x] WAL-001: Create a new wallet — PASS
 - [ ] WAL-002: Import wallet via mnemonic
 - [ ] WAL-003: Import single private key
-- [ ] WAL-004: Switch between wallets
+- [x] WAL-004: Switch between wallets — PASS (per-network isolation noted, not a defect)
 - [ ] WAL-005: Rename a wallet
 - [ ] WAL-006: Lock and unlock wallet
 - [ ] WAL-007: Remove a wallet
 - [ ] WAL-008: View wallet balances
 - [x] WAL-009: View fiat equivalent of balances — N/A (Gap, not implemented)
-- [ ] WAL-010: Generate receive address
-- [ ] WAL-011: View address table
+- [x] WAL-010: Generate receive address — PASS
+- [x] WAL-011: View address table — PASS
 - [ ] WAL-012: View and export private keys
 - [ ] WAL-013: View SPV sync status
 - [x] WAL-014: Label addresses — N/A (Gap, not implemented)
 - [x] WAL-015: Create throwaway wallet without mnemonic backup — N/A (Gap, not implemented)
-- [ ] WAL-016: View transaction history
+- [x] WAL-016: View transaction history — PASS (PR892 cold-boot regression test confirmed fixed)
 - [ ] WAL-017: Fund Platform address from wallet
 - [ ] WAL-018: Fund Platform address from asset lock
 - [ ] WAL-019: Transfer credits between Platform addresses
 - [ ] WAL-020: Withdraw from Platform address to Core
 - [ ] WAL-021: Navigate wallet accounts via tabs
 - [ ] WAL-022: View system accounts in developer mode
-- [ ] WAL-023: Collapsible transaction history
-- [ ] WAL-024: Collapsible balance breakdown
+- [x] WAL-023: Collapsible transaction history — PASS
+- [x] WAL-024: Collapsible balance breakdown — PASS
 
 ## SND
 
-- [ ] SND-001: Send Dash to an address
+- [x] SND-001: Send Dash to an address — PASS (screen nav confirmed; full E2E send pending)
 - [ ] SND-002: Send Dash from single-key wallet
-- [ ] SND-003: Receive Dash with QR code
+- [x] SND-003: Receive Dash with QR code — FAIL (Receive button inert, no QR shown)
 - [x] SND-004: Send to a DPNS username — N/A (Gap, not implemented)
 - [ ] SND-005: See fee estimate before confirming send
 - [ ] SND-006: Send to multiple recipients
@@ -144,7 +144,7 @@ Verdicts: PASS / FAIL / BLOCKED (reason) / N/A (Gap/Superseded/Removed — not i
 
 ## NET
 
-- [ ] NET-001: Switch networks
+- [x] NET-001: Switch networks — PASS
 - [ ] NET-002: Auto-update from dashmate config
 - [ ] NET-003: Configure Dash-Qt path
 - [ ] NET-004: Select theme

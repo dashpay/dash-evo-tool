@@ -154,14 +154,55 @@ det:migration:identities:<net>:v1
 
 ```rust
 pub async fn run(app_context: &Arc<AppContext>) -> Result<bool, TaskError> {
-    let app_data  = migrate_app_data(app_context);            // unchanged
-    let wallet_moved = drain_wallets(app_context).await?;     // unchanged
-    let app_data  = app_data?;
-    let identities = migrate_identities(app_context)?;        // NEW — after the drain
+    // Held, NOT unwrapped: DET's own rows may not gate the funds path.
+    let app_data = migrate_app_data(app_context);
+
+    // Funds first. Nothing above may withhold a seed.
+    let wallet_moved = drain_wallets(app_context).await?;
+
+    // Held too — the two DET-owned passes must not gate each other.
+    let identities = migrate_identities(app_context)?;
+
+    if identities.unreadable > 0 {
+        // `app_data` is judged HERE, never before: unwrapping it first would
+        // return its (deterministic) error and mask the identity signal on this
+        // launch AND every retry, stranding a masternode owner's keys over a
+        // corrupt vote queue. Each arm publishes its own terminal state and
+        // returns `Ok` — a returned `Err` would be re-published as a plain
+        // `Failed`, dropping the identity count.
+        match app_data {
+            // SucceededWithUnreadableIdentities, or …AndVotes when the durable
+            // vote-warning record reads back non-empty. A failing *read* costs
+            // only the vote half — never the identity half, and never a `Failed`.
+            Ok(outcome) => {
+                let moved_data =
+                    wallet_moved || outcome.moved_data() || identities.moved_data();
+                …
+                return Ok(moved_data);
+            }
+            // The one true FailedWithUnreadableIdentities: a hard app-data
+            // failure. Both signals ride one retryable banner.
+            Err(app_data_error) => {
+                let moved_data = wallet_moved || identities.moved_data();
+                …
+                return Ok(moved_data);
+            }
+        }
+    }
+
+    // Every identity decoded, so app-data no longer masks anything: unwrap it.
+    let app_data = app_data?;
     let moved_data = wallet_moved || app_data.moved_data() || identities.moved_data();
     …
 }
 ```
+
+**Held, then judged.** Each DET-owned pass runs unconditionally and its `Result`
+is *held* — the order in which the two are **unwrapped** is the load-bearing part,
+not the order in which they run. An app-data failure is deterministic (one
+malformed vote-index blob is enough) and never writes its sentinel, so unwrapping
+it ahead of the identity outcome would skip the identity import forever, not just
+once.
 
 **Why after `drain_wallets`, not inside it.** The import needs three things the
 drain produces: the wallet backend wired (`det_kv()` is `wallet_backend()?.kv()`),
@@ -283,10 +324,16 @@ Ordered; each is independently reviewable.
 - **T-ID-01 — `database/legacy_import.rs`: `read_identities`.**
   `pub(crate) fn read_identities(conn: &Connection, network: Network) -> rusqlite::Result<LegacyIdentities>`
   returning `{ identities: Vec<LegacyIdentityRow>, unreadable: u32 }` where
-  `LegacyIdentityRow { id: [u8; 32], qi: QualifiedIdentity, status: u8, wallet: Option<([u8; 32], u32)> }`.
-  SQL: `SELECT id, data, status, wallet, wallet_index FROM identity WHERE is_local = 1 AND data IS NOT NULL AND network IN (?1, ?2)`,
-  params `(network.to_string(), mainnet_alias_for(network))`. Missing table ⇒
-  empty. Per-row decode failure ⇒ `unreadable += 1`, warn, continue. Mirrors
+  `LegacyIdentityRow { id: [u8; 32], qi: QualifiedIdentity, wallet: Option<([u8; 32], u32)> }`.
+  There is **no separate `status` field**: the reader restores `status` (and
+  `alias`) from their columns straight onto `qi` before the row is yielded, so the
+  caller receives one already-correct `QualifiedIdentity` and cannot forget to
+  apply them (the blob encodes neither — see §6).
+  SQL: `SELECT id, data, status, wallet, wallet_index, alias FROM identity WHERE is_local = 1 AND data IS NOT NULL AND network IN (?1, ?2)`,
+  params `(network.to_string(), mainnet_alias_for(network))`. `alias` is selected
+  because the column — not the blob's stale copy — is authoritative (§6). Missing
+  table ⇒ empty. Per-row decode failure ⇒ `unreadable += 1`, warn, continue; a
+  wrong SQLite storage class costs its own row, not the whole read. Mirrors
   `read_scheduled_votes` exactly.
   *Depends on:* nothing.
 
@@ -368,13 +415,26 @@ this design consumes — keep it, then add the outcome):
 
 **Assertions in `second_launch_after_a_v093_upgrade_changes_nothing`:**
 
-9. Edit A's alias post-migration (`ctx.set_identity_alias`), re-run
-   `finish_unwire::run` ⇒ the alias survives. This is the skip-if-present rule
-   (§7): an identity already in the store is skipped wholesale — never
-   re-persisted with the stale legacy blob. It must go **RED** against a naive
-   implementation that re-inserts unconditionally.
-10. Identity count is unchanged; `run()` returns `false`.
-11. The legacy `identity` rows are still in `data.db` (count unchanged).
+9. Identity count is unchanged; `run()` returns `false`.
+10. The legacy `identity` rows are still in `data.db` (count unchanged).
+
+**Assertions in `a_retry_after_an_unreadable_identity_preserves_user_edits`:**
+
+11. Edit A's alias post-migration (`ctx.set_identity_alias`), re-run
+    `finish_unwire::run` ⇒ the alias survives. This is the skip-if-present rule
+    (§7): an identity already in the store is skipped wholesale — never
+    re-persisted with the stale legacy blob. It must go **RED** against a naive
+    implementation that re-inserts unconditionally.
+
+    This assertion lives on the **retry** path, not the clean second launch, because
+    only the retry path actually reaches the check. A clean upgrade writes the
+    identity sentinel, and on the next launch that sentinel short-circuits the pass
+    before any row is examined — so `second_launch_after_a_v093_upgrade_changes_nothing`
+    would pass even against an importer with no skip-if-present rule at all, proving
+    nothing. Withholding the sentinel is what forces the re-run: the test seeds one
+    undecodable blob (`unreadable > 0` ⇒ sentinel not written), so the following
+    launch re-imports over identities that already landed — exactly the case where an
+    unconditional INSERT-OR-REPLACE would silently overwrite the user's rename.
 
 **Negative test (own `#[test]`, on `migrate_identities_from_conn`):** a row whose
 `data` is garbage ⇒ `unreadable == 1`, the readable rows still import, and the

@@ -800,9 +800,11 @@ impl ProgressOverlay {
     ///
     /// `blocking_secret_prompt_active` mirrors the
     /// [`claim_input`](Self::claim_input) gate. The overlay remains in its stack
-    /// but paints no dimmer, pointer sink, card, or focus trap while a blocking
-    /// passphrase prompt owns the interaction surface and supplies its own
-    /// outside-window input barrier.
+    /// but paints no dimmer, pointer sink, card, or focus trap while a passphrase
+    /// prompt owns the interaction surface. Every passphrase prompt — cancellable
+    /// or not — installs its own outside-window input barrier
+    /// ([`passphrase_modal`](super::passphrase_modal::passphrase_modal)), so the
+    /// barrier is handed over, never dropped.
     ///
     /// Unlike [`MessageBanner`](super::message_banner::MessageBanner), whose global
     /// path pairs `set_global` with [`show_global`](super::message_banner::MessageBanner::show_global)

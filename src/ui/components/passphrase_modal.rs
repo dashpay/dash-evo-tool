@@ -150,6 +150,12 @@ pub fn passphrase_modal(
     // secret prompt drawn in the same frame get distinct overlays instead of fighting over one.
     // The window renders on Order::Foreground so the prompt stays above the blocking progress
     // overlay — that overlay must never cover a secret prompt it triggered.
+    //
+    // `blocks_input` is unconditional and independent of `cancellable`: the
+    // progress overlay yields its own barrier to ANY passphrase prompt, so every
+    // prompt must own the interaction surface beneath it. `cancellable` governs
+    // only who may dismiss it (Cancel / X / Escape / click-outside), which the
+    // sink does not affect — dismissal reads raw pointer input.
     let chrome = modal_chrome(
         ctx,
         ModalChromeConfig {
@@ -159,7 +165,7 @@ pub fn passphrase_modal(
             window_order: egui::Order::Foreground,
             resizable: false,
             show_close_button: config.cancellable,
-            blocks_input: !config.cancellable,
+            blocks_input: true,
             inner_margin: 20,
         },
         |ui| {

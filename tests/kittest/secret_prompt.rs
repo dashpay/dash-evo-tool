@@ -35,6 +35,7 @@ fn modal_renders_body_hint_error_and_remember_checkbox() {
                 hint: Some("granny's birthday"),
                 error: Some("That passphrase is not correct. Try again."),
                 submit_label: "Unlock",
+                secondary_action_label: None,
                 input_placeholder: "Enter passphrase",
                 remember_label: None,
                 cancellable: true,
@@ -95,6 +96,7 @@ fn remember_checkbox_toggles() {
                 hint: None,
                 error: None,
                 submit_label: "Unlock",
+                secondary_action_label: None,
                 input_placeholder: "Enter passphrase",
                 remember_label: None,
                 cancellable: true,
@@ -122,12 +124,13 @@ fn blocking_passphrase_modal_has_no_dismiss_control() {
         .with_size(egui::vec2(640.0, 480.0))
         .build_ui(|ui| {
             let config = PassphraseModalConfig {
-                window_title: "Continue the storage update.",
-                body: "Migration requires re-encrypting the wallet \"Savings\". Enter its password now to continue.",
+                window_title: "Continue the storage update",
+                body: "Enter the password for \"Savings\" to update this wallet now.",
                 hint: None,
                 error: None,
                 submit_label: "Continue",
-                input_placeholder: "Enter password",
+                secondary_action_label: Some("Skip this wallet"),
+                input_placeholder: "Enter your password.",
                 remember_label: None,
                 cancellable: false,
             };
@@ -138,7 +141,8 @@ fn blocking_passphrase_modal_has_no_dismiss_control() {
     assert!(harness.query_by_label("Cancel").is_none());
     assert!(
         harness
-            .query_by_label_contains("Migration requires re-encrypting the wallet")
+            .query_by_label_contains("Enter the password for \"Savings\"")
             .is_some()
     );
+    assert!(harness.query_by_label("Skip this wallet").is_some());
 }

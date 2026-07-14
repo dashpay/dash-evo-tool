@@ -6,8 +6,7 @@
 //! passphrase through the same centered, overlay-dimmed modal built on the
 //! shared [`modal_chrome`](super::modal_chrome). This module adds the passphrase
 //! specifics: focus-once, the [`PasswordInput`] field, an inline error line, an
-//! optional `extra` body (e.g. a "remember" checkbox), and the Cancel / Submit
-//! button row.
+//! optional `extra` body (e.g. a "remember" checkbox), and the action row.
 //!
 //! Cancellable callers resolve Cancel / Escape / X / click-outside uniformly
 //! to [`PassphraseModalOutcome::Cancel`]. Blocking callers omit every dismissal.
@@ -18,7 +17,7 @@
 //! — is stored in egui's data cache keyed by `window_title`. Callers carry only
 //! domain state (`remember`, `error`). On [`PassphraseModalOutcome::Submit`] the
 //! typed text is extracted into a [`Zeroizing`] string and the cache entry is
-//! cleared; on [`PassphraseModalOutcome::Cancel`] the cache entry is cleared too.
+//! cleared; dismissal and secondary actions clear the cache too.
 
 use std::fmt;
 
@@ -49,6 +48,8 @@ pub enum PassphraseModalOutcome {
     Submit(Zeroizing<String>),
     /// The user dismissed (Cancel button, Escape, X, or click-outside).
     Cancel,
+    /// The user chose the caller-provided secondary action.
+    SecondaryAction,
 }
 
 // Manual Debug to prevent the typed passphrase from leaking into logs.
@@ -60,6 +61,7 @@ impl fmt::Debug for PassphraseModalOutcome {
             Self::Pending => f.write_str("Pending"),
             Self::Submit(_) => f.write_str("Submit(<redacted>)"),
             Self::Cancel => f.write_str("Cancel"),
+            Self::SecondaryAction => f.write_str("SecondaryAction"),
         }
     }
 }
@@ -81,6 +83,8 @@ pub struct PassphraseModalConfig<'a> {
     pub error: Option<&'a str>,
     /// Submit button label, e.g. "Unlock".
     pub submit_label: &'a str,
+    /// Optional caller-owned secondary action rendered left of Submit.
+    pub secondary_action_label: Option<&'a str>,
     /// Placeholder text shown inside the password field before the user types.
     /// Defaults to `"Enter passphrase"` when the callers' existing default is
     /// appropriate; use `"Enter password"` for wallet-unlock flows.
@@ -134,6 +138,7 @@ pub fn passphrase_modal(
 
     let mut should_submit = false;
     let mut should_cancel = false;
+    let mut secondary_action = false;
 
     // The overlay layer id is salted with the window title so a wallet-unlock modal and a JIT
     // secret prompt drawn in the same frame get distinct overlays instead of fighting over one.
@@ -195,6 +200,11 @@ pub fn passphrase_modal(
                     if ComponentStyles::add_primary_button(ui, config.submit_label).clicked() {
                         should_submit = true;
                     }
+                    if let Some(label) = config.secondary_action_label
+                        && ComponentStyles::add_secondary_button(ui, label, dark_mode).clicked()
+                    {
+                        secondary_action = true;
+                    }
                     if config.cancellable
                         && ComponentStyles::add_secondary_button(ui, "Cancel", dark_mode).clicked()
                     {
@@ -237,6 +247,9 @@ pub fn passphrase_modal(
         state.password_input.clear();
         ctx.data_mut(|d| d.remove::<PassphraseModalState>(state_id));
         PassphraseModalOutcome::Submit(text)
+    } else if secondary_action {
+        ctx.data_mut(|d| d.remove::<PassphraseModalState>(state_id));
+        PassphraseModalOutcome::SecondaryAction
     } else if should_cancel {
         ctx.data_mut(|d| d.remove::<PassphraseModalState>(state_id));
         PassphraseModalOutcome::Cancel

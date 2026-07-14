@@ -27,7 +27,7 @@ use crate::context::migration_status::MigrationState;
 use crate::model::wallet::WalletSeedHash;
 use crate::ui::MessageType;
 use crate::ui::components::wallet_unlock_popup::{
-    WalletUnlockPopup, WalletUnlockResult, wallet_needs_unlock,
+    MigrationWalletUnlockResult, WalletUnlockPopup, wallet_needs_unlock,
 };
 use crate::ui::components::{
     BannerHandle, MessageBanner, OptionOverlayExt, OverlayConfig, OverlayHandle,
@@ -656,15 +656,21 @@ impl MigrationReconciler {
                 .notify_wallet_password_submitted();
             return;
         };
-        if self
+        match self
             .wallet_unlock_popup
             .show_for_migration(ctx, &wallet, app_context)
-            == WalletUnlockResult::Unlocked
         {
-            self.prompt_wallet = None;
-            app_context
-                .migration_status()
-                .notify_wallet_password_submitted();
+            MigrationWalletUnlockResult::Unlocked => {
+                self.prompt_wallet = None;
+                app_context
+                    .migration_status()
+                    .notify_wallet_password_submitted();
+            }
+            MigrationWalletUnlockResult::Skipped => {
+                self.prompt_wallet = None;
+                app_context.migration_status().skip_wallet(seed_hash);
+            }
+            MigrationWalletUnlockResult::Pending => {}
         }
     }
 

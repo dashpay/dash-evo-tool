@@ -139,6 +139,7 @@ impl ActivePrompt {
             hint: self.request.hint.as_deref(),
             error: retry_error,
             submit_label: "Unlock",
+            secondary_action_label: None,
             input_placeholder: "Enter passphrase",
             remember_label: Some(remember_label),
             cancellable: true,
@@ -163,6 +164,7 @@ impl ActivePrompt {
                 self.cancel();
                 true
             }
+            PassphraseModalOutcome::SecondaryAction => false,
         }
     }
 

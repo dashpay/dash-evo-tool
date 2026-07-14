@@ -10,6 +10,8 @@ mod settings_db;
 pub(crate) mod test_support;
 mod wallet_lifecycle;
 
+pub use wallet_lifecycle::WalletUnlockRetention;
+
 use crate::app_dir::core_cookie_path;
 use crate::backend_task::error::TaskError;
 use crate::config::{Config, NetworkConfig};

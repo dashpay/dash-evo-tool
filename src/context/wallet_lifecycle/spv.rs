@@ -21,14 +21,13 @@ impl AppContext {
     }
 
     pub fn clear_network_database(self: &Arc<Self>) -> Result<(), TaskError> {
-        self.db.clear_network_data(self.network)?;
-
         // F60: permanently delete every wallet's secret-bearing state so the
         // "delete all local data" promise holds — wallets must NOT rehydrate
         // on next launch and encrypted seeds must NOT persist. Clear the
         // persisted state (seed-envelope vault, wallet-meta + single-key
         // sidecars, shielded notes, session cache) BEFORE the in-memory maps
-        // below, so a mid-failure crash cannot strand a recoverable seed. The
+        // below, so a mid-failure crash cannot strand current state. The
+        // pre-update database remains a read-only recovery artifact. The
         // upstream (watch-only) persistor rows have no seed and are removed
         // asynchronously off the main thread. Best-effort when the backend is
         // not wired yet — there is no such state in that case.

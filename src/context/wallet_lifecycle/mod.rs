@@ -49,6 +49,15 @@ const SPV_CHAIN_STORAGE_ENTRIES: [&str; 7] = [
     "peers.dat",
 ];
 
+/// How long an explicitly unlocked wallet may remain in the secret session cache.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WalletUnlockRetention {
+    /// Keep the seed only until unlock-triggered registration finishes.
+    OperationOnly,
+    /// Keep the seed available until the application closes.
+    UntilAppClose,
+}
+
 /// Per-network SPV storage directory: `<data_dir>/spv/<network>/`. Mirrors
 /// `WalletBackend::resolve_spv_storage_dir` so the path resolves identically
 /// whether or not the wallet backend is wired yet.

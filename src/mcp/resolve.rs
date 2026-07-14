@@ -118,26 +118,25 @@ pub(crate) fn wallet_arc(
         })
 }
 
-/// Poll until the cold-start storage migration is no longer running.
+/// Poll until the cold-start storage update is fully complete.
 ///
 /// On a fresh standalone process, `ensure_wallet_backend_and_start_spv`
 /// kicks off a legacy-data migration before the backend is fully usable.
-/// `AppContext::run_backend_task` short-circuits all wallet-touching tasks
-/// while `migration_status().state().is_running()`, returning
-/// [`TaskError::WalletStorageNotReady`].  By waiting here (still inside
-/// `ensure_spv_synced`, before SPV wait), we turn that fast-fail into a
-/// transparent pause — the tool appears to "just work" on a cold start.
+/// `AppContext::run_backend_task` short-circuits wallet-touching tasks while
+/// `migration_status().state().is_in_progress()`, returning
+/// [`TaskError::WalletStorageNotReady`]. Waiting here covers an active run that
+/// started between dispatch and this check.
 ///
 /// Fast exit: returns immediately if migration is already done (the common
 /// case after the first gated tool has already waited).
 ///
-/// Terminal states `Idle`, `Success`, and `Failed` all pass through —
-/// `Failed` is surfaced to the user via the migration banner; the tool
-/// proceeds and will fail with whatever backend error it encounters there.
+/// The inline dispatch surfaces a terminal failure before this function is
+/// reached. A standalone password-protected install therefore fails promptly
+/// with the desktop-app instruction and never enters this polling loop.
 async fn ensure_storage_ready(ctx: &Arc<AppContext>) -> Result<(), McpToolError> {
     let migration = ctx.migration_status();
-    // Fast path — not running; nothing to wait for.
-    if !migration.state().is_running() {
+    // Fast path — complete; nothing to wait for.
+    if !migration.state().is_in_progress() {
         return Ok(());
     }
 
@@ -145,7 +144,7 @@ async fn ensure_storage_ready(ctx: &Arc<AppContext>) -> Result<(), McpToolError>
 
     let poll = async {
         loop {
-            if !migration.state().is_running() {
+            if !migration.state().is_in_progress() {
                 return Ok(());
             }
             tokio::time::sleep(std::time::Duration::from_millis(250)).await;
@@ -212,19 +211,32 @@ pub(crate) async fn ensure_spv_synced(ctx: &Arc<AppContext>) -> Result<(), McpTo
 
     // S7: In standalone/headless MCP mode the GUI frame-loop never runs, so
     // `MigrationTask::FinishUnwire` is never dispatched from `AppState`.
-    // Dispatch it here (idempotent — returns immediately if the sentinel file
-    // exists or there are no legacy rows) so `ensure_storage_ready` can see a
-    // terminal state instead of always fast-pathing through `Idle`.
-    {
+    // Dispatch it here. The AppContext-level run gate joins an existing GUI
+    // dispatch when this is a shared context, so only one password waiter can
+    // exist. In a standalone context the explicit prompt capability makes a
+    // protected install fail immediately.
+    let migration_state = ctx.migration_status().state();
+    if migration_state.is_in_progress() {
+        ensure_storage_ready(ctx).await?;
+        if let crate::context::migration_status::MigrationState::Failed { error } =
+            ctx.migration_status().state().as_ref()
+        {
+            return Err(McpToolError::TaskFailed(
+                crate::backend_task::migration::migration_task_error(Arc::clone(error)),
+            ));
+        }
+    } else if matches!(
+        migration_state.as_ref(),
+        crate::context::migration_status::MigrationState::Idle
+            | crate::context::migration_status::MigrationState::Failed { .. }
+    ) {
         use crate::backend_task::migration::MigrationTask;
         if let Err(e) = ctx.run_migration_task(MigrationTask::FinishUnwire).await {
-            // Log but do not fail — the migration failing should not prevent the
-            // tool from proceeding; the user will get an actionable error if the
-            // backend task itself later rejects due to missing data.
             tracing::warn!(
                 error = ?e,
-                "Standalone cold-start migration (FinishUnwire) failed; proceeding anyway"
+                "Standalone cold-start storage update failed"
             );
+            return Err(McpToolError::TaskFailed(e));
         }
     }
 

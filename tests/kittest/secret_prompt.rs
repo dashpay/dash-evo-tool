@@ -30,13 +30,16 @@ fn modal_renders_body_hint_error_and_remember_checkbox() {
         .build_ui(move |ui| {
             let ctx = ui.ctx().clone();
             let config = PassphraseModalConfig {
+                state_id: egui::Id::new("test_prompt_body"),
                 window_title: "Unlock to continue",
                 body: "My Wallet",
                 hint: Some("granny's birthday"),
                 error: Some("That passphrase is not correct. Try again."),
                 submit_label: "Unlock",
+                secondary_action_label: None,
                 input_placeholder: "Enter passphrase",
                 remember_label: None,
+                cancellable: true,
             };
             passphrase_modal(&ctx, &config, |ui| {
                 ui.checkbox(&mut remember, KEEP_UNLOCKED_LABEL);
@@ -89,13 +92,16 @@ fn remember_checkbox_toggles() {
         .build_ui(move |ui| {
             let ctx = ui.ctx().clone();
             let config = PassphraseModalConfig {
+                state_id: egui::Id::new("test_prompt_remember"),
                 window_title: "Unlock to continue",
                 body: "My Wallet",
                 hint: None,
                 error: None,
                 submit_label: "Unlock",
+                secondary_action_label: None,
                 input_placeholder: "Enter passphrase",
                 remember_label: None,
+                cancellable: true,
             };
             let mut local = remember_for_ui.get();
             passphrase_modal(&ctx, &config, |ui| {
@@ -112,4 +118,34 @@ fn remember_checkbox_toggles() {
         remember.get(),
         "clicking the checkbox flips it on (maps to UntilAppClose)"
     );
+}
+
+#[test]
+fn blocking_passphrase_modal_has_no_dismiss_control() {
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(640.0, 480.0))
+        .build_ui(|ui| {
+            let config = PassphraseModalConfig {
+                state_id: egui::Id::new("test_storage_update_prompt"),
+                window_title: "Continue the storage update",
+                body: "Enter the password for \"Savings\" to update this wallet now.",
+                hint: None,
+                error: None,
+                submit_label: "Continue",
+                secondary_action_label: Some("Skip this wallet"),
+                input_placeholder: "Enter your password.",
+                remember_label: None,
+                cancellable: false,
+            };
+            passphrase_modal(ui.ctx(), &config, |_| {});
+        });
+    harness.run();
+
+    assert!(harness.query_by_label("Cancel").is_none());
+    assert!(
+        harness
+            .query_by_label_contains("Enter the password for \"Savings\"")
+            .is_some()
+    );
+    assert!(harness.query_by_label("Skip this wallet").is_some());
 }

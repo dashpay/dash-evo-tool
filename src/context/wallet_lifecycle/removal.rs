@@ -11,8 +11,6 @@ impl AppContext {
             return Err(TaskError::WalletNotFound);
         }
 
-        self.db.remove_wallet(seed_hash, &self.network)?;
-
         wallets.remove(seed_hash);
         let has_wallet = !wallets.is_empty();
         drop(wallets);
@@ -35,12 +33,11 @@ impl AppContext {
             addresses.remove(seed_hash);
         }
 
-        // Permanently wipe the wallet's secret-bearing state so removal is not
-        // recoverable: the encrypted seed-envelope vault, the session secret
-        // cache, the wallet-meta sidecar, and the plaintext shielded-note rows
-        // plus the nullifier cursor (F17/F20). Synchronous so the secrets are
-        // gone before the UI reports success. Best-effort when the backend is
-        // not wired yet — a pre-wire context has none of that state.
+        // Wipe the wallet's current secret-bearing state: the encrypted
+        // seed-envelope vault, session cache, wallet-meta sidecar, and shielded
+        // rows. The pre-update database remains a read-only recovery artifact
+        // and is deliberately not changed. Best-effort when the backend is not
+        // wired yet — a pre-wire context has none of the current state.
         if let Ok(backend) = self.wallet_backend() {
             let upstream_id = backend.registered_wallet_id(seed_hash);
             if let Err(e) = backend.forget_wallet_local_state(seed_hash, upstream_id) {

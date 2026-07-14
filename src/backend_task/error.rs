@@ -690,6 +690,14 @@ pub enum TaskError {
     )]
     WalletRegistrationXpubMismatch,
 
+    /// A caller joined an in-flight upstream wallet registration that failed.
+    /// The shared source is the exact typed result produced by the one leader,
+    /// so every caller in that flight observes the same failure.
+    #[error(transparent)]
+    WalletRegistrationFlightFailed {
+        source: std::sync::Arc<TaskError>,
+    },
+
     /// A stored wallet seed could not be decrypted (wrong password or
     /// corrupted seed store).
     #[error(
@@ -1903,7 +1911,7 @@ pub enum TaskError {
     /// from the legacy `data.db` and a task tried to touch it before
     /// the migration finished. The user can retry once the migration
     /// banner clears.
-    #[error("Your data is still being updated. Please wait a moment and try again.")]
+    #[error("The storage update is still running. Please wait a moment and try again.")]
     WalletStorageNotReady,
 
     /// The post-unwire data migration failed. The user is asked to
@@ -1913,8 +1921,18 @@ pub enum TaskError {
     /// Wrapped as `Arc<MigrationError>` so the typed error chain can be
     /// shared with the `MigrationState::Failed` UI banner state without
     /// re-cloning the (non-`Clone`) `MigrationError` source.
-    #[error("Your data could not finish updating. Please restart the application to try again.")]
+    #[error("The storage update could not finish. Please restart the application to try again.")]
     MigrationFailed {
+        #[source]
+        source: std::sync::Arc<crate::backend_task::migration::MigrationError>,
+    },
+
+    /// A standalone process found password-protected data whose storage update
+    /// requires the desktop application's interactive password prompt.
+    #[error(
+        "Open the Dash Evo Tool desktop app once to finish the storage update, then try again."
+    )]
+    StorageUpdateNeedsDesktop {
         #[source]
         source: std::sync::Arc<crate::backend_task::migration::MigrationError>,
     },
@@ -4170,7 +4188,7 @@ mod tests {
             source: std::sync::Arc::new(inner),
         };
         let msg = err.to_string();
-        assert!(msg.contains("could not finish updating"));
+        assert!(msg.contains("storage update could not finish"));
         assert!(msg.contains("restart"));
         assert!(
             std::error::Error::source(&err).is_some(),

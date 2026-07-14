@@ -24,7 +24,11 @@ use crate::context::connection_status::{
     OverallConnectionState, SPV_SYNC_PHASE_COUNT, spv_phase_step, spv_progress_token,
 };
 use crate::context::migration_status::MigrationState;
+use crate::model::wallet::WalletSeedHash;
 use crate::ui::MessageType;
+use crate::ui::components::wallet_unlock_popup::{
+    MigrationWalletUnlockResult, WalletUnlockPopup, wallet_needs_unlock,
+};
 use crate::ui::components::{
     BannerHandle, MessageBanner, OptionOverlayExt, OverlayConfig, OverlayHandle,
 };
@@ -351,6 +355,10 @@ pub(super) struct MigrationReconciler {
     backend_wait_since: BTreeMap<Network, Instant>,
     /// Networks whose stuck-preparation timeout was already logged (dedupe).
     timeout_signaled: BTreeSet<Network>,
+    /// Reused password-entry component for the current migrated wallet.
+    wallet_unlock_popup: WalletUnlockPopup,
+    /// Migrated wallet currently shown in the password prompt.
+    prompt_wallet: Option<WalletSeedHash>,
 }
 
 impl MigrationReconciler {
@@ -361,6 +369,8 @@ impl MigrationReconciler {
             dispatched: BTreeSet::new(),
             backend_wait_since: BTreeMap::new(),
             timeout_signaled: BTreeSet::new(),
+            wallet_unlock_popup: WalletUnlockPopup::new(),
+            prompt_wallet: None,
         }
     }
 
@@ -372,6 +382,16 @@ impl MigrationReconciler {
             handle.clear();
         }
         self.last_state = None;
+        self.wallet_unlock_popup.close();
+        self.prompt_wallet = None;
+    }
+
+    /// Whether migration currently owns a blocking wallet-password prompt.
+    pub(super) fn is_prompting(&self, app_context: &Arc<AppContext>) -> bool {
+        matches!(
+            app_context.migration_status().state().as_ref(),
+            MigrationState::AwaitingWalletPasswords { .. }
+        )
     }
 
     /// Dispatch the cold-start migration once per network, gated on the wallet
@@ -451,6 +471,7 @@ impl MigrationReconciler {
     /// a "Retry now" action button.
     pub(super) fn update_banner(&mut self, ctx: &egui::Context, app_context: &Arc<AppContext>) {
         let state = (*app_context.migration_status().state()).clone();
+        self.update_password_prompt(ctx, app_context, &state);
         if self.last_state.as_ref() == Some(&state) {
             return;
         }
@@ -466,6 +487,15 @@ impl MigrationReconciler {
             MigrationState::Running { step } => {
                 let text = migration_running_text(step);
                 let handle = MessageBanner::set_global(ctx, text, MessageType::Info);
+                handle.with_elapsed();
+                self.banner_handle = Some(handle);
+            }
+            MigrationState::AwaitingWalletPasswords { .. } => {
+                let handle = MessageBanner::set_global(
+                    ctx,
+                    "Enter your wallet password to continue the storage update.",
+                    MessageType::Info,
+                );
                 handle.with_elapsed();
                 self.banner_handle = Some(handle);
             }
@@ -578,6 +608,72 @@ impl MigrationReconciler {
         }
     }
 
+    fn update_password_prompt(
+        &mut self,
+        ctx: &egui::Context,
+        app_context: &Arc<AppContext>,
+        state: &MigrationState,
+    ) {
+        let MigrationState::AwaitingWalletPasswords { wallets } = state else {
+            self.wallet_unlock_popup.close();
+            self.prompt_wallet = None;
+            return;
+        };
+
+        if let Some(seed_hash) = self.prompt_wallet {
+            let still_locked = wallets.contains(&seed_hash)
+                && app_context
+                    .wallet_arc(&seed_hash)
+                    .is_ok_and(|wallet| wallet_needs_unlock(&wallet));
+            if !still_locked {
+                self.wallet_unlock_popup.close();
+                self.prompt_wallet = None;
+            }
+        }
+
+        if self.prompt_wallet.is_none() {
+            self.prompt_wallet = wallets.iter().copied().find(|seed_hash| {
+                app_context
+                    .wallet_arc(seed_hash)
+                    .is_ok_and(|wallet| wallet_needs_unlock(&wallet))
+            });
+            if self.prompt_wallet.is_some() {
+                self.wallet_unlock_popup.open();
+            } else {
+                app_context
+                    .migration_status()
+                    .notify_wallet_password_submitted();
+                return;
+            }
+        }
+
+        let Some(seed_hash) = self.prompt_wallet else {
+            return;
+        };
+        let Ok(wallet) = app_context.wallet_arc(&seed_hash) else {
+            app_context
+                .migration_status()
+                .notify_wallet_password_submitted();
+            return;
+        };
+        match self
+            .wallet_unlock_popup
+            .show_for_migration(ctx, &wallet, app_context)
+        {
+            MigrationWalletUnlockResult::Unlocked => {
+                self.prompt_wallet = None;
+                app_context
+                    .migration_status()
+                    .notify_wallet_password_submitted();
+            }
+            MigrationWalletUnlockResult::Skipped => {
+                self.prompt_wallet = None;
+                app_context.migration_status().skip_wallet(seed_hash);
+            }
+            MigrationWalletUnlockResult::Pending => {}
+        }
+    }
+
     /// Dismiss the migration banner on Escape, unless the migration is still
     /// running (kept sticky so ongoing progress is not hidden).
     pub(super) fn handle_esc(&mut self, ctx: &egui::Context) {
@@ -585,10 +681,11 @@ impl MigrationReconciler {
         if !esc_pressed {
             return;
         }
-        if matches!(
-            self.last_state.as_ref(),
-            Some(MigrationState::Running { .. })
-        ) {
+        if self
+            .last_state
+            .as_ref()
+            .is_some_and(MigrationState::is_executing)
+        {
             return;
         }
         if let Some(handle) = self.banner_handle.take() {

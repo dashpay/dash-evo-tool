@@ -10,6 +10,8 @@ mod settings_db;
 pub(crate) mod test_support;
 mod wallet_lifecycle;
 
+pub use wallet_lifecycle::WalletUnlockRetention;
+
 use crate::app_dir::core_cookie_path;
 use crate::backend_task::error::TaskError;
 use crate::config::{Config, NetworkConfig};
@@ -132,6 +134,11 @@ pub struct AppContext {
     /// frame from the UI. Always present and idle on fresh installs;
     /// driven by [`MigrationTask::FinishUnwire`](crate::backend_task::migration::MigrationTask).
     pub(crate) migration_status: Arc<MigrationStatus>,
+    /// Serializes complete storage-update runs. This prevents a GUI dispatch
+    /// and a shared MCP request from creating two password waiters for the same
+    /// wallet; a follower waits here and returns the leader's terminal result
+    /// without rerunning the update.
+    pub(crate) migration_run: tokio::sync::Mutex<()>,
     /// Pending wallet selection - set after creating/importing a wallet
     /// so the wallet screen can auto-select the new wallet
     pub(crate) pending_wallet_selection: Mutex<Option<WalletSeedHash>>,
@@ -382,6 +389,7 @@ impl AppContext {
             subtasks,
             connection_status,
             migration_status: Arc::new(MigrationStatus::new_idle()),
+            migration_run: tokio::sync::Mutex::new(()),
             pending_wallet_selection: Mutex::new(None),
             selected_wallet_hash: Mutex::new(selected_wallet_hash),
             selected_single_key_hash: Mutex::new(selected_single_key_hash),
@@ -1108,6 +1116,13 @@ impl AppContext {
             .lock()
             .map(|g| Arc::clone(&g))
             .unwrap_or_else(|_| Arc::new(NullSecretPrompt) as Arc<dyn SecretPrompt>)
+    }
+
+    /// Whether this context has a host that can render a human password prompt.
+    /// The GUI installs that capability during boot; standalone MCP/CLI contexts
+    /// retain the non-interactive default.
+    pub fn has_interactive_secret_prompt(&self) -> bool {
+        self.secret_prompt().is_interactive()
     }
 
     /// Persist the per-network selected-wallet pointer to the wallet

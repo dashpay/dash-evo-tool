@@ -881,7 +881,7 @@ impl WalletsBalancesScreen {
                 self.pending_wallet_removal_alias = Some(alias.clone());
 
                 let message = format!(
-                    "Removing wallet \"{}\" will delete its local data, including addresses, balances, and asset locks stored on this device. Identities linked to it will remain but the keys derived from this wallet will no longer work unless the wallet is re-imported. Continue?",
+                    "Removing wallet \"{}\" clears the data used by this version, including its addresses, balances, and asset locks. Identities linked to it will remain, but keys derived from this wallet will not work unless the wallet is imported again. If this wallet came from an earlier version, that version's read-only recovery database stays on this device. Continue?",
                     alias
                 );
 
@@ -960,10 +960,7 @@ impl WalletsBalancesScreen {
         // race ahead with Create/Import CTAs that the rehydrated wallet
         // list might invalidate seconds later.
         let migration_state = (*self.app_context.migration_status().state()).clone();
-        let migration_running = matches!(
-            migration_state,
-            crate::context::migration_status::MigrationState::Running { .. }
-        );
+        let migration_running = migration_state.is_in_progress();
 
         // Optionally put everything in a framed "card"-like container
         Frame::group(ui.style())

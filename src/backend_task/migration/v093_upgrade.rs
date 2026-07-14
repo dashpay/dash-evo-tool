@@ -3,11 +3,10 @@
 //! v0.9.3 is the newest released build, so its on-disk shape is what every
 //! upgrading user actually hands to v1.0. The three subsystems that carry that
 //! data across each have their own unit tests, but each starts from an
-//! already-normalised fixture — the schema ladder from v5 or v27, the settings
-//! import from a v0.10-dev `settings` table. Nothing proved they **compose**
-//! from real v0.9.3 raw data, in the order `AppState` actually runs them:
+//! already-normalised fixture. Nothing proved they **compose** from real v0.9.3
+//! raw data, in the order `AppState` actually runs them:
 //!
-//! 1. [`Database::initialize`] — the schema ladder, v11 → current.
+//! 1. [`Database::open_legacy_read_only`] — preserve the v11 source verbatim.
 //! 2. [`import_legacy_settings`] — user preferences, at boot, **before** the
 //!    active network is chosen (`AppState::new_inner`).
 //! 3. [`finish_unwire::run`] — the wallet drain plus the scheduled-vote and
@@ -41,9 +40,7 @@ use crate::backend_task::migration::finish_unwire::{
 use crate::backend_task::migration::legacy_settings::{SettingsImport, import_legacy_settings};
 use crate::context::AppContext;
 use crate::database::Database;
-use crate::database::test_helpers::{
-    LegacyIdentityFixture, create_database_at_path, legacy_master_epk_bytes,
-};
+use crate::database::test_helpers::{LegacyIdentityFixture, legacy_master_epk_bytes};
 use crate::model::qualified_identity::encrypted_key_storage::{
     KeyStorage, PrivateKeyData, WalletDerivationPath,
 };
@@ -195,17 +192,10 @@ fn wallet_derived_key(seed_hash: WalletSeedHash) -> PrivateKeyData {
     })
 }
 
-/// The seed vault + metadata sidecar state of the two migrated wallets, plus
-/// the envelope bytes the fixture wrote, so a test can assert the protected
-/// envelope travelled byte-for-byte.
+/// The seed hashes of the two migrated wallets.
 struct Fixture {
     unprotected: WalletSeedHash,
     protected: WalletSeedHash,
-    /// Exactly what the v0.9.3 `wallet` row holds for the protected wallet:
-    /// AES-256-GCM ciphertext, 16-byte Argon2 salt, 12-byte GCM nonce.
-    protected_ciphertext: Vec<u8>,
-    protected_salt: Vec<u8>,
-    protected_nonce: Vec<u8>,
 }
 
 /// Insert one row into the legacy `identity` table, in v0.9.3's column shape.
@@ -616,15 +606,12 @@ fn write_v093_database(dir: &std::path::Path) -> Fixture {
     Fixture {
         unprotected,
         protected,
-        protected_ciphertext: envelope.ciphertext,
-        protected_salt: envelope.salt,
-        protected_nonce: envelope.nonce,
     }
 }
 
-/// Boot over `dir` exactly as `AppState` does: run the ladder, import the legacy
-/// preferences, then build the `AppContext` **on the network those preferences
-/// named**. Returns the context and the imported settings blob.
+/// Boot over `dir` exactly as `AppState` does: open the pre-update database
+/// read-only, import its preferences, then build the `AppContext` **on the
+/// network those preferences named**. Returns the context and imported settings.
 ///
 /// Taking the network from the import (rather than hard-coding testnet) is the
 /// point: it is what makes this a composition test. If the import lost the
@@ -634,9 +621,7 @@ fn boot(dir: &std::path::Path) -> (Arc<AppContext>, AppSettings) {
     crate::app_dir::ensure_env_file(dir);
     let db_file = dir.join("data.db");
 
-    let db = Arc::new(Database::new(&db_file).expect("open data.db"));
-    db.initialize(&db_file)
-        .expect("schema ladder v11 -> current");
+    let db = Arc::new(Database::open_legacy_read_only(&db_file).expect("open data.db read-only"));
 
     let app_kv = AppContext::open_app_kv(dir).expect("open app k/v");
     let outcome = import_legacy_settings(&app_kv, &db).expect("import legacy settings");
@@ -681,8 +666,57 @@ async fn wire_backend(ctx: &Arc<AppContext>) -> Arc<WalletBackend> {
     ctx.wallet_backend().expect("backend wired")
 }
 
+/// Run the migration while acting as its blocking password-entry UI.
+async fn run_migration_with_wallet_passwords(
+    ctx: &Arc<AppContext>,
+) -> Result<bool, crate::backend_task::error::TaskError> {
+    ctx.install_secret_prompt(Arc::new(
+        crate::wallet_backend::secret_prompt::test_support::TestPrompt::never(),
+    ));
+    let migration_context = Arc::clone(ctx);
+    let migration = tokio::spawn(async move { finish_unwire::run(&migration_context).await });
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
+
+    while !migration.is_finished() {
+        if let crate::context::migration_status::MigrationState::AwaitingWalletPasswords {
+            wallets,
+        } = ctx.migration_status().state().as_ref()
+        {
+            for seed_hash in wallets {
+                let wallet = ctx.wallet_arc(seed_hash).expect("migrated wallet");
+                let needs_password = {
+                    let wallet = wallet.read().expect("wallet lock");
+                    wallet.requires_password_unlock()
+                };
+                if needs_password {
+                    wallet
+                        .write()
+                        .expect("wallet lock")
+                        .wallet_seed
+                        .open(PROTECTED_PASSWORD)
+                        .expect("fixture password opens protected wallet");
+                    ctx.handle_wallet_unlocked(
+                        &wallet,
+                        PROTECTED_PASSWORD,
+                        crate::context::WalletUnlockRetention::UntilAppClose,
+                    )
+                    .expect("the protected seed must land in the current vault");
+                    ctx.migration_status().notify_wallet_password_submitted();
+                }
+            }
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "migration must finish after every fixture password is submitted",
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+
+    migration.await.expect("migration task must not panic")
+}
+
 fn schema_version_at(db_file: &std::path::Path) -> u16 {
-    Connection::open(db_file)
+    Connection::open_with_flags(db_file, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
         .expect("open database file")
         .query_row(
             "SELECT database_version FROM settings WHERE id = 1",
@@ -694,17 +728,6 @@ fn schema_version_at(db_file: &std::path::Path) -> u16 {
 
 fn schema_version(dir: &std::path::Path) -> u16 {
     schema_version_at(&dir.join("data.db"))
-}
-
-/// The schema version a **fresh** install lands on. Asserting the upgraded DB
-/// matches this — rather than a hard-coded number — states the real contract
-/// ("an upgraded v0.9.3 install is schema-identical to a new one") and cannot
-/// drift when the ladder grows another arm.
-fn fresh_install_schema_version() -> u16 {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let db_file = dir.path().join("fresh.db");
-    create_database_at_path(&db_file).expect("fresh install database");
-    schema_version_at(&db_file)
 }
 
 /// The persisted shape of an identity entry, mirroring the private
@@ -770,20 +793,30 @@ async fn v093_install_upgrades_with_wallets_settings_votes_and_history_intact() 
         V093_DB_VERSION,
         "precondition: the fixture is a v0.9.3-shaped database",
     );
+    let legacy_before = std::fs::read(tmp.path().join("data.db"))
+        .expect("snapshot the v0.9.3 database before boot");
 
     let (ctx, settings) = boot(tmp.path());
     let backend = wire_backend(&ctx).await;
 
     assert!(
-        finish_unwire::run(&ctx).await.expect("migration"),
+        run_migration_with_wallet_passwords(&ctx)
+            .await
+            .expect("migration"),
         "a v0.9.3 install has data to move, so the launch must report work done",
     );
 
-    // ── Schema ladder ────────────────────────────────────────────────
+    // ── Read-only legacy source ─────────────────────────────────────
     assert_eq!(
         schema_version(tmp.path()),
-        fresh_install_schema_version(),
-        "the ladder must walk v11 all the way to the current version",
+        V093_DB_VERSION,
+        "the storage update must not change the legacy schema version",
+    );
+    assert_eq!(
+        std::fs::read(tmp.path().join("data.db"))
+            .expect("snapshot the v0.9.3 database after the storage update"),
+        legacy_before,
+        "boot and the complete storage update must leave data.db byte-unchanged",
     );
 
     // ── Settings: the safety-critical field ──────────────────────────
@@ -822,8 +855,8 @@ async fn v093_install_upgrades_with_wallets_settings_votes_and_history_intact() 
 
     // ── Wallet seeds: the funds path ─────────────────────────────────
     // The drain copies each legacy envelope into the vault; hydration then
-    // promotes the unprotected one to the raw seam (`seed.raw.v1`) and drops the
-    // legacy row. So the seed is asserted where it actually ends up — as the raw
+    // promotes the unprotected one to the raw seam (`seed.raw.v1`) and collects
+    // the redundant copy. So the seed is asserted where it is used — as the raw
     // 64 bytes the wallet is made of.
     let seeds = backend.wallet_seeds();
     let raw_seed = seeds
@@ -845,37 +878,23 @@ async fn v093_install_upgrades_with_wallets_settings_votes_and_history_intact() 
             .legacy_envelope_get(&fixture.unprotected)
             .expect("read legacy envelope")
             .is_none(),
-        "the promoted legacy envelope must be dropped, not left as a second at-rest copy",
+        "the unprotected seed must have exactly one vault copy after migration",
     );
 
-    // The protected wallet cannot be promoted — that needs the user's password —
-    // so its legacy envelope stays put and must be byte-identical to what v0.9.3
-    // wrote. Re-encrypting or truncating it would lock the user out permanently.
-    let protected = seeds
-        .legacy_envelope_get(&fixture.protected)
-        .expect("read protected envelope")
-        .expect("the protected seed must reach the vault");
-    assert_eq!(
-        (
-            protected.encrypted_seed,
-            protected.salt,
-            protected.nonce,
-            protected.uses_password,
-            protected.password_hint
-        ),
-        (
-            fixture.protected_ciphertext,
-            fixture.protected_salt,
-            fixture.protected_nonce,
-            true,
-            Some("the usual".to_string())
-        ),
-        "the legacy AES-GCM envelope must be copied byte-for-byte",
+    // The password gate opens the protected wallet through the normal unlock
+    // path, which re-encrypts the seed into the current Tier-2 envelope and
+    // removes the redundant legacy copy.
+    assert!(
+        seeds
+            .legacy_envelope_get(&fixture.protected)
+            .expect("read protected envelope")
+            .is_none(),
+        "the protected seed must have exactly one vault copy after migration",
     );
     assert_eq!(
         seeds.scheme(&fixture.protected).expect("scheme"),
-        SecretScheme::Absent,
-        "a locked wallet must stay locked — no silent unseal of a protected seed",
+        SecretScheme::Protected,
+        "the migrated seed must stay password-protected under the current envelope",
     );
 
     // ── Wallet metadata + registration ───────────────────────────────
@@ -1148,7 +1167,9 @@ async fn second_launch_after_a_v093_upgrade_changes_nothing() {
 
     let (ctx, _) = boot(tmp.path());
     let backend = wire_backend(&ctx).await;
-    finish_unwire::run(&ctx).await.expect("first migration");
+    run_migration_with_wallet_passwords(&ctx)
+        .await
+        .expect("first migration");
 
     let sentinel_after_first = ctx
         .app_kv()
@@ -1183,7 +1204,9 @@ async fn second_launch_after_a_v093_upgrade_changes_nothing() {
         "the settings sentinel must stop the import from running twice",
     );
     assert!(
-        !finish_unwire::run(&ctx).await.expect("second migration"),
+        !run_migration_with_wallet_passwords(&ctx)
+            .await
+            .expect("second migration"),
         "a second launch must move no data",
     );
 
@@ -1270,7 +1293,9 @@ async fn the_import_never_writes_a_plaintext_key_to_disk() {
 
     let (ctx, _) = boot(tmp.path());
     let backend = wire_backend(&ctx).await;
-    finish_unwire::run(&ctx).await.expect("migration");
+    run_migration_with_wallet_passwords(&ctx)
+        .await
+        .expect("migration");
 
     // Deliberately no `load_*` call before these reads.
     for (id, label) in [
@@ -1358,7 +1383,7 @@ async fn a_corrupt_vote_index_never_strands_the_identity_keys() {
 
     // The failure still reaches the user — it is not swallowed…
     assert!(
-        finish_unwire::run(&ctx).await.is_err(),
+        run_migration_with_wallet_passwords(&ctx).await.is_err(),
         "a hard app-data failure must still surface, so the user gets a retry",
     );
 
@@ -1419,7 +1444,9 @@ async fn a_second_launch_after_an_unreadable_identity_preserves_user_edits_and_d
 
     let (ctx, _) = boot(tmp.path());
     let backend = wire_backend(&ctx).await;
-    finish_unwire::run(&ctx).await.expect("first migration");
+    run_migration_with_wallet_passwords(&ctx)
+        .await
+        .expect("first migration");
 
     // The readable identities landed regardless of the corrupt row…
     assert_eq!(
@@ -1461,7 +1488,9 @@ async fn a_second_launch_after_an_unreadable_identity_preserves_user_edits_and_d
         .expect("delete identity");
 
     // Second launch.
-    finish_unwire::run(&ctx).await.expect("second migration");
+    run_migration_with_wallet_passwords(&ctx)
+        .await
+        .expect("second migration");
 
     assert_eq!(
         ctx.get_identity_alias(&Identifier::from(IDENTITY_ID))

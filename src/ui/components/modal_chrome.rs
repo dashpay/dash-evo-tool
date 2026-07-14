@@ -23,6 +23,10 @@ pub struct ModalChromeConfig {
     pub window_order: egui::Order,
     /// Whether the user can resize the window.
     pub resizable: bool,
+    /// Whether the title bar shows a close button.
+    pub show_close_button: bool,
+    /// Whether clicks outside the window are absorbed before reaching the app.
+    pub blocks_input: bool,
     /// Inner padding of the window frame, in points.
     pub inner_margin: i8,
 }
@@ -50,14 +54,24 @@ pub fn modal_chrome<R>(
     let screen_rect = ctx.content_rect();
     let painter = ctx.layer_painter(egui::LayerId::new(config.overlay_order, config.overlay_id));
     painter.rect_filled(screen_rect, 0.0, DashColors::modal_overlay());
+    if config.blocks_input {
+        let sink_id = config.overlay_id.with("input_sink");
+        let sink_layer = egui::LayerId::new(egui::Order::Foreground, sink_id);
+        ctx.memory_mut(|memory| memory.set_modal_layer(sink_layer));
+        egui::Area::new(sink_id)
+            .order(egui::Order::Foreground)
+            .fixed_pos(screen_rect.min)
+            .show(ctx, |ui| {
+                ui.allocate_response(screen_rect.size(), egui::Sense::click_and_drag());
+            });
+    }
 
     let mut is_open = true;
-    let window_response = egui::Window::new(config.title)
+    let mut window = egui::Window::new(config.title)
         .collapsible(false)
         .resizable(config.resizable)
         .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
         .order(config.window_order)
-        .open(&mut is_open)
         .frame(egui::Frame {
             inner_margin: egui::Margin::same(config.inner_margin),
             outer_margin: egui::Margin::same(0),
@@ -70,8 +84,11 @@ pub fn modal_chrome<R>(
             },
             fill: ctx.global_style().visuals.window_fill,
             stroke: egui::Stroke::new(1.0, DashColors::popup_border_glow()),
-        })
-        .show(ctx, body);
+        });
+    if config.show_close_button {
+        window = window.open(&mut is_open);
+    }
+    let window_response = window.show(ctx, body);
 
     let (window_response, inner) = match window_response {
         Some(r) => (Some(r.response), r.inner),

@@ -203,6 +203,20 @@ type PlatformWarmStartSeed = Vec<(
     Option<(u64, u64)>,
 )>;
 
+type RegistrationFlightOutcome = Result<(), Arc<TaskError>>;
+
+struct RegistrationFlight {
+    outcome: tokio::sync::OnceCell<RegistrationFlightOutcome>,
+}
+
+impl RegistrationFlight {
+    fn new() -> Self {
+        Self {
+            outcome: tokio::sync::OnceCell::new(),
+        }
+    }
+}
+
 struct Inner {
     pwm: PlatformWalletManager<DetPersister>,
     /// Shared handle to the same persister `pwm` consumes. Kept so the
@@ -219,6 +233,16 @@ struct Inner {
     token_balances: Arc<TokenBalanceStore>,
     /// `WalletSeedHash` → upstream `WalletId`. See [`WalletId`].
     id_map: std::sync::RwLock<std::collections::BTreeMap<WalletSeedHash, WalletId>>,
+    #[cfg(test)]
+    registration_attempts: std::sync::atomic::AtomicUsize,
+    #[cfg(test)]
+    registration_test_barrier: std::sync::Mutex<Option<Arc<tokio::sync::Barrier>>>,
+    #[cfg(test)]
+    registration_test_failure: std::sync::atomic::AtomicBool,
+    /// Per-wallet shared-result flights for upstream registration. Every caller
+    /// that joins an active flight awaits the same success or typed error.
+    registration_flights:
+        std::sync::Mutex<std::collections::BTreeMap<WalletSeedHash, Arc<RegistrationFlight>>>,
     /// Cache of `Arc<PlatformWallet>` keyed by `WalletId`, populated at
     /// registration. Lets sync code reach an upstream wallet handle without an
     /// async hop (e.g. DashPay address-pool scanning).
@@ -239,8 +263,9 @@ struct Inner {
     dashpay_address_index_lock: std::sync::Mutex<()>,
     /// Encrypted secret vault. Holds imported single-key WIFs
     /// (`single_key_priv.*` labels, see [`single_key`]) and HD-wallet
-    /// BIP-39 seeds (`envelope.v1` labels under `WalletId(seed_hash)`, see
-    /// [`wallet_seed_store`]). [`Self::secret_access`] decrypts seeds
+    /// BIP-39 seeds (`seed.raw.v1`, with `envelope.v1` only during migration,
+    /// under `WalletId(seed_hash)`; see [`wallet_seed_store`]).
+    /// [`Self::secret_access`] decrypts seeds
     /// just-in-time from this vault for each signing operation; no
     /// long-lived plaintext seed cache exists.
     secret_store: Arc<SecretStore>,
@@ -377,6 +402,13 @@ impl WalletBackend {
                 snapshots,
                 token_balances: Arc::new(TokenBalanceStore::new()),
                 id_map: std::sync::RwLock::new(std::collections::BTreeMap::new()),
+                #[cfg(test)]
+                registration_attempts: std::sync::atomic::AtomicUsize::new(0),
+                #[cfg(test)]
+                registration_test_barrier: std::sync::Mutex::new(None),
+                #[cfg(test)]
+                registration_test_failure: std::sync::atomic::AtomicBool::new(false),
+                registration_flights: std::sync::Mutex::new(std::collections::BTreeMap::new()),
                 wallets: std::sync::RwLock::new(std::collections::BTreeMap::new()),
                 peer,
                 network,
@@ -778,12 +810,99 @@ impl WalletBackend {
         if self.inner.id_map.read()?.contains_key(seed_hash) {
             return Ok(());
         }
-        self.register_wallet_from_seed(
-            seed_hash,
-            seed,
-            registration_birth_height(WalletOrigin::Imported),
-        )
-        .await
+        let flight = {
+            let mut flights = self
+                .inner
+                .registration_flights
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            Arc::clone(
+                flights
+                    .entry(*seed_hash)
+                    .or_insert_with(|| Arc::new(RegistrationFlight::new())),
+            )
+        };
+        #[cfg(test)]
+        let registration_test_barrier = {
+            self.inner
+                .registration_test_barrier
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone()
+        };
+        #[cfg(test)]
+        if let Some(barrier) = registration_test_barrier {
+            barrier.wait().await;
+        }
+        let outcome = flight
+            .outcome
+            .get_or_init(|| async {
+                #[cfg(test)]
+                self.inner
+                    .registration_attempts
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                #[cfg(test)]
+                if self
+                    .inner
+                    .registration_test_failure
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                {
+                    return Err(Arc::new(TaskError::WalletRegistrationXpubMismatch));
+                }
+                self.register_wallet_from_seed(
+                    seed_hash,
+                    seed,
+                    registration_birth_height(WalletOrigin::Imported),
+                )
+                .await
+                .map_err(Arc::new)
+            })
+            .await;
+
+        {
+            let mut flights = self
+                .inner
+                .registration_flights
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if flights
+                .get(seed_hash)
+                .is_some_and(|active| Arc::ptr_eq(active, &flight))
+            {
+                flights.remove(seed_hash);
+            }
+        }
+
+        match outcome {
+            Ok(()) => Ok(()),
+            Err(source) => Err(TaskError::WalletRegistrationFlightFailed {
+                source: Arc::clone(source),
+            }),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn registration_attempt_count(&self) -> usize {
+        self.inner
+            .registration_attempts
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_registration_test_barrier(&self, parties: usize) {
+        *self
+            .inner
+            .registration_test_barrier
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+            Some(Arc::new(tokio::sync::Barrier::new(parties)));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_registration_test_failure(&self, fail: bool) {
+        self.inner
+            .registration_test_failure
+            .store(fail, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Resolve one just-registered upstream wallet into the DET-keyed maps via

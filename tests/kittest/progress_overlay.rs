@@ -40,6 +40,19 @@ use dash_evo_tool::ui::components::{
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 
+#[cfg(feature = "testing")]
+use dash_evo_tool::context::migration_status::MigrationState;
+#[cfg(feature = "testing")]
+use dash_evo_tool::model::secret::Secret;
+#[cfg(feature = "testing")]
+use dash_evo_tool::model::wallet::Wallet;
+#[cfg(feature = "testing")]
+use dash_evo_tool::model::wallet::birth_height::WalletOrigin;
+#[cfg(feature = "testing")]
+use dash_sdk::dpp::dashcore::Network;
+#[cfg(feature = "testing")]
+use std::cell::Cell as StdCell;
+
 const SPINNER_ROLE: egui::accesskit::Role = egui::accesskit::Role::ProgressIndicator;
 
 /// Build a harness whose per-frame closure mirrors `AppState::update`: claim
@@ -1039,13 +1052,16 @@ fn tc_ovl_048_secret_prompt_renders_above_overlay() {
         .build_ui(|ui| {
             ProgressOverlay::render_global(ui.ctx(), false);
             let config = PassphraseModalConfig {
+                state_id: egui::Id::new("test_progress_overlay_passphrase"),
                 window_title: "Unlock to continue",
                 body: "Enter your passphrase to continue.",
                 hint: None,
                 error: None,
                 submit_label: "Unlock",
+                secondary_action_label: None,
                 input_placeholder: "Enter passphrase",
                 remember_label: None,
+                cancellable: true,
             };
             passphrase_modal(ui.ctx(), &config, |_| {});
         });
@@ -1498,6 +1514,143 @@ fn rq1_appstate_secret_prompt_gate_keeps_prompt_typeable_over_overlay() {
              would stay open if the overlay had stripped its keyboard)"
         );
     });
+}
+
+/// Migration password collection owns the full interaction surface while an
+/// SPV block remains active underneath it. The prompt accepts keyboard input,
+/// its secondary action is pointer-hittable, and the overlay's card and pointer
+/// sink are not painted until the prompt resolves.
+#[cfg(feature = "testing")]
+#[test]
+fn migration_password_prompt_is_hittable_while_spv_overlay_is_active() {
+    crate::support::with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let seed_hash = Rc::new(StdCell::new([0; 32]));
+        let seed_hash_for_app = Rc::clone(&seed_hash);
+        let mut harness = Harness::builder()
+            .with_max_steps(100)
+            .build_eframe(move |ctx| {
+                let mut app = dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
+                    .expect("Failed to create AppState")
+                    .with_animations(false);
+                app.show_welcome_screen = false;
+                app.welcome_screen = None;
+
+                let password = Secret::new("correct password");
+                let seed = [0xA7; 64];
+                let wallet = Wallet::new_from_seed(
+                    seed,
+                    Network::Testnet,
+                    Some("Savings".to_string()),
+                    Some(&password),
+                )
+                .expect("build protected wallet");
+                let (seed_hash, wallet) = app
+                    .current_app_context()
+                    .register_wallet(wallet, &seed, WalletOrigin::Imported)
+                    .expect("register protected wallet fixture");
+                wallet.write().expect("wallet lock").wallet_seed.close();
+                seed_hash_for_app.set(seed_hash);
+                app
+            });
+        harness.set_size(egui::vec2(800.0, 600.0));
+        let app_context = crate::support::wait_for_wallet_backend(&mut harness);
+        harness.run_steps(5);
+        app_context
+            .migration_status()
+            .set_state(MigrationState::AwaitingWalletPasswords {
+                wallets: vec![seed_hash.get()],
+            });
+
+        let _spv_overlay = ProgressOverlay::set_global(
+            &harness.ctx,
+            "Syncing with the Dash network.",
+            OverlayConfig::new()
+                .with_secondary_action("Continue in the background", "spv:background")
+                .with_keyboard_escape("spv:background"),
+        );
+        harness.run_steps(5);
+
+        assert!(ProgressOverlay::has_global(&harness.ctx));
+        assert!(
+            harness
+                .query_by_label("Enter the password for \"Savings\" to update this wallet now.")
+                .is_some(),
+        );
+        assert!(
+            harness
+                .query_by_label("Syncing with the Dash network.")
+                .is_none(),
+            "the active SPV block stays stored but does not cover the password prompt",
+        );
+
+        harness
+            .input_mut()
+            .events
+            .push(egui::Event::Text("wrong password".to_string()));
+        harness.run_steps(2);
+        harness.key_press(egui::Key::Enter);
+        harness.run_steps(3);
+        assert!(
+            harness
+                .query_by_label_contains("That password did not match")
+                .is_some(),
+            "the password field remains typeable while the SPV block is active",
+        );
+
+        harness.get_by_label("Skip this wallet").click();
+        harness.run_steps(3);
+        assert!(
+            matches!(
+                harness.state().current_app_context().migration_status().state().as_ref(),
+                MigrationState::AwaitingWalletPasswords { wallets } if wallets.is_empty()
+            ),
+            "the overlay pointer sink must not swallow the migration prompt's secondary action",
+        );
+    });
+}
+
+/// A non-dismissible migration password prompt absorbs clicks everywhere
+/// outside its own window while leaving the prompt controls interactive.
+#[test]
+fn migration_password_prompt_blocks_underlying_clicks() {
+    let underlying_clicked = Rc::new(Cell::new(false));
+    let underlying_clicked_ui = Rc::clone(&underlying_clicked);
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(800.0, 600.0))
+        .build_ui(move |ui| {
+            if ui.button("Underlying wallet action").clicked() {
+                underlying_clicked_ui.set(true);
+            }
+            let config = PassphraseModalConfig {
+                state_id: egui::Id::new("migration_click_barrier"),
+                window_title: "Continue the storage update",
+                body: "Enter the password for this wallet to continue.",
+                hint: None,
+                error: None,
+                submit_label: "Continue",
+                secondary_action_label: Some("Skip this wallet"),
+                input_placeholder: "Enter your password.",
+                remember_label: None,
+                cancellable: false,
+            };
+            let _ = passphrase_modal(ui.ctx(), &config, |_| {});
+        });
+
+    harness.step();
+    harness.get_by_label("Underlying wallet action").click();
+    harness.step();
+
+    assert!(
+        !underlying_clicked.get(),
+        "a click outside the migration prompt reached the wallet action beneath it",
+    );
+    assert!(
+        harness.query_by_label("Skip this wallet").is_some(),
+        "the migration prompt remains interactive above its click barrier",
+    );
 }
 
 /// Drives the REAL `AppState::update` loop with BOTH a passphrase

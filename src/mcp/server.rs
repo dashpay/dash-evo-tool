@@ -320,12 +320,20 @@ pub async fn init_app_context() -> Result<Arc<AppContext>, McpError> {
 
     let db_file_path = data_file_path(&data_dir, "data.db")
         .map_err(|e| McpError::internal_error(format!("db path: {e}"), None))?;
-    let db = Arc::new(
-        Database::new(&db_file_path)
-            .map_err(|e| McpError::internal_error(format!("db open: {e}"), None))?,
-    );
-    db.initialize(&db_file_path)
-        .map_err(|e| McpError::internal_error(format!("db init: {e}"), None))?;
+    let db = if db_file_path.exists() {
+        Arc::new(
+            Database::open_legacy_read_only(&db_file_path)
+                .map_err(|e| McpError::internal_error(format!("db open: {e}"), None))?,
+        )
+    } else {
+        let db = Arc::new(
+            Database::new(&db_file_path)
+                .map_err(|e| McpError::internal_error(format!("db open: {e}"), None))?,
+        );
+        db.initialize(&db_file_path)
+            .map_err(|e| McpError::internal_error(format!("db init: {e}"), None))?;
+        db
+    };
 
     let app_kv = AppContext::open_app_kv(&data_dir)
         .map_err(|e| McpError::internal_error(format!("app k/v open: {e}"), None))?;

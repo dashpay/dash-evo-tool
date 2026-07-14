@@ -297,7 +297,7 @@ impl ScreenLike for CreateAssetLockScreen {
                         .as_ref()
                         .map(|w| {
                             let g = w.read_recover();
-                            !g.uses_password || g.is_open()
+                            !g.requires_password_unlock()
                         })
                         .unwrap_or(false);
 

@@ -4,15 +4,19 @@
 //! reads to decide whether to show a "your data is being migrated"
 //! banner, an empty-state placeholder, or normal wallet content. The
 //! [`MigrationTask`](crate::backend_task::migration::MigrationTask)
-//! orchestrator writes state transitions as the migration walks each
-//! legacy table; everything else is read-only.
+//! orchestrator writes state transitions as the migration walks each legacy
+//! table. The password-prompt reconciler records per-run wallet skips here.
 //!
 //! Backed by [`ArcSwap`] so each frame can `load()` the current state
 //! without taking a lock — the UI calls this from `update()`.
 
-use std::sync::Arc;
+use std::collections::BTreeSet;
+use std::sync::{Arc, Mutex};
 
 use arc_swap::ArcSwap;
+use tokio::sync::Notify;
+
+use crate::model::wallet::WalletSeedHash;
 
 /// Which legacy domain the migration is currently working on.
 ///
@@ -62,6 +66,9 @@ pub enum MigrationState {
     Idle,
     /// Migration is currently executing the given step.
     Running { step: MigrationStep },
+    /// Migration copied and hydrated protected wallets but must collect their
+    /// passwords before registration and completion can continue.
+    AwaitingWalletPasswords { wallets: Vec<WalletSeedHash> },
     /// Migration completed successfully (or no legacy data was present).
     Success,
     /// The wallet drain completed — seeds, metadata and registration all
@@ -156,6 +163,10 @@ impl PartialEq for MigrationState {
             ) => ia == ib && va == vb,
             (MigrationState::Running { step: a }, MigrationState::Running { step: b }) => a == b,
             (
+                MigrationState::AwaitingWalletPasswords { wallets: a },
+                MigrationState::AwaitingWalletPasswords { wallets: b },
+            ) => a == b,
+            (
                 MigrationState::FailedWithUnreadableIdentities {
                     count: a,
                     error: ea,
@@ -176,9 +187,19 @@ impl PartialEq for MigrationState {
 impl Eq for MigrationState {}
 
 impl MigrationState {
-    /// Returns `true` while the migration task is mid-flight.
-    pub fn is_running(&self) -> bool {
+    /// Returns `true` while the storage-update task is actively executing.
+    pub fn is_executing(&self) -> bool {
         matches!(self, MigrationState::Running { .. })
+    }
+
+    /// Returns `true` while progress is paused for a person's password choice.
+    pub fn is_awaiting_user_input(&self) -> bool {
+        matches!(self, MigrationState::AwaitingWalletPasswords { .. })
+    }
+
+    /// Returns `true` until execution and any required password wait finish.
+    pub fn is_in_progress(&self) -> bool {
+        self.is_executing() || self.is_awaiting_user_input()
     }
 }
 
@@ -191,6 +212,8 @@ impl MigrationState {
 #[derive(Debug)]
 pub struct MigrationStatus {
     state: ArcSwap<MigrationState>,
+    wallet_password_submitted: Notify,
+    skipped_wallets: Mutex<BTreeSet<WalletSeedHash>>,
 }
 
 impl MigrationStatus {
@@ -198,6 +221,8 @@ impl MigrationStatus {
     pub fn new_idle() -> Self {
         Self {
             state: ArcSwap::from_pointee(MigrationState::Idle),
+            wallet_password_submitted: Notify::new(),
+            skipped_wallets: Mutex::new(BTreeSet::new()),
         }
     }
 
@@ -210,6 +235,55 @@ impl MigrationStatus {
     /// allowed and cheap.
     pub fn set_state(&self, new_state: MigrationState) {
         self.state.store(Arc::new(new_state));
+    }
+
+    /// Wait until the UI submits a migrated wallet's password.
+    pub async fn wait_for_wallet_password(&self) {
+        self.wallet_password_submitted.notified().await;
+    }
+
+    /// Start one wallet-password collection run with no prior skip decisions.
+    pub fn begin_wallet_password_collection(&self) {
+        self.skipped_wallets
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
+    }
+
+    /// Remove wallets skipped during this run from the next prompt batch.
+    pub fn pending_wallet_passwords(&self, wallets: Vec<WalletSeedHash>) -> Vec<WalletSeedHash> {
+        let skipped = self
+            .skipped_wallets
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        wallets
+            .into_iter()
+            .filter(|seed_hash| !skipped.contains(seed_hash))
+            .collect()
+    }
+
+    /// Skip one locked wallet for this run and wake the migration task.
+    pub fn skip_wallet(&self, seed_hash: WalletSeedHash) {
+        self.skipped_wallets
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(seed_hash);
+
+        if let MigrationState::AwaitingWalletPasswords { wallets } = self.state().as_ref() {
+            self.set_state(MigrationState::AwaitingWalletPasswords {
+                wallets: wallets
+                    .iter()
+                    .copied()
+                    .filter(|wallet| wallet != &seed_hash)
+                    .collect(),
+            });
+        }
+        self.wallet_password_submitted.notify_one();
+    }
+
+    /// Resume the migration task after a migrated wallet was unlocked.
+    pub fn notify_wallet_password_submitted(&self) {
+        self.wallet_password_submitted.notify_one();
     }
 }
 
@@ -233,12 +307,14 @@ mod tests {
     fn state_transitions_success_path() {
         let status = MigrationStatus::new_idle();
         assert_eq!(*status.state(), MigrationState::Idle);
-        assert!(!status.state().is_running());
+        assert!(!status.state().is_executing());
+        assert!(!status.state().is_in_progress());
 
         status.set_state(MigrationState::Running {
             step: MigrationStep::Detecting,
         });
-        assert!(status.state().is_running());
+        assert!(status.state().is_executing());
+        assert!(status.state().is_in_progress());
         assert_eq!(
             *status.state(),
             MigrationState::Running {
@@ -256,12 +332,70 @@ mod tests {
         ] {
             status.set_state(MigrationState::Running { step });
             assert_eq!(*status.state(), MigrationState::Running { step });
-            assert!(status.state().is_running());
+            assert!(status.state().is_executing());
+            assert!(status.state().is_in_progress());
         }
 
         status.set_state(MigrationState::Success);
         assert_eq!(*status.state(), MigrationState::Success);
-        assert!(!status.state().is_running());
+        assert!(!status.state().is_executing());
+        assert!(!status.state().is_in_progress());
+    }
+
+    #[test]
+    fn awaiting_wallet_passwords_is_not_executing_and_preserves_wallet_order() {
+        let status = MigrationStatus::new_idle();
+        let wallets = vec![[0x11; 32], [0x22; 32]];
+
+        status.set_state(MigrationState::AwaitingWalletPasswords {
+            wallets: wallets.clone(),
+        });
+
+        assert!(!status.state().is_executing());
+        assert!(status.state().is_awaiting_user_input());
+        assert!(status.state().is_in_progress());
+        assert_eq!(
+            *status.state(),
+            MigrationState::AwaitingWalletPasswords { wallets },
+        );
+    }
+
+    #[tokio::test]
+    async fn wallet_password_notification_wakes_the_waiting_migration() {
+        let status = MigrationStatus::new_idle();
+
+        status.notify_wallet_password_submitted();
+        tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            status.wait_for_wallet_password(),
+        )
+        .await
+        .expect("a submitted wallet password must wake the migration task");
+    }
+
+    #[tokio::test]
+    async fn skipping_a_wallet_removes_it_from_the_published_pending_set_and_wakes_migration() {
+        let status = MigrationStatus::new_idle();
+        let skipped = [0x11; 32];
+        let remaining = [0x22; 32];
+        status.set_state(MigrationState::AwaitingWalletPasswords {
+            wallets: vec![skipped, remaining],
+        });
+
+        status.skip_wallet(skipped);
+
+        assert_eq!(
+            *status.state(),
+            MigrationState::AwaitingWalletPasswords {
+                wallets: vec![remaining],
+            },
+        );
+        tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            status.wait_for_wallet_password(),
+        )
+        .await
+        .expect("skipping a wallet must wake the migration task");
     }
 
     /// Failure transitions carry a typed error and clear the running
@@ -276,7 +410,8 @@ mod tests {
         status.set_state(MigrationState::Failed {
             error: Arc::new(MigrationError::WalletBackendUnavailable),
         });
-        assert!(!status.state().is_running());
+        assert!(!status.state().is_executing());
+        assert!(!status.state().is_in_progress());
         assert!(matches!(*status.state(), MigrationState::Failed { .. }));
     }
 

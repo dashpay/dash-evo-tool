@@ -15,10 +15,11 @@ use std::collections::{BTreeMap, HashMap};
 use std::str::FromStr;
 
 impl Database {
-    /// Remove a wallet and all associated records from the database.
+    /// Legacy-database writer retained only for compatibility tooling.
     ///
-    /// This clears dependent records (addresses, utxos, identity links) to keep
-    /// the database consistent before deleting the wallet itself.
+    /// Production opens a pre-update `data.db` read-only and must never call
+    /// this method. Current wallet removal goes through
+    /// [`crate::context::AppContext::remove_wallet`] and the wallet backend.
     ///
     /// The legacy wallet-family tables (`wallet`, `wallet_addresses`, `utxos`)
     /// are gated out of the fresh-install schema — they live in the upstream

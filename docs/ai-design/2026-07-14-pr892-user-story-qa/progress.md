@@ -1,0 +1,166 @@
+# PR892 User-Story QA — Progress Checklist
+
+Tracks completion of every story in `docs/user-stories.md` against the PR892 build. One line per story.
+
+Verdicts: PASS / FAIL / BLOCKED (reason) / N/A (Gap/Superseded/Removed — not implemented, no testing needed).
+
+**Note:** the source brief for this campaign referenced 152 stories across categories WAL/SND/ALK/IDN/DPN/DPY/TOK/DOC/DEV/NET/MCP/UX/IDH/MN. The actual `docs/user-stories.md` at the PR892 base (`v1.0-dev`) contains 123 stories (112 `[Implemented]`, 11 `[Gap]`) across only WAL/SND/ALK/IDN/DPN/DPY/TOK/DOC/DEV/NET/MCP — no UX, IDH, or MN category exists in this document version. Masternode/evonode aspects are covered under IDN-003 and DEV-006. Proceeding with the document as it actually exists.
+
+**Totals:** 123 stories total — 112 `[Implemented]` (to test), 11 `[Gap]` (N/A, skip).
+
+
+## WAL
+
+- [ ] WAL-001: Create a new wallet
+- [ ] WAL-002: Import wallet via mnemonic
+- [ ] WAL-003: Import single private key
+- [ ] WAL-004: Switch between wallets
+- [ ] WAL-005: Rename a wallet
+- [ ] WAL-006: Lock and unlock wallet
+- [ ] WAL-007: Remove a wallet
+- [ ] WAL-008: View wallet balances
+- [x] WAL-009: View fiat equivalent of balances — N/A (Gap, not implemented)
+- [ ] WAL-010: Generate receive address
+- [ ] WAL-011: View address table
+- [ ] WAL-012: View and export private keys
+- [ ] WAL-013: View SPV sync status
+- [x] WAL-014: Label addresses — N/A (Gap, not implemented)
+- [x] WAL-015: Create throwaway wallet without mnemonic backup — N/A (Gap, not implemented)
+- [ ] WAL-016: View transaction history
+- [ ] WAL-017: Fund Platform address from wallet
+- [ ] WAL-018: Fund Platform address from asset lock
+- [ ] WAL-019: Transfer credits between Platform addresses
+- [ ] WAL-020: Withdraw from Platform address to Core
+- [ ] WAL-021: Navigate wallet accounts via tabs
+- [ ] WAL-022: View system accounts in developer mode
+- [ ] WAL-023: Collapsible transaction history
+- [ ] WAL-024: Collapsible balance breakdown
+
+## SND
+
+- [ ] SND-001: Send Dash to an address
+- [ ] SND-002: Send Dash from single-key wallet
+- [ ] SND-003: Receive Dash with QR code
+- [x] SND-004: Send to a DPNS username — N/A (Gap, not implemented)
+- [ ] SND-005: See fee estimate before confirming send
+- [ ] SND-006: Send to multiple recipients
+- [ ] SND-007: Shield DASH from Core wallet
+- [ ] SND-008: Top up identity from Send screen
+- [ ] SND-009: Shield credits from Platform address
+- [ ] SND-010: Withdraw from shielded pool to Core address
+- [ ] SND-011: Transfer identity credits to another identity
+- [ ] SND-012: Withdraw identity credits to Core address
+- [ ] SND-013: Transfer identity credits to Platform address
+
+## ALK
+
+- [ ] ALK-001: Create an asset lock
+- [ ] ALK-002: View asset lock details
+- [ ] ALK-003: Recover unused asset locks
+- [x] ALK-004: Quick-fund workflow — N/A (Gap, not implemented)
+
+## IDN
+
+- [ ] IDN-001: Register a new identity
+- [ ] IDN-002: Load existing identity by ID
+- [ ] IDN-003: Load evonode/masternode identity
+- [ ] IDN-004: Top up identity credits
+- [ ] IDN-005: Withdraw credits to Core address
+- [ ] IDN-006: Transfer credits between identities
+- [ ] IDN-007: Add key to identity
+- [ ] IDN-008: View identity keys and details
+- [ ] IDN-009: Refresh identity state
+- [ ] IDN-010: Search identity by DPNS name
+- [x] IDN-011: Bulk identity creation — N/A (Gap, not implemented)
+- [ ] IDN-012: Register identity from Platform addresses
+- [ ] IDN-013: Top up identity from Platform addresses
+
+## DPN
+
+- [ ] DPN-001: Register a DPNS username
+- [ ] DPN-002: View owned usernames
+- [ ] DPN-003: View active name contests
+- [ ] DPN-004: View past name contests
+- [ ] DPN-005: Vote on contested names
+- [ ] DPN-006: Schedule votes
+- [ ] DPN-007: Batch voting across contests
+
+## DPY
+
+- [ ] DPY-001: View and edit DashPay profile
+- [ ] DPY-002: Search DashPay profiles
+- [ ] DPY-003: Send contact request
+- [ ] DPY-004: Accept or reject contact requests
+- [ ] DPY-005: View contact list and details
+- [ ] DPY-006: Send payment to contact
+- [ ] DPY-007: View payment history
+- [ ] DPY-008: Generate DashPay QR code
+- [ ] DPY-009: Edit contact info
+- [x] DPY-010: Remove a contact — N/A (Gap, not implemented)
+- [ ] DPY-011: Auto-accept contact requests
+
+## TOK
+
+- [ ] TOK-001: View token balances
+- [ ] TOK-002: Search and discover tokens
+- [ ] TOK-003: Add token by contract or token ID
+- [ ] TOK-004: Transfer tokens
+- [ ] TOK-005: Create token contract
+- [ ] TOK-006: Mint tokens
+- [ ] TOK-007: Burn tokens
+- [ ] TOK-008: Freeze and unfreeze token recipients
+- [ ] TOK-009: Pause and resume token transfers
+- [ ] TOK-010: Destroy frozen funds
+- [ ] TOK-011: Claim distributed tokens
+- [ ] TOK-012: Set token pricing and purchase tokens
+- [ ] TOK-013: Update token configuration
+- [ ] TOK-014: Group actions for multi-party governance
+- [ ] TOK-015: View available token claims
+- [ ] TOK-016: Estimate perpetual token rewards
+- [ ] TOK-017: Pay for document operations with tokens
+
+## DOC
+
+- [ ] DOC-001: Register a new data contract
+- [ ] DOC-002: Update an existing data contract
+- [ ] DOC-003: Import and manage contracts
+- [ ] DOC-004: Query and browse documents
+- [ ] DOC-005: Create a document
+- [ ] DOC-006: Replace or update a document
+- [ ] DOC-007: Delete a document
+- [ ] DOC-008: Transfer document ownership
+- [ ] DOC-009: Purchase a document and set document pricing
+
+## DEV
+
+- [ ] DEV-001: Decode state transitions
+- [ ] DEV-002: View proof request log
+- [ ] DEV-003: Inspect ZK proofs
+- [ ] DEV-004: View document and contract JSON
+- [ ] DEV-005: View Platform info
+- [ ] DEV-006: View masternode list diff
+- [ ] DEV-007: Check any address balance
+- [ ] DEV-008: Mine blocks on Regtest
+
+## NET
+
+- [ ] NET-001: Switch networks
+- [ ] NET-002: Auto-update from dashmate config
+- [ ] NET-003: Configure Dash-Qt path
+- [ ] NET-004: Select theme
+- [ ] NET-005: Toggle developer mode
+- [x] NET-006: Select user mode — N/A (Gap, not implemented)
+- [ ] NET-007: Granular refresh controls
+- [ ] NET-008: Select Core backend mode
+- [ ] NET-009: Toggle ZMQ
+- [ ] NET-010: Onboarding wizard
+- [ ] NET-011: Wipe Platform data
+- [x] NET-012: Configure Devnet through the UI — N/A (Gap, not implemented)
+- [x] NET-013: Testnet faucet integration — N/A (Gap, not implemented)
+- [x] NET-014: Bulk fund addresses — N/A (Gap, not implemented)
+- [ ] NET-015: Use Dash Evo Tool without a local Dash Core node
+
+## MCP
+
+- [ ] MCP-001: Manage wallets via CLI
+- [ ] MCP-002: MCP server access for AI agents

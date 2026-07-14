@@ -758,7 +758,12 @@ impl WalletSeed {
     /// [`SecretAccess`](crate::wallet_backend::SecretAccess) chokepoint; the
     /// caller that wants the session kept unlocked promotes the seed there
     /// (see [`AppContext::handle_wallet_unlocked`](crate::context::AppContext::handle_wallet_unlocked)).
-    pub fn open(&mut self, password: &str) -> Result<(), String> {
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed encryption error when the password is wrong or the
+    /// stored protected envelope is malformed.
+    pub fn open(&mut self, password: &str) -> Result<(), encryption::EncryptionError> {
         match self {
             WalletSeed::Open(_) => {
                 // Wallet is already open
@@ -766,13 +771,8 @@ impl WalletSeed {
             }
             WalletSeed::Closed(closed_seed) => {
                 // Decrypt to PROVE the password is correct, then drop the
-                // plaintext (`Zeroizing`) without parking it. `decrypt_seed` is
-                // fully typed; this method's `String` return is pre-existing
-                // model/wallet debt tracked for a later type-through, so the
-                // typed error is rendered through its `Display` here.
-                let _verified = closed_seed
-                    .decrypt_seed(password)
-                    .map_err(|e| e.to_string())?;
+                // plaintext (`Zeroizing`) without parking it.
+                let _verified = closed_seed.decrypt_seed(password)?;
                 let open_wallet_seed = OpenWalletSeed {
                     wallet_info: closed_seed.clone(),
                 };

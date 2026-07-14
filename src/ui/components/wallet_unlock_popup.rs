@@ -1,6 +1,7 @@
 use crate::backend_task::error::TaskError;
 use crate::context::{AppContext, WalletUnlockRetention};
 use crate::model::wallet::Wallet;
+use crate::model::wallet::encryption::EncryptionError;
 use crate::ui::components::passphrase_modal::{
     KEEP_UNLOCKED_LABEL, PassphraseModalConfig, PassphraseModalOutcome,
     clear_passphrase_modal_state, passphrase_modal,
@@ -9,6 +10,8 @@ use crate::wallet_backend::poison::RwLockRecover;
 use egui;
 use std::sync::{Arc, RwLock};
 use zeroize::Zeroizing;
+
+const DAMAGED_WALLET_MESSAGE: &str = "This wallet's saved data looks damaged and could not be opened. Re-add it from its recovery phrase to restore it.";
 
 /// Result of showing the wallet unlock popup
 #[derive(Debug, Clone, PartialEq)]
@@ -254,21 +257,30 @@ impl WalletUnlockPopup {
                             }
                         }
                     }
-                    Err(_) => {
+                    Err(error) => {
                         self.storage_error = None;
-                        self.error = Some(match wallet_guard.password_hint() {
-                            Some(hint) => format!(
-                                "That password did not match. Check it and try again. Hint: {hint}"
-                            ),
-                            None => {
-                                "That password did not match. Check it and try again.".to_string()
-                            }
-                        });
+                        self.error = Some(unlock_failure_message(
+                            error,
+                            wallet_guard.password_hint().as_deref(),
+                        ));
                         UnlockInteraction::Pending
                     }
                 }
             }
         }
+    }
+}
+
+fn unlock_failure_message(error: EncryptionError, password_hint: Option<&str>) -> String {
+    match error {
+        EncryptionError::WrongPassword => match password_hint {
+            Some(hint) => {
+                format!("That password did not match. Check it and try again. Hint: {hint}")
+            }
+            None => "That password did not match. Check it and try again.".to_string(),
+        },
+        EncryptionError::Malformed => DAMAGED_WALLET_MESSAGE.to_string(),
+        EncryptionError::KeyDerivation | EncryptionError::Encryption => error.to_string(),
     }
 }
 
@@ -307,11 +319,7 @@ pub fn try_open_wallet_no_password(
         // The raw error is a length-mismatch diagnostic (jargon). Log it
         // and return a calm, jargon-free message the callsite can show.
         tracing::error!(error = %detail, "Failed to open no-password wallet");
-        return Err(
-            "This wallet's saved data looks damaged and could not be opened. \
-             Re-add it from its recovery phrase to restore it."
-                .to_string(),
-        );
+        return Err(DAMAGED_WALLET_MESSAGE.to_string());
     }
     Ok(())
 }
@@ -350,6 +358,45 @@ mod tests {
             migration_skip_body(),
             "You can skip this wallet if you do not know its password. It will stay locked and will not be updated now. Its storage update will finish the next time you unlock it with its password. Your coins are not lost.",
         );
+    }
+
+    #[test]
+    fn corrupted_protected_envelope_reports_damage_without_deletion_guidance() {
+        use crate::model::wallet::ClosedKeyItem;
+        use crate::model::wallet::encryption::{
+            EncryptedEnvelope, EncryptionError, encrypt_message,
+        };
+
+        let seed = [0x42; 64];
+        let password = "correct horse battery staple";
+        let EncryptedEnvelope {
+            mut ciphertext,
+            salt,
+            nonce,
+        } = encrypt_message(&seed, password).expect("encrypt fixture seed");
+        ciphertext.truncate(ciphertext.len() - 1);
+        let item = ClosedKeyItem {
+            seed_hash: ClosedKeyItem::compute_seed_hash(&seed),
+            encrypted_seed: ciphertext,
+            salt,
+            nonce,
+            password_hint: Some("the saved hint".to_string()),
+        };
+
+        let error = match item.decrypt_seed(password) {
+            Err(error) => error,
+            Ok(_) => panic!("a truncated protected envelope must fail"),
+        };
+        assert_eq!(error, EncryptionError::Malformed);
+
+        let message = unlock_failure_message(error, item.password_hint.as_deref());
+        assert_eq!(
+            message,
+            "This wallet's saved data looks damaged and could not be opened. Re-add it from its recovery phrase to restore it.",
+        );
+        assert!(!message.contains("password did not match"));
+        assert!(!message.to_ascii_lowercase().contains("remove"));
+        assert!(!message.to_ascii_lowercase().contains("delete"));
     }
 
     #[test]

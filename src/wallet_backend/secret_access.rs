@@ -1024,6 +1024,7 @@ fn decrypt_hd_seed(
         &envelope.encrypted_seed,
         &envelope.salt,
         &envelope.nonce,
+        HD_SEED_LEN,
         passphrase.expose_secret(),
         "secret_access::decrypt_hd_seed",
     )

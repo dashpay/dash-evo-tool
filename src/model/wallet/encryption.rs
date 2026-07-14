@@ -6,6 +6,7 @@ use zeroize::Zeroizing;
 
 const SALT_SIZE: usize = 16; // 128-bit salt
 const NONCE_SIZE: usize = 12; // 96-bit nonce for AES-GCM
+const TAG_SIZE: usize = 16; // 128-bit authentication tag for AES-256-GCM
 
 use crate::model::wallet::ClosedKeyItem;
 use sha2::{Digest, Sha256};
@@ -32,7 +33,7 @@ pub enum EncryptionError {
     /// The AEAD tag did not verify — wrong password or tampered ciphertext.
     #[error("The password is incorrect. Please check it and try again.")]
     WrongPassword,
-    /// The stored data is structurally invalid (bad key/nonce length or a
+    /// The stored data is structurally invalid (bad envelope lengths or a
     /// corrupt at-rest blob).
     #[error(
         "This wallet's saved data appears to be damaged and could not be read. Re-add it from its recovery phrase to restore it."
@@ -110,10 +111,7 @@ pub(crate) fn encrypt_message(
 /// Failure decrypting an AES-256-GCM envelope produced by [`encrypt_message`].
 ///
 /// Two outcomes the callers must distinguish: an authentication failure
-/// (`WrongPassword` — the supplied password is wrong or the ciphertext was
-/// tampered with) versus a structurally invalid envelope (`Malformed` — bad
-/// key derivation, cipher init, or nonce length; a corrupt at-rest blob). Each
-/// caller maps these to its own typed domain error.
+/// (`WrongPassword`) versus a structurally invalid envelope (`Malformed`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DecryptError {
     /// The AEAD tag did not verify — wrong password or tampered ciphertext.
@@ -127,19 +125,40 @@ pub(crate) enum DecryptError {
 /// `password` — the inverse of [`encrypt_message`]. Returns the plaintext in a
 /// [`Zeroizing`] buffer so it wipes on drop; the caller validates its length.
 ///
-/// Shared by every AES-GCM legacy-secret reader (the HD-seed migration reader,
-/// the imported single-key entry, and the deprecated `ClosedKeyItem` seed
-/// store) so the derive-key → init-cipher → checked-nonce → decrypt sequence
-/// exists once. Structural failures are logged with `site` for context and
-/// returned as [`DecryptError::Malformed`]; an authentication failure is
-/// [`DecryptError::WrongPassword`] (no plaintext oracle).
+/// `expected_plaintext_len` lets the shared reader reject an impossible
+/// ciphertext/tag length before an AEAD failure can be mistaken for a wrong
+/// password. Structural failures are logged with `site`; an authentication
+/// failure on a well-formed envelope is [`DecryptError::WrongPassword`].
 pub(crate) fn decrypt_message(
     ciphertext: &[u8],
     salt: &[u8],
     nonce: &[u8],
+    expected_plaintext_len: usize,
     password: &str,
     site: &'static str,
 ) -> Result<Zeroizing<Vec<u8>>, DecryptError> {
+    let expected_ciphertext_len = expected_plaintext_len
+        .checked_add(TAG_SIZE)
+        .ok_or(DecryptError::Malformed)?;
+    if ciphertext.len() != expected_ciphertext_len {
+        tracing::warn!(
+            target = "model::wallet::encryption",
+            site,
+            ciphertext_len = ciphertext.len(),
+            expected_ciphertext_len,
+            "Envelope ciphertext is not the expected length",
+        );
+        return Err(DecryptError::Malformed);
+    }
+    if salt.len() != SALT_SIZE {
+        tracing::warn!(
+            target = "model::wallet::encryption",
+            site,
+            salt_len = salt.len(),
+            "Envelope salt is not the expected length",
+        );
+        return Err(DecryptError::Malformed);
+    }
     let key = derive_password_key(password, salt).map_err(|error| {
         tracing::warn!(
             target = "model::wallet::encryption",
@@ -205,6 +224,7 @@ impl ClosedKeyItem {
             &self.encrypted_seed,
             &self.salt,
             &self.nonce,
+            64,
             password,
             "closed_key_item::decrypt_seed",
         )
@@ -290,6 +310,7 @@ mod tests {
             &envelope.ciphertext,
             &envelope.salt,
             &envelope.nonce,
+            b"payload".len(),
             "wrong",
             "test",
         )
@@ -306,6 +327,7 @@ mod tests {
             &envelope.ciphertext,
             &envelope.salt,
             &[0u8; 4],
+            b"payload".len(),
             "pw",
             "test",
         )

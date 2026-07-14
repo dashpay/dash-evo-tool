@@ -1899,14 +1899,14 @@ async fn migrated_wallet_is_upstream_registered_without_second_restart() {
     backend.shutdown().await;
 }
 
-/// A migrated protected wallet keeps the migration task pending until its
-/// password is submitted through the UI-owned unlock flow.
+/// A migrated protected wallet keeps the interactive migration pending without
+/// changing the legacy database until the user unlocks or skips it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn migrated_protected_wallet_blocks_migration_until_password_submission() {
+async fn migrated_protected_wallet_waits_without_modifying_legacy_database() {
     use crate::database::test_helpers::seed_legacy_protected_hd_wallet_row;
     use crate::model::wallet::encryption::encrypt_message;
 
-    let (ctx, sender, _tmp) = offline_testnet_context();
+    let (ctx, sender, tmp) = offline_testnet_context();
     let seed = [0x42u8; 64];
     let passphrase = "correct-horse-battery-staple";
     let seed_hash: WalletSeedHash = crate::model::wallet::ClosedKeyItem::compute_seed_hash(&seed);
@@ -1928,6 +1928,12 @@ async fn migrated_protected_wallet_blocks_migration_until_password_submission() 
         Network::Testnet,
     )
     .expect("insert legacy protected wallet row");
+    let legacy_path = tmp.path().join("data.db");
+    let legacy_before = std::fs::read(&legacy_path).expect("snapshot legacy database");
+
+    ctx.install_secret_prompt(Arc::new(
+        crate::wallet_backend::secret_prompt::test_support::TestPrompt::never(),
+    ));
 
     ctx.ensure_wallet_backend(sender)
         .await
@@ -1954,16 +1960,24 @@ async fn migrated_protected_wallet_blocks_migration_until_password_submission() 
     assert_eq!(ctx.locked_wallet_hashes(), vec![seed_hash]);
     assert!(!backend.is_wallet_registered(&seed_hash));
 
-    migration.abort();
-    let _ = migration.await;
+    ctx.migration_status().skip_wallet(seed_hash);
+    migration
+        .await
+        .expect("migration task must not panic")
+        .expect("skipping the protected wallet must complete migration");
+    let legacy_after = std::fs::read(&legacy_path).expect("re-read legacy database");
+    assert_eq!(
+        legacy_after, legacy_before,
+        "waiting for and skipping a protected wallet must not modify the legacy database",
+    );
 
     backend.shutdown().await;
 }
 
-/// Protected-unlock reconciliation (the delete-DB + re-import
-/// acceptance flow): a password-protected wallet that hydrates LOCKED at cold
-/// boot, and therefore pauses the migration for password entry (proven by
-/// [`migrated_protected_wallet_blocks_migration_until_password_submission`]), MUST
+/// Protected-unlock reconciliation: a password-protected wallet that hydrates
+/// locked at cold boot, and therefore pauses the migration for password entry
+/// (proven by
+/// [`migrated_protected_wallet_waits_without_modifying_legacy_database`]), MUST
 /// become upstream-registered on the unlock gesture — without a second app
 /// restart.
 ///
@@ -2013,6 +2027,10 @@ async fn protected_wallet_registers_upstream_on_unlock_without_restart() {
         Network::Testnet,
     )
     .expect("insert legacy protected wallet row");
+
+    ctx.install_secret_prompt(Arc::new(
+        crate::wallet_backend::secret_prompt::test_support::TestPrompt::never(),
+    ));
 
     // Wire the backend, then run the cold-start migration. This reproduces
     // the boot state of the acceptance flow: the protected wallet hydrates
@@ -2099,6 +2117,11 @@ async fn protected_wallet_registers_upstream_on_unlock_without_restart() {
         backend.wallet_count().await,
         1,
         "exactly one wallet must be watched after the unlock reconciliation"
+    );
+    assert_eq!(
+        backend.registration_attempt_count(),
+        1,
+        "the migration and unlock paths must join one registration flight",
     );
 
     // Tier-2 keep-protection migration post-conditions. The

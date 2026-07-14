@@ -38,19 +38,19 @@ Verdicts: PASS / FAIL / BLOCKED (reason) / N/A (Gap/Superseded/Removed — not i
 
 ## SND
 
-- [x] SND-001: Send Dash to an address — PASS (screen nav confirmed; full E2E send pending)
-- [ ] SND-002: Send Dash from single-key wallet
+- [x] SND-001: Send Dash to an address — PASS (nav confirmed; full E2E send now completed — but no confirmation dialog appears before broadcast, see SND-005)
+- [x] SND-002: Send Dash from single-key wallet — FAIL (send disabled for SK wallets; explicit typed error `SingleKeyWalletsUnsupported`)
 - [x] SND-003: Receive Dash with QR code — FAIL (Receive button inert, no QR shown)
 - [x] SND-004: Send to a DPNS username — N/A (Gap, not implemented)
-- [ ] SND-005: See fee estimate before confirming send
-- [ ] SND-006: Send to multiple recipients
-- [ ] SND-007: Shield DASH from Core wallet
-- [ ] SND-008: Top up identity from Send screen
-- [ ] SND-009: Shield credits from Platform address
-- [ ] SND-010: Withdraw from shielded pool to Core address
-- [ ] SND-011: Transfer identity credits to another identity
-- [ ] SND-012: Withdraw identity credits to Core address
-- [ ] SND-013: Transfer identity credits to Platform address
+- [x] SND-005: See fee estimate before confirming send — FAIL (no fee estimate or confirmation dialog anywhere pre-broadcast; Max silently deducts an undisplayed fee)
+- [x] SND-006: Send to multiple recipients — PASS (add/remove recipients, single tx broadcast confirmed on-chain)
+- [x] SND-007: Shield DASH from Core wallet — FAIL ("Invalid output address" on submit; root cause disclosed in-app as "Shielded sending is not available on this network yet")
+- [x] SND-008: Top up identity from Send screen — BLOCKED (no identity exists yet — IDN not run; Identity-destination UI recognition partially verified)
+- [x] SND-009: Shield credits from Platform address — BLOCKED (WAL-017: no Platform address ever holds balance)
+- [x] SND-010: Withdraw from shielded pool to Core address — BLOCKED (shielded balance always 0; no "Shielded Pool" source option exposed in Send screen)
+- [x] SND-011: Transfer identity credits to another identity — BLOCKED (no identity exists yet — IDN not run)
+- [x] SND-012: Withdraw identity credits to Core address — BLOCKED (same reasoning as SND-011)
+- [x] SND-013: Transfer identity credits to Platform address — BLOCKED (same reasoning as SND-011)
 
 ## ALK
 

@@ -15,7 +15,9 @@ use crate::backend_task::BackendTask;
 use crate::backend_task::contested_names::ContestedResourceTask;
 use crate::backend_task::identity::IdentityTask;
 use crate::context::AppContext;
+use crate::context::identity_load_registry::{IdentityLoadPhase, IdentityLoadToken};
 use crate::model::contested_name::MasternodeContestSummary;
+use crate::model::masternode_input::decode_identity_id;
 use crate::model::qualified_identity::{IdentityStatus, IdentityType, MasternodeKeyPresence};
 use crate::model::user_role::UserRole;
 use crate::ui::components::global_nav_switcher::GlobalNavEffect;
@@ -24,7 +26,7 @@ use crate::ui::components::styled::island_central_panel;
 use crate::ui::components::top_panel::add_top_panel_with_global_nav_capturing;
 use crate::ui::identity::identity_pill::shorten_id;
 use crate::ui::identity::picker::compute_column_count;
-use crate::ui::masternodes::card::MasternodeCard;
+use crate::ui::masternodes::card::{MasternodeCard, card_heading};
 use crate::ui::masternodes::detail_screen::{DetailOutcome, MasternodeDetailView};
 use crate::ui::masternodes::load_form::{LoadFormOutcome, MasternodeLoadForm};
 use crate::ui::state::global_nav::PageNavSpec;
@@ -42,6 +44,7 @@ struct NodeCardData {
     node_id: Identifier,
     node_id_short: String,
     alias: Option<String>,
+    balance_credits: u64,
     node_type: IdentityType,
     key_presence: MasternodeKeyPresence,
     contest_summary: MasternodeContestSummary,
@@ -59,6 +62,15 @@ enum MasternodesView {
     Detail(Box<MasternodeDetailView>),
 }
 
+/// A load this screen dispatched and has not yet seen finish. The token names
+/// that one load, so a later load of the same node — dispatched from anywhere —
+/// can never be mistaken for it.
+#[derive(Debug, Clone, Copy)]
+struct PendingLoad {
+    identity_id: Identifier,
+    token: IdentityLoadToken,
+}
+
 /// Root screen for the Masternodes section.
 pub struct MasternodesScreen {
     pub app_context: Arc<AppContext>,
@@ -67,12 +79,37 @@ pub struct MasternodesScreen {
     nodes: Vec<NodeCardData>,
     /// The active sub-view (list / load / detail).
     view: MasternodesView,
-    /// True while a node-load task is in flight. Gates the entry points that
-    /// could re-submit a load (the `+ Load` toolbar button and the empty-state
-    /// CTA) so a rapid double-submit of a brand-new ProTxHash cannot race two
-    /// loads past the pre-fetch existence check. Cleared on the task's result
-    /// or error.
-    load_in_flight: bool,
+    /// The load this screen dispatched and has not yet seen finish, identified by
+    /// the ProTxHash that was *submitted* — never re-read from the form, whose
+    /// fields stay editable while the load runs. Gates the load entry points
+    /// (`+ Load`, the empty-state CTA, the form's submit button) so a load cannot
+    /// be dispatched twice.
+    ///
+    /// Cleared by [`reconcile_pending_load`](Self::reconcile_pending_load) once
+    /// the load's own task reports it finished — never on a guess from the store
+    /// or from which callbacks happened to fire. `None` when there is nothing to
+    /// gate: a submitted ProTxHash that did not parse (the backend rejects such a
+    /// load before touching the store), or a node another caller is already
+    /// loading (that load owns the record, and this screen's dispatch is rejected
+    /// with a message rather than gating on someone else's work).
+    ///
+    /// This gate is the UX layer — it keeps the buttons honest. The exclusion
+    /// that actually protects the store is the load task's own claim on the
+    /// identity, so a duplicate dispatch that slips through fails closed with
+    /// [`TaskError::IdentityLoadInProgress`](crate::backend_task::error::TaskError::IdentityLoadInProgress)
+    /// instead of racing.
+    pending_load: Option<PendingLoad>,
+}
+
+#[cfg(test)]
+impl MasternodesScreen {
+    /// Return card headings in the same order shown by the grid and node pill.
+    pub(crate) fn node_headings_for_test(&self) -> Vec<String> {
+        self.nodes
+            .iter()
+            .map(|node| card_heading(node.alias.as_deref(), &node.node_id_short))
+            .collect()
+    }
 }
 
 impl MasternodesScreen {
@@ -84,7 +121,7 @@ impl MasternodesScreen {
             app_context: app_context.clone(),
             nodes: Vec::new(),
             view: MasternodesView::List,
-            load_in_flight: false,
+            pending_load: None,
         };
         screen.reload();
         screen
@@ -117,6 +154,7 @@ impl MasternodesScreen {
                     node_id,
                     node_id_short,
                     alias: qi.alias.clone(),
+                    balance_credits: qi.identity.balance(),
                     node_type: qi.identity_type,
                     key_presence: qi.masternode_key_presence(),
                     contest_summary,
@@ -124,6 +162,39 @@ impl MasternodesScreen {
                 }
             })
             .collect();
+        self.nodes.sort_by_key(|node| {
+            card_heading(node.alias.as_deref(), &node.node_id_short).to_lowercase()
+        });
+    }
+
+    /// Settle the submitted load against the phase its own task reported, and
+    /// release the gate once that load is finished. The single place this screen
+    /// decides a load is over — its result and error callbacks fire only while it
+    /// is the visible screen, so a load that ran while the user was elsewhere is
+    /// settled here, on the next arrival.
+    ///
+    /// Only the phase decides. Neither of the tempting proxies is sound: a load is
+    /// outstanding from the moment it is dispatched, before its task claims the
+    /// identity, and a *persisted node* does not mean success — the load inserts
+    /// the node before sealing its keys, so a failed seal leaves the node stored
+    /// by a load that errored. A failed load therefore keeps its form, and every
+    /// field in it, ready for a corrected resubmit; the error was already shown as
+    /// a global banner wherever it landed.
+    fn reconcile_pending_load(&mut self) {
+        let Some(pending) = self.pending_load else {
+            return;
+        };
+        let phase = self
+            .app_context
+            .identity_load_phase(&pending.identity_id, pending.token);
+        if phase.is_some_and(IdentityLoadPhase::is_outstanding) {
+            return;
+        }
+        self.pending_load = None;
+        if phase == Some(IdentityLoadPhase::Loaded) && matches!(self.view, MasternodesView::Load(_))
+        {
+            self.view = MasternodesView::List;
+        }
     }
 
     /// Reset the screen after a network switch. A load form or detail
@@ -132,7 +203,7 @@ impl MasternodesScreen {
     /// to the List view and reload from the now-active network's local store.
     pub fn reset_for_network_change(&mut self) {
         self.view = MasternodesView::List;
-        self.load_in_flight = false;
+        self.pending_load = None;
         self.reload();
     }
 
@@ -171,7 +242,7 @@ impl MasternodesScreen {
             );
             ui.add_space(20.0);
             // Gate the CTA while a load is in flight.
-            if self.load_in_flight {
+            if self.pending_load.is_some() {
                 ui.spinner();
                 ui.add_enabled(false, egui::Button::new("Loading…"));
             } else if ComponentStyles::add_primary_button(ui, "Load a masternode").clicked() {
@@ -218,7 +289,8 @@ impl MasternodesScreen {
                             node.contest_summary,
                             node.status,
                         )
-                        .with_alias(node.alias.clone());
+                        .with_alias(node.alias.clone())
+                        .with_balance_credits(node.balance_credits);
                         if card.show(ui).clicked {
                             clicked = Some(node.node_id);
                         }
@@ -334,7 +406,7 @@ impl MasternodesScreen {
                 ui.add_space(8.0);
                 // Gate re-entry into the load form while a load is in flight
                 //, and surface a spinner so the wait is visible.
-                if self.load_in_flight {
+                if self.pending_load.is_some() {
                     ui.spinner();
                     ui.add_enabled(false, egui::Button::new("Loading…"));
                 } else if ComponentStyles::add_toolbar_button(ui, "+ Load", network_accent)
@@ -380,20 +452,52 @@ impl MasternodesScreen {
     /// to the list on cancel or submit.
     fn render_load_view(&mut self, ui: &mut egui::Ui) -> AppAction {
         let dev_mode = self.app_context.user_role().at_least(UserRole::Power);
+        let submitting = self.pending_load.is_some();
         let outcome = match &mut self.view {
-            MasternodesView::Load(form) => form.show(ui, dev_mode),
+            MasternodesView::Load(form) => form.show(ui, dev_mode, submitting),
             _ => return AppAction::None,
         };
+        self.apply_load_outcome(outcome)
+    }
+
+    /// Apply one frame's load-form outcome: cancel returns to the list, submit
+    /// dispatches the backend load.
+    fn apply_load_outcome(&mut self, outcome: LoadFormOutcome) -> AppAction {
         match outcome {
             LoadFormOutcome::None => AppAction::None,
             LoadFormOutcome::Cancel => {
+                // Cancel dismisses the form, not the load: a dispatched load has
+                // no cooperative cancellation and keeps running. Hold the gate so
+                // reopening the form cannot submit that same node a second time;
+                // it clears once the load is seen to finish.
                 self.view = MasternodesView::List;
                 AppAction::None
             }
-            LoadFormOutcome::Submit(input) => {
-                self.view = MasternodesView::List;
-                // Gate re-submission until this load resolves.
-                self.load_in_flight = true;
+            LoadFormOutcome::Submit(mut input) => {
+                // Gate on the identity actually submitted, not on what the form
+                // shows later: every field but the Load button stays editable
+                // while the load runs.
+                //
+                // Mark the dispatch before the task runs: a load is outstanding
+                // from here, and until its task claims the identity nothing else
+                // records that. Keep the form open with its fields intact
+                // meanwhile — `reconcile_pending_load` settles it against the phase
+                // the task reports, closing it only on a load that fully applied.
+                //
+                // No token means another caller is already loading this node: that
+                // load owns the record, so gate on nothing and let the dispatch come
+                // back with `IdentityLoadInProgress` for the banner to explain.
+                self.pending_load =
+                    decode_identity_id(&input.identity_id_input)
+                        .ok()
+                        .and_then(|identity_id| {
+                            self.app_context
+                                .mark_identity_load_submitted(identity_id)
+                                .map(|token| PendingLoad { identity_id, token })
+                        });
+                // Send the token with the load, so the task claims the record this
+                // screen is waiting on — and so no other load can claim it.
+                input.load_token = self.pending_load.map(|pending| pending.token);
                 AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::LoadIdentity(
                     *input,
                 )))
@@ -408,26 +512,36 @@ impl ScreenLike for MasternodesScreen {
     }
 
     fn refresh_on_arrival(&mut self) {
-        // Backstop for a stranded load gate: if the load result was routed to a
-        // different screen while this tab was away (tab switched mid-load),
-        // `display_task_result` never fired here to clear the gate. Clear it on
-        // return so `+ Load` can never sit at "Loading…" forever.
-        self.load_in_flight = false;
         self.reload();
+        self.reconcile_pending_load();
     }
 
-    fn display_task_result(&mut self, result: crate::backend_task::BackendTaskSuccessResult) {
-        // Clear the load gate only on the load task's OWN result variant. This
-        // screen also receives detail-view results (voting, RefreshIdentity) —
-        // clearing on any of those would re-enable `+ Load` while a real load is
-        // still in flight, so match the load's result specifically.
-        if matches!(
-            result,
-            crate::backend_task::BackendTaskSuccessResult::LoadedIdentity(_)
-        ) {
-            self.load_in_flight = false;
+    /// Drop every secret the open view holds — the load form's keys and
+    /// encryption password, the detail view's unsubmitted voting key. This screen
+    /// is a root screen: it lives for the whole process, so nothing else would
+    /// ever zeroize them, and a failed load deliberately keeps its form (and its
+    /// fields) for a corrected resubmit.
+    ///
+    /// Unconditional, in-flight load or not. The load's own copy of the submitted
+    /// input already travelled with the task, and a load that fails while the user
+    /// is elsewhere is exactly the case that would otherwise strand plaintext keys
+    /// on a screen nobody is looking at. What survives is what is tedious to
+    /// re-enter and secret to nobody: ProTxHash, alias, node type.
+    fn on_leave(&mut self) {
+        match &mut self.view {
+            MasternodesView::Load(form) => form.clear_secrets(),
+            MasternodesView::Detail(detail) => detail.clear_secrets(),
+            MasternodesView::List => {}
         }
+    }
+
+    fn display_task_result(&mut self, _result: crate::backend_task::BackendTaskSuccessResult) {
         self.reload();
+        // Settle the submitted load against the phase its task reported. This
+        // screen also receives detail-view results (voting, RefreshIdentity) and
+        // another screen's load result, so the gate must never turn on "a result
+        // arrived" — only on this load's own reported outcome.
+        self.reconcile_pending_load();
         // if a detail view is open, its own backend task (voting, an
         // Add-voting-key merge, a RefreshIdentity) just updated the store.
         // Re-open the detail view for that node so the on-screen view reflects
@@ -439,9 +553,13 @@ impl ScreenLike for MasternodesScreen {
     }
 
     fn display_task_error(&mut self, _error: &crate::backend_task::error::TaskError) -> bool {
-        // A load failed — re-enable the load entry points. Let the
-        // global banner render the error (return false, do not claim it).
-        self.load_in_flight = false;
+        // A failing load reports `Failed` before its error reaches the UI, so
+        // settling here re-enables the still-open form's submit button (the Load
+        // view is untouched, so every entered field survives for correction).
+        // An error from some other task — a detail-view vote, a refresh — leaves
+        // this load's phase outstanding and the gate held. Let the global banner
+        // render the error (return false).
+        self.reconcile_pending_load();
         false
     }
 
@@ -473,6 +591,7 @@ mod tests {
     use super::*;
     use crate::app::TaskResult;
     use crate::app_dir::ensure_env_file;
+    use crate::backend_task::identity::IdentityInputToLoad;
     use crate::context::connection_status::ConnectionStatus;
     use crate::database::test_helpers::create_database_at_path;
     use crate::model::qualified_identity::QualifiedIdentity;
@@ -513,7 +632,7 @@ mod tests {
         (ctx, temp_dir)
     }
 
-    fn seed_masternode(ctx: &Arc<AppContext>, byte: u8) {
+    fn seed_masternode(ctx: &Arc<AppContext>, byte: u8, alias: Option<&str>) {
         let pv = PlatformVersion::latest();
         let identity = Identity::create_basic_identity(Identifier::from([byte; 32]), pv)
             .expect("basic identity");
@@ -523,7 +642,7 @@ mod tests {
             associated_operator_identity: None,
             associated_owner_key_id: None,
             identity_type: IdentityType::Masternode,
-            alias: None,
+            alias: alias.map(str::to_owned),
             private_keys: KeyStorage::default(),
             dpns_names: vec![],
             associated_wallets: BTreeMap::new(),
@@ -535,6 +654,24 @@ mod tests {
         };
         ctx.insert_local_qualified_identity(&qi, &None)
             .expect("seed masternode");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn nodes_are_sorted_case_insensitively_by_display_heading() {
+        let (ctx, _tmp) = offline_ctx().await;
+        seed_masternode(&ctx, 0x11, Some("Zulu"));
+        seed_masternode(&ctx, 0x22, Some("alpha"));
+        seed_masternode(&ctx, 0x44, None);
+
+        let fallback_heading = shorten_id(&Identifier::from([0x44; 32]).to_string(Encoding::Hex));
+        let screen = MasternodesScreen::new(&ctx);
+
+        assert_eq!(
+            screen.node_headings_for_test(),
+            vec![fallback_heading, "alpha".to_string(), "Zulu".to_string()]
+        );
+
+        ctx.wallet_backend().expect("backend").shutdown().await;
     }
 
     /// The list Refresh builds one `RefreshIdentity` per loaded node plus a
@@ -552,8 +689,8 @@ mod tests {
         );
 
         // Two nodes loaded → two RefreshIdentity + one trailing QueryDPNSContests.
-        seed_masternode(&ctx, 0x11);
-        seed_masternode(&ctx, 0x22);
+        seed_masternode(&ctx, 0x11, None);
+        seed_masternode(&ctx, 0x22, None);
         let screen = MasternodesScreen::new(&ctx);
         let AppAction::BackendTasks(tasks, mode) = screen.refresh_from_network() else {
             panic!("expected BackendTasks");
@@ -589,8 +726,8 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn node_pill_is_two_way_bound_with_the_detail_view() {
         let (ctx, _tmp) = offline_ctx().await;
-        seed_masternode(&ctx, 0x11);
-        seed_masternode(&ctx, 0x22);
+        seed_masternode(&ctx, 0x11, None);
+        seed_masternode(&ctx, 0x22, None);
         let mut screen = MasternodesScreen::new(&ctx);
 
         // On the grid, no node is in view: the pill offers both, selects none.
@@ -634,6 +771,486 @@ mod tests {
         // Leaving the detail view clears the pill's selection.
         screen.view = MasternodesView::List;
         assert_eq!(screen.selected_node_id(), None);
+
+        ctx.wallet_backend().expect("backend").shutdown().await;
+    }
+
+    impl MasternodesScreen {
+        /// The identity of the load being gated on, if any.
+        fn pending_identity(&self) -> Option<Identifier> {
+            self.pending_load.map(|pending| pending.identity_id)
+        }
+    }
+
+    /// Drive the real submit path: open the form on `target` and apply the
+    /// outcome a Load click produces, exactly as `render_load_view` would.
+    fn submit_load(screen: &mut MasternodesScreen, target: Identifier) {
+        let mut form = screen.new_load_form();
+        form.set_pro_tx_hash_for_test(target.to_string(Encoding::Base58));
+        let outcome = form.submit_for_test();
+        screen.view = MasternodesView::Load(form);
+        screen.apply_load_outcome(outcome);
+    }
+
+    /// Claim the identity for the load this screen dispatched, exactly as its own
+    /// task does: under the token the screen is waiting on. A claim taken under any
+    /// other token is a *foreign* load — the registry rejects it while this one is
+    /// outstanding, and it could never report into this screen's record.
+    fn claim_dispatched_load(
+        ctx: &Arc<AppContext>,
+        screen: &MasternodesScreen,
+    ) -> crate::context::identity_load_registry::IdentityLoadGuard {
+        let pending = screen.pending_load.expect("the screen dispatched a load");
+        ctx.begin_identity_load(pending.identity_id, Some(pending.token))
+            .expect("claim the load")
+    }
+
+    /// Point the open form at another node — every field but the Load button
+    /// stays editable while a load runs.
+    fn retarget_open_form(screen: &mut MasternodesScreen, target: Identifier) {
+        let MasternodesView::Load(form) = &mut screen.view else {
+            panic!("the load form must be open");
+        };
+        form.set_pro_tx_hash_for_test(target.to_string(Encoding::Base58));
+    }
+
+    fn masternode_identity(ctx: &Arc<AppContext>, id: Identifier) -> QualifiedIdentity {
+        let identity =
+            Identity::create_basic_identity(id, PlatformVersion::latest()).expect("basic identity");
+        QualifiedIdentity {
+            identity,
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::Masternode,
+            alias: None,
+            private_keys: KeyStorage::default(),
+            dpns_names: vec![],
+            associated_wallets: BTreeMap::new(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: BTreeMap::new(),
+            status: IdentityStatus::PendingCreation,
+            network: ctx.network(),
+        }
+    }
+
+    /// Submitting gates on the identity that was submitted, and a failed load
+    /// keeps the form open (fields intact) and re-enables submit; only a
+    /// successful load closes the form and returns to the list.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn load_error_keeps_form_open_success_closes_it() {
+        use crate::backend_task::BackendTaskSuccessResult;
+        use crate::backend_task::error::TaskError;
+
+        let (ctx, _tmp) = offline_ctx().await;
+        let mut screen = MasternodesScreen::new(&ctx);
+
+        let target = Identifier::from([0x33; 32]);
+        submit_load(&mut screen, target);
+        assert_eq!(
+            screen.pending_identity(),
+            Some(target),
+            "the gate must record the submitted identity"
+        );
+
+        // The task ran and failed; it reported `Failed` before its error reached
+        // the UI. The screen defers to the global banner, keeps the form open, and
+        // re-enables submit.
+        drop(claim_dispatched_load(&ctx, &screen));
+        let handled = screen.display_task_error(&TaskError::MalformedProTxHash {
+            input: "not-a-hash".to_string(),
+        });
+        assert!(
+            !handled,
+            "the global banner renders the error, not the screen"
+        );
+        assert!(
+            matches!(screen.view, MasternodesView::Load(_)),
+            "the form must stay open on error so fields can be corrected"
+        );
+        assert!(
+            screen.pending_load.is_none(),
+            "submit must re-enable after a failed load"
+        );
+
+        // Resubmit, then succeed: the form closes and drops back to the list.
+        submit_load(&mut screen, target);
+        claim_dispatched_load(&ctx, &screen).loaded();
+        screen.display_task_result(BackendTaskSuccessResult::LoadedIdentity(
+            masternode_identity(&ctx, target),
+        ));
+        assert!(
+            matches!(screen.view, MasternodesView::List),
+            "a successful load must close the form and return to the list"
+        );
+        assert!(
+            screen.pending_load.is_none(),
+            "the in-flight gate must clear on success"
+        );
+
+        ctx.wallet_backend().expect("backend").shutdown().await;
+    }
+
+    /// Another screen's load result must not release this screen's gate: it
+    /// belongs to a different identity, and this screen's own load is still
+    /// running.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn another_identitys_load_result_leaves_the_gate_locked() {
+        use crate::backend_task::BackendTaskSuccessResult;
+
+        let (ctx, _tmp) = offline_ctx().await;
+        let mut screen = MasternodesScreen::new(&ctx);
+
+        let target = Identifier::from([0x33; 32]);
+        submit_load(&mut screen, target);
+
+        screen.display_task_result(BackendTaskSuccessResult::LoadedIdentity(
+            masternode_identity(&ctx, Identifier::from([0x99; 32])),
+        ));
+
+        assert_eq!(
+            screen.pending_identity(),
+            Some(target),
+            "only the submitted identity's own result releases the gate"
+        );
+        assert!(
+            matches!(screen.view, MasternodesView::Load(_)),
+            "the form must stay open while its own load runs"
+        );
+
+        ctx.wallet_backend().expect("backend").shutdown().await;
+    }
+
+    /// Regression: a load whose result was delivered to another visible screen
+    /// (task results reach only the visible screen) must still close the form on
+    /// return to the tab. The load is no longer running and its node is in the
+    /// store, so the form closes and the gate clears — without ever routing the
+    /// result through this screen's callbacks.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn arrival_reconciles_form_when_load_finished_while_away() {
+        let (ctx, _tmp) = offline_ctx().await;
+        let mut screen = MasternodesScreen::new(&ctx);
+
+        let target = Identifier::from([0x33; 32]);
+        submit_load(&mut screen, target);
+
+        // The load fully applied while another screen was visible: the node landed
+        // in the store and the task reported success, but this screen's
+        // `display_task_result` never fired.
+        let running = claim_dispatched_load(&ctx, &screen);
+        seed_masternode(&ctx, 0x33, None);
+        running.loaded();
+
+        screen.refresh_on_arrival();
+        assert!(
+            matches!(screen.view, MasternodesView::List),
+            "a load that finished while away must close the form on return"
+        );
+        assert!(
+            screen.pending_load.is_none(),
+            "the gate must clear once the loaded node is in the store"
+        );
+
+        ctx.wallet_backend().expect("backend").shutdown().await;
+    }
+
+    /// Regression: while the submitted load is still running, revisiting the tab
+    /// must NOT unlock the form — a second concurrent load of the same node would
+    /// race the first past the duplicate check.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn arrival_keeps_form_locked_while_load_still_pending() {
+        let (ctx, _tmp) = offline_ctx().await;
+        let mut screen = MasternodesScreen::new(&ctx);
+
+        let target = Identifier::from([0x44; 32]);
+        submit_load(&mut screen, target);
+        // The load task is running: it holds the identity's claim.
+        let _running = claim_dispatched_load(&ctx, &screen);
+
+        screen.refresh_on_arrival();
+        assert!(
+            matches!(screen.view, MasternodesView::Load(_)),
+            "a still-pending load must keep the form open"
+        );
+        assert_eq!(
+            screen.pending_identity(),
+            Some(target),
+            "the gate must stay locked so a second concurrent load cannot be submitted"
+        );
+
+        ctx.wallet_backend().expect("backend").shutdown().await;
+    }
+
+    /// Regression: reconciliation must track the identity that was submitted, not
+    /// whatever the still-editable form points at now. Retargeting the open form
+    /// at an already-loaded node must not read as "the submitted load finished" —
+    /// that would unlock the form and let the submitted node be loaded a second
+    /// time, concurrently.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn arrival_tracks_the_submitted_load_not_the_edited_form() {
+        let (ctx, _tmp) = offline_ctx().await;
+
+        // `other` is already loaded; `submitted` is the node whose load is running.
+        seed_masternode(&ctx, 0x66, None);
+        let other = Identifier::from([0x66; 32]);
+        let submitted = Identifier::from([0x55; 32]);
+        let mut screen = MasternodesScreen::new(&ctx);
+
+        submit_load(&mut screen, submitted);
+        let _running = claim_dispatched_load(&ctx, &screen);
+        retarget_open_form(&mut screen, other);
+
+        screen.refresh_on_arrival();
+
+        assert_eq!(
+            screen.pending_identity(),
+            Some(submitted),
+            "the submitted load is still running: the gate must stay locked"
+        );
+        assert!(
+            matches!(screen.view, MasternodesView::Load(_)),
+            "retargeting the form must not close it"
+        );
+
+        ctx.wallet_backend().expect("backend").shutdown().await;
+    }
+
+    /// Regression: Cancel dismisses the form, not the backend task — loads have no
+    /// cooperative cancellation, so the dispatched load keeps running. Releasing
+    /// the gate would let the user reopen the form and submit the same node again,
+    /// racing the first load's duplicate check.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancel_keeps_the_gate_while_the_submitted_load_still_runs() {
+        let (ctx, _tmp) = offline_ctx().await;
+        let mut screen = MasternodesScreen::new(&ctx);
+
+        let target = Identifier::from([0x77; 32]);
+        submit_load(&mut screen, target);
+        let _running = claim_dispatched_load(&ctx, &screen);
+
+        screen.apply_load_outcome(LoadFormOutcome::Cancel);
+
+        assert!(
+            matches!(screen.view, MasternodesView::List),
+            "Cancel must dismiss the form"
+        );
+        assert_eq!(
+            screen.pending_identity(),
+            Some(target),
+            "Cancel does not cancel the task: the gate must hold until the load finishes"
+        );
+
+        ctx.wallet_backend().expect("backend").shutdown().await;
+    }
+
+    /// A load that FAILED while another screen was visible leaves no trace in the
+    /// store, so the store alone cannot tell it from a load still in progress. The
+    /// phase the task reports can: the load is finished, so the gate releases and
+    /// the form stays open with its fields intact for a corrected resubmit.
+    /// Without this, the load entry points would stay disabled for the rest of the
+    /// session.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn arrival_releases_the_gate_when_the_load_failed_while_away() {
+        let (ctx, _tmp) = offline_ctx().await;
+        let mut screen = MasternodesScreen::new(&ctx);
+
+        let target = Identifier::from([0x88; 32]);
+        submit_load(&mut screen, target);
+
+        // The load ran and failed while away; the node never landed.
+        drop(claim_dispatched_load(&ctx, &screen));
+        screen.refresh_on_arrival();
+
+        assert!(
+            screen.pending_load.is_none(),
+            "a finished load must release the gate, whichever screen saw its error"
+        );
+        assert!(
+            matches!(screen.view, MasternodesView::Load(_)),
+            "the form stays open with its fields intact so the user can resubmit"
+        );
+
+        ctx.wallet_backend().expect("backend").shutdown().await;
+    }
+
+    /// Regression: a dispatched load is outstanding from the moment it is
+    /// submitted — the task only reaches its claim after it starts and validates
+    /// its input. Arriving inside that window must not read "no claim yet" as
+    /// "finished": releasing the gate there strands the real load, whose success
+    /// can then no longer close the form.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn arrival_holds_the_gate_before_the_task_claims_the_load() {
+        let (ctx, _tmp) = offline_ctx().await;
+        let mut screen = MasternodesScreen::new(&ctx);
+
+        let target = Identifier::from([0xa1; 32]);
+        submit_load(&mut screen, target);
+
+        // The task has been dispatched but has not reached its claim yet.
+        screen.refresh_on_arrival();
+
+        assert_eq!(
+            screen.pending_identity(),
+            Some(target),
+            "a submitted load is outstanding before its task claims it"
+        );
+        assert!(
+            matches!(screen.view, MasternodesView::Load(_)),
+            "the form must stay open while the submitted load is outstanding"
+        );
+
+        ctx.wallet_backend().expect("backend").shutdown().await;
+    }
+
+    /// Regression: a terminated load is not a successful one. `load_identity`
+    /// inserts the node BEFORE sealing its keys, so a seal failure leaves the node
+    /// in the store while the load errored. Treating "the node is present" as
+    /// success closes the form and discards the user's retry state even though the
+    /// keys may be unprotected or partially protected.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn arrival_does_not_read_a_persisted_node_as_a_successful_load() {
+        let (ctx, _tmp) = offline_ctx().await;
+        let mut screen = MasternodesScreen::new(&ctx);
+
+        let target = Identifier::from([0xb2; 32]);
+        submit_load(&mut screen, target);
+
+        // The task ran, inserted the node, then failed while sealing its keys.
+        let running = claim_dispatched_load(&ctx, &screen);
+        seed_masternode(&ctx, 0xb2, None);
+        drop(running);
+
+        screen.refresh_on_arrival();
+
+        assert!(
+            screen.pending_load.is_none(),
+            "a finished load must release the gate"
+        );
+        assert!(
+            matches!(screen.view, MasternodesView::Load(_)),
+            "a failed load keeps its form open for a retry, even though the node was persisted"
+        );
+
+        ctx.wallet_backend().expect("backend").shutdown().await;
+    }
+
+    /// Open the load form on `target` with every secret field filled.
+    fn open_form_with_secrets(screen: &mut MasternodesScreen, target: Identifier, secret: &str) {
+        let mut form = screen.new_load_form();
+        form.set_pro_tx_hash_for_test(target.to_string(Encoding::Base58));
+        form.set_secrets_for_test(secret);
+        screen.view = MasternodesView::Load(form);
+    }
+
+    /// What the open form would submit right now — the values it still holds.
+    fn form_input(screen: &MasternodesScreen) -> Box<IdentityInputToLoad> {
+        let MasternodesView::Load(form) = &screen.view else {
+            panic!("the load form must still be open");
+        };
+        let LoadFormOutcome::Submit(input) = form.submit_for_test() else {
+            panic!("a form holding a ProTxHash must still submit");
+        };
+        input
+    }
+
+    fn assert_holds_no_secrets(screen: &MasternodesScreen) {
+        let input = form_input(screen);
+        assert!(
+            input.voting_private_key_input.is_blank(),
+            "the voting key must not outlive the tab"
+        );
+        assert!(
+            input.owner_private_key_input.is_blank(),
+            "the owner key must not outlive the tab"
+        );
+        assert!(
+            input.payout_address_private_key_input.is_blank(),
+            "the payout key must not outlive the tab"
+        );
+        assert!(
+            input.encryption_password.is_none(),
+            "the encryption password must not outlive the tab"
+        );
+    }
+
+    /// SEC — the Masternodes tab is a root screen: it outlives navigation. The
+    /// plaintext V/O/P keys and the at-load encryption password entered into its
+    /// load form must not stay resident once the user leaves the tab. The fields
+    /// that are tedious to re-enter and carry no secret — ProTxHash, alias, node
+    /// type — survive, so the load can be resumed on return.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn leaving_the_tab_zeroizes_the_load_forms_secrets() {
+        let (ctx, _tmp) = offline_ctx().await;
+        let mut screen = MasternodesScreen::new(&ctx);
+
+        let target = Identifier::from([0xc3; 32]);
+        open_form_with_secrets(&mut screen, target, "wif");
+
+        screen.on_leave();
+
+        assert_holds_no_secrets(&screen);
+        assert_eq!(
+            form_input(&screen).identity_id_input,
+            target.to_string(Encoding::Base58),
+            "the non-secret fields survive so the load can be resumed",
+        );
+
+        ctx.wallet_backend().expect("backend").shutdown().await;
+    }
+
+    /// SEC — the reported case: the user submits, navigates away while the load
+    /// runs, and the load fails behind their back. The form is kept open for a
+    /// corrected resubmit, so nothing else would ever drop its secrets. Leaving
+    /// clears them even with the load still outstanding — the gate is unaffected,
+    /// and the backend already holds its own copy of the submitted input.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn leaving_the_tab_zeroizes_secrets_of_an_outstanding_load() {
+        let (ctx, _tmp) = offline_ctx().await;
+        let mut screen = MasternodesScreen::new(&ctx);
+
+        let target = Identifier::from([0xc4; 32]);
+        open_form_with_secrets(&mut screen, target, "wif");
+        let outcome = form_input(&screen);
+        screen.apply_load_outcome(LoadFormOutcome::Submit(outcome));
+        let _running = claim_dispatched_load(&ctx, &screen);
+
+        screen.on_leave();
+
+        assert_holds_no_secrets(&screen);
+        assert_eq!(
+            screen.pending_identity(),
+            Some(target),
+            "leaving the tab does not cancel the load: the gate must still hold",
+        );
+
+        ctx.wallet_backend().expect("backend").shutdown().await;
+    }
+
+    /// SEC — the detail view's in-place `Add voting key` prompt holds a plaintext
+    /// WIF too, and lives in the very same root screen. A prompt left filled but
+    /// unsubmitted must not survive the user leaving the tab.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn leaving_the_tab_discards_an_unsubmitted_voting_key() {
+        let (ctx, _tmp) = offline_ctx().await;
+        seed_masternode(&ctx, 0xc5, None);
+        let mut screen = MasternodesScreen::new(&ctx);
+        screen.open_detail(Identifier::from([0xc5; 32]));
+
+        let MasternodesView::Detail(detail) = &mut screen.view else {
+            panic!("the detail view must be open");
+        };
+        detail.set_voter_key_prompt_for_test("voter-wif");
+
+        screen.on_leave();
+
+        let MasternodesView::Detail(detail) = &screen.view else {
+            panic!("leaving must not discard the detail view");
+        };
+        assert!(
+            !detail.has_voter_key_prompt_for_test(),
+            "an unsubmitted voting key must not outlive the tab"
+        );
 
         ctx.wallet_backend().expect("backend").shutdown().await;
     }

@@ -6,6 +6,9 @@
 
 use std::sync::Arc;
 
+use chrono::{LocalResult, TimeZone, Utc};
+use chrono_humanize::HumanTime;
+use dash_sdk::dpp::identity::TimestampMillis;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
@@ -21,6 +24,7 @@ use crate::backend_task::contested_names::ContestedResourceTask;
 use crate::backend_task::identity::{IdentityInputToLoad, IdentityLoadMode, IdentityTask};
 use crate::context::AppContext;
 use crate::model::contested_name::{ContestedName, MasternodeContestSummary};
+use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::{
     IdentityType, MasternodeKeyPresence, PrivateKeyTarget, QualifiedIdentity,
 };
@@ -31,7 +35,11 @@ use crate::ui::components::password_input::PasswordInput;
 use crate::ui::identities::keys::key_info_screen::KeyInfoScreen;
 use crate::ui::identity::identity_picker_card::draw_type_badge;
 use crate::ui::identity::identity_pill::shorten_id;
-use crate::ui::theme::{ComponentStyles, DashColors};
+use crate::ui::masternodes::card::{
+    PLATFORM_IDENTITY_STATUS_TOOLTIP, platform_identity_status_label,
+};
+use crate::ui::masternodes::{TIP_OWNER_KEY, TIP_PAYOUT_KEY, TIP_VOTING_KEY, key_status_tokens};
+use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::tokens::claim_tokens_screen::ClaimTokensScreen;
 use crate::ui::tokens::tokens_screen::IdentityTokenBasicInfo;
 use crate::ui::{MessageType, Screen, ScreenType};
@@ -50,27 +58,140 @@ fn dpns_section_header(open_contest_count: usize) -> String {
     format!("DPNS name contests to vote on ({open_contest_count})")
 }
 
+/// Framing shown once above the per-contest vote controls, so a masternode
+/// owner unfamiliar with DPNS contested voting understands what is being
+/// decided.
+const CONTEST_INTRO_MESSAGE: &str = "Several identities want the same name. Cast this node's vote to help decide who receives it, or to lock the name so no one gets it.";
+/// Nudge shown under a contest that still has no vote picked, so the user knows
+/// why the Cast votes button stays disabled.
+const NO_SELECTION_HINT: &str =
+    "No vote picked yet. Choose Abstain, Lock, or a candidate above to set this node's vote.";
+/// Tooltip on an enabled Cast votes button.
+const CAST_ENABLED_HINT: &str = "Submit this node's vote for every name you picked.";
+/// Tooltip on a disabled Cast votes button, explaining what unlocks it.
+const CAST_DISABLED_HINT: &str =
+    "Pick Abstain, Lock, or a candidate for at least one name to enable this.";
+
+/// The full DPNS domain a contest is fighting over: DPNS names register under
+/// `.dash`, so append it to the normalized label (shown bare elsewhere) to make
+/// clear this is a real domain registration.
+fn contest_display_name(normalized_name: &str) -> String {
+    format!("{normalized_name}.dash")
+}
+
+/// A candidate choice label carrying the candidate's current vote tally, so the
+/// voter sees the standing before picking. Phrased to avoid singular/plural
+/// verb agreement for later translation.
+fn candidate_choice_label(candidate_name: &str, votes: u32) -> String {
+    format!("Vote for {candidate_name} (votes so far: {votes})")
+}
+
+/// Render data for one open contest, snapshotted before the choice-writing
+/// loop so it does not borrow `open_contests` while `vote_selections` mutates.
+struct ContestVoteRow {
+    name: String,
+    end_time: Option<TimestampMillis>,
+    /// `(candidate id, candidate name, votes so far)` for each contestant.
+    candidates: Vec<(dash_sdk::platform::Identifier, String, u32)>,
+}
+
+/// A one-line status for a contest: how many identities are competing and when
+/// voting closes. Keeps the deadline absolute (ISO) plus a relative hint, and
+/// degrades cleanly when the end time has not loaded yet.
+fn contest_status_line(candidate_count: usize, end_time: Option<TimestampMillis>) -> String {
+    let count = format!("Identities competing for this name: {candidate_count}.");
+    match end_time {
+        Some(end_time) => match Utc.timestamp_millis_opt(end_time as i64) {
+            LocalResult::Single(dt) => {
+                let iso = dt.format("%Y-%m-%d %H:%M:%S");
+                let relative = HumanTime::from(dt);
+                format!("{count} Voting ends {iso} UTC ({relative}).")
+            }
+            _ => format!("{count} The voting deadline is unavailable."),
+        },
+        None => format!("{count} The voting deadline is still loading."),
+    }
+}
+
 /// The fixed top→bottom section order. Actions must precede Keys (TC-FR5-01).
 pub const SECTION_ORDER: [&str; 5] = ["Header", "Actions", "Keys", "DPNS", "Remove"];
 
-/// A short, human label for a masternode key button, derived from its purpose
-/// and the identity it lives on. Voter-identity keys are always "Voting"; on
-/// the main identity, Owner/Payout keys are named by purpose, everything else
-/// falls back to its purpose name.
+/// Tooltip for an authentication key — Platform-only, so it has no DIP-3 role
+/// counterpart and lives here rather than in the shared masternode tooltips.
+const TIP_AUTH_KEY: &str = "An authentication key signs this identity's actions on Dash Platform.";
+
+/// A short role name for a masternode key and its tooltip, aligned with the Dash
+/// Core DIP-3 ProRegTx roles. Voter-identity keys are always the voting key; on
+/// the main identity, the Platform Owner and Transfer keys of a masternode
+/// identity mirror the ProTx owner key and payout address respectively. Unknown
+/// purposes fall back to their name with no tooltip.
 fn key_role_label(
     target: &PrivateKeyTarget,
     key: &dash_sdk::platform::IdentityPublicKey,
-) -> String {
+) -> (String, Option<&'static str>) {
+    role_label_and_tip(
+        *target == PrivateKeyTarget::PrivateKeyOnVoterIdentity,
+        key.purpose(),
+    )
+}
+
+/// The pure label/tooltip mapping behind [`key_role_label`], split out so it can
+/// be unit-tested without constructing an `IdentityPublicKey`.
+fn role_label_and_tip(
+    is_voter: bool,
+    purpose: dash_sdk::dpp::identity::Purpose,
+) -> (String, Option<&'static str>) {
     use dash_sdk::dpp::identity::Purpose;
-    if *target == PrivateKeyTarget::PrivateKeyOnVoterIdentity {
-        return "Voting".to_string();
+    if is_voter {
+        return ("Voting".to_string(), Some(TIP_VOTING_KEY));
     }
-    match key.purpose() {
-        Purpose::OWNER => "Owner".to_string(),
-        Purpose::TRANSFER => "Payout".to_string(),
-        Purpose::AUTHENTICATION => "Authentication".to_string(),
-        other => format!("{other:?}"),
+    match purpose {
+        Purpose::OWNER => ("Owner".to_string(), Some(TIP_OWNER_KEY)),
+        Purpose::TRANSFER => ("Payout address".to_string(), Some(TIP_PAYOUT_KEY)),
+        Purpose::AUTHENTICATION => ("Authentication".to_string(), Some(TIP_AUTH_KEY)),
+        other => (format!("{other:?}"), None),
     }
+}
+
+/// Button labels (and DIP-3-aligned tooltips) for the "Manage keys" list, one
+/// per entry of `keys`, in order.
+///
+/// Each label is the key's role word (`Owner`/`Payout address`/`Voting`/…)
+/// plus a `(disabled)` marker for keys platform has retired: a node that
+/// rotates its payout address keeps the old, disabled Payout key on-chain
+/// next to the new active one, so a role word alone is not unique. When two
+/// keys would still collide (e.g. two retired Payout keys), the key id
+/// disambiguates them, so every button carries a distinct, correct label.
+fn manage_keys_labels(
+    keys: &[(PrivateKeyTarget, dash_sdk::platform::IdentityPublicKey)],
+) -> Vec<(String, Option<&'static str>)> {
+    let base: Vec<(String, Option<&'static str>)> = keys
+        .iter()
+        .map(|(target, key)| {
+            let (role, tip) = key_role_label(target, key);
+            let mut label = format!("{role} key");
+            if key.is_disabled() {
+                label.push_str(" (disabled)");
+            }
+            (label, tip)
+        })
+        .collect();
+
+    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    for (label, _) in &base {
+        *counts.entry(label.as_str()).or_default() += 1;
+    }
+
+    base.iter()
+        .zip(keys.iter())
+        .map(|((label, tip), (_, key))| {
+            if counts.get(label.as_str()).copied().unwrap_or(0) > 1 {
+                (format!("{label} #{}", key.id()), *tip)
+            } else {
+                (label.clone(), *tip)
+            }
+        })
+        .collect()
 }
 
 /// At-rest protection posture of a node's vault keys, reduced to what the detail
@@ -133,6 +254,21 @@ pub struct MasternodeDetailView {
     /// from FR-4's load form. `Some` while the prompt is open.
     voter_key_prompt: Option<PasswordInput>,
     remove_dialog: Option<ConfirmationDialog>,
+}
+
+#[cfg(test)]
+impl MasternodeDetailView {
+    /// Open the `Add voting key` prompt on a key, as typing into it would.
+    pub(crate) fn set_voter_key_prompt_for_test(&mut self, value: &str) {
+        let mut prompt = PasswordInput::new();
+        prompt.set_text(value);
+        self.voter_key_prompt = Some(prompt);
+    }
+
+    /// Whether the `Add voting key` prompt is open — and thus holding a key.
+    pub(crate) fn has_voter_key_prompt_for_test(&self) -> bool {
+        self.voter_key_prompt.is_some()
+    }
 }
 
 impl MasternodeDetailView {
@@ -329,12 +465,25 @@ impl MasternodeDetailView {
                     .color(DashColors::text_secondary(dark_mode)),
             );
             // Copy the FULL ProTxHash, not the shortened display string (TC-FR5-03).
-            if ui.button("⧉").on_hover_text("Copy ProTxHash").clicked() {
+            // `small_button` is text-height, so it stays vertically centered with
+            // the monospace hash and the badge; a full-size button towers over them.
+            if ui
+                .small_button("Copy")
+                .on_hover_text("Copy ProTxHash")
+                .clicked()
+            {
                 ui.ctx().copy_text(self.node_id_hex_full.clone());
             }
             draw_type_badge(ui, self.badge_label(), dark_mode);
         });
-        // Status dot + label (never colour-only — TC-FR5-05 / NFR-6).
+        let balance = format_credits_as_dash(self.identity.identity.balance());
+        ui.label(
+            RichText::new(format!("Balance: {balance}"))
+                .monospace()
+                .strong()
+                .size(14.0)
+                .color(DashColors::text_primary(dark_mode)),
+        );
         ui.horizontal(|ui| {
             let (rect, _) =
                 ui.allocate_exact_size(egui::Vec2::new(10.0, 10.0), egui::Sense::hover());
@@ -342,10 +491,12 @@ impl MasternodeDetailView {
                 .circle_filled(rect.center(), 4.0, Color32::from(self.identity.status));
             ui.add_space(4.0);
             ui.label(
-                RichText::new(self.identity.status.to_string())
+                RichText::new(platform_identity_status_label(self.identity.status))
                     .color(DashColors::text_primary(dark_mode)),
             );
-        });
+        })
+        .response
+        .on_hover_text(PLATFORM_IDENTITY_STATUS_TOOLTIP);
     }
 
     fn render_actions_row(&self, ui: &mut Ui, dark_mode: bool) -> Option<AppAction> {
@@ -356,15 +507,9 @@ impl MasternodeDetailView {
                 .color(DashColors::text_primary(dark_mode)),
         );
         ui.horizontal_wrapped(|ui| {
-            // All three credit screens are reused, scoped to THIS node (FR-9).
+            // The withdrawal screen is reused, scoped to THIS node (FR-9).
             if ui.button("Withdraw").clicked() {
                 action = Some(self.push(ScreenType::WithdrawalScreen(self.identity.clone())));
-            }
-            if ui.button("Top up").clicked() {
-                action = Some(self.push(ScreenType::TopUpIdentity(self.identity.clone())));
-            }
-            if ui.button("Transfer").clicked() {
-                action = Some(self.push(ScreenType::TransferScreen(self.identity.clone())));
             }
             // Evonode-only token-rewards cross-link (FR-11); absent for a plain
             // masternode (TC-FR11-02).
@@ -438,20 +583,23 @@ impl MasternodeDetailView {
 
         // Compact V/O/P presence (glyph, not colour-only — NFR-6).
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Roles:").color(DashColors::text_secondary(dark_mode)));
-            for (letter, present) in [
-                ("V", self.key_presence.voting),
-                ("O", self.key_presence.owner),
-                ("P", self.key_presence.payout),
-            ] {
-                let text = if present {
-                    RichText::new(letter)
+            ui.label(RichText::new("Roles:").color(DashColors::text_secondary(dark_mode)))
+                .info_tooltip(
+                    "Shows which of this node's keys are loaded: V is the voting key, O is the \
+                     owner key, and P is the payout address key.",
+                );
+            // Each letter explains its own role on hover, so a user who hovers `V`
+            // is told about the voting key rather than having to read the whole
+            // legend on the `Roles:` label.
+            for token in key_status_tokens(self.key_presence) {
+                let text = if token.present {
+                    RichText::new(token.letter)
                         .strong()
                         .color(DashColors::text_primary(dark_mode))
                 } else {
                     RichText::new("·").color(DashColors::text_secondary(dark_mode))
                 };
-                ui.label(text);
+                ui.label(text).info_tooltip(token.tooltip);
             }
         });
 
@@ -463,8 +611,10 @@ impl MasternodeDetailView {
                     RichText::new(format!("Voter identity: {}", shorten_id(&voter_full)))
                         .color(DashColors::text_secondary(dark_mode)),
                 );
+                // `small_button` keeps the copy affordance text-height and
+                // vertically centered with the voter-identity label.
                 if ui
-                    .button("⧉")
+                    .small_button("Copy")
                     .on_hover_text("Copy voter identity ID")
                     .clicked()
                 {
@@ -488,11 +638,15 @@ impl MasternodeDetailView {
                 .strong()
                 .color(DashColors::text_primary(dark_mode)),
         );
-        for (target, key) in self.identity_keys() {
-            if ui
-                .button(format!("{} key ›", key_role_label(&target, &key)))
-                .clicked()
-            {
+        let keys = self.identity_keys();
+        let labels = manage_keys_labels(&keys);
+        for ((target, key), (label, tip)) in keys.into_iter().zip(labels) {
+            let button = ui.button(format!("{label} ›"));
+            let button = match tip {
+                Some(tip) => button.clickable_tooltip(tip),
+                None => button,
+            };
+            if button.clicked() {
                 action = Some(self.open_key_info(target, &key));
             }
         }
@@ -629,6 +783,13 @@ impl MasternodeDetailView {
         action
     }
 
+    /// Close the `Add voting key` prompt, zeroizing the key typed into it. Called
+    /// when the Masternodes tab is left: the tab is a root screen that outlives
+    /// navigation, and an unsubmitted key must not.
+    pub fn clear_secrets(&mut self) {
+        self.voter_key_prompt = None;
+    }
+
     /// Build the scoped voter-key update: re-load THIS node (context pre-bound)
     /// with just the entered voting key, updating its voter identity in place.
     /// Distinct from FR-4's load form and exempt from duplicate-ProTxHash
@@ -650,6 +811,9 @@ impl MasternodeDetailView {
             // In-place update: merge the new voting key into the already-loaded
             // node, preserving its Owner/Payout keys (§10.8). Never overwrite.
             load_mode: IdentityLoadMode::MergeIntoExisting,
+            // This view gates on nothing: the load opens a record of its own rather
+            // than adopting one another caller is waiting on.
+            load_token: None,
         };
         Some(AppAction::BackendTask(BackendTask::IdentityTask(
             IdentityTask::LoadIdentity(input),
@@ -662,68 +826,92 @@ impl MasternodeDetailView {
         let mut action = None;
         // Collect the render data up front so the choice-writing loop does not
         // borrow `self.open_contests` while mutating `self.vote_selections`.
-        let contests: Vec<(String, Vec<(dash_sdk::platform::Identifier, String)>)> = self
+        let contests: Vec<ContestVoteRow> = self
             .open_contests
             .iter()
             .map(|contest| {
                 let candidates = contest
                     .contestants
                     .as_ref()
-                    .map(|list| list.iter().map(|c| (c.id, c.name.clone())).collect())
+                    .map(|list| {
+                        list.iter()
+                            .map(|c| (c.id, c.name.clone(), c.votes))
+                            .collect()
+                    })
                     .unwrap_or_default();
-                (contest.normalized_contested_name.clone(), candidates)
+                ContestVoteRow {
+                    name: contest.normalized_contested_name.clone(),
+                    end_time: contest.end_time,
+                    candidates,
+                }
             })
             .collect();
 
-        for (name, candidates) in &contests {
+        ui.label(RichText::new(CONTEST_INTRO_MESSAGE).color(DashColors::text_secondary(dark_mode)));
+
+        for contest in &contests {
             ui.separator();
             ui.label(
-                RichText::new(name)
+                RichText::new(contest_display_name(&contest.name))
                     .strong()
                     .color(DashColors::text_primary(dark_mode)),
             );
-            let selected = self.vote_selections.get(name).copied();
+            ui.label(
+                RichText::new(contest_status_line(
+                    contest.candidates.len(),
+                    contest.end_time,
+                ))
+                .color(DashColors::text_secondary(dark_mode)),
+            );
+            let selected = self.vote_selections.get(&contest.name).copied();
             ui.horizontal_wrapped(|ui| {
                 if ui
                     .selectable_label(selected == Some(ResourceVoteChoice::Abstain), "Abstain")
                     .clicked()
                 {
                     self.vote_selections
-                        .insert(name.clone(), ResourceVoteChoice::Abstain);
+                        .insert(contest.name.clone(), ResourceVoteChoice::Abstain);
                 }
                 if ui
                     .selectable_label(selected == Some(ResourceVoteChoice::Lock), "Lock")
                     .clicked()
                 {
                     self.vote_selections
-                        .insert(name.clone(), ResourceVoteChoice::Lock);
+                        .insert(contest.name.clone(), ResourceVoteChoice::Lock);
                 }
                 // Candidate choices are scoped to THIS contest's contestants.
-                for (candidate_id, candidate_name) in candidates {
+                for (candidate_id, candidate_name, votes) in &contest.candidates {
                     let choice = ResourceVoteChoice::TowardsIdentity(*candidate_id);
                     if ui
                         .selectable_label(
                             selected == Some(choice),
-                            format!("Vote for {candidate_name}"),
+                            candidate_choice_label(candidate_name, *votes),
                         )
                         .clicked()
                     {
-                        self.vote_selections.insert(name.clone(), choice);
+                        self.vote_selections.insert(contest.name.clone(), choice);
                     }
                 }
             });
+            if selected.is_none() {
+                ui.label(
+                    RichText::new(NO_SELECTION_HINT).color(DashColors::text_secondary(dark_mode)),
+                );
+            }
         }
 
         ui.separator();
         let votes: Vec<(String, ResourceVoteChoice)> = self
             .vote_selections
             .iter()
-            .filter(|(name, _)| contests.iter().any(|(n, _)| n == *name))
+            .filter(|(name, _)| contests.iter().any(|c| &c.name == *name))
             .map(|(name, choice)| (name.clone(), *choice))
             .collect();
         let has_votes = !votes.is_empty();
         if ui
             .add_enabled(has_votes, egui::Button::new("Cast votes"))
+            .on_hover_text(CAST_ENABLED_HINT)
+            .on_disabled_hover_text(CAST_DISABLED_HINT)
             .clicked()
         {
             action = Some(AppAction::BackendTask(BackendTask::ContestedResourceTask(
@@ -811,10 +999,188 @@ mod tests {
         );
     }
 
+    /// Build a masternode key with a chosen id / purpose / disabled state.
+    fn mn_key(
+        id: dash_sdk::dpp::identity::KeyID,
+        purpose: dash_sdk::dpp::identity::Purpose,
+        disabled: bool,
+    ) -> dash_sdk::platform::IdentityPublicKey {
+        use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
+        use dash_sdk::dpp::identity::{KeyType, SecurityLevel};
+        use dash_sdk::dpp::platform_value::BinaryData;
+        IdentityPublicKeyV0 {
+            id,
+            key_type: KeyType::ECDSA_HASH160,
+            purpose,
+            security_level: SecurityLevel::CRITICAL,
+            read_only: true,
+            data: BinaryData::new(vec![id as u8; 20]),
+            disabled_at: disabled.then_some(1),
+            contract_bounds: None,
+        }
+        .into()
+    }
+
+    /// An evonode that has rotated its payout address holds two `TRANSFER`
+    /// (Payout) keys on its main identity — the active new one and the disabled
+    /// old one — plus the owner key and a voter-identity voting key. Every
+    /// "Manage keys" button must get a distinct, correct label: the disabled
+    /// payout key is marked `(disabled)` instead of colliding with the active
+    /// one under a bare "Payout key".
+    #[test]
+    fn manage_keys_labels_disambiguate_rotated_evonode_payout_keys() {
+        use dash_sdk::dpp::identity::Purpose;
+        let keys = vec![
+            (
+                PrivateKeyTarget::PrivateKeyOnMainIdentity,
+                mn_key(0, Purpose::TRANSFER, false),
+            ),
+            (
+                PrivateKeyTarget::PrivateKeyOnMainIdentity,
+                mn_key(1, Purpose::OWNER, false),
+            ),
+            (
+                PrivateKeyTarget::PrivateKeyOnMainIdentity,
+                mn_key(2, Purpose::TRANSFER, true),
+            ),
+            (
+                PrivateKeyTarget::PrivateKeyOnVoterIdentity,
+                mn_key(0, Purpose::VOTING, false),
+            ),
+        ];
+
+        let labels: Vec<String> = manage_keys_labels(&keys)
+            .into_iter()
+            .map(|(label, _tip)| label)
+            .collect();
+        assert_eq!(
+            labels,
+            vec![
+                "Payout address key".to_string(),
+                "Owner key".to_string(),
+                "Payout address key (disabled)".to_string(),
+                "Voting key".to_string(),
+            ]
+        );
+        // No two buttons ever share a label.
+        let unique: std::collections::BTreeSet<_> = labels.iter().collect();
+        assert_eq!(unique.len(), labels.len(), "labels must be unique");
+    }
+
+    /// When even the role + `(disabled)` marker still collides — a payout
+    /// address rotated twice leaves two disabled Payout keys — the key id
+    /// breaks the tie so every button stays unique.
+    #[test]
+    fn manage_keys_labels_fall_back_to_key_id_on_residual_collision() {
+        use dash_sdk::dpp::identity::Purpose;
+        let keys = vec![
+            (
+                PrivateKeyTarget::PrivateKeyOnMainIdentity,
+                mn_key(0, Purpose::TRANSFER, false),
+            ),
+            (
+                PrivateKeyTarget::PrivateKeyOnMainIdentity,
+                mn_key(2, Purpose::TRANSFER, true),
+            ),
+            (
+                PrivateKeyTarget::PrivateKeyOnMainIdentity,
+                mn_key(3, Purpose::TRANSFER, true),
+            ),
+        ];
+
+        let labels: Vec<String> = manage_keys_labels(&keys)
+            .into_iter()
+            .map(|(label, _tip)| label)
+            .collect();
+        assert_eq!(
+            labels,
+            vec![
+                "Payout address key".to_string(),
+                "Payout address key (disabled) #2".to_string(),
+                "Payout address key (disabled) #3".to_string(),
+            ]
+        );
+        let unique: std::collections::BTreeSet<_> = labels.iter().collect();
+        assert_eq!(unique.len(), labels.len(), "labels must be unique");
+    }
+
+    #[test]
+    fn role_labels_follow_dip3_protx_terms() {
+        use dash_sdk::dpp::identity::Purpose;
+        // A voter-identity key is always the voting key, regardless of purpose.
+        assert_eq!(
+            role_label_and_tip(true, Purpose::AUTHENTICATION),
+            ("Voting".to_string(), Some(TIP_VOTING_KEY))
+        );
+        // Main-identity roles mirror the DIP-3 ProRegTx owner key and payout
+        // address; the Platform Transfer key surfaces as "Payout address".
+        assert_eq!(
+            role_label_and_tip(false, Purpose::OWNER),
+            ("Owner".to_string(), Some(TIP_OWNER_KEY))
+        );
+        assert_eq!(
+            role_label_and_tip(false, Purpose::TRANSFER),
+            ("Payout address".to_string(), Some(TIP_PAYOUT_KEY))
+        );
+        assert_eq!(
+            role_label_and_tip(false, Purpose::AUTHENTICATION),
+            ("Authentication".to_string(), Some(TIP_AUTH_KEY))
+        );
+        // An unmapped purpose keeps its name and carries no tooltip.
+        assert_eq!(
+            role_label_and_tip(false, Purpose::ENCRYPTION),
+            (format!("{:?}", Purpose::ENCRYPTION), None)
+        );
+    }
+
     #[test]
     fn tc_dpns_02_header_shows_open_contest_count() {
         assert_eq!(dpns_section_header(3), "DPNS name contests to vote on (3)");
         assert_eq!(dpns_section_header(0), "DPNS name contests to vote on (0)");
+    }
+
+    #[test]
+    fn contest_name_gets_dash_suffix() {
+        // The normalized label is shown bare elsewhere; the vote section spells
+        // out the full `.dash` domain so the user knows it is a registration.
+        assert_eq!(contest_display_name("det"), "det.dash");
+    }
+
+    #[test]
+    fn candidate_label_carries_current_tally() {
+        let label = candidate_choice_label("alice", 5);
+        assert!(
+            label.contains("Vote for alice"),
+            "names the candidate: {label}"
+        );
+        assert!(label.contains('5'), "shows the running tally: {label}");
+    }
+
+    #[test]
+    fn status_line_reports_candidate_count() {
+        let line = contest_status_line(2, None);
+        assert!(
+            line.contains("Identities competing for this name: 2."),
+            "counts contestants: {line}"
+        );
+        assert!(
+            line.contains("still loading"),
+            "degrades when the deadline is absent: {line}"
+        );
+    }
+
+    #[test]
+    fn status_line_renders_absolute_deadline() {
+        // 2021-01-01T00:00:00Z in milliseconds.
+        let line = contest_status_line(3, Some(1_609_459_200_000));
+        assert!(
+            line.contains("Identities competing for this name: 3."),
+            "counts contestants: {line}"
+        );
+        assert!(
+            line.contains("2021-01-01 00:00:00 UTC"),
+            "shows the absolute ISO deadline: {line}"
+        );
     }
 
     #[test]

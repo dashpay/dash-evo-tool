@@ -3302,8 +3302,9 @@ mod tests {
         assert_eq!(platform_tab_count(&tabs), 0);
     }
 
-    /// QA-006: if a future upstream bump ever makes the primary loop emit a
-    /// `PlatformPayment` tab, the dedicated push must not add a second one.
+    /// The snapshot carries the DIP-17 platform-payment pool, so the primary
+    /// loop emits a `PlatformPayment` tab from the summaries. The dedicated
+    /// push must not add a second one.
     #[test]
     fn platform_tab_is_never_duplicated() {
         let summaries = vec![summary(AccountCategory::PlatformPayment, None, 1_000)];
@@ -3363,6 +3364,25 @@ mod tests {
     fn developer_mode_always_shows_system_tab() {
         let tabs = plan_account_tabs(&[], true, false, true);
         assert!(tabs.contains(&AccountTab::System));
+    }
+
+    /// The Shielded tab appears whenever the shielded pool is available, so a
+    /// wallet that tracks a shielded balance always has a tab to view it.
+    /// Regression guard for the bug where the balance breakdown showed shielded
+    /// funds but the tab bar offered no Shielded tab.
+    #[test]
+    fn shielded_tab_present_when_available() {
+        let tabs = plan_account_tabs(&[], false, true, true);
+        assert!(
+            tabs.contains(&AccountTab::Shielded),
+            "Shielded tab must appear when shielded is available"
+        );
+
+        let tabs = plan_account_tabs(&[], false, false, true);
+        assert!(
+            !tabs.contains(&AccountTab::Shielded),
+            "no Shielded tab when shielded is unavailable"
+        );
     }
 
     /// Build an offline `AppContext` (no network I/O, throwaway data dir).

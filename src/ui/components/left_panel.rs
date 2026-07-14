@@ -12,34 +12,41 @@ use egui::{Frame, Image, Panel, RichText, TextureHandle, Ui};
 use egui_extras::{Size, StripBuilder};
 use std::sync::Arc;
 
-pub fn add_left_panel(
-    ui: &mut Ui,
-    app_context: &Arc<AppContext>,
-    selected_screen: RootScreenType,
-) -> AppAction {
-    let ctx = ui.ctx().clone();
-    let ctx = &ctx;
-    let mut action = AppAction::None;
-
-    // Define the button details directly in this function.
-    // The optional FeatureGate controls visibility — entries where the gate
-    // evaluates to false are filtered out before rendering.
-    // The button ordering below stays stable for existing users. The
-    // Identities hub entry (design-spec §A.1) is inserted after the legacy
-    // `Identities` entry below. Both legacy entries (Dashpay, Identities)
-    // remain visible during the coexistence period.
-    let legacy_buttons: &[(&str, RootScreenType, &str, Option<FeatureGate>)] = &[
-        (
-            "Dashpay",
-            RootScreenType::RootScreenDashPayProfile,
-            "dashpay.png",
-            Some(FeatureGate::DashPay),
-        ),
+/// The nav sidebar entries in display order: `(label, target screen, icon,
+/// optional feature gate)`. Entries whose feature gate evaluates to false are
+/// filtered out at render time.
+///
+/// The former standalone `Identities` ([`RootScreenType::RootScreenIdentities`])
+/// and `Dashpay` ([`RootScreenType::RootScreenDashPayProfile`]) entries are
+/// intentionally hidden from the nav; their screens, routes, and backend paths
+/// stay intact and remain reachable through other means (deep links, MCP tools,
+/// direct screen construction). The Identities hub
+/// ([`RootScreenType::RootScreenIdentityHub`]) is the single user-facing
+/// `Identities` entry.
+fn nav_button_specs() -> &'static [(
+    &'static str,
+    RootScreenType,
+    &'static str,
+    Option<FeatureGate>,
+)] {
+    &[
         (
             "Identities",
-            RootScreenType::RootScreenIdentities,
+            RootScreenType::RootScreenIdentityHub,
             "identity.png",
             None,
+        ),
+        // Masternodes sits directly below the identity cluster (locked decision
+        // #3), gated at the Power role — masternode operation is a Power User
+        // activity. The nav item and route are both absent below Power (the gate
+        // skip at render time drops the entry).
+        // TODO: swap `voting.png` for a dedicated node/server glyph when one is
+        // added to `icons/` (distinct from `identity.png`).
+        (
+            "Masternodes",
+            RootScreenType::RootScreenMasternodes,
+            "voting.png",
+            Some(FeatureGate::Masternodes),
         ),
         (
             "Contracts",
@@ -71,36 +78,19 @@ pub fn add_left_panel(
             "config.png",
             None,
         ),
-    ];
+    ]
+}
 
-    // Build the final button list. The hub and Masternodes entries are inserted
-    // directly after the legacy `Identities` entry so the identity-related
-    // entries cluster together while the old ones stay clickable.
-    let mut buttons: Vec<(&str, RootScreenType, &str, Option<FeatureGate>)> =
-        Vec::with_capacity(legacy_buttons.len() + 2);
-    for entry in legacy_buttons.iter() {
-        buttons.push(*entry);
-        if entry.1 == RootScreenType::RootScreenIdentities {
-            buttons.push((
-                "Identity Hub",
-                RootScreenType::RootScreenIdentityHub,
-                "identity.png",
-                None,
-            ));
-            // Masternodes sits directly below the identity cluster (locked
-            // decision #3), gated at the Power role — masternode operation is a
-            // Power User activity. The nav item and route are both absent below
-            // Power (the gate skip below drops the entry).
-            // TODO: swap `voting.png` for a dedicated node/server glyph when one
-            // is added to `icons/` (distinct from `identity.png`).
-            buttons.push((
-                "Masternodes",
-                RootScreenType::RootScreenMasternodes,
-                "voting.png",
-                Some(FeatureGate::Masternodes),
-            ));
-        }
-    }
+pub fn add_left_panel(
+    ui: &mut Ui,
+    app_context: &Arc<AppContext>,
+    selected_screen: RootScreenType,
+) -> AppAction {
+    let ctx = ui.ctx().clone();
+    let ctx = &ctx;
+    let mut action = AppAction::None;
+
+    let buttons = nav_button_specs();
 
     let dark_mode = ctx.global_style().visuals.dark_mode;
 
@@ -315,13 +305,22 @@ pub fn add_left_panel(
                                             );
                                         }
 
-                                        // Expert label (below network label if present)
-                                        if app_context.user_role().at_least(UserRole::Power) {
+                                        // Interface-mode indicator (below network label if
+                                        // present). Hidden for the default role; each raised
+                                        // role shows its own compact label so switching between
+                                        // them is visible here.
+                                        let role = app_context.user_role();
+                                        if let Some(indicator) = role.indicator_label() {
                                             ui.add_space(5.0);
-                                            let dev_label = egui::RichText::new("🔧 Expert")
-                                                .color(DashColors::GRADIENT_PURPLE)
-                                                .size(12.0);
-                                            if ui.label(dev_label).clickable_tooltip("Expert mode is enabled — shows advanced options").clicked() {
+                                            let mode_label =
+                                                egui::RichText::new(format!("🔧 {indicator}"))
+                                                    .color(DashColors::GRADIENT_PURPLE)
+                                                    .size(12.0);
+                                            let tooltip = format!(
+                                                "{mode} is on. Click to change your interface mode.",
+                                                mode = role.label()
+                                            );
+                                            if ui.label(mode_label).clickable_tooltip(tooltip).clicked() {
                                                 action = AppAction::SetMainScreenThenGoToMainScreen(
                                                     RootScreenType::RootScreenNetworkChooser,
                                                 );
@@ -335,4 +334,71 @@ pub fn add_left_panel(
         });
 
     action
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The nav sidebar hides the legacy standalone `Identities` and `Dashpay`
+    /// entries and surfaces the Identity Hub as the single `Identities` entry.
+    #[test]
+    fn nav_hides_legacy_identities_and_dashpay_and_labels_hub_as_identities() {
+        let specs = nav_button_specs();
+
+        assert!(
+            !specs
+                .iter()
+                .any(|(_, screen, _, _)| *screen == RootScreenType::RootScreenIdentities),
+            "the legacy standalone Identities entry must be hidden from the nav"
+        );
+        assert!(
+            !specs
+                .iter()
+                .any(|(_, screen, _, _)| *screen == RootScreenType::RootScreenDashPayProfile),
+            "the Dashpay entry must be hidden from the nav"
+        );
+
+        let hub = specs
+            .iter()
+            .find(|(_, screen, _, _)| *screen == RootScreenType::RootScreenIdentityHub);
+        assert_eq!(
+            hub.map(|(label, ..)| *label),
+            Some("Identities"),
+            "the Identity Hub row must be labeled Identities"
+        );
+
+        assert_eq!(
+            specs
+                .iter()
+                .filter(|(label, ..)| *label == "Identities")
+                .count(),
+            1,
+            "exactly one nav entry is labeled Identities"
+        );
+    }
+
+    /// Every fallback route (unregistered persisted screen, live de-gating of a
+    /// role-gated tab) lands on `app::FALLBACK_ROOT_SCREEN`. A fallback is only
+    /// an escape if the user can navigate onward from it, so that screen must
+    /// have a nav entry — and an ungated one, or the fallback could itself be
+    /// filtered out of the rail at the very role that triggered the fallback.
+    #[test]
+    fn fallback_root_screen_has_an_ungated_nav_entry() {
+        let entry = nav_button_specs()
+            .iter()
+            .find(|(_, screen, _, _)| *screen == crate::app::FALLBACK_ROOT_SCREEN);
+
+        let (_, _, _, gate) = entry.unwrap_or_else(|| {
+            panic!(
+                "the fallback root screen ({:?}) must have a nav entry — falling back to a \
+                 screen the nav does not carry strands the user with no way back",
+                crate::app::FALLBACK_ROOT_SCREEN
+            )
+        });
+        assert!(
+            gate.is_none(),
+            "the fallback root screen's nav entry must be ungated so it is reachable at every role"
+        );
+    }
 }

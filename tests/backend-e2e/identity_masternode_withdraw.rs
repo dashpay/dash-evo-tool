@@ -95,6 +95,7 @@ fn load_task(
         selected_wallet_seed_hash: None,
         encryption_password: None,
         load_mode: IdentityLoadMode::Overwrite,
+        load_token: None,
     };
     BackendTask::IdentityTask(IdentityTask::LoadIdentity(input))
 }

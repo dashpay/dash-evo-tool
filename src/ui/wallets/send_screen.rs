@@ -2174,6 +2174,7 @@ impl WalletSendScreen {
                     (
                         w.clone(),
                         self.app_context.snapshot_address_balances(&seed_hash),
+                        self.app_context.snapshot_address_paths(&seed_hash),
                     )
                 })
                 .collect();

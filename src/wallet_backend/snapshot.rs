@@ -262,21 +262,35 @@ fn external_addresses_from_info(
 }
 
 /// The derivation path of every address the wallet has generated, across all
-/// accounts and every pool (external and internal).
+/// accounts and every pool (external and internal), including the DIP-17
+/// platform-payment pool.
 ///
 /// Read straight off each pool's [`AddressInfo`](dash_sdk::dpp::key_wallet::managed_account::address_pool::AddressInfo)
-/// (`address → path`), which the account-summary view uses to categorize funded
-/// addresses DET's own `watched_addresses` bookkeeping has not indexed yet.
+/// (`address → path`). This is the authoritative set of addresses the wallet
+/// owns: the account-summary view categorizes funded addresses through it, and
+/// the send-autocomplete offers only addresses that appear here.
+///
+/// Platform-payment accounts hold credits rather than Core UTXOs, so upstream
+/// keys them separately and `all_accounts()` — which yields only Core-chain
+/// accounts — omits them. They must be walked through `all_platform_accounts()`
+/// or their addresses never reach the snapshot.
 fn address_paths_from_info(
     info: &dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::ManagedWalletInfo,
 ) -> BTreeMap<Address, DerivationPath> {
     let mut paths = BTreeMap::new();
-    for account in info.accounts.all_accounts() {
-        for pool in account.managed_account_type().address_pools() {
+    let mut index_pool =
+        |pool: &dash_sdk::dpp::key_wallet::managed_account::address_pool::AddressPool| {
             for entry in pool.addresses.values() {
                 paths.insert(entry.address.clone(), entry.path.clone());
             }
+        };
+    for account in info.accounts.all_accounts() {
+        for pool in account.managed_account_type().address_pools() {
+            index_pool(pool);
         }
+    }
+    for account in info.accounts.all_platform_accounts() {
+        index_pool(&account.addresses);
     }
     paths
 }
@@ -1276,15 +1290,43 @@ mod tests {
         assert_eq!(other.confirmed_balance, 7_000_000);
     }
 
-    /// QA-006 pin: a real upstream wallet's generated addresses must never
-    /// categorize as `PlatformPayment` today — upstream `all_accounts()`
-    /// (the sole source for `address_paths_from_info`) excludes the
-    /// platform-payment pool. `build_account_tabs`'s dedup guard is dormant only
-    /// while this holds; if a future dependency bump folds that pool into
-    /// `all_accounts()`, a `PlatformPayment` summary appears here and this test
-    /// fails loudly, flagging that the dedup path is now live.
+    /// The DIP-17 platform-payment pool must reach the snapshot. Upstream keys
+    /// it separately from `all_accounts()` (which yields only Core-chain
+    /// accounts), so `address_paths_from_info` has to walk
+    /// `all_platform_accounts()` as well. Without it the send-autocomplete's
+    /// Platform branch has no source and silently offers nothing.
+    ///
+    /// `WalletAccountCreationOptions::Default` — the option DET registers every
+    /// wallet with — creates platform-payment account `(0, 0)`, so a default
+    /// wallet always has this pool.
     #[test]
-    fn generated_paths_never_categorize_as_platform_payment_today() {
+    fn address_paths_include_the_platform_payment_pool() {
+        use crate::model::wallet::DerivationPathHelpers;
+        use dash_sdk::dpp::key_wallet::wallet::Wallet as UpstreamWallet;
+        use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOptions;
+        use dash_sdk::dpp::key_wallet::wallet::managed_wallet_info::ManagedWalletInfo;
+
+        let seed = [0x42u8; 64];
+        let network = Network::Testnet;
+        let wallet =
+            UpstreamWallet::from_seed_bytes(seed, network, WalletAccountCreationOptions::Default)
+                .expect("upstream wallet");
+        let info = ManagedWalletInfo::from_wallet(&wallet, 1);
+
+        let paths = address_paths_from_info(&info);
+
+        assert!(
+            paths.values().any(|p| p.is_platform_payment(network)),
+            "the DIP-17 platform-payment pool must carry paths into the snapshot"
+        );
+    }
+
+    /// The platform-payment pool joining the generated-path set makes a
+    /// `PlatformPayment` summary appear — the state `plan_account_tabs`'s dedup
+    /// guard exists for. Pins the categorization here; the tab-dedup assertion
+    /// lives with the planner in `wallets_screen`.
+    #[test]
+    fn platform_payment_pool_categorizes_as_platform_payment() {
         use crate::ui::state::account_summary::{AccountCategory, collect_account_summaries};
         use dash_sdk::dpp::key_wallet::wallet::Wallet as UpstreamWallet;
         use dash_sdk::dpp::key_wallet::wallet::initialization::WalletAccountCreationOptions;
@@ -1297,20 +1339,14 @@ mod tests {
                 .expect("upstream wallet");
         let info = ManagedWalletInfo::from_wallet(&wallet, 1);
 
-        let address_paths = address_paths_from_info(&info);
-        assert!(
-            !address_paths.is_empty(),
-            "the wallet must have generated addresses to make this assertion meaningful"
-        );
+        let summaries =
+            collect_account_summaries(network, &BTreeMap::new(), &address_paths_from_info(&info));
 
-        let summaries = collect_account_summaries(network, &BTreeMap::new(), &address_paths);
         assert!(
-            !summaries
+            summaries
                 .iter()
                 .any(|s| s.category == AccountCategory::PlatformPayment),
-            "platform-payment addresses must not reach the generated-path set today; \
-             if this fails, upstream all_accounts() now includes them and build_account_tabs \
-             must rely on its dedup guard"
+            "the platform-payment pool must categorize as PlatformPayment"
         );
     }
 }

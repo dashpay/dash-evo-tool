@@ -55,6 +55,15 @@ impl AppContext {
     /// fails; callers pass the variant matching their user-facing wording
     /// (message-signing vs. key-display differ). Shared by the wallet-key
     /// sign and display tasks.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TaskError::RootKeyDerivationRefused`] for an empty
+    /// `derivation_path`: the empty path is the BIP-32 root, so deriving there
+    /// would yield the wallet's master key instead of an address key. The
+    /// refusal lives here, before the seed is fetched, because every
+    /// key-bearing wallet task funnels through this seam — a UI-side gate would
+    /// only cover the caller that happens to carry it.
     async fn with_wallet_derived_key<T>(
         self: &Arc<Self>,
         seed_hash: WalletSeedHash,
@@ -62,6 +71,11 @@ impl AppContext {
         derivation_failed: TaskError,
         f: impl FnOnce(PrivateKey) -> Result<T, TaskError>,
     ) -> Result<T, TaskError> {
+        if derivation_path.as_ref().is_empty() {
+            tracing::warn!("Refused a wallet-key derivation at the BIP-32 root path");
+            return Err(TaskError::RootKeyDerivationRefused);
+        }
+
         let wallet = self.wallet_arc(&seed_hash)?.read()?.clone();
 
         let network = self.network;
@@ -248,9 +262,135 @@ pub enum WalletTask {
 
 #[cfg(test)]
 mod tests {
-    use super::dash_signed_message;
-    use dash_sdk::dpp::dashcore::secp256k1::{PublicKey, Secp256k1, SecretKey};
+    use super::*;
+    use crate::app::TaskResult;
+    use crate::app_dir::ensure_env_file;
+    use crate::context::connection_status::ConnectionStatus;
+    use crate::database::test_helpers::create_database_at_path;
+    use crate::model::wallet::Wallet;
+    use crate::model::wallet::birth_height::WalletOrigin;
+    use crate::utils::egui_mpsc::SenderAsync;
+    use crate::utils::tasks::TaskManager;
+    use dash_sdk::dpp::dashcore::Network;
+    use dash_sdk::dpp::dashcore::secp256k1::PublicKey;
     use dash_sdk::dpp::dashcore::sign_message::{MessageSignature, signed_msg_hash};
+    use dash_sdk::dpp::key_wallet::bip32::ChildNumber;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use tokio::sync::mpsc::Receiver;
+
+    /// An offline testnet context with one registered HD wallet whose seed sits
+    /// in the vault. Key derivation is local, so no network is touched. The
+    /// receiver and temp dir must outlive the context.
+    struct WalletFixture {
+        ctx: Arc<AppContext>,
+        seed_hash: WalletSeedHash,
+        _rx: Receiver<TaskResult>,
+        _dir: tempfile::TempDir,
+    }
+
+    async fn wallet_fixture() -> WalletFixture {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let data_dir = dir.path().to_path_buf();
+        ensure_env_file(&data_dir);
+        let db = Arc::new(create_database_at_path(&data_dir.join("data.db")).expect("db"));
+        let app_kv = AppContext::open_app_kv(&data_dir).expect("app kv");
+        let secret_store = AppContext::open_secret_store(&data_dir).expect("secret store");
+        let ctx = AppContext::new(
+            data_dir,
+            Network::Testnet,
+            db,
+            Arc::new(TaskManager::new()),
+            Arc::new(ConnectionStatus::new()),
+            egui::Context::default(),
+            app_kv,
+            secret_store,
+            crate::model::user_role::UserRoleCell::default(),
+        )
+        .expect("offline testnet AppContext");
+
+        let (tx, rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
+
+        let seed = [0x5Au8; 64];
+        let wallet =
+            Wallet::new_from_seed(seed, Network::Testnet, None, None).expect("build wallet");
+        let seed_hash = wallet.seed_hash();
+        ctx.register_wallet(wallet, &seed, WalletOrigin::Fresh)
+            .expect("register wallet");
+        ctx.ensure_wallet_backend(sender)
+            .await
+            .expect("wire wallet backend offline");
+
+        WalletFixture {
+            ctx,
+            seed_hash,
+            _rx: rx,
+            _dir: dir,
+        }
+    }
+
+    /// A BIP-44 external (receive) path `m/44'/1'/0'/0/index` on testnet.
+    fn bip44_external(index: u32) -> DerivationPath {
+        DerivationPath::from(vec![
+            ChildNumber::Hardened { index: 44 },
+            ChildNumber::Hardened { index: 1 },
+            ChildNumber::Hardened { index: 0 },
+            ChildNumber::Normal { index: 0 },
+            ChildNumber::Normal { index },
+        ])
+    }
+
+    /// An empty derivation path IS the BIP-32 root: deriving there yields the
+    /// wallet's master key, not an address key. The chokepoint every key-bearing
+    /// wallet task shares (display, message signing) must refuse it outright —
+    /// the invariant cannot live in a UI button, which only guards one caller.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn empty_derivation_path_is_refused_at_the_chokepoint() {
+        let fixture = wallet_fixture().await;
+
+        let reached_key = Arc::new(AtomicBool::new(false));
+        let probe = Arc::clone(&reached_key);
+        let result = fixture
+            .ctx
+            .with_wallet_derived_key(
+                fixture.seed_hash,
+                &DerivationPath::from(Vec::new()),
+                TaskError::WalletKeyLookupFailed,
+                move |_master_key| {
+                    probe.store(true, Ordering::SeqCst);
+                    Ok(())
+                },
+            )
+            .await;
+
+        assert!(
+            matches!(result, Err(TaskError::RootKeyDerivationRefused)),
+            "deriving at the empty (root) path must be refused, not served"
+        );
+        assert!(
+            !reached_key.load(Ordering::SeqCst),
+            "the master key must never be derived, let alone handed to a caller"
+        );
+    }
+
+    /// The root guard must not over-reach: a real address path still derives.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn known_derivation_path_still_derives() {
+        let fixture = wallet_fixture().await;
+
+        let wif = fixture
+            .ctx
+            .with_wallet_derived_key(
+                fixture.seed_hash,
+                &bip44_external(0),
+                TaskError::WalletKeyLookupFailed,
+                |key| Ok(key.to_wif()),
+            )
+            .await
+            .expect("a known BIP-44 address path must still derive");
+
+        assert!(!wif.is_empty(), "a derived key must produce a WIF");
+    }
 
     /// The shared signed-message envelope round-trips: the signer's public key
     /// recovers from the produced signature for both compression flags. A

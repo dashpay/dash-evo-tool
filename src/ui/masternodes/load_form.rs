@@ -10,6 +10,7 @@ use crate::model::masternode_input::is_valid_pro_tx_hash;
 use crate::model::qualified_identity::IdentityType;
 use crate::ui::components::password_input::PasswordInput;
 use crate::ui::masternodes::testnet_fixture::TestnetNodes;
+use crate::ui::masternodes::{TIP_OWNER_KEY, TIP_PAYOUT_KEY, TIP_VOTING_KEY};
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use eframe::egui::{self, RichText, Ui};
 
@@ -20,6 +21,8 @@ const WARNING_NOTE: &str = "Set an optional password to encrypt these keys on th
 const PRO_TX_HASH_FORMAT_ERROR: &str = "This doesn't look like a valid ProTxHash. Enter a hex or Base58 ProTxHash from your \
      masternode configuration.";
 const LOAD_DISABLED_TOOLTIP: &str = "Enter a ProTxHash to continue.";
+const SECRETS_CLEARED_NOTE: &str = "The keys and password you entered were cleared when you left this page. Enter them again to \
+     load this node with its keys, or load it read-only without them.";
 
 /// Outcome of rendering the load form for one frame.
 pub enum LoadFormOutcome {
@@ -45,6 +48,10 @@ pub struct MasternodeLoadForm {
     owner_key: PasswordInput,
     payout_key: PasswordInput,
     encryption_password: PasswordInput,
+    /// Set when [`clear_secrets`](Self::clear_secrets) dropped filled secret
+    /// fields, so the form can say so instead of silently losing what the user
+    /// entered. Retired as soon as any secret is entered again.
+    secrets_cleared: bool,
     /// Testnet-only Fill-Random fixture (FR-12). `None` off Testnet or when the
     /// `.testnet_nodes.yml` file is missing/malformed — the button never shows.
     testnet_nodes: Option<TestnetNodes>,
@@ -53,6 +60,29 @@ pub struct MasternodeLoadForm {
 impl Default for MasternodeLoadForm {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+impl MasternodeLoadForm {
+    /// Seed the ProTxHash field so a test can point the form at a specific node.
+    pub(crate) fn set_pro_tx_hash_for_test(&mut self, value: impl Into<String>) {
+        self.pro_tx_hash_input = value.into();
+    }
+
+    /// Fill every secret field — the three keys and the encryption password — so
+    /// a test can assert what survives a given transition.
+    pub(crate) fn set_secrets_for_test(&mut self, value: &str) {
+        self.voting_key.set_text(value);
+        self.owner_key.set_text(value);
+        self.payout_key.set_text(value);
+        self.encryption_password.set_text(value);
+    }
+
+    /// The outcome a Load click produces for the current field state, so a test
+    /// can drive the real submit path without an egui frame.
+    pub(crate) fn submit_for_test(&self) -> LoadFormOutcome {
+        LoadFormOutcome::Submit(Box::new(self.build_input()))
     }
 }
 
@@ -74,8 +104,34 @@ impl MasternodeLoadForm {
                 .with_monospace(),
             encryption_password: PasswordInput::new()
                 .with_hint_text("Password to encrypt these keys"),
+            secrets_cleared: false,
             testnet_nodes: None,
         }
+    }
+
+    /// Whether every secret field is empty.
+    fn secrets_are_empty(&self) -> bool {
+        self.voting_key.is_empty()
+            && self.owner_key.is_empty()
+            && self.payout_key.is_empty()
+            && self.encryption_password.is_empty()
+    }
+
+    /// Zeroize the three keys and the encryption password, keeping the fields
+    /// that carry no secret (ProTxHash, alias, node type) so an interrupted load
+    /// can be resumed. Called when the Masternodes tab is left: the tab is a root
+    /// screen that outlives navigation, and entered keys must not.
+    ///
+    /// The keys and the password go together on purpose. Dropping the password
+    /// alone would leave the form one click from storing the retained keys
+    /// unencrypted; with no keys left to store, a resubmit loads the node
+    /// read-only instead — the safe outcome the form already supports.
+    pub fn clear_secrets(&mut self) {
+        self.secrets_cleared |= !self.secrets_are_empty();
+        self.voting_key.clear();
+        self.owner_key.clear();
+        self.payout_key.clear();
+        self.encryption_password.clear();
     }
 
     /// Attach the Testnet Fill-Random fixture (FR-12). Pass `None` off Testnet.
@@ -157,17 +213,20 @@ impl MasternodeLoadForm {
         !self.pro_tx_hash_input.trim().is_empty()
     }
 
-    /// Build the backend load input from the current field state.
-    fn build_input(&mut self) -> IdentityInputToLoad {
-        let password = self.encryption_password.take_secret();
+    /// Build the backend load input from the current field state. Clones the
+    /// secret fields rather than draining them, so the form keeps every value
+    /// if the load fails and the user needs to fix one field and resubmit. The
+    /// form's own copies are zeroized when it is dropped on a successful load.
+    fn build_input(&self) -> IdentityInputToLoad {
+        let password = self.encryption_password.secret().clone();
         let encryption_password = (!password.is_blank()).then_some(password);
         IdentityInputToLoad {
             identity_id_input: self.pro_tx_hash_input.trim().to_string(),
             identity_type: self.node_type,
             alias_input: self.alias_input.trim().to_string(),
-            voting_private_key_input: self.voting_key.take_secret(),
-            owner_private_key_input: self.owner_key.take_secret(),
-            payout_address_private_key_input: self.payout_key.take_secret(),
+            voting_private_key_input: self.voting_key.secret().clone(),
+            owner_private_key_input: self.owner_key.secret().clone(),
+            payout_address_private_key_input: self.payout_key.secret().clone(),
             keys_input: vec![],
             // No auto-derive: masternode keys are never wallet-derived (§Locked-#4).
             derive_keys_from_wallets: false,
@@ -176,6 +235,9 @@ impl MasternodeLoadForm {
             // A fresh load rejects an already-loaded ProTxHash (§10.9) rather
             // than silently overwriting the existing node.
             load_mode: IdentityLoadMode::RejectIfExists,
+            // Stamped by the screen at dispatch: only it knows the record this
+            // submission opened, and only a parseable ProTxHash gets one.
+            load_token: None,
         }
     }
 
@@ -183,9 +245,19 @@ impl MasternodeLoadForm {
     /// a defense-in-depth check (FR-12 / TC-FR12-09): the whole tab is already
     /// Expert-gated, but a plaintext-key-reading dev tool stays inside the
     /// Expert-Mode envelope regardless of any future non-nav entry point.
-    pub fn show(&mut self, ui: &mut Ui, dev_mode: bool) -> LoadFormOutcome {
+    ///
+    /// `submitting` is `true` while a load dispatched from this form is in
+    /// flight: the submit button locks and shows a spinner so the load cannot be
+    /// re-submitted, and the form emits no further `Submit` until the result
+    /// arrives. On error the caller re-enables the form with fields intact.
+    pub fn show(&mut self, ui: &mut Ui, dev_mode: bool, submitting: bool) -> LoadFormOutcome {
         let dark_mode = ui.style().visuals.dark_mode;
         let mut outcome = LoadFormOutcome::None;
+
+        // The user has started re-entering the secrets that were cleared on leave.
+        if self.secrets_cleared && !self.secrets_are_empty() {
+            self.secrets_cleared = false;
+        }
 
         // Back row (content-panel, not the global header) — matches the detail
         // view's `‹ All masternodes` link so both views return to the card list
@@ -291,23 +363,39 @@ impl MasternodeLoadForm {
             );
             ui.add_space(12.0);
 
-            // Optional V/O/P key inputs (WIF or hex, hold-to-reveal).
+            // Say that the secrets were dropped on leave — a pasted key that
+            // vanished without a word reads as a bug, and a user who does not
+            // notice would load the node read-only without meaning to.
+            if self.secrets_cleared {
+                ui.label(
+                    RichText::new(SECRETS_CLEARED_NOTE)
+                        .size(12.0)
+                        .color(DashColors::warning_color(dark_mode)),
+                );
+                ui.add_space(8.0);
+            }
+
+            // Optional V/O/P key inputs (WIF or hex, hold-to-reveal). Labels and
+            // tooltips follow the Dash Core DIP-3 ProRegTx key roles.
             ui.label(
                 RichText::new("Voting private key")
                     .color(DashColors::text_primary(dark_mode)),
-            );
+            )
+            .info_tooltip(TIP_VOTING_KEY);
             self.voting_key.show(ui);
             ui.add_space(8.0);
             ui.label(
                 RichText::new("Owner private key")
                     .color(DashColors::text_primary(dark_mode)),
-            );
+            )
+            .info_tooltip(TIP_OWNER_KEY);
             self.owner_key.show(ui);
             ui.add_space(8.0);
             ui.label(
                 RichText::new("Payout address private key")
                     .color(DashColors::text_primary(dark_mode)),
-            );
+            )
+            .info_tooltip(TIP_PAYOUT_KEY);
             self.payout_key.show(ui);
             ui.add_space(12.0);
 
@@ -347,16 +435,23 @@ impl MasternodeLoadForm {
                     outcome = LoadFormOutcome::Cancel;
                 }
 
-                let enabled = self.can_submit();
-                let clicked = ComponentStyles::add_primary_button_enabled(
-                    ui,
-                    enabled,
-                    "Load masternode",
-                )
-                .disabled_tooltip(LOAD_DISABLED_TOOLTIP)
-                .clicked();
-                if clicked && enabled {
-                    outcome = LoadFormOutcome::Submit(Box::new(self.build_input()));
+                if submitting {
+                    // A load is in flight: lock the button and show progress so
+                    // the user cannot re-submit and knows the load is running.
+                    ui.add_enabled(false, egui::Button::new("Loading…"));
+                    ui.spinner();
+                } else {
+                    let enabled = self.can_submit();
+                    let clicked = ComponentStyles::add_primary_button_enabled(
+                        ui,
+                        enabled,
+                        "Load masternode",
+                    )
+                    .disabled_tooltip(LOAD_DISABLED_TOOLTIP)
+                    .clicked();
+                    if clicked && enabled {
+                        outcome = LoadFormOutcome::Submit(Box::new(self.build_input()));
+                    }
                 }
             });
         });
@@ -522,5 +617,37 @@ mod tests {
         form.encryption_password.set_text("hunter2");
         let input = form.build_input();
         assert!(input.encryption_password.is_some());
+    }
+
+    /// Building the load input must NOT drain the form's fields: if the backend
+    /// load fails, the form stays open and the user corrects one field and
+    /// resubmits — every value (ProTxHash, alias, keys, password) must survive.
+    #[test]
+    fn build_input_preserves_fields_for_error_retry() {
+        let mut form = MasternodeLoadForm::new();
+        form.pro_tx_hash_input = "deadbeef".to_string();
+        form.alias_input = "mn-east-01".to_string();
+        form.voting_key.set_text("voter-wif");
+        form.owner_key.set_text("owner-wif");
+        form.payout_key.set_text("payout-wif");
+        form.encryption_password.set_text("hunter2");
+
+        let input = form.build_input();
+
+        // The built input carries the values through to the backend task.
+        assert_eq!(input.voting_private_key_input.expose_secret(), "voter-wif");
+        assert_eq!(input.owner_private_key_input.expose_secret(), "owner-wif");
+        assert_eq!(
+            input.payout_address_private_key_input.expose_secret(),
+            "payout-wif"
+        );
+
+        // The form retains every field so a failed load is corrected in place.
+        assert_eq!(form.pro_tx_hash_input, "deadbeef");
+        assert_eq!(form.alias_input, "mn-east-01");
+        assert_eq!(form.voting_key.text(), "voter-wif");
+        assert_eq!(form.owner_key.text(), "owner-wif");
+        assert_eq!(form.payout_key.text(), "payout-wif");
+        assert_eq!(form.encryption_password.text(), "hunter2");
     }
 }

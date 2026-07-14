@@ -29,6 +29,7 @@ use dash_evo_tool::model::qualified_identity::qualified_identity_public_key::Qua
 use dash_evo_tool::model::qualified_identity::{
     IdentityStatus, IdentityType, PrivateKeyTarget, QualifiedIdentity,
 };
+use dash_evo_tool::model::user_role::UserRole;
 use dash_evo_tool::ui::ScreenLike;
 use dash_evo_tool::ui::components::MessageBanner;
 use dash_evo_tool::ui::helpers::format_key_label;
@@ -36,7 +37,8 @@ use dash_evo_tool::ui::identities::withdraw_screen::WithdrawalScreen;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::{
     IdentityPublicKeyGettersV0, IdentityPublicKeySettersV0,
 };
-use dash_sdk::dpp::identity::{Identity, KeyID, Purpose, SecurityLevel};
+use dash_sdk::dpp::identity::{Identity, KeyID, KeyType, Purpose, SecurityLevel};
+use dash_sdk::dpp::platform_value::BinaryData;
 use dash_sdk::dpp::version::PlatformVersion;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
 use egui_kittest::Harness;
@@ -52,6 +54,16 @@ fn key(id: KeyID, purpose: Purpose) -> IdentityPublicKey {
     k.set_id(id);
     k.set_purpose(purpose);
     k.set_security_level(SecurityLevel::CRITICAL);
+    k
+}
+
+/// Builds the on-chain TRANSFER key a masternode's registered Core payout
+/// address is derived from — `ECDSA_HASH160` over `hash`, the shape
+/// `QualifiedIdentity::masternode_payout_address` matches on.
+fn payout_key(id: KeyID, hash: [u8; 20]) -> IdentityPublicKey {
+    let mut k = key(id, Purpose::TRANSFER);
+    k.set_key_type(KeyType::ECDSA_HASH160);
+    k.set_data(BinaryData::new(hash.to_vec()));
     k
 }
 
@@ -349,5 +361,94 @@ fn owner_key_fallback_is_selected_and_rendered_in_combo_when_no_transfer_key() {
              fallback key's label ({expected_label})"
         );
         assert!(harness.query_by_value("Select Key…").is_none());
+    });
+}
+
+/// TC-FR9-06 / MN-007 — an owner-key withdrawal's destination is fixed to the
+/// node's registered Core payout address and is never user-editable, at ANY
+/// role. The address field used to stay a free-text `TextEdit` whenever the
+/// role was Power or above — and since the Masternodes page (the only route to
+/// this screen with an owner key selected) is itself gated at Power, that
+/// escape hatch was open to *every* user who could reach it, contradicting both
+/// the user story and the test spec. The backend's
+/// `OwnerKeyWithdrawalNotAllowed` guard only fired after the user had typed an
+/// address, confirmed, and submitted.
+#[test]
+fn owner_key_destination_is_locked_at_every_role() {
+    with_isolated_data_dir(|| {
+        let (_rt, app_context) = fresh_context();
+        MessageBanner::clear_all_global(app_context.egui_ctx());
+
+        // Only the OWNER key is signable locally; the payout key is on-chain
+        // only, so `default_withdrawal_key()` falls back to OWNER while
+        // `masternode_payout_address()` still resolves the forced destination.
+        let owner = key(1, Purpose::OWNER);
+        let payout = payout_key(2, [0x11; 20]);
+        let identity = build_identity(
+            &app_context,
+            IdentityType::Masternode,
+            vec![owner.clone(), payout],
+            vec![owner],
+        );
+        let payout_address = identity
+            .masternode_payout_address(app_context.network())
+            .expect("the fixture registers a payout address");
+
+        for role in [UserRole::Everyday, UserRole::Power, UserRole::Developer] {
+            app_context.set_user_role(role);
+            let screen = WithdrawalScreen::new(identity.clone(), &app_context);
+            let harness = mount_withdrawal_screen(screen);
+
+            assert!(
+                harness
+                    .query_by_label_contains(&format!(
+                        "Masternode payout address: {payout_address}"
+                    ))
+                    .is_some(),
+                "{role:?}: the forced payout destination must be shown"
+            );
+            assert!(
+                harness.query_by_label("Address:").is_none(),
+                "{role:?}: an owner-key withdrawal must not offer a free-text \
+                 destination field — the destination is fixed to the payout address"
+            );
+            assert!(
+                harness
+                    .query_by_label_contains("Leave empty to use masternode payout address")
+                    .is_none(),
+                "{role:?}: the opt-out hint belongs to the editable field, which \
+                 must not render for an owner key"
+            );
+        }
+    });
+}
+
+/// TC-FR9-07 — the mirror image: withdrawing with the transfer/payout key
+/// accepts any user-chosen address. The owner-key lock must not over-reach and
+/// freeze the destination for every masternode withdrawal.
+#[test]
+fn transfer_key_destination_stays_editable() {
+    with_isolated_data_dir(|| {
+        let (_rt, app_context) = fresh_context();
+        MessageBanner::clear_all_global(app_context.egui_ctx());
+        app_context.set_user_role(UserRole::Power);
+
+        // Both keys signable: TRANSFER wins, so the destination is free.
+        let owner = key(1, Purpose::OWNER);
+        let payout = payout_key(2, [0x11; 20]);
+        let identity = build_identity(
+            &app_context,
+            IdentityType::Masternode,
+            vec![owner.clone(), payout.clone()],
+            vec![owner, payout],
+        );
+
+        let screen = WithdrawalScreen::new(identity, &app_context);
+        let harness = mount_withdrawal_screen(screen);
+
+        assert!(
+            harness.query_by_label("Address:").is_some(),
+            "a transfer/payout-key withdrawal must keep the free-text destination field"
+        );
     });
 }

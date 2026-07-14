@@ -3,10 +3,10 @@
 //! `EventBridge` implements `platform_wallet::PlatformEventHandler` (and its
 //! `dash_spv::EventHandler` supertrait). Upstream owns chain sync; this is the
 //! only path by which sync/wallet state changes reach DET. Each callback is
-//! sync and must not block — it updates [`ConnectionStatus`] atomics and
-//! nudges the frame loop with a non-blocking `TaskResult::Refresh`. The
-//! visible-screen `display_task_result` / `refresh` then re-reads state
-//! through `WalletBackend` accessors, exactly as the old reconcile path did.
+//! sync and must not block — it updates [`ConnectionStatus`] atomics and sends
+//! a non-blocking `TaskResult::Repaint`. The sender requests the repaint, while
+//! this dedicated result avoids clearing per-screen async state such as the
+//! Identities hub's DashPay profile cache on every sync tick.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -105,10 +105,10 @@ impl EventBridge {
         }
     }
 
-    /// Nudge the frame loop. Non-blocking; a full channel is harmless because
-    /// `Refresh` is idempotent and the next event coalesces.
+    /// Nudge the frame loop without clearing per-screen async caches such as DashPay profiles.
+    /// The sender requests repaint on success; a full channel is harmless as events coalesce.
     fn nudge_refresh(&self) {
-        let _ = self.task_result_sender.try_send(TaskResult::Refresh);
+        let _ = self.task_result_sender.try_send(TaskResult::Repaint);
     }
 
     /// Emit a `ReceivedAvailableUTXOTransaction` for any freshly-seen records
@@ -676,14 +676,14 @@ mod tests {
         (bridge, cs, rx, platform_balances, platform_sync_cursors)
     }
 
-    fn drained_refresh(rx: &mut tokio::sync::mpsc::Receiver<TaskResult>) -> bool {
-        let mut saw_refresh = false;
+    fn drained_repaint(rx: &mut tokio::sync::mpsc::Receiver<TaskResult>) -> bool {
+        let mut saw_repaint = false;
         while let Ok(r) = rx.try_recv() {
-            if matches!(r, TaskResult::Refresh) {
-                saw_refresh = true;
+            if matches!(r, TaskResult::Repaint) {
+                saw_repaint = true;
             }
         }
-        saw_refresh
+        saw_repaint
     }
 
     /// A funding address paying into our wallet.
@@ -765,7 +765,7 @@ mod tests {
             cycle: 0,
         });
         assert_eq!(cs.spv_status(), SpvStatus::Running);
-        assert!(drained_refresh(&mut rx));
+        assert!(drained_repaint(&mut rx));
     }
 
     #[test]
@@ -777,7 +777,7 @@ mod tests {
         });
         assert_eq!(cs.spv_status(), SpvStatus::Error);
         assert!(cs.spv_last_error().is_some_and(|e| e.contains("boom")));
-        assert!(drained_refresh(&mut rx));
+        assert!(drained_repaint(&mut rx));
     }
 
     #[test]
@@ -790,7 +790,7 @@ mod tests {
         });
         // ConnectionStatus has no public peer-count getter; its own tests
         // cover the internal mutation. Here we assert the frame-loop nudge.
-        assert!(drained_refresh(&mut rx));
+        assert!(drained_repaint(&mut rx));
     }
 
     #[test]
@@ -799,7 +799,25 @@ mod tests {
         bridge.on_progress(&SyncProgress::default());
         // A default (no-manager) progress is neither synced nor errored.
         assert_eq!(cs.spv_status(), SpvStatus::Syncing);
-        assert!(drained_refresh(&mut rx));
+        assert!(drained_repaint(&mut rx));
+    }
+
+    #[test]
+    fn progress_nudge_repaints_without_refreshing_screen() {
+        let (bridge, _cs, mut rx) = make_bridge();
+        bridge.on_progress(&SyncProgress::default());
+
+        let results: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        assert!(
+            results
+                .iter()
+                .any(|result| matches!(result, TaskResult::Repaint))
+        );
+        assert!(
+            !results
+                .iter()
+                .any(|result| matches!(result, TaskResult::Refresh))
+        );
     }
 
     #[test]
@@ -821,7 +839,7 @@ mod tests {
         let stored_headers = stored.headers().expect("headers phase present");
         assert_eq!(stored_headers.target_height(), 10_000);
         assert_eq!(stored_headers.current_height(), 4_200);
-        assert!(drained_refresh(&mut rx));
+        assert!(drained_repaint(&mut rx));
     }
 
     /// A `SyncProgress` whose masternode phase is in `state`, headers still
@@ -871,7 +889,7 @@ mod tests {
             1,
             "a synced masternode phase must open the gate and start coordinators once"
         );
-        assert!(drained_refresh(&mut rx));
+        assert!(drained_repaint(&mut rx));
     }
 
     #[test]
@@ -905,7 +923,7 @@ mod tests {
             cs.spv_last_error()
                 .is_some_and(|e| e.contains("network down"))
         );
-        assert!(drained_refresh(&mut rx));
+        assert!(drained_repaint(&mut rx));
     }
 
     /// Drain the channel and return the first batch of incoming-payment
@@ -971,7 +989,7 @@ mod tests {
             Some(crate::model::wallet::TransactionStatus::InstantSendLocked),
             "the InstantLock event must upgrade the accumulated record's status"
         );
-        assert!(drained_refresh(&mut rx));
+        assert!(drained_repaint(&mut rx));
     }
 
     #[test]
@@ -1043,7 +1061,7 @@ mod tests {
             .expect("downloaded-notes progress published");
         assert_eq!(got.cumulative_scanned, 4_096);
         assert_eq!(got.block_height, 123_456);
-        assert!(drained_refresh(&mut rx));
+        assert!(drained_repaint(&mut rx));
     }
 
     #[test]
@@ -1055,7 +1073,7 @@ mod tests {
             .expect("committed-to-tree progress published");
         assert_eq!(got.leaves_committed, 2_048);
         assert_eq!(got.total_target, 10_000);
-        assert!(drained_refresh(&mut rx));
+        assert!(drained_repaint(&mut rx));
     }
 
     #[test]
@@ -1082,7 +1100,7 @@ mod tests {
             balances.lock().unwrap().is_empty(),
             "an unresolved wallet id must not write a balance"
         );
-        assert!(drained_refresh(&mut rx));
+        assert!(drained_repaint(&mut rx));
     }
 
     #[test]
@@ -1131,7 +1149,7 @@ mod tests {
             "an empty summary must not write any sync cursor"
         );
         assert!(
-            drained_refresh(&mut rx),
+            drained_repaint(&mut rx),
             "the frame loop must be nudged even on an empty summary"
         );
     }
@@ -1161,7 +1179,7 @@ mod tests {
             platform_sync_cursors.lock().unwrap().is_empty(),
             "an errored wallet must not write a sync cursor"
         );
-        assert!(drained_refresh(&mut rx));
+        assert!(drained_repaint(&mut rx));
     }
 
     /// HAPPY PATH (QA-B-002): `summary_ok_platform_entries` extracts the correct
@@ -1532,6 +1550,6 @@ mod tests {
             platform_sync_cursors.lock().unwrap().is_empty(),
             "an unregistered wallet must not write a sync cursor (no seed_hash mapping)"
         );
-        assert!(drained_refresh(&mut rx));
+        assert!(drained_repaint(&mut rx));
     }
 }

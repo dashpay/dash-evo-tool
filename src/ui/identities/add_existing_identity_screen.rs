@@ -872,6 +872,9 @@ impl AddExistingIdentityScreen {
             // Legacy User re-load: preserve the historical overwrite/upsert
             // behaviour (re-loading to add keys is a supported User workflow).
             load_mode: crate::backend_task::identity::IdentityLoadMode::Overwrite,
+            // This screen gates on nothing: the load opens a record of its own
+            // rather than adopting one another caller is waiting on.
+            load_token: None,
         };
 
         AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::LoadIdentity(

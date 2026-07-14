@@ -10,6 +10,8 @@ use crate::backend_task::platform_info::{PlatformInfoTaskRequestType, PlatformIn
 use crate::backend_task::system_task::SystemTask;
 use crate::backend_task::wallet::WalletTask;
 use crate::context::AppContext;
+use crate::context::identity_load_registry::IdentityLoadToken;
+use crate::model::masternode_input::decode_identity_id;
 use dash_sdk::dpp::address_funds::PlatformAddress;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
@@ -78,6 +80,21 @@ fn is_wallet_touching(task: &BackendTask) -> bool {
             | BackendTask::DashPayTask(_)
             | BackendTask::ShieldedTask(_)
     )
+}
+
+/// The identity-load record `task` was dispatched under, when its caller marked
+/// the load `Submitted` and is gating on it. `None` for every other task, and for
+/// a load whose caller gates on nothing.
+///
+/// The id is parsed exactly as `load_identity` parses it, so the record named here
+/// is the one that load would claim.
+fn identity_load_ticket(task: &BackendTask) -> Option<(Identifier, IdentityLoadToken)> {
+    let BackendTask::IdentityTask(IdentityTask::LoadIdentity(input)) = task else {
+        return None;
+    };
+    let token = input.load_token?;
+    let identity_id = decode_identity_id(&input.identity_id_input).ok()?;
+    Some((identity_id, token))
 }
 
 /// Whether a wallet-backend build error is terminal (storage written by a
@@ -543,6 +560,15 @@ impl AppContext {
         task: BackendTask,
         sender: SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
+        // A dispatched identity load is recorded `Submitted` before this task
+        // exists, and only the load's own claim closes that record out. Both gates
+        // below return before the load ever reaches `load_identity`, so without a
+        // backstop the record would stay outstanding for the rest of the session and
+        // the screen gating on it stuck on "Loading…". Held for the whole task: it
+        // covers every way a load can end before its claim, not just these two.
+        let _load_dispatch = identity_load_ticket(&task)
+            .map(|(identity_id, token)| self.backstop_identity_load(identity_id, token));
+
         let sdk = self.sdk.load().as_ref().clone();
 
         // Wallet/identity/DashPay/core/shielded flows go through
@@ -870,6 +896,71 @@ mod tests {
         assert!(!is_wallet_touching(&BackendTask::DiscoverDapiNodes {
             network: Network::Testnet,
         }));
+    }
+
+    /// Regression: a load short-circuited by one of the gates above never reaches
+    /// `load_identity`, so it never takes the claim that reports its outcome. The
+    /// dispatching screen has already recorded it `Submitted` — without the
+    /// backstop that record would stay outstanding for the rest of the session, and
+    /// the Masternodes "Load" gate stuck on "Loading…" for that node.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_submitted_load_recovers_when_its_task_never_starts() {
+        use crate::backend_task::identity::{IdentityInputToLoad, IdentityLoadMode};
+        use crate::context::identity_load_registry::IdentityLoadPhase;
+        use crate::context::migration_status::{MigrationState, MigrationStep};
+        use crate::context::test_support::test_app_context;
+        use crate::model::qualified_identity::IdentityType;
+        use crate::model::secret::Secret;
+        use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(tmp.path());
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
+
+        let identity_id = Identifier::from([0x7c; 32]);
+        let token = ctx
+            .mark_identity_load_submitted(identity_id)
+            .expect("submitted");
+
+        ctx.migration_status().set_state(MigrationState::Running {
+            step: MigrationStep::Identities,
+        });
+
+        let input = IdentityInputToLoad {
+            identity_id_input: identity_id.to_string(Encoding::Hex),
+            identity_type: IdentityType::Masternode,
+            alias_input: String::new(),
+            voting_private_key_input: Secret::new(""),
+            owner_private_key_input: Secret::new(""),
+            payout_address_private_key_input: Secret::new(""),
+            keys_input: vec![],
+            derive_keys_from_wallets: false,
+            selected_wallet_seed_hash: None,
+            encryption_password: None,
+            load_mode: IdentityLoadMode::RejectIfExists,
+            load_token: Some(token),
+        };
+
+        let result = ctx
+            .run_backend_task(
+                BackendTask::IdentityTask(IdentityTask::LoadIdentity(input)),
+                sender,
+            )
+            .await;
+        assert!(
+            matches!(result, Err(TaskError::WalletStorageNotReady)),
+            "the migration gate short-circuits a wallet-touching task, got {result:?}"
+        );
+        assert_eq!(
+            ctx.identity_load_phase(&identity_id, token),
+            Some(IdentityLoadPhase::Failed),
+            "a load short-circuited before its task ran reports Failed, offering the user a retry"
+        );
+
+        if let Ok(backend) = ctx.wallet_backend() {
+            backend.shutdown().await;
+        }
     }
 
     /// Only the storage-open variants (data from a newer/incompatible

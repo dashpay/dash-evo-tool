@@ -2,7 +2,7 @@
 //!
 //! Builds the Masternodes page's [`PageNavSpec`]: a page-aware `Masternodes`
 //! segment-1, an **interactive** wallet pill (funds Top up — FR-9) and an
-//! **interactive** page-scoped node pill (`🖥 mn-east-01 ▾` — FR-GLOBAL-NAV-3),
+//! **interactive** page-scoped node pill (`🖥 mn-east-01 ›` — FR-GLOBAL-NAV-3),
 //! two-way bound with the card grid and the detail view. Renders nothing
 //! (module-placement discriminator → `ui/state`).
 //!

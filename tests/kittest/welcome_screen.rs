@@ -1,5 +1,6 @@
 use crate::support::with_isolated_data_dir;
 use dash_evo_tool::model::user_role::UserRole;
+use dash_evo_tool::ui::RootScreenType;
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 
@@ -45,6 +46,46 @@ fn welcome_role_selector_sets_and_persists_role() {
             app_context.get_app_settings().user_role,
             Some(UserRole::Everyday),
             "the onboarding role choice must be persisted to AppSettings"
+        );
+    });
+}
+
+/// The "Just Explore" onboarding path must land on the Identities hub — the
+/// single user-facing identity entry in the left nav. It previously landed on
+/// the DashPay profile screen, which the nav now hides, leaving the user with
+/// no way to navigate back to their landing screen.
+#[test]
+fn just_explore_lands_on_identities_hub() {
+    with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        // A fresh data dir leaves onboarding incomplete, so the welcome screen
+        // renders on the first frame.
+        let mut harness = Harness::builder().with_max_steps(100).build_eframe(|ctx| {
+            dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
+                .expect("Failed to create AppState")
+                .with_animations(false)
+        });
+        harness.set_size(egui::vec2(1024.0, 768.0));
+        harness.run_steps(10);
+
+        assert!(
+            harness.state().show_welcome_screen,
+            "a fresh data dir must open on the onboarding welcome screen"
+        );
+
+        harness.get_by_label("Just Explore").click();
+        harness.run_steps(5);
+
+        assert!(
+            !harness.state().show_welcome_screen,
+            "choosing an onboarding path must dismiss the welcome screen"
+        );
+        assert_eq!(
+            harness.state().selected_main_screen,
+            RootScreenType::RootScreenIdentityHub,
+            "the 'Just Explore' path must land on the Identities hub, not the hidden DashPay profile"
         );
     });
 }

@@ -285,8 +285,12 @@ pub(crate) fn read_scheduled_votes(
 ///
 /// A row whose blob will not decode is counted in
 /// [`LegacyIdentities::unreadable`] and skipped, so one bad blob never blocks
-/// the identities around it. Nothing about the blob — or the decoded identity —
-/// is ever logged: it carries private keys.
+/// the identities around it.
+///
+/// A skipped row is logged by its identity id alone — the public, on-chain
+/// handle, which is what lets the user tell which identity did not come across.
+/// The `data` blob and everything it decodes to (private keys above all) are
+/// never logged, at any level.
 pub(crate) fn read_identities(
     conn: &Connection,
     network: Network,
@@ -314,8 +318,8 @@ pub(crate) fn read_identities(
         let (id, data, status, wallet, wallet_index, alias) = match decode_identity_columns(row) {
             Ok(columns) => columns,
             Err(_) => {
-                // No id is logged: the failing column may itself be the id, and
-                // nothing about a row that may carry key material is ever logged.
+                // Not even the id is logged here: the failing column may be the id
+                // itself, so there is no trustworthy handle to name the row by.
                 tracing::warn!(
                     target = "database::legacy_import",
                     "Skipping legacy identity whose column types could not be read",

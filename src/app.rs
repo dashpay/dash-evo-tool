@@ -251,6 +251,7 @@ fn cold_start_backend_wait_timed_out(waited: Option<Duration>, timeout: Duration
 
 #[derive(Debug, From)]
 pub enum TaskResult {
+    Repaint,
     Refresh,
     Success(Box<BackendTaskSuccessResult>),
     Error(TaskError),
@@ -1686,6 +1687,10 @@ impl App for AppState {
                 }
                 TaskResult::Refresh => {
                     self.visible_screen_mut().refresh();
+                }
+                TaskResult::Repaint => {
+                    // SenderAsync/SenderSync already requested a repaint when sending; avoid
+                    // state-clearing screen refreshes for ambient events such as sync ticks.
                 }
             }
         }

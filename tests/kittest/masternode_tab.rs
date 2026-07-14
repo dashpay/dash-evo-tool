@@ -299,10 +299,15 @@ fn card_grid_renders_seeded_nodes() {
             "card must expose a single accessible `Open {{node}}` label"
         );
 
-        // Status label pairs colour with text — never colour-only (TC-NFR6-03).
+        // Status label pairs colour with text — never colour-only (TC-NFR6-03) —
+        // and names the subject explicitly, so the dot cannot be misread as Core
+        // or PoSe health. The tab is Power-gated, so the status always renders here.
         assert!(
-            harness.query_all_by_label("Pending Creation").count() >= 1,
-            "identity-status label must render as text alongside its dot"
+            harness
+                .query_all_by_label("Platform identity: Pending Creation")
+                .count()
+                >= 1,
+            "identity-status label must render as text alongside its dot, naming Platform identity"
         );
 
         // Top-right Refresh toolbar button (TC-FR7-01).

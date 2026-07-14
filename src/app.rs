@@ -184,15 +184,16 @@ pub fn migration_unreadable_votes_text(count: u32) -> String {
 
 /// User-facing banner copy for a migration that finished the wallet drain but
 /// could not decode `count` identities. Their keys are therefore not loaded, so
-/// the sentence names the action that restores them. Kept separate from the
-/// scheduled-votes copy because the remedy is different — load an identity, not
-/// re-schedule a vote. The previous version's data is never deleted, so the
-/// re-import is always possible. Exposed for kittest coverage.
+/// the sentence names both the screen and the control that restore them — a user
+/// who has never opened that flow cannot act on "load them again" alone. Kept
+/// separate from the scheduled-votes copy because the remedy is different — load
+/// an identity, not re-schedule a vote. The previous version's data is never
+/// deleted, so the re-import is always possible. Exposed for kittest coverage.
 pub fn migration_unreadable_identities_text(count: u32) -> String {
     format!(
         "Some identities from the previous version could not be read and were not carried over \
-         ({count} in total). Your previous data is untouched. Load these identities again to \
-         restore their keys."
+         ({count} in total). Your previous data is untouched. Choose Load Identity on the \
+         Identities screen to load them again and restore their keys."
     )
 }
 
@@ -207,8 +208,8 @@ pub fn migration_unreadable_identities_and_votes_text(identities: u32, votes: u3
     format!(
         "Some identities ({identities} in total) and some scheduled votes ({votes} in total) from \
          the previous version could not be read and were not carried over. Your previous data is \
-         untouched. Load these identities again to restore their keys, and schedule the votes \
-         again on the Scheduled Votes screen."
+         untouched. Choose Load Identity on the Identities screen to load the identities again, \
+         and schedule the votes again on the Scheduled Votes screen."
     )
 }
 
@@ -222,8 +223,8 @@ pub fn migration_failed_with_unreadable_identities_text(count: u32) -> String {
     format!(
         "Some identities from the previous version could not be read and were not carried over \
          ({count} in total), and updating the rest of your previous data did not finish. Your \
-         previous data is untouched. Choose Retry now to finish updating, then load these \
-         identities again to restore their keys."
+         previous data is untouched. Choose Retry now to finish updating, then choose Load \
+         Identity on the Identities screen to load them again and restore their keys."
     )
 }
 

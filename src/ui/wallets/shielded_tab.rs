@@ -16,12 +16,12 @@ use eframe::egui::{self, Ui};
 use egui::{Color32, Frame, Margin, RichText};
 use std::sync::Arc;
 
-/// J-3 indicator strings — single complete sentences so the i18n
-/// extraction pass picks each one up as a discrete translation unit.
-/// Exposed `pub` so kittest coverage (TC-A11Y-006) can assert against
-/// the exact label the UI renders.
+/// J-3 indicator strings — single complete sentences that name their own
+/// subject, so the i18n pass picks each one up as a discrete translation unit
+/// and no label depends on where it happens to be rendered. Exposed `pub` so
+/// the tests (TC-A11Y-006) assert against the exact label the UI renders.
 pub const SHIELDED_VERIFYING_LABEL: &str = "Verifying shielded balance.";
-pub const SHIELDED_VERIFIED_LABEL: &str = "Verified.";
+pub const SHIELDED_VERIFIED_LABEL: &str = "Shielded balance verified.";
 pub const SHIELDED_SPEND_LOCKED_LABEL: &str = "Spending paused.";
 pub const SHIELDED_SPEND_LOCKED_TOOLTIP: &str =
     "Spending paused until shielded balance is verified.";
@@ -80,10 +80,14 @@ pub fn derive_shielded_indicator(state: &MigrationState, skipped: bool) -> Shiel
             step: MigrationStep::Shielded,
         } => ShieldedIndicator::Verifying,
         MigrationState::Failed { .. } => ShieldedIndicator::Failed,
-        // Unreadable scheduled votes or identities — and even the combined
-        // app-data-plus-identities failure — say nothing about shielded data: all
-        // of these run after the wallet drain completed, so the balance is as
-        // authoritative as on `Success`.
+        // Every state below is reachable only after the wallet drain returned Ok,
+        // and what broke in them — undecodable vote or identity rows, a hard
+        // app-data failure — belongs to passes that run afterwards and never touch
+        // shielded storage. The balance is therefore as authoritative as on
+        // `Success`, even under an error banner: `FailedWithUnreadableIdentities`
+        // raises one, and the badge deliberately stays green beneath it. Mapping it
+        // to `Failed` instead would lock shielded spends over a corrupt vote row and
+        // offer a retry for a shielded migration that never failed.
         MigrationState::Success
         | MigrationState::SucceededWithUnreadableVotes { .. }
         | MigrationState::SucceededWithUnreadableIdentities { .. }
@@ -860,6 +864,23 @@ mod tests {
         assert_ne!(SHIELDED_VERIFIED_ICON, SHIELDED_VERIFIED_LABEL);
     }
 
+    /// The badge stays green on the terminal states that failed *something else*
+    /// (unreadable identities, a hard app-data failure) because none of them
+    /// touch shielded data — so its copy must name the one thing it vouches for.
+    /// A badge whose subject comes from its position under the balance reads as
+    /// a blanket "all good" beside the migration error banner, and hands the
+    /// translator an adjective with no noun to agree with.
+    #[test]
+    fn verified_label_names_the_balance_it_vouches_for() {
+        assert!(
+            SHIELDED_VERIFIED_LABEL
+                .to_lowercase()
+                .contains("shielded balance"),
+            "the Verified badge must name its subject, not borrow it from the layout: \
+             `{SHIELDED_VERIFIED_LABEL}`",
+        );
+    }
+
     /// `derive_shielded_indicator` maps every migration state onto the
     /// expected J-3 badge. Pure inputs / pure output — testable without
     /// a UI harness.
@@ -910,6 +931,43 @@ mod tests {
             ),
             ShieldedIndicator::Verified,
             "an unreadable vote row says nothing about shielded data — the drain completed",
+        );
+        assert_eq!(
+            derive_shielded_indicator(
+                &MigrationState::SucceededWithUnreadableIdentities { count: 1 },
+                false,
+            ),
+            ShieldedIndicator::Verified,
+            "an unreadable identity row costs the user keys, not shielded notes",
+        );
+        assert_eq!(
+            derive_shielded_indicator(
+                &MigrationState::SucceededWithUnreadableIdentitiesAndVotes {
+                    identities: 1,
+                    votes: 2,
+                },
+                false,
+            ),
+            ShieldedIndicator::Verified,
+            "two unreadable-row signals are still not a shielded-data signal",
+        );
+        // The one state where the badge sits beside a red Error banner. It stays
+        // Verified on purpose: the error is the app-data pass, which runs after
+        // the drain and never touches shielded storage. Downgrading it would lock
+        // spends over a corrupt vote row and claim a shielded failure that did not
+        // happen.
+        assert_eq!(
+            derive_shielded_indicator(
+                &MigrationState::FailedWithUnreadableIdentities {
+                    count: 1,
+                    error: std::sync::Arc::new(
+                        crate::backend_task::migration::MigrationError::WalletBackendUnavailable,
+                    ),
+                },
+                false,
+            ),
+            ShieldedIndicator::Verified,
+            "a failed app-data pass is not a failed shielded migration — spends stay open",
         );
         // Skip-for-now hides the indicator regardless of state — the
         // session-local override the UI uses to dismiss the retry

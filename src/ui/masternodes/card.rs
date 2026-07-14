@@ -5,6 +5,7 @@
 use crate::model::contested_name::MasternodeContestSummary;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::{IdentityStatus, IdentityType, MasternodeKeyPresence};
+use crate::model::user_role::UserRole;
 use crate::ui::identity::identity_picker_card::{
     CARD_HEIGHT, CARD_MIN_WIDTH, draw_monogram, draw_type_badge,
 };
@@ -14,6 +15,16 @@ use eframe::egui::{
     self, Color32, CornerRadius, Frame, Margin, Response, RichText, Sense, Stroke, Ui, Vec2,
     WidgetInfo, WidgetType,
 };
+
+pub(crate) const PLATFORM_IDENTITY_STATUS_TOOLTIP: &str = "This shows whether this masternode's Platform identity can currently be found. It does not show Core network or PoSe status.";
+
+pub(crate) fn platform_identity_status_label(status: IdentityStatus) -> String {
+    format!("Platform identity: {status}")
+}
+
+pub(crate) fn show_platform_identity_status(role: UserRole) -> bool {
+    role.at_least(UserRole::Power)
+}
 
 /// Heading for a masternode card: the alias when set, otherwise the shortened
 /// ProTxHash. Mirrors TC-FR3-02 / TC-FR3-03.
@@ -135,7 +146,11 @@ impl MasternodeCard {
         }
     }
 
-    pub fn show(&self, ui: &mut Ui) -> MasternodeCardResponse {
+    pub fn show(
+        &self,
+        ui: &mut Ui,
+        platform_identity_status_visible: bool,
+    ) -> MasternodeCardResponse {
         let dark_mode = ui.ctx().global_style().visuals.dark_mode;
         let border = Stroke::new(1.0, DashColors::border(dark_mode));
         let fill = DashColors::surface(dark_mode);
@@ -149,6 +164,7 @@ impl MasternodeCard {
             .inner_margin(Margin::symmetric(16, 16));
 
         let desired_size = Vec2::new(CARD_MIN_WIDTH, CARD_HEIGHT);
+        let mut platform_identity_status_rect = None;
 
         let inner = frame.show(ui, |ui| {
             ui.set_min_size(desired_size);
@@ -242,13 +258,15 @@ impl MasternodeCard {
                 );
                 ui.add_space(4.0);
 
-                // Identity status dot + label (all five states).
-                draw_status_row(
-                    ui,
-                    Color32::from(self.status),
-                    &self.status.to_string(),
-                    dark_mode,
-                );
+                if platform_identity_status_visible {
+                    let status_response = draw_status_row(
+                        ui,
+                        Color32::from(self.status),
+                        &platform_identity_status_label(self.status),
+                        dark_mode,
+                    );
+                    platform_identity_status_rect = Some(status_response.rect);
+                }
             });
         });
 
@@ -256,6 +274,18 @@ impl MasternodeCard {
         let rect = inner.response.rect;
         let id = ui.id().with(("masternode-card", &self.node_id));
         let response: Response = ui.interact(rect, id, Sense::click());
+        let response = if platform_identity_status_rect.is_some_and(|status_rect| {
+            ui.input(|input| {
+                input
+                    .pointer
+                    .hover_pos()
+                    .is_some_and(|pointer| status_rect.contains(pointer))
+            })
+        }) {
+            response.on_hover_text(PLATFORM_IDENTITY_STATUS_TOOLTIP)
+        } else {
+            response
+        };
         if response.hovered() {
             ui.painter().rect_stroke(
                 rect,
@@ -277,7 +307,7 @@ impl MasternodeCard {
 
 /// Paint a small status dot followed by its text label. The label is always
 /// present, so status is never conveyed by colour alone (NFR-6).
-fn draw_status_row(ui: &mut Ui, color: Color32, label: &str, dark_mode: bool) {
+fn draw_status_row(ui: &mut Ui, color: Color32, label: &str, dark_mode: bool) -> Response {
     ui.horizontal(|ui| {
         let (rect, _) = ui.allocate_exact_size(Vec2::new(10.0, 10.0), Sense::hover());
         ui.painter().circle_filled(rect.center(), 4.0, color);
@@ -287,12 +317,32 @@ fn draw_status_row(ui: &mut Ui, color: Color32, label: &str, dark_mode: bool) {
                 .color(DashColors::text_primary(dark_mode))
                 .size(13.0),
         );
-    });
+    })
+    .response
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn platform_identity_status_copy_is_explicit() {
+        assert_eq!(
+            platform_identity_status_label(IdentityStatus::Active),
+            "Platform identity: Active"
+        );
+        assert_eq!(
+            platform_identity_status_label(IdentityStatus::NotFound),
+            "Platform identity: Not Found"
+        );
+    }
+
+    #[test]
+    fn platform_identity_status_visibility_follows_expert_mode() {
+        assert!(!show_platform_identity_status(UserRole::Everyday));
+        assert!(show_platform_identity_status(UserRole::Power));
+        assert!(show_platform_identity_status(UserRole::Developer));
+    }
 
     #[test]
     fn tc_fr3_02_heading_is_shortened_pro_tx_hash_when_no_alias() {

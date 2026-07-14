@@ -1172,10 +1172,9 @@ async fn second_launch_after_a_v093_upgrade_changes_nothing() {
     ctx.clear_all_scheduled_votes()
         .expect("user casts the vote");
 
-    // …and renames the imported masternode identity. On this (clean) path the
-    // identity sentinel is what must protect the edit; the skip-if-present rule
-    // is exercised by `a_retry_after_an_unreadable_identity_preserves_user_edits`,
-    // where the sentinel is deliberately withheld.
+    // …and renames the imported masternode identity. The identity sentinel is what
+    // must protect the edit; the same guarantee under an undecodable row is covered
+    // by `a_second_launch_after_an_unreadable_identity_preserves_user_edits_and_deletions`.
     ctx.set_identity_alias(&Identifier::from(IDENTITY_ID), Some("my-renamed-node"))
         .expect("user renames the identity");
 
@@ -1390,23 +1389,22 @@ async fn a_corrupt_vote_index_never_strands_the_identity_keys() {
     backend.shutdown().await;
 }
 
-/// The retry path, which is the only path where skip-if-present is load-bearing.
+/// A corrupt legacy row must not make the import re-run forever, on a real
+/// v0.9.3 database.
 ///
-/// An undecodable identity blob withholds the identity sentinel, so the **next**
-/// launch runs the import again over identities that already landed. Without a
-/// skip-if-present check, that re-run would push the stale legacy blob back over
-/// them with `insert_local_qualified_identity`'s INSERT-OR-REPLACE — silently
-/// undoing anything the user changed in between.
-///
-/// (`second_launch_after_a_v093_upgrade_changes_nothing` cannot prove this: on a
-/// clean upgrade the sentinel short-circuits the pass before the check is
-/// reached.)
+/// The import used to withhold its sentinel while any row was undecodable, so it
+/// ran again on **every** launch. Skip-if-present made that harmless for an
+/// identity the user had *edited* — and did nothing for one the user had
+/// *deleted*: the next launch re-imported it, restored the alias the user had
+/// cleared and re-wrote its legacy plaintext keys into the vault, forever. The
+/// import now completes even with an undecodable row (the row is reported by a
+/// durable warning instead), so a second launch changes nothing the user did.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_retry_after_an_unreadable_identity_preserves_user_edits() {
+async fn a_second_launch_after_an_unreadable_identity_preserves_user_edits_and_deletions() {
     let tmp = tempfile::tempdir().expect("tempdir");
     write_v093_database(tmp.path());
 
-    // One corrupt blob is enough to withhold the sentinel for the whole pass.
+    // One corrupt blob used to be enough to re-run the whole pass on every launch.
     let corrupt_id = [0x0C; 32];
     let conn = Connection::open(tmp.path().join("data.db")).expect("open data.db");
     insert_identity(
@@ -1441,7 +1439,8 @@ async fn a_retry_after_an_unreadable_identity_preserves_user_edits() {
         },
         "the user must learn that an identity did not come across",
     );
-    // …and the sentinel stays unwritten, so the next launch retries.
+    // …and the import is nonetheless COMPLETE: the corrupt row rides on the
+    // durable warning, not on an import that re-runs until it decodes.
     assert!(
         ctx.app_kv()
             .get::<MigrationCompletion>(
@@ -1449,32 +1448,44 @@ async fn a_retry_after_an_unreadable_identity_preserves_user_edits() {
                 &identities_sentinel_key_for(USER_NETWORK)
             )
             .expect("read identity sentinel")
-            .is_none(),
-        "an unreadable row must withhold the sentinel, keeping the retry door open for \
-         a later build with a fixed decoder",
+            .is_some(),
+        "an unreadable row must not withhold the sentinel: a re-running import resurrects \
+         identities the user has deleted",
     );
 
-    // The user renames the imported masternode before the next launch.
+    // Between launches the user renames the imported masternode and deletes one
+    // identity outright — the security gesture whose whole point is that those
+    // keys stop living in this install.
     ctx.set_identity_alias(&Identifier::from(IDENTITY_ID), Some("my-renamed-node"))
         .expect("rename identity");
+    let deleted = Identifier::from(USER_IDENTITY_ID);
+    ctx.delete_local_qualified_identity(&deleted)
+        .expect("delete identity");
 
-    // Second launch: with no sentinel, the identity import genuinely runs again.
-    finish_unwire::run(&ctx).await.expect("retry migration");
+    // Second launch.
+    finish_unwire::run(&ctx).await.expect("second migration");
 
     assert_eq!(
         ctx.get_identity_alias(&Identifier::from(IDENTITY_ID))
             .expect("read alias")
             .as_deref(),
         Some("my-renamed-node"),
-        "the retry must skip identities already imported — re-inserting would overwrite \
-         the user's edit with the stale legacy blob",
+        "a second launch must not overwrite the user's edit with the stale legacy blob",
+    );
+    assert!(
+        !ctx.has_local_qualified_identity(&deleted)
+            .expect("read identity store"),
+        "a deleted identity must STAY deleted: re-importing it would restore the alias the \
+         user cleared and re-write their legacy plaintext keys into the vault, on every \
+         launch, with no way to stop it",
     );
     assert_eq!(
         ctx.load_local_qualified_identities()
             .expect("load identities")
             .len(),
-        4,
-        "the retry must not duplicate the identities it already imported",
+        3,
+        "the second launch must neither duplicate the identities it imported nor resurrect \
+         the one the user removed",
     );
 
     backend.shutdown().await;

@@ -154,14 +154,55 @@ det:migration:identities:<net>:v1
 
 ```rust
 pub async fn run(app_context: &Arc<AppContext>) -> Result<bool, TaskError> {
-    let app_data  = migrate_app_data(app_context);            // unchanged
-    let wallet_moved = drain_wallets(app_context).await?;     // unchanged
-    let app_data  = app_data?;
-    let identities = migrate_identities(app_context)?;        // NEW — after the drain
+    // Held, NOT unwrapped: DET's own rows may not gate the funds path.
+    let app_data = migrate_app_data(app_context);
+
+    // Funds first. Nothing above may withhold a seed.
+    let wallet_moved = drain_wallets(app_context).await?;
+
+    // Held too — the two DET-owned passes must not gate each other.
+    let identities = migrate_identities(app_context)?;
+
+    if identities.unreadable > 0 {
+        // `app_data` is judged HERE, never before: unwrapping it first would
+        // return its (deterministic) error and mask the identity signal on this
+        // launch AND every retry, stranding a masternode owner's keys over a
+        // corrupt vote queue. Each arm publishes its own terminal state and
+        // returns `Ok` — a returned `Err` would be re-published as a plain
+        // `Failed`, dropping the identity count.
+        match app_data {
+            // SucceededWithUnreadableIdentities, or …AndVotes when the durable
+            // vote-warning record reads back non-empty. A failing *read* costs
+            // only the vote half — never the identity half, and never a `Failed`.
+            Ok(outcome) => {
+                let moved_data =
+                    wallet_moved || outcome.moved_data() || identities.moved_data();
+                …
+                return Ok(moved_data);
+            }
+            // The one true FailedWithUnreadableIdentities: a hard app-data
+            // failure. Both signals ride one retryable banner.
+            Err(app_data_error) => {
+                let moved_data = wallet_moved || identities.moved_data();
+                …
+                return Ok(moved_data);
+            }
+        }
+    }
+
+    // Every identity decoded, so app-data no longer masks anything: unwrap it.
+    let app_data = app_data?;
     let moved_data = wallet_moved || app_data.moved_data() || identities.moved_data();
     …
 }
 ```
+
+**Held, then judged.** Each DET-owned pass runs unconditionally and its `Result`
+is *held* — the order in which the two are **unwrapped** is the load-bearing part,
+not the order in which they run. An app-data failure is deterministic (one
+malformed vote-index blob is enough) and never writes its sentinel, so unwrapping
+it ahead of the identity outcome would skip the identity import forever, not just
+once.
 
 **Why after `drain_wallets`, not inside it.** The import needs three things the
 drain produces: the wallet backend wired (`det_kv()` is `wallet_backend()?.kv()`),
@@ -211,7 +252,7 @@ rehydrated on load. None of them need migrating.
 
 | Case | Behaviour | Rationale |
 |---|---|---|
-| **Row already in the k/v store** | Skip, count `skipped_existing`. Check `kv.get::<StoredQualifiedIdentity>(Identity(&id), IDENTITY_KEY).is_some()` **before** inserting. | `insert_local_qualified_identity` is INSERT-OR-REPLACE. Without the pre-check, a retry after a partial failure would overwrite an identity the user has since edited (alias, added key) with the stale legacy blob. Same class of bug as re-queuing a cast vote. |
+| **Row already in the k/v store** | Skip the row wholesale (`skipped_existing`). The present record is never re-persisted, and legacy-only keys are **not** reconciled into it. **Known limitation** — see below. | Field *absence* cannot be told apart from a deliberate removal: an identity missing a key may have had it removed by the user ("Remove private key from DET", no tombstone), and a cleared alias persists as `None`; refilling from the stale legacy blob would resurrect either. A protected identity would additionally trip `encode_identity_blob_vault_first`'s `IdentityKeyProtectionDowngrade` guard if a plaintext legacy key were merged in, failing the whole pass. Provenance the model does not carry would be needed to reconcile safely, so the importer stays conservative and skips. |
 | **Linked wallet failed to migrate / absent** | Import the identity anyway, **preserving `wallet_hash` + `wallet_index` verbatim**. Log at `warn`. | The link is what `load_local_qualified_identities_for_wallet` uses to re-attach the identity when the wallet is later restored or unlocked. Nulling it would orphan the identity permanently. A protected (locked) wallet is the *normal* case here — its seed is in the vault but it is not in `ctx.wallets` until the user unlocks. |
 | **`data IS NULL` or `is_local = 0`** | Skip silently, do not count as failure. | Not user identity data; v0.9.3's own readers ignore these rows. |
 | **`data` fails to decode** | Count `unreadable`, log at `warn` with the identity id, **withhold the sentinel**, publish a terminal warning state. Do **not** fail the pass. | Diverges from the scheduled-vote policy (which writes the sentinel anyway) on purpose: a corrupt vote row is unrecoverable, but an undecodable identity blob may be a *decoder* defect (bincode drift, §4.1) that a later build fixes. Withholding the sentinel keeps the retry door open at the cost of one cheap re-attempt per launch; the skip-if-present rule makes the retry a no-op for everything that already landed. Failing the pass instead would be wrong — it would gate nothing useful and shout at a user who cannot act. |
@@ -219,6 +260,29 @@ rehydrated on load. None of them need migrating.
 | **Identity type the fixture doesn't cover (`User`, `Evonode`)** | Handled with no extra code — the type lives in the blob and round-trips. | See §2.3. The *test* must cover it; the *code* need not branch on it. |
 | **Second launch** | Sentinel short-circuits; nothing is read, nothing is written. | Mirrors `drain_wallets`. |
 | **Legacy rows** | **Never deleted.** | Repo-wide migration rule: a migration that deletes its source can never be retried. |
+
+### Known limitation — a partially-loaded identity strands its legacy-only keys
+
+If a v0.9.3 identity was already loaded into the modern store *before* migration
+but only partially — the canonical case is a masternode brought in from just its
+ProTxHash, which persists a **bare** record (no private keys) plus, possibly,
+missing owner/voting/payout associations — the importer skips it and does **not**
+backfill the keys still sitting in the legacy blob. Those keys become
+inaccessible through the current UI: the record shows as present but keyless.
+
+No data is destroyed. The legacy `data.db` is preserved verbatim (rows are never
+deleted), so a future recovery flow can read those keys back. The conservative
+skip is deliberate — as the edge-case rationale explains, field absence cannot be
+distinguished from a deliberate user removal without provenance the model does
+not carry, and merging a plaintext legacy key into a protected identity would
+trip the vault-first downgrade guard. Rather than a heuristic that risks
+resurrecting removed keys or failing the whole pass, the safe behaviour is to
+skip and defer recovery to a dedicated, provenance-aware flow.
+
+The proper recovery flow — an interactive, opt-in re-import that reads the
+preserved legacy blob and merges only genuinely-missing key material under the
+identity password — is tracked as a follow-up (see the GitHub issue referenced
+from PR #885).
 
 ---
 
@@ -260,10 +324,16 @@ Ordered; each is independently reviewable.
 - **T-ID-01 — `database/legacy_import.rs`: `read_identities`.**
   `pub(crate) fn read_identities(conn: &Connection, network: Network) -> rusqlite::Result<LegacyIdentities>`
   returning `{ identities: Vec<LegacyIdentityRow>, unreadable: u32 }` where
-  `LegacyIdentityRow { id: [u8; 32], qi: QualifiedIdentity, status: u8, wallet: Option<([u8; 32], u32)> }`.
-  SQL: `SELECT id, data, status, wallet, wallet_index FROM identity WHERE is_local = 1 AND data IS NOT NULL AND network IN (?1, ?2)`,
-  params `(network.to_string(), mainnet_alias_for(network))`. Missing table ⇒
-  empty. Per-row decode failure ⇒ `unreadable += 1`, warn, continue. Mirrors
+  `LegacyIdentityRow { id: [u8; 32], qi: QualifiedIdentity, wallet: Option<([u8; 32], u32)> }`.
+  There is **no separate `status` field**: the reader restores `status` (and
+  `alias`) from their columns straight onto `qi` before the row is yielded, so the
+  caller receives one already-correct `QualifiedIdentity` and cannot forget to
+  apply them (the blob encodes neither — see §6).
+  SQL: `SELECT id, data, status, wallet, wallet_index, alias FROM identity WHERE is_local = 1 AND data IS NOT NULL AND network IN (?1, ?2)`,
+  params `(network.to_string(), mainnet_alias_for(network))`. `alias` is selected
+  because the column — not the blob's stale copy — is authoritative (§6). Missing
+  table ⇒ empty. Per-row decode failure ⇒ `unreadable += 1`, warn, continue; a
+  wrong SQLite storage class costs its own row, not the whole read. Mirrors
   `read_scheduled_votes` exactly.
   *Depends on:* nothing.
 
@@ -273,10 +343,12 @@ Ordered; each is independently reviewable.
 
 - **T-ID-03 — `finish_unwire::migrate_identities`.** Sentinel
   `identities_sentinel_key_for(network)` → `det:migration:identities:<net>:v1`.
-  Pure body `migrate_identities_from_conn(conn, network, is_present, insert) -> Result<IdentityMigrationOutcome, MigrationError>`
+  Pure body `migrate_identities_from_conn(conn, network, wallet_known, is_present, insert) -> Result<IdentityMigrationOutcome, MigrationError>`
   with closure seams (matching `migrate_app_data_from_conn`) so it unit-tests
-  without an `AppContext`. Counters: `imported`, `skipped_existing`,
-  `unreadable`. Sentinel written **iff `unreadable == 0`**.
+  without an `AppContext`. `is_present` is the skip-if-already-imported check; a
+  present identity is skipped wholesale (see the §7 known limitation). Counters:
+  `imported`, `skipped_existing`, `unreadable`. Sentinel written **iff
+  `unreadable == 0`**.
   *Depends on:* T-ID-01, T-ID-02.
 
 - **T-ID-04 — Wire into `run()`** after `drain_wallets`, before the terminal
@@ -343,12 +415,26 @@ this design consumes — keep it, then add the outcome):
 
 **Assertions in `second_launch_after_a_v093_upgrade_changes_nothing`:**
 
-9. Edit A's alias post-migration (`ctx.set_identity_alias`), re-run
-   `finish_unwire::run` ⇒ the alias survives. This is the skip-if-present rule
-   (§7) and it must go **RED** against a naive implementation that re-inserts
-   unconditionally.
-10. Identity count is unchanged; `run()` returns `false`.
-11. The legacy `identity` rows are still in `data.db` (count unchanged).
+9. Identity count is unchanged; `run()` returns `false`.
+10. The legacy `identity` rows are still in `data.db` (count unchanged).
+
+**Assertions in `a_retry_after_an_unreadable_identity_preserves_user_edits`:**
+
+11. Edit A's alias post-migration (`ctx.set_identity_alias`), re-run
+    `finish_unwire::run` ⇒ the alias survives. This is the skip-if-present rule
+    (§7): an identity already in the store is skipped wholesale — never
+    re-persisted with the stale legacy blob. It must go **RED** against a naive
+    implementation that re-inserts unconditionally.
+
+    This assertion lives on the **retry** path, not the clean second launch, because
+    only the retry path actually reaches the check. A clean upgrade writes the
+    identity sentinel, and on the next launch that sentinel short-circuits the pass
+    before any row is examined — so `second_launch_after_a_v093_upgrade_changes_nothing`
+    would pass even against an importer with no skip-if-present rule at all, proving
+    nothing. Withholding the sentinel is what forces the re-run: the test seeds one
+    undecodable blob (`unreadable > 0` ⇒ sentinel not written), so the following
+    launch re-imports over identities that already landed — exactly the case where an
+    unconditional INSERT-OR-REPLACE would silently overwrite the user's rename.
 
 **Negative test (own `#[test]`, on `migrate_identities_from_conn`):** a row whose
 `data` is garbage ⇒ `unreadable == 1`, the readable rows still import, and the

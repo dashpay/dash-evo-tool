@@ -2883,9 +2883,106 @@ async fn ensure_identity_managed_unregistered_wallet_is_wallet_not_loaded() {
         .await
         .expect_err("an unregistered wallet must not resolve");
     assert!(
-        matches!(err, TaskError::WalletNotLoaded),
+        matches!(err, TaskError::WalletNotLoaded { .. }),
         "expected WalletNotLoaded, got: {err:?}"
     );
+
+    backend.shutdown().await;
+}
+
+/// Both `WalletNotLoaded` sites must name the wallet they are about: the
+/// typed field carries the label and the user-facing message repeats it.
+fn assert_wallet_not_loaded_named(err: &TaskError, expected_label: &str) {
+    match err {
+        TaskError::WalletNotLoaded { wallet_label } => {
+            assert_eq!(wallet_label, expected_label, "wrong wallet named")
+        }
+        other => panic!("expected WalletNotLoaded, got {other:?}"),
+    }
+    assert!(
+        err.to_string().contains(expected_label),
+        "message must name the wallet ({expected_label}), got: {err}"
+    );
+}
+
+/// With several wallets loaded, a `WalletNotLoaded` from either construction
+/// site (`resolve_wallet` async, `monitored_receive_addresses` sync) names the
+/// affected wallet by its alias — the user can tell which wallet to wait for.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn wallet_not_loaded_names_the_wallet_by_alias() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    let backend = ctx.wallet_backend().expect("backend wired");
+
+    // A loaded sibling wallet, so the error cannot name "the only wallet".
+    let loaded_seed = [0x11u8; 64];
+    let loaded_hash = Wallet::new_from_seed(loaded_seed, Network::Testnet, None, None)
+        .expect("build wallet")
+        .seed_hash();
+    backend
+        .register_wallet_from_seed(&loaded_hash, &loaded_seed, None)
+        .await
+        .expect("register the sibling wallet");
+
+    // The wallet under test: known by its meta sidecar, absent from `id_map`.
+    let pending_hash: WalletSeedHash = [0x7Bu8; 32];
+    backend
+        .wallet_meta()
+        .set(
+            Network::Testnet,
+            &pending_hash,
+            &WalletMeta {
+                alias: "paycheque".into(),
+                ..Default::default()
+            },
+        )
+        .expect("persist wallet meta");
+
+    let err = backend
+        .ensure_identity_managed(&pending_hash, &basic_test_identity(), 0)
+        .await
+        .expect_err("a wallet missing from id_map must not resolve");
+    assert_wallet_not_loaded_named(&err, "paycheque");
+
+    let err = backend
+        .monitored_receive_addresses(&pending_hash)
+        .expect_err("a wallet missing from id_map has no monitored addresses");
+    assert_wallet_not_loaded_named(&err, "paycheque");
+
+    backend.shutdown().await;
+}
+
+/// An unnamed wallet still gets identified: the label falls back to the same
+/// truncated seed-hash hex `SeedLengthInvalid` uses (12 hex chars + ellipsis).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn wallet_not_loaded_falls_back_to_truncated_seed_hash_when_unnamed() {
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+    let backend = ctx.wallet_backend().expect("backend wired");
+
+    // No alias in the sidecar (and, for the second case below, no sidecar row
+    // at all) — both degrade to the hex label, never to an unnamed error.
+    let unnamed_hash: WalletSeedHash = [0x9Eu8; 32];
+    backend
+        .wallet_meta()
+        .set(Network::Testnet, &unnamed_hash, &WalletMeta::default())
+        .expect("persist wallet meta");
+
+    let err = backend
+        .ensure_identity_managed(&unnamed_hash, &basic_test_identity(), 0)
+        .await
+        .expect_err("a wallet missing from id_map must not resolve");
+    assert_wallet_not_loaded_named(&err, "9e9e9e9e9e9e…");
+
+    let no_meta_hash: WalletSeedHash = [0xC4u8; 32];
+    let err = backend
+        .monitored_receive_addresses(&no_meta_hash)
+        .expect_err("a wallet missing from id_map has no monitored addresses");
+    assert_wallet_not_loaded_named(&err, "c4c4c4c4c4c4…");
 
     backend.shutdown().await;
 }

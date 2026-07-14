@@ -123,6 +123,7 @@ use crate::context::AppContext;
 use crate::context::connection_status::ConnectionStatus;
 use crate::model::selected_identity::SelectedIdentity;
 use crate::model::selected_wallet::SelectedWallet;
+use crate::model::wallet::meta::wallet_label;
 use crate::model::wallet::{PlatformAddressEntry, WalletSeedHash};
 use crate::utils::egui_mpsc::SenderAsync;
 
@@ -1576,17 +1577,29 @@ impl WalletBackend {
         }
     }
 
+    /// [`TaskError::WalletNotLoaded`] naming the wallet the caller asked for,
+    /// so a user with several wallets open knows which one to wait for. Reads
+    /// the alias from the meta sidecar — the wallet is by definition absent
+    /// from `id_map` here, so there is no live handle to ask.
+    fn wallet_not_loaded(&self, seed_hash: &WalletSeedHash) -> TaskError {
+        let alias = self
+            .wallet_meta()
+            .get(self.inner.network, seed_hash)
+            .map(|meta| meta.alias)
+            .unwrap_or_default();
+        TaskError::WalletNotLoaded {
+            wallet_label: wallet_label(&alias, seed_hash),
+        }
+    }
+
     /// Map a DET `WalletSeedHash` to the upstream wallet handle.
     async fn resolve_wallet(
         &self,
         seed_hash: &WalletSeedHash,
     ) -> Result<Arc<platform_wallet::PlatformWallet>, TaskError> {
-        let wallet_id = *self
-            .inner
-            .id_map
-            .read()?
-            .get(seed_hash)
-            .ok_or(TaskError::WalletNotLoaded)?;
+        // The guard drops before the error path reads the meta sidecar.
+        let wallet_id = self.inner.id_map.read()?.get(seed_hash).copied();
+        let wallet_id = wallet_id.ok_or_else(|| self.wallet_not_loaded(seed_hash))?;
         self.inner
             .pwm
             .get_wallet(&wallet_id)
@@ -1628,12 +1641,8 @@ impl WalletBackend {
     ) -> Result<Vec<String>, TaskError> {
         use dash_sdk::dpp::key_wallet::account::{AccountType, StandardAccountType};
 
-        let wallet_id = *self
-            .inner
-            .id_map
-            .read()?
-            .get(seed_hash)
-            .ok_or(TaskError::WalletNotLoaded)?;
+        let wallet_id = self.inner.id_map.read()?.get(seed_hash).copied();
+        let wallet_id = wallet_id.ok_or_else(|| self.wallet_not_loaded(seed_hash))?;
         let standard = AccountType::Standard {
             index: DEFAULT_BIP44_ACCOUNT,
             standard_account_type: StandardAccountType::BIP44Account,

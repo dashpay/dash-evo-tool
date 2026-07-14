@@ -73,10 +73,11 @@ pub(crate) struct LegacyIdentityRow {
 
 /// Outcome of one legacy identity read.
 ///
-/// `unreadable` counts rows whose blob could not be decoded. The caller
-/// withholds the completion sentinel while it is non-zero, so a later build
-/// with a fixed decoder can still pick those rows up — unlike a corrupt vote,
-/// an undecodable identity blob may be a decoder defect, not data rot.
+/// `unreadable` counts rows whose blob could not be decoded. The caller records
+/// them as a durable warning and leaves them in the legacy file — never deleted,
+/// so a build with a fixed decoder can still recover them on an explicit
+/// re-import. The import itself completes: re-running it on every launch would
+/// resurrect identities the user has deliberately deleted.
 #[derive(Debug, Default)]
 pub(crate) struct LegacyIdentities {
     /// Rows decoded into the modern domain type.

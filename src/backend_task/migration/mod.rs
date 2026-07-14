@@ -40,6 +40,16 @@ pub enum MigrationTask {
     /// acknowledges it, so this is the one gesture that stops it — the legacy
     /// vote rows themselves are never touched.
     AcknowledgeUnreadableVotes,
+    /// Retire the "some identities could not be read" warning for the active
+    /// network. Same contract as [`Self::AcknowledgeUnreadableVotes`]: the
+    /// warning is re-raised on every launch until the user acknowledges it, and
+    /// the legacy identity rows themselves are never touched.
+    AcknowledgeUnreadableIdentities,
+    /// Retire both warnings at once — the acknowledgement of the single combined
+    /// banner that names both problems. Retiring only one half would re-raise the
+    /// other on the next launch, as a notice the user has already read and acted
+    /// on.
+    AcknowledgeUnreadableIdentitiesAndVotes,
 }
 
 impl AppContext {
@@ -79,6 +89,15 @@ impl AppContext {
             },
             MigrationTask::AcknowledgeUnreadableVotes => {
                 finish_unwire::acknowledge_unreadable_votes(self)?;
+                Ok(BackendTaskSuccessResult::Refresh)
+            }
+            MigrationTask::AcknowledgeUnreadableIdentities => {
+                finish_unwire::acknowledge_unreadable_identities(self)?;
+                Ok(BackendTaskSuccessResult::Refresh)
+            }
+            MigrationTask::AcknowledgeUnreadableIdentitiesAndVotes => {
+                finish_unwire::acknowledge_unreadable_votes(self)?;
+                finish_unwire::acknowledge_unreadable_identities(self)?;
                 Ok(BackendTaskSuccessResult::Refresh)
             }
         }

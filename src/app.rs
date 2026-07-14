@@ -64,6 +64,22 @@ pub const MIGRATION_RETRY_ACTION_ID: &str = "migration:retry:finish_unwire";
 /// still have a live deadline. Exposed for kittest coverage.
 pub const MIGRATION_VOTES_ACK_ACTION_ID: &str = "migration:ack:unreadable_votes";
 
+/// Banner action id pushed when the user acknowledges the unreadable-identity
+/// warning. Until it fires, the warning is re-raised on every launch — a
+/// dismissed banner is not an acknowledgement, because the identities it names
+/// hold keys the user cannot sign with until they are loaded again. Exposed for
+/// kittest coverage.
+pub const MIGRATION_IDENTITIES_ACK_ACTION_ID: &str = "migration:ack:unreadable_identities";
+
+/// Banner action id pushed when the user acknowledges the combined warning — the
+/// launch where both unreadable identities and unreadable votes were left behind.
+/// One banner names both problems, so its single acknowledgement retires both
+/// records: re-raising either half after the user has read and dismissed the
+/// sentence describing it would be a notice they have already acted on. Exposed
+/// for kittest coverage.
+pub const MIGRATION_UNREADABLE_ACK_ACTION_ID: &str =
+    "migration:ack:unreadable_identities_and_votes";
+
 /// Action id for the SPV-sync block's "Continue in the background" escape button.
 /// SPV sync is **unbounded** — with no peers it stays Connecting/Syncing forever
 /// with no terminal signal — so a button-less hard block would trap the user
@@ -1937,6 +1953,25 @@ mod migration_banner_tests {
     #[test]
     fn migration_retry_action_id_is_stable() {
         assert_eq!(MIGRATION_RETRY_ACTION_ID, "migration:retry:finish_unwire");
+    }
+
+    /// Every banner action id is distinct. `drain_actions` dispatches on these
+    /// strings, so a collision would silently route one banner's acknowledgement
+    /// to another's task — retiring a warning the user was never shown.
+    #[test]
+    fn migration_action_ids_are_distinct() {
+        let ids = [
+            MIGRATION_RETRY_ACTION_ID,
+            MIGRATION_VOTES_ACK_ACTION_ID,
+            MIGRATION_IDENTITIES_ACK_ACTION_ID,
+            MIGRATION_UNREADABLE_ACK_ACTION_ID,
+        ];
+        let unique: std::collections::BTreeSet<_> = ids.iter().collect();
+        assert_eq!(
+            unique.len(),
+            ids.len(),
+            "banner action ids must not collide"
+        );
     }
 
     /// The combined-failure banner must surface BOTH signals in one message: the

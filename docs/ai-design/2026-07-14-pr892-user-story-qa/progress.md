@@ -56,11 +56,11 @@ needed).
 - [x] WAL-022: View system accounts in the Detailed view — PASS (title updated from "developer mode" to "the Detailed view" in the reconciled doc; same underlying test — System tab gated on "not Default view")
 - [x] WAL-023: Collapsible transaction history — PASS
 - [x] WAL-024: Collapsible balance breakdown — PASS
-- [ ] WAL-025: Restore a password-protected imported key after an update
-- [ ] WAL-026: Unlock a passphrase-protected vault at startup
-- [ ] WAL-027: Balance health check after syncing
-- [ ] WAL-028: Switch the active wallet from the top-nav pill on the Wallets tab
-- [ ] WAL-029: View and copy my shielded receive address
+- [x] WAL-025: Restore a password-protected imported key after an update — BLOCKED (no legacy password-protected imported-key fixture exists in this data dir; restore-banner confirmed absent, though the scan itself also failed to run this session due to the WAL-backend environment blocker)
+- [x] WAL-026: Unlock a passphrase-protected vault at startup — BLOCKED for live UI (no passphrase-sealed vault fixture; destructive resealing out of scope) — source review confirms the flow (`BootApp`/`UnlockState` in `src/boot.rs`) is implemented as specified
+- [x] WAL-027: Balance health check after syncing — BLOCKED (Testnet wallet-backend environment blocker, see ALK.md, prevented any real sync from ever finishing; no false-positive banner appeared across repeated Refresh attempts, but this is a degenerate 0/0/0 test, not a genuine exercise of the reconciliation criteria)
+- [x] WAL-028: Switch the active wallet from the top-nav pill on the Wallets tab — PASS (pill interactivity, in-place switching, cross-surface re-sync, pill/in-tab-picker agreement, and single-wallet inert-pill all confirmed live; single-key-vs-HD precedence sub-check not exercised, no safe fixture)
+- [x] WAL-029: View and copy my shielded receive address — BLOCKED (same Testnet wallet-backend environment blocker; Shielded tab stuck at "Preparing shielded wallet..." for the entire session, address never rendered so copy behavior could not be tested)
 - [x] WAL-030: Inspect shielded note details — N/A (Gap, not implemented)
 - [x] WAL-031: Single-key wallet balance and UTXOs update automatically — N/A (Gap, not implemented)
 

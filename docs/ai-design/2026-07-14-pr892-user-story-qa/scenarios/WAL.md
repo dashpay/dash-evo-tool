@@ -368,6 +368,285 @@ the dropdown was instant with no restart or reload glitches. This confirms WAL-0
 
 ---
 
-*All WAL stories are now checked off in `progress.md`. Final state left by this pass:
-network Testnet, Expert view, `QA Wallet 1` intact with 3 DASH (Core), only wallet
-remaining after throwaway-wallet cleanup.*
+## Second pass (2026-07-14, later session): WAL-025 through WAL-029
+
+**Environment note up front**: this pass's app instance (PID 1580158, same binary hash,
+same data dir) hit the exact **known Testnet wallet-backend/storage blocker** already
+diagnosed in `ALK.md` — `det.log` showed `Failed to start chain sync error=The wallet
+service could not complete this operation. Please retry in a moment.` from the very first
+frame after this instance's launch (22:00:42 UTC), never recovering on its own even after
+~19 minutes idle. Per `ALK.md`'s own recommendation ("don't keep re-attempting repairs"),
+this pass did **one** legitimate non-destructive diagnostic pass — switching Settings >
+Networks to Mainnet (which built a wallet backend and fully synced in the background,
+confirming the process/host is not generally broken) and back to Testnet — which
+reproduced the *exact* documented failure signature (`Failed to start chain sync
+error=Could not access wallet data. Check available disk space and restart the
+application.`, the `WalletStorage`/SQLite-persister variant). This confirms the blocker is
+still present and unresolved; per campaign instructions this pass did not attempt further
+repair (killing/restarting the OS process was independently denied by the permission
+system, consistent with the instruction to reuse the running instance). `QA Wallet 1`'s
+balance showed **0 DASH** throughout this pass as a direct consequence (its real ~3 DASH
+balance never loaded because the wallet backend never wired) — this is an environment
+artifact, not evidence of lost funds; the underlying on-chain balance and DB rows are
+untouched (see `ALK.md` for the full diagnosis chain). All five stories below were
+evaluated against this degraded environment; where the blocker prevented a genuine test,
+that is called out explicitly rather than papered over.
+
+## WAL-025: Restore a password-protected imported key after an update — BLOCKED (as expected)
+
+**Reasoning (matches the task's own premise)**: this story requires a pre-existing
+"old-format" password-protected imported-key fixture from a previous app version. No such
+fixture exists in this data dir — it was created fresh with the current build, and no
+category of prior QA testing in this campaign has produced one.
+
+Steps: navigated to the Wallets screen (`QA Wallet 1`) and inspected all banners across
+multiple visits/wallet-switches during this pass. **No banner counting imported keys
+waiting to be restored ever appeared** — consistent with the expected "nothing to
+restore" state.
+
+**Important nuance found via `det.log`**: the absence of this banner in this session is
+not purely a clean "scan ran, found nothing" signal. The scan itself failed to run at all
+this session, due to the environment blocker:
+```
+WARN dash_evo_tool::ui::wallets::wallets_screen: Failed to scan for protected single-key
+  restores; banner suppressed error=MigrationFailed { source: WalletBackendUnavailable }
+```
+So the banner's absence is doubly explained here — both because (per the task's premise)
+there is genuinely nothing to restore, *and* because the restore-scan couldn't even execute
+against an unwired wallet backend. A light `sqlite3` check of `det-app.sqlite`'s schema
+found no dedicated legacy-migration/protected-key-restore table, consistent with "no
+fixture exists," but this doesn't fully substitute for the scan actually running
+successfully and confirming zero results.
+
+Screenshot: `screenshots/WAL-025-1-no-restore-banner-env-blocked.png`.
+
+**Verdict: BLOCKED.** No legacy password-protected imported-key fixture exists in this
+data dir to exercise the restore flow (expected, per the task's own framing — not a
+product defect). The minimal check that *is* possible — confirming the "restore waiting"
+banner does not falsely appear in a clean state — passes, but is weakened this session by
+the wallet-backend environment blocker also suppressing the underlying scan.
+
+## WAL-026: Unlock a passphrase-protected vault at startup — BLOCKED for live UI; source review confirms implementation
+
+**Reasoning**: this data dir's vault is not currently passphrase-sealed (the primary
+wallet was created without a vault password), and deliberately, destructively re-sealing
+or corrupting the shared QA data dir's vault to force this condition was out of scope
+(risks the evidence trail every other test category in this campaign depends on). Per the
+task instructions, this story was evaluated via **read-only source review** of the PR892
+build worktree (`/data/git-worktrees/home-ubuntu-git-dash-evo-tool-2-pr892-build/src/`, no
+edits) instead of live UI testing.
+
+**Source review findings** (file:line references from the PR892 build worktree):
+
+- **Implemented as a distinct boot-time state**, not folded into the generic error-banner
+  path. `src/boot.rs` defines `enum BootApp { Unlocking(UnlockState), Running(Box<AppState>),
+  Failed }` (`src/boot.rs:56-64`), wired from `main.rs:82`
+  (`Box::new(crate::boot::BootApp::new(cc.egui_ctx.clone())?)`). `docs/user-stories.md:245`
+  lists WAL-026 as `[Implemented]` with acceptance-criteria text matching this prompt
+  verbatim.
+- **Classification logic**: `BootApp::new` (`src/boot.rs:74-88`) calls `classify_open()`
+  (`src/boot.rs:260-266`), which attempts a keyless vault open and routes to
+  `BootDecision::Unlock` only on `TaskError::is_secret_store_wrong_passphrase()`
+  (`src/backend_task/error.rs:2036-2044`) — any other failure still aborts boot as before,
+  so this path is narrowly scoped to the passphrase-sealed case.
+- **Masked prompt, distinct from other error paths**: `UnlockState::show_modal`
+  (`src/boot.rs:188-214`) renders the shared `passphrase_modal` component
+  (`src/ui/components/passphrase_modal.rs`) — a masked `PasswordInput` in a centered
+  overlay titled "Unlock your saved keys" — rendered from `BootApp::Unlocking`, before
+  `AppState` (and therefore the generic `MessageBanner` machinery) even exists. A doc
+  comment at `src/backend_task/error.rs:278-283` explicitly notes this exclusion from the
+  generic `TaskError::SecretStore` banner path.
+- **Wrong-password handling looks safe**: `try_unlock` (`src/boot.rs:93-126`) re-opens the
+  *same* vault file via `open_secret_store_with_passphrase` →
+  `SecretStore::file(path, passphrase)` (`src/wallet_backend/single_key.rs:824-835`,
+  documented as "never deletes, recreates, or rekeys it"). On `WrongPassphrase`, the
+  message is the fixed string "That passphrase is not correct. Try again."
+  (`src/boot.rs:239`) with `hint: None` (`src/boot.rs:193`) — no hint is leaked. Cancel
+  (`UnlockOutcome::Cancel`, `src/boot.rs:147-150`) closes the viewport without touching the
+  vault.
+- **Headless/CLI confirmed to avoid dialogs**: `src/mcp/server.rs:332-345` — on the same
+  `is_secret_store_wrong_passphrase()` check, returns a typed `McpError::internal_error`
+  with actionable text ("Open the Dash Evo Tool desktop app and enter the passphrase...
+  then run this command again."), no GUI dependency.
+
+This was independent read-only investigation (a background research agent), not a
+speculative guess — exact struct/function names and line numbers are cited above so the
+finding can be spot-checked.
+
+**Verdict: BLOCKED** for the live-UI walkthrough (no fixture; destructive resealing
+correctly out of scope). The source review is strong supporting evidence that the
+implementation matches all five acceptance-criteria bullets, but this is not a substitute
+for an actual observed unlock-prompt interaction — flagging for a future pass with either
+(a) explicit authorization to seal a throwaway vault fixture, or (b) a dedicated
+kittest/integration test exercising `BootApp::Unlocking` directly.
+
+## WAL-027: Balance health check after syncing — BLOCKED (environment blocker prevented a genuine test)
+
+**Reasoning**: the acceptance criteria trigger on "when a sync finishes" — in this
+session, no sync ever finished for `QA Wallet 1` on Testnet; SPV stayed in the `Error`
+sync state (see the environment note above) for the entire pass. The check that *was*
+possible is necessarily degenerate.
+
+Steps: on the Wallets screen (`QA Wallet 1`, Expert view), clicked "Refresh" (top-right)
+multiple times across the session while the wallet-backend blocker was active. Watched the
+"Balance breakdown" line (`Core: 0 DASH | Platform: 0 DASH | Shielded: 0 DASH`) and the
+full banner list after each click.
+
+Observed: balance breakdown stayed `0 DASH` across the board throughout (since the true
+~3 DASH balance never loaded — see environment note), and **no "balance mismatch" /
+reconciliation warning banner ever appeared** — only the four pre-existing
+environment-blocker banners ("SPV sync failed", "We couldn't finish preparing your
+wallet", "Your wallet is still starting up", "Could not load your identities"). Screenshot:
+`screenshots/WAL-027-1-balance-breakdown-no-mismatch-banner.png`.
+
+This is a valid negative check as far as it goes (no false-positive banner for a
+trivially-consistent 0/0/0 state), but it does **not** exercise the story's real
+acceptance criteria — a genuine sync never completed, so the "does the app catch a real
+disagreement between the header total and the account-tab breakdown" question was never
+actually tested.
+
+**Additional source-level note** (light-touch grep, not an exhaustive audit — flagged for
+follow-up rather than treated as a definitive finding): searching the PR892 build
+worktree for terminology from the story text ("rounding", "known display issue", "funds
+are safe" + balance context, dedicated reconciler struct names) found no distinct
+runtime balance-reconciliation-and-warn feature. The one directly-relevant hit is a
+**unit test**, not a user-facing check: `header_total_reconciles_with_core_tab_breakdown_
+through_real_accessors` in `src/wallet_backend/snapshot.rs:1238`, which verifies that
+DET's own account-summary aggregation code (`src/ui/state/account_summary.rs`) doesn't
+itself introduce a mismatch — useful as an internal correctness guardrail, but distinct
+from a runtime banner that detects and warns about a *real* wallet-vs-breakdown
+disagreement after a sync. `src/app/reconcilers.rs` only defines `SpvBlockReconciler` and
+`MigrationReconciler` — no balance-health reconciler was found there either. This search
+was not exhaustive (different terminology could exist elsewhere in the ~200+ source
+files), so it should not be read as a confirmed "Gap" — just a flag worth a closer look in
+a future pass, ideally once the environment blocker is resolved and a real mismatch can be
+constructed to test against.
+
+**Verdict: BLOCKED.** Cite the Testnet wallet-backend environment blocker (`ALK.md`) as
+the primary reason a genuine test could not be performed. The available degenerate
+negative check passed (no spurious banner), but does not confirm the acceptance criteria.
+
+## WAL-028: Switch the active wallet from the top-nav pill on the Wallets tab — PASS
+
+Unlike WAL-025/027/029, this story's mechanics (wallet creation, selection, removal) are
+largely independent of SPV/wallet-backend wiring, so it was **fully live-tested** despite
+the environment blocker.
+
+**Fixture note**: rather than creating a fresh throwaway wallet immediately, first
+discovered via the pill dropdown that a "DIAG throwaway" HD wallet already existed —
+a diagnostic leftover from `ALK.md`'s earlier root-cause investigation, deliberately left
+in place at the time ("harmless and left in place"). Used it for an initial full
+round of testing (confirmed every mechanic below), then removed it — fixing forward the
+cleanup that investigation had deferred. Afterward, per the task's explicit instruction,
+created a dedicated **"WAL-028 Throwaway"** HD wallet (Create Wallet, no password) and
+repeated the key checks against it for clean, correctly-named evidence, then removed it
+too, leaving only `QA Wallet 1`.
+
+Steps and observations:
+
+1. **Pill interactive on the Wallets tab**: on the Wallets tab with 2 wallets present,
+   clicked the top-nav breadcrumb pill (`🖥 QA Wallet 1 ›` / `🖥 WAL-028 Throwaway ›`) — it
+   opened a dropdown listing both wallets plus "Set up another wallet", confirming it is
+   not a dead/informational element. Screenshot:
+   `screenshots/WAL-028-1-top-nav-pill-interactive-on-wallets-tab.png`.
+2. **In-place switch, no forced navigation**: picking the other wallet from the pill
+   switched the active wallet immediately — page title, balance breakdown, and address
+   table all updated to the newly-selected wallet's data — while staying on the Wallets
+   tab throughout (no redirect to a different screen).
+3. **Cross-surface re-sync**: with "DIAG throwaway" active, navigated to the Identities
+   tab — the pill there also showed "DIAG throwaway" (global, not per-tab state).
+   Switched to "QA Wallet 1" from the pill **while on the Identities tab**, then navigated
+   back to the Wallets tab via the sidebar: it correctly arrived showing **QA Wallet 1**
+   (the wallet last selected on the *other* surface), confirming "arriving at the Wallets
+   tab re-syncs to the wallet last chosen on any surface."
+4. **Pill and in-tab picker never disagree**: tested both directions — selecting a wallet
+   from the top-nav pill updated the in-page "HD: ... ▾" selector to match, and
+   conversely, selecting a wallet from the in-page selector updated the top-nav pill to
+   match. No divergence observed in either direction, across several repeated switches.
+5. **Removal confirmation intact for HD wallets**: clicking "Remove" on both "DIAG
+   throwaway" and "WAL-028 Throwaway" (both HD wallets) correctly opened the "Remove
+   Wallet" confirmation modal with the same warning text WAL-007 documented for HD
+   wallets ("will delete its local data... Continue?"); confirmed removal completed
+   cleanly both times, `QA Wallet 1` was never touched.
+6. **Single-wallet pill is inert**: after removing the second wallet each time (down to
+   just `QA Wallet 1`), clicking the top-nav pill produced **no dropdown** — confirmed the
+   pill has nothing to switch to and stays non-interactive with one wallet. Screenshot:
+   `screenshots/WAL-028-2-pill-inert-single-wallet.png`.
+
+**Not independently exercised**: the sub-bullet "a single-key selection made in the tab
+survives navigation; a later explicit HD pick from the pill supersedes it" specifically
+requires a single-key (SK) wallet fixture. Only two HD wallets were used for this test (no
+safe SK fixture was created, to avoid unnecessary state growth beyond what the task asked
+for) — so this specific SK-vs-HD precedence behavior was not directly observed, though the
+general pill/in-tab-agreement mechanism confirmed above makes no distinction between HD
+and SK wallets in its implementation path.
+
+**Incidental finding (documented, not blocking the verdict above)**: at one point during
+this pass — after several pill/dropdown wallet switches plus a full wallet-creation
+cycle — the Wallets screen's wallet-level header block (display name, total balance line,
+Send/Receive buttons, and the Rename/Remove buttons) stopped rendering entirely for
+*every* wallet, leaving only the error banners followed directly by the account-tab bar
+and tab content. This persisted across sidebar navigation away-and-back and a window
+resize/reposition, and was **not** a scroll-position artifact (scrolling up by up to 2000px
+had no effect, confirming the content was genuinely absent from layout, not merely
+off-screen). It recovered only after toggling Settings > Networks > Interface mode from
+Expert to Default and back to Expert. This looks like a real, reproducible-in-session
+layout/state bug independent of WAL-028's own acceptance criteria (all of which were
+independently re-confirmed both before this glitch appeared and after it was
+worked around) — worth a follow-up investigation, but not filed as its own WAL story since
+it doesn't map cleanly to any of the five stories in scope for this pass.
+
+**Verdict: PASS.** All four acceptance-criteria bullets that could be exercised with the
+available fixtures were confirmed working correctly and consistently, across two
+independent throwaway-wallet fixtures.
+
+## WAL-029: View and copy my shielded receive address — BLOCKED (environment blocker)
+
+**Reasoning**: this story requires the wallet's shielded keys to be "bound at unlock" —
+i.e. `ensure_shielded_bound` to complete on the backend side. In this session, the
+Testnet wallet backend never finished wiring (see the environment note above), so this
+never happened.
+
+Steps: opened the Wallets screen (`QA Wallet 1`, Expert view) > "Shielded" tab, at
+multiple points across the session (roughly 40+ minutes apart, including immediately
+after the Mainnet/Testnet network-switch diagnostic).
+
+Observed, consistently every time: the tab shows a spinner and **"Preparing shielded
+wallet..."**, plus the same "Your wallet is still starting up. Please wait a moment and
+try again." banner seen elsewhere on this screen — never resolving to show an actual
+address. Screenshot: `screenshots/WAL-029-1-shielded-tab-preparing-env-blocked.png`.
+
+This differs from the situation the task description anticipated ("a prior session
+already read this tab's shielded address for SND-007 testing, so it should already be
+populated/bound") — that prior session ran against a healthy wallet-backend instance;
+this session's instance hit the environment blocker from its very first frame, so the
+shielded binding that SND-007 relied on was never (re-)established here.
+
+Cannot test: whether the address displays correctly, whether clicking "Copy" or the
+address text itself copies the full untruncated address to the clipboard (`xclip` is
+installed and would have been used — `which xclip` confirmed — but there was never an
+address to copy), and cannot cross-check the displayed truncated prefix/suffix against the
+known full address from `SND.md` since no address ever rendered this session.
+
+**Verdict: BLOCKED.** Root cause: the same Testnet wallet-backend/storage environment
+blocker documented in `ALK.md`, not a defect specific to the Shielded tab or this story —
+the tab's own "still preparing" state is itself a reasonable, non-crashing empty/pending
+state (arguably consistent with, though not proof of, the story's first bullet: "until
+then it says the address appears after unlock"). The last two acceptance-criteria bullets
+(frame-safe snapshot sourcing from the backend; the diversified-address gap) remain
+unverifiable via black-box UI testing regardless of environment state, per the task's own
+framing — no "+" control was found anywhere on this tab, consistent with the documented
+gap.
+
+---
+
+*Second-pass summary: WAL-025 BLOCKED (no fixture, as expected), WAL-026 BLOCKED for live
+UI / source-review-confirmed-implemented, WAL-027 BLOCKED (environment blocker prevented a
+genuine test), WAL-028 **PASS** (fully live-tested despite the environment blocker, since
+its mechanics don't depend on SPV wiring), WAL-029 BLOCKED (environment blocker). Final
+state left by this pass: network Testnet, Expert view, `QA Wallet 1` intact (balance
+reads 0 DASH in-app due to the still-unresolved wallet-backend environment blocker — the
+underlying ~3 DASH balance and all DB state are believed untouched, see `ALK.md`), only
+wallet remaining after both throwaway-wallet cleanups. The Testnet wallet-backend
+environment blocker documented in `ALK.md` remains unresolved and affects any future
+testing that requires a live Testnet wallet/SPV connection in this data dir.*

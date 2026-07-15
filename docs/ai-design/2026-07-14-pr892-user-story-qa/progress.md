@@ -315,9 +315,18 @@ needed).
 
 ## UX
 
-- [ ] UX-001: Blocking progress overlay for unsafe-to-interrupt operations
-- [ ] UX-002: Blocking SPV-sync overlay with a "continue in the background" escape
-- [ ] UX-003: Global wallet/identity switcher across all tabs
+- [x] UX-001: Blocking progress overlay for unsafe-to-interrupt operations — FAIL (component
+      itself is correctly implemented and thoroughly unit-tested, but Send/broadcast — the
+      story's own headline example — does not raise it, only DPNS registration does, per an
+      explicit single-adopter "Bucket A" rollout scope cut)
+- [x] UX-002: Blocking SPV-sync overlay with a "continue in the background" escape — PASS
+      (every bullet live-confirmed via screenshots + timestamped logs: jargon-free text, Step N
+      of 5, total input suppression, keyboard-only Enter/Tab+Enter dismissal, no re-raise for the
+      rest of the episode, auto-lower-on-Error confirmed twice on cold-boot restarts)
+- [x] UX-003: Global wallet/identity switcher across all tabs — FAIL (works correctly on the 3
+      tabs that adopt it — Wallets, Identity Hub, Masternodes — but 4 of 7 root screens
+      — Contracts, Tokens, Tools, Settings — render no switcher at all, not even the baseline
+      wallet pill, contradicting "every root screen")
 - [x] UX-004: One-time post-migration disclosure notice — N/A (Gap, not implemented)
 
 ## IDH

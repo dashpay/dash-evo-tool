@@ -90,9 +90,16 @@ impl UpdateDataContractScreen {
         };
 
         let excluded_aliases = ["dpns", "keyword_search", "token_history", "withdrawals"];
-        let known_contracts = app_context
-            .get_contracts()
-            .expect("Failed to load contracts")
+        let contracts = app_context.get_contracts().unwrap_or_else(|error| {
+            MessageBanner::set_global(
+                app_context.egui_ctx(),
+                "Your saved contracts could not be loaded. Try opening this screen again.",
+                MessageType::Error,
+            )
+            .with_details(error);
+            Vec::new()
+        });
+        let known_contracts = contracts
             .into_iter()
             .filter(|c| match &c.alias {
                 Some(alias) => !excluded_aliases.contains(&alias.as_str()),
@@ -634,5 +641,56 @@ impl ScreenLike for UpdateDataContractScreen {
         }
 
         action
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::AppState;
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+
+    fn data_dir_lock() -> MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn with_isolated_dir<R>(f: impl FnOnce() -> R) -> R {
+        let lock = data_dir_lock();
+        let temp_dir = tempfile::tempdir().expect("create temp data dir");
+        let prior_data_dir = std::env::var("DASH_EVO_DATA_DIR").ok();
+        // Safety: access is serialized by `lock`, and the variable is restored below.
+        unsafe {
+            std::env::set_var("DASH_EVO_DATA_DIR", temp_dir.path());
+        }
+        let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let _guard = runtime.enter();
+
+        let result = f();
+
+        drop(_guard);
+        drop(runtime);
+        // Safety: access remains serialized by `lock` until restoration is complete.
+        unsafe {
+            match prior_data_dir {
+                Some(value) => std::env::set_var("DASH_EVO_DATA_DIR", value),
+                None => std::env::remove_var("DASH_EVO_DATA_DIR"),
+            }
+        }
+        drop(lock);
+        drop(temp_dir);
+        result
+    }
+
+    #[test]
+    fn constructor_degrades_when_contracts_cannot_be_loaded() {
+        with_isolated_dir(|| {
+            let app = AppState::new(egui::Context::default()).expect("AppState builds");
+            let screen = UpdateDataContractScreen::new(app.current_app_context());
+
+            assert!(screen.known_contracts.is_empty());
+        });
     }
 }

@@ -302,6 +302,42 @@ mod tests {
         assert!(f.ctx.begin_token_balance_refresh().is_ok());
     }
 
+    #[tokio::test]
+    async fn unbounded_refresh_hang_gives_honest_restart_guidance() {
+        let f = fixture().await;
+        let refresh_guard = f
+            .ctx
+            .begin_token_balance_refresh()
+            .expect("hung refresh must acquire the single-flight guard");
+
+        let result = await_managed_network_request_with_timeout(
+            f.ctx.subtasks.clone(),
+            "pending_token_balance_refresh_test",
+            std::time::Duration::from_millis(1),
+            async move {
+                let _refresh_guard = refresh_guard;
+                std::future::pending::<Result<(), TaskError>>().await
+            },
+            |source| TaskError::TokenBalanceRefreshTimeout { source },
+        )
+        .await;
+        assert!(matches!(
+            result,
+            Err(TaskError::TokenBalanceRefreshTimeout { .. })
+        ));
+        tokio::task::yield_now().await;
+
+        let error = match f.ctx.begin_token_balance_refresh() {
+            Err(error) => error,
+            Ok(_) => panic!("the truly hung refresh must still own its guard"),
+        };
+        assert!(matches!(error, TaskError::TokenBalanceRefreshInProgress));
+        assert_eq!(
+            error.to_string(),
+            "Token balances are still refreshing. Try again in a moment. If this continues, restart the app and try again.",
+        );
+    }
+
     /// Dismissing a balance must survive "Refresh My Tokens": the pair stays
     /// out of the identity's watch set, and only that identity is affected.
     #[tokio::test]

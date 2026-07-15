@@ -1,7 +1,8 @@
 use crate::app::{AppAction, DesiredAppAction};
-use crate::backend_task::BackendTask;
 use crate::backend_task::contract::ContractTask;
 use crate::backend_task::document::DocumentTask::{self, FetchDocumentsPage}; // Updated import
+use crate::backend_task::error::TaskError;
+use crate::backend_task::{BackendTask, BackendTaskContext};
 use crate::context::AppContext;
 use crate::model::qualified_contract::QualifiedContract;
 use crate::ui::components::Component;
@@ -69,6 +70,7 @@ pub struct DocumentQueryScreen {
     // Contract chooser state
     contract_chooser_state: ContractChooserState,
     query_banner: Option<BannerHandle>,
+    pending_fetch_context: Option<BackendTaskContext>,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -80,10 +82,12 @@ pub enum DocumentQueryStatus {
 }
 
 impl DocumentQueryStatus {
-    fn fail_if_fetch_in_flight(&mut self, message_type: MessageType) -> bool {
-        if *self == Self::WaitingForResult
-            && matches!(message_type, MessageType::Error | MessageType::Warning)
-        {
+    fn fail_if_fetch_in_flight(
+        &mut self,
+        expected: Option<&BackendTaskContext>,
+        failed: &BackendTaskContext,
+    ) -> bool {
+        if *self == Self::WaitingForResult && expected == Some(failed) {
             *self = Self::Error;
             true
         } else {
@@ -146,6 +150,7 @@ impl DocumentQueryScreen {
             previous_cursors: Vec::new(),
             contract_chooser_state: ContractChooserState::default(),
             query_banner: None,
+            pending_fetch_context: None,
         }
     }
 
@@ -541,6 +546,7 @@ impl ScreenLike for DocumentQueryScreen {
         self.next_cursors.clear();
         self.has_next_page = false;
         self.previous_cursors.clear();
+        self.pending_fetch_context = None;
 
         // Reset the selected contract and document type
         let dpns_contract = QualifiedContract {
@@ -554,12 +560,12 @@ impl ScreenLike for DocumentQueryScreen {
             .expect("Expected to find domain document type in DPNS contract");
     }
 
-    fn display_message(&mut self, _message: &str, message_type: MessageType) {
-        // Banner display is handled globally by AppState; this is only for side-effects.
+    fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
         if self
             .document_query_status
-            .fail_if_fetch_in_flight(message_type)
+            .fail_if_fetch_in_flight(self.pending_fetch_context.as_ref(), context)
         {
+            self.pending_fetch_context = None;
             self.query_banner.take_and_clear();
         }
     }
@@ -567,6 +573,7 @@ impl ScreenLike for DocumentQueryScreen {
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         match backend_task_success_result {
             BackendTaskSuccessResult::Documents(documents) => {
+                self.pending_fetch_context = None;
                 self.query_banner.take_and_clear();
                 self.matching_documents = documents
                     .iter()
@@ -575,6 +582,7 @@ impl ScreenLike for DocumentQueryScreen {
                 self.document_query_status = DocumentQueryStatus::Complete;
             }
             BackendTaskSuccessResult::PageDocuments(page_docs, next_cursor) => {
+                self.pending_fetch_context = None;
                 self.query_banner.take_and_clear();
                 self.matching_documents = page_docs
                     .iter()
@@ -752,6 +760,13 @@ impl ScreenLike for DocumentQueryScreen {
                 .inner
         };
 
+        if let AppAction::BackendTask(task) = &action {
+            let context = BackendTaskContext::from(task);
+            if matches!(context, BackendTaskContext::FetchDocumentsPage(_)) {
+                self.pending_fetch_context = Some(context);
+            }
+        }
+
         action
     }
 }
@@ -790,23 +805,39 @@ fn doc_to_filtered_string(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend_task::BackendTaskContext;
+    use dash_sdk::dpp::data_contracts::SystemDataContract;
+    use dash_sdk::dpp::system_data_contracts::load_system_data_contract;
+    use dash_sdk::dpp::version::PlatformVersion;
+
+    fn query(limit: u32) -> DocumentQuery {
+        let contract =
+            load_system_data_contract(SystemDataContract::DPNS, PlatformVersion::latest())
+                .expect("DPNS contract");
+        let mut query = DocumentQuery::new(Arc::new(contract), "domain").expect("domain query");
+        query.limit = limit;
+        query
+    }
 
     #[test]
-    fn in_flight_fetch_failure_is_driven_by_message_type_not_text() {
+    fn in_flight_fetch_failure_requires_the_matching_backend_task() {
+        let expected = BackendTaskContext::FetchDocumentsPage(Box::new(query(10)));
+        let different_query = BackendTaskContext::FetchDocumentsPage(Box::new(query(20)));
         let mut status = DocumentQueryStatus::WaitingForResult;
-        assert!(status.fail_if_fetch_in_flight(MessageType::Error));
-        assert_eq!(status, DocumentQueryStatus::Error);
-
-        let mut status = DocumentQueryStatus::WaitingForResult;
-        assert!(status.fail_if_fetch_in_flight(MessageType::Warning));
-        assert_eq!(status, DocumentQueryStatus::Error);
-
-        let mut status = DocumentQueryStatus::WaitingForResult;
-        assert!(!status.fail_if_fetch_in_flight(MessageType::Info));
+        assert!(!status.fail_if_fetch_in_flight(Some(&expected), &BackendTaskContext::Other));
+        assert!(!status.fail_if_fetch_in_flight(Some(&expected), &BackendTaskContext::Unknown));
+        assert!(!status.fail_if_fetch_in_flight(Some(&expected), &different_query));
+        assert!(!status.fail_if_fetch_in_flight(
+            Some(&expected),
+            &BackendTaskContext::FetchDocuments(Box::new(query(10))),
+        ));
         assert_eq!(status, DocumentQueryStatus::WaitingForResult);
 
+        assert!(status.fail_if_fetch_in_flight(Some(&expected), &expected));
+        assert_eq!(status, DocumentQueryStatus::Error);
+
         let mut status = DocumentQueryStatus::Complete;
-        assert!(!status.fail_if_fetch_in_flight(MessageType::Error));
+        assert!(!status.fail_if_fetch_in_flight(Some(&expected), &expected));
         assert_eq!(status, DocumentQueryStatus::Complete);
     }
 }

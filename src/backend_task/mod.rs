@@ -33,7 +33,7 @@ use dash_sdk::dpp::state_transition::StateTransition;
 use dash_sdk::dpp::tokens::token_pricing_schedule::TokenPricingSchedule;
 use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
 use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::Start;
-use dash_sdk::platform::{Document, Identifier};
+use dash_sdk::platform::{Document, DocumentQuery, Identifier};
 use dash_sdk::query_types::{Documents, IndexMap};
 use futures::future::join_all;
 use std::collections::BTreeMap;
@@ -232,6 +232,57 @@ pub enum BackendTask {
         network: Network,
     },
     None,
+}
+
+/// Identifies the operation that produced a backend-task error without retaining
+/// the complete [`BackendTask`] in the UI result channel. Document operations
+/// retain their query because the visible screen needs it for exact matching.
+#[derive(Debug, Clone, PartialEq)]
+pub enum BackendTaskContext {
+    /// A complete document query.
+    FetchDocuments(Box<DocumentQuery>),
+    /// A paginated document query.
+    FetchDocumentsPage(Box<DocumentQuery>),
+    /// A refresh of all tracked token balances.
+    TokenBalanceRefresh,
+    /// A perpetual-reward estimate for one identity-token pair.
+    TokenRewardEstimate(IdentityTokenIdentifier),
+    /// A known backend task that needs no finer UI correlation.
+    Other,
+    /// An error emitted without an originating backend task.
+    Unknown,
+}
+
+impl From<&BackendTask> for BackendTaskContext {
+    fn from(task: &BackendTask) -> Self {
+        match task {
+            BackendTask::DocumentTask(task) => match task.as_ref() {
+                DocumentTask::FetchDocuments(query) => {
+                    Self::FetchDocuments(Box::new(query.clone()))
+                }
+                DocumentTask::FetchDocumentsPage(query) => {
+                    Self::FetchDocumentsPage(Box::new(query.clone()))
+                }
+                _ => Self::Other,
+            },
+            BackendTask::TokenTask(task)
+                if matches!(task.as_ref(), TokenTask::QueryMyTokenBalances) =>
+            {
+                Self::TokenBalanceRefresh
+            }
+            BackendTask::TokenTask(task) => match task.as_ref() {
+                TokenTask::EstimatePerpetualTokenRewardsWithExplanation {
+                    identity_id,
+                    token_id,
+                } => Self::TokenRewardEstimate(IdentityTokenIdentifier {
+                    identity_id: *identity_id,
+                    token_id: *token_id,
+                }),
+                _ => Self::Other,
+            },
+            _ => Self::Other,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -953,6 +1004,51 @@ impl AppContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn backend_task_context_preserves_document_query_and_fetch_kind() {
+        use dash_sdk::dpp::data_contracts::SystemDataContract;
+        use dash_sdk::dpp::system_data_contracts::load_system_data_contract;
+        use dash_sdk::dpp::version::PlatformVersion;
+
+        let contract =
+            load_system_data_contract(SystemDataContract::DPNS, PlatformVersion::latest())
+                .expect("DPNS contract");
+        let query = DocumentQuery::new(Arc::new(contract), "domain").expect("domain query");
+
+        let fetch =
+            BackendTask::DocumentTask(Box::new(DocumentTask::FetchDocuments(query.clone())));
+        let page =
+            BackendTask::DocumentTask(Box::new(DocumentTask::FetchDocumentsPage(query.clone())));
+
+        assert_eq!(
+            BackendTaskContext::from(&fetch),
+            BackendTaskContext::FetchDocuments(Box::new(query.clone()))
+        );
+        assert_eq!(
+            BackendTaskContext::from(&page),
+            BackendTaskContext::FetchDocumentsPage(Box::new(query))
+        );
+    }
+
+    #[test]
+    fn backend_task_context_preserves_reward_estimate_pair() {
+        let identity_token_id = IdentityTokenIdentifier {
+            identity_id: Identifier::from([1; 32]),
+            token_id: Identifier::from([2; 32]),
+        };
+        let task = BackendTask::TokenTask(Box::new(
+            TokenTask::EstimatePerpetualTokenRewardsWithExplanation {
+                identity_id: identity_token_id.identity_id,
+                token_id: identity_token_id.token_id,
+            },
+        ));
+
+        assert_eq!(
+            BackendTaskContext::from(&task),
+            BackendTaskContext::TokenRewardEstimate(identity_token_id)
+        );
+    }
 
     /// `is_wallet_touching` covers every task family that funnels
     /// through `WalletBackend` — the gate in `run_backend_task` relies

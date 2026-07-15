@@ -1,6 +1,6 @@
 use crate::app::AppAction;
-use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
+use crate::backend_task::{BackendTaskContext, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::qualified_identity::encrypted_key_storage::{
@@ -795,6 +795,21 @@ pub trait ScreenLike {
     /// override this for their expected result variants.
     fn display_task_result(&mut self, _backend_task_success_result: BackendTaskSuccessResult) {}
 
+    /// Called for a successful task result with the same UI-safe operation
+    /// context used for failures. Existing screens default to the legacy result
+    /// callback; screens that track concurrent operations can override this.
+    fn display_backend_task_result(
+        &mut self,
+        _context: &BackendTaskContext,
+        backend_task_success_result: BackendTaskSuccessResult,
+    ) {
+        self.display_task_result(backend_task_success_result);
+    }
+
+    /// Called before [`display_task_error`](Self::display_task_error) with a
+    /// UI-safe operation context; unattributed errors use `Unknown`.
+    fn display_backend_task_error(&mut self, _context: &BackendTaskContext, _error: &TaskError) {}
+
     /// Called by `AppState` when a backend task fails with a typed error.
     ///
     /// Override to handle specific error variants (e.g., `CoreWalletNotConfigured`).
@@ -1076,6 +1091,18 @@ impl ScreenLike for Screen {
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         delegate_to_screen!(self, screen => screen.display_task_result(backend_task_success_result))
+    }
+
+    fn display_backend_task_result(
+        &mut self,
+        context: &BackendTaskContext,
+        backend_task_success_result: BackendTaskSuccessResult,
+    ) {
+        delegate_to_screen!(self, screen => screen.display_backend_task_result(context, backend_task_success_result))
+    }
+
+    fn display_backend_task_error(&mut self, context: &BackendTaskContext, error: &TaskError) {
+        delegate_to_screen!(self, screen => screen.display_backend_task_error(context, error))
     }
 
     fn display_task_error(&mut self, error: &TaskError) -> bool {

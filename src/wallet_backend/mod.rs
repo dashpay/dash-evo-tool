@@ -1296,9 +1296,9 @@ impl WalletBackend {
             // (single-winner gate): a full 256-deep channel would drop this and
             // the sweep would not run until a reconnect re-arms the gate, but the
             // user can always run discovery manually, so the drop is tolerated.
-            let _ = task_result_sender.try_send(TaskResult::Success(Box::new(
+            let _ = task_result_sender.try_send(TaskResult::unattributed_success(
                 BackendTaskSuccessResult::PlatformReadyDiscoverIdentities,
-            )));
+            ));
         }));
 
         Ok(())

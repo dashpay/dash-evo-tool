@@ -1065,7 +1065,7 @@ pub enum TaskError {
 
     /// A token-balance refresh was requested while the previous pass was still running.
     #[error(
-        "Token balances are still refreshing. Please wait a moment before trying again."
+        "Token balances are still refreshing. Try again in a moment. If this continues, restart the app and try again."
     )]
     TokenBalanceRefreshInProgress,
 

@@ -10,7 +10,7 @@ use crate::app_dir::{app_user_data_dir_path, ensure_data_dir_exists, ensure_env_
 use crate::backend_task::contested_names::ContestedResourceTask;
 use crate::backend_task::dashpay::DashPayTask;
 use crate::backend_task::error::TaskError;
-use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
+use crate::backend_task::{BackendTask, BackendTaskContext, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::context::connection_status::{ConnectionStatus, OverallConnectionState};
 use crate::context::feature_gate::FeatureGate;
@@ -42,7 +42,6 @@ use crate::utils::tasks::TaskManager;
 use crate::wallet_backend::DetScope;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::platform::Identifier;
-use derive_more::From;
 use eframe::{App, egui};
 use platform_wallet_storage::secrets::SecretStore;
 use std::collections::BTreeMap;
@@ -152,7 +151,61 @@ enum SpvBlockStep {
 #[cfg(test)]
 mod backend_task_join_tests {
     use super::*;
+    use crate::backend_task::BackendTaskContext;
+    use crate::backend_task::tokens::TokenTask;
     use crate::utils::egui_mpsc::SenderAsync;
+
+    #[test]
+    fn backend_task_error_retains_originating_context() {
+        let task = BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances));
+
+        let result = TaskResult::from_backend_task_result(
+            BackendTaskContext::from(&task),
+            Err(TaskError::NoIdentitiesFound),
+        );
+
+        let TaskResult::Error {
+            context,
+            error: TaskError::NoIdentitiesFound,
+        } = result
+        else {
+            panic!("expected an attributed backend-task error");
+        };
+        assert_eq!(context, BackendTaskContext::TokenBalanceRefresh);
+        assert_eq!(
+            BackendTaskContext::from(&BackendTask::None),
+            BackendTaskContext::Other
+        );
+    }
+
+    #[test]
+    fn backend_task_success_retains_originating_context() {
+        let task = BackendTask::TokenTask(Box::new(TokenTask::QueryMyTokenBalances));
+
+        let result = TaskResult::from_backend_task_result(
+            BackendTaskContext::from(&task),
+            Ok(BackendTaskSuccessResult::FetchedTokenBalances),
+        );
+
+        let TaskResult::Success { context, result } = result else {
+            panic!("expected an attributed backend-task success");
+        };
+        assert_eq!(context, BackendTaskContext::TokenBalanceRefresh);
+        assert!(matches!(
+            *result,
+            BackendTaskSuccessResult::FetchedTokenBalances
+        ));
+    }
+
+    #[test]
+    fn unattributed_error_has_unknown_context() {
+        let result = TaskResult::unattributed_error(TaskError::NoIdentitiesFound);
+
+        let TaskResult::Error { context, .. } = result else {
+            panic!("expected an unattributed task error");
+        };
+        assert_eq!(context, BackendTaskContext::Unknown);
+    }
 
     #[tokio::test]
     async fn panicking_backend_task_is_forwarded_as_typed_error() {
@@ -160,13 +213,18 @@ mod backend_task_join_tests {
         let sender = SenderAsync::new(tx, egui::Context::default());
         let join_handle = tokio::task::spawn_blocking(|| panic!("backend task panic"));
 
-        forward_backend_task_join_error(join_handle, sender, None).await;
+        forward_backend_task_join_error(join_handle, sender, None, BackendTaskContext::Unknown)
+            .await;
 
         let result = tokio::time::timeout(Duration::from_secs(1), rx.recv())
             .await
             .expect("join failure must be reported promptly")
             .expect("join failure result must be sent");
-        let TaskResult::Error(error @ TaskError::BackendTaskFailed { .. }) = result else {
+        let TaskResult::Error {
+            error: error @ TaskError::BackendTaskFailed { .. },
+            ..
+        } = result
+        else {
             panic!("expected typed backend task failure, got {result:?}");
         };
         assert!(
@@ -182,7 +240,13 @@ mod backend_task_join_tests {
         let request_id = Identifier::from([0x44; 32]);
         let join_handle = tokio::task::spawn_blocking(|| panic!("backend task panic"));
 
-        forward_backend_task_join_error(join_handle, sender, Some(request_id)).await;
+        forward_backend_task_join_error(
+            join_handle,
+            sender,
+            Some(request_id),
+            BackendTaskContext::Unknown,
+        )
+        .await;
 
         let result = tokio::time::timeout(Duration::from_secs(1), rx.recv())
             .await
@@ -190,10 +254,13 @@ mod backend_task_join_tests {
             .expect("join failure result must be sent");
         assert!(matches!(
             result,
-            TaskResult::Error(TaskError::DashPayContactRequestActionFailed {
-                request_id: correlated,
-                source,
-            }) if correlated == request_id
+            TaskResult::Error {
+                error: TaskError::DashPayContactRequestActionFailed {
+                    request_id: correlated,
+                    source,
+                },
+                ..
+            } if correlated == request_id
                 && matches!(source.as_ref(), TaskError::BackendTaskFailed { .. })
         ));
     }
@@ -339,19 +406,45 @@ fn cold_start_backend_wait_timed_out(waited: Option<Duration>, timeout: Duration
     waited.is_some_and(|elapsed| elapsed >= timeout)
 }
 
-#[derive(Debug, From)]
+#[derive(Debug)]
 pub enum TaskResult {
     Repaint,
     Refresh,
-    Success(Box<BackendTaskSuccessResult>),
-    Error(TaskError),
+    Success {
+        context: BackendTaskContext,
+        result: Box<BackendTaskSuccessResult>,
+    },
+    Error {
+        context: BackendTaskContext,
+        error: TaskError,
+    },
 }
 
-impl From<Result<BackendTaskSuccessResult, TaskError>> for TaskResult {
-    fn from(value: Result<BackendTaskSuccessResult, TaskError>) -> Self {
+impl TaskResult {
+    fn from_backend_task_result(
+        context: BackendTaskContext,
+        value: Result<BackendTaskSuccessResult, TaskError>,
+    ) -> Self {
         match value {
-            Ok(value) => TaskResult::Success(Box::new(value)),
-            Err(e) => TaskResult::Error(e),
+            Ok(value) => TaskResult::Success {
+                context,
+                result: Box::new(value),
+            },
+            Err(error) => TaskResult::Error { context, error },
+        }
+    }
+
+    pub(crate) fn unattributed_success(result: BackendTaskSuccessResult) -> Self {
+        Self::Success {
+            context: BackendTaskContext::Unknown,
+            result: Box::new(result),
+        }
+    }
+
+    pub(crate) fn unattributed_error(error: TaskError) -> Self {
+        Self::Error {
+            context: BackendTaskContext::Unknown,
+            error,
         }
     }
 }
@@ -360,6 +453,7 @@ async fn forward_backend_task_join_error(
     join_handle: tokio::task::JoinHandle<()>,
     sender: egui_mpsc::SenderAsync<TaskResult>,
     request_id: Option<Identifier>,
+    context: BackendTaskContext,
 ) {
     if let Err(source) = join_handle.await {
         let stopped = TaskError::BackendTaskFailed {
@@ -372,7 +466,7 @@ async fn forward_backend_task_join_error(
             },
             None => stopped,
         };
-        if let Err(error) = sender.send(TaskResult::Error(error)).await {
+        if let Err(error) = sender.send(TaskResult::Error { context, error }).await {
             tracing::error!(%error, "Failed to report a stopped backend task");
         }
     }
@@ -1239,19 +1333,29 @@ impl AppState {
         let request_id = crate::backend_task::dashpay_request_id(&task);
         let sender = self.task_result_sender.clone();
         let watcher_sender = sender.clone();
+        let context = BackendTaskContext::from(&task);
+        let watcher_context = context.clone();
         let app_context = self.current_app_context().clone();
         let handle = tokio::runtime::Handle::current();
         let join_handle = tokio::task::spawn_blocking(move || {
             handle.block_on(async move {
                 let result = app_context.run_backend_task(task, sender.clone()).await;
-                if let Err(e) = sender.send(result.into()).await {
+                if let Err(e) = sender
+                    .send(TaskResult::from_backend_task_result(context, result))
+                    .await
+                {
                     tracing::error!("Failed to send task result: {}", e);
                 }
             });
         });
         self.subtasks.spawn_sync(
             "backend_task_join_watcher",
-            forward_backend_task_join_error(join_handle, watcher_sender, request_id),
+            forward_backend_task_join_error(
+                join_handle,
+                watcher_sender,
+                request_id,
+                watcher_context,
+            ),
         );
     }
 
@@ -1259,6 +1363,10 @@ impl AppState {
     fn handle_backend_tasks(&self, tasks: Vec<BackendTask>, mode: BackendTasksExecutionMode) {
         let sender = self.task_result_sender.clone();
         let watcher_sender = sender.clone();
+        let contexts = tasks
+            .iter()
+            .map(BackendTaskContext::from)
+            .collect::<Vec<_>>();
         let app_context = self.current_app_context().clone();
         let handle = tokio::runtime::Handle::current();
 
@@ -1277,8 +1385,11 @@ impl AppState {
                     }
                 };
 
-                for result in results {
-                    if let Err(e) = sender.send(result.into()).await {
+                for (context, result) in contexts.into_iter().zip(results) {
+                    if let Err(e) = sender
+                        .send(TaskResult::from_backend_task_result(context, result))
+                        .await
+                    {
                         tracing::error!("Failed to send task result: {}", e);
                     }
                 }
@@ -1286,7 +1397,12 @@ impl AppState {
         });
         self.subtasks.spawn_sync(
             "backend_tasks_join_watcher",
-            forward_backend_task_join_error(join_handle, watcher_sender, None),
+            forward_backend_task_join_error(
+                join_handle,
+                watcher_sender,
+                None,
+                BackendTaskContext::Unknown,
+            ),
         );
     }
 
@@ -1667,7 +1783,10 @@ impl App for AppState {
 
             // Handle the result on the main thread
             match task_result {
-                TaskResult::Success(message) => {
+                TaskResult::Success {
+                    context,
+                    result: message,
+                } => {
                     let unboxed_message = *message;
                     self.route_contact_request_result_to_hidden_hub(&unboxed_message);
                     match unboxed_message {
@@ -1699,7 +1818,7 @@ impl App for AppState {
                             // See https://github.com/dashpay/dash-evo-tool/issues/660 .
                             MessageBanner::set_global(ctx, msg, MessageType::Success);
                             self.visible_screen_mut()
-                                .display_task_result(unboxed_message);
+                                .display_backend_task_result(&context, unboxed_message);
                         }
                         BackendTaskSuccessResult::AssetLockBroadcast { ref txid } => {
                             let msg = format!(
@@ -1707,7 +1826,7 @@ impl App for AppState {
                             );
                             MessageBanner::set_global(ctx, &msg, MessageType::Success);
                             self.visible_screen_mut()
-                                .display_task_result(unboxed_message);
+                                .display_backend_task_result(&context, unboxed_message);
                         }
                         BackendTaskSuccessResult::DashPayAddressesRegistered {
                             addresses,
@@ -1725,7 +1844,7 @@ impl App for AppState {
                             };
                             MessageBanner::set_global(ctx, &msg, MessageType::Success);
                             self.visible_screen_mut()
-                                .display_task_result(unboxed_message);
+                                .display_backend_task_result(&context, unboxed_message);
                         }
                         BackendTaskSuccessResult::IdentitiesLoaded { count } => {
                             let msg = if count == 1 {
@@ -1735,7 +1854,7 @@ impl App for AppState {
                             };
                             MessageBanner::set_global(ctx, &msg, MessageType::Success);
                             self.visible_screen_mut()
-                                .display_task_result(unboxed_message);
+                                .display_backend_task_result(&context, unboxed_message);
                         }
                         BackendTaskSuccessResult::Progress { .. } => {
                             // Progress updates only go to the screen — no global banner.
@@ -1745,7 +1864,7 @@ impl App for AppState {
                             // updates land on the wrong screen. Adding task-to-screen
                             // affinity would fix this (same limitation as Message).
                             self.visible_screen_mut()
-                                .display_task_result(unboxed_message);
+                                .display_backend_task_result(&context, unboxed_message);
                         }
                         BackendTaskSuccessResult::UpdatedThemePreference(new_theme) => {
                             let detection_failed = self.theme.apply_new_preference(ctx, new_theme);
@@ -1808,31 +1927,45 @@ impl App for AppState {
                             // For all other success results, let the screen decide how to display
                             // the outcome without showing a generic global success banner.
                             self.visible_screen_mut()
-                                .display_task_result(unboxed_message);
+                                .display_backend_task_result(&context, unboxed_message);
                         }
                     }
                 }
-                TaskResult::Error(err @ TaskError::CoreWalletAutoDetected { .. }) => {
+                TaskResult::Error {
+                    error: err @ TaskError::CoreWalletAutoDetected { .. },
+                    ..
+                } => {
                     let msg = err.to_string();
                     MessageBanner::set_global(ctx, &msg, MessageType::Success);
                     self.visible_screen_mut()
                         .display_message(&msg, MessageType::Success);
                     self.visible_screen_mut().refresh();
                 }
-                TaskResult::Error(err @ TaskError::NetworkContextCreationFailed { .. }) => {
+                TaskResult::Error {
+                    error: err @ TaskError::NetworkContextCreationFailed { .. },
+                    ..
+                } => {
                     self.network_switch_pending = None;
                     self.network_switch_banner.take_and_clear();
                     MessageBanner::set_global(ctx, err.to_string(), MessageType::Error)
                         .disable_auto_dismiss();
                 }
-                TaskResult::Error(TaskError::MigrationFailed { .. }) => {
+                TaskResult::Error {
+                    error: TaskError::MigrationFailed { .. },
+                    ..
+                } => {
                     // The migration task already published `MigrationState::Failed`,
                     // which the migration reconciler surfaces with the typed
                     // details and a "Retry now" action. Suppress the generic
                     // error banner here so the user sees one banner, not two.
                 }
-                TaskResult::Error(err) => {
+                TaskResult::Error {
+                    context,
+                    error: err,
+                } => {
                     self.route_contact_request_error_to_hidden_hub(&err);
+                    self.visible_screen_mut()
+                        .display_backend_task_error(&context, &err);
                     // Let the screen handle specific error types first.
                     // If handled, skip the generic error banner.
                     let handled = self.visible_screen_mut().display_task_error(&err);

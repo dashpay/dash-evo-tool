@@ -223,9 +223,9 @@ impl AppContext {
         // Tell the Scheduled Votes screen which votes are now in flight.
         let in_progress = castable.iter().map(|(v, _)| v.clone()).collect();
         let _ = sender
-            .send(TaskResult::Success(Box::new(
+            .send(TaskResult::unattributed_success(
                 BackendTaskSuccessResult::ScheduledVotesInProgress(in_progress),
-            )))
+            ))
             .await;
 
         for (vote, voter) in castable {
@@ -241,9 +241,9 @@ impl AppContext {
             {
                 Ok(_) => {
                     let _ = sender
-                        .send(TaskResult::Success(Box::new(
+                        .send(TaskResult::unattributed_success(
                             BackendTaskSuccessResult::CastScheduledVote(vote),
-                        )))
+                        ))
                         .await;
                 }
                 Err(e) => {

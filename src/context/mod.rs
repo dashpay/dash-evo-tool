@@ -1031,9 +1031,9 @@ impl AppContext {
             self.log_drive_proof_error(proof_error, RequestType::BroadcastStateTransition);
 
         sender
-            .send(TaskResult::Success(Box::new(
+            .send(TaskResult::unattributed_success(
                 BackendTaskSuccessResult::ProofErrorLogged,
-            )))
+            ))
             .await
             .map_err(|_| TaskError::InternalSendError)?;
 

@@ -14,7 +14,7 @@ use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::context::connection_status::{ConnectionStatus, OverallConnectionState};
 use crate::context::feature_gate::FeatureGate;
-use crate::context::migration_status::MigrationStep;
+use crate::context::migration_status::{MigrationState, MigrationStep};
 use crate::database::Database;
 use crate::model::settings::AppSettings;
 use crate::ui::components::passphrase_modal;
@@ -48,7 +48,7 @@ use std::collections::BTreeMap;
 use std::ops::BitOrAssign;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use std::vec;
 use tokio::sync::mpsc as tokiompsc;
 
@@ -80,6 +80,23 @@ pub const MIGRATION_IDENTITIES_ACK_ACTION_ID: &str = "migration:ack:unreadable_i
 /// for kittest coverage.
 pub const MIGRATION_UNREADABLE_ACK_ACTION_ID: &str =
     "migration:ack:unreadable_identities_and_votes";
+
+fn migration_allows_scheduled_vote_sweep(state: &MigrationState) -> bool {
+    matches!(
+        state,
+        MigrationState::Success
+            | MigrationState::SucceededWithUnreadableVotes { .. }
+            | MigrationState::SucceededWithUnreadableIdentities { .. }
+            | MigrationState::SucceededWithUnreadableIdentitiesAndVotes { .. }
+    )
+}
+
+fn unix_time_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
+}
 
 /// Action id for the SPV-sync block's "Continue in the background" escape button.
 /// SPV sync is **unbounded** — with no peers it stays Connecting/Syncing forever
@@ -403,8 +420,10 @@ pub struct AppState {
     pub task_result_receiver: tokiompsc::Receiver<TaskResult>, // Channel receiver for receiving task results
     theme: ThemeState,
     last_scheduled_vote_check: Instant, // Last time we checked if there are scheduled masternode votes to cast
-    last_repaint_request: Instant,      // Throttle periodic repaint scheduling to once per second
-    pub subtasks: Arc<TaskManager>,     // Subtasks manager for graceful shutdown
+    /// Per-network start of a migration wait that deferred scheduled-vote casting.
+    scheduled_vote_sweep_deferred_since_ms: BTreeMap<Network, u64>,
+    last_repaint_request: Instant, // Throttle periodic repaint scheduling to once per second
+    pub subtasks: Arc<TaskManager>, // Subtasks manager for graceful shutdown
     /// Whether to show the welcome/onboarding screen
     pub show_welcome_screen: bool,
     /// The welcome screen instance (only created if needed)
@@ -1063,6 +1082,7 @@ impl AppState {
             task_result_receiver,
             theme: ThemeState::new(theme_preference),
             last_scheduled_vote_check: Instant::now(),
+            scheduled_vote_sweep_deferred_since_ms: BTreeMap::new(),
             last_repaint_request: Instant::now(),
             subtasks,
             show_welcome_screen: !onboarding_completed,
@@ -1366,13 +1386,12 @@ impl AppState {
     }
 
     /// Whether a passphrase prompt owns the frame's full interaction surface.
-    fn has_blocking_secret_prompt(&self) -> bool {
-        self.active_secret_prompt.is_some()
-            || self.migration.is_prompting(self.current_app_context())
+    fn has_blocking_secret_prompt(&self, migration_state: &MigrationState) -> bool {
+        self.active_secret_prompt.is_some() || MigrationReconciler::is_prompting(migration_state)
     }
 
-    fn claim_overlay_input(&self, ctx: &egui::Context) {
-        if !self.has_blocking_secret_prompt() {
+    fn claim_overlay_input(&self, ctx: &egui::Context, migration_state: &MigrationState) {
+        if !self.has_blocking_secret_prompt(migration_state) {
             ProgressOverlay::claim_input(ctx);
         }
     }
@@ -1578,6 +1597,7 @@ impl App for AppState {
 
         self.enforce_network_context_invariant();
         let active_context = self.current_app_context().clone();
+        let migration_state = active_context.migration_status().state();
 
         // Poll the receiver for any new task results
         while let Ok(task_result) = self.task_result_receiver.try_recv() {
@@ -1791,10 +1811,26 @@ impl App for AppState {
         // screen learns which votes are in progress / cast via
         // `display_task_result`, so a slow or failing query never stalls a frame.
         let now = Instant::now();
-        if now.duration_since(self.last_scheduled_vote_check) > Duration::from_secs(60) {
+        let network = active_context.network;
+        if !migration_allows_scheduled_vote_sweep(migration_state.as_ref()) {
+            self.scheduled_vote_sweep_deferred_since_ms
+                .entry(network)
+                .or_insert_with(unix_time_ms);
+        } else if let Some(preserve_eligibility_since_ms) =
+            self.scheduled_vote_sweep_deferred_since_ms.remove(&network)
+        {
             self.last_scheduled_vote_check = now;
             self.handle_backend_task(BackendTask::ContestedResourceTask(
-                ContestedResourceTask::CastDueScheduledVotes,
+                ContestedResourceTask::CastDueScheduledVotes {
+                    preserve_eligibility_since_ms: Some(preserve_eligibility_since_ms),
+                },
+            ));
+        } else if now.duration_since(self.last_scheduled_vote_check) > Duration::from_secs(60) {
+            self.last_scheduled_vote_check = now;
+            self.handle_backend_task(BackendTask::ContestedResourceTask(
+                ContestedResourceTask::CastDueScheduledVotes {
+                    preserve_eligibility_since_ms: None,
+                },
             ));
         }
 
@@ -1817,7 +1853,7 @@ impl App for AppState {
         // frame, before the modal installs its input sink. Drop that one pending
         // click so it cannot fall through to the screen beneath; the sink covers
         // every later frame.
-        let prompt_blocking = self.has_blocking_secret_prompt();
+        let prompt_blocking = self.has_blocking_secret_prompt(migration_state.as_ref());
         if prompt_blocking && !self.prompt_was_blocking {
             passphrase_modal::drop_activation_frame_pointer_click(ctx);
         }
@@ -1826,7 +1862,7 @@ impl App for AppState {
         // Total input block at frame start: while a blocking overlay is up, claim
         // all keyboard + text input BEFORE the panels run — unless a
         // secret prompt is active above the overlay (it needs the keyboard).
-        self.claim_overlay_input(ctx);
+        self.claim_overlay_input(ctx, migration_state.as_ref());
 
         // Show welcome screen if onboarding not completed
         let mut actions = Vec::new();
@@ -1842,7 +1878,10 @@ impl App for AppState {
         // but renders no dimmer, card, or focus trap until the prompt resolves.
         // Every passphrase prompt — cancellable or not — supplies its own
         // outside-window input barrier in its place (`passphrase_modal`).
-        ProgressOverlay::render_global(ctx, self.has_blocking_secret_prompt());
+        ProgressOverlay::render_global(
+            ctx,
+            self.has_blocking_secret_prompt(migration_state.as_ref()),
+        );
 
         // Render any just-in-time passphrase prompt on top of the screen.
         self.render_secret_prompt(ctx);
@@ -1868,7 +1907,8 @@ impl App for AppState {
         if let Some(task) = self.migration.dispatch_cold_start(&active_context) {
             self.handle_backend_task(task);
         }
-        self.migration.update_banner(ctx, &active_context);
+        self.migration
+            .update_banner(ctx, &active_context, migration_state.as_ref());
         self.migration.handle_esc(ctx);
         if let Some(task) = self.migration.drain_actions(ctx, self.chosen_network) {
             self.handle_backend_task(task);
@@ -2006,6 +2046,63 @@ impl App for AppState {
 #[cfg(test)]
 mod migration_banner_tests {
     use super::*;
+
+    /// A frame owns one migration snapshot even if the task publishes mid-frame.
+    #[test]
+    fn migration_frame_snapshot_is_stable_after_async_publish() {
+        let status = crate::context::migration_status::MigrationStatus::new_idle();
+        let frame_state = status.state();
+
+        status.set_state(
+            crate::context::migration_status::MigrationState::AwaitingWalletPasswords {
+                wallets: Vec::new(),
+            },
+        );
+
+        assert!(
+            !MigrationReconciler::is_prompting(&frame_state),
+            "a transition published mid-frame must wait for the next frame",
+        );
+        assert!(
+            MigrationReconciler::is_prompting(&status.state()),
+            "the next frame snapshot must observe the prompt",
+        );
+    }
+
+    /// Scheduled-vote work resumes only after every migration pass has finished.
+    #[test]
+    fn scheduled_vote_sweep_waits_for_successful_migration_completion() {
+        use crate::context::migration_status::{MigrationState, MigrationStep};
+
+        assert!(!migration_allows_scheduled_vote_sweep(
+            &MigrationState::Idle
+        ));
+        assert!(!migration_allows_scheduled_vote_sweep(
+            &MigrationState::Running {
+                step: MigrationStep::Identities,
+            },
+        ));
+        assert!(!migration_allows_scheduled_vote_sweep(
+            &MigrationState::AwaitingWalletPasswords {
+                wallets: Vec::new(),
+            },
+        ));
+        assert!(migration_allows_scheduled_vote_sweep(
+            &MigrationState::Success,
+        ));
+        assert!(migration_allows_scheduled_vote_sweep(
+            &MigrationState::SucceededWithUnreadableVotes { count: 1 },
+        ));
+        assert!(migration_allows_scheduled_vote_sweep(
+            &MigrationState::SucceededWithUnreadableIdentities { count: 1 },
+        ));
+        assert!(migration_allows_scheduled_vote_sweep(
+            &MigrationState::SucceededWithUnreadableIdentitiesAndVotes {
+                identities: 1,
+                votes: 1,
+            },
+        ));
+    }
 
     /// TC-MIG-014 — every `MigrationStep` exposes a non-empty,
     /// sentence-shaped label so i18n extraction picks it up as one

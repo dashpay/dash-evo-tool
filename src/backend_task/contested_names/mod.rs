@@ -28,10 +28,12 @@ pub enum ContestedResourceTask {
     VoteOnDPNSNames(Vec<(String, ResourceVoteChoice)>, Vec<QualifiedIdentity>),
     ScheduleDPNSVotes(Vec<ScheduledDPNSVote>),
     CastScheduledVote(ScheduledDPNSVote, Box<QualifiedIdentity>),
-    /// Sweep the scheduled-vote table and cast every vote that is now due. The
-    /// periodic UI tick dispatches this so the DB query, identity load, and
-    /// casting all run off the frame thread.
-    CastDueScheduledVotes,
+    /// Sweep the scheduled-vote table and cast every vote that is now due.
+    /// `preserve_eligibility_since_ms` keeps a vote eligible when its normal
+    /// grace window overlapped a migration that deferred the sweep.
+    CastDueScheduledVotes {
+        preserve_eligibility_since_ms: Option<u64>,
+    },
     ClearAllScheduledVotes,
     ClearExecutedScheduledVotes,
     DeleteScheduledVote(Identifier, String),
@@ -142,8 +144,11 @@ impl AppContext {
                 .await?;
                 Ok(BackendTaskSuccessResult::CastScheduledVote(scheduled_vote))
             }
-            ContestedResourceTask::CastDueScheduledVotes => {
-                self.cast_due_scheduled_votes(sdk, sender).await
+            ContestedResourceTask::CastDueScheduledVotes {
+                preserve_eligibility_since_ms,
+            } => {
+                self.cast_due_scheduled_votes(sdk, sender, preserve_eligibility_since_ms)
+                    .await
             }
             ContestedResourceTask::ClearAllScheduledVotes => {
                 self.clear_all_scheduled_votes()?;
@@ -176,6 +181,7 @@ impl AppContext {
         self: &Arc<Self>,
         sdk: &Sdk,
         sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
+        preserve_eligibility_since_ms: Option<u64>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         let now_ms = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -184,10 +190,13 @@ impl AppContext {
         let due: Vec<ScheduledDPNSVote> = self
             .get_scheduled_votes()?
             .into_iter()
-            .filter(|v| {
-                !v.executed_successfully
-                    && v.unix_timestamp <= now_ms
-                    && v.unix_timestamp + SCHEDULED_VOTE_MAX_LATENESS_MS >= now_ms
+            .filter(|vote| {
+                scheduled_vote_is_due(
+                    vote.unix_timestamp,
+                    vote.executed_successfully,
+                    now_ms,
+                    preserve_eligibility_since_ms,
+                )
             })
             .collect();
         if due.is_empty() {
@@ -247,5 +256,65 @@ impl AppContext {
             }
         }
         Ok(BackendTaskSuccessResult::None)
+    }
+}
+
+fn scheduled_vote_is_due(
+    scheduled_at_ms: u64,
+    executed_successfully: bool,
+    now_ms: u64,
+    preserve_eligibility_since_ms: Option<u64>,
+) -> bool {
+    let eligibility_cutoff_ms = preserve_eligibility_since_ms.unwrap_or(now_ms);
+    !executed_successfully
+        && scheduled_at_ms <= now_ms
+        && scheduled_at_ms.saturating_add(SCHEDULED_VOTE_MAX_LATENESS_MS) >= eligibility_cutoff_ms
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Migration extends only eligibility windows that overlap its wait.
+    #[test]
+    fn migration_wait_preserves_only_overlapping_vote_eligibility() {
+        let migration_started_ms = 1_000_000;
+        let now_ms = migration_started_ms + SCHEDULED_VOTE_MAX_LATENESS_MS * 2;
+
+        assert!(
+            scheduled_vote_is_due(
+                migration_started_ms,
+                false,
+                now_ms,
+                Some(migration_started_ms),
+            ),
+            "a vote due when migration began must remain eligible afterward",
+        );
+        assert!(
+            !scheduled_vote_is_due(
+                migration_started_ms - SCHEDULED_VOTE_MAX_LATENESS_MS - 1,
+                false,
+                now_ms,
+                Some(migration_started_ms),
+            ),
+            "migration must not revive a vote already stale before it began",
+        );
+        assert!(
+            !scheduled_vote_is_due(migration_started_ms, false, now_ms, None),
+            "the normal sweep must retain the ordinary lateness limit",
+        );
+        assert!(
+            !scheduled_vote_is_due(now_ms + 1, false, now_ms, Some(migration_started_ms)),
+            "migration must not cast a vote before its scheduled time",
+        );
+        assert!(
+            !scheduled_vote_is_due(
+                migration_started_ms,
+                true,
+                now_ms,
+                Some(migration_started_ms)
+            ),
+            "migration must not cast an already-executed vote again",
+        );
     }
 }

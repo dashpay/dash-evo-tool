@@ -387,11 +387,8 @@ impl MigrationReconciler {
     }
 
     /// Whether migration currently owns a blocking wallet-password prompt.
-    pub(super) fn is_prompting(&self, app_context: &Arc<AppContext>) -> bool {
-        matches!(
-            app_context.migration_status().state().as_ref(),
-            MigrationState::AwaitingWalletPasswords { .. }
-        )
+    pub(super) fn is_prompting(state: &MigrationState) -> bool {
+        matches!(state, MigrationState::AwaitingWalletPasswords { .. })
     }
 
     /// Dispatch the cold-start migration once per network, gated on the wallet
@@ -469,8 +466,13 @@ impl MigrationReconciler {
     /// Update the migration banner to reflect the current [`MigrationState`].
     /// Each step / outcome surfaces a single i18n-ready sentence; `Failed` gets
     /// a "Retry now" action button.
-    pub(super) fn update_banner(&mut self, ctx: &egui::Context, app_context: &Arc<AppContext>) {
-        let state = (*app_context.migration_status().state()).clone();
+    pub(super) fn update_banner(
+        &mut self,
+        ctx: &egui::Context,
+        app_context: &Arc<AppContext>,
+        frame_state: &MigrationState,
+    ) {
+        let state = frame_state.clone();
         self.update_password_prompt(ctx, app_context, &state);
         if self.last_state.as_ref() == Some(&state) {
             return;
@@ -800,7 +802,8 @@ mod tests {
             .with_size(egui::vec2(600.0, 260.0))
             .build_ui(MessageBanner::show_global);
 
-        reconciler.update_banner(&harness.ctx, &app_context);
+        let frame_state = app_context.migration_status().state();
+        reconciler.update_banner(&harness.ctx, &app_context, frame_state.as_ref());
         harness.run();
         harness.get_by_label(label).click();
         harness.run();

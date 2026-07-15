@@ -118,6 +118,17 @@ pub(crate) fn wallet_arc(
         })
 }
 
+/// Wire the wallet backend so persisted wallets are available in memory.
+///
+/// Unlike [`ensure_spv_synced`], this does not start SPV or wait for chain sync.
+pub(crate) async fn ensure_wallets_hydrated(ctx: &Arc<AppContext>) -> Result<(), McpToolError> {
+    let (tx, _) = tokio::sync::mpsc::channel::<crate::app::TaskResult>(32);
+    let sender = crate::utils::egui_mpsc::SenderAsync::new(tx, egui::Context::default());
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .map_err(McpToolError::TaskFailed)
+}
+
 /// Poll until the cold-start storage update is fully complete.
 ///
 /// On a fresh standalone process, `ensure_wallet_backend_and_start_spv`

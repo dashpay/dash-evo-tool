@@ -90,7 +90,11 @@ impl AppContext {
                 }
             }
             Err(e) => {
+                // A listing failure skips every per-identity key wipe, so it must
+                // surface as an incomplete clear — never a silent success that
+                // leaves identity private keys on disk.
                 tracing::warn!("Identity index listing for DashPay clear failed: {e:?}");
+                failures.push(e);
             }
         }
 

@@ -187,8 +187,17 @@ jobs:
     needs: [gate, tag]
     uses: ./.github/workflows/flatpak.yml
     secrets: inherit
+    # NOTE: flatpak.yml's own `build-flatpak` job hard-codes
+    # `permissions: { contents: write }` (needed for its `release:`-event
+    # attach-to-release step). GitHub's nested-workflow permission capping is
+    # NOT silent truncation — a nested job's own declared permissions must be
+    # <= what the caller grants, or the whole workflow fails validation
+    # ("Invalid workflow file", startup_failure) before any job runs. So this
+    # must be `write` even though the write capability goes unused on this
+    # workflow_call path (the attach step only fires on the real `release`
+    # event, never on workflow_call).
     permissions:
-      contents: read
+      contents: write
     with:
       version_override: ${{ needs.gate.outputs.version }}
 

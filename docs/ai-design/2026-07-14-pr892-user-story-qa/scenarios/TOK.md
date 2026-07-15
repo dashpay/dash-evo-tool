@@ -7,6 +7,307 @@ already running (PID 989399) when this pass started; reused per campaign instruc
 (PID 1279253); all TOK testing after that point ran against the relaunched instance. Both
 sessions showed the same environment blocker.
 
+## Retest pass (2026-07-15): identity registration now works, retesting all 17 in-scope TOK stories
+
+Same environment-blocker fix as `scenarios/DOC.md` (dashpay/platform#4133 fixed again upstream).
+App running as PID 527888, binary `/data/tmp/det-qa-pr892-bin-myown/dash-evo-tool` (hash
+`2931220e94871a0454ac56a43092aa87246b5a590d917645c025ddb1c7f9271a`), data dir
+`/data/tmp/det-qa-pr892-data`, Testnet. Two real identities exist and hold Platform balance:
+`QA Identity 1` (@detqa892run2) and `QA Identity 2` (@detqa892run3). Three QA-owned contracts
+exist from the DOC retest pass (QA Note Contract, QA Transfer Contract, QA Purchase Contract).
+The `WalletBackendNotYetWired`/asset-lock-recurrence bug (dashpay/platform#4133) was **not** hit
+at any point during this TOK retest pass.
+
+**Fixture-token strategy**: TOK-005 (Create Token) turned out to be completely non-functional
+(see below) — no QA-owned token could ever be created, so most of TOK-006 through TOK-018 (which
+need a tracked identity-token pair) could not be exercised with a real owned token. Worked around
+by using **`lklimek-20260217`** (contract `7TNdYLnTdCD1mpZ4yH2RyUthpmyF4QRZAr2kX18JzCeo`), a real,
+pre-existing, third-party Testnet token discovered live via TOK-002's keyword search and added to
+"My Tokens." This let every owner-only action (Mint, Burn, Freeze, Pause, Set Price, Update
+Config) be exercised far enough to observe DET's authorization-gating behavior (QA identities are
+correctly rejected, "Only the contract owner is [allowed]") even though the actual privileged
+action can never complete for real. It also happens to have a live perpetual distribution, which
+let TOK-011/015/016 be exercised much more thoroughly than a QA-owned throwaway token would have
+allowed.
+
+### TOK-001: View token balances — **PASS** (retested: real tracked token confirmed listed with
+### correct data, per-identity balance table renders correctly)
+
+"My Tokens" now shows a live, non-empty table: **Token Name** (`lklimek-20260217`), **Token ID**,
+**Description** (`None`), **Actions** (`More Info` / `X`). Clicking the token name drills into a
+per-identity table — **Identity Alias | Identity ID | Balance (Check) | Rewards (Estimate) |
+Actions (Transfer/Claim/Mint/…/X)** — correctly listing all three loaded identities (QA Identity
+1, QA Identity 2, alice.dash). Screenshots: `screenshots/TOK-001-2-my-tokens-list-with-tracked-token.png`,
+`screenshots/TOK-004-006-per-identity-actions-table.png`.
+
+**Verdict: PASS** — "My Tokens" lists a held/tracked token with a working balance-check surface,
+matching the acceptance criteria. (Not tested: a token with an actual non-zero balance for a QA
+identity, since no QA identity owns any token — see TOK-005.)
+
+### TOK-002: Search and discover tokens — **PASS** (retested: live keyword search returns real
+### results and "add to My Tokens" works end-to-end)
+
+Tokens > "Search Tokens" > entered `test`, clicked Search → returned real Testnet token search
+results including `lklimek-20260217`. Added it to "My Tokens" — confirmed it persists in the list
+across navigation and a Refresh. Screenshots: `screenshots/TOK-002-1-search-tokens-results.png`,
+`screenshots/TOK-002-2-token-added-to-my-tokens.png`.
+
+**Verdict: PASS** — keyword search dispatches, returns real results, and "add from search
+results" persists correctly, matching both acceptance-criteria bullets.
+
+### TOK-004: Transfer tokens — **BLOCKED** (reachable; correctly gated by zero balance, not a bug)
+
+Per-identity table's "Transfer" button is visibly greyed out/disabled for all three identities
+against `lklimek-20260217` (each holds a 0 balance for this token — none of them ever received
+any). This is correct, expected gating, not a defect: a QA identity genuinely cannot transfer
+tokens it does not hold.
+
+**Verdict: BLOCKED** — reasoning: "no QA-controlled identity holds a non-zero balance of any
+token in this environment — TOK-005 (Create Token) is confirmed non-functional, so no QA-owned
+token can ever be minted to give a QA identity a balance to transfer." The disabled-button gating
+itself is confirmed correct behavior, not the bug.
+
+### TOK-005: Create token contract — **FAIL** (confirmed, reproducible click no-op on both
+### simple-mode "Create Token" and advanced-mode "Register Token Contract"/"View JSON")
+
+Tokens > "Token Creator": filled a complete simple-mode form (token name "QA Token 1", base
+supply, a token preset) — the "Create Token" button renders enabled (blue fill, per
+`can_create` gate all being satisfied) but **clicking it has zero effect**: no confirmation
+popup, no banner, no backend dispatch, no log line of any kind in `det.log` (contrast with every
+other button in this campaign, which logs at minimum a dispatch attempt). Reproduced with
+Advanced Options on ("Register Token Contract" and "View JSON" buttons — same non-response).
+Screenshots: `screenshots/TOK-005-1-token-creator-form-filled.png`,
+`screenshots/TOK-005-2-advanced-mode-buttons-unresponsive.png`.
+
+**Diagnosis (thorough elimination, not assumed)**:
+1. a11y-dumped exact button coordinates and confirmed clicks landed dead-center — ruled out
+   coordinate drift.
+2. Tried `mcp__desktop__computer` clicks, direct `xdotool mousemove`+`click`, repeated attempts
+   with delays, moving the mouse away and back — no change.
+3. Confirmed sibling controls on the **identical frame** (the "Show Advanced Options" checkbox,
+   Identity/Token-Preset dropdowns, collapsible section expanders) all respond correctly to the
+   same click-delivery mechanism — ruling out a general input-pipeline failure.
+4. Confirmed via full `det.log` review that no `MessageBanner`/dispatch/any log line appears
+   after any of these clicks, while the same log shows reliable "Banner displayed" lines
+   immediately after successful clicks elsewhere in the same session.
+5. Read the exact Rust source (`token_creator.rs` simple mode ~419-454, advanced mode ~872-930):
+   both handlers set a `bool` flag (`show_token_creator_confirmation_popup = true` /
+   `show_json_popup = true`) on click, with the popup rendered unconditionally later in the same
+   `ui()` call — ruling out an immediate-reset race.
+6. **Strongest check**: killed the running app entirely (`pkill`, confirmed dead via `pgrep`),
+   verified the binary hash was unchanged, relaunched fresh with the same accessibility flags,
+   refilled the form from scratch with new values ("QA Token 2"), and reproduced the exact
+   identical non-response on the very first fresh attempt.
+
+**Root-cause hypothesis (not fixed, documented only)**: see the cross-story pattern note in the
+Summary section below — every confirmed-broken button in this pass shares the same code shape
+(sets a "show confirmation popup" `bool`/`Option` field as its *sole* immediate action, deferring
+the real work to a later frame), while every button that dispatches a `BackendTask` directly (or
+navigates) on click works correctly.
+
+**Verdict: FAIL** — the story's entire configuration surface (naming, supply, decimals,
+distribution, groups) is reachable and correctly populated, but the actual "register the
+contract" action can never be triggered by any tested input method, in either UI mode. This is
+the most severe TOK finding this pass: it structurally blocks TOK-006 through TOK-013/015/016/018
+from ever being exercised against a QA-owned token.
+
+### TOK-006: Mint tokens — **BLOCKED** (reachable; correct authorization gating confirmed, not
+### a bug)
+
+Per-identity table > Mint (QA Identity 1, `lklimek-20260217`) → Mint screen loads cleanly and
+shows: **"You are not allowed to mint this token. Only the contract owner is."** — a correct,
+clean, typed authorization rejection (`NotContractOwner`, confirmed via the banner's "Show
+details" expansion). Screenshot: `screenshots/TOK-006-1-mint-not-authorized.png`.
+
+**Verdict: BLOCKED** — reasoning: "TOK-005 (Create Token) is confirmed non-functional, so no
+QA-controlled identity ever owns a token to mint for real; the third-party fixture token
+`lklimek-20260217` correctly rejects QA identities as non-owners." Authorization-gating logic
+itself is confirmed working correctly.
+
+### TOK-007: Burn tokens — **BLOCKED** (same reasoning as TOK-006; reachable, correct
+### authorization gating)
+
+"..." menu > Burn → **"You are not allowed to burn this token. Only the contract owner is."**
+Screenshot: `screenshots/TOK-007-1-burn-not-authorized.png`.
+
+**Verdict: BLOCKED** — same reasoning as TOK-006.
+
+### TOK-008: Freeze and unfreeze token recipients — **BLOCKED** (same reasoning; reachable,
+### correct authorization gating)
+
+"..." menu > Freeze → **"You are not allowed to freeze this token. Only the contract owner is."**
+Screenshot: `screenshots/TOK-008-1-freeze-not-authorized.png`. Unfreeze/"Destroy Frozen Identity
+Tokens" menu items confirmed reachable in the same menu, not independently clicked (same
+authorization-gate class expected).
+
+**Verdict: BLOCKED** — same reasoning as TOK-006.
+
+### TOK-009: Pause and resume token transfers — **BLOCKED** (same reasoning; reachable, correct
+### authorization gating)
+
+"..." menu > Pause → **"You are not allowed to pause this token. Only the contract owner is."**
+Screenshot: `screenshots/TOK-009-010-1-pause-not-authorized.png`. "Resume" menu item confirmed
+reachable in the same menu, not independently clicked.
+
+**Verdict: BLOCKED** — same reasoning as TOK-006.
+
+### TOK-010: Destroy frozen funds — **BLOCKED** (same reasoning; reachable via "..." menu's
+### "Destroy Frozen Identity Tokens" item, not independently clicked)
+
+**Verdict: BLOCKED** — same reasoning as TOK-006.
+
+### TOK-011: Claim distributed tokens — **FAIL** (reachable, form fully functional and shows a
+### real live perpetual distribution — but the "Claim" submit button is a confirmed click no-op,
+### same defect class as TOK-005)
+
+Per-identity table > Claim (QA Identity 1, `lklimek-20260217`) → **Claim Tokens** screen loads a
+complete, correct form: "Select Distribution Type: Perpetual", a clear plain-language explanation
+of claim-cycle limits, and **"This token is using a time based distribution where every 1h it
+will distribute a fixed amount of 10 base tokens."** — confirming this fixture token has a real,
+live, non-owner-claimable perpetual distribution (contrast with TOK-006's Mint, which is
+correctly owner-only). "Estimated Fee: 0.000001 DASH." Screenshot:
+`screenshots/TOK-011-1-claim-tokens-form.png`.
+
+Clicked "Claim" (an a11y-verified exact-coordinate click, `@(336,430 76x28) center=(374,444)`,
+matching the click coordinates exactly): **zero effect** — no confirmation popup (source review
+of `claim_tokens_screen.rs` line 592-607 confirms the handler's only action is
+`self.confirmation_dialog = Some(ConfirmationDialog::new(...))`, with rendering unconditionally
+wired at line 610-612, ruling out a render-order race), no banner, no log line whatsoever.
+Reproduced twice with a fresh log-line check after each attempt (0 new lines both times).
+
+**Verdict: FAIL** — the claim-eligibility/distribution-detail surface works correctly (a genuine,
+useful confirmation the acceptance criteria's "view available claims" half is implemented), but
+the actual "Claim action transfers tokens to identity" half can never be triggered — same
+click-no-op defect class as TOK-005.
+
+### TOK-012: Set token pricing and purchase tokens — **BLOCKED** (partially retested: "Update
+### Config" reachable with a working form; "purchase tokens" side not independently exercised
+### beyond TOK-013's Set Price)
+
+"..." menu > "Update Config" → **Update Token Configuration** screen loads with "2. Select the
+item to update:" (dropdown defaulted to "No Change", "No parameters to edit for this entry"),
+"3. Public note (optional)," "Estimated Fee: 0.00002856 DASH" — no auth-rejection banner shown
+immediately (unlike Burn/Freeze/Pause/Set Price, which all reject at screen-construction time).
+Screenshot: `screenshots/TOK-012-1-update-config-form.png`. The submit button was not clicked
+(no confirmation-dialog-pattern check performed for this specific screen; given TOK-005/011's
+established pattern, it is plausible but not confirmed this button shares the same defect class).
+
+**Verdict: BLOCKED** — reasoning: "TOK-005 (Create Token) is confirmed non-functional, so no
+QA-controlled identity owns `lklimek-20260217` or any other token to update config for/purchase;
+the form itself is reachable and renders correctly, but no privileged action can be completed."
+
+### TOK-013: Update token configuration — **BLOCKED** (reachable; correct authorization gating
+### confirmed via "Set Price," the closest analogous story)
+
+"..." menu > "Set Price" → **Set Token Pricing Schedule** screen loads a full, correct form
+(Single Price / Tiered Pricing / Remove Pricing radio options, warning text for "Remove Pricing")
+but immediately shows: **"You are not allowed to set token price on this token. Only the
+contract owner is."** Screenshot: `screenshots/TOK-013-1-set-price-not-authorized.png`.
+
+**Verdict: BLOCKED** — same reasoning as TOK-006 (note: this story's title in PR892's catalog,
+"Update token configuration," is closely related to but distinct from TOK-012's "Set token
+pricing and purchase tokens" — both were exercised this pass via the token action menu's
+"Update Config" and "Set Price" items respectively).
+
+### TOK-014: Group actions for multi-party governance — **PASS** (retested: reachable, clean
+### empty states for both selectors, no crash — unchanged from the prior pass's finding)
+
+Contracts > "Group Actions" → "Active Group Actions" with "1. Select a contract:" (empty
+dropdown — none of QA's three registered contracts have groups configured) and "2. Select an
+identity:" (pre-filled QA Identity 1). No crash, no hang, no stray network call.
+
+**Verdict: PASS** — screen reachability and both selectors confirmed working correctly; no
+group-configured contract was available to exercise the actual approve/sign flow (none of this
+pass's fixture contracts opted into multi-party groups — out of scope to construct one).
+
+### TOK-015: View available token claims — **PASS** (retested: "Fetch claims" button works
+### correctly and returns a real result — contrast with TOK-011's broken Claim submit button on
+### the adjacent screen)
+
+"..." menu > "View Claims" → **View Token Claims** screen, "Fetch claims" button → **"No claims
+found"** — a correct, real result for an identity/token pair with no pending claims. Screenshot:
+`screenshots/TOK-015-1-view-claims-no-claims-found.png`. Notably, this button *does* work
+(uses the identical `ComponentStyles::add_primary_button` helper as TOK-011's broken "Claim"
+button — see the cross-story pattern note in the Summary), confirming the defect is not a
+blanket "all primary buttons on token screens are broken" issue.
+
+**Verdict: PASS** — the detailed claims view is reachable and dispatches/returns correctly,
+matching the acceptance criteria ("accessible before performing claim action").
+
+### TOK-016: Estimate perpetual token rewards — **PARTIAL** (reachable; returned an
+### ownership-gated rejection rather than a numeric estimate, plausibly correct for this fixture
+### token's distribution configuration)
+
+Per-identity table > "Estimate" (Rewards column, QA Identity 1, `lklimek-20260217`) →
+**"This token distribution can only be claimed by the contract owner
+(97rXwog9WJJGHkEqzTvDwcri5RWWKPiV7UMb4SoARQE8). Your identity is not the contract owner."**
+(typed `NotContractOwner` error, confirmed via "Show details"). Screenshot:
+`screenshots/TOK-016-1-estimate-rewards-not-owner.png`.
+
+This is a notable discrepancy with TOK-011's finding on the *same token*: the Claim screen
+describes a "time based distribution... every 1h... 10 base tokens" available to be claimed
+(implying a broadly-claimable perpetual distribution), while this "Estimate" action rejects with
+an owner-only message. Not root-caused further (out of scope for this pass) — plausible
+explanations include the token having two distinct distribution mechanisms (one perpetual/public,
+one owner-controlled) or the "Estimate" action internally reusing a claim-eligibility check scoped
+to a different distribution than the one described on the Claim screen. Flagged for follow-up,
+not asserted as a confirmed defect given the ambiguity.
+
+**Verdict: PARTIAL** — reachable and returns a clean, typed response (no crash, no hang), but the
+response contradicts what TOK-011 found on the same token/identity pair enough to warrant
+follow-up before calling this either a clean pass or a bug.
+
+### TOK-017: Pay for document operations with tokens — **BLOCKED** (reachable: Create Document
+### and Purchase Document flows both now load fully with a real contract, unlike the prior
+### pass's transitive block — but no token-payment UI option was found anywhere in either flow)
+
+Contracts > Documents > "Create Document" with contract **QA Note Contract** (a real, QA-owned
+contract from DOC-001) → filled contract/doc-type/identity/key through to step 3 ("Fill out the
+document fields"), including toggling "Advanced Options" (which only surfaced a Key selector, no
+payment-method option) — the form only ever shows a credits-based "Estimated fee: … DASH" /
+"Broadcast document" path, no token-payment toggle. Repeated the same check on "Purchase
+Document" up through contract/doc-type selection — same absence. Source review from the prior
+pass (`document_action_screen.rs` constructing `TokenPaymentInfo::V0(...)`) confirms the
+capability exists in the backend/submission logic, but no reachable UI control to opt into it was
+found in the two flows explored this pass.
+
+**Verdict: BLOCKED** — reasoning: "the underlying document-action screens are now reachable
+(unlike the prior pass's transitive DOC-003 environment block), but no token-payment UI surface
+was found in Create Document or Purchase Document; not exhaustively checked across all six
+document-action screens, so a UI element may exist elsewhere (e.g. only after selecting a
+document/price already denominated in tokens) that this pass's exploration did not reach."
+
+### TOK-018: Stop tracking a token balance — **FAIL** (confirmed reproducible click no-op on the
+### "X" button — same defect class as TOK-005/TOK-011)
+
+My Tokens list ("Token Name | Token ID | Description | Actions") shows `lklimek-20260217` with
+"More Info" / "X" actions. Clicked "X": **zero effect** — the token remains in the list after the
+click, after a subsequent "Refresh," and after a repeat click with a fresh `det.log` line-count
+check (0 new lines related to token removal both times). Screenshots:
+`screenshots/TOK-018-1-before-stop-tracking.png`, `screenshots/TOK-018-2-x-button-unresponsive-after-refresh.png`.
+
+Also reproduced on the per-identity table's own "X" ("Remove identity token balance from DET") —
+same non-response.
+
+**Source review confirms the same "sets a popup flag, nothing else" pattern as TOK-005/TOK-011**:
+`my_tokens.rs` line 1077-1084 (top-level list) sets `self.confirm_remove_token_popup = true;
+self.token_to_remove = Some(*token_id);`; line 541-551 (per-identity table) sets
+`self.confirm_remove_identity_token_balance_popup = true;`. Both popups are unconditionally wired
+to render later in the same `ui()` call (`tokens_screen/mod.rs` line 2777) — ruling out a
+render-order race, same as TOK-005/TOK-011. No confirmation popup was ever observed on screen
+after any of the click attempts.
+
+**Verdict: FAIL** — "Stop Tracking Balance" can never be triggered by any tested input method.
+This is a functional regression from the previous pass's source-only review (which found the
+underlying persistence/un-watch/restoration logic to be a complete, well-tested implementation) —
+the backend logic appears sound, but the UI can never reach it.
+
+---
+
+## Original pass findings (below this point, superseded by the 2026-07-15 retest above for
+## TOK-001, 002, 004-018 — TOK-003 was not in the 24-story retest scope and its FAIL finding
+## still stands as last confirmed, unretested this pass)
+
 ## Environment status at start of this pass — one honest recheck performed, blocker confirmed
 ## unchanged (not re-diagnosed further; see `scenarios/DOC.md` for the full recheck writeup)
 
@@ -356,7 +657,7 @@ acceptance-criteria bullet — not a stub.
 
 ---
 
-## Summary
+## Original pass summary (superseded by the final Summary at the bottom of this file)
 
 | Story | Verdict |
 |---|---|
@@ -408,3 +709,72 @@ three targeted unit tests — consistent with this campaign's pattern of finding
 already-shipped features gated behind an environment blocker rather than missing functionality.
 No PR892 application source was modified; no persistent state was changed by this follow-up
 (read-only navigation and source review only).
+
+---
+
+## Summary (2026-07-15 retest, wallet-backend/asset-lock env fix applied — final, current)
+
+| Story | Verdict (2026-07-15 retest) |
+|---|---|
+| TOK-001 | **PASS** (real tracked token listed; per-identity balance table renders correctly) |
+| TOK-002 | **PASS** (live keyword search returns real results; add-to-My-Tokens persists) |
+| TOK-003 | FAIL (not retested this pass — out of the 24-story scope; original finding stands: well-formed-ID search dispatches and fails, but the failure is silently dropped) |
+| TOK-004 | BLOCKED (reachable; Transfer correctly disabled for a 0 balance — TOK-005 blocks ever obtaining a QA-owned balance) |
+| TOK-005 | **FAIL** (Create Token / Register Token Contract / View JSON: confirmed, thoroughly diagnosed click no-op — most severe TOK finding this pass) |
+| TOK-006 | BLOCKED (reachable; correct owner-only authorization rejection, not a bug) |
+| TOK-007 | BLOCKED (same as TOK-006) |
+| TOK-008 | BLOCKED (same as TOK-006) |
+| TOK-009 | BLOCKED (same as TOK-006) |
+| TOK-010 | BLOCKED (same as TOK-006, via the shared "..." menu) |
+| TOK-011 | **FAIL** (Claim form fully functional and shows a real live distribution, but "Claim" submit button is a confirmed click no-op — same defect class as TOK-005) |
+| TOK-012 | BLOCKED (Update Config form reachable; submit button not independently tested) |
+| TOK-013 | BLOCKED (Set Price reachable; correct owner-only authorization rejection) |
+| TOK-014 | **PASS** (reachable; clean empty states for both selectors, no crash) |
+| TOK-015 | **PASS** ("Fetch claims" works correctly, returns "No claims found" — contrast with TOK-011's broken button on the adjacent screen) |
+| TOK-016 | PARTIAL (reachable; returned an owner-only rejection that appears to contradict TOK-011's finding on the same token — flagged for follow-up, not asserted as a confirmed bug) |
+| TOK-017 | BLOCKED (Create Document / Purchase Document both now fully reachable with a real contract, but no token-payment UI option found in either flow explored) |
+| TOK-018 | **FAIL** (Stop Tracking Balance "X": confirmed click no-op on both the top-level and per-identity variants — same defect class as TOK-005/TOK-011; backend logic previously confirmed sound via source review) |
+
+**Nine of seventeen retested stories flip from BLOCKED to a live verdict** (PASS, FAIL, or
+PARTIAL) now that the wallet-backend/asset-lock environment blocker (dashpay/platform#4133) is
+fixed and real funded identities are reachable; the remaining eight stay BLOCKED for a *new*,
+narrower, non-environment reason — almost entirely because **TOK-005 (Create Token) is
+completely non-functional**, so no QA-controlled identity can ever own a real token to exercise
+the issuer-only actions against. TOK-003 was outside this pass's 24-story scope and was not
+retested; its original FAIL finding stands unchanged.
+
+**Cross-story pattern — three confirmed click-no-op defects share the same code shape**:
+TOK-005 (Token Creator's "Create Token"/"Register Token Contract"/"View JSON"), TOK-011 (Claim
+Tokens' "Claim"), and TOK-018 (My Tokens' "X" / Stop Tracking, both variants) are all
+independently, thoroughly diagnosed click no-ops — a11y-verified exact coordinates, zero log
+activity of any kind after the click, and (for TOK-011/018) a source-confirmed, correctly-wired
+popup render path ruling out an immediate-reset race. Source review found all three share one
+specific shape: **the click handler's sole immediate action is to set a "show confirmation
+popup" `bool`/`Option` field** (`show_token_creator_confirmation_popup`, `confirmation_dialog =
+Some(ConfirmationDialog::new(...))`, `confirm_remove_token_popup` /
+`confirm_remove_identity_token_balance_popup`), deferring the real state-transition dispatch to a
+later frame once the user confirms in that popup. By contrast, every button in this pass that
+dispatches a `BackendTask` directly on click (or navigates to another screen) works correctly —
+including buttons using the *identical* `ComponentStyles::add_primary_button` helper, e.g.
+TOK-015's working "Fetch claims" right next to TOK-011's broken "Claim." This rules out a
+blanket "primary buttons are broken" explanation and narrows the likely defect to something
+specific about the deferred-confirmation-popup pattern on these token screens — not fixed, not
+further root-caused, per this campaign's document-don't-fix rule.
+
+**Read-only/public queries confirmed working**: TOK-001 and TOK-002 both PASS live, confirming
+the wallet-backend/asset-lock fix genuinely restores the identity-dependent surfaces this
+category needs, not just the public-query paths already known to work pre-fix.
+
+**Fixture-token workaround**: this pass used a real, pre-existing, third-party Testnet token
+(`lklimek-20260217`, contract `7TNdYLnTdCD1mpZ4yH2RyUthpmyF4QRZAr2kX18JzCeo`, discovered live via
+TOK-002's own search) to exercise as many owner-gated action screens as possible despite TOK-005's
+failure blocking any QA-owned token from ever existing. This let authorization-gating logic be
+verified correct (TOK-006/007/008/009/010/013 all show clean, typed `NotContractOwner`
+rejections) and let TOK-011/015/016 exercise a real live perpetual distribution — evidence that
+would have been unobtainable with a QA-owned token alone, given TOK-005's failure. The app was
+never crashed during this pass; no PR892 application source was modified; no destructive action
+was taken against the third-party token owner's actual holdings (every privileged action was
+correctly, cleanly rejected before reaching broadcast).
+
+**Asset-lock recurrence (dashpay/platform#4133) was NOT hit at any point during this TOK retest
+pass.**

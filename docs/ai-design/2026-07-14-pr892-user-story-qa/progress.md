@@ -231,31 +231,45 @@ needed).
 
 ## TOK
 
-- [x] TOK-001: View token balances — BLOCKED (empty state confirmed reachable and correct)
-- [x] TOK-002: Search and discover tokens — BLOCKED (confirmed reachable without identity;
-      dispatches + fails cleanly on known quorum-sync error)
-- [x] TOK-003: Add token by contract or token ID — FAIL (format validation + dispatch both
-      work; well-formed-ID request fails but result is silently dropped, zero user feedback)
-- [x] TOK-004: Transfer tokens — BLOCKED (no tracked token/identity reachable)
-- [x] TOK-005: Create token contract — BLOCKED (live-tested: clean typed error, Advanced
-      Options doesn't bypass the identity gate)
-- [x] TOK-006: Mint tokens — BLOCKED (no tracked token/identity reachable)
+- [x] TOK-001: View token balances — PASS (retested 2026-07-15: real tracked token
+      `lklimek-20260217` listed correctly, per-identity balance table renders for all 3 identities)
+- [x] TOK-002: Search and discover tokens — PASS (retested 2026-07-15: live keyword search
+      returns real results; add-to-My-Tokens persists across navigation and Refresh)
+- [x] TOK-003: Add token by contract or token ID — FAIL (not retested — out of 24-story scope;
+      original finding stands: format validation + dispatch both work; well-formed-ID request
+      fails but result is silently dropped, zero user feedback)
+- [x] TOK-004: Transfer tokens — BLOCKED (retested 2026-07-15: reachable, Transfer correctly
+      disabled for a 0 balance; TOK-005's failure blocks ever obtaining a QA-owned balance)
+- [x] TOK-005: Create token contract — FAIL (retested 2026-07-15: "Create Token" /
+      "Register Token Contract" / "View JSON" all confirmed reproducible click no-ops —
+      a11y-verified coordinates, zero log activity, reproduced fresh after a full app relaunch;
+      most severe TOK finding this pass, structurally blocks TOK-006–013/015/016/018)
+- [x] TOK-006: Mint tokens — BLOCKED (retested 2026-07-15: reachable via a third-party fixture
+      token; correct owner-only authorization rejection, not a bug — TOK-005 blocks a real test)
 - [x] TOK-007: Burn tokens — BLOCKED (same as TOK-006)
 - [x] TOK-008: Freeze and unfreeze token recipients — BLOCKED (same as TOK-006)
 - [x] TOK-009: Pause and resume token transfers — BLOCKED (same as TOK-006)
 - [x] TOK-010: Destroy frozen funds — BLOCKED (same as TOK-006)
-- [x] TOK-011: Claim distributed tokens — BLOCKED (same as TOK-006)
-- [x] TOK-012: Set token pricing and purchase tokens — BLOCKED (same as TOK-006)
-- [x] TOK-013: Update token configuration — BLOCKED (same as TOK-006)
-- [x] TOK-014: Group actions for multi-party governance — BLOCKED (live-tested: clean empty
-      states for contract/identity selectors, no crash)
-- [x] TOK-015: View available token claims — BLOCKED (same as TOK-006)
-- [x] TOK-016: Estimate perpetual token rewards — BLOCKED (no tracked token to estimate for)
-- [x] TOK-017: Pay for document operations with tokens — BLOCKED (transitively, via DOC's
-      contract-add environment blocker)
-- [x] TOK-018: Stop tracking a token balance — BLOCKED (no tracked token/identity reachable;
-      "Stop Tracking Balance" confirmed fully implemented — per-pair persistence, un-watch, and
-      both restoration paths — via source)
+- [x] TOK-011: Claim distributed tokens — FAIL (retested 2026-07-15: Claim form fully functional
+      and shows a real live perpetual distribution, but the "Claim" submit button is a confirmed
+      click no-op — same defect class as TOK-005)
+- [x] TOK-012: Set token pricing and purchase tokens — BLOCKED (retested 2026-07-15: "Update
+      Config" form reachable; TOK-005 blocks a real owned-token test)
+- [x] TOK-013: Update token configuration — BLOCKED (retested 2026-07-15: "Set Price" reachable,
+      correct owner-only authorization rejection)
+- [x] TOK-014: Group actions for multi-party governance — PASS (retested 2026-07-15: clean
+      empty states for contract/identity selectors, no crash)
+- [x] TOK-015: View available token claims — PASS (retested 2026-07-15: "Fetch claims" works
+      correctly, returns "No claims found" — contrast with TOK-011's broken button next to it)
+- [x] TOK-016: Estimate perpetual token rewards — PARTIAL (retested 2026-07-15: reachable,
+      returned an owner-only rejection that appears to contradict TOK-011's finding on the same
+      token — flagged for follow-up, not asserted as a confirmed bug)
+- [x] TOK-017: Pay for document operations with tokens — BLOCKED (retested 2026-07-15: Create
+      Document / Purchase Document both now fully reachable with a real contract, but no
+      token-payment UI option found in either flow explored)
+- [x] TOK-018: Stop tracking a token balance — FAIL (retested 2026-07-15: "X" button confirmed
+      click no-op on both the top-level and per-identity variants — same defect class as
+      TOK-005/TOK-011; underlying persistence logic previously confirmed sound via source review)
 
 ## DOC
 

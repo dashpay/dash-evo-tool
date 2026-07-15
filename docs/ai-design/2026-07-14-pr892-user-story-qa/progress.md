@@ -99,8 +99,10 @@ needed).
 
 ## IDN
 
-- [x] IDN-001: Register a new identity — BLOCKED (wizard/validation confirmed working;
-      independent "+Add Key" no-op bug found in Advanced key-selection mode)
+- [x] IDN-001: Register a new identity — PASS (retested post-env-fix: full E2E wizard using
+      "From your wallet" funding — "Identity Registered Successfully!"; the earlier "+Add Key"
+      no-op bug in Advanced key-selection mode was NOT re-verified this pass, superseded by
+      IDN-007's PASS via the direct "Add a new key" screen)
 - [x] IDN-002: Load existing identity by ID — FAIL (ID+key "Load Identity" button silently
       hangs with zero feedback; sibling tabs on the same screen — "From my wallet", "My
       username" — degrade gracefully with clean typed/generic errors)
@@ -108,32 +110,55 @@ needed).
       MN-001]` in the reconciled doc; original FAIL finding — same silent-hang defect class
       as IDN-002 — carried forward as context for whoever tests MN-001, which now owns this
       capability)
-- [x] IDN-004: Top up identity credits — BLOCKED (no identity reachable — see IDN-001/002/003)
-- [x] IDN-005: Withdraw credits to Core address — BLOCKED (same reasoning as IDN-004)
-- [x] IDN-006: Transfer credits between identities — BLOCKED (same reasoning as IDN-004)
-- [x] IDN-007: Add key to identity — BLOCKED (same reasoning as IDN-004)
-- [x] IDN-008: View identity keys and details — BLOCKED (same reasoning as IDN-004)
-- [x] IDN-013a: Password-protect an identity's signing keys (SEC-001) — BLOCKED for live UI (no
-      identity reachable, see scenarios/IDN.md); read-only source review confirms the feature is
-      fully implemented, matching every acceptance-criteria bullet
-- [x] IDN-009: Refresh identity state — BLOCKED (same reasoning as IDN-004)
-- [x] IDN-010: Search identity by DPNS name — BLOCKED (dispatches and fails cleanly on the
-      known masternode-list/quorum-sync error, same signature as DEV.md)
+- [x] IDN-004: Top up identity credits — PASS (retested post-env-fix: top-up via Platform
+      address, "Identity Topped Up Successfully!")
+- [x] IDN-005: Withdraw credits to Core address — PASS (retested post-env-fix: confirmation
+      dialog + "Withdrawal Successful!" to a Core address)
+- [x] IDN-006: Transfer credits between identities — FAIL (retested post-env-fix with two real
+      identities: the "Transfer" button is a confirmed, reproducible click no-op — enabled,
+      hoverable with correct tooltip, zero effect on click, 5 repro attempts across both
+      destination-type variants; see scenarios/IDN.md)
+- [x] IDN-007: Add key to identity — PASS (retested post-env-fix: on-chain `IdentityUpdate`
+      state transition confirmed via broadcast+proof-verification log evidence, not just the
+      success screen; see scenarios/IDN.md for a secondary key-list-staleness finding tied to
+      IDN-009)
+- [x] IDN-008: View identity keys and details — FAIL (retested post-env-fix: only an aggregate
+      "This identity has N keys" count is reachable; no per-key list with type/purpose/status
+      and no individual key detail view — source confirms `KeysScreen`/`KeyInfoScreen` exist but
+      have no live navigation trigger for a normal keyed identity, see scenarios/IDN.md)
+- [x] IDN-013a: Password-protect an identity's signing keys (SEC-001) — BLOCKED (retested
+      post-env-fix: an identity is now reachable, but Key Info screen — which hosts the Key
+      Protection section — has no reachable navigation path for a normal keyed User identity in
+      this build's default UI; same structural gap as IDN-008, not the prior "no identity"
+      reasoning; underlying mechanism previously source-confirmed implemented)
+- [x] IDN-009: Refresh identity state — FAIL (retested post-env-fix: button dispatches cleanly
+      with no hang — a major improvement — but the displayed key count never updates even after
+      3 refreshes + full navigation reload over ~10 min, despite a confirmed on-chain 7th key
+      from IDN-007; credit balance does update correctly)
+- [x] IDN-010: Search identity by DPNS name — PASS (retested post-env-fix: searching "alice"
+      now successfully finds and loads a real Testnet identity, `alice.dash`, 1.1747 DASH —
+      previously failed cleanly on the masternode-list/quorum-sync error, now returns real
+      results end-to-end)
 - [x] IDN-011: Bulk identity creation — N/A (Gap, not implemented)
-- [x] IDN-012: Register identity from Platform addresses — BLOCKED (confirmed implemented and
-      correctly gated in source; live Platform-balance cache never populates in this session)
-- [x] IDN-013b: Top up identity from Platform addresses — BLOCKED (no identity reachable;
-      *disambiguated ID, see duplicate-ID note above — this is the story in its expected
-      numeric position after IDN-012*)
+- [x] IDN-012: Register identity from Platform addresses — PASS (retested post-env-fix: full E2E
+      identity registration funded directly from a Platform address, bypassing the broken
+      Asset-Locks list entirely — "Identity Registered Successfully!")
+- [x] IDN-013b: Top up identity from Platform addresses — PASS (retested post-env-fix: same
+      flow/result as IDN-004, "Identity Topped Up Successfully!")
 - [x] IDN-014: Fund identity by receiving a deposit to a shown QR/address — FAIL (deposit-address
       step renders zero content — no QR, no address, no amount field, no error; directly
       reachable without a pre-existing identity, re-verified fresh this session)
 - [x] IDN-015: Automatic identity discovery after sync — PASS (live det.log from this exact
       running process shows the once-per-session auto-trigger firing and completing on Platform
       readiness; source review confirms rolling 5-index window and alias-preserving refresh)
-- [x] IDN-016: Identities and their keys preserved across an app upgrade — BLOCKED (no
-      pre-upgrade legacy identity-storage fixture exists to exercise this migration path; would
-      require running a prior app version first, out of scope for this QA pass)
+- [x] IDN-016: Identities and their keys preserved across an app upgrade — BLOCKED for the
+      story's literal criteria (no pre-upgrade legacy fixture, unchanged); **separately, a real
+      restart-survival test confirmed the flagged asset-lock recurrence risk**: a clean quit +
+      relaunch reproduced the exact `ALK.md`/`TEST-VECTOR.md` `WalletBackendNotYetWired` failure
+      on a NEW `is_locked` row (WAL-018's 0.5 DASH lock), leaving all 3 identities inaccessible
+      via UI (data confirmed intact via direct SQLite check, not lost). Same root-caused defect,
+      not a new bug. No DB fix attempted — see scenarios/IDN.md for full detail. **Data dir is
+      currently in this broken state; report back before continuing DPN/DPY/TOK/DOC/IDH/MN.**
 
 ## DPN
 

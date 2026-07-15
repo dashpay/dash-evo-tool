@@ -599,7 +599,7 @@ BLOCKED verdict above.
 
 ---
 
-## Summary
+## Summary (pre-fix pass — see "Third pass" below for the post-environment-fix retest)
 
 | Story | Verdict |
 |---|---|
@@ -620,6 +620,367 @@ BLOCKED verdict above.
 | IDN-014 | FAIL (step 2's deposit address/QR renders zero content; directly reachable, not identity-gated) |
 | IDN-015 | PASS (live log confirms once-per-session auto-trigger; source confirms 5-index rolling window + alias preservation) |
 | IDN-016 | BLOCKED (no pre-upgrade legacy fixture exists; source review confirms mature, tested implementation) |
+
+---
+
+## Third pass (2026-07-15, post-environment-fix): IDN-001, 004-010, 012, 013a/b, 016 retested
+
+**Environment**: the Testnet wallet-backend blocker is now root-caused and fixed for this session
+(see `ALK.md`'s "Resolution" section and
+`/data/artifacts/dash-evo-tool/2026-07-14/pr892-user-story-qa/testnet-blocker-investigation/TEST-VECTOR.md`).
+On arrival, app PID 2216703 (hash-verified
+`2931220e94871a0454ac56a43092aa87246b5a590d917645c025ddb1c7f9271a`) was already running against
+the live QA data dir, Testnet fully synced, `QA Wallet 1` holding ~5.48 DASH (Core ~5.465,
+Platform ~0.0137, Shielded 0), Developer view. This pass registered two new identities
+(`QA Identity 1`, `QA Identity 2`) and loaded a third real Platform identity (`alice.dash`) via
+search — the wallet had **zero** identities before this pass (confirmed via `meta_identity`
+row count).
+
+**UI note**: the identity UI has been substantially redesigned since the previous pass —
+`RootScreenIdentityHub` (`ui/identity/`, `IdentityHubScreen`) is now the default/fallback root
+screen, replacing the legacy `RootScreenIdentities` (`ui/identities/identities_screen.rs`) that
+IDN-001/002/003's earlier write-up exercised. The new Identity Hub uses Home/Contacts/Activity/
+Settings tabs per identity, a breadcrumb identity-switcher pill (click the identity name in the
+breadcrumb → "Create a new identity" / "Load an existing identity" / "Create multiple test
+identities"), and funding wizards with a `Select how to fund` dropdown offering **"Recover an
+unfinished funding"**, **"From your wallet (recommended)"**, **"Use a Platform address"**, and
+**"Receive a new deposit"** — a strict superset of what the earlier degraded-environment pass
+saw (which only showed two of these four, likely because the other two require a live
+Platform-balance cache that never populated then).
+
+### IDN-001: Register a new identity — **PASS**
+
+**Acceptance criteria**: "Fund-first wizard: choose a funding method — from your wallet
+(recommended, pre-selected by default when available), recover an unfinished funding, or use a
+Platform address — then optionally set a local alias before creating. Multi-stage confirmation
+flow."
+
+Steps: `Identities` (clean empty state, no red banners this time) → "Create my first identity" →
+wizard step 1 (`QA Wallet 1` pre-selected) → step 2 funding method **"From your wallet
+(recommended)"** (pre-selected by default, confirming that acceptance-criteria bullet) → step 3
+amount `0.03` DASH (estimated fee shown live: `0.00241 DASH`) → step 4 alias `QA Identity 1` →
+"Create Identity". Result: **"Identity Registered Successfully!"**, landed on the new Identity
+Hub home screen showing `0.0281 DASH` (0.03 minus registration cost), Identity ID
+`24Jm9XBCPsAf154cy4X2YLvTTgFjiwAKoCSew17CetCb`. Screenshots:
+`screenshots/IDN-001-3-create-identity-wizard-postfix.png`,
+`screenshots/IDN-001-4-identity-registered-successfully.png`,
+`screenshots/IDN-001-5-identity-hub-home.png`.
+
+**Verdict: PASS.** This is the critical unlock for the whole IDN/DPN/DPY/TOK/DOC/IDH/MN
+dependency chain — a real, on-chain identity now exists and is reachable in this data dir.
+
+### IDN-004: Top up identity credits — **PASS**
+
+**Acceptance criteria**: "Top up from wallet or Platform addresses. Amount selection with credit
+cost display."
+
+Steps: Identity Home → "Add Funds" → "Top Up Identity" screen → funding method dropdown (same 4
+options as Create Identity) → selected **"Use a Platform address"** (doubles as IDN-013b, see
+below) → wallet `QA Wallet 1` → Platform address `tdash1kp30ae9x752z7wu20j4m4y945449anlhtqqe9h4l`
+(0.0087251398 DASH available) → amount `0.005` → "Top Up Identity". Result: **"Identity Topped
+Up Successfully!"** Screenshot:
+`screenshots/IDN-004-013b-1-topped-up-successfully.png`.
+
+**Verdict: PASS.**
+
+### IDN-005: Withdraw credits to Core address — **PASS**
+
+**Acceptance criteria**: "Enter destination address and withdrawal amount. Withdrawal appears in
+the queue."
+
+Steps: Identity Home → "Send to wallet" → "Withdraw Funds" screen → amount `0.015` DASH →
+destination `yYCWtyP2mSLzGkZqL9a6G5rpPQQRs1fT5f` (the wallet's own Core address) → "Withdraw" →
+**"Confirm Withdrawal"** dialog (exact amount + address restated) → "Confirm". Result:
+**"Withdrawal Successful! Note: It may take a few minutes for funds to appear on the Core
+chain."** Screenshots: `screenshots/IDN-005-1-withdraw-funds-filled.png`,
+`screenshots/IDN-005-2-withdrawal-successful.png`.
+
+**Verdict: PASS.**
+
+### IDN-006: Transfer credits between identities — **FAIL** (Transfer button is a confirmed, reproducible click no-op)
+
+**Acceptance criteria**: "Select source and destination identities. Enter transfer amount."
+
+A second identity (`QA Identity 2`) was registered specifically to self-test this story per
+campaign convention (see IDN-012 below — registered via "Use a Platform address" funding).
+
+Steps: `QA Identity 1` Home → "Send to another identity" → `ui/identities/transfer_screen.rs`'s
+"Transfer Funds" screen. Amount `0.005`, destination type **Identity**, "Receiver Identity ID"
+dropdown correctly listed `QA Identity 2` (auto-filled its full Identifier on selection). The
+"Transfer" button rendered fully enabled (solid blue, matching every other enabled button this
+session) and hovering it produced the enabled tooltip **"Transfer credits to another identity or
+Platform address"** — confirming the `ready` gate (amount set, key selected, balance sufficient,
+destination non-empty) was genuinely true, not a rendering artifact.
+
+**Clicking "Transfer" produced no observable effect whatsoever**, reproduced 5 times:
+- No confirmation dialog appeared (source shows a click should set
+  `self.confirmation_popup = true`, rendering a `ConfirmationDialog` on the next frame — an
+  a11y-tree dump immediately after each click found zero `dialog`/`confirm`/`popup` nodes
+  anywhere, ruling out an off-screen or mis-rendered dialog).
+- No entry in `det.log` (`grep -c "TransferCredits" det.log` → 0, across the entire session).
+- No balance change on either identity (`QA Identity 1`'s "Available balance" stayed at
+  `0.01573675 DASH` through every attempt).
+- No error banner.
+
+Repro also confirmed with **"Show Advanced Options"** enabled (reveals a "Select the key to sign
+the transaction with" dropdown, pre-populated with `Key 3 | TRANSFER | CRITICAL |
+ECDSA_HASH160` — a valid key was selected) and with the **Platform Address** destination-type
+variant (filled a valid Platform address, button rendered enabled, same silent no-op). This
+rules out "identity destination specifically is broken" — the whole screen's Transfer action is
+non-functional for a ready state that the UI itself reports as ready.
+Screenshots: `screenshots/IDN-006-1-transfer-funds-filled.png`,
+`screenshots/IDN-006-2-transfer-button-noop-both-destination-types.png`.
+
+**Verdict: FAIL.** This is a genuinely new, environment-independent defect — the healthiest
+backend state seen all campaign, a demonstrably `ready == true` button, and still zero effect on
+click. Worth a P1 ticket: users attempting to transfer credits between their own identities will
+see a fully-interactive-looking button that silently does nothing.
+
+### IDN-007: Add key to identity — **PASS** (with a secondary key-list staleness finding, see IDN-009)
+
+**Acceptance criteria**: "Select key type and purpose. Key is added via state transition."
+
+Steps: `QA Identity 1` → Settings tab → Advanced → "Add a new key" → `Add Key` screen: Purpose
+`AUTHENTICATION`, Security Level `HIGH`, Key Type `ECDSA_SECP256K1`, "Generate Random" for the
+private key → "Add Key". Result: **"Key Added Successfully!"** Screenshots:
+`screenshots/IDN-007-1-add-key-screen-generated.png`,
+`screenshots/IDN-007-2-key-added-successfully.png`.
+
+**Confirmed via `det.log`, not just the success screen**: a real `IdentityUpdate` state
+transition was broadcast and its proof verified —
+```
+broadcast_and_wait: start state_transition=IdentityUpdate
+broadcast: request succeeded
+wait: proof verification successful
+wait: result variant result_variant=VerifiedPartialIdentity
+INFO dash_evo_tool::backend_task::identity::add_key_to_identity: AddKeyToIdentity proof result: VerifiedPartialIdentity
+```
+
+**Verdict: PASS** — both acceptance-criteria bullets confirmed on-chain, not just via the
+front-end success screen.
+
+### IDN-008: View identity keys and details — **FAIL** (only an aggregate count is reachable; no per-key list or detail view for a normal keyed User identity)
+
+**Acceptance criteria**: "Lists all keys with type, purpose, and status. View individual key
+details."
+
+The Identity Settings → Advanced → "Keys" section (`ui/identity/settings.rs`) renders **only**
+`"This identity has N keys."` + an "Add a new key" button — there is no per-key table, no
+type/purpose/status columns, and no click-through to a key-detail view anywhere in the reachable
+Identity Hub UI.
+
+Source review confirms the screens this story's criteria describe **do exist** —
+`ui/identities/keys/keys_screen.rs` (`KeysScreen`, a full keys table) and
+`ui/identities/keys/key_info_screen.rs` (`KeyInfoScreen`, individual key detail + the Key
+Protection section IDN-013a needs) — but `KeysScreen` has **zero navigation callsites anywhere
+in the codebase** (`grep -rn "ScreenType::Keys("` only matches its own registration in
+`ui/mod.rs`, never a button/link that constructs it), and `KeyInfoScreen`'s only callsite
+reachable from a User identity with keys already present
+(`ui/identities/transfer_screen.rs:632`, `"Check Transfer Key"`) is gated behind
+`!has_keys` — i.e. it only renders when the identity has **no** transfer-purpose keys at all, the
+opposite of the normal case. Every other `KeyInfoScreen` callsite is inside Token/Masternode
+signing-key-selection flows, not a general "browse my identity's keys" surface. The legacy
+`ui/identities/identities_screen.rs` (which IDN.md's original IDN-002 write-up shows still has
+per-key rows linking to `KeyInfoScreen`) is a dead root screen in this build — nothing routes to
+`RootScreenIdentities` any more; `RootScreenIdentityHub` is the sole fallback
+(`app.rs::FALLBACK_ROOT_SCREEN`).
+
+**Verdict: FAIL.** The count-and-add-button view partially satisfies the story's spirit (some
+key info is visible) but does not meet either explicit bullet — no listing with type/purpose/
+status, no individual key detail view — for a normal identity via the default, only-reachable
+navigation path in this build.
+
+### IDN-009: Refresh identity state — **FAIL** (button dispatches cleanly with no hang/error — a major improvement — but key state does not update even after repeated refreshes and full navigation reloads)
+
+**Acceptance criteria**: "Manual refresh button. Updated data reflected immediately."
+
+Steps: Identity Settings → Advanced → "Refresh identity data" (`IdentityTask::RefreshIdentity`).
+Clicked 3 times over ~10 minutes, including full navigation-away-and-back (fresh screen
+construction, re-reading from the local store, not just in-memory screen state) between
+attempts.
+
+**What worked**: the button dispatches without hanging or erroring (a clear improvement over
+IDN-002/003's silent-hang defect class from the pre-fix pass) — no crash, no stuck spinner. The
+identity's **credit balance** did stay current throughout (updated via a separate live push
+mechanism, without even needing an explicit click).
+
+**What didn't**: the displayed **key count** stayed at "This identity has 6 keys" through every
+refresh attempt and full re-navigation, despite IDN-007 having just added a 7th key with a
+confirmed on-chain `VerifiedPartialIdentity` proof. A direct `sqlite3` check of the underlying
+`meta_identity` blob (`spv/testnet/platform-wallet.sqlite`, key `det:identity:v1`) showed its
+`updated_at` timestamp genuinely advancing after each refresh click (so `RefreshIdentity`'s
+`update_local_qualified_identity()` call is executing, not silently failing) — meaning either
+the identity fetch from Platform (`Identity::fetch_by_identifier`) is itself returning a stale
+6-key result even ~10 minutes post-confirmation, or some other part of the refresh/render path
+drops the 7th key. Root cause not conclusively identified within this pass's scope; flagged for a
+follow-up with SDK/ContextProvider tracing.
+
+**Verdict: FAIL** for the story's explicit "reflected immediately" requirement, evaluated
+specifically against key state (balance state does meet it). This is a materially different,
+more subtle failure mode than the pre-fix pass's complete inability to reach this button at all —
+worth noting as a partial improvement even though the verdict itself is unchanged from a user's
+perspective (refreshing still doesn't show them their current key list).
+
+### IDN-010: Search identity by DPNS name — **PASS** (retested: now returns real Platform results, not the previous quorum-sync failure)
+
+**Acceptance criteria**: "Enter username and retrieve associated identity."
+
+Steps: breadcrumb identity-switcher pill → "Load an existing identity" → "Load Existing
+Identity" screen → **"My username"** tab → `alice` → "Search by Username". Result:
+**"Successfully loaded identity."** — a genuinely distinct, real Testnet identity (`alice.dash`,
+1.1747 DASH balance, Identity ID `FKZZFDTfGdSWUmL2g7H9e46pMJMPQp9DHQcvjrsS6884`) was found and
+added to the wallet's identity switcher under "Identities without a wallet on this device" (no
+private key held, correctly read-only). Screenshots:
+`screenshots/IDN-010-1-search-by-username-success.png`,
+`screenshots/IDN-010-2-alice-dash-identity-loaded-details.png`.
+
+**Verdict: PASS.** Directly answers the task's question — this previously "dispatched and failed
+cleanly" on the masternode-list/quorum-sync error; now that Testnet actually connects, it
+completes successfully and returns a real result end-to-end.
+
+### IDN-012: Register identity from Platform addresses — **PASS**
+
+**Acceptance criteria**: "Alternative funding method in identity registration wizard. Uses
+existing Platform address balance."
+
+Steps: `Identities` → "Add a new identity" → Create Identity wizard → funding method **"Use a
+Platform address"** → wallet `QA Wallet 1` (Total Platform Address Balance: `0.008695843 DASH`
+shown live) → selected address `tdash1kplvfz...sdzvt6` (0.005 DASH) → "Max" (auto-filled
+`0.001896236 DASH`, i.e. balance minus the live-estimated fee) → alias `QA Identity 2` → "Create
+Identity". Result: **"Identity Registered Successfully!"** Screenshots:
+`screenshots/IDN-012-1-create-identity-from-platform-address-filled.png`,
+`screenshots/IDN-012-2-identity-registered-from-platform-address.png`.
+
+**Verdict: PASS.** This funding path bypasses the Asset-Locks-list bug (ALK-002/WAL-018)
+entirely, exactly as the task's guidance anticipated — no dependency on that broken list at all.
+This also produced `QA Identity 2`, the second identity used to self-test IDN-006.
+
+### IDN-013a: Password-protect an identity's signing keys (SEC-001) — **BLOCKED** (same navigation gap as IDN-008 — the Key Protection section's only host screen, KeyInfoScreen, is unreachable for a normal keyed User identity)
+
+**Acceptance criteria**: see `docs/user-stories.md`; the "Key Protection" section lives on the
+Key Info screen per `CLAUDE.md`'s own description.
+
+Per IDN-008's finding above, `KeyInfoScreen` (where the "Key Protection" section lives) has no
+reachable navigation trigger for a User identity that already has keys via the current default
+(Identity Hub) UI — its only such-identity-reachable callsite is gated behind a `!has_keys`
+condition that a normal identity never satisfies. Checked every plausible alternate path this
+pass: Identity Settings → Advanced (count + Add-key only, no per-key rows), Withdraw Funds
+(no key-check buttons rendered in this build's variant — differs from the source's
+`identities/withdraw_screen.rs` "Check Owner/Transfer Key" buttons, which are similarly
+`!has_keys`-gated fallbacks), Transfer Funds with Advanced Options (a key-selector *dropdown* for
+signing, not a details link).
+
+**Verdict: BLOCKED** — reasoning: "Key Info screen (which hosts the Key Protection section) has
+no reachable navigation path for a normal keyed User identity in this build's default Identity
+Hub UI; see IDN-008 for the full source-confirmed navigation-gap analysis." This supersedes the
+pre-fix pass's "no identity reachable" reasoning — an identity **is** now reachable, but the
+specific screen this story needs is not, for a structural navigation reason rather than an
+environment issue. The previous pass's read-only source review (confirming the underlying
+password-protection *mechanism* is fully implemented once `KeyInfoScreen` is reached) still
+stands and is not re-litigated here.
+
+### IDN-013b: Top up identity from Platform addresses — **PASS**
+
+**Acceptance criteria**: "Available as funding method in top-up screen. Uses Platform address
+credits directly."
+
+Same action as IDN-004 above (both bullets tested in one flow): Top Up Identity wizard's funding
+method dropdown offered **"Use a Platform address"**, wallet/address/amount selection worked
+identically to IDN-012's create-identity flow, and completed with **"Identity Topped Up
+Successfully!"** Screenshot: `screenshots/IDN-013b-1-topup-from-platform-address-filled.png`
+(pre-submit) and `screenshots/IDN-004-013b-1-topped-up-successfully.png` (result).
+
+**Verdict: PASS.**
+
+### IDN-016: Identities and their keys preserved across an app upgrade — **BLOCKED, and the known asset-lock-recurrence risk MATERIALIZED** (same root-caused defect as ALK.md/TEST-VECTOR.md, now on a new row — not a new bug)
+
+**Acceptance criteria**: identities/keys/alias/wallet-link carried across an upgrade via
+first-launch import (see full criteria in the earlier BLOCKED write-up above — unchanged, this
+story genuinely needs a pre-upgrade legacy fixture this data dir has never had). This retest
+targeted the specific **restart-survival** risk the task flagged, not the story's literal
+upgrade-migration scenario (which remains untestable for the same reason as before).
+
+**Pre-quit state** (screenshot `screenshots/IDN-016-1-pre-quit-identity-state.png`): 3 identities
+visible and correct — `QA Identity 1` (0.015737 DASH), `QA Identity 2` (0.001896 DASH),
+`alice.dash` (1.174722 DASH, read-only). Confirmed via direct `sqlite3` query before quitting:
+`spv/testnet/platform-wallet.sqlite`'s `asset_locks` table held 3 rows — two `consumed`
+(2,000,000 and 3,000,000 duffs, 269-byte blobs each) and **one `is_locked`** (50,000,000 duffs /
+0.5 DASH, **719-byte blob** — this is the exact fresh asset lock `WAL.md`'s third-pass WAL-018
+write-up created and flagged as "not-yet-restart-tested," carrying "the same theoretical
+AssetLockProof-decode risk described in ALK.md's resolution section"). `meta_identity` held all
+3 identities' blobs correctly.
+
+**Restart**: `kill -TERM 2216703` → clean exit (confirmed via `pgrep`, no lingering process) →
+relaunched with the exact `CAMPAIGN-CONTEXT.md` command
+(`DASH_EVO_TOOL_ACCESSIBILITY=1 DASH_EVO_DATA_DIR=/data/tmp/det-qa-pr892-data`), binary hash
+reconfirmed (`2931220e94871a0454ac56a43092aa87246b5a590d917645c025ddb1c7f9271a`) immediately
+before launch.
+
+**Recurrence confirmed within 1 second of the new process starting.** `det.log`:
+```
+ERROR dash_evo_tool::ui::components::message_banner: Banner displayed banner="Could not load your identities from this device. Try refreshing or reopening the app." details="WalletBackendNotYetWired"
+ERROR dash_evo_tool::context::wallet_lifecycle::spv: Failed to start chain sync error=The wallet service could not complete this operation. Please retry in a moment.
+WARN dash_evo_tool::app: eager wallet-backend init + SPV auto-start failed; SDK proof verification will retry once the lazy backend-task fallback fires error=The wallet service could not complete this operation. Please retry in a moment.
+ERROR dash_evo_tool::ui::components::message_banner: Banner displayed banner="Disconnected — check your internet connection"
+ERROR dash_evo_tool::ui::components::message_banner: Banner displayed banner="SPV sync failed. Go to Settings for connection details."
+```
+This is the **identical signature** documented in `ALK.md`'s "App-restart failure" section and
+root-caused in `TEST-VECTOR.md`: `PersisterLoad` → `BincodeDecode { source: Serde(AnyNotSupported) } }`
+on an `asset_locks` row whose `lifecycle_blob` holds a full `AssetLockProof` (an internally-tagged
+Serde enum requiring `deserialize_any`, which the crate's bincode decoder cannot support). The
+UI shows the same "Welcome to Identities" empty state with the same two red banners as before —
+all 3 identities are inaccessible via the UI. Screenshot:
+`screenshots/IDN-016-2-post-restart-recurrence-blocker.png`.
+
+**This is NOT a new bug** — per the task's framing, it is the same fixable-but-unfixed storage-
+format defect recurring on a *different* `is_locked` row (the WAL-018 pass's 0.5 DASH lock,
+719-byte blob) than the one `TEST-VECTOR.md` originally diagnosed (that one, 2,000,000 duffs,
+was independently confirmed consumed — its blob shrank to 269 bytes and is presumably now benign
+— it did not cause this recurrence; the *new* 719-byte `is_locked` row did). **Per instructions,
+no DB fix was attempted.** A direct `sqlite3` check post-recurrence confirms the underlying data
+is intact, not corrupted — `asset_locks` (3 rows, same as pre-quit) and `meta_identity` (3
+identity blobs, same as pre-quit) are byte-for-byte unchanged; this is purely a load-time
+failure, not data loss. The app was left running in this broken state (PID 3213927) for the
+coordinator to inspect/decide next steps, per the task's "report back immediately... rather than
+looping on retries" instruction.
+
+**Verdict: BLOCKED** for the story's literal acceptance criteria (no pre-upgrade fixture, as
+before). **Separately and more urgently: the restart-survival risk flagged in this task's
+briefing has now been confirmed to reproduce**, and this data dir is currently in the broken
+`WalletBackendNotYetWired` state as of the end of this pass.
+
+---
+
+## Third-pass summary
+
+| Story | Verdict |
+|---|---|
+| IDN-001 | **PASS** — full E2E identity registration via "From your wallet" funding |
+| IDN-004 | **PASS** — top-up via Platform address, "Identity Topped Up Successfully!" |
+| IDN-005 | **PASS** — withdraw to Core address, confirmation dialog + "Withdrawal Successful!" |
+| IDN-006 | **FAIL** — Transfer-between-identities button is a confirmed, reproducible click no-op (both destination types, with/without Advanced Options) |
+| IDN-007 | **PASS** — Add Key confirmed via on-chain broadcast + verified proof in `det.log` |
+| IDN-008 | **FAIL** — only an aggregate key count reachable; no per-key list/detail view for a normal identity (KeysScreen/KeyInfoScreen exist in source but have no live navigation trigger) |
+| IDN-009 | **FAIL** — Refresh button dispatches cleanly (no hang, an improvement) but key state doesn't update even after repeated refresh + full re-navigation over ~10 min; balance does update |
+| IDN-010 | **PASS** — DPNS username search now returns and loads a real Platform identity (`alice.dash`) |
+| IDN-012 | **PASS** — identity registration funded directly from a Platform address, bypassing the broken Asset-Locks list entirely |
+| IDN-013a | **BLOCKED** — same KeyInfoScreen navigation gap as IDN-008; underlying protection mechanism previously source-confirmed implemented |
+| IDN-013b | **PASS** — top-up from Platform address, same flow/result as IDN-004 |
+| IDN-016 | **BLOCKED** (literal criteria, no fixture) — **and the flagged asset-lock restart-recurrence risk is CONFIRMED**: a full quit+relaunch reproduced the exact `ALK.md`/`TEST-VECTOR.md` `WalletBackendNotYetWired` failure on a new `is_locked` row, leaving all 3 identities inaccessible via the UI (data itself confirmed intact, not lost) |
+
+**Two new, environment-independent defects found this pass**: IDN-006's Transfer-between-
+identities button (silent no-op despite a demonstrably `ready` state) and IDN-008's missing
+per-key list/detail view (source-confirmed unreachable, not merely unbuilt). IDN-009 surfaces a
+narrower, secondary staleness issue tied to IDN-007's newly-added key. All other stories in this
+pass are clean PASSes, materially advancing the campaign's overall picture now that a real
+identity exists in this data dir.
+
+**Current data-dir state at the end of this pass**: app PID 3213927, Testnet,
+`WalletBackendNotYetWired` (broken — see IDN-016 above), 3 identities present in storage but
+inaccessible via UI. **Whoever picks up DPN/DPY/TOK/DOC/IDH/MN retesting should read the IDN-016
+section above first** — those categories depend on a loaded identity, which this data dir cannot
+currently provide until the recurrence is addressed (out of scope for this agent per explicit
+instruction).
 
 Two genuinely new, environment-independent-looking findings from the original pass: **IDN-002**
 and **IDN-003** both hang completely silently (no banner, no log line, no timeout) on their core

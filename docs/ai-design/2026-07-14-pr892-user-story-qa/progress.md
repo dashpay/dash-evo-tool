@@ -352,15 +352,42 @@ needed).
 
 ## MN
 
-- [ ] MN-001: Load a masternode by keys
-- [ ] MN-002: See my masternodes at a glance
-- [ ] MN-003: Open a masternode and vote
-- [ ] MN-004: Remove a masternode
-- [ ] MN-005: Keep the everyday surface clean
-- [ ] MN-006: Encrypt my node keys at load time
-- [ ] MN-007: Withdraw a node's credits
-- [ ] MN-008: Manage a node's keys
-- [ ] MN-009: Claim an evonode's token rewards
-- [ ] MN-010: Keep the Masternodes tab consistent across a network switch
-- [ ] MN-011: Refresh masternode and voting state
-- [ ] MN-012: Switch wallet/identity from the Masternodes header
+- [x] MN-001: Load a masternode by keys — FAIL (disabled-gate/malformed-hash/unencrypted-note/
+      Fill-Random gating all correct, but "Load masternode" with a well-formed fake ProTxHash
+      still hangs silently — same defect class as IDN-003, re-confirmed fresh with 20s wait; new
+      `det.log` evidence implicates the known wallet-backend blocker as a likely contributing
+      cause)
+- [x] MN-002: See my masternodes at a glance — PASS on directly-testable scope (empty state
+      correctly explains the concept + CTA; Expert-view-only nav gating live-confirmed both ways
+      — hides on Default view, restores on Expert view); card-list-with-real-nodes content and
+      the literal same-frame de-gating trigger untested (no loaded node; architecturally
+      unreachable via mouse-only UI respectively) — noted as untested scope, not failures
+- [x] MN-003: Open a masternode and vote — BLOCKED (no loaded masternode reachable — MN-001's
+      hang; DPNS-voting UI structurally confirmed via source review only)
+- [x] MN-004: Remove a masternode — BLOCKED (same reasoning as MN-003; confirm-before-remove
+      dialog structurally confirmed via source review only)
+- [x] MN-005: Keep the everyday surface clean — PASS (legacy "Load Existing Identity" screen's
+      Identity Type selector now offers User only and its ProTxHash tab is gone entirely — clean
+      regression fix vs. IDN-003's prior finding of a Masternode/Evonode toggle there)
+- [x] MN-006: Encrypt my node keys at load time — BLOCKED (cannot observe an actual encrypted
+      load — MN-001's hang; load-time "Encryption password (optional)" field already confirmed
+      present and correctly worded while testing MN-001)
+- [x] MN-007: Withdraw a node's credits — BLOCKED (no loaded masternode reachable; Withdraw
+      button routing to the shared withdrawal screen confirmed via source review only)
+- [x] MN-008: Manage a node's keys — BLOCKED (no loaded masternode reachable; add-key purpose
+      selector structurally excludes OWNER/VOTING for every identity type, confirmed via source
+      review only)
+- [x] MN-009: Claim an evonode's token rewards — BLOCKED (no loaded Evonode reachable;
+      Evonode-only "Claim token rewards" gating confirmed via source review only)
+- [x] MN-010: Keep the Masternodes tab consistent across a network switch — PASS (unsubmitted
+      Evonode + fake ProTxHash + alias in the Load form was fully discarded on a Testnet→Mainnet
+      switch, landing on a clean empty List view with zero leftover input; stale per-network
+      banners also cleared; app restored to Testnet afterward)
+- [x] MN-011: Refresh masternode and voting state — BLOCKED overall (core node-refresh behavior
+      needs a loaded node, unreachable), with a positive no-op-safety data point: the Refresh
+      control exists and is a confirmed-safe no-op with zero nodes loaded, matching the story's
+      own no-op requirement and the source's explicit early-return on an empty node list
+- [x] MN-012: Switch wallet/identity from the Masternodes header — PASS on directly-testable
+      scope (header renders the 3-segment switcher with the exact `(no masternode yet)`
+      placeholder text, corroborated by UX-003's independent prior finding on this same build);
+      node-picking / cross-page-identity-isolation behavior untested — no loaded node to pick

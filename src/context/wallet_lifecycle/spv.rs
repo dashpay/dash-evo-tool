@@ -74,6 +74,15 @@ impl AppContext {
                             "DashPay per-owner overlay clear failed: {e:?}"
                         );
                     }
+                    // Wipe each identity's vault keys and det:identity:* records too —
+                    // Tier-1 keyless identity keys (incl. masternode voting/owner/payout)
+                    // are plaintext-recoverable, so a full wipe must remove them as well.
+                    if let Err(e) = self.delete_local_qualified_identity(&owner) {
+                        tracing::warn!(
+                            owner = %owner,
+                            "Identity private-key wipe failed during clear: {e:?}"
+                        );
+                    }
                 }
             }
             Err(e) => {

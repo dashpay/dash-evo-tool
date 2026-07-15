@@ -1908,6 +1908,102 @@ async fn clear_network_database_wipes_wallet_meta_and_seed_envelope() {
         .await;
 }
 
+/// "Delete all local data" must also wipe every local identity's private keys.
+/// Identity keys are Tier-1 keyless (plaintext-recoverable) and include
+/// masternode voting/owner/payout keys, so a clear that skipped them would
+/// leave fund-control keys recoverable on disk after the user asked to erase.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn clear_network_database_wipes_local_identity_private_keys() {
+    use crate::model::qualified_identity::encrypted_key_storage::{KeyStorage, PrivateKeyData};
+    use crate::model::qualified_identity::qualified_identity_public_key::QualifiedIdentityPublicKey;
+    use crate::model::qualified_identity::{
+        IdentityStatus, IdentityType, PrivateKeyTarget, QualifiedIdentity,
+    };
+    use crate::wallet_backend::IdentityKeyView;
+    use dash_sdk::dpp::identity::Identity;
+    use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
+    use dash_sdk::dpp::version::PlatformVersion;
+    use dash_sdk::platform::{Identifier, IdentityPublicKey};
+    use std::collections::BTreeMap;
+
+    let (ctx, sender, _tmp) = offline_testnet_context();
+    ctx.ensure_wallet_backend(sender)
+        .await
+        .expect("ensure_wallet_backend should succeed offline");
+
+    // A User identity carrying one plaintext (Clear) private key.
+    let pv = PlatformVersion::latest();
+    let key = IdentityPublicKey::random_key(1, Some(1), pv);
+    let key_id = key.id();
+    let mut private_keys = KeyStorage::default();
+    private_keys.private_keys.insert(
+        (PrivateKeyTarget::PrivateKeyOnMainIdentity, key_id),
+        (
+            QualifiedIdentityPublicKey::from(key),
+            PrivateKeyData::Clear([0x5Au8; 32]),
+        ),
+    );
+    let identity_id = Identifier::from([0x33u8; 32]);
+    let identity = Identity::create_basic_identity(identity_id, pv).expect("basic identity");
+    let qi = QualifiedIdentity {
+        identity,
+        associated_voter_identity: None,
+        associated_operator_identity: None,
+        associated_owner_key_id: None,
+        identity_type: IdentityType::User,
+        alias: None,
+        private_keys,
+        dpns_names: vec![],
+        associated_wallets: BTreeMap::new(),
+        secret_access: None,
+        wallet_index: None,
+        top_ups: BTreeMap::new(),
+        status: IdentityStatus::Active,
+        network: Network::Testnet,
+    };
+
+    // Vault-first insert: the Clear key moves into the vault and the record
+    // carries an InVault placeholder.
+    ctx.insert_local_qualified_identity(&qi, &None)
+        .expect("persist local identity");
+
+    let store = ctx.secret_store();
+    let view = IdentityKeyView::new(&store, identity_id.to_buffer());
+
+    assert_eq!(
+        ctx.local_identity_ids().expect("list ids before clear"),
+        vec![identity_id],
+        "precondition: the identity is stored locally before clear"
+    );
+    assert!(
+        view.get(&PrivateKeyTarget::PrivateKeyOnMainIdentity, key_id)
+            .expect("vault read before clear")
+            .is_some(),
+        "precondition: the identity private key is in the vault before clear"
+    );
+
+    ctx.clear_network_database()
+        .expect("clear_network_database should succeed");
+
+    assert!(
+        ctx.local_identity_ids()
+            .expect("list ids after clear")
+            .is_empty(),
+        "clear must remove every local identity record"
+    );
+    assert!(
+        view.get(&PrivateKeyTarget::PrivateKeyOnMainIdentity, key_id)
+            .expect("vault read after clear")
+            .is_none(),
+        "clear must wipe the identity private key from the vault"
+    );
+
+    ctx.wallet_backend()
+        .expect("backend wired")
+        .shutdown()
+        .await;
+}
+
 /// Clear-all must fail before changing any state when the wallet backend is
 /// unavailable, because persisted secrets from an earlier run may still exist.
 #[test]

@@ -416,17 +416,23 @@ pub async fn create_or_update_contact_info(
             let props = doc.properties();
 
             // Get the derivation index used for this document
-            if let Some(Value::U32(deriv_idx)) = props.get("derivationEncryptionKeyIndex") {
+            if let Some(deriv_idx) = props
+                .get("derivationEncryptionKeyIndex")
+                .and_then(|value| value.to_integer::<u32>().ok())
+            {
                 // Track the highest derivation index
-                if *deriv_idx >= next_derivation_index {
+                if deriv_idx >= next_derivation_index {
                     next_derivation_index = deriv_idx + 1;
                 }
 
                 // Get the root key index to derive keys
-                if let Some(Value::U32(_root_idx)) = props.get("rootEncryptionKeyIndex") {
+                if let Some(_root_idx) = props
+                    .get("rootEncryptionKeyIndex")
+                    .and_then(|value| value.to_integer::<u32>().ok())
+                {
                     // Derive keys for this document
                     let (enc_user_id_key, _) =
-                        derive_contact_info_keys(app_context, &identity, *deriv_idx).await?;
+                        derive_contact_info_keys(app_context, &identity, deriv_idx).await?;
 
                     // Decrypt encToUserId to check if it matches
                     if let Some(Value::Bytes(enc_user_id)) = props.get("encToUserId") {
@@ -450,13 +456,7 @@ pub async fn create_or_update_contact_info(
         found_existing_doc
             .as_ref()
             .and_then(|doc| doc.properties().get("derivationEncryptionKeyIndex"))
-            .and_then(|v| {
-                if let Value::U32(idx) = v {
-                    Some(*idx)
-                } else {
-                    None
-                }
-            })
+            .and_then(|value| value.to_integer::<u32>().ok())
             .unwrap_or(0)
     } else {
         next_derivation_index

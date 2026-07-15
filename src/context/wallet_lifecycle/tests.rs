@@ -1908,6 +1908,43 @@ async fn clear_network_database_wipes_wallet_meta_and_seed_envelope() {
         .await;
 }
 
+/// Clear-all must fail before changing any state when the wallet backend is
+/// unavailable, because persisted secrets from an earlier run may still exist.
+#[test]
+fn clear_network_database_refuses_unwired_backend_without_partial_wipe() {
+    let (ctx, _sender, _tmp) = offline_testnet_context();
+    let seed = [0xB3u8; 64];
+    let wallet = crate::model::wallet::Wallet::new_from_seed(seed, Network::Testnet, None, None)
+        .expect("build wallet");
+    let seed_hash = wallet.seed_hash();
+    ctx.register_wallet(wallet, &seed, WalletOrigin::Fresh)
+        .expect("persist wallet before backend wiring");
+
+    let result = ctx.clear_network_database();
+
+    assert!(
+        matches!(result, Err(TaskError::WalletDataClearUnavailable)),
+        "clear-all must return the dedicated clear-unavailable error"
+    );
+    assert!(
+        ctx.wallets.read_recover().contains_key(&seed_hash),
+        "a refused clear must not partially remove the in-memory wallet"
+    );
+    assert!(
+        WalletMetaView::new(&ctx.app_kv())
+            .get(Network::Testnet, &seed_hash)
+            .is_some(),
+        "a refused clear must preserve wallet metadata for a later retry"
+    );
+    assert!(
+        WalletSeedView::new(&ctx.secret_store())
+            .get_raw(&seed_hash)
+            .expect("vault read after refused clear")
+            .is_some(),
+        "a refused clear must preserve the seed so the caller can retry safely"
+    );
+}
+
 /// F131 — locking a wallet must wipe the session-cached seed. Before the
 /// fix `handle_wallet_locked` was an empty no-op, so after an
 /// `UntilAppClose` unlock the plaintext seed stayed resident and the wallet

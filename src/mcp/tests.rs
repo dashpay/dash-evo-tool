@@ -3,6 +3,78 @@
 use crate::mcp::error::McpToolError;
 use crate::mcp::resolve;
 
+pub(super) fn legacy_wallet_context(
+    data_dir: &std::path::Path,
+) -> std::sync::Arc<crate::context::AppContext> {
+    use crate::context::AppContext;
+    use dash_sdk::dpp::dashcore::Network;
+
+    crate::app_dir::ensure_env_file(data_dir);
+    let db = std::sync::Arc::new(
+        crate::database::test_helpers::create_database_at_path(&data_dir.join("data.db"))
+            .expect("create legacy database"),
+    );
+    let app_kv = AppContext::open_app_kv(data_dir).expect("open app k/v");
+    let secret_store = AppContext::open_secret_store(data_dir).expect("open secret store");
+    AppContext::new(
+        data_dir.to_path_buf(),
+        Network::Testnet,
+        db,
+        Default::default(),
+        Default::default(),
+        egui::Context::default(),
+        app_kv,
+        secret_store,
+        crate::model::user_role::UserRoleCell::default(),
+    )
+    .expect("create app context")
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ensure_wallets_hydrated_finishes_pending_legacy_migration() {
+    use crate::context::migration_status::MigrationState;
+    use dash_sdk::dpp::dashcore::Network;
+
+    let temp_dir = tempfile::tempdir().expect("tempdir");
+    let ctx = legacy_wallet_context(temp_dir.path());
+    let seed = [0x91u8; 64];
+    let seed_hash = crate::model::wallet::ClosedKeyItem::compute_seed_hash(&seed);
+    let xpub = crate::database::test_helpers::legacy_master_epk_bytes(&seed, Network::Testnet);
+    crate::database::test_helpers::seed_legacy_unprotected_hd_wallet_row(
+        &ctx.db,
+        &seed_hash,
+        &seed,
+        &xpub,
+        "Legacy savings",
+        Network::Testnet,
+    )
+    .expect("seed legacy wallet");
+
+    assert!(
+        ctx.wallets.read().expect("wallet map").is_empty(),
+        "precondition: the legacy wallet is not hydrated yet"
+    );
+
+    resolve::ensure_wallets_hydrated(&ctx)
+        .await
+        .expect("hydrate and migrate wallets");
+
+    let alias = ctx
+        .wallets
+        .read()
+        .expect("wallet map")
+        .get(&seed_hash)
+        .map(|wallet| wallet.read().expect("wallet").alias.clone());
+    let migration_state = ctx.migration_status().state();
+    let backend = ctx.wallet_backend().expect("backend wired");
+    let spv_started = backend.is_started();
+    backend.shutdown().await;
+
+    assert_eq!(alias, Some(Some("Legacy savings".to_owned())));
+    assert_eq!(*migration_state, MigrationState::Success);
+    assert!(!spv_started, "wallet hydration must not start chain sync");
+}
+
 // ── Amount validation ──────────────────────────────────────────
 
 #[test]

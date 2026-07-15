@@ -95,6 +95,13 @@ pub enum TaskError {
     #[error("Your wallet is still starting up. Please wait a moment and try again.")]
     WalletBackendNotYetWired,
 
+    /// Clearing saved wallet data requires the fully-wired backend because it
+    /// owns the complete set of secret-bearing stores and live secret caches.
+    #[error(
+        "Your saved wallet data cannot be cleared because your wallet is not ready. Please wait a moment, or restart the application, then try again."
+    )]
+    WalletDataClearUnavailable,
+
     /// A wallet operation was requested before its wallet had finished loading
     /// into the wallet backend. Distinct from
     /// [`Self::WalletBackendNotYetWired`]: the backend is ready, but this

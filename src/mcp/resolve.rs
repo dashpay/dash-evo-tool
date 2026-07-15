@@ -118,7 +118,8 @@ pub(crate) fn wallet_arc(
         })
 }
 
-/// Wire the wallet backend so persisted wallets are available in memory.
+/// Wire the wallet backend and finish any pending legacy-wallet migration so
+/// every persisted wallet is available in memory before returning.
 ///
 /// Unlike [`ensure_spv_synced`], this does not start SPV or wait for chain sync.
 pub(crate) async fn ensure_wallets_hydrated(ctx: &Arc<AppContext>) -> Result<(), McpToolError> {
@@ -126,13 +127,14 @@ pub(crate) async fn ensure_wallets_hydrated(ctx: &Arc<AppContext>) -> Result<(),
     let sender = crate::utils::egui_mpsc::SenderAsync::new(tx, egui::Context::default());
     ctx.ensure_wallet_backend(sender)
         .await
-        .map_err(McpToolError::TaskFailed)
+        .map_err(McpToolError::TaskFailed)?;
+    ensure_legacy_storage_migrated(ctx).await
 }
 
 /// Poll until the cold-start storage update is fully complete.
 ///
-/// On a fresh standalone process, `ensure_wallet_backend_and_start_spv`
-/// kicks off a legacy-data migration before the backend is fully usable.
+/// On a fresh standalone process, the MCP readiness gates dispatch a
+/// legacy-data migration before the backend is fully usable.
 /// `AppContext::run_backend_task` short-circuits wallet-touching tasks while
 /// `migration_status().state().is_in_progress()`, returning
 /// [`TaskError::WalletStorageNotReady`]. Waiting here covers an active run that
@@ -141,32 +143,35 @@ pub(crate) async fn ensure_wallets_hydrated(ctx: &Arc<AppContext>) -> Result<(),
 /// Fast exit: returns immediately if migration is already done (the common
 /// case after the first gated tool has already waited).
 ///
-/// The inline dispatch surfaces a terminal failure before this function is
-/// reached. A standalone password-protected install therefore fails promptly
-/// with the desktop-app instruction and never enters this polling loop.
+/// A terminal [`MigrationState::Failed`] is never ready: it is converted back
+/// into its typed task error even when a concurrent retry changed state while
+/// another caller was waiting.
 async fn ensure_storage_ready(ctx: &Arc<AppContext>) -> Result<(), McpToolError> {
     let migration = ctx.migration_status();
-    // Fast path — complete; nothing to wait for.
-    if !migration.state().is_in_progress() {
-        return Ok(());
-    }
-
-    tracing::info!("Waiting for cold-start storage migration to complete…");
 
     let poll = async {
         loop {
-            if !migration.state().is_in_progress() {
-                return Ok(());
+            let state = migration.state();
+            match state.as_ref() {
+                crate::context::migration_status::MigrationState::Failed { error } => {
+                    return Err(McpToolError::TaskFailed(
+                        crate::backend_task::migration::migration_task_error(Arc::clone(error)),
+                    ));
+                }
+                state if state.is_in_progress() => {
+                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                }
+                _ => return Ok(()),
             }
-            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
         }
     };
 
     match tokio::time::timeout(STORAGE_MIGRATION_WAIT_TIMEOUT, poll).await {
-        Ok(result) => {
+        Ok(Ok(())) => {
             tracing::info!("Cold-start storage migration complete.");
-            result
+            Ok(())
         }
+        Ok(Err(error)) => Err(error),
         Err(_elapsed) => {
             tracing::warn!(
                 timeout_secs = STORAGE_MIGRATION_WAIT_TIMEOUT.as_secs(),
@@ -175,6 +180,28 @@ async fn ensure_storage_ready(ctx: &Arc<AppContext>) -> Result<(), McpToolError>
             Err(McpToolError::StorageNotReady)
         }
     }
+}
+
+/// Dispatch or join the legacy-data migration before wallet reads.
+///
+/// Standalone/headless MCP has no GUI frame loop to dispatch `FinishUnwire`.
+/// Embedded MCP may race the GUI dispatch, so the AppContext run gate safely
+/// joins that run and the task's sentinel keeps repeated dispatch idempotent.
+async fn ensure_legacy_storage_migrated(ctx: &Arc<AppContext>) -> Result<(), McpToolError> {
+    let migration_state = ctx.migration_status().state();
+    if matches!(
+        migration_state.as_ref(),
+        crate::context::migration_status::MigrationState::Idle
+            | crate::context::migration_status::MigrationState::Failed { .. }
+    ) {
+        use crate::backend_task::migration::MigrationTask;
+        if let Err(e) = ctx.run_migration_task(MigrationTask::FinishUnwire).await {
+            tracing::warn!(error = ?e, "Standalone cold-start storage update failed");
+            return Err(McpToolError::TaskFailed(e));
+        }
+    }
+
+    ensure_storage_ready(ctx).await
 }
 
 /// Wait for SPV to reach the `Running` state (chain headers + filters synced).
@@ -194,10 +221,10 @@ async fn ensure_storage_ready(ctx: &Arc<AppContext>) -> Result<(), McpToolError>
 /// this is the single chokepoint that makes SPV actually start for every gated
 /// tool. Both steps are idempotent, so repeated tool calls are cheap.
 ///
-/// Also waits for any in-progress cold-start storage migration to finish
-/// (see [`ensure_storage_ready`]) before polling SPV state — this prevents
-/// the `WalletStorageNotReady` fast-fail that `run_backend_task` applies
-/// while migration is mid-flight.
+/// Also dispatches or joins any pending cold-start storage migration and waits
+/// for a wallet-safe terminal state before polling SPV — this prevents the
+/// `WalletStorageNotReady` fast-fail that `run_backend_task` applies while
+/// migration is mid-flight.
 ///
 /// ## Why `SpvStatus::Running`, not `OverallConnectionState::Synced`
 ///
@@ -220,42 +247,7 @@ pub(crate) async fn ensure_spv_synced(ctx: &Arc<AppContext>) -> Result<(), McpTo
         return Err(McpToolError::TaskFailed(e));
     }
 
-    // S7: In standalone/headless MCP mode the GUI frame-loop never runs, so
-    // `MigrationTask::FinishUnwire` is never dispatched from `AppState`.
-    // Dispatch it here. The AppContext-level run gate joins an existing GUI
-    // dispatch when this is a shared context, so only one password waiter can
-    // exist. In a standalone context the explicit prompt capability makes a
-    // protected install fail immediately.
-    let migration_state = ctx.migration_status().state();
-    if migration_state.is_in_progress() {
-        ensure_storage_ready(ctx).await?;
-        if let crate::context::migration_status::MigrationState::Failed { error } =
-            ctx.migration_status().state().as_ref()
-        {
-            return Err(McpToolError::TaskFailed(
-                crate::backend_task::migration::migration_task_error(Arc::clone(error)),
-            ));
-        }
-    } else if matches!(
-        migration_state.as_ref(),
-        crate::context::migration_status::MigrationState::Idle
-            | crate::context::migration_status::MigrationState::Failed { .. }
-    ) {
-        use crate::backend_task::migration::MigrationTask;
-        if let Err(e) = ctx.run_migration_task(MigrationTask::FinishUnwire).await {
-            tracing::warn!(
-                error = ?e,
-                "Standalone cold-start storage update failed"
-            );
-            return Err(McpToolError::TaskFailed(e));
-        }
-    }
-
-    // Wait for cold-start storage migration before polling SPV state.
-    // `run_backend_task` rejects wallet-touching tasks while migration is
-    // running; ensuring it finishes here makes cold-start tool calls
-    // wait transparently rather than bouncing with WalletStorageNotReady.
-    ensure_storage_ready(ctx).await?;
+    ensure_legacy_storage_migrated(ctx).await?;
 
     // Subscribe BEFORE reading the current value so no transition is lost
     // between the `ensure_wallet_backend_and_start_spv` call above and the
@@ -349,4 +341,33 @@ pub(crate) fn qualified_identity(
                  Load the identity first using the identity screen or CLI."
             ),
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn storage_ready_rejects_terminal_migration_failure() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let ctx = crate::mcp::tests::legacy_wallet_context(temp_dir.path());
+        let source =
+            Arc::new(crate::backend_task::migration::MigrationError::WalletBackendUnavailable);
+        ctx.migration_status().set_state(
+            crate::context::migration_status::MigrationState::Failed {
+                error: Arc::clone(&source),
+            },
+        );
+
+        let error = ensure_storage_ready(&ctx)
+            .await
+            .expect_err("a failed migration is not wallet-ready");
+
+        match error {
+            McpToolError::TaskFailed(crate::backend_task::error::TaskError::MigrationFailed {
+                source: actual,
+            }) => assert!(Arc::ptr_eq(&actual, &source)),
+            other => panic!("expected the typed migration failure, got {other:?}"),
+        }
+    }
 }

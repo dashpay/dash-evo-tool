@@ -580,3 +580,105 @@ confirmed working via the simple Send form. Bullet 3 (Developer mode required) c
 this flow was exercised in Developer view as required. The WAL-017 root cause this story was
 previously blocked on (no Platform balance) is fully resolved; the story is now blocked by
 the same shielded-destination-rejection defect as SND-007, not a funding gap.
+
+---
+
+# Retest — 2026-07-15 (SND-008/011/012/013, real identities now reachable)
+
+Environment: same PR892 build/hash, running instance PID 527888, data dir
+`/data/tmp/det-qa-pr892-data`, Testnet. `QA Identity 1` and `QA Identity 2` are now real,
+funded identities. Per the standing environment rule, these tests deliberately avoided any
+Core-Wallet-source path that would create a **new asset lock** (the known
+`dashpay/platform#4133` bincode-encoding recurrence risk) — every test below uses a source/
+destination combination that never touches asset-lock creation: Platform-Addresses→Identity
+(direct top-up, no lock), Identity→Identity (pure Platform transfer), Identity→Core (withdrawal,
+the reverse direction from a lock), and Identity→Platform-address (pure Platform transfer). The
+asset-lock recurrence was **not** hit during this retest.
+
+## SND-008: Top up identity from Send screen — **PASS** (upgraded from BLOCKED)
+
+Wallets > Send Dash > selected **Platform Addresses** as source (0.0024 DASH available across 2
+addresses) > entered `QA Identity 2`'s Identity ID as destination. The autocomplete immediately
+tagged it `Identity` with its live balance, and the form auto-updated to
+**"Transaction type: Top Up Identity"** with the primary button relabeling to "Top Up Identity" —
+confirming the destination-recognition bullet. Screenshot:
+`screenshots/SND-008-1-topup-form-ready-platform-source.png`.
+
+Entered 0.0005 DASH and submitted: **"Identity topped up successfully! Fee: Estimated 0.000505
+DASH."** Screenshot: `screenshots/SND-008-2-topup-success.png`. QA Identity 2's balance was
+confirmed increased afterward on its Home tab.
+
+Deliberately used the **Platform Addresses** source (not Core Wallet) — per the standing rule to
+avoid triggering a new asset lock. The Core-Wallet-source half of this story ("System uses
+appropriate backend task: asset lock for Core") was not exercised for that reason; the direct
+Platform-source half was fully exercised end to end.
+
+**Verdict: PASS** (for the directly-testable, asset-lock-avoiding half). Both remaining
+acceptance-criteria bullets ("Enter an identity ID as destination", "System uses appropriate
+backend task... direct for Platform") are now live-confirmed. The Core-Wallet/asset-lock half is
+untested by deliberate choice, not because it failed.
+
+## SND-011: Transfer identity credits to another identity — **PASS** (upgraded from BLOCKED)
+
+Selected **Identity** as source — the dropdown populated with all 3 loaded identities and their
+live balances: `detqa892run2` (QA Identity 1, 0.152 DASH), `detqa892run3` (QA Identity 2,
+~0.0016 DASH), and the read-only `alice.dash` (1.175 DASH), directly confirming the "dropdown of
+loaded identities" bullet. Selected QA Identity 1 as source, QA Identity 2 as destination (via
+the "Send to" autocomplete, tagged `Identity`) — form showed **"Transaction type: Transfer
+Credits"**. Screenshot: `screenshots/SND-011-1-transfer-form-ready.png`.
+
+Sent 0.001 DASH: **"Credits transferred successfully! Fee: Estimated 0.000001 DASH • Actual
+0.0000302746 DASH."** Screenshot: `screenshots/SND-011-2-transfer-success.png`. Navigated to the
+Identity Hub and confirmed both balances updated: QA Identity 2's balance increased to reflect
+the received transfer (plus SND-008's top-up). Screenshot:
+`screenshots/SND-011-3-both-balances-updated.png`.
+
+Note: this is a genuinely different code path from IDN-006's earlier confirmed FAIL ("Transfer"
+button click no-op) — IDN-006 tested a button inside the Identity screens themselves, while this
+story's flow is the unified Send screen's Identity-source path. They are not the same feature;
+this pass's PASS does not contradict IDN-006's FAIL.
+
+**Verdict: PASS.** All three acceptance-criteria bullets (identity-dropdown source selection,
+identity-ID destination entry, both balances updating after transfer) live-confirmed.
+
+## SND-012: Withdraw identity credits to Core address — **PASS** (upgraded from BLOCKED)
+
+Selected **Identity** source (QA Identity 1) > entered one of `QA Wallet 1`'s own Core addresses
+as destination — form showed **"Transaction type: Withdraw Credits"**. Screenshot:
+`screenshots/SND-012-1-withdraw-form-ready.png`.
+
+Withdrew 0.001 DASH: **"Identity withdrawal initiated. Funds will appear on the Core chain after
+confirmation. Fee: Estimated 0.004 DASH • Actual 0.0020364038 DASH."** Screenshot:
+`screenshots/SND-012-2-withdraw-success.png`. Wording ("queued on Platform... settles after
+confirmation") matches the acceptance criteria's second bullet almost verbatim.
+
+**Verdict: PASS.** Both acceptance-criteria bullets (Identity source + Core-address destination;
+queued-then-settles wording) live-confirmed.
+
+## SND-013: Transfer identity credits to Platform address — **PASS** (upgraded from BLOCKED)
+
+Selected **Identity** source (QA Identity 1) > entered one of `QA Wallet 1`'s own Platform
+(bech32m `tdash1...`) addresses as destination — recognized and tagged `Platform`, form showed
+**"Transaction type: Transfer to Address"**. Screenshot:
+`screenshots/SND-013-1-transfer-to-platform-address-form-ready.png`.
+
+Sent 0.001 DASH: **"Credits transferred successfully! Fee: Estimated 0.000065 DASH • Actual
+0.0000399224 DASH."** Screenshot: `screenshots/SND-013-2-transfer-success.png`. Confirmed the
+destination Platform address's on-screen balance increased by exactly the sent amount (0.00068923
+→ 0.00168923 DASH) via Wallets > Platform tab. Screenshot:
+`screenshots/SND-013-3-platform-address-balance-updated.png`.
+
+**Verdict: PASS.** Both acceptance-criteria bullets (Identity source + bech32m Platform-address
+destination; credits arriving at the Platform address) live-confirmed with an on-chain balance
+check, not just the success banner.
+
+## Updated category status
+
+SND-008/011/012/013 all upgraded from BLOCKED to **PASS** — the "no identity exists yet" blocker
+that suppressed them is resolved, and none of the four required a new asset lock to test (all
+routed through Platform-Addresses-source, Identity-source, or Identity-destination paths). The
+asset-lock recurrence (`dashpay/platform#4133`) was not encountered this pass. Final app state:
+Testnet, Expert view, QA Identity 1 balance reduced by ~0.003 DASH across the 3 outgoing tests
+(top-up + transfer + withdrawal + platform-transfer sources), QA Identity 2 balance increased
+correspondingly, one of QA Wallet 1's Platform addresses increased by 0.001 DASH, no leftover
+partial forms or error banners.

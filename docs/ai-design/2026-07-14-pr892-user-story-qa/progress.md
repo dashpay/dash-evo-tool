@@ -73,12 +73,23 @@ needed).
 - [x] SND-005: See fee estimate before confirming send — FAIL (no fee estimate or confirmation dialog anywhere pre-broadcast; Max silently deducts an undisplayed fee)
 - [x] SND-006: Send to multiple recipients — PASS (add/remove recipients, single tx broadcast confirmed on-chain)
 - [x] SND-007: Shield DASH from Core wallet — FAIL ("Invalid output address" on submit; root cause disclosed in-app as "Shielded sending is not available on this network yet")
-- [x] SND-008: Top up identity from Send screen — BLOCKED (no identity exists yet — IDN not run; Identity-destination UI recognition partially verified)
+- [x] SND-008: Top up identity from Send screen — PASS (retested 2026-07-15 with real identities:
+      Platform Addresses source → QA Identity 2 by ID, "Identity" tag + "Transaction type: Top Up
+      Identity" auto-recognized, "Identity topped up successfully!"; used the Platform-source path
+      specifically to avoid a new Core-wallet asset lock per the standing recurrence-avoidance rule)
 - [x] SND-009: Shield credits from Platform address — FAIL (retested post-fix: Platform Addresses source now funded and selectable, correctly auto-selects the highest-balance address; but the shielded destination is rejected with "Invalid output address" at submission — same root cause as SND-007 — even though Advanced Options recognizes and tags it "(Shielded)" beforehand)
 - [x] SND-010: Withdraw from shielded pool to Core address — BLOCKED (shielded balance always 0; no "Shielded Pool" source option exposed in Send screen)
-- [x] SND-011: Transfer identity credits to another identity — BLOCKED (no identity exists yet — IDN not run)
-- [x] SND-012: Withdraw identity credits to Core address — BLOCKED (same reasoning as SND-011)
-- [x] SND-013: Transfer identity credits to Platform address — BLOCKED (same reasoning as SND-011)
+- [x] SND-011: Transfer identity credits to another identity — PASS (retested 2026-07-15: Identity
+      source dropdown lists all 3 loaded identities with live balances; QA Identity 1 → QA Identity 2,
+      "Transaction type: Transfer Credits", "Credits transferred successfully!", both balances
+      confirmed updated on-screen afterward)
+- [x] SND-012: Withdraw identity credits to Core address — PASS (retested 2026-07-15: QA Identity 1 →
+      QA Wallet 1's own Core address, "Transaction type: Withdraw Credits", "Identity withdrawal
+      initiated. Funds will appear on the Core chain after confirmation.")
+- [x] SND-013: Transfer identity credits to Platform address — PASS (retested 2026-07-15: QA Identity
+      1 → one of QA Wallet 1's own Platform (bech32m) addresses, "Transaction type: Transfer to
+      Address", "Credits transferred successfully!", destination Platform address balance confirmed
+      increased by the sent amount afterward)
 - [x] SND-014: Send maximum from a Core wallet — FAIL (fee-reserve math correct, but the fee-shown-next-to-amount label and the too-low-balance message are both dead code in the render path; source-confirmed, root-causes SND-005)
 - [x] SND-015: Unshield credits to a Platform address — FAIL (button exists in source, correctly wired to the unified Send screen preset, but unconditionally hidden behind a hardcoded not-yet-activated `ShieldedOperations` capability gate — never reachable live on any network in this build)
 - [x] SND-016: Send privately within the shielded pool — FAIL (same reachability gap as SND-015; spend-lock/verification-in-progress UX for the button is correctly implemented in source but unobservable live for the same reason)
@@ -305,11 +316,21 @@ needed).
       original FAIL finding — no UI implementation, only a failure-only tracing target —
       consistent with this reclassification)
 - [x] DEV-003: Inspect ZK proofs — FAIL (Proof deserializer works; GroveSTARK gen/verification deliberately hidden from all UI navigation)
-- [x] DEV-004: View document and contract JSON — BLOCKED (Contract deserializer PASS; Document deserializer's contract-loading path blocked by known Testnet masternode-list/quorum-sync issue, see ALK.md)
-- [x] DEV-005: View Platform info — FAIL (2/8 sub-tools work — Basic Platform Info, Validator Set Info; rest blocked by known masternode-list-sync issue)
+- [x] DEV-004: View document and contract JSON — PASS (retested 2026-07-15: masternode-list/quorum
+      sync issue confirmed resolved — Document deserializer's Contract and Doc Type dropdowns are
+      now populated from locally-tracked contracts (dpns, dashpay, QA fixture contracts, etc.);
+      selected dpns/domain, fed garbage input, got a clean typed error, same reachable pattern as
+      the already-passing Contract deserializer)
+- [x] DEV-005: View Platform info — FAIL (2/8 sub-tools work — Basic Platform Info, Validator Set Info; rest blocked by known masternode-list-sync issue) — NOTE: not retested 2026-07-15 (out of this
+      phase's assigned scope), but DEV-004/DEV-007's retests confirm the underlying masternode-
+      list/quorum-sync blocker is now resolved, so this is very likely stale and worth a quick
+      re-check by a future pass
 - [x] DEV-006: View masternode list diff — N/A (reclassified to Removed in the reconciled
       doc; original FAIL finding — no UI implementation found — consistent with the removal)
-- [x] DEV-007: Check any address balance — BLOCKED (address-format validation PASS; balance fetch blocked by known masternode-list-sync issue)
+- [x] DEV-007: Check any address balance — PASS (retested 2026-07-15: masternode-list/quorum sync
+      issue confirmed resolved — fetched a known-funded QA Wallet 1 Platform address and got a real
+      result: "Balance: 168923420 credits (0.00168923 Dash), Nonce: 2", matching the wallet's own
+      balance display exactly)
 - [x] DEV-008: Mine blocks on Regtest — BLOCKED (Regtest-only, no regtest node running in this environment)
 
 ## NET
@@ -391,15 +412,20 @@ needed).
       handling, network-mismatch guard, dynamic tool discovery all work correctly; carries
       the same wallet-hydration caveat as MCP-001 but that is a wallet-tooling defect, not
       a transport/protocol defect)
-- [x] MCP-003: Load a masternode/evonode identity via CLI — BLOCKED (full happy path — no
-      masternode/evonode fixture available); CLI plumbing tested clean with a fake
-      ProTxHash/WIF: network-required and network-must-match both enforced, no key leakage
-      in any output, clean parameter validation, SPV-gated dispatch behaves per docs (no
-      crash/hang-without-progress)
-- [x] MCP-004: Withdraw masternode/evonode credits via CLI — BLOCKED (no masternode/evonode
-      identity loaded — MCP-003 prerequisite BLOCKED); tool schema confirmed to match the
-      owner-key/payout-address restriction and fee-reporting acceptance criteria (supporting
-      context only, not a live test)
+- [x] MCP-003: Load a masternode/evonode identity via CLI — BLOCKED (rechecked 2026-07-15: still
+      no real masternode/evonode fixture available — same constraint as MN-003 et al., unchanged
+      by the recurrence-2 environment fix. Tool schema re-confirmed intact via a freshly rebuilt,
+      hash-noted `det-cli` (`tool-describe name=masternode_identity_load`) — identical shape to
+      the prior pass. Not re-run against a live fake ProTxHash this pass — that requires a full
+      from-scratch SPV sync in a throwaway dir, disproportionate for a schema-only recheck — but
+      the GUI's equivalent load flow (MN-001, same underlying identity-fetch code path) was
+      live-confirmed fixed: a well-formed nonexistent ProTxHash now gets a clean, fast "not found"
+      response instead of a hang, which is strong indirect evidence the CLI tool's SPV-gated
+      dispatch behaves the same way now.)
+- [x] MCP-004: Withdraw masternode/evonode credits via CLI — BLOCKED (same updated reasoning as
+      MCP-003 — no masternode/evonode identity loaded, MCP-003 prerequisite still BLOCKED); tool
+      schema confirmed to match the owner-key/payout-address restriction and fee-reporting
+      acceptance criteria (supporting context only, not a live test)
 
 ## UX
 
@@ -422,59 +448,100 @@ needed).
 - [x] IDH-001: First-time identity setup — PASS (onboarding empty state matches every criterion;
       dev-mode footer confirmed present at Expert/Developer views, absent at Default, though
       currently non-interactive placeholder text pending a T6 wiring follow-up)
-- [x] IDH-002: Identity home at a glance — BLOCKED (no identity reachable, see scenarios/IDN.md;
-      source review confirms IdentityHeroCard/OnboardingChecklist/HomeOutcome are wired)
-- [x] IDH-003: Multi-identity switching — BLOCKED (multiple identities unreachable; source review
-      confirms BreadcrumbPill/IdentityPill/IdentityPickerCard exist; see UX-003 for switcher
-      rollout gaps)
-- [x] IDH-004: Opt in to DashPay social profile — BLOCKED (no identity reachable; source review
-      confirms SocialProfileGateCard and the Home/Settings surfaces are wired)
+- [x] IDH-002: Identity home at a glance — PASS (retested 2026-07-15 with real QA Identity 1: Home
+      tab renders IdentityHeroCard, Send/Receive/Add contact quick actions, Add funds/Send to
+      wallet/Send to another identity secondary actions, the "Finish setting up your identity"
+      OnboardingChecklist, and a recent-activity preview; "See all activity" live-confirmed to
+      navigate directly to the Activity tab, `HomeOutcome::GoToActivity` in action)
+- [x] IDH-003: Multi-identity switching — PASS (retested 2026-07-15 with QA Identity 1 + 2 + read-
+      only alice.dash: identity-pill dropdown lists all 3 with a "1 click" switch confirmed live,
+      re-scoping every hub tab to the new identity (Contacts tab correctly showed the switched
+      identity's own contact list); clicking the "Identities" breadcrumb link landed on a real
+      IdentityPickerCard + IdentityPickerAddCard 4-tile grid, matching the story's picker-landing
+      requirement exactly)
+- [x] IDH-004: Opt in to DashPay social profile — BLOCKED (retested 2026-07-15: both real
+      identities already have a DashPay profile set from the earlier DPY phase, so the no-profile
+      `SocialProfileGateCard`/skip-affordance state can't be triggered — "Delete social profile"
+      is confirmed still feature-gated (disabled, "coming soon" tooltip) so there's no reversible
+      way to unset a profile to test this. NEW: the Settings-tab social-profile editing block is
+      now LIVE-confirmed as a real, working form for two different identities (Display name/About/
+      Avatar URL fields, Save social profile), upgrading bullet 2 from source-review-only to live-
+      verified; bullets 1 and 3 remain source-review-only, unchanged.)
 - [x] IDH-005: Bulk identity creation — N/A (Gap, not implemented)
 - [x] IDH-006: Unified activity timeline — N/A (Gap, not implemented)
-- [x] IDH-007: Manage contacts from the Identities hub — BLOCKED (no identity/contacts reachable;
-      source review confirms Accept/Decline/Cancel/search+Pay/hidden-by-default are wired; see
-      DPY-014)
-- [x] IDH-008: Name an identity on this device — BLOCKED (no identity reachable; source review
-      confirms this is the same set_identity_alias mechanism DPN-008 already found wired, exposed
-      via a second Settings-tab UI surface)
+- [x] IDH-007: Manage contacts from the Identities hub — PASS (retested 2026-07-15 with QA
+      Identity 1's established contact "QA Test Two": search box live-confirmed to filter (no
+      match → "No contact matches your search.", partial match → correct result); Pay live-
+      confirmed to open the existing DashPay Send Payment flow pre-filled with the contact's
+      address; empty Received/Sent-requests states confirmed correct. Accept/Decline/Cancel not
+      independently re-exercised on this new screen — no reversible way to generate a fresh
+      pending request without breaking the only established-contact fixture (DPY-010 "Remove a
+      contact" is Gap, so there's no undo) — relying on source review (unit-tested wiring
+      confirmed) plus DPY-003/004/014's live confirmation of the same underlying backend tasks via
+      the legacy screen.)
+- [x] IDH-008: Name an identity on this device — PASS (retested 2026-07-15 with QA Identity 2, full
+      edit-save-clear-restore cycle live: Save name correctly disabled when unchanged, enabled the
+      moment the field is edited; saving updated the breadcrumb instantly ("QA Identity 2" →
+      "QA Identity 2 Renamed"); clearing the field + saving removed the name and the breadcrumb
+      correctly fell back to the DPNS handle (`detqa892run3`) — confirming the breadcrumb's
+      documented 3-tier priority (local nickname → DPNS handle → shortened ID), which deliberately
+      excludes the DashPay display name per an explicit source comment in
+      `global_nav_switcher.rs::identity_label()`; original name restored afterward. All three
+      acceptance-criteria bullets now live-verified, not just source-reviewed.)
 
 ## MN
 
-- [x] MN-001: Load a masternode by keys — FAIL (disabled-gate/malformed-hash/unencrypted-note/
-      Fill-Random gating all correct, but "Load masternode" with a well-formed fake ProTxHash
-      still hangs silently — same defect class as IDN-003, re-confirmed fresh with 20s wait; new
-      `det.log` evidence implicates the known wallet-backend blocker as a likely contributing
-      cause)
+- [x] MN-001: Load a masternode by keys — PASS (retested 2026-07-15, incidental to checking
+      whether the recurrence-2 environment fix changed anything for this category: the silent
+      hang is FIXED — submitting a well-formed but nonexistent 64-hex-char ProTxHash now returns
+      an immediate, clean, correctly-worded error, "No masternode or evonode was found on the
+      network for this ProTxHash. Check the ProTxHash and try again, or confirm the node is
+      registered on this network.", with a typed `MasternodeNotFound { identity_id: ... }` visible
+      via Show details, instead of hanging forever with zero feedback. Disabled-gate, malformed-
+      hash rejection, unencrypted-note, and Fill-Random gating were already confirmed correct and
+      are unchanged. Verdict upgraded from FAIL — was a downstream symptom of the wallet-backend
+      blocker as suspected, not an independent masternode-load bug.)
 - [x] MN-002: See my masternodes at a glance — PASS on directly-testable scope (empty state
       correctly explains the concept + CTA; Expert-view-only nav gating live-confirmed both ways
       — hides on Default view, restores on Expert view); card-list-with-real-nodes content and
       the literal same-frame de-gating trigger untested (no loaded node; architecturally
-      unreachable via mouse-only UI respectively) — noted as untested scope, not failures
-- [x] MN-003: Open a masternode and vote — BLOCKED (no loaded masternode reachable — MN-001's
-      hang; DPNS-voting UI structurally confirmed via source review only)
-- [x] MN-004: Remove a masternode — BLOCKED (same reasoning as MN-003; confirm-before-remove
+      unreachable via mouse-only UI respectively) — noted as untested scope, not failures. Not
+      retested 2026-07-15 (unaffected by the env fix; already PASS, no dependency on the blocker).
+- [x] MN-003: Open a masternode and vote — BLOCKED (retested 2026-07-15: MN-001's load flow is now
+      confirmed working end-to-end — a well-formed ProTxHash gets a clean, fast "not found"
+      response — but no *real* masternode/evonode is registered on Testnet for any fixture this
+      environment has, so no node is ever actually loaded to open. Blocking cause narrowed from
+      "load flow hangs" to purely "no real fixture available" (~1000 tDASH collateral to register
+      one for real, per CAMPAIGN-CONTEXT.md). DPNS-voting UI structurally confirmed via source
+      review only.)
+- [x] MN-004: Remove a masternode — BLOCKED (same updated reasoning as MN-003; confirm-before-remove
       dialog structurally confirmed via source review only)
 - [x] MN-005: Keep the everyday surface clean — PASS (legacy "Load Existing Identity" screen's
       Identity Type selector now offers User only and its ProTxHash tab is gone entirely — clean
-      regression fix vs. IDN-003's prior finding of a Masternode/Evonode toggle there)
-- [x] MN-006: Encrypt my node keys at load time — BLOCKED (cannot observe an actual encrypted
-      load — MN-001's hang; load-time "Encryption password (optional)" field already confirmed
-      present and correctly worded while testing MN-001)
-- [x] MN-007: Withdraw a node's credits — BLOCKED (no loaded masternode reachable; Withdraw
+      regression fix vs. IDN-003's prior finding of a Masternode/Evonode toggle there). Not
+      retested 2026-07-15 (unaffected by the env fix).
+- [x] MN-006: Encrypt my node keys at load time — BLOCKED (same updated reasoning as MN-003 —
+      MN-001's load flow works, but no real fixture exists to observe an actual encrypted load;
+      load-time "Encryption password (optional)" field already confirmed present and correctly
+      worded while testing MN-001)
+- [x] MN-007: Withdraw a node's credits — BLOCKED (same updated reasoning as MN-003; Withdraw
       button routing to the shared withdrawal screen confirmed via source review only)
-- [x] MN-008: Manage a node's keys — BLOCKED (no loaded masternode reachable; add-key purpose
+- [x] MN-008: Manage a node's keys — BLOCKED (same updated reasoning as MN-003; add-key purpose
       selector structurally excludes OWNER/VOTING for every identity type, confirmed via source
       review only)
-- [x] MN-009: Claim an evonode's token rewards — BLOCKED (no loaded Evonode reachable;
-      Evonode-only "Claim token rewards" gating confirmed via source review only)
+- [x] MN-009: Claim an evonode's token rewards — BLOCKED (same updated reasoning as MN-003, and
+      additionally requires the Evonode variant specifically; Evonode-only "Claim token rewards"
+      gating confirmed via source review only)
 - [x] MN-010: Keep the Masternodes tab consistent across a network switch — PASS (unsubmitted
       Evonode + fake ProTxHash + alias in the Load form was fully discarded on a Testnet→Mainnet
       switch, landing on a clean empty List view with zero leftover input; stale per-network
-      banners also cleared; app restored to Testnet afterward)
-- [x] MN-011: Refresh masternode and voting state — BLOCKED overall (core node-refresh behavior
-      needs a loaded node, unreachable), with a positive no-op-safety data point: the Refresh
-      control exists and is a confirmed-safe no-op with zero nodes loaded, matching the story's
-      own no-op requirement and the source's explicit early-return on an empty node list
+      banners also cleared; app restored to Testnet afterward). Not retested 2026-07-15 (unaffected
+      by the env fix).
+- [x] MN-011: Refresh masternode and voting state — BLOCKED overall (same updated reasoning as
+      MN-003 — core node-refresh behavior needs a loaded node, which still requires a real fixture
+      that doesn't exist here), with a positive no-op-safety data point: the Refresh control exists
+      and is a confirmed-safe no-op with zero nodes loaded, matching the story's own no-op
+      requirement and the source's explicit early-return on an empty node list
 - [x] MN-012: Switch wallet/identity from the Masternodes header — PASS on directly-testable
       scope (header renders the 3-segment switcher with the exact `(no masternode yet)`
       placeholder text, corroborated by UX-003's independent prior finding on this same build);

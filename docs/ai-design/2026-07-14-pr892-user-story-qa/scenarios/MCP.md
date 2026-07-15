@@ -332,3 +332,42 @@ criteria bullet:
 This confirms the tool is implemented with the correct shape and restrictions at the schema
 level, but this is supporting context only — no live call was made (no identity to operate
 on), so this does not upgrade the verdict beyond BLOCKED.
+
+---
+
+# Retest — 2026-07-15 (recurrence-2 environment fix: does anything change for MCP-003/004?)
+
+Environment: PR892 build/hash `57195d54`, freshly rebuilt `det-cli` from the PR892-build worktree
+(`cargo build --bin det-cli --features cli`, confirmed a clean/no-op build meaning the shared
+target dir was already at the right commit; copied to a private path,
+`sha256sum 06b74ea02d859a46a8c32d9d4529dddf0f102f40ef33fac79a41a64b4aa23328`).
+
+Re-confirmed `masternode_identity_load`'s schema is byte-for-byte the same shape as the original
+pass (`tool-describe name=masternode_identity_load`) — `pro_tx_hash`/`node_type`/`network`
+required, `owner_private_key`/`voting_private_key`/`payout_private_key` typed `Secret`, output
+reports `owner_key_loaded`/`voting_key_loaded`/`payout_key_loaded`/`available_withdrawal_keys`/
+`payout_address`/`dpns_names` — no drift from the earlier pass's schema check.
+
+**Did not re-run a live fake-ProTxHash dispatch through the CLI this pass.** That test requires a
+fresh throwaway data dir (to avoid touching the shared, evidence-bearing one), which means a full
+from-scratch SPV sync before the tool's SPV gate releases — a multi-minute cost that would only
+re-confirm what `scenarios/MN.md`'s MN-001 retest already proved live, for the exact same
+underlying identity-fetch code path (`MasternodeNotFound`): the GUI's equivalent "Load a
+masternode" flow, previously a silent indefinite hang on a well-formed nonexistent ProTxHash, now
+returns a clean, fast, correctly-typed "not found" error. Since `masternode_identity_load` (CLI)
+and the GUI's load form both ultimately dispatch into the same masternode-identity-fetch backend
+task, this is strong indirect evidence the CLI's SPV-gated dispatch behaves the same way now —
+i.e. the CLI's earlier "hang is expected chain-sync wait, not a bug" finding likely still holds,
+but if a genuine masternode-lookup failure were reached today it would very likely surface as a
+typed error rather than an indefinite stall, matching the GUI-side fix.
+
+**What this does not change**: no real masternode/evonode identity is loadable in this
+environment — same fixture-availability constraint as `scenarios/MN.md`'s MN-003/004/006–009/011,
+unaffected by either the wallet-backend fix or the masternode-list/quorum-sync fix (both are
+about *reaching* real network data faster/more reliably, not about *having* a registered node to
+find). `memcan:recall` and a brief external search for a public, ownership-free Testnet ProTxHash
+(loadable read-only per the story's own "keys optional" design) did not turn up a usable fixture
+in the time budget for this pass.
+
+**MCP-003 and MCP-004 verdicts unchanged: BLOCKED**, reasoning refined to note the constraint is
+now purely fixture-availability, not a suspected CLI-side hang risk.

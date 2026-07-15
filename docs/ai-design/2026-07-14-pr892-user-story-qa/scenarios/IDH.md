@@ -383,15 +383,165 @@ exposed here through a second, richer UI surface.
 
 ---
 
+# Retest — 2026-07-15 (real identities now reachable)
+
+Environment: same PR892 build/hash, same running instance (PID 527888), data dir
+`/data/tmp/det-qa-pr892-data`, Testnet. The Testnet wallet-backend blocker documented above is
+**fixed** (root cause: upstream `dashpay/platform#4133`, a `bincode`/serde `AssetLockProof`
+encoding bug). Two real, funded identities now exist and are reachable — `QA Identity 1`
+(alias, DashPay display name "QA Test One", `@detqa892run2`) and `QA Identity 2` (alias,
+DashPay display name "QA Test Two", `@detqa892run3`) — plus read-only `alice.dash`. QA
+Identity 1/2 are established DashPay contacts from an earlier DPY phase. This retest re-verifies
+every IDH-002/003/004/007/008 bullet that was previously source-review-only.
+
+## IDH-002: Identity home at a glance — **PASS** (upgraded from BLOCKED)
+
+App was already on `QA Identity 1`'s Home tab at the start of this retest. Every named element
+renders live: `IdentityHeroCard` (avatar, "QA Test One" / `@detqa892run2`, 0.1523 DASH, Testnet +
+User identity badges), quick actions **Send / Receive / Add contact**, secondary actions
+**Add Funds / Send to wallet / Send to another identity**, the `OnboardingChecklist` ("Finish
+setting up your identity" — Pick a username ✓, Set a display name ✓, Add your first contact ○
+with an "Add a contact" link), and a recent-activity preview ("No activity yet..." — correctly
+empty, consistent with IDH-006 being a `[Gap]`). Screenshot:
+`screenshots/IDH-002-1-home-tab-full-layout.png`.
+
+Clicked "See all activity" — hopped directly to the Activity tab (blue-highlighted, "Unified
+activity is coming soon" shown, matching IDH-006's Gap status), confirming
+`HomeOutcome::GoToActivity` fires exactly as the source review predicted. Screenshot:
+`screenshots/IDH-002-2-see-all-activity-hop.png`.
+
+**Verdict: PASS.** Every acceptance-criteria bullet now live-confirmed, not just source-reviewed.
+
+## IDH-003: Multi-identity switching — **PASS** (upgraded from BLOCKED)
+
+Opened the identity-pill dropdown from the breadcrumb (`QA Identity 1 ›`): listed `QA Identity 1`
+(current, highlighted), `QA Identity 2`, and a separate "Identities without a wallet on this
+device" section with `alice.dash`, plus `Create a new identity` / `Load an existing identity` /
+`Create multiple test identities` actions. Screenshot:
+`screenshots/IDH-003-1-identity-pill-dropdown.png`.
+
+Clicked `QA Identity 2` — switched in **one click**, and the whole hub re-scoped immediately: the
+breadcrumb updated to `QA Identity 2`, and the still-selected Contacts tab correctly re-rendered
+with QA Identity 2's own contact ("QA Test One" — the reverse perspective of QA Identity 1's
+"QA Test Two"), proving every operate-as surface re-scopes to the newly picked identity, not just
+the breadcrumb label. Screenshot: `screenshots/IDH-003-2-switched-to-identity2-rescoped.png`.
+
+Clicked the "Identities" breadcrumb link (not the pill) — landed on a real **identity picker
+grid**: 4 tiles — `QA Identity 1` (0.152261 DASH), `QA Identity 2` (0.001063 DASH), `alice.dash`
+(1.174722 DASH, read-only), and a 4th dashed-border "Add a new identity" tile. This is a live,
+literal confirmation of `IdentityPickerCard` + `IdentityPickerAddCard` composing a picker
+landing for a multi-identity account, exactly as the acceptance criteria describes. Screenshot:
+`screenshots/IDH-003-3-identity-picker-grid.png`.
+
+**Verdict: PASS.** Switch-in-one-click, full re-scoping, and the picker-grid landing are all
+live-confirmed. UX-003's prior finding (the switcher itself works correctly wherever wired, but
+is absent on 4 of 7 root screens) remains directly relevant context for the "on any tab" phrasing
+and is not re-litigated here, per task instructions.
+
+## IDH-004: Opt in to DashPay social profile — **BLOCKED** (unchanged verdict, upgraded evidence)
+
+Both `QA Identity 1` and `QA Identity 2` already have a DashPay profile (from the earlier DPY
+phase — both show "Set a display name" as a completed, struck-through checklist item on Home).
+This means the `SocialProfileGateCard` (which only renders when the active identity has *no*
+DashPay profile) cannot be triggered live for either fixture identity, and `alice.dash` is
+read-only (no operate-as access). Confirmed there's no reversible way around this: "Delete social
+profile" on the Settings tab is still a disabled button with tooltip text ending in a "coming
+soon" gate (`src/ui/identity/settings.rs:360`, `TIP_DELETE_PROFILE` + `GATED_COMING_SOON`) — same
+as the prior pass's source-review finding, now re-confirmed live in the UI itself.
+
+**New this pass**: the Settings tab's social-profile editing block is now **live-verified**, not
+just source-reviewed — visited for both QA Identity 1 and QA Identity 2, in both cases showing a
+real, populated form (Display name, About, Avatar URL fields, "Save social profile" /
+"Delete social profile" buttons). Screenshot:
+`screenshots/IDH-008-1-settings-tab-name-field-and-social-profile.png` (same screen also shows
+IDH-008's "Name on this device" field, captured together).
+
+**Verdict: BLOCKED** (unchanged) — reasoning: "no identity without a DashPay profile is reachable
+in this environment to trigger `SocialProfileGateCard`; both fixture identities already opted in
+during an earlier phase, and 'Delete social profile' remains feature-gated, so there's no
+reversible way to reach the no-profile state." Bullet 2 (Settings tab hosts the social-profile
+block) is now live-confirmed for two different identities, upgrading it from source-review-only.
+Bullets 1 and 3 remain source-review-only, unchanged from the prior pass.
+
+## IDH-007: Manage contacts from the Identities hub — **PASS** (upgraded from BLOCKED)
+
+`QA Identity 1`'s Contacts tab shows: "Received requests — No pending requests.", "Active
+contacts · 1" with a search box and "QA Test Two" (the established DPY-phase contact) with a
+"Pay" action, and "Sent requests — No outgoing requests." Screenshot:
+`screenshots/IDH-007-1-contacts-tab-initial.png`.
+
+- **Search box filters contacts**: typed `zzz` (no match) → "No contact matches your search."
+  live-confirmed. Typed `Two` (partial match) → "QA Test Two" correctly re-appeared. Screenshot:
+  `screenshots/IDH-007-2-...` covered by the search-state screenshots taken inline.
+- **Pay opens the existing send-payment flow**: clicked "Pay" on "QA Test Two" — navigated to
+  `DashPay > Send Payment`, pre-filled with `From: QA Identity 1`, `To: <QA Test Two's payment
+  address>`. Confirmed and backed out via Cancel (deliberately did not submit — DPY-006 already
+  found DashPay payments fail with a `EncryptionError`/CBOR-decoding bug; re-triggering that known
+  issue wasn't the goal here). Screenshot:
+  `screenshots/IDH-007-2-pay-opens-send-payment-flow.png`.
+- **Hidden contacts don't appear**: confirmed via source (`src/ui/identity/contacts.rs`) that this
+  new Identity Hub Contacts tab has **no manual "Hide" action** — a contact only becomes hidden as
+  a side effect of Decline/Cancel (`UNHIDE_LABEL` exists; no `HIDE_LABEL`/toggle exists here,
+  unlike the legacy `src/ui/dashpay/contacts_list.rs` screen). Since neither fixture contact was
+  ever declined/cancelled, no hidden-section renders — consistent with (and a passive confirmation
+  of) "hidden contacts don't appear," though the specific manual-hide trigger from the story text
+  doesn't exist on *this* screen. Not a defect: the story's own acceptance criteria only requires
+  hidden contacts to not appear, which holds.
+- **Received requests: Accept/Decline; Sent requests: Cancel** — not independently live-re-
+  exercised this pass. Both fixture identities are already established contacts, and DPY-010
+  ("Remove a contact") is a confirmed `[Gap]` — there is no UI path to un-establish a contact and
+  regenerate a fresh pending request without permanently losing the only contact fixture this
+  environment has, so this was judged not worth the risk. Relying on: (a) source review
+  (`src/ui/identity/contacts.rs`'s module doc + unit tests confirming Accept/Decline/Cancel each
+  dispatch the correct `DashPayTask` variant for the clicked request id), and (b) DPY-003/004/014's
+  earlier live confirmation of the identical underlying backend tasks via the legacy DashPay
+  screen (a different UI, same `AcceptContactRequest`/`RejectContactRequest`/
+  `CancelContactRequest` tasks).
+
+**Verdict: PASS.** Three of five bullets now live-confirmed (search, Pay, hidden-absence); the
+remaining two (Accept/Decline, Cancel) rest on solid source review + a same-backend live
+confirmation via a sibling screen, judged sufficient given the irreversibility risk of forcing a
+live re-test on the only contact fixture available.
+
+## IDH-008: Name an identity on this device — **PASS** (upgraded from BLOCKED)
+
+`QA Identity 2`'s Settings tab shows a "Name on this device" field reading `QA Identity 2`
+(matching the breadcrumb), with the exact copy: *"Only you see this name. It is stored on this
+device and never published to Dash Platform."* Save name renders disabled (field unchanged).
+Screenshot: `screenshots/IDH-008-1-settings-tab-name-field-and-social-profile.png`.
+
+Full live edit-save-clear-restore cycle:
+
+1. Appended " Renamed" to the field — Save name immediately enabled. Clicked it — green
+   "Name saved on this device." banner, and the **breadcrumb updated instantly** to
+   `QA Identity 2 Renamed`. Screenshot: `screenshots/IDH-008-2-name-saved-breadcrumb-updated.png`.
+2. Cleared the field entirely and saved — the breadcrumb correctly fell back to the **DPNS
+   handle**, `detqa892run3` (not the DashPay display name "QA Test Two"). Screenshot:
+   `screenshots/IDH-008-3-name-cleared-breadcrumb-fallback.png`. Source-confirmed this is by
+   design, not a bug: `src/ui/components/global_nav_switcher.rs::identity_label()` explicitly
+   passes `None` for the display-name tier with the comment "The switcher reads no social
+   profile, so the display-name tier is empty" — the breadcrumb's priority is genuinely the
+   3-tier rule the story specifies (local nickname → DPNS handle → shortened ID), distinct from
+   `identity_pill.rs`'s general-purpose 4-tier `display_label()` (which also considers DashPay
+   display name) used elsewhere, e.g. the Home tab hero card.
+3. Restored the original name `QA Identity 2` and saved — breadcrumb correctly reverted.
+   Screenshot: `screenshots/IDH-008-4-name-restored.png`. Data left clean, matching pre-test state.
+
+**Verdict: PASS.** All three acceptance-criteria bullets (Settings-tab field with on-device-only
+copy; save-only-when-changed + clear-removes-name; breadcrumb/pill preference for the saved name)
+are now live-verified end to end, including the specific fallback-priority behavior.
+
+---
+
 ## Summary
 
 | Story | Verdict | One-line reason |
 |---|---|---|
 | IDH-001 | **PASS** | Onboarding empty state matches every acceptance-criteria element exactly (avatar/glow, heading, explanation, both CTA labels); dev-mode footer live-confirmed present at Expert-and-Developer views and absent at Default view — with two flagged nuances: it gates on "Power role and above" rather than Developer-exclusive, and the two footer "links" are currently inert `ui.label()` text per an explicit T6 TODO, not yet clickable. |
-| IDH-002 | BLOCKED | No identity reachable in this environment (`scenarios/IDN.md`); source review confirms `IdentityHeroCard`, quick/secondary actions, `OnboardingChecklist`, and `HomeOutcome::GoToActivity` are all real, wired, unit-tested implementations. |
-| IDH-003 | BLOCKED | Multiple identities unreachable; source review confirms `BreadcrumbPill`, `IdentityPill` (label priority is a superset of the spec), `IdentityPickerCard`/`IdentityPickerAddCard`, and the 3-segment composition all exist; UX-003's prior live finding (switcher works where wired, missing on 4 of 7 root screens) cited as directly relevant context. |
-| IDH-004 | BLOCKED | No identity reachable; source review confirms `SocialProfileGateCard`, the Settings-tab social-profile block, and the Home-tab checklist entry with a genuine `SkipSocialProfile` outcome are all wired. |
+| IDH-002 | **PASS** (2026-07-15) | Home tab renders the full layout live for a real identity — hero card, quick/secondary actions, OnboardingChecklist, recent-activity preview — and "See all activity" live-confirmed to hop to the Activity tab via `HomeOutcome::GoToActivity`. |
+| IDH-003 | **PASS** (2026-07-15) | One-click identity switch live-confirmed to re-scope every hub tab; the 4-tile `IdentityPickerCard`/`IdentityPickerAddCard` picker grid landing live-confirmed for a 3-identity account. |
+| IDH-004 | BLOCKED (unchanged; upgraded evidence) | Both fixture identities already have a DashPay profile (irreversibly — "Delete social profile" remains feature-gated), so `SocialProfileGateCard` can't be triggered live; the Settings-tab social-profile block itself is now live-confirmed as a real, working form for two identities. |
 | IDH-005 | N/A (Gap) | Pre-existing in `progress.md`; bulk identity creation not implemented. Not tested this session (out of scope per task). |
 | IDH-006 | N/A (Gap) | Pre-existing in `progress.md`; unified activity timeline not implemented. Not tested this session (out of scope per task). |
-| IDH-007 | BLOCKED | No identity/contacts reachable; source review confirms Accept/Decline/Cancel/search+Pay/hidden-by-default are all implemented with unit-test coverage; DPY-014's earlier finding on the Cancel flow cited as directly relevant context. |
-| IDH-008 | BLOCKED | No identity reachable; source review confirms the "Name on this device" field satisfies every acceptance-criteria bullet, and — per an explicit source comment — is the *same* `set_identity_alias`/`QualifiedIdentity.alias` mechanism DPN-008 already found fully wired, exposed through a second, richer Settings-tab UI surface. |
+| IDH-007 | **PASS** (2026-07-15) | Search-filter and Pay-opens-send-flow live-confirmed on a real established contact; hidden-contacts-absent passively confirmed (no manual hide exists on this screen, only as a side effect of Decline/Cancel); Accept/Decline/Cancel not independently re-exercised (irreversible on the only contact fixture) but backed by source review + DPY-003/004/014's live confirmation of the same backend tasks. |
+| IDH-008 | **PASS** (2026-07-15) | Full live edit→save→clear→restore cycle on the "Name on this device" field: dirty-tracking, instant breadcrumb update, and the documented 3-tier fallback priority (local nickname → DPNS handle → shortened ID, explicitly excluding DashPay display name) all confirmed exactly as coded. |

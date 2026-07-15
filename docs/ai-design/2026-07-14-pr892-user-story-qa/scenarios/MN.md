@@ -431,19 +431,73 @@ and is noted as untested scope rather than assumed.
 
 ---
 
+# Retest — 2026-07-15 (recurrence-2 environment fix: does anything change for MN?)
+
+Environment: same PR892 build/hash, running instance PID 527888, data dir
+`/data/tmp/det-qa-pr892-data`, Testnet. The Testnet wallet-backend blocker is fixed (upstream
+`dashpay/platform#4133`). Task guidance: MN was expected to likely still be blocked on the "no
+masternode fixture" constraint (real registration needs ~1000 tDASH collateral), but to check
+first whether anything changed given MN-001's original finding suspected the wallet-backend
+blocker as a contributing cause to its silent hang.
+
+**Something did change.** Re-tested MN-001 fresh: Masternodes tab (still empty, "No masternodes
+loaded") > "Load a masternode" > entered a freshly-generated, well-formed-but-nonexistent 64-hex
+ProTxHash. Previously this silently hung forever with zero feedback. **Now**: clicking "Load
+masternode" returns, within a couple seconds, a clean, correctly-worded red banner —
+**"No masternode or evonode was found on the network for this ProTxHash. Check the ProTxHash and
+try again, or confirm the node is registered on this network."** — with "Show details" revealing
+a proper typed error, `MasternodeNotFound { identity_id: Identifier(...) }`, not a raw string.
+Screenshots: `screenshots/MN-001-1-load-wellformed-fake-protxhash-now-clean-error.png`,
+`screenshots/MN-001-2-typed-error-details-masternodenotfound.png`. Navigating back to the list
+confirmed it's still cleanly empty — no residual UI corruption from the attempt. Screenshot:
+`screenshots/MN-001-1-load-wellformed-fake-protxhash-now-clean-error.png`.
+
+This confirms MN-001's original suspicion was correct: the silent hang **was** a downstream
+symptom of the wallet-backend blocker, not an independent masternode-load bug. **MN-001 is
+upgraded from FAIL to PASS** — every acceptance-criteria bullet (form fields, disabled-gate,
+malformed-hash rejection, unencrypted-storage note, Fill-Random gating, and now also the
+not-found-on-network path) works correctly.
+
+**What this does *not* change**: there is still no *real* masternode/evonode registered on
+Testnet that this environment can load — the fake ProTxHash correctly comes back "not found"
+because it genuinely isn't registered, and getting a real one still requires ~1000 tDASH
+collateral this environment doesn't have (per `CAMPAIGN-CONTEXT.md`). A `memcan:recall` search
+for a pre-existing masternode/evonode fixture (project `dash-evo-tool`) turned up nothing usable.
+A brief external search for a public, ownership-free Testnet ProTxHash to load **read-only**
+(the form explicitly supports keys-optional read-only loading) did not turn up a live, fetchable
+source in the time budget for this pass. So MN-003/004/006/007/008/009/011 — every story that
+needs an *actually-loaded* node — remain genuinely BLOCKED, but the reasoning is now narrower and
+more precise: purely "no real fixture available," not "the load mechanism itself might be
+broken." MN-002/005/010/012 were not re-tested (unaffected by either environment fix — their
+prior PASS verdicts don't depend on the wallet-backend blocker).
+
+## MCP-003/MCP-004 cross-reference (same underlying code path)
+
+`scenarios/MCP.md`'s MCP-003/004 share the identical masternode/evonode-identity-fixture
+dependency. Re-verified the CLI tool schemas are unchanged via a freshly rebuilt, hash-noted
+`det-cli` (`tool-describe name=masternode_identity_load` / `masternode_credits_withdraw`) —
+identical shape to the original pass. Did not re-run a live fake-ProTxHash dispatch through the
+CLI this pass (that requires a full from-scratch SPV sync in a throwaway dir, disproportionate
+for what would only re-confirm what MN-001 already proved for the same underlying identity-fetch
+code path) — but MN-001's live confirmation above is strong indirect evidence the CLI's
+SPV-gated dispatch now behaves the same way (clean "not found" instead of an indefinite hang).
+MCP-003/004 remain BLOCKED — same fixture-availability constraint, unaffected by either fix.
+
+---
+
 ## Summary
 
 | Story | Verdict | One-line reason |
 |---|---|---|
-| MN-001 | **FAIL** | Disabled-button gate, malformed-hash rejection, unencrypted-storage note, and Fill-Random gating all correct; but "Load masternode" with a well-formed fake ProTxHash still hangs silently (re-confirmed fresh, 20s wait) — same defect class as IDN-003, now with a `det.log` line implicating the known wallet-backend blocker as a likely contributing cause. |
-| MN-002 | **PASS** (directly-testable scope) | Empty state and Expert-view-only nav gating (incl. live restore) both confirmed; card-list-with-real-nodes and the literal same-frame de-gating trigger are untested/architecturally unreachable, not failed. |
-| MN-003 | **BLOCKED** | No loaded masternode reachable (MN-001's hang); DPNS-voting UI structurally confirmed via source only. |
-| MN-004 | **BLOCKED** | Same as MN-003; confirm-before-remove dialog structurally confirmed via source only. |
-| MN-005 | **PASS** | Legacy "Load Existing Identity" screen's Identity Type selector now offers User only, and its ProTxHash-loading tab is gone entirely — clean regression fix vs. IDN-003's prior finding. |
-| MN-006 | **BLOCKED** | Cannot observe an actual encrypted load (MN-001's hang); load-time password field already confirmed present and correctly worded under MN-001. |
-| MN-007 | **BLOCKED** | No loaded masternode reachable; Withdraw button routing to the shared withdrawal screen confirmed via source only. |
-| MN-008 | **BLOCKED** | No loaded masternode reachable; add-key purpose selector structurally excludes OWNER/VOTING (never offered to any identity type) confirmed via source only. |
-| MN-009 | **BLOCKED** | No loaded Evonode reachable; Evonode-only "Claim token rewards" gating confirmed via source only. |
-| MN-010 | **PASS** | Network switch with an unsubmitted, filled Load form (Evonode + fake ProTxHash + alias) returns to a clean empty List view with zero leftover input, and stale per-network banners are cleared — both live-confirmed; app restored to Testnet afterward. |
-| MN-011 | **BLOCKED** (core), no-op-safety sub-check passes | Core node-refresh behavior needs a loaded node (unreachable); Refresh button exists and is a confirmed-safe no-op with zero nodes loaded, matching the story's own no-op requirement. |
-| MN-012 | **PASS** (directly-testable scope) | Header renders the 3-segment switcher with the exact `(no masternode yet)` placeholder text, corroborated by UX-003's independent prior finding; node-picking / cross-page-isolation behavior untested — no node to pick. |
+| MN-001 | **PASS** (2026-07-15, upgraded from FAIL) | Disabled-button gate, malformed-hash rejection, unencrypted-storage note, and Fill-Random gating all correct (unchanged); the silent hang on a well-formed nonexistent ProTxHash is now FIXED — returns a clean, fast, correctly-worded "not found" error with a proper typed `MasternodeNotFound` in details, confirming it was a downstream symptom of the (now-fixed) wallet-backend blocker. |
+| MN-002 | **PASS** (directly-testable scope) | Empty state and Expert-view-only nav gating (incl. live restore) both confirmed; card-list-with-real-nodes and the literal same-frame de-gating trigger are untested/architecturally unreachable, not failed. Not retested 2026-07-15 (unaffected by the env fix). |
+| MN-003 | **BLOCKED** (2026-07-15: narrower reasoning) | MN-001's load flow is now confirmed working end-to-end; no loaded masternode reachable purely because no real fixture is registered on Testnet for this environment (~1000 tDASH collateral required) — not because loading hangs. DPNS-voting UI structurally confirmed via source only. |
+| MN-004 | **BLOCKED** (2026-07-15: narrower reasoning) | Same as MN-003; confirm-before-remove dialog structurally confirmed via source only. |
+| MN-005 | **PASS** | Legacy "Load Existing Identity" screen's Identity Type selector now offers User only, and its ProTxHash-loading tab is gone entirely — clean regression fix vs. IDN-003's prior finding. Not retested 2026-07-15 (unaffected by the env fix). |
+| MN-006 | **BLOCKED** (2026-07-15: narrower reasoning) | Same as MN-003 — MN-001's load flow works, but no real fixture exists to observe an actual encrypted load; load-time password field already confirmed present and correctly worded under MN-001. |
+| MN-007 | **BLOCKED** (2026-07-15: narrower reasoning) | Same as MN-003; Withdraw button routing to the shared withdrawal screen confirmed via source only. |
+| MN-008 | **BLOCKED** (2026-07-15: narrower reasoning) | Same as MN-003; add-key purpose selector structurally excludes OWNER/VOTING (never offered to any identity type) confirmed via source only. |
+| MN-009 | **BLOCKED** (2026-07-15: narrower reasoning) | Same as MN-003, plus requires the Evonode variant specifically; Evonode-only "Claim token rewards" gating confirmed via source only. |
+| MN-010 | **PASS** | Network switch with an unsubmitted, filled Load form (Evonode + fake ProTxHash + alias) returns to a clean empty List view with zero leftover input, and stale per-network banners are cleared — both live-confirmed; app restored to Testnet afterward. Not retested 2026-07-15 (unaffected by the env fix). |
+| MN-011 | **BLOCKED** (2026-07-15: narrower reasoning) (core), no-op-safety sub-check passes | Core node-refresh behavior needs a loaded node — same fixture-availability constraint as MN-003, not a load-mechanism issue; Refresh button exists and is a confirmed-safe no-op with zero nodes loaded, matching the story's own no-op requirement. |
+| MN-012 | **PASS** (directly-testable scope) | Header renders the 3-segment switcher with the exact `(no masternode yet)` placeholder text, corroborated by UX-003's independent prior finding; node-picking / cross-page-isolation behavior untested — no node to pick. Not retested 2026-07-15 (unaffected by the env fix). |

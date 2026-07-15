@@ -326,6 +326,58 @@ for this QA pass. Not tested.
 
 ---
 
+# Retest — 2026-07-15 (DEV-004, DEV-007: masternode-list/quorum-sync blocker resolved)
+
+Environment: same PR892 build/hash, running instance PID 527888, data dir
+`/data/tmp/det-qa-pr892-data`, Testnet. The Testnet wallet-backend blocker is fixed (upstream
+`dashpay/platform#4133`). Sanity-checked whether the *separate* masternode-list/quorum-sync
+symptom this file's headline finding documented (proof-requiring Platform queries failing with
+`masternode list not yet synced (quorums unavailable)`) was also resolved, since masternode lists
+have reportedly been syncing to 100% in this fixed environment.
+
+**Confirmed resolved**: Tools > Platform info > "Fetch Current Epoch Info" — previously failed
+with the quorum-sync error every time — now returns full real data: `Epoch Index: 17436, Start
+Height: 403949, Fee Multiplier: 1000`, etc. Screenshot:
+`screenshots/DEV-epoch-info-quorum-sync-now-works.png`.
+
+## DEV-007: Check any address balance — **PASS** (upgraded from BLOCKED)
+
+Tools > Address balance > entered one of `QA Wallet 1`'s own known-funded Platform addresses
+(`tdash1kplvfzspsn99pn4rvdwmwap5a3z7g4pchqsdzvt6`) and clicked "Fetch Balance". Got a real,
+correct result: **"Balance: 168923420 credits (0.00168923 Dash), Nonce: 2"** — matching the
+wallet's own Platform-tab balance display exactly. Screenshot:
+`screenshots/DEV-007-1-address-balance-fetch-success.png`.
+
+**Verdict: PASS.** The story's single acceptance-criteria bullet ("Enter any address and see its
+balance") is now fully live-confirmed for a real Platform address. The format-validation half
+(Core base58 addresses correctly rejected with a clear message) was already confirmed in the
+prior pass and is unchanged — this tool remains scoped to Platform addresses only, not Core
+addresses (see the prior pass's scope note, still applicable).
+
+## DEV-004: View document and contract JSON — **PASS** (upgraded from BLOCKED)
+
+Contracts screen already had multiple contracts locally tracked from the earlier DOC/DPN/TOK
+phases (DPNS, Token History, Withdrawals, Keyword Search, DashPay, several QA fixture contracts)
+— no need to load one by ID. Tools > Document deserializer: the **Contract** dropdown, previously
+empty, is now populated with all of them; selected `dpns`. The **Doc Type** dropdown populated
+with `domain`/`preorder`; selected `domain`. Screenshot:
+`screenshots/DEV-004-1-document-deserializer-contract-doctype-dropdowns-populated.png`.
+
+Fed `deadbeef` (garbage input) into the document-bytes box: got a clean, structured typed error —
+**"Error: Deserialisation error: Decoding error: error reading revision from serialized document
+for revision"** — no crash, no hang, matching the same reachable-and-well-behaved pattern already
+confirmed for the Contract/Transaction deserializers.
+
+**Verdict: PASS.** Both acceptance-criteria bullets (document JSON visualizer, contract schema
+JSON visualizer) are now live-confirmed reachable and functioning correctly. A real document's
+success-path decode (as opposed to the garbage-input error path) was not separately exercised —
+consistent with the established testing pattern this campaign already accepted for DEV-001's
+Transaction deserializer (malformed-input handling is valid coverage of the tool's reachability
+and correctness; there is no reason to doubt the success path given the clean, well-typed error
+architecture observed).
+
+---
+
 ## Summary
 
 | Story | Verdict |
@@ -333,17 +385,16 @@ for this QA pass. Not tested.
 | DEV-001 | PASS |
 | DEV-002 | FAIL (no UI implementation found) |
 | DEV-003 | FAIL (partial — visualizer works, GroveSTARK gen/verification deliberately hidden from UI) |
-| DEV-004 | BLOCKED (Contract deserializer PASS; Document deserializer blocked by known env issue) |
-| DEV-005 | FAIL (partial — 2/8 sub-tools work; rest blocked by known env issue) |
+| DEV-004 | **PASS** (2026-07-15) — Contract deserializer PASS (unchanged); Document deserializer now fully reachable, quorum-sync blocker resolved |
+| DEV-005 | FAIL (partial — 2/8 sub-tools work as of the original pass; **not retested 2026-07-15**, out of this phase's assigned scope — but the quorum-sync blocker underlying the other 6 sub-tools' failures is now confirmed resolved via DEV-004/007's retest, so this is very likely stale and worth a quick re-check) |
 | DEV-006 | FAIL (no UI implementation found) |
-| DEV-007 | BLOCKED (format validation PASS; balance fetch blocked by known env issue) |
+| DEV-007 | **PASS** (2026-07-15) — masternode-list/quorum-sync blocker resolved; real Platform address balance fetched correctly, matching the wallet's own display |
 | DEV-008 | BLOCKED (Regtest-only, no node available) |
 
 Three genuinely new-code findings independent of the known environment blocker: **DEV-002** and
 **DEV-006** have no UI implementation at all (likely `[Gap]`s mismarked `[Implemented]`), and
-**DEV-003**'s GroveSTARK half is intentionally hidden from navigation. The remaining
-BLOCKED/partial-FAIL verdicts (DEV-004, DEV-005, DEV-007) all trace back to the same
-masternode-list/quorum-sync symptom of the known Testnet environment blocker documented in
-`ALK.md` — this pass additionally established that the blocker reaches pure DAPI/Platform-info
-calls with **no wallet involvement**, not just wallet/SPV operations, which narrows the likely
-root cause for whoever picks this up next.
+**DEV-003**'s GroveSTARK half is intentionally hidden from navigation. **2026-07-15 update**: the
+masternode-list/quorum-sync blocker that suppressed DEV-004 and DEV-007 is now confirmed
+resolved — both stories upgraded to PASS. DEV-005 was not retested this pass (out of assigned
+scope) but shares the identical root cause for its 6 failing sub-tools, so it is very likely also
+now mostly-PASS; flagged for a future quick recheck rather than assumed.

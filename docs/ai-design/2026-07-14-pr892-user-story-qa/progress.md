@@ -282,8 +282,16 @@ needed).
 - [x] NET-018: Auto-start SPV sync on startup — PASS (toggle persists across full quit +
       cold-boot restart in both directions; sync behavior matched the toggle exactly each
       time — restored to Enabled/baseline before finishing)
-- [ ] NET-019: Clear all local data for a network — **destructive — test LAST, alongside NET-011/020**
-- [ ] NET-020: Clear cached SPV data to force a resync — **destructive — test LAST, alongside NET-011/019**
+- [x] NET-019: Clear all local data for a network — BLOCKED (deliberately not executed:
+      irreversible action against the campaign's shared, evidence-bearing data directory;
+      requires explicit human authorization and a disposable copy of the data dir, consistent
+      with NET-011's precedent; navigation to the control and its confirmation-dialog wording
+      confirmed via live UI + source review — see scenarios/NET.md)
+- [x] NET-020: Clear cached SPV data to force a resync — BLOCKED (deliberately not executed:
+      irreversible action against the campaign's shared, evidence-bearing data directory;
+      requires explicit human authorization and a disposable copy of the data dir, consistent
+      with NET-011's precedent; button correctly enabled while SPV is in Error state and
+      source-confirmed disabled while Starting/Syncing/Running/Stopping — see scenarios/NET.md)
 - [x] NET-021: App settings preserved across an app upgrade — BLOCKED (no pre-upgrade legacy
       settings-storage fixture exists; source review of `legacy_settings.rs` and the
       `v093_upgrade.rs` composite regression test found strong evidence the feature is fully

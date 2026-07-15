@@ -349,6 +349,165 @@ should, from a fresh vantage point with nothing else depending on the current da
    for Devnet/Testnet — check whether the equivalent Mainnet control is absent or disabled;
    Platform state specifically cleared).
 
+## NET-019: Clear all local data for a network — BLOCKED (deliberately not executed)
+
+Acceptance criteria: "Danger-mode confirmation dialog before deletion; the action cannot be
+undone. Available for the currently selected network, including Mainnet."
+
+This is the second of the campaign's three final destructive stories (alongside NET-011 and
+NET-020), all deliberately deferred to the very end and all mapping into the same Settings >
+Networks > Advanced Settings > "Database Maintenance" / "SPV Maintenance" area described in
+NET-011's write-up above.
+
+**Navigation (read-only, no destructive action)**: Settings > Networks, Testnet, Expert view
+(the campaign's ongoing session, same instance as every other NET story). Clicked to expand
+the "Advanced Settings" accordion. Unlike NET-011's precedent — where the very act of
+expanding this same accordion was halted by the Claude Code agent permission system — this
+click went through without any permission gate firing, and the accordion opened normally
+(screenshot: `screenshots/NET-019-1-database-maintenance-section.png`). This divergence from
+NET-011's account is noted for the record but does not change how this story is handled: the
+task's own instructions cover both outcomes, and the controls that follow are irreversible
+regardless of which path led to them.
+
+**What was observed** (scrolled to the "Database Maintenance" subsection, nothing clicked):
+
+- Heading "Database Maintenance", description "Remove all local data for the current network
+  (wallets, contacts, identities, tokens, etc.)." — this description already matches the
+  story's own scope statement ("wallets, tokens, contacts, and cached identity data")
+  word-for-word.
+- A red "Clear Testnet Database" button (label is dynamic — `format!("Clear {} Database",
+  self.current_network_label())` in `src/ui/network_chooser_screen.rs:760`, confirmed against
+  the PR892 build source at
+  `/data/git-worktrees/home-ubuntu-git-dash-evo-tool-2-pr892-build/`). On Mainnet this would
+  read "Clear Mainnet Database" — the button and its containing "Database Maintenance"
+  section have **no network gate** in source (unlike NET-011's Devnet/Testnet-only scoping)
+  and **no role gate** either (unconditional inside the Advanced Settings body, not wrapped in
+  the `selected_role.at_least(UserRole::Power)` check that gates SPV Maintenance below it) —
+  source-confirms the "Available for the currently selected network, including Mainnet" half
+  of the acceptance criteria without needing to actually switch to Mainnet and risk an
+  unnecessary network change this late in the campaign.
+- Source review of the click handler (`network_chooser_screen.rs:769-781`) confirms the
+  danger-mode confirmation dialog matches the acceptance criteria precisely: title "Clear
+  Database", message *"This permanently deletes all local database entries for Testnet. This
+  includes wallets, tokens, contacts, and cached identity data. This cannot be undone."*,
+  buttons "Delete Data" / "Cancel", and `.danger_mode(true)` — this was read from source only,
+  never triggered live, so the dialog's actual on-screen rendering (styling, focus order) was
+  not visually confirmed.
+- Confirming would call `current_app_context().clear_network_database()`
+  (`network_chooser_screen.rs:1167`), which is exactly the kind of stateful, irreversible
+  write this task is scoped to avoid.
+
+**Deliberately not executed**: did not click "Clear Testnet Database". This button, if
+clicked and confirmed, permanently deletes `QA Wallet 1`'s funded balance, its transaction
+history, and every prior FAIL/BLOCKED repro's evidence trail recorded across the entire
+175-story campaign — all of which live in the same shared `/data/tmp/det-qa-pr892-data`
+directory this session is still running against. No alternative path (raw SQLite deletion,
+manual file removal, or any other workaround) was attempted either.
+
+**Verdict: BLOCKED.** Reasoning: deliberately not executed — irreversible action against the
+campaign's shared, evidence-bearing data directory; requires explicit human authorization and
+a disposable copy of the data dir, consistent with NET-011's precedent.
+
+**To complete this story**: a human (or an agent explicitly authorized for this one action)
+should, from a fresh vantage point with nothing else depending on the current data dir state:
+1. Copy `/data/tmp/det-qa-pr892-data` to a disposable location and launch the app against the
+   copy — not the original, which other findings in this campaign still reference as evidence.
+2. Settings > Networks > Advanced Settings > Database Maintenance > click "Clear Testnet
+   Database", confirm the dialog reads exactly as described above, then click "Delete Data".
+3. Confirm wallets, contacts, identities, and tokens for that network are all gone (the
+   success banner reads "Cleared Testnet database. Restart or resync to rebuild state.").
+4. Switch the `Network:` dropdown to **Mainnet** and repeat steps 2-3 there, specifically to
+   verify the button is genuinely available on Mainnet (the acceptance criteria's
+   distinguishing requirement vs. NET-011) — the same source path is expected to apply, but
+   this should be confirmed live since it was not visually exercised here.
+
+## NET-020: Clear cached SPV data to force a resync — BLOCKED (deliberately not executed)
+
+Acceptance criteria: "Expert-mode 'Clear SPV Data' action with confirmation; disabled while
+SPV is active. The next connection triggers a full resync."
+
+Third and last of the campaign's final destructive trio (alongside NET-011 and NET-019),
+tested in the same session and against the same live UI state as NET-019 immediately above —
+Settings > Networks > Testnet > Advanced Settings, already expanded, scrolled to the "SPV
+Maintenance" subsection just below "Database Maintenance" (screenshot:
+`screenshots/NET-020-1-spv-maintenance-section.png`).
+
+**What was observed** (nothing clicked):
+
+- Heading "SPV Maintenance", description "Clear cached headers and filter data for this
+  network." A red "Clear SPV Data" button.
+- **Expert-mode gating**: source-confirms the entire SPV Maintenance block is only rendered
+  `if self.selected_role.at_least(UserRole::Power)` (`network_chooser_screen.rs:813`) — Power
+  is this codebase's Expert tier — matching the story's "As an expert user" framing exactly,
+  and distinct from NET-019's Database Maintenance section immediately above it, which has no
+  such gate. The session was already in Expert view throughout (sidebar footer reads
+  "Expert"), consistent with the button being visible.
+- **Disabled-while-active gating**: source (`network_chooser_screen.rs:1053-1065`) shows the
+  button is wrapped in `ui.add_enabled(!is_active, clear_button)` where `is_active =
+  snapshot.status.is_active()`, and `SpvStatus::is_active()` (`src/model/spv_status.rs:25-30`)
+  is `true` only for `Starting | Syncing | Running | Stopping` — explicitly `false` for `Idle`,
+  `Stopped`, and `Error`. When disabled, the button additionally gets a
+  `.disabled_tooltip("Stop the SPV client before clearing data")`. Live-observed: this
+  session's SPV status has been stuck in `Error` all campaign (the same known Testnet
+  SPV-connect blocker NET-017/NET-018 already documented) — per the source's own definition,
+  `Error` is **not** "active", so the button correctly rendered fully enabled (solid red fill,
+  identical to the "Clear Testnet Database" button, no greyed-out styling) and hovering over
+  it produced no tooltip (there is none for the enabled branch). This is the source-correct
+  behavior for this specific state, but it means the *disabled* half of the acceptance
+  criterion — the button greying out with its tooltip while SPV is genuinely
+  Starting/Syncing/Running/Stopping — was not observable live this session, for the same
+  reason NET-017/018 could not observe every connection state: the environment's Testnet SPV
+  connection has not left the Error state throughout the whole campaign. Source-level
+  confidence in the disabling logic is high (a direct, explicit `matches!` gate plus a
+  purpose-written tooltip string), but it was not live-confirmed end to end.
+- Source review of the click handler (`network_chooser_screen.rs:1067-1080`) confirms the
+  confirmation dialog matches the acceptance criteria: title "Clear SPV Data", message *"This
+  will delete cached SPV data for Testnet. The next connection will trigger a full resync."*,
+  buttons "Clear Data" / "Keep Data", `.danger_mode(true)` — the message wording lines up
+  almost verbatim with this story's own description ("so that the next connection performs a
+  full resync"). Confirming calls `current_app_context().clear_spv_data()`
+  (`network_chooser_screen.rs:1137`), which `src/context/wallet_lifecycle/spv.rs:15-20`
+  documents as relying on this same "enabled only while sync is stopped" invariant.
+
+**Deliberately not executed**: did not click "Clear SPV Data" — same reasoning as NET-019:
+this is an irreversible action (deletes cached SPV headers/filters, forcing a full resync)
+against the campaign's shared data directory, and while a resync alone would not destroy
+wallet/identity/contact records the way NET-019's control would, it would still disrupt the
+Testnet SPV cache state that other completed stories' evidence implicitly depends on (e.g. the
+persistent Error-state banners other NET write-ups reference), for no testing benefit beyond
+what source review already established. No workaround was attempted.
+
+**Verdict: BLOCKED.** Reasoning: deliberately not executed — irreversible action against the
+campaign's shared, evidence-bearing data directory; requires explicit human authorization and
+a disposable copy of the data dir, consistent with NET-011's precedent.
+
+**To complete this story**: a human (or an agent explicitly authorized for this one action)
+should, from a fresh vantage point with nothing else depending on the current data dir state:
+1. Copy `/data/tmp/det-qa-pr892-data` to a disposable location and launch the app against the
+   copy — not the original.
+2. With Interface mode set to Expert (or Developer) and SPV idle/stopped (e.g. click
+   "Disconnect" first if connected), Settings > Networks > Advanced Settings > SPV Maintenance
+   > confirm the "Clear SPV Data" button is enabled, click it, confirm the dialog reads as
+   described above, then click "Clear Data".
+3. Separately, click "Connect" to put SPV into an actively-syncing state, then return to
+   Advanced Settings > SPV Maintenance and confirm the button is now visually disabled (greyed
+   out) with the "Stop the SPV client before clearing data" tooltip on hover — this exercises
+   the half of the acceptance criterion that could not be observed live in this session.
+4. After confirming the clear from step 2, reconnect and confirm the next connection performs
+   a full resync (headers restart from a low height rather than resuming from the pre-clear
+   checkpoint).
+
+**Aside (not scored against either story)**: while reading this section's source, a third,
+narrower control was found one level up — a Developer-role-only "Clear Platform Addresses"
+button under "Developer Tools" (`network_chooser_screen.rs:638`), which clears only cached
+Platform address/sync-cursor state rather than wiping wallets/identities/contacts wholesale.
+Its description ("Removes all Platform addresses for testing sync") reads closer to NET-011's
+"clears cached Platform state" acceptance criterion than the two broader controls this
+write-up and NET-011's covers. This is left as a note for whoever picks up NET-011/019/020 —
+it does not change any verdict here, since NET-011's write-up already established which
+controls this campaign maps to which story, and re-litigating that mapping is out of scope
+for this task.
+
 ---
 
 ## NET-006: Select interface mode — PASS
@@ -558,8 +717,13 @@ from), but the source-level evidence is unusually direct for a BLOCKED story.
 
 ---
 
-*All assigned NET stories (NET-002 through NET-021, excluding NET-019/NET-020) now
-accounted for. NET-011/NET-019/NET-020 remain deliberately unrun — destructive, deferred to
-the final pass (see NET-011's write-up above). NET-005 was retitled and NET-008 was
-reclassified N/A in the corrected 175-story catalog (see reconciliation notes above).
-NET-012 through NET-014 are `[Gap]` (N/A, no testing needed) — see `progress.md`.*
+*All assigned NET stories (NET-002 through NET-021) now accounted for. NET-011, NET-019, and
+NET-020 — the campaign's final destructive trio, all mapping to the same Settings > Networks
+> Advanced Settings "Database Maintenance" / "SPV Maintenance" controls — are all **BLOCKED**,
+deliberately left unrun pending explicit human authorization and a disposable copy of the
+shared data dir (see each story's write-up above for exactly what was and wasn't observed,
+and the step-by-step human completion guide). This closes out the entire PR892 175-story
+catalog: every story now has either a live/source-reviewed verdict or a documented BLOCKED
+reason. NET-005 was retitled and NET-008 was reclassified N/A in the corrected 175-story
+catalog (see reconciliation notes above). NET-012 through NET-014 are `[Gap]` (N/A, no
+testing needed) — see `progress.md`.*

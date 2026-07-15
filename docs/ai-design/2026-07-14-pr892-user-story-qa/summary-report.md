@@ -92,12 +92,24 @@ This was investigated extensively and non-destructively:
   remove and reconstruct the wallet through the app's own sanctioned "Remove Wallet" UI) did
   not resolve it, and the second was correctly halted by the Claude Code agent permission
   system before any destructive confirmation, pending explicit human authorization.
-- Root cause was **not** found — it needs either destructive DB access or a debug-instrumented
-  rebuild to capture the underlying error's structured detail, both appropriately gated behind
-  human sign-off rather than attempted unilaterally by an unattended agent.
+- Root cause was **not** found during the QA campaign itself — it needed either destructive DB
+  access or a debug-instrumented rebuild to capture the underlying error's structured detail,
+  both appropriately gated behind human sign-off rather than attempted unilaterally by an
+  unattended agent.
 
-**Full diagnostic trail**: `scenarios/ALK.md` ("App-restart failure" section and its
-addendum), with a forward pointer from `scenarios/DEV.md` narrowing the scope further.
+**Update, 2026-07-15**: the user later explicitly authorized a destructive follow-up
+investigation on disposable copies (never the live QA data dir above). It fully root-caused
+this — a storage-format incompatibility bug in the pinned upstream `platform-wallet` crate (a
+specific `asset_locks` row's proof blob can be written but never decoded back), not corruption
+or resource exhaustion. Full findings and a verified recovery:
+`scenarios/ALK.md`'s "Resolution" section and
+`/data/artifacts/dash-evo-tool/2026-07-14/pr892-user-story-qa/testnet-blocker-investigation/TEST-VECTOR.md`.
+This confirms every BLOCKED verdict below that cites this blocker was genuinely untestable at
+the time for the reason now identified — not a gap in how the campaign tested them.
+
+**Full diagnostic trail**: `scenarios/ALK.md` ("App-restart failure" section, its addendum,
+and the "Resolution" section), with a forward pointer from `scenarios/DEV.md` narrowing the
+scope further.
 
 **Practical effect on this report**: every BLOCKED verdict from ALK-002 onward that cites
 "known environment issue" reflects this one open problem, not 60+ separate defects. It should

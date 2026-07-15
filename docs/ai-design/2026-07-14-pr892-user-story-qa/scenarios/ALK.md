@@ -350,3 +350,46 @@ sign-off) or a debug-instrumented rebuild to capture the underlying `WalletStora
 variant. In the meantime, prioritize categories/stories that don't require a live Testnet
 wallet-backend connection (DEV, MCP, and any UI-only/validation-only aspects of IDN/DPN/DPY/
 TOK/DOC).
+
+---
+
+### Resolution (2026-07-15, authorized follow-up investigation) — ROOT CAUSED
+
+The user later explicitly authorized destructive investigation of this exact failure, on
+condition of preserving a byte-identical copy first. That investigation (a `codex:codex-rescue`
+task run against copies only — the live data dir above was never touched) fully root-caused it.
+Full writeup: `/data/artifacts/dash-evo-tool/2026-07-14/pr892-user-story-qa/testnet-blocker-investigation/TEST-VECTOR.md`.
+
+**Short version**: `SqlitePersister::open()` (the step this pass's diagnostics focused on) was
+never actually the failure point — it succeeds every time. The real failure is one step later,
+in `load_from_persistor()`'s rehydration read pass: one `asset_locks` row's `lifecycle_blob`
+holds a serialized `AssetLockProof` whose Serde representation requires `deserialize_any`,
+which the crate's `bincode`-based blob decoder doesn't support (`BincodeDecode { source:
+Serde(AnyNotSupported) } }`). The row was written successfully (bincode encode has no such
+restriction) but can never be read back — a storage-format incompatibility bug in the pinned
+upstream crate, not corruption and not a lock/contention issue.
+
+**Reconciling this with the "asset_locks rows are NOT the trigger" differential test above**:
+that conclusion was correct as far as it went, but was answering a subtly different question
+than it appeared to. The throwaway wallet used in that test had zero asset locks *of its own*,
+but `load_from_persistor()` rehydrates the **entire shared `asset_locks` table in one pass**,
+not per-wallet — so the pre-existing bad row (created earlier under `QA Wallet 1`, and never
+actually deleted; the blanket `DELETE FROM asset_locks;` attempted just above this section was
+blocked by the permission system and never ran) was still present and still broke the load for
+*every* wallet in the data dir, including one that never touched an asset lock itself. The
+differential test correctly ruled out "which wallet's asset locks" as the variable; it couldn't
+have ruled out "is there any unreadable row anywhere in the table," since that variable was
+never actually removed. Both findings are correct; they just weren't measuring the same thing.
+
+**Verified working recovery** (on a disposable copy only): deleting exactly that one row via a
+precisely-scoped `DELETE` (identified by `wallet_id`+`outpoint`+`status`+`amount_duffs`+blob
+length — see the TEST-VECTOR doc for the exact statement) restores full functionality,
+confirmed via a direct persister load and an end-to-end `det-cli serve` session with real
+network switches. **Not applied to this live QA data dir** — that remains a separate,
+explicit decision; see the TEST-VECTOR doc's "Applying it to the live QA data" section for the
+human-approved procedure if this is ever unblocked retroactively. The deleted row represents a
+real, active 0.02 DASH asset lock, so this is a data-loss trade-off, not a free fix.
+
+This closes out the "not yet root-caused" status for every BLOCKED verdict in this campaign
+that cited this environment blocker — they were genuinely untestable at the time for the
+reason now confirmed above, not because of any gap in how they were tested.

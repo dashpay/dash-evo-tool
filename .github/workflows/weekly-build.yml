@@ -234,9 +234,30 @@ jobs:
           url=$(gh release view "$TAG" --json url --jq .url -R "$GITHUB_REPOSITORY")
           echo "url=$url" >>"$GITHUB_OUTPUT"
 
+  # Restore the invariant: a weekly tag exists ⟺ a complete release exists.
+  cleanup:
+    name: Clean up orphaned tag on build failure
+    needs: [gate, tag, release, flatpak, finalize]
+    if: always() && needs.gate.outputs.should_release == 'true' && needs.tag.result == 'success' && needs.finalize.result != 'success'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAG: ${{ needs.gate.outputs.tag }}
+    steps:
+      - name: Delete orphaned weekly tag
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release delete "$TAG" --yes --cleanup-tag -R "$GITHUB_REPOSITORY"
+          else
+            gh api --method DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/$TAG" || true
+          fi
+
   notify:
     name: Slack notification
-    needs: [gate, finalize]
+    needs: [gate, release, flatpak, finalize]
     if: always() && (needs.gate.outputs.should_release == 'true' || needs.gate.outputs.ci_red == 'true')
     runs-on: ubuntu-24.04
     permissions:
@@ -249,6 +270,9 @@ jobs:
           CI_RED: ${{ needs.gate.outputs.ci_red }}
           VERSION: ${{ needs.gate.outputs.version }}
           RELEASE_URL: ${{ needs.finalize.outputs.url }}
+          FINALIZE_RESULT: ${{ needs.finalize.result }}
+          RELEASE_RESULT: ${{ needs.release.result }}
+          FLATPAK_RESULT: ${{ needs.flatpak.result }}
         run: |
           set -euo pipefail
 
@@ -260,10 +284,12 @@ jobs:
           REPO="${GITHUB_REPOSITORY}"
           RUN_URL="https://github.com/${REPO}/actions/runs/${GITHUB_RUN_ID}"
 
-          if [ "$SHOULD_RELEASE" = "true" ]; then
-            TEXT=":sparkles: *I, Claudius the Magnificent, have sealed another weekly draft for \`${REPO}\`.* Version \`${VERSION}\` awaits your royal assent — undraft it here: <${RELEASE_URL}|the release page>."
-          elif [ "$CI_RED" = "true" ]; then
+          if [ "$CI_RED" = "true" ]; then
             TEXT=":warning: *I, Claudius the Magnificent, decline to bless a broken week.* CI on \`v1.0-dev\` is red — no weekly draft was cut. Mend the pipeline: <${RUN_URL}|the run>."
+          elif [ "$SHOULD_RELEASE" = "true" ] && [ "$FINALIZE_RESULT" = "success" ]; then
+            TEXT=":sparkles: *I, Claudius the Magnificent, have sealed another weekly draft for \`${REPO}\`.* Version \`${VERSION}\` awaits your royal assent — undraft it here: <${RELEASE_URL}|the release page>."
+          elif [ "$SHOULD_RELEASE" = "true" ]; then
+            TEXT=":rotating_light: <!channel> *Even I, Claudius the Magnificent, cannot forge a release from a broken build.* Version \`${VERSION}\` for \`${REPO}\` was tagged, yet the platform build faltered — I have swept the orphaned tag away so next week begins unblemished. Inspect the wreckage: <${RUN_URL}|the run>."
           else
             echo "Nothing to notify."
             exit 0

@@ -74,6 +74,7 @@ use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{WalletUnlockPopup, WalletUnlockResult};
 use crate::ui::components::{Component, ComponentResponse};
+use crate::ui::helpers::ModalOpeningGuard;
 use crate::ui::{BackendTaskSuccessResult, MessageType, RootScreenType, ScreenLike, ScreenType};
 
 const EXP_FORMULA_PNG: &[u8] = include_bytes!("../../../../assets/exp_function.png");
@@ -1104,6 +1105,7 @@ pub struct TokensScreen {
     cached_build_args: Option<TokenBuildArgs>,
     show_json_popup: bool,
     json_popup_text: String,
+    json_popup_opening_guard: ModalOpeningGuard,
     allow_transfers_to_frozen_identities: bool,
 
     // Action Rules
@@ -1464,6 +1466,7 @@ impl TokensScreen {
             cached_build_args: None,
             show_json_popup: false,
             json_popup_text: String::new(),
+            json_popup_opening_guard: ModalOpeningGuard::default(),
 
             // Action rules
             allow_transfers_to_frozen_identities: true,

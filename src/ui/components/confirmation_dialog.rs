@@ -1,6 +1,6 @@
 use crate::ui::components::component_trait::{Component, ComponentResponse};
 use crate::ui::components::modal_chrome::{ModalChromeConfig, modal_chrome};
-use crate::ui::helpers::clicked_outside_window;
+use crate::ui::helpers::{ModalOpeningGuard, clicked_outside_window_after_open};
 use crate::ui::theme::{ComponentStyles, DashColors};
 use egui::{InnerResponse, Ui, WidgetText};
 
@@ -61,6 +61,7 @@ pub struct ConfirmationDialog {
     cancel_text: Option<WidgetText>,
     danger_mode: bool,
     is_open: bool,
+    opening_guard: ModalOpeningGuard,
 }
 
 impl Component for ConfirmationDialog {
@@ -103,6 +104,7 @@ impl ConfirmationDialog {
             cancel_text: Some("Cancel".into()),
             danger_mode: false,
             is_open: true,
+            opening_guard: ModalOpeningGuard::armed(),
         }
     }
 
@@ -229,7 +231,7 @@ impl ConfirmationDialog {
         if let Some(ref wr) = chrome.window_response
             && final_response.is_none()
             && !self.danger_mode
-            && clicked_outside_window(ui.ctx(), wr.rect)
+            && clicked_outside_window_after_open(ui.ctx(), wr.rect, &mut self.opening_guard)
         {
             final_response = Some(ConfirmationStatus::Canceled);
         }
@@ -306,5 +308,34 @@ mod tests {
         assert!(dialog.cancel_text.is_some());
         assert!(!dialog.danger_mode);
         assert!(dialog.is_open);
+    }
+
+    #[test]
+    fn opening_click_does_not_immediately_cancel_dialog() {
+        let ctx = egui::Context::default();
+        let outside_pos = egui::pos2(0.0, 0.0);
+        let raw = egui::RawInput {
+            events: vec![
+                egui::Event::PointerMoved(outside_pos),
+                egui::Event::PointerButton {
+                    pos: outside_pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+            ..Default::default()
+        };
+        let mut dialog = ConfirmationDialog::new("Confirm", "Continue?");
+        let mut status = None;
+
+        let _ = ctx.run_ui(raw, |ui| {
+            status = dialog.show(ui).inner.dialog_response;
+        });
+
+        assert_eq!(
+            status, None,
+            "the click that opens a dialog must not also dismiss it",
+        );
     }
 }

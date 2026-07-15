@@ -926,8 +926,8 @@ impl TokensScreen {
                                             self.app_context.platform_version(),
                                         ).expect("Expected to map contract to serialization format");
                                         let data_contract_json = serde_json::to_value(&data_contract_fmt).expect("Expected to map contract to json");
-                                        self.show_json_popup = true;
-                                        self.json_popup_text = serde_json::to_string_pretty(&data_contract_json).expect("Expected to serialize json");
+                                        let json = serde_json::to_string_pretty(&data_contract_json).expect("Expected to serialize json");
+                                        self.open_data_contract_json_popup(json);
                                     },
                                     Err(err_msg) => {
                                         MessageBanner::set_global(context, &err_msg, MessageType::Error);
@@ -1437,13 +1437,14 @@ impl TokensScreen {
             }
         }
 
-        // Always create a fresh confirmation dialog to ensure current state is reflected
-        let confirmation_dialog = self.token_creator_confirmation_dialog.insert(
-            ConfirmationDialog::new("Confirm Token Contract Registration", confirmation_message)
-                .confirm_text(Some("Confirm"))
-                .cancel_text(Some("Cancel"))
-                .danger_mode(is_danger_mode),
-        );
+        let confirmation_dialog = self
+            .token_creator_confirmation_dialog
+            .get_or_insert_with(|| {
+                ConfirmationDialog::new("Confirm Token Contract Registration", confirmation_message)
+                    .confirm_text(Some("Confirm"))
+                    .cancel_text(Some("Cancel"))
+                    .danger_mode(is_danger_mode)
+            });
 
         // Show the dialog and handle the response
         let response = confirmation_dialog.show(ui).inner;

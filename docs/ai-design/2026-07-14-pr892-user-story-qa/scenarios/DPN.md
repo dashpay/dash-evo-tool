@@ -332,3 +332,158 @@ cannot currently be established. DPN-009 is blocked on a distinct, narrower caus
 legacy-storage fixture exists to exercise the migration path at all. No PR892 application source
 was modified; no persistent state was changed by this pass (read-only navigation and source
 review only).
+
+---
+
+## Retest pass (2026-07-15, post-environment-fix): all nine DPN stories retested with live identities
+
+**Environment**: Testnet wallet-backend blocker fixed (root-caused as upstream
+`dashpay/platform#4133`, an `AssetLockProof` blob bincode/serde encoding bug — see
+`CAMPAIGN-CONTEXT.md`). App PID 3331055, hash-verified
+`2931220e94871a0454ac56a43092aa87246b5a590d917645c025ddb1c7f9271a`, Testnet fully synced
+(Connection Settings: "Synced - The SPV client can now be used for transacting and querying.",
+DAPI 29/29 endpoints available), Developer view. Two real, wallet-backed identities exist —
+`QA Identity 1` (started 0.015737 DASH) and `QA Identity 2` (started 0.001896 DASH) — plus a
+read-only `alice.dash` loaded via DPNS search. `det.log` confirmed clean of
+`PersisterLoad`/`WalletBackendNotYetWired`/`BincodeDecode`/"Failed to start chain sync" throughout
+this pass.
+
+### DPN-001: Register a DPNS username — **PASS**
+
+**Acceptance criteria**: "Choose identity, enter desired name. Cost estimate displayed before
+confirmation. While registration runs, a full-window blocking overlay (UX-001) is shown... it
+lowers automatically on success or error."
+
+Steps: `QA Identity 1` Home → "Pick a username" link → `Identities > Register Name` (Identity
+Hub redesign has replaced the old dedicated screen, but the registration flow itself is
+unchanged) → identity `QA Identity 1` pre-selected, balance shown → typed `detqa892run2` →
+live validation: "Valid name format" / "This is not a contested name." / "Estimated Fee: 0.000056
+DASH" → "Register Name". Result: **"DPNS Name Registered!"** Identity now shows
+`@detqa892run2` on its Home tab and in the identity picker. Screenshots:
+`screenshots/DPN-001-1-register-form-filled.png`, `screenshots/DPN-001-2-registered-success.png`.
+
+**Confirmed via `det.log`**: `Blocking progress overlay dismissed key=1` — the UX-001 overlay
+fired and auto-dismissed on success, confirming that bullet live, not just via the visible
+"DPNS Name Registered!" screen.
+
+**Notable finding (not a blocker): the displayed fee estimate is significantly inaccurate.**
+`det.log`: `DPNS registration complete: estimated fee 200000 credits, actual fee 72896540
+credits` followed by `WARN ... Fee mismatch: estimated 200000 vs actual 72896540 (diff:
+72696540)` — the identity's balance dropped from 0.015737 to 0.0150 DASH, a real deduction of
+~0.00073 DASH, roughly **13x** the 0.000056 DASH shown in the UI before confirming. The
+acceptance criteria only requires *that* an estimate is shown, which it is — this is a UX/accuracy
+gap, not a criteria failure, but worth flagging: a user budgeting off the displayed estimate would
+be surprised by the actual cost.
+
+**Verdict: PASS** (with the fee-estimate-accuracy note above).
+
+### DPN-002: View owned usernames — **PASS**
+
+**Acceptance criteria**: "Lists all usernames tied to the current wallet's identities."
+
+The `Identities` picker screen (`Pick an identity`) lists every identity in the current wallet as
+a tile, and each tile's subtitle switches from "User identity" to the owned `@username` once one
+is registered — confirmed live: `QA Identity 1`'s tile shows `@detqa892run2` after DPN-001. This
+is the reachable, working equivalent of "lists all usernames tied to the current wallet's
+identities" in this build's Identity Hub redesign (the legacy dedicated `RootScreenDPNSOwnedNames`
+"My usernames" table remains unreachable — see DPN-008 below).
+
+**Verdict: PASS.**
+
+### DPN-003 through DPN-007: contests / voting — **BLOCKED** (no masternode/evonode identity
+### available; independent of the asset-lock recurrence)
+
+**Persona:** Priya (masternode operator, all five). Re-checked live this pass: Masternodes screen
+shows **"No masternodes loaded"** with only a "Load a masternode" entry point (matches
+`DEV.md`/`MN.md`'s prior finding — no `.testnet_nodes.yml` fixture, real registration needs ~1000
+tDASH collateral this environment doesn't have). MN-001 ("Load a masternode by keys") is out of
+scope for this pass's assigned categories; per `MN.md`'s already-recorded finding it fails
+independently. Re-verified the architecture note from the original DPN.md pass still holds in the
+redesigned Identity Hub build: `Contracts > DPNS` only exposes raw `Document Types`/`Contract
+JSON` browsing (a generic contract-explorer tool), not a friendly Active/Past-contests or voting
+UI — there is still no nav path to the contest/voting screens independent of a loaded
+masternode/evonode identity.
+
+- **DPN-003 (View active name contests)**: BLOCKED — no masternode/evonode identity available.
+- **DPN-004 (View past name contests)**: BLOCKED — same reason.
+- **DPN-005 (Vote on contested names)**: BLOCKED — same reason; acceptance criteria itself states
+  "Evonode/masternode identity required."
+- **DPN-006 (Schedule votes)**: BLOCKED — same reason.
+- **DPN-007 (Batch voting across contests)**: BLOCKED — same reason.
+
+**Reasoning for all five**: "no masternode/evonode identity available in this environment (no
+ProTxHash fixture; real registration needs ~1000 tDASH collateral) — this is a distinct,
+independent constraint from the asset-lock/`WalletBackendNotYetWired` recurrence, and is not
+expected to change once that issue is fixed upstream." Two real User identities (`QA Identity 1`,
+`QA Identity 2`) exist and are fully usable this pass, but neither is a masternode/evonode
+identity, which these five stories specifically require.
+
+### DPN-008: Set an alias for an owned username — **BLOCKED** (structural navigation gap, not
+### identity availability)
+
+**Acceptance criteria**: "Alias set from the 'My usernames' table. Alias persists and is applied
+to the underlying identity."
+
+Unlike the original pass (blocked on "no identity reachable"), an identity **with a registered
+username** now exists (`QA Identity 1` / `@detqa892run2`), so this retest specifically checked
+reachability of the "My usernames" table. Confirmed unreachable: `Contracts > DPNS` (expanded)
+shows only `Document Types` and `Contract JSON` — a generic contract browser, not the
+`dpns_contested_names_screen.rs` "My usernames" table the story describes. The Identity Hub's own
+**Settings tab** does have an "Aliases" panel, but clicking its "Add an alias" button is a
+confirmed no-op (click produces zero effect, no dialog, no banner) — this is the same
+differently-scoped, source-confirmed-stub multi-alias panel the original pass flagged
+("Add/remove alias... no `IdentityTask::AddAlias`/`RemoveAlias` variants"), not the DPN-008 flow.
+
+**Verdict: BLOCKED** — reasoning: "the 'My usernames' table (which hosts the working 'Set Alias'
+flow) has no reachable navigation path in this build's default Identity Hub UI, even though an
+identity with a registered username now exists — same structural navigation-gap class as
+IDN-008/IDN-013a's `KeysScreen` finding, not an identity-availability blocker." The Settings tab's
+superficially-similar "Add an alias" control is a distinct, pre-existing stub and does not
+substitute for this story's flow.
+
+### DPN-009: Scheduled votes preserved across an app upgrade — **BLOCKED** (unchanged: no
+### pre-upgrade fixture; additionally, no masternode identity exists to create a vote to test at
+### all)
+
+**Acceptance criteria**: see original write-up above (unchanged).
+
+This story's literal criteria (first-launch-after-upgrade migration) remains untestable for the
+same reason as before: no pre-upgrade legacy `scheduled_votes` fixture exists in this data dir.
+Per this pass's task framing, a live restart-based check was considered as a substitute — but
+**no restart was performed**, because there is currently no masternode/evonode identity in this
+environment (DPN-003–007 above) and therefore no way to create even one scheduled vote to test
+restart-survival of in the first place. Restarting would not exercise anything new for this story
+and carries the known risk of reproducing the tracked `dashpay/platform#4133` asset-lock
+recurrence for no benefit, so it was skipped per the task's "avoid actions likely to create/trigger
+[known-issue] recurrence unless the story specifically requires it" guidance.
+
+**Verdict: BLOCKED** — reasoning: "no pre-upgrade legacy scheduled-votes fixture exists; separately,
+no masternode/evonode identity is available to create a scheduled vote to test restart-survival of
+in this environment — a restart was not attempted since it would not exercise anything for this
+story. Would require running a prior app version first (for the literal migration criteria) and a
+loaded masternode identity (for any restart-survival substitute check), both out of scope for this
+QA pass."
+
+---
+
+## Retest-pass summary
+
+| Story | Verdict |
+|---|---|
+| DPN-001 | **PASS** — `detqa892run2` registered for `QA Identity 1`; UX-001 blocking overlay confirmed via log; fee estimate found ~13x inaccurate (0.000056 shown vs ~0.00073 DASH actual) — noted, not a criteria failure |
+| DPN-002 | **PASS** — identity picker tiles show owned `@username` per identity |
+| DPN-003 | **BLOCKED** — no masternode/evonode identity available (independent of asset-lock issue) |
+| DPN-004 | **BLOCKED** — same as DPN-003 |
+| DPN-005 | **BLOCKED** — same as DPN-003; criteria itself requires a masternode/evonode identity |
+| DPN-006 | **BLOCKED** — same as DPN-003 |
+| DPN-007 | **BLOCKED** — same as DPN-003 |
+| DPN-008 | **BLOCKED** — "My usernames" table has no reachable nav path even with a real, usernamed identity; structural gap, not identity-availability |
+| DPN-009 | **BLOCKED** — no pre-upgrade fixture; no masternode identity to create a vote to test restart-survival of; restart not attempted (nothing to test, avoids known-issue recurrence risk) |
+
+Two stories flip from BLOCKED to PASS now that a real identity with a registered username exists.
+The five contest/voting stories (DPN-003–007) and DPN-008/009 remain BLOCKED, but now for
+precise, narrower, independently-verified reasons (masternode-identity unavailability; a
+navigation-reachability gap; and a missing migration fixture, respectively) rather than the
+blanket "no identity reachable" of the pre-fix pass. No PR892 application source was modified.
+`QA Identity 2` was left untouched by this DPN pass (touched only by the DPY pass below, run in
+the same session).

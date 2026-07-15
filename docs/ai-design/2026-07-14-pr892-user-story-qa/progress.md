@@ -162,45 +162,72 @@ needed).
 
 ## DPN
 
-- [x] DPN-001: Register a DPNS username — BLOCKED (no identity reachable; client-side
-      name-format validation + fee estimate confirmed implemented via source)
-- [x] DPN-002: View owned usernames — BLOCKED (no identity reachable)
-- [x] DPN-003: View active name contests — BLOCKED (no masternode/evonode identity
-      reachable — IDN-003 / MN-001)
+- [x] DPN-001: Register a DPNS username — PASS (retested post-env-fix: registered `detqa892run2`
+      for `QA Identity 1`; UX-001 blocking overlay confirmed via log; fee estimate found ~13x
+      inaccurate — 0.000056 DASH shown vs ~0.00073 DASH actual — noted, not a criteria failure)
+- [x] DPN-002: View owned usernames — PASS (retested post-env-fix: identity picker tiles show
+      owned `@username` per identity, e.g. `QA Identity 1` → `@detqa892run2`)
+- [x] DPN-003: View active name contests — BLOCKED (retested post-env-fix: still no
+      masternode/evonode identity available in this environment — no ProTxHash fixture, real
+      registration needs ~1000 tDASH collateral — independent of the asset-lock recurrence; two
+      real User identities exist and work fine, but neither is a masternode/evonode identity)
 - [x] DPN-004: View past name contests — BLOCKED (same as DPN-003)
 - [x] DPN-005: Vote on contested names — BLOCKED (same as DPN-003; acceptance criteria
       itself requires a masternode/evonode identity)
 - [x] DPN-006: Schedule votes — BLOCKED (same as DPN-003)
 - [x] DPN-007: Batch voting across contests — BLOCKED (same as DPN-003)
-- [x] DPN-008: Set an alias for an owned username — BLOCKED (no identity reachable; "Set Alias"
-      on the "My usernames" table confirmed fully implemented via source)
-- [x] DPN-009: Scheduled votes preserved across an app upgrade — BLOCKED (no pre-upgrade legacy
-      scheduled-votes fixture exists; source review confirms mature, tested implementation)
+- [x] DPN-008: Set an alias for an owned username — BLOCKED (retested post-env-fix: an identity
+      with a registered username now exists, but the "My usernames" table has no reachable
+      navigation path in this build's Identity Hub — structural gap, same class as
+      IDN-008/IDN-013a, not identity-availability)
+- [x] DPN-009: Scheduled votes preserved across an app upgrade — BLOCKED (unchanged: no
+      pre-upgrade legacy scheduled-votes fixture; additionally no masternode identity exists to
+      create a vote to restart-test in the first place — restart not attempted, nothing to test)
 
 ## DPY
 
-- [x] DPY-001: View and edit DashPay profile — BLOCKED (no identity reachable)
-- [x] DPY-002: Search DashPay profiles — BLOCKED (no identity reachable)
-- [x] DPY-003: Send contact request — BLOCKED (no identity reachable; self-testable via
-      second identity in principle, but a first identity can't be established either)
-- [x] DPY-004: Accept or reject contact requests — BLOCKED (same as DPY-003)
-- [x] DPY-005: View contact list and details — BLOCKED (no identity reachable)
-- [x] DPY-006: Send payment to contact — BLOCKED (same as DPY-003)
-- [x] DPY-007: View payment history — BLOCKED (no identity reachable)
-- [x] DPY-008: Generate DashPay QR code — BLOCKED (no identity reachable)
-- [x] DPY-009: Edit contact info — BLOCKED (needs an existing contact; two identities
-      unreachable)
+- [x] DPY-001: View and edit DashPay profile — PASS (retested post-env-fix: profile created for
+      `QA Identity 1`, confirmed via on-chain state transition in det.log)
+- [x] DPY-002: Search DashPay profiles — PASS (retested post-env-fix: Profile Search finds real
+      profiles and correctly reports "no profile" for identities without one, before contact-request)
+- [x] DPY-003: Send contact request — PASS (retested post-env-fix, self-tested `QA Identity 1` →
+      `QA Identity 2` by identity ID, confirmed via on-chain state transition)
+- [x] DPY-004: Accept or reject contact requests — PASS (retested post-env-fix: `QA Identity 2`
+      accepted the incoming request; both sides show an established Active contact)
+- [x] DPY-005: View contact list and details — PASS (retested post-env-fix: list + detail view
+      both work; detail view has no direct click-through from the Contacts tab row itself, noted
+      as a gap but not blocking — see scenarios/DPY.md)
+- [x] DPY-006: Send payment to contact — FAIL (retested post-env-fix: every payment attempt fails
+      with `EncryptionError { detail: "Missing senderKeyIndex" }`; root-caused to a general,
+      always-reproducible CBOR-integer-decoding bug in `derive_contact_payment_address`
+      (`src/backend_task/dashpay/payments.rs` ~112-126) — a strict `Value::U32` match never
+      matches real network-fetched documents, which decode integers as `Value::I128`; confirmed
+      NOT an artifact of this pass's cancel-then-accept contact setup — see scenarios/DPY.md)
+- [x] DPY-007: View payment history — Partial PASS (retested post-env-fix: screen, empty state,
+      and Refresh button all confirmed reachable/correct; populated-list rendering unconfirmed
+      because DPY-006 blocks any real payment from completing)
+- [x] DPY-008: Generate DashPay QR code — PASS (retested post-env-fix: real QR + `dash:?di=...&dapk=...`
+      data URI generated, with correct "can automatically become your contact" security warning)
+- [x] DPY-009: Edit contact info — FAIL (retested post-env-fix: nickname/notes editing and
+      persistence work correctly, but hiding a contact does NOT move it to a collapsed "Show
+      hidden contacts" section on the Identity Hub Contacts tab — it stays listed unconditionally,
+      contradicting an explicit acceptance-criteria bullet; hidden flag itself does persist)
 - [x] DPY-010: Remove a contact — N/A (Gap, not implemented)
-- [x] DPY-011: Auto-accept contact requests — BLOCKED (no identity reachable)
-- [x] DPY-012: Detect payments received from contacts — BLOCKED (no identity reachable;
-      address-to-contact matching + tx_id/vout dedup confirmed implemented and live-wired via
-      source)
-- [x] DPY-013: View contacts and avatars offline — BLOCKED (no identity reachable;
-      offline-first-read/avatar-cache/explicit-refresh confirmed implemented, but in a
-      nav-unreachable sibling screen rather than the reachable Contacts tab — see scenarios/DPY.md)
-- [x] DPY-014: Cancel a sent contact request — BLOCKED (needs a sent request + two identities,
-      neither reachable; every acceptance-criteria bullet confirmed implemented and unit-tested
-      via source)
+- [x] DPY-011: Auto-accept contact requests — PASS (retested post-env-fix: same QR-generator
+      screen's Advanced Options exposes HD Account Index + Validity-Hours fields, with a
+      `dapk=` auto-accept proof key embedded in the generated URI)
+- [x] DPY-012: Detect payments received from contacts — BLOCKED (retested post-env-fix: cannot be
+      live-tested because DPY-006's bug prevents any real DashPay payment from completing;
+      plausible but unconfirmed shared root cause via the same address-derivation code path)
+- [x] DPY-013: View contacts and avatars offline — Partial PASS (retested post-env-fix: the
+      reachable Identity Hub Contacts tab shows contacts instantly, meeting the core criterion; a
+      separate legacy Contacts screen was found live-reachable this pass and shows stale/empty
+      data plus a real network fetch instead of an offline-first read — new finding, see
+      scenarios/DPY.md)
+- [x] DPY-014: Cancel a sent contact request — PASS (retested post-env-fix: cancel confirmed via
+      on-chain `contactInfo` state transition; cancel-then-accept edge case correctly reconciles
+      to an established contact on both sides, exercising the story's "already accepted" bullet
+      live for the first time)
 
 ## TOK
 

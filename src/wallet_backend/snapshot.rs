@@ -143,12 +143,39 @@ pub(super) fn map_transaction_record(record: &TransactionRecord) -> WalletTransa
         height: record.height(),
         block_hash: block_info.map(|bi| bi.block_hash()),
         net_amount: record.net_amount,
-        fee: record.fee,
+        fee: transaction_fee(record),
         label: Some(record.label.clone()).filter(|s| !s.is_empty()),
         // Per-wallet history — every record involves our addresses.
         is_ours: true,
         status: status_from_context(&record.context),
     }
+}
+
+fn transaction_fee(record: &TransactionRecord) -> Option<u64> {
+    if record.fee.is_some() {
+        return record.fee;
+    }
+    if record.transaction.input.is_empty()
+        || record.input_details.len() != record.transaction.input.len()
+        || record
+            .input_details
+            .iter()
+            .enumerate()
+            .any(|(index, detail)| detail.index as usize != index)
+    {
+        return None;
+    }
+
+    let input_total = record
+        .input_details
+        .iter()
+        .try_fold(0u64, |total, input| total.checked_add(input.value))?;
+    let output_total = record
+        .transaction
+        .output
+        .iter()
+        .try_fold(0u64, |total, output| total.checked_add(output.value))?;
+    input_total.checked_sub(output_total)
 }
 
 /// The `(transaction, [(outpoint, txout, address)])` payload the asset-lock and
@@ -615,7 +642,7 @@ mod tests {
     use dash_sdk::dpp::dashcore::{BlockHash, Network, PublicKey, Transaction, TxOut};
     use dash_sdk::dpp::key_wallet::account::{AccountType, StandardAccountType};
     use dash_sdk::dpp::key_wallet::managed_account::transaction_record::{
-        OutputDetail, OutputRole, TransactionDirection, TransactionRecord,
+        InputDetail, OutputDetail, OutputRole, TransactionDirection, TransactionRecord,
     };
     use dash_sdk::dpp::key_wallet::transaction_checking::BlockInfo;
     use dash_sdk::dpp::key_wallet::transaction_checking::transaction_router::TransactionType;
@@ -849,6 +876,44 @@ mod tests {
         let snap = store.snapshot(&seed(7));
         assert_eq!(snap.transactions.len(), 2);
         assert_eq!(snap.balance, DetWalletBalance::default());
+    }
+
+    #[test]
+    fn outgoing_transaction_fee_is_derived_from_known_inputs() {
+        use dash_sdk::dpp::dashcore::TxIn;
+
+        let source = addr(10);
+        let destination = addr(11);
+        let mut tx = tx_with(10);
+        tx.input.push(TxIn::default());
+        tx.output.push(TxOut {
+            value: 9_700,
+            script_pubkey: destination.script_pubkey(),
+        });
+        let record = TransactionRecord::new(
+            tx,
+            AccountType::Standard {
+                index: 0,
+                standard_account_type: StandardAccountType::BIP44Account,
+            },
+            TransactionContext::Mempool,
+            TransactionType::Standard,
+            TransactionDirection::Outgoing,
+            vec![InputDetail {
+                index: 0,
+                value: 10_000,
+                address: source,
+            }],
+            vec![OutputDetail {
+                index: 0,
+                role: OutputRole::Sent,
+                address: Some(destination),
+                value: 9_700,
+            }],
+            -10_000,
+        );
+
+        assert_eq!(map_transaction_record(&record).fee, Some(300));
     }
 
     #[test]

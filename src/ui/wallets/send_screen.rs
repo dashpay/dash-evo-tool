@@ -359,7 +359,7 @@ impl WalletSendScreen {
 
         let usable_count = sorted_addresses.len().min(MAX_PLATFORM_INPUTS);
         if usable_count == 0 {
-            return estimate_platform_fee(fee_estimator, 1);
+            return estimate_platform_fee(fee_estimator, 1, 1);
         }
 
         let dest_kind = self.validated_destination.as_ref().map(|v| v.kind());
@@ -383,7 +383,7 @@ impl WalletSendScreen {
             }
         }
 
-        estimate_platform_fee(fee_estimator, usable_count)
+        estimate_platform_fee(fee_estimator, usable_count, 1)
     }
 
     /// Clear the AddressInput widget so it picks up the new network on next frame.
@@ -2830,6 +2830,7 @@ impl WalletSendScreen {
                 Some(estimate_platform_fee(
                     &self.app_context.fee_estimator(),
                     num_inputs,
+                    num_outputs,
                 ))
             }
             _ => None,

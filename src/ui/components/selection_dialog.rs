@@ -1,6 +1,6 @@
 use crate::ui::components::component_trait::{Component, ComponentResponse};
 use crate::ui::components::modal_chrome::{ModalChromeConfig, modal_chrome};
-use crate::ui::helpers::clicked_outside_window;
+use crate::ui::helpers::clicked_outside_window_after_open_by_id;
 use crate::ui::theme::{ComponentStyles, DashColors};
 use egui::{InnerResponse, Ui, WidgetText};
 
@@ -281,11 +281,19 @@ impl SelectionDialog {
             final_response = Some(SelectionStatus::Selected(self.selected_index));
         }
 
-        // Handle click outside window (skip if ComboBox dropdown is open)
+        // Handle click outside window (skip if ComboBox dropdown is open).
+        // SelectionDialog is value-constructed every frame, so the opening-frame
+        // skip is tracked in egui memory rather than a persistent guard field —
+        // otherwise the click that opened the dialog would cancel it on the same
+        // frame, before it is ever visible.
         if let Some(ref wr) = chrome.window_response
             && final_response.is_none()
             && !combo_open
-            && clicked_outside_window(ui.ctx(), wr.rect)
+            && clicked_outside_window_after_open_by_id(
+                ui.ctx(),
+                wr.rect,
+                egui::Id::new("selection_dialog").with("outside_click_pass"),
+            )
         {
             final_response = Some(SelectionStatus::Canceled);
         }

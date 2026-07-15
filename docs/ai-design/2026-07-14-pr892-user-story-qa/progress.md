@@ -49,18 +49,18 @@ needed).
 - [x] WAL-015: Create throwaway wallet without mnemonic backup — N/A (Gap, not implemented)
 - [x] WAL-016: View transaction history — PASS (PR892 cold-boot regression test confirmed fixed)
 - [x] WAL-017: Fund Platform address from wallet — FAIL (asset-lock coin selection: "No UTXOs available for selection" despite funded wallet; later shown transient/non-persistent, see ALK.md)
-- [x] WAL-018: Fund Platform address from asset lock — BLOCKED (no asset lock could be created at test time due to WAL-017 bug)
-- [x] WAL-019: Transfer credits between Platform addresses — BLOCKED (no Platform address held balance at test time)
-- [x] WAL-020: Withdraw from Platform address to Core — BLOCKED (same root cause as WAL-019)
+- [x] WAL-018: Fund Platform address from asset lock — BLOCKED (retested post-fix: asset-lock creation now works — a fresh 0.5 DASH lock was created live and confirmed persisted via direct SQLite check — but the "Asset Locks" list still never surfaces it, reproducing ALK-002's confirmed UI/cache bug; that list is the only reachable path to the "Fund a Platform address with this asset lock" dialog, so the story remains genuinely blocked for an independent, now-confirmed reason, not the original WAL-017/env-blocker cause)
+- [x] WAL-019: Transfer credits between Platform addresses — PASS (retested post-fix: transferred 0.005 DASH between two of the wallet's own Platform addresses via Advanced Options; all 4 fee-strategy options present; balance math confirmed correct for "Deduct from first input")
+- [x] WAL-020: Withdraw from Platform address to Core — PASS (retested post-fix: withdrew 0.005 DASH from a Platform address to a Core address; "Withdrawal initiated successfully!" confirmed)
 - [x] WAL-021: Navigate wallet accounts via tabs — PASS
 - [x] WAL-022: View system accounts in the Detailed view — PASS (title updated from "developer mode" to "the Detailed view" in the reconciled doc; same underlying test — System tab gated on "not Default view")
 - [x] WAL-023: Collapsible transaction history — PASS
 - [x] WAL-024: Collapsible balance breakdown — PASS
-- [x] WAL-025: Restore a password-protected imported key after an update — BLOCKED (no legacy password-protected imported-key fixture exists in this data dir; restore-banner confirmed absent, though the scan itself also failed to run this session due to the WAL-backend environment blocker)
+- [x] WAL-025: Restore a password-protected imported key after an update — BLOCKED (retested post-fix: still no legacy password-protected imported-key fixture exists in this data dir, so the flow itself can't be exercised; but the restore-scan itself now runs cleanly — confirmed via a full healthy session with zero `MigrationFailed`/`WalletBackendUnavailable` warnings in det.log — so the env blocker no longer suppresses it, only the missing fixture blocks the story)
 - [x] WAL-026: Unlock a passphrase-protected vault at startup — BLOCKED for live UI (no passphrase-sealed vault fixture; destructive resealing out of scope) — source review confirms the flow (`BootApp`/`UnlockState` in `src/boot.rs`) is implemented as specified
-- [x] WAL-027: Balance health check after syncing — BLOCKED (Testnet wallet-backend environment blocker, see ALK.md, prevented any real sync from ever finishing; no false-positive banner appeared across repeated Refresh attempts, but this is a degenerate 0/0/0 test, not a genuine exercise of the reconciliation criteria)
+- [x] WAL-027: Balance health check after syncing — FAIL (retested post-fix with a genuine, fully-completed sync and many real balance-changing operations across the session: the header total always correctly reconciled with the account-tab breakdown, and source review confirms no balance-health reconciler or warning-banner mechanism exists anywhere in the codebase — the only match for the story's own language is an internal unit test, `header_total_reconciles_with_core_tab_breakdown_through_real_accessors`, not a user-facing runtime check; same conclusion as the earlier degraded-environment session, now reconfirmed in a fully healthy one)
 - [x] WAL-028: Switch the active wallet from the top-nav pill on the Wallets tab — PASS (pill interactivity, in-place switching, cross-surface re-sync, pill/in-tab-picker agreement, and single-wallet inert-pill all confirmed live; single-key-vs-HD precedence sub-check not exercised, no safe fixture)
-- [x] WAL-029: View and copy my shielded receive address — BLOCKED (same Testnet wallet-backend environment blocker; Shielded tab stuck at "Preparing shielded wallet..." for the entire session, address never rendered so copy behavior could not be tested)
+- [x] WAL-029: View and copy my shielded receive address — PASS (retested post-fix: Shielded tab now renders the address immediately, no longer stuck at "Preparing shielded wallet..."; both clicking the address text and clicking "Copy" verified via `xclip` to copy the full untruncated 83-character `tdash1...` address to the system clipboard, matching the truncated display's prefix/suffix)
 - [x] WAL-030: Inspect shielded note details — N/A (Gap, not implemented)
 - [x] WAL-031: Single-key wallet balance and UTXOs update automatically — N/A (Gap, not implemented)
 
@@ -74,7 +74,7 @@ needed).
 - [x] SND-006: Send to multiple recipients — PASS (add/remove recipients, single tx broadcast confirmed on-chain)
 - [x] SND-007: Shield DASH from Core wallet — FAIL ("Invalid output address" on submit; root cause disclosed in-app as "Shielded sending is not available on this network yet")
 - [x] SND-008: Top up identity from Send screen — BLOCKED (no identity exists yet — IDN not run; Identity-destination UI recognition partially verified)
-- [x] SND-009: Shield credits from Platform address — BLOCKED (WAL-017: no Platform address held balance at test time)
+- [x] SND-009: Shield credits from Platform address — FAIL (retested post-fix: Platform Addresses source now funded and selectable, correctly auto-selects the highest-balance address; but the shielded destination is rejected with "Invalid output address" at submission — same root cause as SND-007 — even though Advanced Options recognizes and tags it "(Shielded)" beforehand)
 - [x] SND-010: Withdraw from shielded pool to Core address — BLOCKED (shielded balance always 0; no "Shielded Pool" source option exposed in Send screen)
 - [x] SND-011: Transfer identity credits to another identity — BLOCKED (no identity exists yet — IDN not run)
 - [x] SND-012: Withdraw identity credits to Core address — BLOCKED (same reasoning as SND-011)
@@ -90,9 +90,11 @@ needed).
       `scenarios/ALK.md`; IDN/DPN/DPY/TOK/DOC should NOT be pre-emptively marked BLOCKED)
 - [x] ALK-002: View asset lock details — FAIL ("Asset Locks" list never shows a just-created,
       confirmed-usable lock, even after Refresh/renavigation — data is persisted correctly per
-      direct SQLite check, this is a UI/cache bug, not a coin-selection issue)
+      direct SQLite check, this is a UI/cache bug, not a coin-selection issue). Reconfirmed
+      post-fix: a fresh 0.5 DASH lock created live in a healthy, fully-synced session still
+      never appears, even after Refresh — verdict stands, see scenarios/ALK.md.
 - [x] ALK-003: Recover unused asset locks — BLOCKED (same list-population bug as ALK-002 blocks
-      reaching any recovery UI)
+      reaching any recovery UI). Reconfirmed post-fix — verdict stands, see scenarios/ALK.md.
 - [x] ALK-004: Quick-fund workflow — N/A (Gap, not implemented)
 
 ## IDN

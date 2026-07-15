@@ -393,3 +393,28 @@ real, active 0.02 DASH asset lock, so this is a data-loss trade-off, not a free 
 This closes out the "not yet root-caused" status for every BLOCKED verdict in this campaign
 that cited this environment blocker — they were genuinely untestable at the time for the
 reason now confirmed above, not because of any gap in how they were tested.
+
+---
+
+### Bonus reconfirmation (2026-07-15, post-fix retest during WAL-018 testing): ALK-002/ALK-003 verdicts stand
+
+While retesting WAL-018 ("Fund Platform address from asset lock") against the now-healthy,
+fully-synced live app, a **fresh** asset lock was created end-to-end (Registration purpose,
+0.5 DASH, txid `88b8c37019edcc66b4e5ddb7c98b208e93f5a4311a03a29bacff7048198977d4` — see
+`WAL.md`'s third-pass WAL-018 write-up for the full flow). A read-only `sqlite3` check
+confirmed it persisted correctly: `status='is_locked'`, `amount_duffs=50000000`, a 719-byte
+`lifecycle_blob`, genuinely unconsumed.
+
+Despite this — in a session with no wallet-backend blocker, no `PersisterLoad` errors, and
+an actively-syncing Testnet connection — the Wallets screen's "Asset Locks" panel still
+showed **"No asset locks found"** for this lock, even after multiple "Refresh" clicks. This
+is the exact same symptom ALK-002 originally documented, now reconfirmed in conditions that
+rule out the (already-fixed) environment blocker as an explanation.
+
+**No re-verification of ALK-002/ALK-003's verdicts was needed or attempted beyond this
+observation** — the original FAIL (ALK-002) and BLOCKED (ALK-003) verdicts already correctly
+attributed the bug to a UI/cache-population defect independent of the coin-selection/
+environment issues, and this fresh evidence is fully consistent with that diagnosis. **Both
+verdicts stand as recorded.** This also explains why WAL-018 remains BLOCKED post-fix (see
+`WAL.md`) — the "Fund a Platform address with this asset lock" action is only reachable from
+a row in this same list, which never populates.

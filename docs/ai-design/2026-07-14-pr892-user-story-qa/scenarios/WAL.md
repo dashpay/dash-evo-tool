@@ -650,3 +650,201 @@ underlying ~3 DASH balance and all DB state are believed untouched, see `ALK.md`
 wallet remaining after both throwaway-wallet cleanups. The Testnet wallet-backend
 environment blocker documented in `ALK.md` remains unresolved and affects any future
 testing that requires a live Testnet wallet/SPV connection in this data dir.*
+
+---
+
+## Third pass (2026-07-15): WAL-018/019/020/025/027/029 retested post-fix
+
+**Environment**: the Testnet wallet-backend blocker documented above and in `ALK.md` is now
+root-caused and (for the one historically bad row) fixed in this live data dir — see
+`ALK.md`'s "Resolution (2026-07-15...)" section and
+`/data/artifacts/dash-evo-tool/2026-07-14/pr892-user-story-qa/testnet-blocker-investigation/TEST-VECTOR.md`.
+On arrival this pass, the app (PID 2216703, same hash-verified binary) was already running
+against the live QA data dir with Testnet **fully synced** ("Synced - The SPV client can now
+be used for transacting and querying.") — confirmed via Settings > Networks and via `det.log`
+showing active, error-free header/masternode-list/filter/block/shielded-note sync. `QA Wallet
+1` already carried a real balance (3.96 DASH Core, plus 0.0199 DASH already funded to a
+Platform address from an earlier differential-retest pass — see `ALK.md`'s "Scope conclusion"
+section) and a genuinely-synced, non-degenerate state throughout this pass, unlike the
+second pass above.
+
+### WAL-018: Fund Platform address from asset lock — BLOCKED (independent, confirmed cause)
+
+**What changed**: the original blocker ("no asset lock could be created due to WAL-017's coin
+selection bug") no longer applies — asset-lock creation now works reliably. Created a fresh
+asset lock live end-to-end: Wallets > Dash Core tab > "Create Asset Lock" > Registration
+purpose > funded the generated deposit address (`yitCWdDBXLCUMa84ENDnaxJKd14ju3tKHR`) via the
+Pasta testnet faucet (solved the Cap.js v4 PoW challenge per the `faucet-cap-pow-solver`
+memory note; txid `914c8b4a506175704670914e89bdb02bf54044eb37af64503a5d1d4272378074`) —
+**without navigating away from the screen this time** (an earlier attempt in this same pass
+that did navigate away lost the in-flight build and left the funds as plain wallet balance,
+confirming ALK-001's documented navigation-loses-state behavior). The flow progressed through
+"Waiting for funds…" → "Funds received!" → "Waiting for Core Chain to produce proof of asset
+lock…" → **"Asset Lock Created Successfully!"** (txid
+`88b8c37019edcc66b4e5ddb7c98b208e93f5a4311a03a29bacff7048198977d4`). Screenshot:
+`screenshots/WAL-018-1-asset-lock-created-successfully.png`.
+
+Note: a first attempt at this (different deposit address, funded via a separate faucet
+payout) hit WAL-017's exact "No UTXOs available for selection" transient coin-selection
+error mid-flow and stalled — consistent with ALK.md's characterization of that bug as
+state-dependent/transient, not deterministic. It cleared on a fresh retry with a new deposit
+address; the funds from the first, abandoned attempt remain in the wallet as ordinary balance
+(not lost, just not part of an asset lock).
+
+**Verified the lock is genuinely persisted**, not just a one-shot success screen: a read-only
+`sqlite3` query against `spv/testnet/platform-wallet.sqlite`'s `asset_locks` table confirms a
+row with `status='is_locked'`, `amount_duffs=50000000` (0.5 DASH — the form's default amount,
+left unchanged), a 719-byte `lifecycle_blob`, unconsumed.
+
+**Where it's still blocked**: WAL-018's actual acceptance criteria ("fund a Platform address
+from an *existing* asset lock") require reaching the "Fund a Platform address with this asset
+lock" action, which — per source review (`src/ui/wallets/wallets_screen/asset_locks.rs:174`,
+`dialogs.rs:562`) — is only reachable from a row in the Wallets screen's "Asset Locks" list.
+That list still shows **"No asset locks found"** for this same, freshly-created, confirmed-
+persisted, unconsumed lock, even after multiple Refresh clicks — reproducing ALK-002's
+documented UI/cache bug exactly, now in a fully healthy session with no other explanation
+available. No alternate UI path to this specific dialog was found.
+
+**Verdict: BLOCKED**, but for a different, now-independently-confirmed reason than
+originally recorded: not "no asset lock could be created" (fixed), but "the Asset Locks list
+never surfaces a created lock, so the only entry point to the fund-from-asset-lock dialog is
+unreachable" (ALK-002's bug, confirmed live once more — see the ALK.md update below). Per
+task guidance, this is a genuinely-blocked-for-an-independent-reason case, not a forced PASS
+or a speculative FAIL.
+
+### WAL-019: Transfer credits between Platform addresses — PASS
+
+Steps: Wallets > Send > Advanced Options > Source Type: Platform Addresses (now enabled —
+previously disabled with "no Platform addresses with balance"). Selected the wallet's funded
+Platform address (`tdash1kp30ae9x752z7wu20j4m4y945449anlhtqqe9h4l`, 0.0198520418 DASH) as the
+sole input, amount 0.005 DASH. Added an output to a second, zero-balance Platform address
+belonging to the same wallet (`tdash1kplvfzspsn99pn4rvdwmwap5a3z7g4pchqsdzvt6`, index 0),
+amount 0.005 DASH. Confirmed the **Fee Strategy** selector is present with all 4 documented
+options: "Deduct from first input", "Deduct from last input", "Reduce first output", "Reduce
+last output" — left at the default ("Deduct from first input"). Clicked "Send".
+
+Observed: **"Platform credits transferred successfully!"** Screenshot:
+`screenshots/WAL-019-1-platform-credits-transferred-successfully.png`. Confirmed on the
+Platform tab afterward: destination address now holds exactly `0.00500000` DASH; source
+address dropped from `0.01985204` to `0.01475803` (= 0.01985204 − 0.005 sent − ~0.00009401
+fee), matching "deduct from first input" exactly.
+
+Verdict: **PASS**. Both acceptance-criteria bullets confirmed: fee-strategy selection
+present and functional; wired into the same internal wallet Send flow used elsewhere
+("used in internal wallet operations").
+
+### WAL-020: Withdraw from Platform address to Core — PASS
+
+Steps: Wallets > Send > Source Type: Platform Addresses, destination a Core address
+(`yYCWtyP2mSLzGkZqL9a6G5rpPQQRs1fT5f`, the wallet's own funded address). The combined "Send
+to" field correctly recognized the Core address and auto-set **"Transaction type: Withdraw to
+Wallet"**. Amount 0.005 DASH. Clicked "Withdraw to Wallet".
+
+Observed: **"Withdrawal initiated successfully! Note: It may take a few minutes for funds to
+appear on the Core chain."** Screenshot:
+`screenshots/WAL-020-1-withdrawal-initiated-successfully.png`. Confirmed Core balance
+increased correctly afterward (5.45998397 → 5.46498397 DASH) and Platform balance decreased
+accordingly.
+
+Verdict: **PASS**. "Destination Core address input" and "Fee strategy configuration"
+(same Fee Strategy selector as WAL-019) both confirmed.
+
+### WAL-025: Restore a password-protected imported key after an update — BLOCKED (fixture still absent; scan now confirmed clean)
+
+**What changed**: the earlier BLOCKED reasoning noted the restore-scan itself failed to run
+this session due to the wallet-backend blocker (`MigrationFailed { source:
+WalletBackendUnavailable }` warning in `det.log`). Source review
+(`src/ui/wallets/wallets_screen/mod.rs:2323-2343`,
+`refresh_pending_protected_restores`) shows the scan runs lazily exactly once per
+`WalletsBalancesScreen` instance lifetime (a persistent root screen, not re-created per
+navigation), logging a `WARN` only on failure and nothing on success. Across this entire
+pass's session — from the very first paint through dozens of subsequent screen visits and
+real transactions — `det.log` contains **zero** occurrences of `MigrationFailed`,
+`WalletBackendUnavailable`, "Failed to scan for protected single-key restores", or any
+single-key/restore-scan string. This confirms the scan now runs and completes cleanly.
+
+No restore banner appeared at any point (consistent with "nothing to restore"). A read-only
+check of `det-app.sqlite`'s schema again found no dedicated legacy single-key-password table
+(the scan's underlying data source), consistent with "no fixture exists in this data dir" —
+same conclusion as before, now on firmer footing since the scan itself is confirmed to have
+actually run and found nothing, rather than having failed to run at all.
+
+Verdict: **BLOCKED** — same as before (no fixture to exercise the actual restore dialog), but
+the caveat about the scan itself failing no longer applies; only the missing fixture blocks
+this story now.
+
+### WAL-027: Balance health check after syncing — FAIL
+
+**What changed**: the earlier BLOCKED verdict was explicitly a "degenerate 0/0/0 test" since
+no sync ever completed. This pass ran against a genuinely, fully-synced wallet with dozens of
+real balance-changing operations (the asset lock creation, WAL-019's transfer, WAL-020's
+withdrawal, SND-009's rejected-but-attempted shield, plus prior-session sends) — a much more
+meaningful substrate for this story's "totals don't add up" check.
+
+Observed: at every checkpoint, the wallet header total exactly equalled the sum of the
+Core + Platform + Shielded account tabs (e.g. `5.4787091` = `5.46498397` + `0.01372513` +
+`0`, verified by direct addition). **No mismatch/reconciliation warning banner ever
+appeared**, across the whole session. Screenshot:
+`screenshots/WAL-027-1-genuine-reconciliation-totals-agree.png`.
+
+**Source review** (repeated from the earlier pass, now checked against this healthy session
+too): grepped the PR892 build worktree for the story's own language ("totals don't add up",
+"known display issue", "funds are safe", `header_total`, balance-reconciler struct names).
+The only matches are: `src/wallet_backend/snapshot.rs:1238`
+(`header_total_reconciles_with_core_tab_breakdown_through_real_accessors`) — an **internal
+unit test** verifying DET's own account-summary aggregation code never introduces a mismatch,
+not a user-facing runtime check — and `src/app/reconcilers.rs`, which defines only
+`SpvBlockReconciler` and `MigrationReconciler`, no balance-health reconciler. No banner
+string matching the story's wording ("funds are safe", "known display issue") exists
+anywhere in the UI source.
+
+**Verdict: FAIL.** With a genuine, healthy sync and a real, actively-changing wallet
+throughout this session, the totals always agreed correctly (so there was never a true
+mismatch to report — a legitimate negative result on its own), but source review confirms
+the underlying proactive "detect and warn about a mismatch" mechanism the story describes
+simply does not exist in this codebase — the same conclusion independently reached in the
+degraded-environment second pass, now reconfirmed with a healthy substrate that could have
+surfaced the feature if it existed. Recording as FAIL rather than BLOCKED because this is a
+deterministic, source-confirmed absence, not an environment-dependent unknown.
+
+### WAL-029: View and copy my shielded receive address — PASS
+
+**What changed**: the Shielded tab no longer gets stuck at "Preparing shielded wallet..." —
+it now renders immediately.
+
+Steps: Wallets > `QA Wallet 1` > Shielded tab. Observed: **Shielded Balance: 0 DASH**,
+**Shielded Address**: `tdash1zpzmpc25xp0x3g...pp4cvs6cca9x` (truncated display) with a "Copy"
+button, the informational note "Shielded sending is not available on this network yet. You
+can still view your shielded balance and receive address," and a "Shielded Notes" section
+(placeholder, matching WAL-030's documented Gap). Screenshot:
+`screenshots/WAL-029-1-shielded-tab-address-rendered.png`.
+
+**Copy verified two ways** using `xclip -selection clipboard -o` to inspect the real X11
+clipboard after each action (clearing it between tests):
+1. Clicking the **"Copy" button**: clipboard held
+   `tdash1zpzmpc25xp0x3gjh650nqhunsmezkqqujawl2g2p6k04uax7nj53fdlpcp77udv8vpp4cvs6cca9x` (83
+   chars) — full, untruncated, matching the displayed prefix/suffix exactly.
+2. Clicking the **address text itself**: same 83-character full address copied, confirmed via
+   an in-app "Shielded address copied to the clipboard." toast plus the clipboard check.
+   Screenshot: `screenshots/WAL-029-2-address-copy-confirmed-full-address.png`.
+
+Verdict: **PASS**. All testable acceptance-criteria bullets confirmed: address shown once
+bound at unlock; both click targets (address and Copy button) copy the correct full address.
+The last two bullets (frame-safe backend sourcing; diversified-address "+" gap) remain
+source-review-only per the story's own framing (no "+" control found, consistent with the
+documented gap) — not re-verified live this pass since they require code inspection, not UI
+interaction.
+
+---
+
+*Third-pass summary: WAL-018 BLOCKED (independent, confirmed cause — ALK-002's list bug, not
+the resolved env blocker), WAL-019 **PASS**, WAL-020 **PASS**, WAL-025 BLOCKED (fixture still
+absent, but scan confirmed to now run cleanly), WAL-027 **FAIL** (source-confirmed absent
+feature), WAL-029 **PASS**. Final state: network Testnet, Expert/Developer view (left on
+Developer view — see SND.md's SND-009 retest, which required it), `QA Wallet 1` balance
+~5.48 DASH total across Core+Platform, app PID 2216703 still running against
+`/data/tmp/det-qa-pr892-data`, Testnet still synced and healthy — no restart was performed
+this pass (see the campaign coordinator's report for the reasoning: this pass's own asset
+lock creation produced a new, not-yet-restart-tested `lifecycle_blob`, so a restart carries
+the same theoretical AssetLockProof-decode risk described in `ALK.md`'s resolution section
+until a product fix lands).*

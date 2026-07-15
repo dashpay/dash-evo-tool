@@ -530,3 +530,53 @@ showed `0 DASH` all session and the Shielded tab never finished initializing —
 UI evidence was supplemented with direct source review throughout. No funds were moved;
 no transaction was broadcast; the app was left in a clean state (Send form cancelled,
 Wallets > QA Wallet 1, Shielded tab).*
+
+---
+
+## SND-009 retest (2026-07-15, post wallet-backend fix): Shield credits from Platform address — FAIL
+
+**Environment**: retested against the same live app instance (PID 2216703) as the WAL-018
+through WAL-029 third pass in `WAL.md` — Testnet fully synced, no wallet-backend blocker.
+Switched Interface mode to **Developer view** first (Settings > Networks), per this story's
+own "Developer mode required" criterion.
+
+Steps:
+1. Wallets > `QA Wallet 1` > Send > Advanced Options > Source Type: Platform Addresses.
+   Clicked "+ Add Platform Address" — the dropdown listed only the wallet's two
+   balance-holding Platform addresses, with the higher-balance one
+   (`tdash1kp30ae9x752z7wu20j4m4y945449anlhtqqe9h4l`, 0.0087251398 DASH) listed first,
+   consistent with "System auto-selects the highest-balance Platform address" (the simple,
+   non-Advanced Send form — not used for this test, since it doesn't support shielded
+   destinations, see below — auto-populates exactly this same address as source when
+   Platform Addresses is selected there, confirming the auto-selection behavior directly).
+2. Selected that address as the sole input, amount 0.003 DASH.
+3. Output: pasted the wallet's own shielded address
+   (`tdash1zpzmpc25xp0x3gjh650nqhunsmezkqqujawl2g2p6k04uax7nj53fdlpcp77udv8vpp4cvs6cca9x`,
+   copied from the Shielded tab per WAL-029). The field correctly tagged it green
+   **"(Shielded)"** and accepted an amount, 0.003 DASH.
+4. Clicked "Send".
+
+Observed: **fails every time** with the banner **"Invalid output address"** — confirmed in
+`det.log`:
+```
+2026-07-15T07:58:45.559932Z ERROR dash_evo_tool::ui::components::message_banner: Banner displayed banner="Invalid output address"
+```
+Screenshot: `screenshots/SND-009-1-invalid-output-address-platform-to-shielded.png`. No
+funds moved — the Platform source address balance was unaffected by this failed attempt.
+
+This exactly reproduces **SND-007**'s finding (Core → Shielded also rejected with the same
+message), now confirmed for the Platform → Shielded direction too: the shielded-destination
+rejection is not specific to a Core-Wallet source, it applies uniformly regardless of which
+`SourceType` the Send screen uses. Per SND-007's diagnosis, the Shielded tab's own
+"Shielded sending is not available on this network yet" notice is the accurate underlying
+explanation, but — as before — that explanation is never surfaced at the point of failure in
+the Send screen itself.
+
+**Verdict: FAIL.** Bullet 1 ("Select Platform Addresses as source and enter a shielded
+address as destination") is reachable and the address is correctly recognized/tagged, but
+the transaction cannot actually be submitted — same root cause and same verdict class as
+SND-007. Bullet 2 ("auto-selects the highest-balance Platform address") is independently
+confirmed working via the simple Send form. Bullet 3 (Developer mode required) confirmed —
+this flow was exercised in Developer view as required. The WAL-017 root cause this story was
+previously blocked on (no Platform balance) is fully resolved; the story is now blocked by
+the same shielded-destination-rejection defect as SND-007, not a funding gap.

@@ -280,6 +280,29 @@ pub fn clear_passphrase_modal_state(ctx: &Context, config_id: egui::Id) {
     ctx.data_mut(|data| data.remove::<PassphraseModalState>(state_id));
 }
 
+/// Drop any pointer click still pending on the frame a passphrase prompt first
+/// becomes active.
+///
+/// egui resolves a frame's click at `begin_pass` — against the *previous* frame's
+/// widget geometry and modal layer — before that frame's `update` runs. On the
+/// frame a prompt first renders, the previous frame had no prompt and no modal
+/// sink, so a press-then-release completing now still resolves to the control
+/// beneath, *before* [`passphrase_modal`] installs its sink later this frame. A
+/// widget only reports the click if a `Released` event is still in
+/// `input.pointer` when it interacts (see egui's `Context::create_widget`);
+/// clearing the pointer state — called as the prompt is promoted, before the
+/// screen beneath runs — drops that one frame's click so it cannot fall through.
+/// The sink covers every later frame. Keyboard events are left intact so the
+/// freshly focused password field still receives typing.
+pub fn drop_activation_frame_pointer_click(ctx: &Context) {
+    ctx.input_mut(|input| {
+        input.pointer = Default::default();
+        input
+            .events
+            .retain(|event| !matches!(event, egui::Event::PointerButton { .. }));
+    });
+}
+
 #[cfg(test)]
 pub(crate) fn passphrase_modal_state_exists(ctx: &Context, config_id: egui::Id) -> bool {
     ctx.data(|data| {

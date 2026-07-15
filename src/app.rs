@@ -17,6 +17,7 @@ use crate::context::feature_gate::FeatureGate;
 use crate::context::migration_status::MigrationStep;
 use crate::database::Database;
 use crate::model::settings::AppSettings;
+use crate::ui::components::passphrase_modal;
 use crate::ui::components::secret_prompt_host::{ActivePrompt, EguiSecretPromptHost, QueuedPrompt};
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt, ProgressOverlay};
 use crate::ui::contracts_documents::contracts_documents_screen::DocumentQueryScreen;
@@ -397,6 +398,10 @@ pub struct AppState {
     /// The passphrase prompt currently shown, if any. Exactly one is active at
     /// a time; further requests wait in `secret_prompt_receiver` (FIFO).
     active_secret_prompt: Option<ActivePrompt>,
+    /// Whether a blocking passphrase prompt owned the previous frame. Drives the
+    /// one-shot pointer-drop on the frame a prompt first becomes active — see
+    /// [`passphrase_modal::drop_activation_frame_pointer_click`].
+    prompt_was_blocking: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1033,6 +1038,7 @@ impl AppState {
             secret_prompt_host,
             secret_prompt_receiver,
             active_secret_prompt: None,
+            prompt_was_blocking: false,
         };
 
         // Initialize welcome screen if needed (uses whichever context is active)
@@ -1752,6 +1758,18 @@ impl App for AppState {
         // Promote a queued prompt before the overlay input/render decision so
         // its first visible frame never shares a pointer sink or focus trap.
         self.activate_secret_prompt(ctx);
+
+        // On the frame a passphrase prompt first becomes active — a just-in-time
+        // unlock promoted above, or the migration password prompt — egui has
+        // already resolved this frame's click against the previous, prompt-less
+        // frame, before the modal installs its input sink. Drop that one pending
+        // click so it cannot fall through to the screen beneath; the sink covers
+        // every later frame.
+        let prompt_blocking = self.has_blocking_secret_prompt();
+        if prompt_blocking && !self.prompt_was_blocking {
+            passphrase_modal::drop_activation_frame_pointer_click(ctx);
+        }
+        self.prompt_was_blocking = prompt_blocking;
 
         // Total input block at frame start: while a blocking overlay is up, claim
         // all keyboard + text input BEFORE the panels run — unless a

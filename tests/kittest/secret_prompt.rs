@@ -18,7 +18,8 @@ use std::rc::Rc;
 
 use dash_evo_tool::ui::components::ProgressOverlay;
 use dash_evo_tool::ui::components::passphrase_modal::{
-    KEEP_UNLOCKED_LABEL, PassphraseModalConfig, passphrase_modal,
+    KEEP_UNLOCKED_LABEL, PassphraseModalConfig, drop_activation_frame_pointer_click,
+    passphrase_modal,
 };
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
@@ -173,7 +174,7 @@ fn cancellable_passphrase_modal_blocks_clicks_beneath_a_yielding_overlay() {
 }
 
 /// The **transition frame** — the first frame a prompt becomes active — is not
-/// protected by the sink.
+/// protected by the sink, so the app must drop this frame's pending click itself.
 ///
 /// egui computes each frame's click interaction at `begin_pass` from the
 /// *previous* frame's widget geometry (`viewport.prev_pass.widgets`, see
@@ -182,33 +183,43 @@ fn cancellable_passphrase_modal_blocks_clicks_beneath_a_yielding_overlay() {
 /// a prompt first renders, the control beneath still existed last frame with no
 /// sink above it and no modal layer recorded, so egui completes the click on it
 /// *before* `modal_chrome` installs the sink / calls `set_modal_layer` later in
-/// the same frame — mirroring `AppState::update`, where `visible_screen_mut().ui`
-/// runs before `render_secret_prompt`.
+/// the same frame — reordering the render cannot help.
 ///
-/// The sibling test above primes the sink a full frame before the press (the
-/// modal renders unconditionally every frame), so it only ever exercises frame
-/// N+1 and later. This test presses the underlying button while no prompt
-/// exists, activates the prompt, then releases on the very frame the prompt
-/// first renders — the transition frame the sink cannot cover.
+/// The fix drops this frame's pending pointer click as the prompt is promoted,
+/// before the screen beneath runs (`AppState::update` calls
+/// [`drop_activation_frame_pointer_click`] on the prompt-activation rising edge,
+/// which this closure mirrors). A widget only reports a click while a `Released`
+/// event is still in `input.pointer`; clearing it strands the leaked click.
 ///
-/// RED repro: fails against the current `visible_screen_mut().ui` →
-/// `render_secret_prompt` ordering. Remove `#[ignore]` once the barrier is
-/// installed before the visible screen renders on the activation frame.
+/// The sibling test below primes the sink a full frame before the press, so it
+/// only ever exercises frame N+1 and later. This test presses the underlying
+/// button while no prompt exists, activates the prompt, then releases on the very
+/// frame the prompt first renders — the transition frame the sink cannot cover.
 #[test]
-#[ignore = "known-failing repro: click leaks through the prompt's first frame; un-ignore when the sink is installed before the visible screen renders"]
 fn transition_frame_click_leaks_through_a_newly_activated_prompt() {
     let counter = Rc::new(Cell::new(0u32));
     let counter_ui = Rc::clone(&counter);
     let show_prompt = Rc::new(Cell::new(false));
     let show_prompt_ui = Rc::clone(&show_prompt);
+    let was_active = Rc::new(Cell::new(false));
+    let was_active_ui = Rc::clone(&was_active);
 
     let mut harness = Harness::builder()
         .with_size(egui::vec2(640.0, 480.0))
         .build_ui(move |ui| {
+            // Mirror `AppState::update`: promote the prompt at frame start, and on
+            // the frame it first becomes active drop this frame's pending click
+            // before the screen beneath (the button) runs.
+            let active = show_prompt_ui.get();
+            if active && !was_active_ui.get() {
+                drop_activation_frame_pointer_click(ui.ctx());
+            }
+            was_active_ui.set(active);
+
             if ui.button("Increment").clicked() {
                 counter_ui.set(counter_ui.get() + 1);
             }
-            if show_prompt_ui.get() {
+            if active {
                 // Same frame order as `AppState::update`: the overlay yields to
                 // the prompt (paints no sink of its own), the prompt renders on top.
                 ProgressOverlay::render_global(ui.ctx(), true);
@@ -258,8 +269,83 @@ fn transition_frame_click_leaks_through_a_newly_activated_prompt() {
         counter.get(),
         0,
         "a control beneath a prompt must not receive a click on the frame the \
-         prompt first becomes active — egui resolves the click against the prior \
-         frame (no sink, no modal layer) before modal_chrome installs its barrier",
+         prompt first becomes active — the app drops this frame's pending click \
+         before the screen renders",
+    );
+}
+
+/// The migration password prompt has the same transition-frame exposure as a
+/// just-in-time unlock: it renders *after* the screen (via `update_banner`), so
+/// its first frame's click resolves against the prior, prompt-less frame before
+/// the sink exists. It is non-cancellable and shows a "Skip this wallet"
+/// secondary action instead of Cancel — a different modal chrome — yet the same
+/// [`drop_activation_frame_pointer_click`] on the activation rising edge must
+/// strand the leaked click.
+#[test]
+fn transition_frame_click_leaks_through_a_newly_activated_migration_prompt() {
+    let counter = Rc::new(Cell::new(0u32));
+    let counter_ui = Rc::clone(&counter);
+    let show_prompt = Rc::new(Cell::new(false));
+    let show_prompt_ui = Rc::clone(&show_prompt);
+    let was_active = Rc::new(Cell::new(false));
+    let was_active_ui = Rc::clone(&was_active);
+
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(640.0, 480.0))
+        .build_ui(move |ui| {
+            let active = show_prompt_ui.get();
+            if active && !was_active_ui.get() {
+                drop_activation_frame_pointer_click(ui.ctx());
+            }
+            was_active_ui.set(active);
+
+            if ui.button("Increment").clicked() {
+                counter_ui.set(counter_ui.get() + 1);
+            }
+            if active {
+                ProgressOverlay::render_global(ui.ctx(), true);
+                let config = PassphraseModalConfig {
+                    state_id: egui::Id::new("test_transition_migration_prompt_sink"),
+                    window_title: "Continue the storage update",
+                    body: "Enter the password for \"Savings\" to update this wallet now.",
+                    hint: None,
+                    error: None,
+                    submit_label: "Continue",
+                    secondary_action_label: Some("Skip this wallet"),
+                    input_placeholder: "Enter your password.",
+                    remember_label: None,
+                    cancellable: false,
+                };
+                passphrase_modal(ui.ctx(), &config, |_| {});
+            }
+        });
+
+    harness.step();
+    let button_center = harness.get_by_label("Increment").rect().center();
+
+    harness.hover_at(button_center);
+    harness.event(egui::Event::PointerButton {
+        pos: button_center,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: egui::Modifiers::NONE,
+    });
+    harness.step();
+
+    show_prompt.set(true);
+    harness.event(egui::Event::PointerButton {
+        pos: button_center,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: egui::Modifiers::NONE,
+    });
+    harness.step();
+
+    assert_eq!(
+        counter.get(),
+        0,
+        "a control beneath the migration password prompt must not receive a click \
+         on the frame the prompt first becomes active",
     );
 }
 

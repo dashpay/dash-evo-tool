@@ -13,12 +13,30 @@ on:
       tag:
         description: "Version (i.e. v0.1.0)"
         required: false
+      draft:
+        description: "Create the release as a draft"
+        required: false
+        type: boolean
+        default: false
+      version_override:
+        description: "Override the Cargo.toml package version for this build only (never committed)"
+        required: false
   workflow_call:
     inputs:
       tag:
         description: "Version (i.e. v0.1.0)"
         required: false
         type: string
+      draft:
+        description: "Create the release as a draft"
+        required: false
+        type: boolean
+        default: false
+      version_override:
+        description: "Override the Cargo.toml package version for this build only (never committed)"
+        required: false
+        type: string
+        default: ""
 
 permissions:
   id-token: write
@@ -50,6 +68,11 @@ jobs:
     steps:
       - name: Check out code
         uses: actions/checkout@v4
+
+      - name: Apply version override
+        uses: ./.github/actions/apply-version-override
+        with:
+          version: ${{ inputs.version_override }}
 
       - name: Cache Cargo registry
         uses: actions/cache@v4
@@ -170,6 +193,11 @@ jobs:
     steps:
       - name: Check out code
         uses: actions/checkout@v4
+
+      - name: Apply version override
+        uses: ./.github/actions/apply-version-override
+        with:
+          version: ${{ inputs.version_override }}
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -486,6 +514,11 @@ jobs:
     steps:
       - name: Check out code
         uses: actions/checkout@v4
+
+      - name: Apply version override
+        uses: ./.github/actions/apply-version-override
+        with:
+          version: ${{ inputs.version_override }}
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -826,5 +859,5 @@ jobs:
             ./dash-evo-tool-macos-arm64.dmg
             ./dash-evo-tool-macos-x86_64.dmg
             ./dash-evo-tool-windows.zip
-          draft: false
+          draft: ${{ inputs.draft || false }}
           prerelease: true

@@ -1,0 +1,55 @@
+name: Apply version override
+description: >-
+  Rewrites the package version in Cargo.toml and Cargo.lock (dash-evo-tool
+  entry) before a build, so a CI-only build can carry a synthetic version
+  (e.g. a weekly pre-release tag + short commit sha) without ever committing
+  that version back to git. No-ops when the input is empty, so callers that
+  omit it get byte-for-byte unchanged behavior.
+
+inputs:
+  version:
+    description: "Version string to bake in (e.g. 1.0.0-weekly.20260715+abc1234def). Empty = no-op."
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        set -euo pipefail
+        v="${{ inputs.version }}"
+        if [ -z "$v" ]; then
+          echo "No version override supplied — leaving Cargo.toml/Cargo.lock untouched."
+          exit 0
+        fi
+        python3 - "$v" <<'PY'
+        import re, sys, pathlib
+
+        v = sys.argv[1]
+
+        ct = pathlib.Path("Cargo.toml")
+        ct_text = ct.read_text()
+        new_ct_text, n = re.subn(
+            r'(?m)^version\s*=\s*"[^"]*"', f'version = "{v}"', ct_text, count=1
+        )
+        if n != 1:
+            print("::error::Could not find a version = \"...\" line to rewrite in Cargo.toml", file=sys.stderr)
+            sys.exit(1)
+        ct.write_text(new_ct_text)
+
+        lk = pathlib.Path("Cargo.lock")
+        if lk.exists():
+            lk_text = lk.read_text()
+            new_lk_text, n = re.subn(
+                r'(?ms)(^\[\[package\]\]\nname = "dash-evo-tool"\nversion = )"[^"]*"',
+                lambda m: m.group(1) + f'"{v}"',
+                lk_text,
+                count=1,
+            )
+            if n != 1:
+                print("::error::Could not find the dash-evo-tool package entry to rewrite in Cargo.lock", file=sys.stderr)
+                sys.exit(1)
+            lk.write_text(new_lk_text)
+
+        print(f"Applied version override: {v}")
+        PY

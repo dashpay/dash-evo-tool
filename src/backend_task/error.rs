@@ -17,6 +17,7 @@ use dash_sdk::dpp::dashcore;
 use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::Identifier;
+use std::fmt;
 use thiserror::Error;
 
 /// Why an existing DashPay `contactInfo` payload could not be preserved.
@@ -46,6 +47,40 @@ pub enum WalletTransactionHistoryError {
     #[error("transaction record {txid} disappeared during hydration")]
     RecordMissing { txid: dash_sdk::dpp::dashcore::Txid },
 }
+
+/// Redacted diagnostic for a backend task that panicked or was cancelled.
+pub struct BackendTaskJoinError {
+    source: tokio::task::JoinError,
+}
+
+impl From<tokio::task::JoinError> for BackendTaskJoinError {
+    fn from(source: tokio::task::JoinError) -> Self {
+        Self { source }
+    }
+}
+
+impl fmt::Debug for BackendTaskJoinError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("BackendTaskJoinError")
+            .field("task_id", &self.source.id())
+            .field("cancelled", &self.source.is_cancelled())
+            .field("panicked", &self.source.is_panic())
+            .finish()
+    }
+}
+
+impl fmt::Display for BackendTaskJoinError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.source.is_cancelled() {
+            formatter.write_str("backend task was cancelled")
+        } else {
+            formatter.write_str("backend task panicked")
+        }
+    }
+}
+
+impl std::error::Error for BackendTaskJoinError {}
 
 /// Dash Core RPC error code: wallet file not specified (multi-wallet node).
 const RPC_WALLET_NOT_SPECIFIED: i32 = -19;
@@ -741,6 +776,13 @@ pub enum TaskError {
     #[error("An internal operation failed unexpectedly. Please restart the application.")]
     JoinError(#[from] tokio::task::JoinError),
 
+    /// A backend task panicked or was cancelled before returning a result.
+    #[error("The requested action stopped before it finished. Please try again. If it keeps stopping, restart the app.")]
+    BackendTaskFailed {
+        #[source]
+        source: BackendTaskJoinError,
+    },
+
     /// DAPI node discovery or address resolution failed.
     #[error(transparent)]
     DapiDiscovery(#[from] crate::backend_task::dapi_discovery::DapiDiscoveryError),
@@ -972,6 +1014,48 @@ pub enum TaskError {
         #[source]
         source_error: Box<SdkError>,
     },
+
+    /// Loading an identity exceeded the app's network-request deadline.
+    #[error(
+        "The identity could not be loaded because the network took too long to respond. Check your connection and try again."
+    )]
+    IdentityLoadTimeout {
+        #[source]
+        source: tokio::time::error::Elapsed,
+    },
+
+    /// Fetching documents exceeded the app's network-request deadline.
+    #[error(
+        "The documents could not be loaded because the network took too long to respond. Check your connection and try again."
+    )]
+    DocumentFetchTimeout {
+        #[source]
+        source: tokio::time::error::Elapsed,
+    },
+
+    /// Looking up a token exceeded the app's network-request deadline.
+    #[error(
+        "The token or contract could not be found because the network took too long to respond. Check your connection and try again."
+    )]
+    TokenLookupTimeout {
+        #[source]
+        source: tokio::time::error::Elapsed,
+    },
+
+    /// Refreshing token balances exceeded the app's network-request deadline.
+    #[error(
+        "Token balances could not be refreshed because the network took too long to respond. Check your connection and refresh the Tokens screen."
+    )]
+    TokenBalanceRefreshTimeout {
+        #[source]
+        source: tokio::time::error::Elapsed,
+    },
+
+    /// A token-balance refresh was requested while the previous pass was still running.
+    #[error(
+        "Token balances are still refreshing. Please wait a moment before trying again."
+    )]
+    TokenBalanceRefreshInProgress,
 
     /// Connected server is behind (SdkError::StaleNode).
     #[error("The server you connected to is behind. Please retry.")]

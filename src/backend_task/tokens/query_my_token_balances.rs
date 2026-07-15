@@ -11,17 +11,32 @@
 
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
+use crate::backend_task::{NETWORK_REQUEST_TIMEOUT, await_managed_network_request_with_timeout};
 use crate::context::AppContext;
 use crate::ui::tokens::tokens_screen::IdentityTokenIdentifier;
 use dash_sdk::Sdk;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::platform::Identifier;
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
 
 use crate::app::TaskResult;
 
+struct TokenBalanceRefreshGuard {
+    context: Arc<AppContext>,
+}
+
+impl Drop for TokenBalanceRefreshGuard {
+    fn drop(&mut self) {
+        self.context
+            .token_balance_refresh_in_flight
+            .store(false, Ordering::Release);
+    }
+}
+
 impl AppContext {
     pub async fn query_my_token_balances(
-        &self,
+        self: &std::sync::Arc<Self>,
         _sdk: &Sdk,
         sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
@@ -34,14 +49,29 @@ impl AppContext {
         let identity_ids: Vec<Identifier> = identities.iter().map(|qi| qi.identity.id()).collect();
         let watch_sets = self.token_watch_sets(identity_ids)?;
 
-        self.refresh_upstream_token_balances(watch_sets, &sender)
-            .await?;
+        let refresh_guard = self.begin_token_balance_refresh()?;
+        let context = Arc::clone(self);
+        await_managed_network_request_with_timeout(
+            self.subtasks.clone(),
+            "token_balance_refresh_reaper",
+            NETWORK_REQUEST_TIMEOUT,
+            async move {
+                let _refresh_guard = refresh_guard;
+                context.refresh_upstream_token_balances(watch_sets).await
+            },
+            |source| TaskError::TokenBalanceRefreshTimeout { source },
+        )
+        .await??;
+        sender
+            .send(TaskResult::Refresh)
+            .await
+            .map_err(|_| TaskError::InternalSendError)?;
 
         Ok(BackendTaskSuccessResult::FetchedTokenBalances)
     }
 
     pub async fn query_token_balance(
-        &self,
+        self: &std::sync::Arc<Self>,
         _sdk: &Sdk,
         pair: IdentityTokenIdentifier,
         sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
@@ -54,8 +84,23 @@ impl AppContext {
         // The upstream watch list is per-identity and replaced wholesale, so
         // register the identity's whole watch set rather than a single pair.
         let watch_sets = self.token_watch_sets(vec![pair.identity_id])?;
-        self.refresh_upstream_token_balances(watch_sets, &sender)
-            .await?;
+        let refresh_guard = self.begin_token_balance_refresh()?;
+        let context = Arc::clone(self);
+        await_managed_network_request_with_timeout(
+            self.subtasks.clone(),
+            "token_balance_refresh_reaper",
+            NETWORK_REQUEST_TIMEOUT,
+            async move {
+                let _refresh_guard = refresh_guard;
+                context.refresh_upstream_token_balances(watch_sets).await
+            },
+            |source| TaskError::TokenBalanceRefreshTimeout { source },
+        )
+        .await??;
+        sender
+            .send(TaskResult::Refresh)
+            .await
+            .map_err(|_| TaskError::InternalSendError)?;
 
         Ok(BackendTaskSuccessResult::FetchedTokenBalances)
     }
@@ -114,13 +159,23 @@ impl AppContext {
             .collect())
     }
 
+    fn begin_token_balance_refresh(
+        self: &Arc<Self>,
+    ) -> Result<TokenBalanceRefreshGuard, TaskError> {
+        self.token_balance_refresh_in_flight
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map_err(|_| TaskError::TokenBalanceRefreshInProgress)?;
+        Ok(TokenBalanceRefreshGuard {
+            context: Arc::clone(self),
+        })
+    }
+
     /// Register each identity's watch set with upstream, force an immediate
     /// sync pass, then republish DET's balance snapshot and nudge the UI to
     /// re-read it.
     async fn refresh_upstream_token_balances(
         &self,
         watch_sets: Vec<(Identifier, Vec<Identifier>)>,
-        sender: &crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<(), TaskError> {
         let backend = self.wallet_backend()?;
         for (identity_id, token_ids) in watch_sets {
@@ -129,10 +184,6 @@ impl AppContext {
                 .await;
         }
         backend.sync_token_balances_now().await;
-        sender
-            .send(TaskResult::Refresh)
-            .await
-            .map_err(|_| TaskError::InternalSendError)?;
         Ok(())
     }
 }
@@ -232,6 +283,23 @@ mod tests {
             identity_id,
             token_id,
         }
+    }
+
+    #[tokio::test]
+    async fn overlapping_token_refresh_is_rejected_until_the_first_finishes() {
+        let f = fixture().await;
+        let first_refresh = f
+            .ctx
+            .begin_token_balance_refresh()
+            .expect("first refresh must acquire the single-flight guard");
+
+        assert!(matches!(
+            f.ctx.begin_token_balance_refresh(),
+            Err(TaskError::TokenBalanceRefreshInProgress)
+        ));
+
+        drop(first_refresh);
+        assert!(f.ctx.begin_token_balance_refresh().is_ok());
     }
 
     /// Dismissing a balance must survive "Refresh My Tokens": the pair stays

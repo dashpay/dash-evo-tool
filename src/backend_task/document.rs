@@ -1,5 +1,8 @@
 use crate::backend_task::error::TaskError;
-use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
+use crate::backend_task::{
+    BackendTaskSuccessResult, FeeResult, NETWORK_REQUEST_TIMEOUT,
+    await_network_request_with_timeout,
+};
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::request_type::RequestType;
@@ -110,10 +113,14 @@ impl AppContext {
             start: None,
         };
         let query_with_id = DocumentQuery::with_document_id(document_query, &document_id);
-        let mut document = Document::fetch(sdk, query_with_id)
-            .await
-            .map_err(TaskError::from)?
-            .ok_or(TaskError::DocumentNotFound)?;
+        let mut document = await_network_request_with_timeout(
+            NETWORK_REQUEST_TIMEOUT,
+            Document::fetch(sdk, query_with_id),
+            |source| TaskError::DocumentFetchTimeout { source },
+        )
+        .await?
+        .map_err(TaskError::from)?
+        .ok_or(TaskError::DocumentNotFound)?;
         document.bump_revision();
         Ok(document)
     }
@@ -124,12 +131,14 @@ impl AppContext {
         sdk: &Sdk,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         match task {
-            DocumentTask::FetchDocuments(document_query) => {
-                Document::fetch_many(sdk, document_query)
-                    .await
-                    .map(BackendTaskSuccessResult::Documents)
-                    .map_err(TaskError::from)
-            }
+            DocumentTask::FetchDocuments(document_query) => await_network_request_with_timeout(
+                NETWORK_REQUEST_TIMEOUT,
+                Document::fetch_many(sdk, document_query),
+                |source| TaskError::DocumentFetchTimeout { source },
+            )
+            .await?
+            .map(BackendTaskSuccessResult::Documents)
+            .map_err(TaskError::from),
             DocumentTask::FetchDocumentsPage(mut document_query) => {
                 // Set the limit for each page
                 document_query.limit = 100;
@@ -138,9 +147,13 @@ impl AppContext {
                 let mut page_docs: IndexMap<Identifier, Option<Document>> = IndexMap::new();
 
                 // Fetch a single page
-                let docs_batch_result = Document::fetch_many(sdk, document_query)
-                    .await
-                    .map_err(TaskError::from)?;
+                let docs_batch_result = await_network_request_with_timeout(
+                    NETWORK_REQUEST_TIMEOUT,
+                    Document::fetch_many(sdk, document_query),
+                    |source| TaskError::DocumentFetchTimeout { source },
+                )
+                .await?
+                .map_err(TaskError::from)?;
 
                 let batch_len = docs_batch_result.len();
 
@@ -437,5 +450,24 @@ impl AppContext {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn document_network_timeout_is_typed_and_actionable() {
+        let error = crate::backend_task::await_network_request_with_timeout(
+            std::time::Duration::from_millis(1),
+            std::future::pending::<()>(),
+            |source| TaskError::DocumentFetchTimeout { source },
+        )
+        .await
+        .expect_err("a pending document request must time out");
+
+        assert!(matches!(error, TaskError::DocumentFetchTimeout { .. }));
+        assert!(error.to_string().contains("Check your connection"));
     }
 }

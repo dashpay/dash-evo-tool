@@ -128,6 +128,7 @@ pub struct AppContext {
     secret_store: Arc<SecretStore>,
     // subtasks started by the app context, used for graceful shutdown
     pub(crate) subtasks: Arc<TaskManager>,
+    pub(crate) token_balance_refresh_in_flight: AtomicBool,
     /// Tracks the connection status to currently active network
     pub(crate) connection_status: Arc<ConnectionStatus>,
     /// Tracks the legacy-data migration progress. Cheap to read each
@@ -387,6 +388,7 @@ impl AppContext {
             app_kv,
             secret_store,
             subtasks,
+            token_balance_refresh_in_flight: AtomicBool::new(false),
             connection_status,
             migration_status: Arc::new(MigrationStatus::new_idle()),
             migration_run: tokio::sync::Mutex::new(()),

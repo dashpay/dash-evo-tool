@@ -71,12 +71,25 @@ pub struct DocumentQueryScreen {
     query_banner: Option<BannerHandle>,
 }
 
-#[derive(PartialEq, Eq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum DocumentQueryStatus {
     NotStarted,
     WaitingForResult,
     Complete,
     Error,
+}
+
+impl DocumentQueryStatus {
+    fn fail_if_fetch_in_flight(&mut self, message_type: MessageType) -> bool {
+        if *self == Self::WaitingForResult
+            && matches!(message_type, MessageType::Error | MessageType::Warning)
+        {
+            *self = Self::Error;
+            true
+        } else {
+            false
+        }
+    }
 }
 
 #[derive(PartialEq, Eq, Clone)]
@@ -541,13 +554,13 @@ impl ScreenLike for DocumentQueryScreen {
             .expect("Expected to find domain document type in DPNS contract");
     }
 
-    fn display_message(&mut self, message: &str, message_type: MessageType) {
+    fn display_message(&mut self, _message: &str, message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
-        if message.contains("Error fetching documents")
-            && matches!(message_type, MessageType::Error | MessageType::Warning)
+        if self
+            .document_query_status
+            .fail_if_fetch_in_flight(message_type)
         {
             self.query_banner.take_and_clear();
-            self.document_query_status = DocumentQueryStatus::Error;
         }
     }
 
@@ -772,4 +785,28 @@ fn doc_to_filtered_string(
     };
 
     Some(final_string)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn in_flight_fetch_failure_is_driven_by_message_type_not_text() {
+        let mut status = DocumentQueryStatus::WaitingForResult;
+        assert!(status.fail_if_fetch_in_flight(MessageType::Error));
+        assert_eq!(status, DocumentQueryStatus::Error);
+
+        let mut status = DocumentQueryStatus::WaitingForResult;
+        assert!(status.fail_if_fetch_in_flight(MessageType::Warning));
+        assert_eq!(status, DocumentQueryStatus::Error);
+
+        let mut status = DocumentQueryStatus::WaitingForResult;
+        assert!(!status.fail_if_fetch_in_flight(MessageType::Info));
+        assert_eq!(status, DocumentQueryStatus::WaitingForResult);
+
+        let mut status = DocumentQueryStatus::Complete;
+        assert!(!status.fail_if_fetch_in_flight(MessageType::Error));
+        assert_eq!(status, DocumentQueryStatus::Complete);
+    }
 }

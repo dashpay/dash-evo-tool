@@ -127,6 +127,33 @@ enum SpvBlockStep {
     Idle,
 }
 
+#[cfg(test)]
+mod backend_task_join_tests {
+    use super::*;
+    use crate::utils::egui_mpsc::SenderAsync;
+
+    #[tokio::test]
+    async fn panicking_backend_task_is_forwarded_as_typed_error() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let sender = SenderAsync::new(tx, egui::Context::default());
+        let join_handle = tokio::task::spawn_blocking(|| panic!("backend task panic"));
+
+        forward_backend_task_join_error(join_handle, sender).await;
+
+        let result = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("join failure must be reported promptly")
+            .expect("join failure result must be sent");
+        let TaskResult::Error(error @ TaskError::BackendTaskFailed { .. }) = result else {
+            panic!("expected typed backend task failure, got {result:?}");
+        };
+        assert!(
+            !format!("{error:?}").contains("backend task panic"),
+            "panic payload must be redacted from diagnostics"
+        );
+    }
+}
+
 /// Pure SPV-sync block policy (F-SPV-A scope gate + C1/C2). The block is **scoped
 /// to user-initiated sync** — armed only on startup auto-start and the Connect
 /// button — so an ambient reconnect or the SPV engine flipping Synced→Syncing on
@@ -281,6 +308,21 @@ impl From<Result<BackendTaskSuccessResult, TaskError>> for TaskResult {
             Ok(value) => TaskResult::Success(Box::new(value)),
             Err(e) => TaskResult::Error(e),
         }
+    }
+}
+
+async fn forward_backend_task_join_error(
+    join_handle: tokio::task::JoinHandle<()>,
+    sender: egui_mpsc::SenderAsync<TaskResult>,
+) {
+    if let Err(source) = join_handle.await
+        && let Err(error) = sender
+            .send(TaskResult::Error(TaskError::BackendTaskFailed {
+                source: source.into(),
+            }))
+            .await
+    {
+        tracing::error!(%error, "Failed to report a stopped backend task");
     }
 }
 
@@ -1140,9 +1182,10 @@ impl AppState {
     // SDK types (DataContract/Sdk references across await points).
     fn handle_backend_task(&mut self, task: BackendTask) {
         let sender = self.task_result_sender.clone();
+        let watcher_sender = sender.clone();
         let app_context = self.current_app_context().clone();
         let handle = tokio::runtime::Handle::current();
-        tokio::task::spawn_blocking(move || {
+        let join_handle = tokio::task::spawn_blocking(move || {
             handle.block_on(async move {
                 let result = app_context.run_backend_task(task, sender.clone()).await;
                 if let Err(e) = sender.send(result.into()).await {
@@ -1150,15 +1193,20 @@ impl AppState {
                 }
             });
         });
+        self.subtasks.spawn_sync(
+            "backend_task_join_watcher",
+            forward_backend_task_join_error(join_handle, watcher_sender),
+        );
     }
 
     /// Handle the backend tasks and send the results through the channel
     fn handle_backend_tasks(&self, tasks: Vec<BackendTask>, mode: BackendTasksExecutionMode) {
         let sender = self.task_result_sender.clone();
+        let watcher_sender = sender.clone();
         let app_context = self.current_app_context().clone();
         let handle = tokio::runtime::Handle::current();
 
-        tokio::task::spawn_blocking(move || {
+        let join_handle = tokio::task::spawn_blocking(move || {
             handle.block_on(async move {
                 let results = match mode {
                     BackendTasksExecutionMode::Sequential => {
@@ -1180,6 +1228,10 @@ impl AppState {
                 }
             });
         });
+        self.subtasks.spawn_sync(
+            "backend_tasks_join_watcher",
+            forward_backend_task_join_error(join_handle, watcher_sender),
+        );
     }
 
     pub fn active_root_screen_mut(&mut self) -> &mut Screen {

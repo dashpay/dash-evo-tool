@@ -23,6 +23,7 @@ use crate::ui::tokens::tokens_screen::{
     ContractDescriptionInfo, IdentityTokenIdentifier, TokenInfo,
 };
 use crate::utils::egui_mpsc::SenderAsync;
+use crate::utils::tasks::TaskManager;
 use contested_names::ScheduledDPNSVote;
 use dash_sdk::dpp::balances::credits::TokenAmount;
 use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution::distribution_function::evaluate_interval::IntervalEvaluationExplanation;
@@ -36,7 +37,9 @@ use dash_sdk::platform::{Document, Identifier};
 use dash_sdk::query_types::{Documents, IndexMap};
 use futures::future::join_all;
 use std::collections::BTreeMap;
+use std::future::Future;
 use std::sync::Arc;
+use std::time::Duration;
 use migration::MigrationTask;
 use shielded::ShieldedTask;
 use tokens::TokenTask;
@@ -60,6 +63,45 @@ pub mod system_task;
 pub mod tokens;
 pub mod update_data_contract;
 pub mod wallet;
+
+pub(crate) const NETWORK_REQUEST_TIMEOUT: Duration = Duration::from_secs(90);
+
+pub(crate) async fn await_network_request_with_timeout<T>(
+    timeout_duration: Duration,
+    request: impl Future<Output = T>,
+    timeout_error: impl FnOnce(tokio::time::error::Elapsed) -> TaskError,
+) -> Result<T, TaskError> {
+    tokio::time::timeout(timeout_duration, request)
+        .await
+        .map_err(timeout_error)
+}
+
+pub(crate) async fn await_managed_network_request_with_timeout<T>(
+    task_manager: Arc<TaskManager>,
+    reaper_name: &'static str,
+    timeout_duration: Duration,
+    request: impl Future<Output = T> + Send + 'static,
+    timeout_error: impl FnOnce(tokio::time::error::Elapsed) -> TaskError,
+) -> Result<T, TaskError>
+where
+    T: Send + 'static,
+{
+    let mut task = tokio::spawn(request);
+    match tokio::time::timeout(timeout_duration, &mut task).await {
+        Ok(result) => result.map_err(|source| TaskError::BackendTaskFailed {
+            source: source.into(),
+        }),
+        Err(source) => {
+            task_manager.spawn_sync(reaper_name, async move {
+                if let Err(source) = task.await {
+                    let error = crate::backend_task::error::BackendTaskJoinError::from(source);
+                    tracing::error!(?error, "Timed-out background request stopped unexpectedly");
+                }
+            });
+            Err(timeout_error(source))
+        }
+    }
+}
 
 /// Returns `true` for backend tasks that read or write the
 /// `WalletBackend` (and therefore the upstream `SecretStore` / sidecar

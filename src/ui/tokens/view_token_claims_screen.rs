@@ -24,6 +24,16 @@ pub enum FetchStatus {
     Fetching(DateTime<Utc>),
 }
 
+impl FetchStatus {
+    fn stop_on_failure(&mut self, message_type: MessageType) {
+        if matches!(self, Self::Fetching(_))
+            && matches!(message_type, MessageType::Error | MessageType::Warning)
+        {
+            *self = Self::NotFetching;
+        }
+    }
+}
+
 pub struct ViewTokenClaimsScreen {
     pub identity_token_basic_info: IdentityTokenBasicInfo,
     pub new_claims_query: DocumentQuery,
@@ -69,16 +79,9 @@ impl ViewTokenClaimsScreen {
 }
 
 impl ScreenLike for ViewTokenClaimsScreen {
-    fn display_message(&mut self, message: &str, message_type: MessageType) {
+    fn display_message(&mut self, _message: &str, message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
-        match message_type {
-            MessageType::Error | MessageType::Warning => {
-                if message.contains("Error fetching documents") {
-                    self.fetch_status = FetchStatus::NotFetching;
-                }
-            }
-            _ => {}
-        }
+        self.fetch_status.stop_on_failure(message_type);
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
@@ -223,5 +226,25 @@ impl ScreenLike for ViewTokenClaimsScreen {
         });
 
         action
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn in_flight_claim_fetch_failure_is_driven_by_message_type_not_text() {
+        let mut status = FetchStatus::Fetching(Utc::now());
+        status.stop_on_failure(MessageType::Error);
+        assert_eq!(status, FetchStatus::NotFetching);
+
+        let mut status = FetchStatus::Fetching(Utc::now());
+        status.stop_on_failure(MessageType::Warning);
+        assert_eq!(status, FetchStatus::NotFetching);
+
+        let mut status = FetchStatus::Fetching(Utc::now());
+        status.stop_on_failure(MessageType::Info);
+        assert!(matches!(status, FetchStatus::Fetching(_)));
     }
 }

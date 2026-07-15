@@ -188,10 +188,20 @@ impl TokensSubscreen {
     }
 }
 
-#[derive(PartialEq)]
+#[derive(Debug, PartialEq)]
 pub enum RefreshingStatus {
     Refreshing,
     NotRefreshing,
+}
+
+impl RefreshingStatus {
+    fn stop_on_failure(&mut self, message_type: MessageType) {
+        if *self == Self::Refreshing
+            && matches!(message_type, MessageType::Error | MessageType::Warning)
+        {
+            *self = Self::NotRefreshing;
+        }
+    }
 }
 
 /// Represents the status of the user's search
@@ -2860,6 +2870,8 @@ impl ScreenLike for TokensScreen {
     fn display_message(&mut self, msg: &str, msg_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
 
+        self.refreshing_status.stop_on_failure(msg_type);
+
         // Clear the operation banner only on Error/Warning (task failed).
         if matches!(msg_type, MessageType::Error | MessageType::Warning) {
             self.operation_banner.take_and_clear();
@@ -3018,6 +3030,25 @@ mod tests {
     use dash_sdk::dpp::data_contract::TokenConfiguration;
     use dash_sdk::dpp::identifier::Identifier;
     use dash_sdk::platform::{DataContract, Identity};
+
+    #[test]
+    fn in_flight_token_refresh_failure_is_driven_by_message_type_not_text() {
+        let mut status = RefreshingStatus::Refreshing;
+        status.stop_on_failure(MessageType::Error);
+        assert_eq!(status, RefreshingStatus::NotRefreshing);
+
+        let mut status = RefreshingStatus::Refreshing;
+        status.stop_on_failure(MessageType::Warning);
+        assert_eq!(status, RefreshingStatus::NotRefreshing);
+
+        let mut status = RefreshingStatus::Refreshing;
+        status.stop_on_failure(MessageType::Info);
+        assert_eq!(status, RefreshingStatus::Refreshing);
+
+        let mut status = RefreshingStatus::NotRefreshing;
+        status.stop_on_failure(MessageType::Error);
+        assert_eq!(status, RefreshingStatus::NotRefreshing);
+    }
 
     fn ensure_test_env() {
         static INIT: Once = Once::new();

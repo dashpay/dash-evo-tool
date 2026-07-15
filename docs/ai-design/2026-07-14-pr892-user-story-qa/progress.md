@@ -259,21 +259,30 @@ needed).
 
 ## DOC
 
-- [x] DOC-001: Register a new data contract — BLOCKED (live-tested: clean typed "No identities
-      loaded" message, no crash)
+- [x] DOC-001: Register a new data contract — PASS (retested 2026-07-15: full E2E registration
+      of "QA Note Contract" for QA Identity 1, owner ID cross-checked on-chain; unlocks DOC-005–009)
 - [x] DOC-002: Update an existing data contract — FAIL — **application crash**: `.expect()` on
       `get_contracts()` panics on `WalletBackendNotYetWired`; app relaunched, zero persistent
       state lost
-- [x] DOC-003: Import and manage contracts — BLOCKED (confirmed reachable without identity;
-      dispatches + fails cleanly on known quorum-sync error)
+- [x] DOC-003: Import and manage contracts — Partial PASS (retested 2026-07-15: import-by-ID
+      PASS with a genuinely new contract; "Remove cached contract" is a confirmed click no-op —
+      a11y-verified exact coordinates, 4 attempts, zero dispatch)
 - [x] DOC-004: Query and browse documents — FAIL (dispatches a real query that hangs silently
       forever, with a misleading ever-counting "Querying documents..." progress banner)
-- [x] DOC-005: Create a document — BLOCKED (reachable, clean empty state, no crash)
-- [x] DOC-006: Replace or update a document — BLOCKED (same as DOC-005)
-- [x] DOC-007: Delete a document — BLOCKED (same as DOC-005)
-- [x] DOC-008: Transfer document ownership — BLOCKED (same as DOC-005)
-- [x] DOC-009: Purchase a document and set document pricing — BLOCKED (same as DOC-005; both
-      "Purchase Document" and "Set Document Price" menu items tested)
+- [x] DOC-005: Create a document — PASS (retested 2026-07-15: full E2E create on "QA Note
+      Contract", `note` document on-chain verified via documents query tool)
+- [x] DOC-006: Replace or update a document — PASS (retested 2026-07-15: fetched existing
+      document by ID, replaced `message`, same `$id` confirmed on-chain with new content)
+- [x] DOC-007: Delete a document — PASS (retested 2026-07-15: deleted a scratch document,
+      confirmed absent from a subsequent live query)
+- [x] DOC-008: Transfer document ownership — PASS (retested 2026-07-15: QA Identity 1 → QA
+      Identity 2 by raw Identity ID; required a purpose-built "QA Transfer Contract" with
+      `transferable: 1` — the original "QA Note Contract" correctly rejects transfer per platform
+      consensus rules since it never opted in)
+- [x] DOC-009: Purchase a document and set document pricing — PASS (retested 2026-07-15: set
+      price 100000000 credits on "QA Purchase Contract" doc, QA Identity 2 purchased at that
+      price, on-chain `$ownerId` confirms both payment and ownership transfer; required
+      `transferable: 1` + `tradeMode: 1` on the fixture contract)
 
 ## DEV
 

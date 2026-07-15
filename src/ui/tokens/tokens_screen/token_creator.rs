@@ -5,9 +5,10 @@ use dash_sdk::dpp::data_contract::associated_token::token_distribution_rules::To
 use dash_sdk::dpp::data_contract::change_control_rules::authorized_action_takers::AuthorizedActionTakers;
 use dash_sdk::dpp::data_contract::change_control_rules::v0::ChangeControlRulesV0;
 use dash_sdk::dpp::data_contract::change_control_rules::ChangeControlRules;
-use dash_sdk::dpp::data_contract::conversion::json::DataContractJsonConversionMethodsV0;
+use dash_sdk::dpp::data_contract::serialized_version::DataContractInSerializationFormat;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+use dash_sdk::dpp::version::TryFromPlatformVersioned;
 use dash_sdk::platform::Identifier;
 use eframe::epaint::Color32;
 use egui::{ComboBox, Context, Frame, Margin, RichText, TextEdit, Ui};
@@ -920,7 +921,11 @@ impl TokensScreen {
                                             }
                                         };
 
-                                        let data_contract_json = data_contract.to_json(self.app_context.platform_version()).expect("Expected to map contract to json");
+                                        let data_contract_fmt = DataContractInSerializationFormat::try_from_platform_versioned(
+                                            &data_contract,
+                                            self.app_context.platform_version(),
+                                        ).expect("Expected to map contract to serialization format");
+                                        let data_contract_json = serde_json::to_value(&data_contract_fmt).expect("Expected to map contract to json");
                                         self.show_json_popup = true;
                                         self.json_popup_text = serde_json::to_string_pretty(&data_contract_json).expect("Expected to serialize json");
                                     },

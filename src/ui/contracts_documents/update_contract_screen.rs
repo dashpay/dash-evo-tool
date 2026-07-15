@@ -21,10 +21,12 @@ use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::{BackendTaskSuccessResult, MessageType, ScreenLike};
 use dash_sdk::dpp::data_contract::accessors::v0::{DataContractV0Getters, DataContractV0Setters};
 use dash_sdk::dpp::data_contract::conversion::json::DataContractJsonConversionMethodsV0;
+use dash_sdk::dpp::data_contract::serialized_version::DataContractInSerializationFormat;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
+use dash_sdk::dpp::version::TryFromPlatformVersioned;
 use dash_sdk::platform::{DataContract, IdentityPublicKey};
 use eframe::egui::{self, Color32, Frame, Margin, TextEdit};
 use egui::{RichText, ScrollArea, Ui};
@@ -589,12 +591,18 @@ impl ScreenLike for UpdateDataContractScreen {
                             {
                                 let platform_version = self.app_context.platform_version();
                                 self.selected_contract = Some(display_text.to_string());
-                                self.contract_json_input =
-                                    match contract.contract.to_json(platform_version) {
-                                        Ok(json) => serde_json::to_string_pretty(&json)
-                                            .expect("Expected to get string pretty"),
-                                        Err(e) => format!("Error serialising contract: {e}"),
-                                    };
+                                self.contract_json_input = match DataContractInSerializationFormat::try_from_platform_versioned(
+                                    &contract.contract,
+                                    platform_version,
+                                )
+                                .map_err(|e| e.to_string())
+                                .and_then(|fmt| {
+                                    serde_json::to_value(&fmt).map_err(|e| e.to_string())
+                                }) {
+                                    Ok(json) => serde_json::to_string_pretty(&json)
+                                        .expect("Expected to get string pretty"),
+                                    Err(e) => format!("Error serialising contract: {e}"),
+                                };
                             }
                         }
                     });

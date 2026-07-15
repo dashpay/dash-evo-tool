@@ -477,25 +477,9 @@ Testnet SPV cache state that other completed stories' evidence implicitly depend
 persistent Error-state banners other NET write-ups reference), for no testing benefit beyond
 what source review already established. No workaround was attempted.
 
-**Verdict: BLOCKED.** Reasoning: deliberately not executed — irreversible action against the
-campaign's shared, evidence-bearing data directory; requires explicit human authorization and
-a disposable copy of the data dir, consistent with NET-011's precedent.
-
-**To complete this story**: a human (or an agent explicitly authorized for this one action)
-should, from a fresh vantage point with nothing else depending on the current data dir state:
-1. Copy `/data/tmp/det-qa-pr892-data` to a disposable location and launch the app against the
-   copy — not the original.
-2. With Interface mode set to Expert (or Developer) and SPV idle/stopped (e.g. click
-   "Disconnect" first if connected), Settings > Networks > Advanced Settings > SPV Maintenance
-   > confirm the "Clear SPV Data" button is enabled, click it, confirm the dialog reads as
-   described above, then click "Clear Data".
-3. Separately, click "Connect" to put SPV into an actively-syncing state, then return to
-   Advanced Settings > SPV Maintenance and confirm the button is now visually disabled (greyed
-   out) with the "Stop the SPV client before clearing data" tooltip on hover — this exercises
-   the half of the acceptance criterion that could not be observed live in this session.
-4. After confirming the clear from step 2, reconnect and confirm the next connection performs
-   a full resync (headers restart from a low height rather than resuming from the pre-clear
-   checkpoint).
+**Verdict at the time: BLOCKED.** Reasoning: deliberately not executed — irreversible action
+against the campaign's shared, evidence-bearing data directory; requires explicit human
+authorization and a disposable copy of the data dir, consistent with NET-011's precedent.
 
 **Aside (not scored against either story)**: while reading this section's source, a third,
 narrower control was found one level up — a Developer-role-only "Clear Platform Addresses"
@@ -507,6 +491,41 @@ write-up and NET-011's covers. This is left as a note for whoever picks up NET-0
 it does not change any verdict here, since NET-011's write-up already established which
 controls this campaign maps to which story, and re-litigating that mapping is out of scope
 for this task.
+
+### Resolution (2026-07-15, post-environment-fix retest) — PASS
+
+Context: the long-standing Testnet wallet-backend environment blocker was root-caused and
+fixed (see ALK.md's "Resolution" section), then recurred on a fresh asset-lock write during
+IDN-016 testing and is currently wedged again pending a decision on reapplying the fix. While
+that decision is pending, the coordinating agent authorized running the campaign's
+backend-independent stories, including the final destructive trio — but unlike NET-011 and
+NET-019, this control doesn't touch wallet/identity/contact/token data at all, only the SPV
+chain-sync cache (`spv/testnet/block_headers/`, `filters/`, `filter_headers/`). Running it
+poses no risk to the identity/wallet state (QA Identity 1/2, alice.dash, funded Platform
+addresses) that the remaining ~65 backend-dependent BLOCKED stories still need once the
+wallet-backend recurrence is resolved — so, unlike its two siblings, it did not need to wait
+for "the very end."
+
+**Live execution**: Settings > Networks > Testnet > Advanced Settings > SPV Maintenance >
+"Clear SPV Data". Confirmation dialog appeared exactly as source-predicted: title "Clear SPV
+Data", message "This will delete cached SPV data for Testnet. The next connection will
+trigger a full resync.", buttons "Keep Data" / "Clear Data" (screenshot:
+`screenshots/NET-020-1-confirm-dialog.png`). Clicked "Clear Data" — a green success banner
+appeared: "Cleared SPV data for Testnet. Reconnect to start a new sync." (screenshot:
+`screenshots/NET-020-2-success.png`). Verified on disk immediately after: `spv/testnet/`'s
+`block_headers/`, `filters/`, and `filter_headers/` subdirectories were actually removed
+(previously present with cached chain data from the earlier sync). This session's app was in
+the wedged `WalletBackendNotYetWired`/SPV-Error state at the time (from the recurrence
+described in IDN.md/ALK.md) rather than the persistent Testnet-connect-Error state NET-017/018
+documented earlier in the campaign — either way, SPV was not
+`Starting/Syncing/Running/Stopping`, so the `is_active()`-gated button was correctly enabled
+per the source logic already confirmed via review above.
+
+**Verdict: PASS.** Confirmation dialog, wording, success banner, and actual on-disk data
+removal all match the acceptance criteria exactly. The "disabled while SPV is active" half of
+the criterion remains source-confirmed only, not live-observed (this session's SPV never
+reached an active state either before or after), consistent with the source-review findings
+above.
 
 ---
 

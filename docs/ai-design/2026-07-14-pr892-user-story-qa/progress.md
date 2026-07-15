@@ -314,11 +314,14 @@ needed).
       requires explicit human authorization and a disposable copy of the data dir, consistent
       with NET-011's precedent; navigation to the control and its confirmation-dialog wording
       confirmed via live UI + source review — see scenarios/NET.md)
-- [x] NET-020: Clear cached SPV data to force a resync — BLOCKED (deliberately not executed:
-      irreversible action against the campaign's shared, evidence-bearing data directory;
-      requires explicit human authorization and a disposable copy of the data dir, consistent
-      with NET-011's precedent; button correctly enabled while SPV is in Error state and
-      source-confirmed disabled while Starting/Syncing/Running/Stopping — see scenarios/NET.md)
+- [x] NET-020: Clear cached SPV data to force a resync — PASS (live-executed post-fix: unlike
+      NET-011/NET-019, this action doesn't touch wallet/identity/contact data, only the SPV
+      chain cache, so it's safe to run while other stories still need the live identity state.
+      Confirmation dialog matched acceptance criteria exactly; clicking "Clear Data" produced
+      "Cleared SPV data for Testnet. Reconnect to start a new sync."; confirmed on disk —
+      block_headers/filters/filter_headers directories under spv/testnet/ were actually removed.
+      Button correctly enabled while SPV was in its Error state, per source-confirmed gating
+      logic already documented — see scenarios/NET.md)
 - [x] NET-021: App settings preserved across an app upgrade — BLOCKED (no pre-upgrade legacy
       settings-storage fixture exists; source review of `legacy_settings.rs` and the
       `v093_upgrade.rs` composite regression test found strong evidence the feature is fully

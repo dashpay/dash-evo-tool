@@ -1,5 +1,6 @@
 use crate::backend_task::{BackendTaskSuccessResult, FeeResult};
 use crate::model::fee_estimation::format_credits_as_dash;
+use crate::model::user_role::UserRole;
 use crate::ui::components::Component;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
 use crate::ui::components::left_panel::add_left_panel;
@@ -21,7 +22,7 @@ use dash_sdk::dpp::data_contract::associated_token::token_perpetual_distribution
 use dash_sdk::dpp::data_contract::TokenConfiguration;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
-use eframe::egui::{self, Color32, Context, Frame, Margin, Ui};
+use eframe::egui::{self, Color32, Frame, Margin, Ui};
 use egui::RichText;
 use crate::app::{AppAction, BackendTasksExecutionMode};
 use crate::backend_task::BackendTask;
@@ -304,9 +305,11 @@ impl ScreenLike for ClaimTokensScreen {
         }
     }
 
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
         let mut action = add_top_panel(
-            ctx,
+            ui,
             &self.app_context,
             vec![
                 ("Tokens", AppAction::GoToMainScreen),
@@ -321,15 +324,15 @@ impl ScreenLike for ClaimTokensScreen {
 
         // Left panel
         action |= add_left_panel(
-            ctx,
+            ui,
             &self.app_context,
             crate::ui::RootScreenType::RootScreenMyTokenBalances,
         );
 
         // Subscreen chooser
-        action |= add_tokens_subscreen_chooser_panel(ctx, &self.app_context);
+        action |= add_tokens_subscreen_chooser_panel(ui, &self.app_context);
 
-        island_central_panel(ctx, |ui| {
+        island_central_panel(ui, |ui| {
             if self.status == ClaimTokensStatus::Complete {
                 action |= self.show_success_screen(ui);
                 return;
@@ -347,7 +350,7 @@ impl ScreenLike for ClaimTokensScreen {
             ui.add_space(10.0);
 
             // Check if user has any auth keys
-            let has_keys = if self.app_context.is_developer_mode() {
+            let has_keys = if self.app_context.user_role().at_least(UserRole::Developer) {
                 !identity.identity.public_keys().is_empty()
             } else {
                 match identity.identity_type {
@@ -399,13 +402,14 @@ impl ScreenLike for ClaimTokensScreen {
                 // Possibly handle locked wallet scenario
                 if let Some(wallet) = &self.selected_wallet {
                     if !self.wallet_open_attempted {
-                        if let Err(e) = try_open_wallet_no_password(wallet) {
-                            MessageBanner::set_global(
+                        if let Err(e) = try_open_wallet_no_password(&self.app_context, wallet) {
+                            let handle = MessageBanner::set_global(
                                 self.app_context.egui_ctx(),
                                 "Unable to open wallet. Please unlock it and try again.",
                                 MessageType::Error,
-                            )
-                            .with_details(e);
+                            );
+                            handle.with_details(e);
+                            handle.disable_auto_dismiss();
                         }
                         self.wallet_open_attempted = true;
                     }
@@ -563,7 +567,7 @@ impl ScreenLike for ClaimTokensScreen {
                 let fee_estimator = self.app_context.fee_estimator();
                 let estimated_fee = fee_estimator.estimate_document_batch(1); // Token operations are document batch transitions
 
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                let dark_mode = ui.style().visuals.dark_mode;
                 Frame::new()
                     .fill(DashColors::surface(dark_mode))
                     .inner_margin(Margin::symmetric(10, 8))

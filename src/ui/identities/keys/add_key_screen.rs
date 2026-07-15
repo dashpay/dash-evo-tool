@@ -26,7 +26,7 @@ use dash_sdk::dpp::identity::identity_public_key::v0::IdentityPublicKeyV0;
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::dpp::prelude::Identifier;
-use eframe::egui::{self, Context, Frame, Margin};
+use eframe::egui::{self, Frame, Margin};
 use egui::{Color32, RichText, Ui};
 use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
@@ -186,7 +186,9 @@ impl AddKeyScreen {
         // Convert the input string to bytes (hex decoding)
         match hex::decode(self.private_key_input.text()) {
             Ok(private_key_bytes_vec) if private_key_bytes_vec.len() == 32 => {
-                let private_key_bytes = private_key_bytes_vec.try_into().unwrap();
+                let private_key_bytes: [u8; 32] = private_key_bytes_vec
+                    .try_into()
+                    .expect("invariant: length checked to be 32 in the match guard");
                 let public_key_data_result = self.key_type.public_key_data_from_private_key_data(
                     &private_key_bytes,
                     self.app_context.network,
@@ -233,7 +235,9 @@ impl AddKeyScreen {
                         key_type: self.key_type,
                         purpose: self.purpose,
                         security_level: self.security_level,
-                        data: public_key_data_result.unwrap().into(),
+                        data: public_key_data_result
+                            .expect("invariant: Err handled in the preceding branch")
+                            .into(),
                         read_only: false,
                         disabled_at: None,
                         contract_bounds,
@@ -249,7 +253,9 @@ impl AddKeyScreen {
                             format!("Issue verifying private key: {}", err),
                             MessageType::Error,
                         );
-                    } else if validation_result.unwrap() {
+                    } else if validation_result
+                        .expect("invariant: Err handled in the preceding branch")
+                    {
                         let new_qualified_key = QualifiedIdentityPublicKey {
                             identity_public_key: new_key.into(),
                             in_wallet_at_derivation_path: None,
@@ -385,9 +391,11 @@ impl ScreenLike for AddKeyScreen {
         }
     }
 
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
         let mut action = add_top_panel(
-            ctx,
+            ui,
             &self.app_context,
             vec![
                 ("Identities", AppAction::GoToMainScreen),
@@ -397,12 +405,12 @@ impl ScreenLike for AddKeyScreen {
         );
 
         action |= add_left_panel(
-            ctx,
+            ui,
             &self.app_context,
             crate::ui::RootScreenType::RootScreenIdentities,
         );
 
-        action |= island_central_panel(ctx, |ui| {
+        action |= island_central_panel(ui, |ui| {
             let mut inner_action = AppAction::None;
 
             // Show the success screen if the key was added successfully
@@ -418,8 +426,9 @@ impl ScreenLike for AddKeyScreen {
                 && let Some(wallet) = &self.selected_wallet
             {
                 if !self.wallet_open_attempted {
-                    if let Err(e) = try_open_wallet_no_password(wallet) {
-                        MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                    if let Err(e) = try_open_wallet_no_password(&self.app_context, wallet) {
+                        MessageBanner::set_global(ui.ctx(), &e, MessageType::Error)
+                            .disable_auto_dismiss();
                     }
                     self.wallet_open_attempted = true;
                 }
@@ -650,7 +659,7 @@ impl ScreenLike for AddKeyScreen {
             let fee_estimator = self.app_context.fee_estimator();
             let estimated_fee = fee_estimator.estimate_identity_update();
 
-            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            let dark_mode = ui.style().visuals.dark_mode;
             Frame::new()
                 .fill(DashColors::surface(dark_mode))
                 .inner_margin(Margin::symmetric(10, 8))

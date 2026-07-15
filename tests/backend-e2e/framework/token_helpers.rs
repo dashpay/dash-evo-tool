@@ -60,38 +60,39 @@ pub fn build_register_token_task(
     BackendTask::TokenTask(Box::new(TokenTask::RegisterTokenContract {
         identity: identity.clone(),
         signing_key: Box::new(signing_key.clone()),
-        token_names: vec![(
-            "E2ETestToken".to_string(),
-            "E2ETK".to_string(),
-            "en".to_string(),
-        )],
-        // No keywords — each keyword costs ~10B credits (0.1 DASH) due to
-        // the keyword search contract registration fee, which would exceed
-        // the test wallet's budget and cause registration to fail.
-        contract_keywords: vec![],
-        token_description: Some("Token created by backend E2E tests".to_string()),
-        should_capitalize: false,
-        decimals: 8,
-        base_supply: 0,
-        max_supply: Some(1_000_000_000_000_000),
-        start_paused: false,
-        allow_transfers_to_frozen_identities: false,
-        keeps_history,
-        main_control_group: None,
-        manual_minting_rules: owner_only.clone(),
-        manual_burning_rules: owner_only.clone(),
-        freeze_rules: owner_only.clone(),
-        unfreeze_rules: Box::new(owner_only.clone()),
-        destroy_frozen_funds_rules: Box::new(owner_only.clone()),
-        emergency_action_rules: Box::new(owner_only.clone()),
-        max_supply_change_rules: Box::new(owner_only.clone()),
-        conventions_change_rules: Box::new(owner_only.clone()),
-        main_control_group_change_authorized: AuthorizedActionTakers::ContractOwner,
-        distribution_rules,
-        groups: BTreeMap::new(),
-        document_schemas: None,
-        marketplace_trade_mode: 1,
-        marketplace_rules: owner_only,
+        params: Box::new(dash_evo_tool::backend_task::tokens::TokenContractParams {
+            token_names: vec![(
+                "E2ETestToken".to_string(),
+                "E2ETK".to_string(),
+                "en".to_string(),
+            )],
+            // No keywords — each keyword costs ~10B credits (0.1 DASH) due to
+            // the keyword search contract registration fee, which would exceed
+            // the test wallet's budget and cause registration to fail.
+            contract_keywords: vec![],
+            token_description: Some("Token created by backend E2E tests".to_string()),
+            should_capitalize: false,
+            decimals: 8,
+            base_supply: 0,
+            max_supply: Some(1_000_000_000_000_000),
+            start_paused: false,
+            allow_transfers_to_frozen_identities: false,
+            keeps_history,
+            main_control_group: None,
+            manual_minting_rules: owner_only.clone(),
+            manual_burning_rules: owner_only.clone(),
+            freeze_rules: owner_only.clone(),
+            unfreeze_rules: owner_only.clone(),
+            destroy_frozen_funds_rules: owner_only.clone(),
+            emergency_action_rules: owner_only.clone(),
+            max_supply_change_rules: owner_only.clone(),
+            conventions_change_rules: owner_only.clone(),
+            main_control_group_change_authorized: AuthorizedActionTakers::ContractOwner,
+            distribution_rules,
+            groups: BTreeMap::new(),
+            document_schemas: None,
+            marketplace_rules: owner_only,
+        }),
     }))
 }
 

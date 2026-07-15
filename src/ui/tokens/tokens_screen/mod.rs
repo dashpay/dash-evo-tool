@@ -11,6 +11,7 @@ pub use structs::*;
 
 pub use groups::*;
 
+use crate::wallet_backend::poison::MutexRecover;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, RwLock};
 use tracing::error;
@@ -45,20 +46,22 @@ use dash_sdk::dpp::prelude::TimestampMillisInterval;
 use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::Start;
 use dash_sdk::platform::{Identifier, IdentityPublicKey};
 use dash_sdk::query_types::IndexMap;
-use eframe::egui::{self, Color32, Context, Ui};
+use eframe::egui::{self, Color32, Ui};
 use crate::ui::theme::{DashColors, ResponseExt};
 use egui::{Checkbox, ColorImage, ComboBox, Response, RichText, TextEdit, TextureHandle};
 use enum_iterator::Sequence;
 use image::ImageReader;
 use crate::app::BackendTasksExecutionMode;
 use crate::backend_task::contract::ContractTask;
+use crate::backend_task::error::TaskError;
 use crate::backend_task::tokens::TokenTask;
-use crate::backend_task::{BackendTask, NO_IDENTITIES_FOUND};
+use crate::backend_task::{BackendTask, BackendTaskContext};
 
 use crate::app::{AppAction, DesiredAppAction};
 use crate::context::AppContext;
 use crate::model::amount::Amount;
 use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
+use crate::model::user_role::UserRole;
 use crate::model::wallet::Wallet;
 use crate::ui::components::MessageBanner;
 use crate::ui::components::amount_input::AmountInput;
@@ -71,6 +74,7 @@ use crate::ui::components::tokens_subscreen_chooser_panel::add_tokens_subscreen_
 use crate::ui::components::top_panel::add_top_panel;
 use crate::ui::components::wallet_unlock_popup::{WalletUnlockPopup, WalletUnlockResult};
 use crate::ui::components::{Component, ComponentResponse};
+use crate::ui::helpers::ModalOpeningGuard;
 use crate::ui::{BackendTaskSuccessResult, MessageType, RootScreenType, ScreenLike, ScreenType};
 
 const EXP_FORMULA_PNG: &[u8] = include_bytes!("../../../../assets/exp_function.png");
@@ -184,10 +188,59 @@ impl TokensSubscreen {
     }
 }
 
-#[derive(PartialEq)]
+#[derive(Debug, PartialEq)]
 pub enum RefreshingStatus {
     Refreshing,
     NotRefreshing,
+}
+
+impl RefreshingStatus {
+    fn stop_on_failure(
+        &mut self,
+        expected: Option<&BackendTaskContext>,
+        failed: &BackendTaskContext,
+    ) {
+        if *self == Self::Refreshing && expected == Some(failed) {
+            *self = Self::NotRefreshing;
+        }
+    }
+}
+
+fn is_duplicate_balance_refresh(
+    status: &RefreshingStatus,
+    pending_context: Option<&BackendTaskContext>,
+    action: &AppAction,
+) -> bool {
+    *status == RefreshingStatus::Refreshing
+        && pending_context == Some(&BackendTaskContext::TokenBalanceRefresh)
+        && matches!(
+            action,
+            AppAction::BackendTask(BackendTask::TokenTask(task))
+                if matches!(task.as_ref(), TokenTask::QueryMyTokenBalances)
+        )
+}
+
+fn completes_pending_operation(
+    pending_context: Option<&BackendTaskContext>,
+    result_context: &BackendTaskContext,
+    result: &BackendTaskSuccessResult,
+) -> bool {
+    if pending_context != Some(result_context) {
+        return false;
+    }
+
+    match result {
+        BackendTaskSuccessResult::FetchedTokenBalances => {
+            *result_context == BackendTaskContext::TokenBalanceRefresh
+        }
+        BackendTaskSuccessResult::TokenEstimatedNonClaimedPerpetualDistributionAmountWithExplanation(
+            identity_token_id,
+            ..
+        ) => {
+            *result_context == BackendTaskContext::TokenRewardEstimate(*identity_token_id)
+        }
+        _ => false,
+    }
 }
 
 /// Represents the status of the user's search
@@ -239,8 +292,28 @@ impl From<ChangeControlRulesV0> for ChangeControlRulesUI {
     }
 }
 
+/// Extra "minting destination" controls appended below the manual-mint rule grid.
+///
+/// Passed to [`ChangeControlRulesUI::render_control_change_rules_ui`] only for the
+/// Manual Mint action; every other action passes `None`.
+pub struct MintRecipientSection<'a> {
+    pub should_default_to_contract_owner: &'a mut bool,
+    pub destination_identity_enabled: &'a mut bool,
+    pub allow_choosing_destination: &'a mut bool,
+    pub destination_identity_rules: &'a mut ChangeControlRulesUI,
+    pub destination_identity: &'a mut String,
+    pub allow_choosing_destination_rules: &'a mut ChangeControlRulesUI,
+    pub destination_expanded: &'a mut bool,
+    pub allow_choosing_expanded: &'a mut bool,
+}
+
 impl ChangeControlRulesUI {
     /// Renders the UI for a single action’s configuration (mint, burn, freeze, etc.)
+    ///
+    /// `special_case_option` carries the Freeze-only "allow transfers to frozen
+    /// identities" toggle; `mint_section` carries the Manual-Mint-only destination
+    /// controls. Both are `None` for every other action.
+    #[allow(clippy::too_many_arguments)]
     pub fn render_control_change_rules_ui(
         &mut self,
         ui: &mut Ui,
@@ -248,6 +321,7 @@ impl ChangeControlRulesUI {
         action_name: &str,
         special_case_option: Option<&mut bool>,
         is_expanded: &mut bool,
+        mint_section: Option<MintRecipientSection>,
     ) {
         ui.horizontal(|ui| {
             // +/- button
@@ -331,7 +405,7 @@ impl ChangeControlRulesUI {
                             self.authorized_identity.get_or_insert_with(String::new);
                             if let Some(ref mut id_str) = self.authorized_identity {
                                 ui.horizontal(|ui| {
-                                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+                                    let dark_mode = ui.style().visuals.dark_mode;
                                     ui.add_sized(
                                         [300.0, 22.0],
                                         TextEdit::singleline(id_str)
@@ -414,7 +488,7 @@ impl ChangeControlRulesUI {
                             self.admin_identity.get_or_insert_with(String::new);
                             if let Some(ref mut id_str) = self.admin_identity {
                                 ui.horizontal(|ui| {
-                                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+                                    let dark_mode = ui.style().visuals.dark_mode;
                                     ui.add_sized(
                                         [300.0, 22.0],
                                         TextEdit::singleline(id_str)
@@ -478,246 +552,16 @@ impl ChangeControlRulesUI {
                             });
                             ui.end_row();
                         }
-                });
-            });
-        }
-    }
 
-    #[allow(clippy::too_many_arguments)]
-    pub fn render_mint_control_change_rules_ui(
-        &mut self,
-        ui: &mut Ui,
-        current_groups: &[GroupConfigUI],
-        new_tokens_destination_identity_should_default_to_contract_owner: &mut bool,
-        new_tokens_destination_identity_enabled: &mut bool,
-        minting_allow_choosing_destination: &mut bool,
-        new_tokens_destination_identity_rules: &mut ChangeControlRulesUI,
-        new_tokens_destination_identity: &mut String,
-        minting_allow_choosing_destination_rules: &mut ChangeControlRulesUI,
-        is_expanded: &mut bool,
-        new_tokens_destination_expanded: &mut bool,
-        minting_allow_choosing_expanded: &mut bool,
-    ) {
-        ui.horizontal(|ui| {
-            // +/- button
-            let button_text = if *is_expanded { "−" } else { "+" };
-            let button_response = ui.add(
-                egui::Button::new(
-                    RichText::new(button_text)
-                        .size(20.0)
-                        .color(DashColors::DASH_BLUE),
-                )
-                .fill(Color32::TRANSPARENT)
-                .stroke(egui::Stroke::NONE),
-            );
-            if button_response.clicked() {
-                *is_expanded = !*is_expanded;
-            }
-            ui.label("Manual Mint");
-        });
-
-        if *is_expanded {
-            ui.indent("manual_mint_content", |ui| {
-                egui::Grid::new("manual_mint_grid")
-                    .num_columns(2)
-                    .spacing([16.0, 8.0]) // Horizontal, vertical spacing
-                    .show(ui, |ui| {
-                    // Authorized action takers
-                    ui.horizontal(|ui| {
-                        ui.label("Authorized to perform action:");
-                        ComboBox::from_id_salt(format!("Authorized Manual Mint {}", current_groups.len()))
-                            .selected_text(match self.rules.authorized_to_make_change {
-                                AuthorizedActionTakers::NoOne => "No One".to_string(),
-                                AuthorizedActionTakers::ContractOwner => "Contract Owner".to_string(),
-                                AuthorizedActionTakers::Identity(id) => {
-                                    if id == Identifier::default() {
-                                        "Identity".to_string()
-                                    } else {
-                                        format!("Identity({})", id)
-                                    }
-                                },
-                                AuthorizedActionTakers::MainGroup => "Main Group".to_string(),
-                                AuthorizedActionTakers::Group(position) => format!("Group {}", position),
-                            })
-                            .show_ui(ui, |ui| {
-                                ui.selectable_value(
-                                    &mut self.rules.authorized_to_make_change,
-                                    AuthorizedActionTakers::NoOne,
-                                    "No One",
-                                );
-                                ui.selectable_value(
-                                    &mut self.rules.authorized_to_make_change,
-                                    AuthorizedActionTakers::ContractOwner,
-                                    "Contract Owner",
-                                );
-                                ui.selectable_value(
-                                    &mut self.rules.authorized_to_make_change,
-                                    AuthorizedActionTakers::Identity(Identifier::default()),
-                                    "Identity",
-                                );
-                                if current_groups.is_empty() {
-                                    ui.horizontal(|ui| {
-                                        ui.label(RichText::new("(No Groups Added Yet)").color(Color32::GRAY));
-                                    });
-                                } else {
-                                    ui.selectable_value(
-                                        &mut self.rules.authorized_to_make_change,
-                                        AuthorizedActionTakers::MainGroup,
-                                        "Main Group",
-                                    );
-                                }
-                                for (group_position, _group) in current_groups.iter().enumerate() {
-                                    ui.selectable_value(
-                                        &mut self.rules.authorized_to_make_change,
-                                        AuthorizedActionTakers::Group(group_position as GroupContractPosition),
-                                        format!("Group {}", group_position),
-                                    );
-                                }
-                            });
-
-                        // If user selected Identity or Group, show text edit
-                        if let AuthorizedActionTakers::Identity(_) = &mut self.rules.authorized_to_make_change {
-                            self.authorized_identity.get_or_insert_with(String::new);
-                            if let Some(ref mut id_str) = self.authorized_identity {
-                                ui.horizontal(|ui| {
-                                    let dark_mode = ui.ctx().style().visuals.dark_mode;
-                                    ui.add_sized(
-                                        [300.0, 22.0],
-                                        TextEdit::singleline(id_str)
-                                            .hint_text("Enter base58 id")
-                                            .text_color(DashColors::text_primary(dark_mode))
-                                            .background_color(DashColors::input_background(dark_mode)),
-                                    );
-
-                                    if !id_str.is_empty() {
-                                        let is_valid = Identifier::from_string(id_str.as_str(), Encoding::Base58).is_ok();
-
-                                        let (symbol, color) = if is_valid {
-                                            ("✔", Color32::DARK_GREEN)
-                                        } else {
-                                            ("×", Color32::DARK_RED)
-                                        };
-
-                                        ui.label(RichText::new(symbol).color(color).strong());
-                                    }
-                                });
-                            }
-                        }
-                    });
-                    ui.end_row();
-
-                    // Admin action takers
-                    ui.horizontal(|ui| {
-                        ui.label("Authorized to change rules:");
-                        ComboBox::from_id_salt(format!("Admin Manual Mint {}", current_groups.len()))
-                            .selected_text(match self.rules.admin_action_takers {
-                                AuthorizedActionTakers::NoOne => "No One".to_string(),
-                                AuthorizedActionTakers::ContractOwner => "Contract Owner".to_string(),
-                                AuthorizedActionTakers::Identity(id) => {
-                                    if id == Identifier::default() {
-                                        "Identity".to_string()
-                                    } else {
-                                        format!("Identity({})", id)
-                                    }
-                                },
-                                AuthorizedActionTakers::MainGroup => "Main Group".to_string(),
-                                AuthorizedActionTakers::Group(position) => format!("Group {}", position),
-                            })
-                            .show_ui(ui, |ui| {
-                                ui.selectable_value(
-                                    &mut self.rules.admin_action_takers,
-                                    AuthorizedActionTakers::NoOne,
-                                    "No One",
-                                );
-                                ui.selectable_value(
-                                    &mut self.rules.admin_action_takers,
-                                    AuthorizedActionTakers::ContractOwner,
-                                    "Contract Owner",
-                                );
-                                ui.selectable_value(
-                                    &mut self.rules.admin_action_takers,
-                                    AuthorizedActionTakers::Identity(Identifier::default()),
-                                    "Identity",
-                                );
-                                if current_groups.is_empty() {
-                                    ui.horizontal(|ui| {
-                                        ui.label(RichText::new("(No Groups Added Yet)").color(Color32::GRAY));
-                                    });
-                                } else {
-                                    ui.selectable_value(
-                                        &mut self.rules.admin_action_takers,
-                                        AuthorizedActionTakers::MainGroup,
-                                        "Main Group",
-                                    );
-                                }
-                                for (group_position, _group) in current_groups.iter().enumerate() {
-                                    ui.selectable_value(
-                                        &mut self.rules.admin_action_takers,
-                                        AuthorizedActionTakers::Group(group_position as GroupContractPosition),
-                                        format!("Group {}", group_position),
-                                    );
-                                }
-                            });
-
-                        if let AuthorizedActionTakers::Identity(_) = &mut self.rules.admin_action_takers {
-                            self.admin_identity.get_or_insert_with(String::new);
-                            if let Some(ref mut id_str) = self.admin_identity {
-                                ui.horizontal(|ui| {
-                                    let dark_mode = ui.ctx().style().visuals.dark_mode;
-                                    ui.add_sized(
-                                        [300.0, 22.0],
-                                        TextEdit::singleline(id_str)
-                                            .hint_text("Enter base58 id")
-                                            .text_color(DashColors::text_primary(dark_mode))
-                                            .background_color(DashColors::input_background(dark_mode)),
-                                    );
-
-                                    if !id_str.is_empty() {
-                                        let is_valid = Identifier::from_string(id_str.as_str(), Encoding::Base58).is_ok();
-
-                                        let (symbol, color) = if is_valid {
-                                            ("✔", Color32::DARK_GREEN)
-                                        } else {
-                                            ("×", Color32::DARK_RED)
-                                        };
-
-                                        ui.label(RichText::new(symbol).color(color).strong());
-                                    }
-                                });
-                            }
-                        }
-                    });
-                    ui.end_row();
-
-                    // Booleans
-                    ui.checkbox(
-                        &mut self
-                            .rules
-                            .changing_authorized_action_takers_to_no_one_allowed,
-                        "Changing authorized action takers to no one allowed",
-                    );
-                    ui.end_row();
-
-                    ui.checkbox(
-                        &mut self.rules.changing_admin_action_takers_to_no_one_allowed,
-                        "Changing admin action takers to no one allowed",
-                    );
-                    ui.end_row();
-
-                    ui.checkbox(
-                        &mut self.rules.self_changing_admin_action_takers_allowed,
-                        "Self-changing admin action takers allowed",
-                    );
-                    ui.end_row();
-
-                    if self.rules.authorized_to_make_change != AuthorizedActionTakers::NoOne {
-
+                    if let Some(mint) = mint_section
+                        && self.rules.authorized_to_make_change != AuthorizedActionTakers::NoOne
+                    {
                         let mut default_to_owner_clicked = false;
                         let mut default_to_identity_clicked = false;
 
                         if ui
                             .checkbox(
-                                new_tokens_destination_identity_should_default_to_contract_owner,
+                                mint.should_default_to_contract_owner,
                                 "Newly minted tokens should default to going to contract owner",
                             )
                             .clicked()
@@ -727,7 +571,7 @@ impl ChangeControlRulesUI {
 
                         if ui
                             .checkbox(
-                                new_tokens_destination_identity_enabled,
+                                mint.destination_identity_enabled,
                                 "Use a default identity to receive newly minted tokens",
                             )
                             .clicked()
@@ -737,42 +581,53 @@ impl ChangeControlRulesUI {
 
                         // Apply exclusivity
                         if default_to_owner_clicked {
-                            *new_tokens_destination_identity_enabled = false;
+                            *mint.destination_identity_enabled = false;
                         }
 
                         if default_to_identity_clicked {
-                            *new_tokens_destination_identity_should_default_to_contract_owner = false;
+                            *mint.should_default_to_contract_owner = false;
                         }
 
-                        if *new_tokens_destination_identity_enabled {
+                        if *mint.destination_identity_enabled {
                             ui.end_row();
 
                             ui.label("Default Destination Identity (Base58):");
-                            ui.text_edit_singleline(new_tokens_destination_identity);
+                            ui.text_edit_singleline(mint.destination_identity);
                             ui.end_row();
 
-                            new_tokens_destination_identity_rules.render_control_change_rules_ui(ui, current_groups,"New Tokens Destination Identity Rules", None, new_tokens_destination_expanded);
+                            mint.destination_identity_rules.render_control_change_rules_ui(
+                                ui,
+                                current_groups,
+                                "New Tokens Destination Identity Rules",
+                                None,
+                                mint.destination_expanded,
+                                None,
+                            );
                         }
 
                         ui.end_row();
 
-                        // MINTING ALLOW CHOOSING DESTINATION
                         ui.checkbox(
-                            minting_allow_choosing_destination,
+                            mint.allow_choosing_destination,
                             "Allow user to pick a destination identity on each mint",
                         );
 
-
-                        if *minting_allow_choosing_destination {
+                        if *mint.allow_choosing_destination {
                             ui.end_row();
-                            minting_allow_choosing_destination_rules.render_control_change_rules_ui(ui, current_groups, "Minting Allow Choosing Destination Rules", None, minting_allow_choosing_expanded);
+                            mint.allow_choosing_destination_rules.render_control_change_rules_ui(
+                                ui,
+                                current_groups,
+                                "Minting Allow Choosing Destination Rules",
+                                None,
+                                mint.allow_choosing_expanded,
+                                None,
+                            );
                         }
                         ui.end_row();
 
-                        // Destination Identity Mode Enforcement
-                        let none_selected = !*new_tokens_destination_identity_enabled
-                            && !*new_tokens_destination_identity_should_default_to_contract_owner
-                            && !*minting_allow_choosing_destination;
+                        let none_selected = !*mint.destination_identity_enabled
+                            && !*mint.should_default_to_contract_owner
+                            && !*mint.allow_choosing_destination;
 
                         if none_selected {
                             ui.colored_label(
@@ -1147,9 +1002,41 @@ pub struct TokenBuildArgs {
     pub distribution_rules: TokenDistributionRules,
     pub groups: BTreeMap<u16, Group>,
     pub document_schemas: Option<BTreeMap<String, serde_json::Value>>,
-    pub marketplace_trade_mode: u8,
     pub marketplace_rules: ChangeControlRules,
     pub change_direct_purchase_pricing_rules: ChangeControlRules,
+}
+
+impl TokenBuildArgs {
+    /// Converts parsed UI inputs into the backend token-contract parameters
+    /// consumed by `AppContext::build_data_contract_v1_with_one_token`.
+    pub fn into_contract_params(self) -> crate::backend_task::tokens::TokenContractParams {
+        crate::backend_task::tokens::TokenContractParams {
+            token_names: self.token_names,
+            contract_keywords: self.contract_keywords,
+            token_description: self.token_description,
+            should_capitalize: self.should_capitalize,
+            decimals: self.decimals,
+            base_supply: self.base_supply,
+            max_supply: self.max_supply,
+            start_paused: self.start_paused,
+            allow_transfers_to_frozen_identities: self.allow_transfers_to_frozen_identities,
+            keeps_history: self.keeps_history,
+            main_control_group: self.main_control_group,
+            manual_minting_rules: self.manual_minting_rules,
+            manual_burning_rules: self.manual_burning_rules,
+            freeze_rules: self.freeze_rules,
+            unfreeze_rules: self.unfreeze_rules,
+            destroy_frozen_funds_rules: self.destroy_frozen_funds_rules,
+            emergency_action_rules: self.emergency_action_rules,
+            max_supply_change_rules: self.max_supply_change_rules,
+            conventions_change_rules: self.conventions_change_rules,
+            main_control_group_change_authorized: self.main_control_group_change_authorized,
+            distribution_rules: self.distribution_rules,
+            groups: self.groups,
+            document_schemas: self.document_schemas,
+            marketplace_rules: self.marketplace_rules,
+        }
+    }
 }
 
 pub type TokenSearchable = bool;
@@ -1157,6 +1044,10 @@ pub type TokenSearchable = bool;
 /// The main, combined TokensScreen:
 /// - Displays token balances or a search UI
 /// - Allows reordering of tokens if desired
+///
+// TODO(det): this god-struct still mixes state for every subscreen (My Tokens,
+// Search, Token Creator). Split per-subscreen state into dedicated structs behind
+// a thin shell; the kittest reads `selected_identity` directly, so update it too.
 pub struct TokensScreen {
     pub app_context: Arc<AppContext>,
     pub tokens_subscreen: TokensSubscreen,
@@ -1171,6 +1062,7 @@ pub struct TokensScreen {
     pricing_loading_state: IndexMap<Identifier, bool>,
     pending_backend_task: Option<BackendTask>,
     refreshing_status: RefreshingStatus,
+    pending_operation_context: Option<BackendTaskContext>,
     should_reset_collapsing_states: bool,
     // Token Creator expanded sections
     token_creator_advanced_expanded: bool,
@@ -1238,7 +1130,7 @@ pub struct TokensScreen {
     selected_token_preset: Option<TokenConfigurationPresetFeatures>,
     show_pop_up_info: Option<String>,
     identity_id_string: String,
-    selected_identity: Option<QualifiedIdentity>,
+    pub selected_identity: Option<QualifiedIdentity>,
     selected_key: Option<IdentityPublicKey>,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     wallet_open_attempted: bool,
@@ -1263,6 +1155,7 @@ pub struct TokensScreen {
     cached_build_args: Option<TokenBuildArgs>,
     show_json_popup: bool,
     json_popup_text: String,
+    json_popup_opening_guard: ModalOpeningGuard,
     allow_transfers_to_frozen_identities: bool,
 
     // Action Rules
@@ -1279,7 +1172,6 @@ pub struct TokensScreen {
     main_control_group_change_authorized_group: Option<String>,
 
     // Marketplace rules
-    marketplace_trade_mode: u8, // 0 = NotTradeable, future values for other modes
     marketplace_rules: ChangeControlRulesUI,
     change_direct_purchase_pricing_rules: ChangeControlRulesUI,
 
@@ -1482,7 +1374,7 @@ fn my_tokens(
         Option<dash_sdk::dpp::tokens::token_pricing_schedule::TokenPricingSchedule>,
     >,
 ) -> IndexMap<IdentityTokenIdentifier, IdentityTokenBalanceWithActions> {
-    let in_dev_mode = app_context.is_developer_mode();
+    let in_dev_mode = app_context.user_role().at_least(UserRole::Power);
 
     app_context
         .identity_token_balances()
@@ -1515,8 +1407,7 @@ impl TokensScreen {
             .map(|qi| (qi.identity.id(), qi))
             .collect();
         let all_known_tokens = app_context
-            .db
-            .get_all_known_tokens_with_data_contract(app_context)
+            .get_all_known_tokens_with_data_contract()
             .unwrap_or_default();
 
         let my_tokens = my_tokens(
@@ -1574,6 +1465,7 @@ impl TokensScreen {
             pending_backend_task: None,
             tokens_subscreen,
             refreshing_status: RefreshingStatus::NotRefreshing,
+            pending_operation_context: None,
 
             // Remove token
             confirm_remove_identity_token_balance_popup: false,
@@ -1625,6 +1517,7 @@ impl TokensScreen {
             cached_build_args: None,
             show_json_popup: false,
             json_popup_text: String::new(),
+            json_popup_opening_guard: ModalOpeningGuard::default(),
 
             // Action rules
             allow_transfers_to_frozen_identities: true,
@@ -1643,7 +1536,6 @@ impl TokensScreen {
             main_control_group_change_authorized_group: None,
 
             // Marketplace rules
-            marketplace_trade_mode: 0, // NotTradeable
             marketplace_rules: ChangeControlRulesUI::default(),
             change_direct_purchase_pricing_rules: ChangeControlRulesUI::default(),
 
@@ -1774,9 +1666,23 @@ impl TokensScreen {
             document_schemas_error: None,
         };
 
-        if let Ok(saved_ids) = screen.app_context.db.load_token_order() {
+        if let Ok(saved_ids) = screen.app_context.load_token_order() {
             screen.reorder_vec_to(saved_ids);
             screen.use_custom_order = true;
+        }
+
+        // Seed selected_identity from the app-scoped selection (W4 SYNC); fall back to first.
+        if let Some(preferred_id) = screen.app_context.selected_identity_id()
+            && let Some(qi) = screen.identities.get(&preferred_id)
+        {
+            screen.selected_identity = Some(qi.clone());
+            screen.identity_id_string = preferred_id.to_string(Encoding::Base58);
+        }
+        if screen.selected_identity.is_none()
+            && let Some((id, qi)) = screen.identities.iter().next()
+        {
+            screen.selected_identity = Some(qi.clone());
+            screen.identity_id_string = id.to_string(Encoding::Base58);
         }
 
         screen
@@ -1822,7 +1728,6 @@ impl TokensScreen {
             .collect::<Vec<_>>();
 
         self.app_context
-            .db
             .save_token_order(all_ids)
             .map_err(|e| {
                 error!("Error saving token order: {}", e);
@@ -2407,7 +2312,6 @@ impl TokensScreen {
         self.authorized_main_control_group_change = AuthorizedActionTakers::NoOne;
         self.main_control_group_change_authorized_identity = None;
         self.main_control_group_change_authorized_group = None;
-        self.marketplace_trade_mode = 0;
         self.marketplace_rules = ChangeControlRulesUI::default();
         self.change_direct_purchase_pricing_rules = ChangeControlRulesUI::default();
         self.main_control_group_input = "".to_string();
@@ -2584,13 +2488,13 @@ impl TokensScreen {
         AppAction::None
     }
 
-    fn show_remove_identity_token_balance_popup(&mut self, ui: &mut Ui) {
+    fn show_remove_identity_token_balance_popup(&mut self, ui: &mut Ui) -> AppAction {
         // If no token is set, nothing to confirm
         let token_to_remove = match &self.identity_token_balance_to_remove {
             Some(token) => token.clone(),
             None => {
                 self.confirm_remove_identity_token_balance_popup = false;
-                return;
+                return AppAction::None;
             }
         };
 
@@ -2613,32 +2517,21 @@ impl TokensScreen {
         // Show the dialog and handle the response
         let response = confirmation_dialog.show(ui).inner;
 
+        let mut action = AppAction::None;
         if let Some(status) = response.dialog_response {
-            match status {
-                ConfirmationStatus::Confirmed => {
-                    if let Err(e) = self
-                        .app_context
-                        .remove_token_balance(token_to_remove.token_id, token_to_remove.identity_id)
-                    {
-                        MessageBanner::set_global(
-                            self.app_context.egui_ctx(),
-                            format!("Error removing token balance: {}", e),
-                            MessageType::Error,
-                        );
-                    } else {
-                        self.refresh();
-                    }
-                    self.confirm_remove_identity_token_balance_popup = false;
-                    self.identity_token_balance_to_remove = None;
-                    self.remove_identity_token_balance_confirmation_dialog = None;
-                }
-                ConfirmationStatus::Canceled => {
-                    self.confirm_remove_identity_token_balance_popup = false;
-                    self.identity_token_balance_to_remove = None;
-                    self.remove_identity_token_balance_confirmation_dialog = None;
-                }
+            if let ConfirmationStatus::Confirmed = status {
+                action = AppAction::BackendTask(BackendTask::TokenTask(Box::new(
+                    TokenTask::StopTrackingTokenBalance(IdentityTokenIdentifier {
+                        identity_id: token_to_remove.identity_id,
+                        token_id: token_to_remove.token_id,
+                    }),
+                )));
             }
+            self.confirm_remove_identity_token_balance_popup = false;
+            self.identity_token_balance_to_remove = None;
+            self.remove_identity_token_balance_confirmation_dialog = None;
         }
+        action
     }
 
     fn show_remove_token_popup(&mut self, ui: &mut Ui) {
@@ -2677,11 +2570,7 @@ impl TokensScreen {
         if let Some(status) = response.dialog_response {
             match status {
                 ConfirmationStatus::Confirmed => {
-                    if let Err(e) = self
-                        .app_context
-                        .db
-                        .remove_token(&token_to_remove, &self.app_context)
-                    {
+                    if let Err(e) = self.app_context.remove_token(&token_to_remove) {
                         MessageBanner::set_global(
                             self.app_context.egui_ctx(),
                             format!("Error removing token balance: {}", e),
@@ -2751,8 +2640,7 @@ impl ScreenLike for TokensScreen {
     fn refresh(&mut self) {
         self.all_known_tokens = self
             .app_context
-            .db
-            .get_all_known_tokens_with_data_contract(&self.app_context)
+            .get_all_known_tokens_with_data_contract()
             .unwrap_or_default();
 
         self.identities = self
@@ -2775,7 +2663,7 @@ impl ScreenLike for TokensScreen {
             &self.token_pricing_data,
         );
 
-        match self.app_context.db.load_token_order() {
+        match self.app_context.load_token_order() {
             Ok(saved_ids) => {
                 self.reorder_vec_to(saved_ids);
 
@@ -2793,8 +2681,7 @@ impl ScreenLike for TokensScreen {
 
         self.all_known_tokens = self
             .app_context
-            .db
-            .get_all_known_tokens_with_data_contract(&self.app_context)
+            .get_all_known_tokens_with_data_contract()
             .unwrap_or_default();
         self.identities = self
             .app_context
@@ -2817,7 +2704,9 @@ impl ScreenLike for TokensScreen {
         );
     }
 
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
         let mut action = AppAction::None;
 
         // Build top-right buttons
@@ -2847,7 +2736,7 @@ impl ScreenLike for TokensScreen {
                 .unwrap_or_else(|| token_id.to_string(Encoding::Base58));
 
             action |= add_top_panel(
-                ctx,
+                ui,
                 &self.app_context,
                 vec![
                     ("Tokens", AppAction::Custom("Back to tokens".to_string())),
@@ -2866,7 +2755,7 @@ impl ScreenLike for TokensScreen {
             );
 
             action |= add_top_panel(
-                ctx,
+                ui,
                 &self.app_context,
                 vec![
                     (
@@ -2879,7 +2768,7 @@ impl ScreenLike for TokensScreen {
             );
         } else {
             action |= add_top_panel(
-                ctx,
+                ui,
                 &self.app_context,
                 vec![("Tokens", AppAction::None)],
                 right_buttons.clone(),
@@ -2890,21 +2779,18 @@ impl ScreenLike for TokensScreen {
         match self.tokens_subscreen {
             TokensSubscreen::MyTokens => {
                 action |= add_left_panel(
-                    ctx,
+                    ui,
                     &self.app_context,
                     RootScreenType::RootScreenMyTokenBalances,
                 );
             }
             TokensSubscreen::SearchTokens => {
-                action |= add_left_panel(
-                    ctx,
-                    &self.app_context,
-                    RootScreenType::RootScreenTokenSearch,
-                );
+                action |=
+                    add_left_panel(ui, &self.app_context, RootScreenType::RootScreenTokenSearch);
             }
             TokensSubscreen::TokenCreator => {
                 action |= add_left_panel(
-                    ctx,
+                    ui,
                     &self.app_context,
                     RootScreenType::RootScreenTokenCreator,
                 );
@@ -2912,10 +2798,10 @@ impl ScreenLike for TokensScreen {
         }
 
         // Subscreen chooser
-        action |= add_tokens_subscreen_chooser_panel(ctx, self.app_context.as_ref());
+        action |= add_tokens_subscreen_chooser_panel(ui, self.app_context.as_ref());
 
         // Main panel
-        action |= island_central_panel(ctx, |ui| {
+        action |= island_central_panel(ui, |ui| {
             egui::ScrollArea::vertical()
                 .show(ui, |ui| {
                     let mut inner_action = AppAction::None;
@@ -2925,11 +2811,8 @@ impl ScreenLike for TokensScreen {
                             inner_action |= self.render_my_tokens_subscreen(ui);
                         }
                         TokensSubscreen::SearchTokens => {
-                            if self.selected_contract_id.is_some() {
-                                inner_action |= self.render_contract_details(
-                                    ui,
-                                    &self.selected_contract_id.unwrap(),
-                                );
+                            if let Some(contract_id) = self.selected_contract_id {
+                                inner_action |= self.render_contract_details(ui, &contract_id);
                                 // Render the JSON popup if needed
                                 if self.show_json_popup {
                                     self.render_data_contract_json_popup(ui);
@@ -2946,7 +2829,7 @@ impl ScreenLike for TokensScreen {
                     // Elapsed display for refreshing is handled by the global MessageBanner
 
                     if self.confirm_remove_identity_token_balance_popup {
-                        self.show_remove_identity_token_balance_popup(ui);
+                        inner_action |= self.show_remove_identity_token_balance_popup(ui);
                     }
                     if self.confirm_remove_token_popup {
                         self.show_remove_token_popup(ui);
@@ -2965,6 +2848,24 @@ impl ScreenLike for TokensScreen {
                 .inner
         });
 
+        let duplicate_balance_refresh = is_duplicate_balance_refresh(
+            &self.refreshing_status,
+            self.pending_operation_context.as_ref(),
+            &action,
+        );
+        if duplicate_balance_refresh {
+            action = AppAction::None;
+        } else if let AppAction::BackendTask(task) = &action {
+            let context = BackendTaskContext::from(task);
+            if matches!(
+                context,
+                BackendTaskContext::TokenBalanceRefresh
+                    | BackendTaskContext::TokenRewardEstimate(_)
+            ) {
+                self.pending_operation_context = Some(context);
+            }
+        }
+
         // Post-processing on user actions
         match action {
             AppAction::BackendTask(BackendTask::TokenTask(ref token_task))
@@ -2979,6 +2880,7 @@ impl ScreenLike for TokensScreen {
             }
             AppAction::SetMainScreenThenGoToMainScreen(_) => {
                 self.refreshing_status = RefreshingStatus::NotRefreshing;
+                self.pending_operation_context = None;
 
                 // should put these in a fn
                 self.contract_search_status = ContractSearchStatus::NotStarted;
@@ -3028,8 +2930,10 @@ impl ScreenLike for TokensScreen {
     fn display_message(&mut self, msg: &str, msg_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
 
-        // Clear the operation banner only on Error/Warning (task failed).
-        if matches!(msg_type, MessageType::Error | MessageType::Warning) {
+        // Uncorrelated failures must not clear a genuine token refresh banner.
+        if matches!(msg_type, MessageType::Error | MessageType::Warning)
+            && self.refreshing_status != RefreshingStatus::Refreshing
+        {
             self.operation_banner.take_and_clear();
         }
 
@@ -3049,24 +2953,11 @@ impl ScreenLike for TokensScreen {
                 }
             }
             TokensSubscreen::MyTokens => {
-                if msg.contains("Successfully fetched token balances")
-                    || msg.contains("Failed to fetch token balances")
-                    || msg.contains("Failed to get estimated rewards")
-                    || msg.eq(NO_IDENTITIES_FOUND)
-                {
-                    // Clear adding status on any error
-                    if msg.contains("Failed") {
-                        self.adding_token_start_time = None;
-                        self.adding_token_name = None;
-                    }
-                    self.refreshing_status = RefreshingStatus::NotRefreshing;
-                } else {
-                    tracing::debug!(
-                        msg = msg,
-                        ?msg_type,
-                        "unsupported message received in token screen"
-                    );
-                }
+                tracing::debug!(
+                    msg = msg,
+                    ?msg_type,
+                    "unsupported message received in token screen"
+                );
             }
             TokensSubscreen::SearchTokens => {
                 if msg_type == MessageType::Error {
@@ -3086,30 +2977,54 @@ impl ScreenLike for TokensScreen {
         }
     }
 
-    fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
-        // Clear any active operation banner
-        self.operation_banner.take_and_clear();
+    fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
+        if self.tokens_subscreen == TokensSubscreen::MyTokens {
+            let was_stopped = self.refreshing_status == RefreshingStatus::Refreshing
+                && self.pending_operation_context.as_ref() == Some(context);
+            let expected = self.pending_operation_context.clone();
+            self.refreshing_status
+                .stop_on_failure(expected.as_ref(), context);
+            if !was_stopped {
+                return;
+            }
+            self.pending_operation_context = None;
+            self.operation_banner.take_and_clear();
+        }
+    }
 
+    fn display_task_error(&mut self, _error: &TaskError) -> bool {
+        false
+    }
+
+    fn display_backend_task_result(
+        &mut self,
+        context: &BackendTaskContext,
+        backend_task_success_result: BackendTaskSuccessResult,
+    ) {
+        let completes_pending = completes_pending_operation(
+            self.pending_operation_context.as_ref(),
+            context,
+            &backend_task_success_result,
+        );
         match backend_task_success_result {
             BackendTaskSuccessResult::DescriptionsByKeyword(descriptions, next_cursor) => {
-                let mut sr = self.search_results.lock().unwrap();
+                let mut sr = self.search_results.lock_recover();
                 *sr = descriptions;
                 self.search_has_next_page = next_cursor.is_some();
                 if let Some(cursor) = next_cursor {
                     self.next_cursors.push(cursor);
                 }
                 self.contract_search_status = ContractSearchStatus::Complete;
-                self.refreshing_status = RefreshingStatus::NotRefreshing;
             }
             BackendTaskSuccessResult::ContractsWithDescriptions(contracts_with_descriptions) => {
                 let default_info = (None, vec![]);
-                let info = contracts_with_descriptions
-                    .get(&self.selected_contract_id.unwrap())
+                let info = self
+                    .selected_contract_id
+                    .and_then(|id| contracts_with_descriptions.get(&id))
                     .unwrap_or(&default_info);
 
                 self.selected_contract_description = info.0.clone();
                 self.selected_token_infos = info.1.clone();
-                self.refreshing_status = RefreshingStatus::NotRefreshing;
                 self.contract_details_loading = false;
             }
             BackendTaskSuccessResult::TokenEstimatedNonClaimedPerpetualDistributionAmountWithExplanation(
@@ -3117,7 +3032,11 @@ impl ScreenLike for TokensScreen {
                 amount,
                 explanation,
             ) => {
-                self.refreshing_status = RefreshingStatus::NotRefreshing;
+                if completes_pending {
+                    self.refreshing_status = RefreshingStatus::NotRefreshing;
+                    self.pending_operation_context = None;
+                    self.operation_banner.take_and_clear();
+                }
                 if let Some(itb) = self.my_tokens.get_mut(&identity_token_id) {
                     itb.estimated_unclaimed_rewards = Some(amount);
                 }
@@ -3135,10 +3054,13 @@ impl ScreenLike for TokensScreen {
                     &self.all_known_tokens,
                     &self.token_pricing_data,
                 );
-                // Refresh display
-                self.refreshing_status = RefreshingStatus::NotRefreshing;
             }
             BackendTaskSuccessResult::FetchedTokenBalances => {
+                if completes_pending {
+                    self.refreshing_status = RefreshingStatus::NotRefreshing;
+                    self.pending_operation_context = None;
+                    self.operation_banner.take_and_clear();
+                }
                 // Refresh my_tokens to show updated balances
                 self.my_tokens = my_tokens(
                     &self.app_context,
@@ -3146,7 +3068,6 @@ impl ScreenLike for TokensScreen {
                     &self.all_known_tokens,
                     &self.token_pricing_data,
                 );
-                self.refreshing_status = RefreshingStatus::NotRefreshing;
             }
             BackendTaskSuccessResult::RegisteredTokenContract => {
                 self.token_creator_status = TokenCreatorStatus::Complete;
@@ -3158,7 +3079,6 @@ impl ScreenLike for TokensScreen {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
     use std::sync::Once;
 
     use crate::app_dir::copy_env_file_if_not_exists;
@@ -3175,6 +3095,75 @@ mod tests {
     use dash_sdk::dpp::data_contract::TokenConfiguration;
     use dash_sdk::dpp::identifier::Identifier;
     use dash_sdk::platform::{DataContract, Identity};
+
+    #[test]
+    fn in_flight_token_refresh_failure_requires_the_matching_backend_task() {
+        let expected = BackendTaskContext::TokenBalanceRefresh;
+        let mut status = RefreshingStatus::Refreshing;
+        status.stop_on_failure(Some(&expected), &BackendTaskContext::Other);
+        status.stop_on_failure(Some(&expected), &BackendTaskContext::Unknown);
+        assert_eq!(status, RefreshingStatus::Refreshing);
+
+        status.stop_on_failure(Some(&expected), &expected);
+        assert_eq!(status, RefreshingStatus::NotRefreshing);
+
+        status.stop_on_failure(Some(&expected), &expected);
+        assert_eq!(status, RefreshingStatus::NotRefreshing);
+    }
+
+    #[test]
+    fn duplicate_balance_refresh_is_suppressed_only_while_the_first_is_pending() {
+        let action = AppAction::BackendTask(BackendTask::TokenTask(Box::new(
+            TokenTask::QueryMyTokenBalances,
+        )));
+
+        assert!(is_duplicate_balance_refresh(
+            &RefreshingStatus::Refreshing,
+            Some(&BackendTaskContext::TokenBalanceRefresh),
+            &action,
+        ));
+        assert!(!is_duplicate_balance_refresh(
+            &RefreshingStatus::NotRefreshing,
+            None,
+            &action,
+        ));
+    }
+
+    #[test]
+    fn token_balance_success_requires_the_refresh_task_context() {
+        let pending = BackendTaskContext::TokenBalanceRefresh;
+        let result = BackendTaskSuccessResult::FetchedTokenBalances;
+
+        assert!(completes_pending_operation(
+            Some(&pending),
+            &BackendTaskContext::TokenBalanceRefresh,
+            &result,
+        ));
+        assert!(!completes_pending_operation(
+            Some(&pending),
+            &BackendTaskContext::Other,
+            &result,
+        ));
+    }
+
+    #[test]
+    fn in_flight_reward_estimate_failure_requires_the_matching_pair() {
+        let expected = BackendTaskContext::TokenRewardEstimate(IdentityTokenIdentifier {
+            identity_id: Identifier::from([1; 32]),
+            token_id: Identifier::from([2; 32]),
+        });
+        let other_pair = BackendTaskContext::TokenRewardEstimate(IdentityTokenIdentifier {
+            identity_id: Identifier::from([1; 32]),
+            token_id: Identifier::from([3; 32]),
+        });
+        let mut status = RefreshingStatus::Refreshing;
+
+        status.stop_on_failure(Some(&expected), &other_pair);
+        assert_eq!(status, RefreshingStatus::Refreshing);
+
+        status.stop_on_failure(Some(&expected), &expected);
+        assert_eq!(status, RefreshingStatus::NotRefreshing);
+    }
 
     fn ensure_test_env() {
         static INIT: Once = Once::new();
@@ -3224,17 +3213,30 @@ mod tests {
         let db_file_path = "test_db_token_creator";
         let _ = std::fs::remove_file(db_file_path); // Clean up from previous runs
         let db = Arc::new(Database::new(db_file_path).unwrap());
-        db.initialize(Path::new(&db_file_path)).unwrap();
+        // Force legacy wallet-family schema for tests — `initialize`
+        // gates these out for truly-fresh installs post-T-DEV-01.
+        db.create_tables(true).unwrap();
+        db.set_default_version().unwrap();
 
         ensure_test_env();
+        // The upstream SQLite persister that backs `app_kv` is not safe
+        // to re-open concurrently from multiple tests on the same file,
+        // so each test gets its own scratch directory. Production opens
+        // a single persister per process via `AppContext::open_app_kv`.
+        let kv_tmp = tempfile::tempdir().expect("kv tmpdir");
+        let app_kv = AppContext::open_app_kv(kv_tmp.path()).expect("open app k/v");
+        let secret_store = AppContext::open_secret_store(kv_tmp.path()).expect("open secret store");
+        let data_dir = crate::app_dir::app_user_data_dir_path().unwrap();
         let app_context = AppContext::new(
-            crate::app_dir::app_user_data_dir_path().unwrap(),
+            data_dir,
             Network::Regtest,
             db,
-            None,
             Default::default(),
             Default::default(),
             egui::Context::default(),
+            app_kv,
+            secret_store,
+            crate::model::user_role::UserRoleCell::default(),
         )
         .expect("Expected to create AppContext");
         let mut token_creator_ui = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
@@ -3260,6 +3262,7 @@ mod tests {
             },
             dpns_names: vec![],
             associated_wallets: BTreeMap::new(),
+            secret_access: None,
             wallet_index: None,
             top_ups: BTreeMap::new(),
             status: IdentityStatus::Active,
@@ -3378,35 +3381,9 @@ mod tests {
         let build_args = token_creator_ui
             .parse_token_build_args()
             .expect("parse_token_build_args should succeed");
+        let owner_id = build_args.identity_id;
         let data_contract = app_context
-            .build_data_contract_v1_with_one_token(
-                build_args.identity_id,
-                build_args.token_names,
-                build_args.contract_keywords,
-                build_args.token_description,
-                build_args.should_capitalize,
-                build_args.decimals,
-                build_args.base_supply,
-                build_args.max_supply,
-                build_args.start_paused,
-                build_args.allow_transfers_to_frozen_identities,
-                build_args.keeps_history,
-                build_args.main_control_group,
-                build_args.manual_minting_rules,
-                build_args.manual_burning_rules,
-                build_args.freeze_rules,
-                build_args.unfreeze_rules,
-                build_args.destroy_frozen_funds_rules,
-                build_args.emergency_action_rules,
-                build_args.max_supply_change_rules,
-                build_args.conventions_change_rules,
-                build_args.main_control_group_change_authorized,
-                build_args.distribution_rules,
-                build_args.groups,
-                build_args.document_schemas,
-                build_args.marketplace_trade_mode,
-                build_args.marketplace_rules,
-            )
+            .build_data_contract_v1_with_one_token(owner_id, build_args.into_contract_params())
             .expect("Contract build failed");
 
         // -------------------------------------------------
@@ -3538,17 +3515,30 @@ mod tests {
         let db_file_path = "test_db_distribution_random";
         let _ = std::fs::remove_file(db_file_path); // Clean up from previous runs
         let db = Arc::new(Database::new(db_file_path).unwrap());
-        db.initialize(Path::new(&db_file_path)).unwrap();
+        // Force legacy wallet-family schema for tests — `initialize`
+        // gates these out for truly-fresh installs post-T-DEV-01.
+        db.create_tables(true).unwrap();
+        db.set_default_version().unwrap();
 
         ensure_test_env();
+        // The upstream SQLite persister that backs `app_kv` is not safe
+        // to re-open concurrently from multiple tests on the same file,
+        // so each test gets its own scratch directory. Production opens
+        // a single persister per process via `AppContext::open_app_kv`.
+        let kv_tmp = tempfile::tempdir().expect("kv tmpdir");
+        let app_kv = AppContext::open_app_kv(kv_tmp.path()).expect("open app k/v");
+        let secret_store = AppContext::open_secret_store(kv_tmp.path()).expect("open secret store");
+        let data_dir = crate::app_dir::app_user_data_dir_path().unwrap();
         let app_context = AppContext::new(
-            crate::app_dir::app_user_data_dir_path().unwrap(),
+            data_dir,
             Network::Regtest,
             db,
-            None,
             Default::default(),
             Default::default(),
             egui::Context::default(),
+            app_kv,
+            secret_store,
+            crate::model::user_role::UserRoleCell::default(),
         )
         .expect("Expected to create AppContext");
         let mut token_creator_ui = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
@@ -3574,6 +3564,7 @@ mod tests {
             },
             dpns_names: vec![],
             associated_wallets: BTreeMap::new(),
+            secret_access: None,
             wallet_index: None,
             top_ups: BTreeMap::new(),
             status: IdentityStatus::Active,
@@ -3608,35 +3599,9 @@ mod tests {
         let build_args = token_creator_ui
             .parse_token_build_args()
             .expect("Should parse");
+        let owner_id = build_args.identity_id;
         let data_contract = app_context
-            .build_data_contract_v1_with_one_token(
-                build_args.identity_id,
-                build_args.token_names,
-                build_args.contract_keywords,
-                build_args.token_description,
-                build_args.should_capitalize,
-                build_args.decimals,
-                build_args.base_supply,
-                build_args.max_supply,
-                build_args.start_paused,
-                build_args.allow_transfers_to_frozen_identities,
-                build_args.keeps_history,
-                build_args.main_control_group,
-                build_args.manual_minting_rules,
-                build_args.manual_burning_rules,
-                build_args.freeze_rules,
-                build_args.unfreeze_rules,
-                build_args.destroy_frozen_funds_rules,
-                build_args.emergency_action_rules,
-                build_args.max_supply_change_rules,
-                build_args.conventions_change_rules,
-                build_args.main_control_group_change_authorized,
-                build_args.distribution_rules,
-                build_args.groups,
-                build_args.document_schemas,
-                build_args.marketplace_trade_mode,
-                build_args.marketplace_rules,
-            )
+            .build_data_contract_v1_with_one_token(owner_id, build_args.into_contract_params())
             .expect("Should build successfully");
         let contract_v1 = data_contract.as_v1().expect("Expected DataContract::V1");
 
@@ -3666,17 +3631,30 @@ mod tests {
         let db_file_path = "test_db_empty_token_name";
         let _ = std::fs::remove_file(db_file_path); // Clean up from previous runs
         let db = Arc::new(Database::new(db_file_path).unwrap());
-        db.initialize(Path::new(&db_file_path)).unwrap();
+        // Force legacy wallet-family schema for tests — `initialize`
+        // gates these out for truly-fresh installs post-T-DEV-01.
+        db.create_tables(true).unwrap();
+        db.set_default_version().unwrap();
 
         ensure_test_env();
+        // The upstream SQLite persister that backs `app_kv` is not safe
+        // to re-open concurrently from multiple tests on the same file,
+        // so each test gets its own scratch directory. Production opens
+        // a single persister per process via `AppContext::open_app_kv`.
+        let kv_tmp = tempfile::tempdir().expect("kv tmpdir");
+        let app_kv = AppContext::open_app_kv(kv_tmp.path()).expect("open app k/v");
+        let secret_store = AppContext::open_secret_store(kv_tmp.path()).expect("open secret store");
+        let data_dir = crate::app_dir::app_user_data_dir_path().unwrap();
         let app_context = AppContext::new(
-            crate::app_dir::app_user_data_dir_path().unwrap(),
+            data_dir,
             Network::Regtest,
             db,
-            None,
             Default::default(),
             Default::default(),
             egui::Context::default(),
+            app_kv,
+            secret_store,
+            crate::model::user_role::UserRoleCell::default(),
         )
         .expect("Expected to create AppContext");
         let mut token_creator_ui = TokensScreen::new(&app_context, TokensSubscreen::TokenCreator);
@@ -3702,6 +3680,7 @@ mod tests {
             },
             dpns_names: vec![],
             associated_wallets: BTreeMap::new(),
+            secret_access: None,
             wallet_index: None,
             top_ups: BTreeMap::new(),
             status: IdentityStatus::Active,

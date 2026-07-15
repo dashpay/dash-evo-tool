@@ -1,4 +1,5 @@
-use super::hd_derivation::derive_auto_accept_key;
+use crate::backend_task::error::TaskError;
+use crate::model::dashpay_derivation::derive_auto_accept_key;
 use crate::model::qualified_identity::QualifiedIdentity;
 use dash_sdk::dpp::dashcore::secp256k1::{Message, Secp256k1, SecretKey};
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
@@ -123,15 +124,17 @@ impl AutoAcceptProofData {
 ///
 /// According to DIP-0015, the autoAcceptProof is a signature that allows the recipient
 /// to automatically accept the contact request and send one back without user interaction.
-pub fn generate_auto_accept_proof(
+pub async fn generate_auto_accept_proof(
     identity: &QualifiedIdentity,
     account_reference: u32,
     validity_hours: u32,
-) -> Result<AutoAcceptProofData, String> {
+) -> Result<AutoAcceptProofData, TaskError> {
+    use crate::backend_task::dashpay::errors::DashPayError;
+
     // Calculate expiration timestamp
     let expires_at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|e| format!("Time error: {}", e))?
+        .map_err(|_| DashPayError::SystemClockInvalid)?
         .as_secs()
         + (validity_hours as u64 * 3600);
 
@@ -145,36 +148,30 @@ pub fn generate_auto_accept_proof(
             HashSet::from([KeyType::ECDSA_SECP256K1]),
             false,
         )
-        .ok_or(
-            "No suitable key found. This operation requires a MEDIUM security level ECDSA_SECP256K1 ENCRYPTION key.",
-        )?;
+        .ok_or(DashPayError::MissingEncryptionKey)?;
 
-    let wallets: Vec<_> = identity.associated_wallets.values().cloned().collect();
+    // Resolve the ENCRYPTION private key through the JIT chokepoint — no
+    // parked-seed read.
     let wallet_seed = identity
-        .private_keys
-        .get_resolve(
-            &(
-                crate::model::qualified_identity::PrivateKeyTarget::PrivateKeyOnMainIdentity,
-                signing_key.id(),
-            ),
-            &wallets,
-            identity.network,
+        .resolve_private_key_bytes(
+            crate::model::qualified_identity::PrivateKeyTarget::PrivateKeyOnMainIdentity,
+            signing_key.id(),
         )
-        .map_err(|e| format!("Error resolving private key: {}", e))?
+        .await?
         .map(|(_, private_key)| private_key)
-        .ok_or("Private key not found")?;
+        .ok_or(TaskError::WalletLocked)?;
 
     // Determine network from the identity
     let network = identity.network;
 
-    // Derive the auto-accept key using DIP-0015 path: m/9'/5'/16'/timestamp'
+    // Derive the auto-accept key using DIP-0015 path: m/9'/coin'/16'/timestamp'
     // Using expiration timestamp as the derivation index
     let auto_accept_xprv = derive_auto_accept_key(
-        &wallet_seed,
+        &wallet_seed[..],
         network,
         expires_at as u32, // Truncate to u32 for derivation
     )
-    .map_err(|e| format!("Failed to derive auto-accept key: {}", e))?;
+    .map_err(|e| TaskError::DashPay(DashPayError::from(e)))?;
 
     // Extract the private key bytes (32 bytes)
     let proof_key = auto_accept_xprv.private_key.secret_bytes();
@@ -240,7 +237,7 @@ pub fn create_auto_accept_proof_bytes_with_key(
 ///
 /// This would be called when receiving a contact request with an autoAcceptProof field
 /// to determine if we should automatically accept and reciprocate.
-pub fn verify_auto_accept_proof(
+pub async fn verify_auto_accept_proof(
     proof_data: &[u8],
     sender_identity_id: Identifier,
     recipient_identity_id: Identifier,
@@ -287,7 +284,6 @@ pub fn verify_auto_accept_proof(
 
     // Derive expected pubkey from our seed and key index (timestamp)
     // Use ENCRYPTION key (ECDSA_SECP256K1) for HD derivation as per DIP-15
-    let wallets: Vec<_> = our_identity.associated_wallets.values().cloned().collect();
     let signing_key = our_identity
         .identity
         .get_first_public_key_matching(
@@ -297,20 +293,18 @@ pub fn verify_auto_accept_proof(
             false,
         )
         .ok_or("No suitable key found. This operation requires a MEDIUM security level ECDSA_SECP256K1 ENCRYPTION key.")?;
+    // Resolve the ENCRYPTION private key through the JIT chokepoint — no
+    // parked-seed read.
     let wallet_seed = our_identity
-        .private_keys
-        .get_resolve(
-            &(
-                crate::model::qualified_identity::PrivateKeyTarget::PrivateKeyOnMainIdentity,
-                signing_key.id(),
-            ),
-            &wallets,
-            our_identity.network,
+        .resolve_private_key_bytes(
+            crate::model::qualified_identity::PrivateKeyTarget::PrivateKeyOnMainIdentity,
+            signing_key.id(),
         )
+        .await
         .map_err(|e| format!("Error resolving private key: {}", e))?
         .map(|(_, private_key)| private_key)
         .ok_or("Private key not found")?;
-    let xprv = derive_auto_accept_key(&wallet_seed, our_identity.network, key_index)
+    let xprv = derive_auto_accept_key(&wallet_seed[..], our_identity.network, key_index)
         .map_err(|e| format!("Failed to derive auto-accept key: {}", e))?;
     let pubkey = dash_sdk::dpp::dashcore::secp256k1::PublicKey::from_secret_key(
         &secp,

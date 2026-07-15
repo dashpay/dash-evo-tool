@@ -38,6 +38,10 @@ Test locations:
 - E2E: `tests/e2e/`
 - Backend E2E: `tests/backend-e2e/` (network-dependent, `#[ignore]`)
 
+### GUI testing (live app, real display)
+
+Driving the actual compiled binary through a real display — for flows that need real navigation, real async/network timing, or visual verification beyond what `kittest` (no display) or `backend-e2e` (no UI) can cover. Read `docs/gui-testing/README.md` before running this kind of test — it has the safety rules (isolated data dir, credential handling, fund-movement caps) and the reusable scenario library under `docs/gui-testing/scenarios/`.
+
 Always run `cargo clippy` and `cargo +nightly fmt` when finalizing your work.
 
 ### User stories catalog
@@ -69,6 +73,23 @@ scripts/safe-cargo.sh +nightly fmt --all
 * **Never parse error strings** to extract information. Always use the typed error chain (downcast, match on variants, access structured fields). If no typed variant exists for the information you need, define a new `TaskError` variant or extend the existing error type. String parsing is fragile, breaks on message changes, and bypasses the type system.
 * **Validation placement**: Pure input validation (format, length, character sets) lives in `model/` as stateless functions — single source of truth, unit-testable, no dependencies on `AppContext` or `Sdk`. Backend tasks are the authoritative enforcement layer: they call model validators for format checks AND perform stateful validation that requires network or database (existence checks, uniqueness, business rules). UI screens may call model validators for instant user feedback, but must never implement their own validation logic — always delegate to the model function.
 
+### DET Module Placement Policy
+
+Code lives by responsibility, not convenience:
+
+- **`model/`** — stateless data types and pure validation (format/length/charset). The single source of truth for validation. No `AppContext`, `Sdk`, DB, or `BackendTask`. All fee estimation goes in `model/fee_estimation.rs` — never inlined elsewhere.
+- **`backend_task/`** — async business logic, one submodule per domain; the authoritative enforcement layer. `TaskError` and its typed variants live in `backend_task/error.rs`.
+- **`database/`** — SQLite persistence, one module per domain.
+- **`context/`** — `AppContext` submodules (`*_db.rs`, lifecycle, settings, status).
+- **`wallet_backend/`** — the wallet orchestration seam: adapters, views, backend-side live caches, signers, the secret chokepoint, the event bridge. All wallet secret bytes (HD seed, imported single key, identity private key) enter/leave the vault through ONE chokepoint, `wallet_backend/secret_seam.rs` (raw `SecretBytes`, no DET-side serialization). Per-secret at-rest encryption is implemented via `put_secret_protected`/`get_secret_protected` (Argon2id + XChaCha20-Poly1305, per-secret object-password envelope, AAD bound to `wallet_id ‖ label`); unprotected secrets use `put_secret`/`get_secret` (raw, keyless vault). Identity keys (imported/loaded, including masternode voting/owner/payout) enter unprotected (Tier-1 keyless) at load/creation time — the load flow has no password field — but can be sealed to Tier-2 per-identity afterward via `IdentityTask::ProtectIdentityKeys` (Key Info screen → "Add password protection…"; gated by vault-key scheme, not identity type). The keyless-vault residual is only no-password secrets and keys the user has not opted to protect. Design + migration: `docs/ai-design/2026-06-19-secret-storage-seam/`.
+- **`ui/<domain>/`** — screens (`ScreenLike`). UI may *call* `model/` validators for instant feedback but never implements its own validation.
+- **`ui/components/`** — reusable **Component-pattern widgets ONLY**: a `show()` plus a `ComponentResponse`, a display-only render widget, or component infrastructure. If it does not render egui, it is not a component.
+- **`ui/state/`** — non-widget UI state: per-screen view-models and async fetch-state caches (e.g. `TrackedAssetLockCache`). Owned by screens, may return `BackendTask`, render nothing.
+- **`src/mcp/tools/`** — MCP tool logic, one file per domain (e.g. `wallet.rs`, `shielded.rs`, `identity.rs`) with multiple tool structs per file; never in `src/bin/det_cli/`.
+- **`src/localization.rs`** — localization logic. **`src/ui/theme.rs`** — theme/alignment helpers.
+
+Discriminator for `ui/components/` vs `ui/state/`: *does it render egui (`show`/`ui`/a render fn)?* Yes → component. No → state.
+
 ### Error messages
 
 User-facing error messages (shown in `MessageBanner` via `Display`) must follow these rules:
@@ -91,18 +112,68 @@ User-facing error messages (shown in `MessageBanner` via `Display`) must follow 
 - **docs/personas** contains user personas (Everyday User, Power User, Platform Developer) that define the three target user archetypes and the progressive disclosure model for UI complexity. Consult these when making UX decisions about what to show/hide or how to structure wallet features.
 - **docs/user-stories.md** catalogs user stories across feature areas, tagged by persona and marked `[Implemented]` or `[Gap]`. Reference when planning new features or verifying coverage.
 - **docs/ux-design-patterns.md** is the UI/UX reference card — explains **when and how** to use design tokens, buttons, dialogs, forms, accessibility rules, and progressive disclosure. For exact values (sizes, colors, padding), refer to source files (`src/ui/theme.rs`, `src/ui/components/`). Consult when building or reviewing UI.
+- **docs/gui-testing/** contains standing guidelines and a reusable scenario library for testing the real compiled app through a real display (not date-grouped — this is reusable practice, not a point-in-time design record). Read `docs/gui-testing/README.md` before driving the GUI directly for verification.
 - end-user documentation is in a separate repo: https://github.com/dashpay/docs/tree/HEAD/docs/user/network/dash-evo-tool , published at https://docs.dash.org/en/stable/docs/user/network/dash-evo-tool/
 
-### Core Module Structure
+### System Layers (top → bottom)
 
-- **app.rs** - `AppState`: owns all screens, polls task results each frame, dispatches to visible screen
-- **ui/** - Screens and reusable components (`ui/components/`)
-- **backend_task/** - Async business logic, one submodule per domain (identity, wallet, contract, etc.)
-- **model/** - Data types (amounts, fees, settings, wallet/identity models). **All fee estimation logic must be centralized in `model/fee_estimation.rs`** — both platform state transition fees and shielded fee calculations. Never inline fee math in UI or backend task code.
-- **database/** - SQLite persistence (rusqlite), one module per domain
-- **context/** - `AppContext`: network config, SDK client, database, wallets, settings cache (split into submodules: `identity_db.rs`, `wallet_lifecycle.rs`, `settings_db.rs`, etc.)
-- **spv/** - Simplified Payment Verification for light wallet support
-- **components/core_zmq_listener** - Real-time Dash Core event listening via ZMQ
+- **UI (`ui/`)** — Screens (`ui/<domain>/`), reusable components (`ui/components/`), and non-widget view state (`ui/state/`). No business logic. Returns `AppAction`s.
+- **App (`app.rs`)** — `AppState`: owns all screens, polls task results each frame, dispatches to visible screen. Bridges UI and backend.
+- **Backend Tasks (`backend_task/`)** — Async business logic and the authoritative validation/enforcement layer, one submodule per domain (identity, wallet, contract, etc.). Operates through `AppContext`, returns typed `Result<T, TaskError>` over a channel.
+- **Wallet Backend (`wallet_backend/`)** — Wallet orchestration seam: adapters, views, backend-side live caches, signers, the secret chokepoint (`secret_seam.rs`), and the event bridge. A thin adapter over the upstream `platform-wallet` crate.
+- **Context (`context/`)** — `AppContext`: shared state — network config, SDK client, database, wallets, settings cache, connection health (`ConnectionStatus` / `SpvManager`), split into submodules (`identity_db.rs`, `wallet_lifecycle.rs`, `settings_db.rs`, etc.). Glue between layers.
+- **Model (`model/`)** — Pure data types and stateless validation (amounts, fees, settings, wallet/identity models). No side effects, no IO. All fee estimation lives in `model/fee_estimation.rs` — never inline fee math elsewhere.
+- **Database (`database/`)** — SQLite persistence (rusqlite), one module per domain. Typed CRUD, no business decisions.
+- **Platform Integration** — Chain sync, address derivation, asset-lock/identity handling, and the shielded coordinator come from the upstream **`platform-wallet`** crate (git dep, dashpay/platform); DET is a thin adapter over it via `wallet_backend/`. SPV health is surfaced through `SpvManager` → `ConnectionStatus`. (DET's bespoke `src/spv/` stack and the `core_zmq_listener` module were removed in the platform-wallet migration.)
+
+### Layer Rules
+
+**Model rules** (ideal target for new code):
+- UI never calls SDK or database directly — always through `BackendTask`
+- Backend tasks receive `AppContext`, do async work, return typed results
+- Models are shared across all layers — pure data types, no IO
+- Database modules are pure data access — no business logic or domain decisions
+- Context is the glue: UI reads from it, backend tasks operate through it
+- Data types shared between layers belong in `model/`, not in `ui/` or `database/`
+- Wallet secret bytes enter/leave only through the `wallet_backend/secret_seam.rs` chokepoint
+
+**In practice**, the codebase has established patterns that differ from the model:
+- UI may **read** from DB through `AppContext` wrapper methods (e.g., `app_context.load_local_qualified_identities()`)
+- UI may **write** to DB in `display_task_result()` for caching backend results
+- `Wallet` (`model/wallet/`) is a large module that mixes data, address derivation, and SDK/RPC concerns — this is intentional
+- Some data types live in `ui/` and are imported by `backend_task/`
+- Database methods occasionally contain domain logic (e.g., contest state derivation)
+
+These are accepted. Do not refactor existing code to match the model rules.
+
+### Standard Flows
+
+**User action → async work → result displayed:**
+```
+Screen::ui() → AppAction::BackendTask(task)
+  → tokio::spawn → AppContext::run_backend_task()
+  → sender.send(TaskResult::Success(result))
+  → AppState::update() polls → Screen::display_task_result()
+```
+
+**UI needs fresh data on construction/refresh:**
+```
+Screen::new() or refresh() → app_context.read_wrapper_method()
+  → returns cached or DB-read data (read-only, no writes)
+```
+
+**Backend task fetches + persists data:**
+```
+BackendTask variant → AppContext::run_*_task()
+  → SDK/RPC call → persist results to DB → return typed result
+  → Screen::display_task_result() updates in-memory state only
+```
+
+**Anti-patterns (do not add new instances):**
+- `app_context.db.save_*()` / `db.delete_*()` from UI code
+- `tokio::spawn` in UI bypassing the `BackendTask` system
+- Business logic (signing, filtering, state derivation) in UI or database layers
+- Accessing wallet secret bytes outside the `wallet_backend/secret_seam.rs` chokepoint
 
 ### MCP Server & CLI (`src/mcp/`, `src/bin/det_cli/`)
 
@@ -118,10 +189,45 @@ User-facing error messages (shown in `MessageBanner` via `Display`) must follow 
 - **Error type**: `McpToolError` enum (InvalidParam, WalletNotFound, SpvSyncFailed, TaskFailed, Internal) converts to `rmcp::ErrorData` via `From`.
 - **Docs**: `docs/MCP.md` (server config, tool reference), `docs/CLI.md` (usage, examples), `docs/MCP_TOOL_DEVELOPMENT.md` (checklist for adding new MCP tools).
 
+### Smoke-testing changes with det-cli
+
+`det-cli` in standalone (stdio, lazy-init) mode is a fast, no-funds, no-GUI smoke test for the **MCP-tool layer + context wiring**. Run these after changes that touch MCP tools (`src/mcp/`), `AppContext` construction, or the wallet-backend boot path — they catch compile/API drift and context-init regressions before any live-network testing.
+
+Build:
+
+```bash
+cargo build --bin det-cli --features cli
+```
+
+Then, with `MCP_API_KEY` unset (or empty — the default `.env` ships it empty, which means standalone), run the read-only checks. Point `DASH_EVO_DATA_DIR` at a throwaway dir to avoid touching real user data or contending with a running GUI / `det-cli serve` instance:
+
+```bash
+DET=$(mktemp -d) && cp .env.example "$DET/.env"
+BIN=target/debug/det-cli   # or "$CARGO_TARGET_DIR/debug/det-cli" if that env var is set
+run() { env -u MCP_API_KEY DASH_EVO_DATA_DIR="$DET" RUST_LOG=off "$BIN" "$@"; }
+
+run network-info                       # active network as JSON — no SPV sync (network-exempt)
+run tools                              # discovers all tools via tools/list
+run tool-describe name=network_info    # full schema for one tool (meta tool, network-exempt)
+run core-wallets-list                  # exercises in-process MCP -> tool -> AppContext -> DB; returns {"wallets":[]}
+```
+
+What each verifies:
+
+- **`network-info`** — binary starts, lazy-inits `AppContext` (creates `.env`/DB/secret store), reports the active network. No SPV gate, so it's a pure context-wiring check.
+- **`tools`** — the in-process MCP server is up and the dynamic `tools/list` discovery path works (catches a tool that fails to register in `tool_router()`).
+- **`tool-describe name=...`** — the meta tool returns a tool's JSON schema; confirms tool metadata serializes cleanly.
+- **`core-wallets-list`** — drives the full dispatch chain (MCP service → tool invoke → `AppContext` → SQLite) without funds; skips the SPV gate.
+
+`--help`, `<cmd> --help`, and `completion <shell>` work from the on-disk tool cache without any context init.
+
+**Not smoke tests** (need a synced chain / live DAPI — they wait on the SPV gate, up to a 10-min timeout): all fund-moving and balance/withdrawal tools — `core-balances-get`, `core-funds-send`, `platform-addresses-list`, `platform-withdrawals-get`, every `identity-*` and `shielded-*` tool. Don't force these in a no-network smoke run.
+
 ### Key Dependencies
 
 - `dash-sdk` - Dash blockchain SDK (git dep from dashpay/platform)
-- `egui/eframe 0.33` - Immediate mode GUI framework
+- `platform-wallet` / `platform-wallet-storage` - Upstream wallet backend (git dep from dashpay/platform): SPV chain sync, address derivation, asset-lock/identity handling, shielded coordinator
+- `egui/eframe 0.35` - Immediate mode GUI framework
 - `tokio` - Async runtime (12 worker threads)
 - `rusqlite` - SQLite with bundled library
 - Rust edition 2024, minimum rust-version 1.92
@@ -137,20 +243,7 @@ See `.env.example` for network configuration options.
 
 ## App Task System (Critical Pattern)
 
-The UI and async backend communicate through an action/channel pattern:
-
-1. **Screens return `AppAction`** from their `ui()` method (e.g., `AppAction::BackendTask(task)`)
-2. **`AppState` spawns a tokio task** that calls `app_context.run_backend_task(task, sender)`
-3. **`AppContext::run_backend_task()`** matches on the `BackendTask` enum and dispatches to domain-specific async methods
-4. **Results come back** via tokio MPSC channel as `TaskResult` (Success/Error/Refresh)
-5. **Main `update()` loop** polls `task_result_receiver.try_recv()` each frame and routes results to the visible screen's `display_task_result()`
-
-```
-Screen::ui() → AppAction::BackendTask(task)
-    → tokio::spawn → AppContext::run_backend_task()
-    → sender.send(TaskResult::Success(result))
-    → AppState::update() polls receiver → Screen::display_task_result()
-```
+The UI and async backend communicate through the action/channel pattern described in Standard Flows above.
 
 **Backend task enums**: `BackendTask` has variants like `IdentityTask(IdentityTask)`, `WalletTask(WalletTask)`, `TokenTask(Box<TokenTask>)`, etc. Each sub-enum has its own variants and corresponding `run_*_task()` method. Results are `BackendTaskSuccessResult` with 50+ typed variants.
 
@@ -159,7 +252,7 @@ Screen::ui() → AppAction::BackendTask(task)
 ## Screen Pattern
 
 All screens implement the `ScreenLike` trait:
-- `ui(&mut self, ctx: &Context) -> AppAction` - Render UI, return actions
+- `ui(&mut self, ui: &mut egui::Ui) -> AppAction` - Render UI, return actions
 - `display_task_result(&mut self, result: BackendTaskSuccessResult)` - Handle async results
 - `display_message(&mut self, msg: &str, type: MessageType)` - Show user feedback
 - `refresh(&mut self)` / `refresh_on_arrival(&mut self)` - Re-fetch data
@@ -183,7 +276,7 @@ Screens hold `Arc<AppContext>` and manage their own UI state.
 
 ### ConnectionStatus (single source of truth for connection health)
 
-`ConnectionStatus` (`src/context/connection_status.rs`) is the **single source of truth** for all high-level connection health state — RPC, ZMQ, SPV, and DAPI. For connection health (status, peer counts, errors, overall state), always read from `ConnectionStatus`, not directly from `SpvManager` or other subsystems.
+`ConnectionStatus` (`src/context/connection_status.rs`) is the **single source of truth** for all high-level connection health state — SPV and DAPI. For connection health (status, peer counts, errors, overall state), always read from `ConnectionStatus`, not directly from `SpvManager` or other subsystems.
 
 SPV status is **push-based**: `SpvManager` event handlers write directly to `ConnectionStatus` atomics (status, peer count, errors) as events arrive. The UI frame loop calls `refresh_state()` to recompute `overall_state` from these atomics, but does not poll SPV for health. This means `ConnectionStatus` is up-to-date in both GUI and headless/test contexts. Detailed SPV sync progress (heights, phase summaries used by tooltips) may still be read directly from `SpvManager.status()` until that progress reporting is migrated into `ConnectionStatus`.
 
@@ -239,4 +332,4 @@ Single SQLite connection wrapped in `Mutex<Connection>`. Schema initialized in `
 
 Linux (x86_64/aarch64), Windows (x86_64), macOS (x86_64/aarch64 with code signing)
 
-Requires protoc v25.2+ for protocol buffer compilation. Different ZMQ libraries for Windows (`zeromq`) vs Unix (`zmq`).
+Requires protoc v25.2+ for protocol buffer compilation.

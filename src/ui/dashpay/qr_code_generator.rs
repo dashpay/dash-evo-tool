@@ -1,5 +1,6 @@
 use crate::app::AppAction;
-use crate::backend_task::dashpay::auto_accept_proof::generate_auto_accept_proof;
+use crate::backend_task::dashpay::DashPayTask;
+use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
@@ -38,7 +39,7 @@ const ACCOUNT_INDEX_INFO_TEXT: &str = "Account Index:\n\n\
 
 pub struct QRCodeGeneratorScreen {
     pub app_context: Arc<AppContext>,
-    selected_identity: Option<QualifiedIdentity>,
+    pub selected_identity: Option<QualifiedIdentity>,
     selected_identity_string: String,
     account_index: String,
     validity_hours: String,
@@ -66,83 +67,78 @@ impl QRCodeGeneratorScreen {
             wallet_open_attempted: false,
         };
 
-        // Auto-select first identity on creation if available
-        if let Ok(identities) = app_context.load_local_qualified_identities()
+        // Seed from the app-scoped selected identity (W3 SYNC); fall back to first.
+        if let Ok(identities) = app_context.load_local_user_identities()
             && !identities.is_empty()
         {
             use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
             use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 
-            new_self.selected_identity = Some(identities[0].clone());
-            new_self.selected_identity_string =
-                identities[0].identity.id().to_string(Encoding::Base58);
+            let selected_id = app_context.selected_identity_id();
+            let preferred = selected_id
+                .and_then(|id| identities.iter().find(|qi| qi.identity.id() == id).cloned())
+                .unwrap_or_else(|| identities[0].clone());
+
+            new_self.selected_identity = Some(preferred.clone());
+            new_self.selected_identity_string = preferred.identity.id().to_string(Encoding::Base58);
 
             // Get wallet for the selected identity
-            new_self.selected_wallet =
-                get_selected_wallet(&identities[0], Some(&app_context), None)
-                    .or_show_error(app_context.egui_ctx())
-                    .unwrap_or(None);
+            new_self.selected_wallet = get_selected_wallet(&preferred, Some(&app_context), None)
+                .or_show_error(app_context.egui_ctx())
+                .unwrap_or(None);
         }
 
         new_self
     }
 
-    fn generate_qr_code(&mut self) {
-        if let Some(identity) = &self.selected_identity {
-            let account_idx = match self.account_index.parse::<u32>() {
-                Ok(v) => v,
-                Err(_) => {
-                    MessageBanner::set_global(
-                        self.app_context.egui_ctx(),
-                        "Invalid account index number",
-                        MessageType::Error,
-                    );
-                    return;
-                }
-            };
-
-            let validity = match self.validity_hours.parse::<u32>() {
-                Ok(v) if v > 0 && v <= 720 => v, // Max 30 days
-                _ => {
-                    MessageBanner::set_global(
-                        self.app_context.egui_ctx(),
-                        "Validity hours must be between 1 and 720",
-                        MessageType::Error,
-                    );
-                    return;
-                }
-            };
-
-            match generate_auto_accept_proof(identity, account_idx, validity) {
-                Ok(proof_data) => {
-                    let qr_string = proof_data.to_qr_string();
-                    self.generated_qr_data = Some(qr_string);
-                    MessageBanner::set_global(
-                        self.app_context.egui_ctx(),
-                        "QR code generated successfully",
-                        MessageType::Success,
-                    );
-                }
-                Err(e) => {
-                    MessageBanner::set_global(
-                        self.app_context.egui_ctx(),
-                        format!("Failed to generate QR code: {}", e),
-                        MessageType::Error,
-                    );
-                }
-            }
-        } else {
+    /// Dispatch the auto-accept QR build to the backend, which resolves the key
+    /// and derives the proof through the JIT chokepoint (no seed in the UI).
+    fn generate_qr_code(&mut self) -> AppAction {
+        let Some(identity) = &self.selected_identity else {
             MessageBanner::set_global(
                 self.app_context.egui_ctx(),
                 "Please select an identity first",
                 MessageType::Error,
             );
-        }
+            return AppAction::None;
+        };
+
+        let account_idx = match self.account_index.parse::<u32>() {
+            Ok(v) => v,
+            Err(_) => {
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    "Invalid account index number",
+                    MessageType::Error,
+                );
+                return AppAction::None;
+            }
+        };
+
+        let validity = match self.validity_hours.parse::<u32>() {
+            Ok(v) if v > 0 && v <= 720 => v, // Max 30 days
+            _ => {
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    "Validity hours must be between 1 and 720",
+                    MessageType::Error,
+                );
+                return AppAction::None;
+            }
+        };
+
+        AppAction::BackendTask(BackendTask::DashPayTask(Box::new(
+            DashPayTask::GenerateAutoAcceptQrCode {
+                identity: identity.clone(),
+                account_reference: account_idx,
+                validity_hours: validity,
+            },
+        )))
     }
 
     pub fn render(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
 
         // Header with info icon
         ui.horizontal(|ui| {
@@ -164,7 +160,7 @@ impl QRCodeGeneratorScreen {
         // Identity selector
         let identities = self
             .app_context
-            .load_local_qualified_identities()
+            .load_local_user_identities()
             .unwrap_or_default();
 
         if identities.is_empty() {
@@ -190,6 +186,8 @@ impl QRCodeGeneratorScreen {
                             RichText::new("Identity:").color(DashColors::text_primary(dark_mode)),
                         );
                         ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                            // SYNC: write-back via syncing_global on user pick (FR-6: the source list is
+                    // User-only, so a masternode/evonode can never leak to the app-global identity).
                             let response = ui.add(
                                 IdentitySelector::new(
                                     "qr_identity_selector",
@@ -199,7 +197,8 @@ impl QRCodeGeneratorScreen {
                                     .selected_identity(&mut self.selected_identity)
                                     .unwrap()
                                     .width(300.0)
-                                    .other_option(false),
+                                    .other_option(false)
+                                    .syncing_global(self.app_context.clone()),
                             );
 
                             if response.changed() {
@@ -269,8 +268,9 @@ impl QRCodeGeneratorScreen {
                 // Check wallet lock status before showing generate button
                 let wallet_locked = if let Some(wallet) = &self.selected_wallet {
                     if !self.wallet_open_attempted {
-                        if let Err(e) = try_open_wallet_no_password(wallet) {
-                            MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                        if let Err(e) = try_open_wallet_no_password(&self.app_context, wallet) {
+                            MessageBanner::set_global(ui.ctx(), &e, MessageType::Error)
+                                .disable_auto_dismiss();
                         }
                         self.wallet_open_attempted = true;
                     }
@@ -294,7 +294,7 @@ impl QRCodeGeneratorScreen {
                 } else {
                     ui.horizontal(|ui| {
                         if ui.button("Generate QR Code").clicked() {
-                            self.generate_qr_code();
+                            action |= self.generate_qr_code();
                         }
 
                         if self.generated_qr_data.is_some()
@@ -399,12 +399,12 @@ impl QRCodeGeneratorScreen {
 }
 
 impl ScreenLike for QRCodeGeneratorScreen {
-    fn ui(&mut self, ctx: &egui::Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
         let mut action = AppAction::None;
 
         // Add top panel
         action |= add_top_panel(
-            ctx,
+            ui,
             &self.app_context,
             vec![
                 ("DashPay", AppAction::None),
@@ -414,23 +414,23 @@ impl ScreenLike for QRCodeGeneratorScreen {
         );
 
         // Highlight DashPay in the main left panel
-        action |= add_left_panel(ctx, &self.app_context, RootScreenType::RootScreenDashpay);
+        action |= add_left_panel(ui, &self.app_context, RootScreenType::RootScreenDashpay);
 
         // Add DashPay subscreen chooser panel
         action |= add_dashpay_subscreen_chooser_panel(
-            ctx,
+            ui,
             &self.app_context,
             DashPaySubscreen::Contacts, // Use Contacts as the active subscreen since QR Generator is launched from there
         );
 
         // Main content area with island styling
-        action |= island_central_panel(ctx, |ui| self.render(ui));
+        action |= island_central_panel(ui, |ui| self.render(ui));
 
         // Show info popup if requested
         if self.show_info_popup {
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
-                .show(ctx, |ui| {
+                .show(ui, |ui| {
                     let mut popup = InfoPopup::new("About Contact QR Codes", QR_CODE_INFO_TEXT);
                     if popup.show(ui).inner {
                         self.show_info_popup = false;
@@ -443,5 +443,11 @@ impl ScreenLike for QRCodeGeneratorScreen {
 
     fn display_message(&mut self, _message: &str, _message_type: MessageType) {
         // Banner display is handled globally by AppState; no side-effects needed.
+    }
+
+    fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
+        if let BackendTaskSuccessResult::DashPayAutoAcceptQrCode(qr_string) = result {
+            self.generated_qr_data = Some(qr_string);
+        }
     }
 }

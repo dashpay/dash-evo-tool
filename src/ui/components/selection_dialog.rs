@@ -1,7 +1,10 @@
 use crate::ui::components::component_trait::{Component, ComponentResponse};
+use crate::ui::components::modal_chrome::{ModalChromeConfig, modal_chrome};
 use crate::ui::helpers::clicked_outside_window;
 use crate::ui::theme::{ComponentStyles, DashColors};
 use egui::{InnerResponse, Ui, WidgetText};
+
+pub use crate::ui::components::modal_chrome::NOTHING;
 
 /// Result of a selection dialog interaction
 #[derive(Debug, Clone, PartialEq)]
@@ -11,8 +14,6 @@ pub enum SelectionStatus {
     /// User cancelled the dialog
     Canceled,
 }
-
-pub const NOTHING: Option<&str> = None;
 
 /// Response struct for the SelectionDialog component following the Component trait pattern
 #[derive(Debug, Clone)]
@@ -167,48 +168,31 @@ impl SelectionDialog {
 impl SelectionDialog {
     /// Show the dialog and return the user's response
     fn show_dialog(&mut self, ui: &mut Ui) -> InnerResponse<Option<SelectionStatus>> {
-        let mut is_open = self.is_open;
-
-        if !is_open {
+        if !self.is_open {
             return InnerResponse::new(
                 None,
                 ui.allocate_response(egui::Vec2::ZERO, egui::Sense::hover()),
             );
         }
 
-        // Draw dark overlay behind the dialog
-        let screen_rect = ui.ctx().content_rect();
-        let painter = ui.ctx().layer_painter(egui::LayerId::new(
-            egui::Order::Middle,
-            egui::Id::new("selection_dialog_overlay"),
-        ));
-        painter.rect_filled(screen_rect, 0.0, DashColors::modal_overlay());
-
         let mut final_response = None;
         let mut combo_popup_id: Option<egui::Id> = None;
-        let window_response = egui::Window::new(self.title.clone())
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-            .order(egui::Order::Foreground)
-            .open(&mut is_open)
-            .frame(egui::Frame {
-                inner_margin: egui::Margin::same(16),
-                outer_margin: egui::Margin::same(0),
-                corner_radius: egui::CornerRadius::same(8),
-                shadow: egui::epaint::Shadow {
-                    offset: [0, 8],
-                    blur: 16,
-                    spread: 0,
-                    color: DashColors::popup_shadow(),
-                },
-                fill: ui.style().visuals.window_fill,
-                stroke: egui::Stroke::new(1.0, DashColors::popup_border_glow()),
-            })
-            .show(ui.ctx(), |ui| {
+        let chrome = modal_chrome(
+            ui.ctx(),
+            ModalChromeConfig {
+                title: self.title.clone(),
+                overlay_id: egui::Id::new("selection_dialog_overlay"),
+                overlay_order: egui::Order::Middle,
+                window_order: egui::Order::Foreground,
+                resizable: false,
+                show_close_button: true,
+                blocks_input: false,
+                inner_margin: 16,
+            },
+            |ui| {
                 ui.set_min_width(300.0);
 
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                let dark_mode = ui.style().visuals.dark_mode;
 
                 // Message
                 ui.add_space(10.0);
@@ -259,7 +243,7 @@ impl SelectionDialog {
 
                         // Cancel button
                         if let Some(cancel_text) = &self.cancel_text {
-                            let dark_mode = ui.ctx().style().visuals.dark_mode;
+                            let dark_mode = ui.style().visuals.dark_mode;
                             if ComponentStyles::add_secondary_button(
                                 ui,
                                 cancel_text.clone(),
@@ -274,10 +258,11 @@ impl SelectionDialog {
                         }
                     });
                 });
-            });
+            },
+        );
 
         // Handle window closed via X button
-        if !is_open && final_response.is_none() {
+        if chrome.closed_via_x && final_response.is_none() {
             final_response = Some(SelectionStatus::Canceled);
         }
 
@@ -297,10 +282,10 @@ impl SelectionDialog {
         }
 
         // Handle click outside window (skip if ComboBox dropdown is open)
-        if let Some(ref wr) = window_response
+        if let Some(ref wr) = chrome.window_response
             && final_response.is_none()
             && !combo_open
-            && clicked_outside_window(ui.ctx(), wr.response.rect)
+            && clicked_outside_window(ui.ctx(), wr.rect)
         {
             final_response = Some(SelectionStatus::Canceled);
         }
@@ -310,11 +295,11 @@ impl SelectionDialog {
             self.status = final_response.clone();
             self.is_open = false;
         } else {
-            self.is_open = is_open;
+            self.is_open = !chrome.closed_via_x;
         }
 
-        if let Some(window_response) = window_response {
-            InnerResponse::new(final_response, window_response.response)
+        if let Some(window_response) = chrome.window_response {
+            InnerResponse::new(final_response, window_response)
         } else {
             InnerResponse::new(
                 final_response,

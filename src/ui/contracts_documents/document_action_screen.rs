@@ -49,7 +49,7 @@ use dash_sdk::drive::query::WhereClause;
 use dash_sdk::platform::{DocumentQuery, Identifier, IdentityPublicKey};
 use dash_sdk::query_types::IndexMap;
 use eframe::epaint::Color32;
-use egui::{Context, Frame, Margin, RichText, Ui};
+use egui::{Frame, Margin, RichText, Ui};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, RwLock};
 
@@ -139,10 +139,7 @@ impl DocumentActionScreen {
         selected_identity: Option<QualifiedIdentity>,
         action_type: DocumentActionType,
     ) -> Self {
-        let known_contracts = app_context
-            .db
-            .get_contracts(&app_context, None, None)
-            .unwrap_or_default();
+        let known_contracts = app_context.get_contracts().unwrap_or_default();
 
         let identities_map = if let Ok(identities) = app_context.load_local_user_identities() {
             identities
@@ -154,6 +151,10 @@ impl DocumentActionScreen {
         };
 
         let selected_contract = known_contracts.into_iter().next();
+
+        // Seed from the app-scoped selected identity when none was passed in (W2 SYNC).
+        let selected_identity =
+            selected_identity.or_else(|| app_context.resolve_selected_identity());
 
         let selected_identity_string = selected_identity
             .as_ref()
@@ -264,7 +265,7 @@ impl DocumentActionScreen {
 
         let identities_vec: Vec<_> = self.identities_map.values().cloned().collect();
 
-        // Identity selector
+        // Identity selector — SYNC: write-back via syncing_global on user pick.
         let response = ui.add(
             IdentitySelector::new(
                 "document_action_identity_selector",
@@ -275,7 +276,8 @@ impl DocumentActionScreen {
             .unwrap()
             .width(300.0)
             .label("Identity:")
-            .other_option(false),
+            .other_option(false)
+            .syncing_global(self.app_context.clone()),
         );
 
         // Handle identity change - auto-select key and update wallet
@@ -373,7 +375,7 @@ impl DocumentActionScreen {
 
         ui.horizontal(|ui| {
             ui.label("Document ID:");
-            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            let dark_mode = ui.style().visuals.dark_mode;
             ui.add(styled_text_edit_singleline(
                 &mut self.document_id_input,
                 dark_mode,
@@ -510,7 +512,7 @@ impl DocumentActionScreen {
 
         ui.horizontal(|ui| {
             ui.label("Document ID:");
-            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            let dark_mode = ui.style().visuals.dark_mode;
             ui.add(styled_text_edit_singleline(
                 &mut self.document_id_input,
                 dark_mode,
@@ -570,7 +572,7 @@ impl DocumentActionScreen {
 
         ui.horizontal(|ui| {
             ui.label("Document ID:");
-            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            let dark_mode = ui.style().visuals.dark_mode;
             ui.add(styled_text_edit_singleline(
                 &mut self.document_id_input,
                 dark_mode,
@@ -653,7 +655,7 @@ impl DocumentActionScreen {
 
         ui.horizontal(|ui| {
             ui.label("Document ID:");
-            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            let dark_mode = ui.style().visuals.dark_mode;
             ui.add(styled_text_edit_singleline(
                 &mut self.document_id_input,
                 dark_mode,
@@ -662,7 +664,7 @@ impl DocumentActionScreen {
 
         ui.horizontal(|ui| {
             ui.label("Price (credits):");
-            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            let dark_mode = ui.style().visuals.dark_mode;
             ui.add(styled_text_edit_singleline(
                 &mut self.price_input,
                 dark_mode,
@@ -682,7 +684,7 @@ impl DocumentActionScreen {
 
         ui.horizontal(|ui| {
             ui.label("Document ID:");
-            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            let dark_mode = ui.style().visuals.dark_mode;
             ui.add(styled_text_edit_singleline(
                 &mut self.document_id_input,
                 dark_mode,
@@ -691,7 +693,7 @@ impl DocumentActionScreen {
 
         ui.horizontal(|ui| {
             ui.label("Recipient Identity:");
-            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            let dark_mode = ui.style().visuals.dark_mode;
             ui.add(styled_text_edit_singleline(
                 &mut self.recipient_id_input,
                 dark_mode,
@@ -735,7 +737,7 @@ impl DocumentActionScreen {
                         | DocumentPropertyType::I16
                         | DocumentPropertyType::U8
                         | DocumentPropertyType::I8 => {
-                            let dark_mode = ui.ctx().style().visuals.dark_mode;
+                            let dark_mode = ui.style().visuals.dark_mode;
                             ui.add(
                                 egui::TextEdit::singleline(val)
                                     .hint_text("integer")
@@ -744,7 +746,7 @@ impl DocumentActionScreen {
                             );
                         }
                         DocumentPropertyType::F64 => {
-                            let dark_mode = ui.ctx().style().visuals.dark_mode;
+                            let dark_mode = ui.style().visuals.dark_mode;
                             ui.add(
                                 egui::TextEdit::singleline(val)
                                     .hint_text("floating-point")
@@ -753,7 +755,7 @@ impl DocumentActionScreen {
                             );
                         }
                         DocumentPropertyType::String(size) => {
-                            let dark_mode = ui.ctx().style().visuals.dark_mode;
+                            let dark_mode = ui.style().visuals.dark_mode;
                             ui.add({
                                 let text_edit = egui::TextEdit::singleline(val)
                                     .text_color(DashColors::text_primary(dark_mode))
@@ -766,7 +768,7 @@ impl DocumentActionScreen {
                             });
                         }
                         DocumentPropertyType::ByteArray(_size) => {
-                            let dark_mode = ui.ctx().style().visuals.dark_mode;
+                            let dark_mode = ui.style().visuals.dark_mode;
                             ui.add(
                                 egui::TextEdit::singleline(val)
                                     .hint_text("hex or base64")
@@ -775,7 +777,7 @@ impl DocumentActionScreen {
                             );
                         }
                         DocumentPropertyType::Identifier => {
-                            let dark_mode = ui.ctx().style().visuals.dark_mode;
+                            let dark_mode = ui.style().visuals.dark_mode;
                             ui.add(
                                 egui::TextEdit::singleline(val)
                                     .hint_text("base58 identifier")
@@ -793,7 +795,7 @@ impl DocumentActionScreen {
                             }
                         }
                         DocumentPropertyType::Date => {
-                            let dark_mode = ui.ctx().style().visuals.dark_mode;
+                            let dark_mode = ui.style().visuals.dark_mode;
                             ui.add(
                                 egui::TextEdit::singleline(val)
                                     .hint_text("unix-ms")
@@ -804,7 +806,7 @@ impl DocumentActionScreen {
                         DocumentPropertyType::Object(_)
                         | DocumentPropertyType::Array(_)
                         | DocumentPropertyType::VariableTypeArray(_) => {
-                            let dark_mode = ui.ctx().style().visuals.dark_mode;
+                            let dark_mode = ui.style().visuals.dark_mode;
                             ui.add(
                                 egui::TextEdit::multiline(val)
                                     .hint_text("JSON value")
@@ -896,7 +898,7 @@ impl DocumentActionScreen {
         };
 
         ui.add_space(10.0);
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
         Frame::new()
             .fill(DashColors::surface(dark_mode))
             .inner_margin(Margin::symmetric(10, 8))
@@ -947,6 +949,42 @@ impl DocumentActionScreen {
         action
     }
 
+    /// Resolve the four selections every document action needs — document
+    /// type, contract, identity, and signing key.
+    ///
+    /// The action buttons are only enabled once all four are chosen, so a
+    /// missing one is a broken UI invariant rather than normal input. Instead
+    /// of panicking, show an actionable banner and return `None` so the caller
+    /// degrades to `BackendTask::None`.
+    #[allow(clippy::type_complexity)]
+    fn require_selections(
+        &self,
+    ) -> Option<(
+        &DocumentType,
+        &QualifiedContract,
+        &QualifiedIdentity,
+        &IdentityPublicKey,
+    )> {
+        match (
+            self.selected_document_type.as_ref(),
+            self.selected_contract.as_ref(),
+            self.selected_identity.as_ref(),
+            self.selected_key.as_ref(),
+        ) {
+            (Some(doc_type), Some(contract), Some(identity), Some(key)) => {
+                Some((doc_type, contract, identity, key))
+            }
+            _ => {
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    "Select a document type, contract, identity, and key before continuing.",
+                    crate::ui::MessageType::Error,
+                );
+                None
+            }
+        }
+    }
+
     fn create_document_action(&mut self) -> BackendTask {
         match self.action_type {
             DocumentActionType::Create => self.create_document_task(),
@@ -961,7 +999,9 @@ impl DocumentActionScreen {
     fn create_document_task(&mut self) -> BackendTask {
         match self.try_build_document() {
             Ok((doc, entropy)) => {
-                let doc_type = self.selected_document_type.as_ref().unwrap();
+                let Some((doc_type, contract, identity, key)) = self.require_selections() else {
+                    return BackendTask::None;
+                };
 
                 let token_payment_info =
                     doc_type
@@ -977,15 +1017,15 @@ impl DocumentActionScreen {
                             })
                         });
 
-                BackendTask::DocumentTask(Box::new(DocumentTask::BroadcastDocument(
-                    doc,
+                BackendTask::DocumentTask(Box::new(DocumentTask::BroadcastDocument {
+                    document: doc,
                     token_payment_info,
                     entropy,
-                    doc_type.clone(),
-                    Arc::new(self.selected_contract.as_ref().unwrap().contract.clone()),
-                    self.selected_identity.as_ref().unwrap().clone(),
-                    self.selected_key.as_ref().unwrap().clone(),
-                )))
+                    document_type: doc_type.clone(),
+                    data_contract: Arc::new(contract.contract.clone()),
+                    qualified_identity: identity.clone(),
+                    identity_key: key.clone(),
+                }))
             }
             Err(e) => {
                 MessageBanner::set_global(
@@ -1002,7 +1042,9 @@ impl DocumentActionScreen {
         let document_id =
             Identifier::from_string(&self.document_id_input, Encoding::Base58).unwrap_or_default();
 
-        let doc_type = self.selected_document_type.as_ref().unwrap();
+        let Some((doc_type, contract, identity, key)) = self.require_selections() else {
+            return BackendTask::None;
+        };
 
         let token_payment_info =
             doc_type
@@ -1017,21 +1059,23 @@ impl DocumentActionScreen {
                     })
                 });
 
-        BackendTask::DocumentTask(Box::new(DocumentTask::DeleteDocument(
+        BackendTask::DocumentTask(Box::new(DocumentTask::DeleteDocument {
             document_id,
-            doc_type.clone(),
-            Arc::new(self.selected_contract.as_ref().unwrap().contract.clone()),
-            self.selected_identity.as_ref().unwrap().clone(),
-            self.selected_key.as_ref().unwrap().clone(),
+            document_type: doc_type.clone(),
+            data_contract: Arc::new(contract.contract.clone()),
+            qualified_identity: identity.clone(),
+            identity_key: key.clone(),
             token_payment_info,
-        )))
+        }))
     }
 
     fn create_purchase_task(&self) -> BackendTask {
         let document_id =
             Identifier::from_string(&self.document_id_input, Encoding::Base58).unwrap_or_default();
 
-        let doc_type = self.selected_document_type.as_ref().unwrap();
+        let Some((doc_type, contract, identity, key)) = self.require_selections() else {
+            return BackendTask::None;
+        };
 
         let token_payment_info =
             doc_type
@@ -1046,22 +1090,25 @@ impl DocumentActionScreen {
                     })
                 });
 
-        BackendTask::DocumentTask(Box::new(DocumentTask::PurchaseDocument(
-            self.fetched_price.unwrap_or(0),
+        BackendTask::DocumentTask(Box::new(DocumentTask::PurchaseDocument {
+            price: self.fetched_price.unwrap_or(0),
             document_id,
-            doc_type.clone(),
-            Arc::new(self.selected_contract.as_ref().unwrap().contract.clone()),
-            self.selected_identity.as_ref().unwrap().clone(),
-            self.selected_key.as_ref().unwrap().clone(),
+            document_type: doc_type.clone(),
+            data_contract: Arc::new(contract.contract.clone()),
+            qualified_identity: identity.clone(),
+            identity_key: key.clone(),
             token_payment_info,
-        )))
+        }))
     }
 
     fn create_replace_task(&mut self) -> BackendTask {
         if let Some(_original_doc) = &self.original_doc {
             match self.try_build_document_from_original() {
                 Ok((updated_doc, _entropy)) => {
-                    let doc_type = self.selected_document_type.as_ref().unwrap();
+                    let Some((doc_type, contract, identity, key)) = self.require_selections()
+                    else {
+                        return BackendTask::None;
+                    };
 
                     let token_payment_info =
                         doc_type
@@ -1077,14 +1124,14 @@ impl DocumentActionScreen {
                                 })
                             });
 
-                    BackendTask::DocumentTask(Box::new(DocumentTask::ReplaceDocument(
-                        updated_doc,
-                        doc_type.clone(),
-                        Arc::new(self.selected_contract.as_ref().unwrap().contract.clone()),
-                        self.selected_identity.as_ref().unwrap().clone(),
-                        self.selected_key.as_ref().unwrap().clone(),
+                    BackendTask::DocumentTask(Box::new(DocumentTask::ReplaceDocument {
+                        document: updated_doc,
+                        document_type: doc_type.clone(),
+                        data_contract: Arc::new(contract.contract.clone()),
+                        qualified_identity: identity.clone(),
+                        identity_key: key.clone(),
                         token_payment_info,
-                    )))
+                    }))
                 }
                 Err(e) => {
                     MessageBanner::set_global(
@@ -1096,7 +1143,9 @@ impl DocumentActionScreen {
                 }
             }
         } else {
-            let doc_type = self.selected_document_type.as_ref().unwrap();
+            let Some((doc_type, contract, identity, key)) = self.require_selections() else {
+                return BackendTask::None;
+            };
 
             let token_payment_info =
                 doc_type
@@ -1111,14 +1160,14 @@ impl DocumentActionScreen {
                         })
                     });
 
-            BackendTask::DocumentTask(Box::new(DocumentTask::ReplaceDocument(
-                DocumentV0::default().into(),
-                doc_type.clone(),
-                Arc::new(self.selected_contract.as_ref().unwrap().contract.clone()),
-                self.selected_identity.as_ref().unwrap().clone(),
-                self.selected_key.as_ref().unwrap().clone(),
+            BackendTask::DocumentTask(Box::new(DocumentTask::ReplaceDocument {
+                document: DocumentV0::default().into(),
+                document_type: doc_type.clone(),
+                data_contract: Arc::new(contract.contract.clone()),
+                qualified_identity: identity.clone(),
+                identity_key: key.clone(),
                 token_payment_info,
-            )))
+            }))
         }
     }
 
@@ -1127,7 +1176,9 @@ impl DocumentActionScreen {
             Identifier::from_string(&self.document_id_input, Encoding::Base58).unwrap_or_default();
         let price = self.price_input.parse::<u64>().unwrap_or(0);
 
-        let doc_type = self.selected_document_type.as_ref().unwrap();
+        let Some((doc_type, contract, identity, key)) = self.require_selections() else {
+            return BackendTask::None;
+        };
 
         let token_payment_info =
             doc_type
@@ -1142,15 +1193,15 @@ impl DocumentActionScreen {
                     })
                 });
 
-        BackendTask::DocumentTask(Box::new(DocumentTask::SetDocumentPrice(
+        BackendTask::DocumentTask(Box::new(DocumentTask::SetDocumentPrice {
             price,
             document_id,
-            doc_type.clone(),
-            Arc::new(self.selected_contract.as_ref().unwrap().contract.clone()),
-            self.selected_identity.as_ref().unwrap().clone(),
-            self.selected_key.as_ref().unwrap().clone(),
+            document_type: doc_type.clone(),
+            data_contract: Arc::new(contract.contract.clone()),
+            qualified_identity: identity.clone(),
+            identity_key: key.clone(),
             token_payment_info,
-        )))
+        }))
     }
 
     fn create_transfer_task(&self) -> BackendTask {
@@ -1159,7 +1210,9 @@ impl DocumentActionScreen {
         let recipient_id =
             Identifier::from_string(&self.recipient_id_input, Encoding::Base58).unwrap_or_default();
 
-        let doc_type = self.selected_document_type.as_ref().unwrap();
+        let Some((doc_type, contract, identity, key)) = self.require_selections() else {
+            return BackendTask::None;
+        };
 
         let token_payment_info =
             doc_type
@@ -1174,15 +1227,15 @@ impl DocumentActionScreen {
                     })
                 });
 
-        BackendTask::DocumentTask(Box::new(DocumentTask::TransferDocument(
+        BackendTask::DocumentTask(Box::new(DocumentTask::TransferDocument {
             document_id,
-            recipient_id,
-            doc_type.clone(),
-            Arc::new(self.selected_contract.as_ref().unwrap().contract.clone()),
-            self.selected_identity.as_ref().unwrap().clone(),
-            self.selected_key.as_ref().unwrap().clone(),
+            new_owner_id: recipient_id,
+            document_type: doc_type.clone(),
+            data_contract: Arc::new(contract.contract.clone()),
+            qualified_identity: identity.clone(),
+            identity_key: key.clone(),
             token_payment_info,
-        )))
+        }))
     }
 
     fn try_build_document(&self) -> Result<(Document, [u8; 32]), String> {
@@ -1564,9 +1617,11 @@ impl DocumentActionScreen {
 }
 
 impl ScreenLike for DocumentActionScreen {
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
         let mut action = add_top_panel(
-            ctx,
+            ui,
             &self.app_context,
             vec![
                 ("Contracts", AppAction::GoToMainScreen),
@@ -1576,12 +1631,12 @@ impl ScreenLike for DocumentActionScreen {
         );
 
         action |= add_left_panel(
-            ctx,
+            ui,
             &self.app_context,
             crate::ui::RootScreenType::RootScreenDocumentQuery,
         );
 
-        action |= island_central_panel(ctx, |ui| match &self.broadcast_status {
+        action |= island_central_panel(ui, |ui| match &self.broadcast_status {
             BroadcastStatus::Broadcasted => {
                 let success_message = format!("{} successful!", self.action_type.display_name());
                 let back_button = ("Back to Contracts".to_string(), AppAction::GoToMainScreen);
@@ -1662,8 +1717,13 @@ impl ScreenLike for DocumentActionScreen {
                             self.original_doc = Some(doc.clone());
                             // Populate field inputs with existing values
                             // Only include properties that are defined in the document type schema
-                            let doc_type_properties =
-                                self.selected_document_type.as_ref().unwrap().properties();
+                            let Some(doc_type) = self.selected_document_type.as_ref() else {
+                                tracing::warn!(
+                                    "Replace results arrived without a selected document type; skipping field population"
+                                );
+                                return;
+                            };
+                            let doc_type_properties = doc_type.properties();
                             self.field_inputs = doc
                                 .properties()
                                 .iter()
@@ -1792,13 +1852,14 @@ impl DocumentActionScreen {
                 }
                 if let Some(wallet) = &self.wallet {
                     if !self.wallet_open_attempted {
-                        if let Err(e) = try_open_wallet_no_password(wallet) {
-                            MessageBanner::set_global(
+                        if let Err(e) = try_open_wallet_no_password(&self.app_context, wallet) {
+                            let handle = MessageBanner::set_global(
                                 self.app_context.egui_ctx(),
                                 "Unable to open wallet. Please unlock it and try again.",
                                 crate::ui::MessageType::Error,
-                            )
-                            .with_details(e);
+                            );
+                            handle.disable_auto_dismiss();
+                            handle.with_details(e);
                         }
                         self.wallet_open_attempted = true;
                     }

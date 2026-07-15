@@ -265,36 +265,25 @@ pub fn validate_profile_field_sizes(
     avatar_hash: Option<&[u8]>,
     avatar_fingerprint: Option<&[u8]>,
 ) -> ContactRequestValidation {
+    use crate::model::dashpay::{ProfileFieldError, validate_profile_fields};
+
     let mut validation = ContactRequestValidation::new();
 
-    // Validate displayName (0-25 characters)
-    if let Some(name) = display_name.filter(|name| name.chars().count() > 25) {
-        validation.add_error(format!(
-            "displayName must be 0-25 characters, got {}",
-            name.chars().count()
-        ));
-    }
-
-    // Validate publicMessage (0-140 characters)
-    if let Some(msg) = public_message.filter(|msg| msg.chars().count() > 140) {
-        validation.add_error(format!(
-            "publicMessage must be 0-140 characters, got {}",
-            msg.chars().count()
-        ));
-    }
-
-    // Validate avatarUrl (0-2048 characters)
-    if let Some(url) = avatar_url.filter(|url| url.chars().count() > 2048) {
-        validation.add_error(format!(
-            "avatarUrl must be 0-2048 characters, got {}",
-            url.chars().count()
-        ));
-    }
-
-    if avatar_url.is_some_and(|url| {
-        !url.is_empty() && !url.starts_with("https://") && !url.starts_with("http://")
-    }) {
-        validation.add_warning("avatarUrl should use HTTPS protocol".to_string());
+    // Character-count and scheme checks for the three text fields come from the
+    // shared model validator, the single source of truth also used by the UI
+    // editors. The scheme violation is downgraded to a warning here (a non-HTTPS
+    // avatar URL is discouraged, not fatal), matching prior backend behaviour.
+    for error in validate_profile_fields(
+        display_name.unwrap_or_default(),
+        public_message.unwrap_or_default(),
+        avatar_url.unwrap_or_default(),
+    ) {
+        match error {
+            ProfileFieldError::AvatarUrlInvalidScheme => {
+                validation.add_warning("avatarUrl should use HTTPS protocol".to_string());
+            }
+            other => validation.add_error(other.message()),
+        }
     }
 
     // Validate avatarHash (exactly 32 bytes if present)

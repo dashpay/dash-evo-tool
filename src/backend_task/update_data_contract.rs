@@ -1,21 +1,13 @@
 use super::{BackendTaskSuccessResult, FeeResult};
 use crate::{
-    app::TaskResult,
-    backend_task::error::TaskError,
-    context::AppContext,
-    model::{
-        fee_estimation::PlatformFeeEstimator,
-        proof_log_item::{ProofLogItem, RequestType},
-        qualified_identity::QualifiedIdentity,
-    },
+    app::TaskResult, backend_task::error::TaskError, context::AppContext,
+    model::qualified_identity::QualifiedIdentity,
 };
 use dash_sdk::{
     Error, Sdk,
     dpp::{
-        dashcore::Network,
         data_contract::accessors::v0::{DataContractV0Getters, DataContractV0Setters},
         identity::{SecurityLevel, accessors::IdentityGettersV0},
-        platform_value::string_encoding::Encoding,
         state_transition::{
             StateTransition, StateTransitionSigningOptions,
             data_contract_update_transition::DataContractUpdateTransition,
@@ -23,36 +15,10 @@ use dash_sdk::{
         version::TryIntoPlatformVersioned,
     },
     platform::{
-        DataContract, Fetch, Identifier, IdentityPublicKey,
+        DataContract, Identifier, IdentityPublicKey,
         transition::broadcast::BroadcastStateTransition,
     },
 };
-use std::time::Duration;
-use tokio::time::sleep;
-
-/// Extracts the contract ID from a formatted error message string that contains:
-/// "... with id <contract_id>: ..."
-pub fn extract_contract_id_from_error(error: &str) -> Result<Identifier, String> {
-    // Find the start of "with id "
-    let prefix = "with id ";
-    let start_index = error
-        .find(prefix)
-        .ok_or("Missing 'with id ' prefix in error message")?
-        + prefix.len();
-
-    // Slice from after "with id " and find the next colon
-    let rest = &error[start_index..];
-    let end_index = rest.find(':').ok_or("Missing ':' after contract ID")?;
-
-    let id_str = &rest[..end_index].trim();
-
-    Identifier::from_string(id_str, Encoding::Base58).map_err(|e| {
-        format!(
-            "Failed to convert contract ID from string to Identifier: {}",
-            e
-        )
-    })
-}
 
 impl AppContext {
     pub async fn update_data_contract(
@@ -64,10 +30,11 @@ impl AppContext {
         sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, crate::backend_task::error::TaskError> {
         // Estimate fee for contract update
-        let estimated_fee = PlatformFeeEstimator::new().estimate_contract_update();
+        let estimated_fee = self.fee_estimator().estimate_contract_update();
 
         // Increment the version of the data contract
         data_contract.increment_version();
+        let contract_id = data_contract.id();
 
         // Fetch the identity contract nonce
         let identity_contract_nonce = sdk
@@ -77,9 +44,9 @@ impl AppContext {
 
         // Update UI
         sender
-            .send(TaskResult::Success(Box::new(
+            .send(TaskResult::unattributed_success(
                 BackendTaskSuccessResult::FetchedNonce,
-            )))
+            ))
             .await
             .map_err(|_| TaskError::InternalSendError)?;
 
@@ -104,62 +71,29 @@ impl AppContext {
                     allow_signing_with_any_purpose: false,
                 },
             )
+            .await
             .map_err(|e| TaskError::from(dash_sdk::Error::Protocol(e)))?;
 
         match state_transition.broadcast_and_wait(sdk, None).await {
             Ok(returned_contract) => {
-                self.db
-                    .replace_contract(data_contract.id(), &returned_contract, self)?;
-                let fee_result = FeeResult::new(estimated_fee, estimated_fee);
-                Ok(BackendTaskSuccessResult::UpdatedContract(fee_result))
+                self.replace_contract(data_contract.id(), &returned_contract)?;
+                Ok(BackendTaskSuccessResult::UpdatedContract(
+                    FeeResult::estimated_only(estimated_fee),
+                ))
             }
-            Err(e) => match e {
-                Error::DriveProofError(proof_error, proof_bytes, block_info) => {
-                    let proof_error_str = proof_error.to_string();
-                    // Log the proof error first, before any other operations
-                    self.db
-                        .insert_proof_log_item(ProofLogItem {
-                            request_type: RequestType::BroadcastStateTransition,
-                            request_bytes: vec![],
-                            verification_path_query_bytes: vec![],
-                            height: block_info.height,
-                            time_ms: block_info.time_ms,
-                            proof_bytes: proof_bytes.clone(),
-                            error: Some(proof_error_str.clone()),
-                        })
-                        .ok();
-
-                    // Reconstruct the SDK error to preserve as source
-                    let source_error =
-                        Box::new(Error::DriveProofError(proof_error, proof_bytes, block_info));
-
-                    sender
-                        .send(TaskResult::Success(Box::new(
-                            BackendTaskSuccessResult::ProofErrorLogged,
-                        )))
-                        .await
-                        .map_err(|_| crate::backend_task::error::TaskError::InternalSendError)?;
-
-                    // Try to extract contract ID and fetch the contract if it exists
-                    // This handles the case where the contract was actually updated despite the proof error
-                    if let Ok(id) = extract_contract_id_from_error(&proof_error_str) {
-                        match self.network {
-                            Network::Regtest => sleep(Duration::from_secs(3)).await,
-                            _ => sleep(Duration::from_secs(10)).await,
-                        }
-                        if let Ok(Some(contract)) = DataContract::fetch(sdk, id).await {
-                            self.db
-                                .replace_contract(contract.id(), &contract, self)
-                                .ok();
-
-                            return Ok(BackendTaskSuccessResult::ContractSavedAfterProofError);
-                        }
-                    }
-
-                    Err(crate::backend_task::error::TaskError::ProofError { source_error })
-                }
-                e => Err(crate::backend_task::error::TaskError::from(e)),
-            },
+            Err(e @ Error::DriveProofError(..)) => {
+                self.recover_contract_after_proof_error(
+                    sdk,
+                    contract_id,
+                    e,
+                    &sender,
+                    |ctx, contract| {
+                        ctx.replace_contract(contract.id(), contract).ok();
+                    },
+                )
+                .await
+            }
+            Err(e) => Err(crate::backend_task::error::TaskError::from(e)),
         }
     }
 }

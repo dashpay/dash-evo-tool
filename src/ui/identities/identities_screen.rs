@@ -10,7 +10,7 @@ use crate::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedId
 use crate::model::wallet::WalletSeedHash;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::{ConfirmationDialog, ConfirmationStatus, island_central_panel};
-use crate::ui::components::top_panel::add_top_panel;
+use crate::ui::components::top_panel::{add_top_panel_with_global_nav, subdued_everyday_spec};
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::helpers::clicked_outside_window;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
@@ -22,6 +22,8 @@ use crate::ui::identities::top_up_identity_screen::TopUpIdentityScreen;
 use crate::ui::identities::transfer_screen::TransferScreen;
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike, ScreenType};
+use crate::wallet_backend::poison::MutexRecover;
+use crate::wallet_backend::poison::RwLockRecover;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::{Purpose, SecurityLevel};
@@ -97,7 +99,7 @@ impl IdentitiesScreen {
             editing_alias_value: String::new(),
         };
 
-        if let Ok(saved_ids) = screen.app_context.db.load_identity_order() {
+        if let Ok(saved_ids) = screen.app_context.load_identity_order() {
             // reorder the IndexMap
             screen.reorder_map_to(saved_ids);
             screen.use_custom_order = true;
@@ -109,7 +111,7 @@ impl IdentitiesScreen {
     /// Reorders `self.identities` to match the order of the provided list of IDs.
     /// Any IDs not present in the provided list are left in their current position.
     fn reorder_map_to(&self, new_order: Vec<Identifier>) {
-        let mut lock = self.identities.lock().unwrap();
+        let mut lock = self.identities.lock_recover();
         if lock.is_empty() || new_order.is_empty() {
             return;
         }
@@ -196,7 +198,7 @@ impl IdentitiesScreen {
                 IdentitiesSortOrder::Descending => ordering.reverse(),
             }
         });
-        let mut lock = self.identities.lock().unwrap();
+        let mut lock = self.identities.lock_recover();
         *lock = list
             .iter()
             .map(|qi| (qi.identity.id(), qi.clone()))
@@ -219,7 +221,7 @@ impl IdentitiesScreen {
     }
 
     fn show_alias(&mut self, ui: &mut Ui, qualified_identity: &QualifiedIdentity) {
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
 
         if let Some(alias) = &qualified_identity.alias {
             ui.label(RichText::new(alias).color(DashColors::text_primary(dark_mode)));
@@ -262,7 +264,7 @@ impl IdentitiesScreen {
 
     // Up/down reorder methods
     fn move_identity_up(&mut self, identity_id: &Identifier) {
-        let mut lock = self.identities.lock().unwrap();
+        let mut lock = self.identities.lock_recover();
         if let Some(idx) = lock.get_index_of(identity_id)
             && idx > 0
         {
@@ -274,7 +276,7 @@ impl IdentitiesScreen {
 
     // arrow down
     fn move_identity_down(&mut self, identity_id: &Identifier) {
-        let mut lock = self.identities.lock().unwrap();
+        let mut lock = self.identities.lock_recover();
         if let Some(idx) = lock.get_index_of(identity_id)
             && idx + 1 < lock.len()
         {
@@ -286,16 +288,16 @@ impl IdentitiesScreen {
 
     // Save the current index order to DB
     fn save_current_order(&self) {
-        let lock = self.identities.lock().unwrap();
+        let lock = self.identities.lock_recover();
         let all_ids = lock.keys().cloned().collect::<Vec<_>>();
         drop(lock);
-        self.app_context.db.save_identity_order(all_ids).ok();
+        self.app_context.save_identity_order(all_ids).ok();
     }
 
     /// This method merges the ephemeral-sorted `Vec` back into the IndexMap
     /// so the IndexMap is updated to the user’s currently displayed order.
     fn update_index_map_to_current_ephemeral(&self, ephemeral_list: Vec<QualifiedIdentity>) {
-        let mut lock = self.identities.lock().unwrap();
+        let mut lock = self.identities.lock_recover();
         // basically reorder the underlying IndexMap to match ephemeral_list
         for (desired_idx, qi) in ephemeral_list.into_iter().enumerate() {
             let id = qi.identity.id();
@@ -311,9 +313,9 @@ impl IdentitiesScreen {
         if let Some(in_wallet_text) = self.wallet_seed_hash_cache.get(wallet_seed_hash) {
             return Some(in_wallet_text.clone());
         }
-        let wallets = self.app_context.wallets.read().unwrap();
+        let wallets = self.app_context.wallets.read_recover();
         for wallet in wallets.values() {
-            let wallet_guard = wallet.read().unwrap();
+            let wallet_guard = wallet.read_recover();
             if &wallet_guard.seed_hash() == wallet_seed_hash {
                 let in_wallet_text = if let Some(alias) = wallet_guard.alias.as_ref() {
                     alias.clone()
@@ -380,7 +382,7 @@ impl IdentitiesScreen {
     }
 
     fn render_no_identities_view(&self, ui: &mut Ui) {
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
 
         // Optionally put everything in a framed "card"-like container
         Frame::group(ui.style())
@@ -615,7 +617,7 @@ impl IdentitiesScreen {
                                                     let actions_popup_id = ui.make_persistent_id(format!("actions_popup_{}", qualified_identity.identity.id().to_string(Encoding::Base58)));
                                                         egui::Popup::from_toggle_button_response(&actions_response).id(actions_popup_id)
                                                         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                                                        .frame(egui::Frame::popup(ui.style()).fill(DashColors::popup_fill(ui.ctx().style().visuals.dark_mode)))
+                                                        .frame(egui::Frame::popup(ui.style()).fill(DashColors::popup_fill(ui.style().visuals.dark_mode)))
                                                         .show(|ui| {
                                                         ui.set_min_width(150.0);
 
@@ -725,12 +727,12 @@ impl IdentitiesScreen {
                                                     let popup_id = ui.make_persistent_id(format!("keys_popup_{}", qualified_identity.identity.id().to_string(Encoding::Base58)));
                                                     egui::Popup::from_toggle_button_response(&button_response).id(popup_id)
                                                         .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
-                                                        .frame(egui::Frame::popup(ui.style()).fill(DashColors::popup_fill(ui.ctx().style().visuals.dark_mode)))
+                                                        .frame(egui::Frame::popup(ui.style()).fill(DashColors::popup_fill(ui.style().visuals.dark_mode)))
                                                         .show(|ui| {
                                                             // Wrap in a scroll area so popups with many keys are accessible
                                                             let max_popup_height = ui.ctx().content_rect().height() * 0.6;
                                                             egui::ScrollArea::vertical().max_height(max_popup_height).show(ui, |ui| {
-                                                            let dark_mode = ui.ctx().style().visuals.dark_mode;
+                                                            let dark_mode = ui.style().visuals.dark_mode;
 
                                                             // Main Identity Keys
                                                             if !public_keys.is_empty() {
@@ -873,11 +875,10 @@ impl IdentitiesScreen {
 
                             match self
                                 .app_context
-                                .db
-                                .delete_local_qualified_identity(&identity_id, &self.app_context)
+                                .delete_local_qualified_identity(&identity_id)
                             {
                                 Ok(_) => {
-                                    let mut lock = self.identities.lock().unwrap();
+                                    let mut lock = self.identities.lock_recover();
                                     lock.shift_remove(&identity_id);
                                 }
                                 Err(e) => {
@@ -889,7 +890,8 @@ impl IdentitiesScreen {
                                         self.app_context.egui_ctx(),
                                         format!("Failed to remove identity: {}", e),
                                         MessageType::Error,
-                                    );
+                                    )
+                                    .disable_auto_dismiss();
                                 }
                             }
 
@@ -897,10 +899,10 @@ impl IdentitiesScreen {
                                 &identity_to_remove.associated_voter_identity
                             {
                                 let voter_identity_id = voter_identity.id();
-                                if let Err(e) = self.app_context.db.delete_local_qualified_identity(
-                                    &voter_identity_id,
-                                    &self.app_context,
-                                ) {
+                                if let Err(e) = self
+                                    .app_context
+                                    .delete_local_qualified_identity(&voter_identity_id)
+                                {
                                     tracing::warn!(
                                         "Failed to delete voter identity from database: {}",
                                         e
@@ -919,11 +921,9 @@ impl IdentitiesScreen {
     }
 
     fn show_alias_edit_popup(&mut self, ctx: &Context) -> AppAction {
-        if self.editing_alias_identity.is_none() {
+        let Some(identity_id) = self.editing_alias_identity else {
             return AppAction::None;
-        }
-
-        let identity_id = self.editing_alias_identity.unwrap();
+        };
 
         // Draw dark overlay behind the popup
         let screen_rect = ctx.content_rect();
@@ -947,13 +947,13 @@ impl IdentitiesScreen {
                     spread: 0,
                     color: DashColors::popup_shadow(),
                 },
-                fill: ctx.style().visuals.window_fill,
+                fill: ctx.global_style().visuals.window_fill,
                 stroke: egui::Stroke::new(1.0, DashColors::popup_border_glow()),
             })
             .show(ctx, |ui| {
                 ui.set_min_width(300.0);
 
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                let dark_mode = ui.style().visuals.dark_mode;
 
                 ui.label(
                     RichText::new("Enter a new alias for this identity:")
@@ -996,7 +996,7 @@ impl IdentitiesScreen {
                             .set_identity_alias(&identity_id, new_alias.as_deref())
                         {
                             Ok(()) => {
-                                let mut identities = self.identities.lock().unwrap();
+                                let mut identities = self.identities.lock_recover();
                                 if let Some(identity_to_update) = identities.get_mut(&identity_id) {
                                     identity_to_update.alias = new_alias;
                                 }
@@ -1029,7 +1029,7 @@ impl IdentitiesScreen {
 
 impl ScreenLike for IdentitiesScreen {
     fn refresh(&mut self) {
-        let mut identities = self.identities.lock().unwrap();
+        let mut identities = self.identities.lock_recover();
         *identities = self
             .app_context
             .load_local_qualified_identities()
@@ -1040,7 +1040,7 @@ impl ScreenLike for IdentitiesScreen {
         drop(identities);
 
         // Keep order after refreshing
-        if let Ok(saved_ids) = self.app_context.db.load_identity_order() {
+        if let Ok(saved_ids) = self.app_context.load_identity_order() {
             self.reorder_map_to(saved_ids);
             self.use_custom_order = true;
         }
@@ -1080,7 +1080,9 @@ impl ScreenLike for IdentitiesScreen {
         }
     }
 
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
         let mut right_buttons = if !self.app_context.has_wallet.load(Ordering::Relaxed) {
             vec![
                 (
@@ -1102,12 +1104,11 @@ impl ScreenLike for IdentitiesScreen {
             "Load Identity",
             DesiredAppAction::AddScreenType(Box::new(ScreenType::AddExistingIdentity)),
         ));
-        if !self.identities.lock().unwrap().is_empty() {
+        if !self.identities.lock_recover().is_empty() {
             // Create a vec of RefreshIdentity(identity) DesiredAppAction for each identity
             let backend_tasks: Vec<BackendTask> = self
                 .identities
-                .lock()
-                .unwrap()
+                .lock_recover()
                 .values()
                 .map(|qi| BackendTask::IdentityTask(IdentityTask::RefreshIdentity(qi.clone())))
                 .collect();
@@ -1120,21 +1121,22 @@ impl ScreenLike for IdentitiesScreen {
             ));
         }
 
-        let mut action = add_top_panel(
-            ctx,
+        // TODO: wire wallet/identity selection consumption for the Identities page.
+        let mut action = add_top_panel_with_global_nav(
+            ui,
             &self.app_context,
-            vec![("Identities", AppAction::None)],
+            subdued_everyday_spec("Identities", RootScreenType::RootScreenIdentities),
             right_buttons,
         );
 
-        action |= add_left_panel(ctx, &self.app_context, RootScreenType::RootScreenIdentities);
+        action |= add_left_panel(ui, &self.app_context, RootScreenType::RootScreenIdentities);
 
         let identities_vec = {
-            let guard = self.identities.lock().unwrap();
+            let guard = self.identities.lock_recover();
             guard.values().cloned().collect::<Vec<_>>()
         };
 
-        action |= island_central_panel(ctx, |ui| {
+        action |= island_central_panel(ui, |ui| {
             let mut inner_action = AppAction::None;
             if identities_vec.is_empty() {
                 self.render_no_identities_view(ui);

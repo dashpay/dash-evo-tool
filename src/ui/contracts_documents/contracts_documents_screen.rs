@@ -1,7 +1,8 @@
 use crate::app::{AppAction, DesiredAppAction};
-use crate::backend_task::BackendTask;
 use crate::backend_task::contract::ContractTask;
 use crate::backend_task::document::DocumentTask::{self, FetchDocumentsPage}; // Updated import
+use crate::backend_task::error::TaskError;
+use crate::backend_task::{BackendTask, BackendTaskContext};
 use crate::context::AppContext;
 use crate::model::qualified_contract::QualifiedContract;
 use crate::ui::components::Component;
@@ -23,7 +24,7 @@ use dash_sdk::dpp::data_contract::document_type::{DocumentType, Index};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::Start;
 use dash_sdk::platform::{Document, DocumentQuery, Identifier};
-use egui::{CentralPanel, Context, Frame, Margin, ScrollArea, Stroke, Ui};
+use egui::{CentralPanel, Frame, Margin, ScrollArea, Stroke, Ui};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -69,14 +70,30 @@ pub struct DocumentQueryScreen {
     // Contract chooser state
     contract_chooser_state: ContractChooserState,
     query_banner: Option<BannerHandle>,
+    pending_fetch_context: Option<BackendTaskContext>,
 }
 
-#[derive(PartialEq, Eq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum DocumentQueryStatus {
     NotStarted,
     WaitingForResult,
     Complete,
     Error,
+}
+
+impl DocumentQueryStatus {
+    fn fail_if_fetch_in_flight(
+        &mut self,
+        expected: Option<&BackendTaskContext>,
+        failed: &BackendTaskContext,
+    ) -> bool {
+        if *self == Self::WaitingForResult && expected == Some(failed) {
+            *self = Self::Error;
+            true
+        } else {
+            false
+        }
+    }
 }
 
 #[derive(PartialEq, Eq, Clone)]
@@ -133,6 +150,7 @@ impl DocumentQueryScreen {
             previous_cursors: Vec::new(),
             contract_chooser_state: ContractChooserState::default(),
             query_banner: None,
+            pending_fetch_context: None,
         }
     }
 
@@ -166,7 +184,7 @@ impl DocumentQueryScreen {
             let available = ui.available_width();
             let text_width = (available - button_width - spacing).max(100.0); // Ensure minimum width
 
-            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            let dark_mode = ui.style().visuals.dark_mode;
             ui.add(
                 egui::TextEdit::singleline(&mut self.document_query)
                     .desired_width(text_width)
@@ -294,7 +312,7 @@ impl DocumentQueryScreen {
                         });
 
                         ui.separator();
-                        let dark_mode = ui.ctx().style().visuals.dark_mode;
+                        let dark_mode = ui.style().visuals.dark_mode;
                         if ComponentStyles::add_secondary_button(ui, "Close", dark_mode).clicked() {
                             self.show_fields_dropdown = false;
                         }
@@ -453,7 +471,7 @@ impl DocumentQueryScreen {
         let mut combined_string = doc_strings.join("\n\n");
 
         // 3) Display in multiline text
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
         ui.add(
             egui::TextEdit::multiline(&mut combined_string)
                 .desired_rows(10)
@@ -528,6 +546,7 @@ impl ScreenLike for DocumentQueryScreen {
         self.next_cursors.clear();
         self.has_next_page = false;
         self.previous_cursors.clear();
+        self.pending_fetch_context = None;
 
         // Reset the selected contract and document type
         let dpns_contract = QualifiedContract {
@@ -541,19 +560,20 @@ impl ScreenLike for DocumentQueryScreen {
             .expect("Expected to find domain document type in DPNS contract");
     }
 
-    fn display_message(&mut self, message: &str, message_type: MessageType) {
-        // Banner display is handled globally by AppState; this is only for side-effects.
-        if message.contains("Error fetching documents")
-            && matches!(message_type, MessageType::Error | MessageType::Warning)
+    fn display_backend_task_error(&mut self, context: &BackendTaskContext, _error: &TaskError) {
+        if self
+            .document_query_status
+            .fail_if_fetch_in_flight(self.pending_fetch_context.as_ref(), context)
         {
+            self.pending_fetch_context = None;
             self.query_banner.take_and_clear();
-            self.document_query_status = DocumentQueryStatus::Error;
         }
     }
 
     fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
         match backend_task_success_result {
             BackendTaskSuccessResult::Documents(documents) => {
+                self.pending_fetch_context = None;
                 self.query_banner.take_and_clear();
                 self.matching_documents = documents
                     .iter()
@@ -562,6 +582,7 @@ impl ScreenLike for DocumentQueryScreen {
                 self.document_query_status = DocumentQueryStatus::Complete;
             }
             BackendTaskSuccessResult::PageDocuments(page_docs, next_cursor) => {
+                self.pending_fetch_context = None;
                 self.query_banner.take_and_clear();
                 self.matching_documents = page_docs
                     .iter()
@@ -579,7 +600,9 @@ impl ScreenLike for DocumentQueryScreen {
         }
     }
 
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
         let load_contract_button = (
             "Load Contracts",
             DesiredAppAction::AddScreenType(Box::new(ScreenType::AddContracts)),
@@ -623,7 +646,7 @@ impl ScreenLike for DocumentQueryScreen {
         let mut action = AppAction::None;
         if self.app_context.network == Network::Mainnet {
             action |= add_top_panel(
-                ctx,
+                ui,
                 &self.app_context,
                 vec![("Contracts", AppAction::None)],
                 vec![
@@ -640,7 +663,7 @@ impl ScreenLike for DocumentQueryScreen {
             );
         } else {
             action |= add_top_panel(
-                ctx,
+                ui,
                 &self.app_context,
                 vec![("Contracts", AppAction::None)],
                 vec![
@@ -659,13 +682,13 @@ impl ScreenLike for DocumentQueryScreen {
         }
 
         action |= add_left_panel(
-            ctx,
+            ui,
             &self.app_context,
             RootScreenType::RootScreenDocumentQuery,
         );
 
         action |= add_contract_chooser_panel(
-            ctx,
+            ui,
             &mut self.contract_search_term,
             &self.app_context,
             &mut self.selected_data_contract,
@@ -687,53 +710,62 @@ impl ScreenLike for DocumentQueryScreen {
         }
 
         // Custom central panel with adjusted margins for Document Query screen
-        let dark_mode = ctx.style().visuals.dark_mode;
+        let dark_mode = ctx.global_style().visuals.dark_mode;
 
-        action |= CentralPanel::default()
-            .frame(
-                Frame::new()
-                    .fill(DashColors::background(dark_mode))
-                    .inner_margin(Margin {
-                        left: 10,
-                        right: 19, // More space on the right
-                        top: 10,
-                        bottom: 0, // Less space on the bottom
-                    }),
-            )
-            .show(ctx, |ui| {
-                // Create an island panel with rounded edges
-                Frame::new()
-                    .fill(DashColors::surface(dark_mode))
-                    .stroke(Stroke::new(1.0, DashColors::border_light(dark_mode)))
-                    .inner_margin(Margin::same(20))
-                    .corner_radius(egui::CornerRadius::same(Shape::RADIUS_LG))
-                    .shadow(Shadow::elevated())
-                    .show(ui, |ui| {
-                        MessageBanner::show_global(ui);
-                        let mut inner_action = AppAction::None;
+        action |= {
+            CentralPanel::default()
+                .frame(
+                    Frame::new()
+                        .fill(DashColors::background(dark_mode))
+                        .inner_margin(Margin {
+                            left: 10,
+                            right: 19, // More space on the right
+                            top: 10,
+                            bottom: 0, // Less space on the bottom
+                        }),
+                )
+                .show(ui, |ui| {
+                    // Create an island panel with rounded edges
+                    Frame::new()
+                        .fill(DashColors::surface(dark_mode))
+                        .stroke(Stroke::new(1.0, DashColors::border_light(dark_mode)))
+                        .inner_margin(Margin::same(20))
+                        .corner_radius(egui::CornerRadius::same(Shape::RADIUS_LG))
+                        .shadow(Shadow::elevated())
+                        .show(ui, |ui| {
+                            MessageBanner::show_global(ui);
+                            let mut inner_action = AppAction::None;
 
-                        // Use a vertical layout that allocates space properly
-                        ui.vertical(|ui| {
-                            // Input field at the top
-                            inner_action |= self.show_input_field(ui);
+                            // Use a vertical layout that allocates space properly
+                            ui.vertical(|ui| {
+                                // Input field at the top
+                                inner_action |= self.show_input_field(ui);
 
-                            // Document display area that expands to fill available space
-                            ui.with_layout(
-                                egui::Layout::top_down_justified(egui::Align::LEFT),
-                                |ui| {
-                                    inner_action |= self.show_output(ui);
-                                },
-                            );
-                        });
+                                // Document display area that expands to fill available space
+                                ui.with_layout(
+                                    egui::Layout::top_down_justified(egui::Align::LEFT),
+                                    |ui| {
+                                        inner_action |= self.show_output(ui);
+                                    },
+                                );
+                            });
 
-                        if self.contract_to_remove.is_some() {
-                            inner_action |= self.show_remove_contract_popup(ui);
-                        }
-                        inner_action
-                    })
-                    .inner
-            })
-            .inner;
+                            if self.contract_to_remove.is_some() {
+                                inner_action |= self.show_remove_contract_popup(ui);
+                            }
+                            inner_action
+                        })
+                        .inner
+                })
+                .inner
+        };
+
+        if let AppAction::BackendTask(task) = &action {
+            let context = BackendTaskContext::from(task);
+            if matches!(context, BackendTaskContext::FetchDocumentsPage(_)) {
+                self.pending_fetch_context = Some(context);
+            }
+        }
 
         action
     }
@@ -768,4 +800,44 @@ fn doc_to_filtered_string(
     };
 
     Some(final_string)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backend_task::BackendTaskContext;
+    use dash_sdk::dpp::data_contracts::SystemDataContract;
+    use dash_sdk::dpp::system_data_contracts::load_system_data_contract;
+    use dash_sdk::dpp::version::PlatformVersion;
+
+    fn query(limit: u32) -> DocumentQuery {
+        let contract =
+            load_system_data_contract(SystemDataContract::DPNS, PlatformVersion::latest())
+                .expect("DPNS contract");
+        let mut query = DocumentQuery::new(Arc::new(contract), "domain").expect("domain query");
+        query.limit = limit;
+        query
+    }
+
+    #[test]
+    fn in_flight_fetch_failure_requires_the_matching_backend_task() {
+        let expected = BackendTaskContext::FetchDocumentsPage(Box::new(query(10)));
+        let different_query = BackendTaskContext::FetchDocumentsPage(Box::new(query(20)));
+        let mut status = DocumentQueryStatus::WaitingForResult;
+        assert!(!status.fail_if_fetch_in_flight(Some(&expected), &BackendTaskContext::Other));
+        assert!(!status.fail_if_fetch_in_flight(Some(&expected), &BackendTaskContext::Unknown));
+        assert!(!status.fail_if_fetch_in_flight(Some(&expected), &different_query));
+        assert!(!status.fail_if_fetch_in_flight(
+            Some(&expected),
+            &BackendTaskContext::FetchDocuments(Box::new(query(10))),
+        ));
+        assert_eq!(status, DocumentQueryStatus::WaitingForResult);
+
+        assert!(status.fail_if_fetch_in_flight(Some(&expected), &expected));
+        assert_eq!(status, DocumentQueryStatus::Error);
+
+        let mut status = DocumentQueryStatus::Complete;
+        assert!(!status.fail_if_fetch_in_flight(Some(&expected), &expected));
+        assert_eq!(status, DocumentQueryStatus::Complete);
+    }
 }

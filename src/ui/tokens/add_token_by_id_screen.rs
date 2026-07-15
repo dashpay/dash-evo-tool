@@ -8,13 +8,13 @@ use dash_sdk::dpp::data_contract::associated_token::token_configuration_conventi
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::DataContract;
 use dash_sdk::platform::Identifier;
-use eframe::egui::{self, Context, Ui};
+use eframe::egui::{self, Ui};
 
 use crate::ui::theme::ComponentStyles;
 
 use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::contract::ContractTask;
-use crate::database::contracts::InsertTokensToo;
+use crate::model::qualified_contract::InsertTokensToo;
 use crate::ui::components::MessageBanner;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::styled::island_central_panel;
@@ -27,11 +27,21 @@ use crate::{
     ui::{MessageType, ScreenLike, components::top_panel::add_top_panel},
 };
 
+/// Which lookup is in flight, so `display_task_result` can disambiguate a
+/// `ContractNotFound`: fall back to a token-ID search vs. report a genuine
+/// missing-contract error.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+enum SearchKind {
+    ByContractId,
+    ByTokenId,
+    Saving,
+}
+
 /// UI state during the add-token flow.
-#[derive(PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 enum AddTokenStatus {
     Idle,
-    Searching(u32),
+    Searching(SearchKind, u32),
     FoundSingle(Box<TokenInfo>),
     FoundMultiple(Vec<TokenInfo>),
     Error,
@@ -79,7 +89,7 @@ impl AddTokenByIdScreen {
             .clicked()
         {
             let now = Utc::now().timestamp() as u32;
-            self.status = AddTokenStatus::Searching(now);
+            self.status = AddTokenStatus::Searching(SearchKind::ByContractId, now);
 
             if !self.contract_or_token_id_input.is_empty() {
                 // Try to parse as identifier
@@ -139,7 +149,8 @@ impl AddTokenByIdScreen {
             let insert_mode = InsertTokensToo::SomeTokensShouldBeAdded(vec![tok.token_position]);
 
             // Set status to show we're processing
-            self.status = AddTokenStatus::Searching(chrono::Utc::now().timestamp() as u32);
+            self.status =
+                AddTokenStatus::Searching(SearchKind::Saving, Utc::now().timestamp() as u32);
 
             // None for alias; change if you allow user alias input
             return AppAction::BackendTasks(
@@ -259,32 +270,14 @@ impl AddTokenByIdScreen {
 }
 
 impl ScreenLike for AddTokenByIdScreen {
-    fn display_message(&mut self, msg: &str, msg_type: MessageType) {
-        // Banner display is handled globally by AppState; this is only for side-effects.
+    fn display_message(&mut self, _msg: &str, msg_type: MessageType) {
+        // Status transitions are driven by typed results in `display_task_result`.
+        // React only to the message *type* here, never to its text.
         match msg_type {
-            MessageType::Success => {
-                if msg.contains("DataContract successfully saved") {
-                    self.status = AddTokenStatus::Complete;
-                } else if msg.contains("Contract not found") {
-                    // Contract not found, try as token ID
-                    if let Ok(_identifier) =
-                        Identifier::from_string(&self.contract_or_token_id_input, Encoding::Base58)
-                    {
-                        // We'll initiate a token ID search
-                        self.try_token_id_next = true;
-                    } else {
-                        self.status = AddTokenStatus::Error;
-                    }
-                } else if msg.contains("Token not found")
-                    || msg.contains("Error fetching contracts")
-                {
-                    self.status = AddTokenStatus::Error;
-                }
-            }
             MessageType::Error | MessageType::Warning => {
                 self.status = AddTokenStatus::Error;
             }
-            MessageType::Info => {}
+            MessageType::Success | MessageType::Info => {}
         }
     }
 
@@ -299,6 +292,36 @@ impl ScreenLike for AddTokenByIdScreen {
             ) => {
                 self.handle_fetched_contract(contract, Some(token_position));
             }
+            BackendTaskSuccessResult::ContractNotFound => {
+                if matches!(
+                    self.status,
+                    AddTokenStatus::Searching(SearchKind::ByContractId, _)
+                ) {
+                    // The input was not a contract ID; try it as a token ID next
+                    // frame (the search is dispatched from `ui()`).
+                    self.try_token_id_next = true;
+                } else {
+                    // A token was found but its contract is missing — a genuine
+                    // data inconsistency, so we do not loop back into a search.
+                    MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
+                        "This token was found, but its contract could not be loaded right now. Please try again in a little while.",
+                        MessageType::Error,
+                    );
+                    self.status = AddTokenStatus::Error;
+                }
+            }
+            BackendTaskSuccessResult::TokenNotFound => {
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    "No token or contract was found for that ID. Double-check the ID and try again.",
+                    MessageType::Error,
+                );
+                self.status = AddTokenStatus::Error;
+            }
+            BackendTaskSuccessResult::SavedContract => {
+                self.status = AddTokenStatus::Complete;
+            }
             _ => {}
         }
     }
@@ -307,9 +330,9 @@ impl ScreenLike for AddTokenByIdScreen {
         // nothing to refresh
     }
 
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
         let mut action = add_top_panel(
-            ctx,
+            ui,
             &self.app_context,
             vec![
                 ("Tokens", AppAction::GoToMainScreen),
@@ -320,15 +343,15 @@ impl ScreenLike for AddTokenByIdScreen {
 
         // Left panel
         action |= add_left_panel(
-            ctx,
+            ui,
             &self.app_context,
             crate::ui::RootScreenType::RootScreenMyTokenBalances,
         );
 
         // Subscreen chooser
-        action |= add_tokens_subscreen_chooser_panel(ctx, &self.app_context);
+        action |= add_tokens_subscreen_chooser_panel(ui, &self.app_context);
 
-        action |= island_central_panel(ctx, |ui| {
+        action |= island_central_panel(ui, |ui| {
             // If we are in the "Complete" status, just show success screen
             if self.status == AddTokenStatus::Complete {
                 return self.show_success_screen(ui);
@@ -349,7 +372,7 @@ impl ScreenLike for AddTokenByIdScreen {
                     Identifier::from_string(&self.contract_or_token_id_input, Encoding::Base58)
                 {
                     let now = Utc::now().timestamp() as u32;
-                    self.status = AddTokenStatus::Searching(now);
+                    self.status = AddTokenStatus::Searching(SearchKind::ByTokenId, now);
                     inner_action = AppAction::BackendTask(BackendTask::TokenTask(Box::new(
                         TokenTask::FetchTokenByTokenId(identifier),
                     )));
@@ -360,12 +383,11 @@ impl ScreenLike for AddTokenByIdScreen {
             let search_action = self.render_search_inputs(ui);
             inner_action |= search_action;
 
-            if let AddTokenStatus::Searching(start_time) = self.status {
+            if let AddTokenStatus::Searching(kind, start_time) = self.status {
                 ui.add_space(10.0);
                 let elapsed_seconds = Utc::now().timestamp() as u32 - start_time;
 
-                // Show different messages based on whether we have a token selected
-                if self.selected_token.is_some() {
+                if matches!(kind, SearchKind::Saving) {
                     ui.label(format!(
                         "Adding token... {} seconds elapsed",
                         elapsed_seconds
@@ -385,5 +407,130 @@ impl ScreenLike for AddTokenByIdScreen {
         });
 
         action
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::AppState;
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+
+    fn data_dir_lock() -> MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// Runs `f` in a unique temp data dir with a Tokio runtime in context, so
+    /// `AppState::new()` neither touches the real user data dir nor races other
+    /// test threads on `DASH_EVO_DATA_DIR`.
+    fn with_isolated_dir<R>(f: impl FnOnce() -> R) -> R {
+        let lock = data_dir_lock();
+        let tmp = tempfile::tempdir().expect("create temp data dir");
+        let prior = std::env::var("DASH_EVO_DATA_DIR").ok();
+        // Safety: serialized by `lock`; env var is restored below before it drops.
+        unsafe {
+            std::env::set_var("DASH_EVO_DATA_DIR", tmp.path());
+        }
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let _guard = rt.enter();
+        let result = f();
+        drop(_guard);
+        drop(rt);
+        // Safety: serialized by `lock`.
+        unsafe {
+            match &prior {
+                Some(v) => std::env::set_var("DASH_EVO_DATA_DIR", v),
+                None => std::env::remove_var("DASH_EVO_DATA_DIR"),
+            }
+        }
+        drop(lock);
+        drop(tmp);
+        result
+    }
+
+    fn make_ctx() -> Arc<AppContext> {
+        let app = AppState::new(egui::Context::default()).expect("AppState builds");
+        app.current_app_context().clone()
+    }
+
+    fn screen_with(ctx: &Arc<AppContext>, status: AddTokenStatus) -> AddTokenByIdScreen {
+        let mut screen = AddTokenByIdScreen::new(ctx);
+        screen.status = status;
+        screen
+    }
+
+    #[test]
+    fn display_task_result_drives_status_from_typed_variants() {
+        with_isolated_dir(|| {
+            let ctx = make_ctx();
+
+            // Saving the contract completes the import.
+            let mut screen = screen_with(&ctx, AddTokenStatus::Searching(SearchKind::Saving, 0));
+            screen.display_task_result(BackendTaskSuccessResult::SavedContract);
+            assert_eq!(screen.status, AddTokenStatus::Complete);
+
+            // A missing contract during a contract-ID lookup retries as a token ID.
+            let mut screen =
+                screen_with(&ctx, AddTokenStatus::Searching(SearchKind::ByContractId, 0));
+            screen.display_task_result(BackendTaskSuccessResult::ContractNotFound);
+            assert!(
+                screen.try_token_id_next,
+                "contract-ID miss must fall back to a token-ID search"
+            );
+            assert!(
+                matches!(
+                    screen.status,
+                    AddTokenStatus::Searching(SearchKind::ByContractId, _)
+                ),
+                "the fallback keeps searching; it must not flip to Error"
+            );
+
+            // A missing contract behind a found token is a genuine error, not a retry.
+            let mut screen = screen_with(&ctx, AddTokenStatus::Searching(SearchKind::ByTokenId, 0));
+            screen.display_task_result(BackendTaskSuccessResult::ContractNotFound);
+            assert_eq!(screen.status, AddTokenStatus::Error);
+            assert!(
+                !screen.try_token_id_next,
+                "a found token's missing contract must not loop back into a search"
+            );
+
+            // Nothing matched the ID at all.
+            let mut screen = screen_with(&ctx, AddTokenStatus::Searching(SearchKind::ByTokenId, 0));
+            screen.display_task_result(BackendTaskSuccessResult::TokenNotFound);
+            assert_eq!(screen.status, AddTokenStatus::Error);
+
+            // A background balance refresh must not disturb a completed import.
+            let mut screen = screen_with(&ctx, AddTokenStatus::Complete);
+            screen.display_task_result(BackendTaskSuccessResult::FetchedTokenBalances);
+            assert_eq!(screen.status, AddTokenStatus::Complete);
+        });
+    }
+
+    #[test]
+    fn display_message_reacts_to_type_not_text() {
+        with_isolated_dir(|| {
+            let ctx = make_ctx();
+
+            // Any error banner puts the screen into the Error state.
+            let mut screen =
+                screen_with(&ctx, AddTokenStatus::Searching(SearchKind::ByContractId, 0));
+            screen.display_message("anything at all", MessageType::Error);
+            assert_eq!(screen.status, AddTokenStatus::Error);
+
+            // The old code flipped to Complete on this exact success text; it must not now.
+            let mut screen =
+                screen_with(&ctx, AddTokenStatus::Searching(SearchKind::ByContractId, 0));
+            screen.display_message("DataContract successfully saved", MessageType::Success);
+            assert!(
+                matches!(
+                    screen.status,
+                    AddTokenStatus::Searching(SearchKind::ByContractId, _)
+                ),
+                "success banner text must no longer drive status transitions"
+            );
+        });
     }
 }

@@ -1,11 +1,6 @@
 use crate::app::AppAction;
-use crate::backend_task::BackendTask;
-use crate::backend_task::BackendTaskSuccessResult;
-use crate::backend_task::core::CoreTask;
-use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::wallet::Wallet;
-use crate::model::wallet::encryption::{DASH_SECRET_MESSAGE, encrypt_message};
 use crate::ui::components::entropy_grid::U256EntropyGrid;
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::password_input::PasswordInput;
@@ -65,7 +60,6 @@ pub struct AddNewWalletScreen {
     estimated_time_to_crack: String,
     error: Option<String>,
     pub app_context: Arc<AppContext>,
-    use_password_for_app: bool,
     wallet_created: bool,
     // Success screen state
     created_wallet_seed_hash: Option<[u8; 32]>,
@@ -74,12 +68,6 @@ pub struct AddNewWalletScreen {
     receive_qr_texture: Option<TextureHandle>,
     show_receive_popup: bool,
     funds_received: bool,
-    /// Cached list of Core wallets (fetched asynchronously via backend task)
-    core_wallets: Option<Vec<String>>,
-    /// Whether the backend task to fetch Core wallets has been dispatched
-    core_wallets_loading: bool,
-    /// Index of selected Core wallet in the ComboBox
-    selected_core_wallet_index: usize,
 }
 
 impl AddNewWalletScreen {
@@ -96,7 +84,6 @@ impl AddNewWalletScreen {
             estimated_time_to_crack: "".to_string(),
             error: None,
             app_context: app_context.clone(),
-            use_password_for_app: true,
             wallet_created: false,
             created_wallet_seed_hash: None,
             receive_address: None,
@@ -104,15 +91,7 @@ impl AddNewWalletScreen {
             receive_qr_texture: None,
             show_receive_popup: false,
             funds_received: false,
-            core_wallets: None,
-            core_wallets_loading: false,
-            selected_core_wallet_index: 0,
         }
-    }
-
-    pub fn reset_core_wallets_cache(&mut self) {
-        self.core_wallets = None;
-        self.core_wallets_loading = false;
     }
 
     /// Generate a new seed phrase based on the selected language and word count
@@ -130,15 +109,6 @@ impl AddNewWalletScreen {
     fn save_wallet(&mut self) -> Result<AppAction, String> {
         if let Some(mnemonic) = &self.seed_phrase {
             let seed = mnemonic.to_seed("");
-
-            // Handle app-level password encryption (UI concern, separate from wallet)
-            if !self.password_input.is_empty() && self.use_password_for_app {
-                let (encrypted_message, salt, nonce) =
-                    encrypt_message(DASH_SECRET_MESSAGE, self.password_input.text())?;
-                self.app_context
-                    .update_main_password(&salt, &nonce, &encrypted_message)
-                    .map_err(|e| e.to_string())?;
-            }
 
             let password = if self.password_input.is_empty() {
                 None
@@ -159,18 +129,13 @@ impl AddNewWalletScreen {
                 self.alias_input.clone()
             };
 
-            let mut wallet = Wallet::new_from_seed(
+            let wallet = Wallet::new_from_seed(
                 seed,
                 self.app_context.network,
                 Some(wallet_alias),
                 password.as_ref(),
             )
             .map_err(|e| e.to_string())?;
-
-            wallet.core_wallet_name = self
-                .core_wallets
-                .as_ref()
-                .and_then(|ws| ws.get(self.selected_core_wallet_index).cloned());
 
             // Extract first receive address for display before registering
             if let Some((address, _)) = wallet.known_addresses.first_key_value() {
@@ -180,7 +145,11 @@ impl AddNewWalletScreen {
 
             let (new_wallet_seed_hash, _wallet_arc) = self
                 .app_context
-                .register_wallet(wallet)
+                .register_wallet(
+                    wallet,
+                    &seed,
+                    crate::model::wallet::birth_height::WalletOrigin::Fresh,
+                )
                 .map_err(|e| e.to_string())?;
 
             // Set pending wallet selection so the wallet screen auto-selects this wallet
@@ -198,16 +167,12 @@ impl AddNewWalletScreen {
 
     fn show_success(&mut self, ui: &mut Ui, ctx: &Context) -> AppAction {
         let mut action = AppAction::None;
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
 
-        // Check for incoming funds by looking at wallet balance
-        // Use total_balance_duffs() which falls back to max_balance() (from UTXOs) if SPV balance not set
+        // Check for incoming funds via the display-only WalletBackend snapshot.
         if !self.funds_received {
             if let Some(seed_hash) = &self.created_wallet_seed_hash
-                && let Ok(wallets) = self.app_context.wallets.read()
-                && let Some(wallet) = wallets.get(seed_hash)
-                && let Ok(wallet_guard) = wallet.read()
-                && wallet_guard.total_balance_duffs() > 0
+                && self.app_context.snapshot_balance(seed_hash).total > 0
             {
                 self.funds_received = true;
                 // Auto-close the popup when funds are received
@@ -402,7 +367,7 @@ impl AddNewWalletScreen {
     }
 
     fn render_seed_phrase_input(&mut self, ui: &mut Ui) {
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
         let surface = DashColors::surface(dark_mode);
         let border = DashColors::border(dark_mode);
         let text_primary = DashColors::text_primary(dark_mode);
@@ -563,36 +528,13 @@ impl AddNewWalletScreen {
 }
 
 impl ScreenLike for AddNewWalletScreen {
-    fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
-        if let BackendTaskSuccessResult::CoreWalletsList(wallets) = backend_task_success_result {
-            self.selected_core_wallet_index = self
-                .selected_core_wallet_index
-                .min(wallets.len().saturating_sub(1));
-            self.core_wallets = Some(wallets);
-        }
-    }
-
-    fn display_task_error(&mut self, _error: &TaskError) -> bool {
-        self.core_wallets_loading = false;
-        self.core_wallets = Some(vec![]);
-        false
-    }
-
-    fn ui(&mut self, ctx: &Context) -> AppAction {
-        let mut pending_action = AppAction::None;
-        if self.core_wallets.is_none() && !self.core_wallets_loading {
-            // SPV mode has no Dash Core RPC — skip listing Core wallets entirely.
-            if self.app_context.core_backend_mode() == crate::spv::CoreBackendMode::Spv {
-                self.core_wallets = Some(vec![]);
-            } else {
-                self.core_wallets_loading = true;
-                pending_action =
-                    AppAction::BackendTask(BackendTask::CoreTask(CoreTask::ListCoreWallets));
-            }
-        }
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
+        let pending_action = AppAction::None;
 
         let mut action = add_top_panel(
-            ctx,
+            ui,
             &self.app_context,
             vec![
                 ("Wallets", AppAction::GoToMainScreen),
@@ -602,12 +544,12 @@ impl ScreenLike for AddNewWalletScreen {
         );
 
         action |= add_left_panel(
-            ctx,
+            ui,
             &self.app_context,
             crate::ui::RootScreenType::RootScreenWalletsBalances,
         );
 
-        action |= island_central_panel(ctx, |ui| {
+        action |= island_central_panel(ui, |ui| {
             let mut inner_action = AppAction::None;
             let ctx = ui.ctx().clone();
 
@@ -742,43 +684,7 @@ impl ScreenLike for AddNewWalletScreen {
                     ui.separator();
                     ui.add_space(10.0);
 
-                    let save_step = if self
-                        .core_wallets
-                        .as_ref()
-                        .is_some_and(|w| w.len() > 1)
-                    {
-                        let core_wallets = self.core_wallets.as_ref().unwrap();
-                        ui.heading(
-                            "6. Select the Dash Core wallet to use for RPC operations.",
-                        );
-                        ui.add_space(8.0);
-
-                        ui.horizontal(|ui| {
-                            ui.label("Dash Core Wallet:");
-                            let selected_name =
-                                &core_wallets[self.selected_core_wallet_index];
-                            ComboBox::from_id_salt("core_wallet_selector")
-                                .selected_text(selected_name.as_str())
-                                .show_ui(ui, |ui| {
-                                    for (i, name) in core_wallets.iter().enumerate() {
-                                        ui.selectable_value(
-                                            &mut self.selected_core_wallet_index,
-                                            i,
-                                            name,
-                                        );
-                                    }
-                                });
-                        });
-
-                        ui.add_space(10.0);
-                        ui.separator();
-                        ui.add_space(10.0);
-                        "7"
-                    } else {
-                        "6"
-                    };
-
-                    ui.heading(format!("{save_step}. Save the wallet."));
+                    ui.heading("6. Save the wallet.");
                     ui.add_space(10.0);
 
                     // Save Wallet button styled like Load Identity button
@@ -810,7 +716,7 @@ impl ScreenLike for AddNewWalletScreen {
                 .show(ctx, |ui| {
                     ui.label(error_message);
                     ui.add_space(10.0);
-                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+                    let dark_mode = ui.style().visuals.dark_mode;
                     if ComponentStyles::add_secondary_button(ui, "Close", dark_mode).clicked() {
                         self.error = None;
                     }

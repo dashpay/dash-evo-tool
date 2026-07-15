@@ -81,24 +81,9 @@ impl SendPaymentScreen {
     }
 
     fn load_contact_info(&mut self) {
-        let owner_id = self.from_identity.identity.id();
-        let network_str = self.app_context.network.to_string();
-        if let Ok(contacts) = self
-            .app_context
-            .db
-            .load_dashpay_contacts(&owner_id, &network_str)
-        {
-            let contact_bytes = self.to_contact_id.to_buffer().to_vec();
-            if let Some(contact) = contacts
-                .iter()
-                .find(|c| c.contact_identity_id == contact_bytes)
-            {
-                self.to_contact_name = contact
-                    .username
-                    .clone()
-                    .or_else(|| contact.display_name.clone());
-            }
-        }
+        // The DET contacts cache is gone after D3; the recipient name is supplied
+        // via the routing screen (see ContactDetailsScreen / ContactsList) or
+        // remains None and the UI falls back to displaying the contact ID.
     }
 
     fn send_payment(&mut self) -> AppAction {
@@ -133,9 +118,10 @@ impl SendPaymentScreen {
             return AppAction::None;
         }
 
-        // Get amount in Dash (convert from duffs)
-        let amount_dash = match self.amount.dash_to_duffs() {
-            Ok(duffs) => duffs as f64 / 100_000_000.0,
+        // Resolve the amount in duffs at the UI edge — no floating-point value
+        // crosses into the backend.
+        let amount_duffs = match self.amount.dash_to_duffs() {
+            Ok(duffs) => duffs,
             Err(e) => {
                 MessageBanner::set_global(
                     self.app_context.egui_ctx(),
@@ -153,7 +139,7 @@ impl SendPaymentScreen {
             DashPayTask::SendPaymentToContact {
                 identity: self.from_identity.clone(),
                 contact_id: self.to_contact_id,
-                amount_dash,
+                amount_duffs,
                 memo: if self.memo.is_empty() {
                     None
                 } else {
@@ -207,8 +193,9 @@ impl SendPaymentScreen {
         // Check wallet unlock
         let needs_unlock = if let Some(wallet) = &self.selected_wallet {
             if !self.wallet_open_attempted {
-                if let Err(e) = try_open_wallet_no_password(wallet) {
-                    MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                if let Err(e) = try_open_wallet_no_password(&self.app_context, wallet) {
+                    MessageBanner::set_global(ui.ctx(), &e, MessageType::Error)
+                        .disable_auto_dismiss();
                 }
                 self.wallet_open_attempted = true;
             }
@@ -235,13 +222,13 @@ impl SendPaymentScreen {
             ui.group(|ui| {
                 // From identity
                 ui.horizontal(|ui| {
-                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+                    let dark_mode = ui.style().visuals.dark_mode;
                     ui.label(
                         RichText::new("From:")
                             .strong()
                             .color(DashColors::text_primary(dark_mode)),
                     );
-                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+                    let dark_mode = ui.style().visuals.dark_mode;
                     ui.label(
                         RichText::new(self.from_identity.to_string())
                             .color(DashColors::text_primary(dark_mode)),
@@ -250,7 +237,7 @@ impl SendPaymentScreen {
 
                 // Wallet Balance (from wallet, not identity)
                 ui.horizontal(|ui| {
-                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+                    let dark_mode = ui.style().visuals.dark_mode;
                     ui.label(
                         RichText::new("Wallet Balance:")
                             .strong()
@@ -258,7 +245,10 @@ impl SendPaymentScreen {
                     );
                     let balance_dash = if let Some(wallet) = &self.selected_wallet {
                         if let Ok(wallet_guard) = wallet.read() {
-                            wallet_guard.confirmed_balance_duffs() as f64 / 100_000_000.0
+                            self.app_context
+                                .snapshot_balance(&wallet_guard.seed_hash())
+                                .spendable() as f64
+                                / 100_000_000.0
                         } else {
                             0.0
                         }
@@ -275,17 +265,17 @@ impl SendPaymentScreen {
 
                 // To contact
                 ui.horizontal(|ui| {
-                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+                    let dark_mode = ui.style().visuals.dark_mode;
                     ui.label(
                         RichText::new("To:")
                             .strong()
                             .color(DashColors::text_primary(dark_mode)),
                     );
                     if let Some(name) = &self.to_contact_name {
-                        let dark_mode = ui.ctx().style().visuals.dark_mode;
+                        let dark_mode = ui.style().visuals.dark_mode;
                         ui.label(RichText::new(name).color(DashColors::text_primary(dark_mode)));
                     } else {
-                        let dark_mode = ui.ctx().style().visuals.dark_mode;
+                        let dark_mode = ui.style().visuals.dark_mode;
                         ui.label(
                             RichText::new(format!("{}", self.to_contact_id))
                                 .color(DashColors::text_primary(dark_mode)),
@@ -295,10 +285,14 @@ impl SendPaymentScreen {
 
                 ui.separator();
 
-                // Amount input - use wallet balance for max
+                // Amount input - use the spendable wallet balance for max, so it
+                // matches the coin selector (confirmed + unconfirmed) and does
+                // not understate IS-locked funds awaiting their local flag.
                 let max_balance = if let Some(wallet) = &self.selected_wallet {
                     if let Ok(wallet_guard) = wallet.read() {
-                        wallet_guard.confirmed_balance_duffs()
+                        self.app_context
+                            .snapshot_balance(&wallet_guard.seed_hash())
+                            .spendable()
                     } else {
                         0
                     }
@@ -325,7 +319,7 @@ impl SendPaymentScreen {
                 ui.add_space(10.0);
 
                 // Memo field
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                let dark_mode = ui.style().visuals.dark_mode;
                 ui.label(
                     RichText::new("Memo (optional):")
                         .strong()
@@ -337,7 +331,7 @@ impl SendPaymentScreen {
                         .desired_rows(3)
                         .desired_width(f32::INFINITY),
                 );
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                let dark_mode = ui.style().visuals.dark_mode;
                 ui.label(
                     RichText::new(format!("{}/100 characters", self.memo.len()))
                         .small()
@@ -399,12 +393,14 @@ impl ScreenLike for SendPaymentScreen {
         self.refresh();
     }
 
-    fn ui(&mut self, ctx: &egui::Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
         let mut action = AppAction::None;
 
         // Add top panel
         action |= add_top_panel(
-            ctx,
+            ui,
             &self.app_context,
             vec![
                 ("DashPay", AppAction::None),
@@ -414,17 +410,17 @@ impl ScreenLike for SendPaymentScreen {
         );
 
         // Highlight DashPay in the main left panel
-        action |= add_left_panel(ctx, &self.app_context, RootScreenType::RootScreenDashpay);
+        action |= add_left_panel(ui, &self.app_context, RootScreenType::RootScreenDashpay);
         action |=
-            add_dashpay_subscreen_chooser_panel(ctx, &self.app_context, DashPaySubscreen::Payments);
+            add_dashpay_subscreen_chooser_panel(ui, &self.app_context, DashPaySubscreen::Payments);
 
-        action |= island_central_panel(ctx, |ui| self.render(ui));
+        action |= island_central_panel(ui, |ui| self.render(ui));
 
         // Show info popup if requested
         if self.show_info_popup {
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
-                .show(ctx, |ui| {
+                .show(ui, |ui| {
                     let mut popup =
                         InfoPopup::new("Payment Guidelines", PAYMENT_GUIDELINES_INFO_TEXT);
                     if popup.show(ui).inner {
@@ -465,7 +461,7 @@ impl ScreenLike for SendPaymentScreen {
 // Payment History Component (used in main DashPay screen)
 pub struct PaymentHistory {
     pub app_context: Arc<AppContext>,
-    selected_identity: Option<QualifiedIdentity>,
+    pub selected_identity: Option<QualifiedIdentity>,
     selected_identity_string: String,
     payments: Vec<PaymentRecord>,
     loading: bool,
@@ -493,89 +489,31 @@ impl PaymentHistory {
             has_searched: false,
         };
 
-        // Auto-select first identity on creation if available
-        if let Ok(identities) = app_context.load_local_qualified_identities()
+        // Seed from the app-scoped selected identity (W3 SYNC); fall back to first.
+        if let Ok(identities) = app_context.load_local_user_identities()
             && !identities.is_empty()
         {
             use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-            new_self.selected_identity = Some(identities[0].clone());
-            new_self.selected_identity_string =
-                identities[0].identity.id().to_string(Encoding::Base58);
-
-            // Load payments from database for this identity
-            new_self.load_payments_from_database();
+            let selected_id = app_context.selected_identity_id();
+            let preferred = selected_id
+                .and_then(|id| identities.iter().find(|qi| qi.identity.id() == id).cloned())
+                .unwrap_or_else(|| identities[0].clone());
+            new_self.selected_identity = Some(preferred.clone());
+            new_self.selected_identity_string = preferred.identity.id().to_string(Encoding::Base58);
         }
 
         new_self
     }
 
-    fn load_payments_from_database(&mut self) {
-        // Load saved payment history for the selected identity from database
-        if let Some(identity) = &self.selected_identity {
-            let identity_id = identity.identity.id();
-
-            // Clear existing payments before loading
-            self.payments.clear();
-
-            // Load payment history from database (limit 100)
-            if let Ok(stored_payments) = self.app_context.db.load_payment_history(&identity_id, 100)
-            {
-                for payment in stored_payments {
-                    // Determine if incoming or outgoing based on identity
-                    let is_incoming = payment.to_identity_id == identity_id.to_buffer().to_vec();
-                    let contact_id = if is_incoming {
-                        payment.from_identity_id
-                    } else {
-                        payment.to_identity_id
-                    };
-
-                    // Try to resolve contact name
-                    let contact_name = if let Ok(contact_id) = Identifier::from_bytes(&contact_id) {
-                        // First check if we have a saved contact with username
-                        let network_str = self.app_context.network.to_string();
-                        if let Ok(contacts) = self
-                            .app_context
-                            .db
-                            .load_dashpay_contacts(&identity_id, &network_str)
-                        {
-                            contacts
-                                .iter()
-                                .find(|c| c.contact_identity_id == contact_id.to_buffer().to_vec())
-                                .and_then(|c| c.username.clone().or(c.display_name.clone()))
-                                .unwrap_or_else(|| {
-                                    format!(
-                                        "Unknown ({})",
-                                        &contact_id.to_string(Encoding::Base58)[0..8]
-                                    )
-                                })
-                        } else {
-                            format!(
-                                "Unknown ({})",
-                                &contact_id.to_string(Encoding::Base58)[0..8]
-                            )
-                        }
-                    } else {
-                        "Unknown".to_string()
-                    };
-
-                    let payment_record = PaymentRecord {
-                        tx_id: payment.tx_id,
-                        contact_name,
-                        amount: Credits::from(payment.amount as u64),
-                        is_incoming,
-                        timestamp: payment.created_at as u64,
-                        memo: payment.memo,
-                    };
-
-                    self.payments.push(payment_record);
-                }
-            }
-        }
-    }
-
     pub fn trigger_fetch_payment_history(&mut self) -> AppAction {
         if let Some(identity) = &self.selected_identity {
             self.loading = true;
+            // Mark the attempt at dispatch time, not on success. A failed load
+            // resets `loading` in `display_message` but leaves this flag set, so
+            // the auto-fetch gate fires exactly once and a transient error can't
+            // drive a re-dispatch storm. A fresh attempt is opted into via
+            // `refresh()` or an identity change.
+            self.has_searched = true;
 
             let task = BackendTask::DashPayTask(Box::new(DashPayTask::LoadPaymentHistory {
                 identity: identity.clone(),
@@ -591,28 +529,39 @@ impl PaymentHistory {
         // Don't clear if we have data, just clear temporary states
         self.loading = false;
 
-        // Auto-select first identity if none selected
+        // Seed from the app-scoped selected identity if none yet selected (W3 SYNC).
         if self.selected_identity.is_none()
-            && let Ok(identities) = self.app_context.load_local_qualified_identities()
+            && let Ok(identities) = self.app_context.load_local_user_identities()
             && !identities.is_empty()
         {
-            self.selected_identity = Some(identities[0].clone());
-            self.selected_identity_string = identities[0].display_string();
+            use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+            let selected_id = self.app_context.selected_identity_id();
+            let preferred = selected_id
+                .and_then(|id| identities.iter().find(|qi| qi.identity.id() == id).cloned())
+                .unwrap_or_else(|| identities[0].clone());
+            self.selected_identity = Some(preferred.clone());
+            self.selected_identity_string = preferred.identity.id().to_string(Encoding::Base58);
         }
 
-        // Load payments from database if we have an identity selected and no payments loaded
+        // Reset the fetched flag if we have no payments; next render dispatches
+        // `LoadPaymentHistory` via `has_searched == false`.
         if self.selected_identity.is_some() && self.payments.is_empty() {
-            self.load_payments_from_database();
+            self.has_searched = false;
         }
     }
 
     pub fn render(&mut self, ui: &mut Ui) -> AppAction {
-        let action = AppAction::None;
+        let mut action = AppAction::None;
+
+        // Auto-dispatch `LoadPaymentHistory` on first render or after identity change.
+        if !self.has_searched && !self.loading && self.selected_identity.is_some() {
+            action = self.trigger_fetch_payment_history();
+        }
 
         // Identity selector or no identities message
         let identities = self
             .app_context
-            .load_local_qualified_identities()
+            .load_local_user_identities()
             .unwrap_or_default();
 
         // Header with identity selector on the right
@@ -621,6 +570,8 @@ impl PaymentHistory {
 
             if !identities.is_empty() {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    // SYNC: write-back via syncing_global on user pick (FR-6: the source list is
+                    // User-only, so a masternode/evonode can never leak to the app-global identity).
                     let response = ui.add(
                         IdentitySelector::new(
                             "payment_history_identity_selector",
@@ -630,14 +581,15 @@ impl PaymentHistory {
                         .selected_identity(&mut self.selected_identity)
                         .unwrap()
                         .width(300.0)
-                        .other_option(false), // Disable "Other" option
+                        .other_option(false) // Disable "Other" option
+                        .syncing_global(self.app_context.clone()),
                     );
 
                     if response.changed() {
                         self.refresh();
-
-                        // Load payments from database for the newly selected identity
-                        self.load_payments_from_database();
+                        // The next render dispatches `LoadPaymentHistory`
+                        // via `has_searched == false`.
+                        self.has_searched = false;
                     }
                 });
             }
@@ -650,7 +602,7 @@ impl PaymentHistory {
         }
 
         if self.selected_identity.is_none() {
-            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            let dark_mode = ui.style().visuals.dark_mode;
             ui.label(
                 RichText::new("Please select an identity to view payment history")
                     .color(DashColors::text_primary(dark_mode)),
@@ -670,7 +622,7 @@ impl PaymentHistory {
         // Payment list
         ScrollArea::vertical().show(ui, |ui| {
             if self.payments.is_empty() {
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                let dark_mode = ui.style().visuals.dark_mode;
                 Frame::group(ui.style())
                     .fill(ui.visuals().extreme_bg_color)
                     .corner_radius(5.0)
@@ -696,7 +648,7 @@ impl PaymentHistory {
             } else {
                 for payment in &self.payments {
                     ui.group(|ui| {
-                        let dark_mode = ui.ctx().style().visuals.dark_mode;
+                        let dark_mode = ui.style().visuals.dark_mode;
                         ui.horizontal(|ui| {
                             // Avatar placeholder
                             ui.vertical(|ui| {
@@ -786,7 +738,11 @@ impl PaymentHistory {
     }
 
     pub fn display_message(&mut self, _message: &str, _message_type: MessageType) {
-        // Banner display is handled globally by AppState; this is only for side-effects.
+        // Banner display is handled globally by AppState; this is only for
+        // side-effects. Settle the spinner so a failed `LoadPaymentHistory`
+        // doesn't strand the widget on the loading state (`has_searched` was
+        // already set at dispatch, so this won't re-trigger the auto-fetch).
+        self.loading = false;
     }
 
     pub fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
@@ -807,8 +763,13 @@ impl PaymentHistory {
                         let contact_id = if contact_name.contains("(") && contact_name.contains(")")
                         {
                             // Extract ID from format "Unknown (abcd1234)"
-                            let start = contact_name.find('(').unwrap() + 1;
-                            let end = contact_name.find(')').unwrap();
+                            let start = contact_name
+                                .find('(')
+                                .expect("invariant: '(' present per the contains check above")
+                                + 1;
+                            let end = contact_name
+                                .find(')')
+                                .expect("invariant: ')' present per the contains check above");
                             let _id_str = &contact_name[start..end];
                             // This is likely a partial base58 ID, we'd need the full ID
                             // For now, we'll use a placeholder
@@ -830,22 +791,11 @@ impl PaymentHistory {
                             },
                         };
                         self.payments.push(payment);
-
-                        // Save to database
-                        let (from_id, to_id, payment_type) = if is_incoming {
-                            (contact_id, identity_id, "received")
-                        } else {
-                            (identity_id, contact_id, "sent")
-                        };
-
-                        let _ = self.app_context.db.save_payment(
-                            &tx_id,
-                            &from_id,
-                            &to_id,
-                            amount as i64,
-                            if memo.is_empty() { None } else { Some(&memo) },
-                            payment_type,
-                        );
+                        // `payments::send_payment_to_contact` records outgoing payments
+                        // through `WalletBackend::dashpay_record_payment` + the
+                        // payment-timestamp sidecar, so the upstream wallet is the
+                        // single source of truth; no mirror is needed here.
+                        let _ = (contact_id, identity_id, tx_id, amount, memo, is_incoming);
                     }
                 } else {
                     // No selected identity, just populate in-memory

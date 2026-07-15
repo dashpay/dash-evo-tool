@@ -1,8 +1,10 @@
 use crate::app::{AppAction, BackendTasksExecutionMode};
 use crate::backend_task::dashpay::DashPayTask;
 use crate::backend_task::dashpay::errors::DashPayError;
+use crate::backend_task::error::TaskError;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
+use crate::model::dashpay::{UnreadableContactInfoPolicy, contact_request_recipient};
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::wallet::Wallet;
 use crate::ui::components::component_trait::Component;
@@ -54,13 +56,16 @@ pub struct ContactRequests {
     outgoing_requests: BTreeMap<Identifier, ContactRequest>,
     accepted_requests: HashSet<Identifier>,
     rejected_requests: HashSet<Identifier>,
-    selected_identity: Option<QualifiedIdentity>,
+    pub selected_identity: Option<QualifiedIdentity>,
     selected_identity_string: String,
     active_tab: RequestTab,
     loading: bool,
+    request_in_flight: Option<Identifier>,
+    request_task_in_flight: Option<DashPayTask>,
     has_fetched_requests: bool,
     accept_confirmation_dialog: Option<(ConfirmationDialog, ContactRequest)>,
     reject_confirmation_dialog: Option<(ConfirmationDialog, ContactRequest)>,
+    overwrite_confirmation_dialog: Option<ConfirmationDialog>,
     pub selected_wallet: Option<Arc<RwLock<Wallet>>>,
     pub wallet_unlock_popup: WalletUnlockPopup,
     wallet_open_attempted: bool,
@@ -82,9 +87,12 @@ impl ContactRequests {
             selected_identity_string: String::new(),
             active_tab: RequestTab::Incoming,
             loading: false,
+            request_in_flight: None,
+            request_task_in_flight: None,
             has_fetched_requests: false,
             accept_confirmation_dialog: None,
             reject_confirmation_dialog: None,
+            overwrite_confirmation_dialog: None,
             selected_wallet: None,
             wallet_unlock_popup: WalletUnlockPopup::new(),
             wallet_open_attempted: false,
@@ -92,25 +100,25 @@ impl ContactRequests {
             pending_profile_fetches: HashSet::new(),
         };
 
-        // Auto-select first identity on creation if available
-        if let Ok(identities) = app_context.load_local_qualified_identities()
+        // Seed from the app-scoped selected identity (W3 SYNC); fall back to first.
+        if let Ok(identities) = app_context.load_local_user_identities()
             && !identities.is_empty()
         {
             use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
-            new_self.selected_identity = Some(identities[0].clone());
-            new_self.selected_identity_string = identities[0]
+            let selected_id = app_context.selected_identity_id();
+            let preferred = selected_id
+                .and_then(|id| identities.iter().find(|qi| qi.identity.id() == id).cloned())
+                .unwrap_or_else(|| identities[0].clone());
+            new_self.selected_identity = Some(preferred.clone());
+            new_self.selected_identity_string = preferred
                 .identity
                 .id()
                 .to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58);
 
             // Get wallet for the selected identity
-            new_self.selected_wallet =
-                get_selected_wallet(&identities[0], Some(&app_context), None)
-                    .or_show_error(app_context.egui_ctx())
-                    .unwrap_or(None);
-
-            // Load requests from database for this identity
-            new_self.load_requests_from_database();
+            new_self.selected_wallet = get_selected_wallet(&preferred, Some(&app_context), None)
+                .or_show_error(app_context.egui_ctx())
+                .unwrap_or(None);
         }
 
         new_self
@@ -143,14 +151,16 @@ impl ContactRequests {
                 self.wallet_open_attempted = false;
             }
 
-            // Clear the requests when identity changes
+            // Clear the requests when identity changes. Next render dispatches
+            // `LoadContactRequests` via `has_fetched_requests == false`.
             self.incoming_requests.clear();
             self.outgoing_requests.clear();
             self.has_fetched_requests = false;
             self.pending_profile_fetches.clear();
-
-            // Load requests from database for the newly selected identity
-            self.load_requests_from_database();
+            self.request_in_flight = None;
+            self.request_task_in_flight = None;
+            self.overwrite_confirmation_dialog = None;
+            self.loading = false;
         }
     }
 
@@ -159,211 +169,24 @@ impl ContactRequests {
         self.render_content(ui, false)
     }
 
-    fn load_requests_from_database(&mut self) {
-        // Load saved contact requests for the selected identity from database
-        if let Some(identity) = &self.selected_identity {
-            let identity_id = identity.identity.id();
-
-            // Clear existing requests before loading
-            self.incoming_requests.clear();
-            self.outgoing_requests.clear();
-
-            let network_str = self.app_context.network.to_string();
-            tracing::debug!(
-                "Loading contact requests from database for identity {} on network {}",
-                identity_id,
-                network_str
-            );
-
-            // Load pending incoming requests from database
-            match self.app_context.db.load_pending_contact_requests(
-                &identity_id,
-                &network_str,
-                "received",
-            ) {
-                Ok(incoming) => {
-                    tracing::debug!("Loaded {} incoming requests from database", incoming.len());
-                    for request in incoming {
-                        if let Ok(from_id) = Identifier::from_bytes(&request.from_identity_id) {
-                            let contact_request = ContactRequest {
-                                request_id: Identifier::new([0; 32]), // We'll need to store this in DB
-                                from_identity: from_id,
-                                to_identity: identity_id,
-                                from_username: request.to_username, // This field is misnamed in DB
-                                from_display_name: None,
-                                to_username: None,
-                                to_display_name: None,
-                                account_reference: 0,
-                                account_label: request.account_label,
-                                timestamp: request.created_at as u64,
-                                auto_accept_proof: None,
-                            };
-                            self.incoming_requests.insert(from_id, contact_request);
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::error!("Failed to load incoming contact requests: {}", e);
-                }
-            }
-
-            // Load pending outgoing requests from database
-            match self.app_context.db.load_pending_contact_requests(
-                &identity_id,
-                &network_str,
-                "sent",
-            ) {
-                Ok(outgoing) => {
-                    tracing::debug!("Loaded {} outgoing requests from database", outgoing.len());
-                    for request in outgoing {
-                        if let Ok(to_id) = Identifier::from_bytes(&request.to_identity_id) {
-                            let contact_request = ContactRequest {
-                                request_id: Identifier::new([0; 32]), // We'll need to store this in DB
-                                from_identity: identity_id,
-                                to_identity: to_id,
-                                from_username: None,
-                                from_display_name: None,
-                                to_username: None,
-                                to_display_name: None,
-                                account_reference: 0,
-                                account_label: request.account_label,
-                                timestamp: request.created_at as u64,
-                                auto_accept_proof: None,
-                            };
-                            self.outgoing_requests.insert(to_id, contact_request);
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::error!("Failed to load outgoing contact requests: {}", e);
-                }
-            }
-
-            // Resolve names from local cache and mark unresolved for Platform fetch
-            let unresolved = self.resolve_names_from_local_cache();
-            self.pending_profile_fetches.extend(unresolved);
-        }
-    }
-
-    /// Resolve usernames and display names for contact requests using local DB cache.
-    /// Returns a list of identity IDs that were not found locally and need Platform fetching.
+    /// Collect identities whose usernames/display names still need to be fetched
+    /// from Platform. After D3, DET no longer caches contacts/profiles, so every
+    /// request with missing names is treated as unresolved and dispatched through
+    /// `fetch_unresolved_profiles`.
     fn resolve_names_from_local_cache(&mut self) -> Vec<Identifier> {
-        use std::collections::HashMap;
+        let mut unresolved_ids: Vec<Identifier> = Vec::new();
 
-        let network_str = self.app_context.network.to_string();
-        let mut unresolved_ids = Vec::new();
-
-        // Pre-load contacts once to avoid N+1 queries inside the loop
-        let contacts_by_id: HashMap<Identifier, (Option<String>, Option<String>)> =
-            if let Some(selected_identity) = &self.selected_identity {
-                let owner_id = selected_identity.identity.id();
-                self.app_context
-                    .db
-                    .load_dashpay_contacts(&owner_id, &network_str)
-                    .unwrap_or_default()
-                    .into_iter()
-                    .filter_map(|c| {
-                        Identifier::from_bytes(&c.contact_identity_id)
-                            .ok()
-                            .map(|id| (id, (c.username, c.display_name)))
-                    })
-                    .collect()
-            } else {
-                HashMap::new()
-            };
-
-        // Collect all identity IDs we need to look up profiles for
-        let incoming_ids: Vec<Identifier> = self
-            .incoming_requests
-            .values()
-            .filter(|r| r.from_username.is_none() && r.from_display_name.is_none())
-            .map(|r| r.from_identity)
-            .collect();
-        let outgoing_ids: Vec<Identifier> = self
-            .outgoing_requests
-            .values()
-            .filter(|r| r.to_username.is_none() && r.to_display_name.is_none())
-            .map(|r| r.to_identity)
-            .collect();
-
-        // Pre-load profiles for all needed IDs (one DB query each, but only for unresolved)
-        let mut profiles_cache: HashMap<Identifier, Option<String>> = HashMap::new();
-        for id in incoming_ids.iter().chain(outgoing_ids.iter()) {
-            if !profiles_cache.contains_key(id) {
-                let display_name = self
-                    .app_context
-                    .db
-                    .load_dashpay_profile(id, &network_str)
-                    .ok()
-                    .flatten()
-                    .and_then(|p| p.display_name);
-                profiles_cache.insert(*id, display_name);
+        for request in self.incoming_requests.values() {
+            if request.from_username.is_none() && request.from_display_name.is_none() {
+                unresolved_ids.push(request.from_identity);
+            }
+        }
+        for request in self.outgoing_requests.values() {
+            if request.to_username.is_none() && request.to_display_name.is_none() {
+                unresolved_ids.push(request.to_identity);
             }
         }
 
-        // Resolve names for incoming requests (need from_identity info)
-        for request in self.incoming_requests.values_mut() {
-            if request.from_username.is_some() || request.from_display_name.is_some() {
-                continue;
-            }
-
-            let identity_id = request.from_identity;
-            let mut found = false;
-
-            // Try profile cache first (has display_name)
-            if let Some(Some(display_name)) = profiles_cache.get(&identity_id) {
-                request.from_display_name = Some(display_name.clone());
-                found = true;
-            }
-
-            // Try contacts cache (has username and display_name)
-            if let Some((username, display_name)) = contacts_by_id.get(&identity_id) {
-                if request.from_username.is_none() {
-                    request.from_username = username.clone();
-                }
-                if request.from_display_name.is_none() {
-                    request.from_display_name = display_name.clone();
-                }
-                found = true;
-            }
-
-            if !found {
-                unresolved_ids.push(identity_id);
-            }
-        }
-
-        // Resolve names for outgoing requests (need to_identity info)
-        for request in self.outgoing_requests.values_mut() {
-            if request.to_username.is_some() || request.to_display_name.is_some() {
-                continue;
-            }
-
-            let identity_id = request.to_identity;
-            let mut found = false;
-
-            // Try profile cache first
-            if let Some(Some(display_name)) = profiles_cache.get(&identity_id) {
-                request.to_display_name = Some(display_name.clone());
-                found = true;
-            }
-
-            // Try contacts cache
-            if let Some((username, display_name)) = contacts_by_id.get(&identity_id) {
-                if request.to_username.is_none() {
-                    request.to_username = username.clone();
-                }
-                if request.to_display_name.is_none() {
-                    request.to_display_name = display_name.clone();
-                }
-                found = true;
-            }
-
-            if !found {
-                unresolved_ids.push(identity_id);
-            }
-        }
-
-        // Deduplicate
         unresolved_ids.sort();
         unresolved_ids.dedup();
         unresolved_ids
@@ -414,33 +237,21 @@ impl ContactRequests {
             }
         }
 
-        // Save to local DB for future lookups
-        let network_str = self.app_context.network.to_string();
-        let bio = doc
-            .get("publicMessage")
-            .and_then(|v| v.as_text())
-            .filter(|s| !s.is_empty());
-        let avatar_url = doc
-            .get("avatarUrl")
-            .and_then(|v| v.as_text())
-            .filter(|s| !s.is_empty());
-
-        if let Err(e) = self.app_context.db.save_dashpay_profile(
-            &contact_id,
-            &network_str,
-            display_name.as_deref(),
-            bio,
-            avatar_url,
-            None,
-        ) {
-            tracing::warn!("Failed to cache profile for {}: {}", contact_id, e);
-        }
+        // Profile cache write dropped — `FetchContactProfile` re-queries
+        // Platform on each open, and contact identities outside our wallet
+        // are not mirrored through the WalletBackend seam.
     }
 
     pub fn trigger_fetch_requests(&mut self) -> AppAction {
         // Only fetch if we have a selected identity
         if let Some(identity) = &self.selected_identity {
             self.loading = true;
+            // Mark the attempt at dispatch time, not on success. A failed load
+            // resets `loading` in `display_message` / `display_task_error` but
+            // leaves this flag set, so the auto-fetch gate fires exactly once
+            // and a transient error can't drive a re-dispatch storm. A fresh
+            // attempt is opted into via `refresh()` or an identity change.
+            self.has_fetched_requests = true;
 
             let task = BackendTask::DashPayTask(Box::new(DashPayTask::LoadContactRequests {
                 identity: identity.clone(),
@@ -469,20 +280,30 @@ impl ContactRequests {
     pub fn refresh(&mut self) -> AppAction {
         // Don't clear requests - preserve loaded state
         // Only clear temporary states
-        self.loading = false;
-
-        // Auto-select first identity if none selected
-        if self.selected_identity.is_none()
-            && let Ok(identities) = self.app_context.load_local_qualified_identities()
-            && !identities.is_empty()
-        {
-            self.selected_identity = Some(identities[0].clone());
-            self.selected_identity_string = identities[0].display_string();
+        if self.request_in_flight.is_none() {
+            self.loading = false;
         }
 
-        // Load requests from database if we have an identity selected
+        // Seed from the app-scoped selected identity if none yet selected (W3 SYNC).
+        if self.selected_identity.is_none()
+            && let Ok(identities) = self.app_context.load_local_user_identities()
+            && !identities.is_empty()
+        {
+            use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
+            let selected_id = self.app_context.selected_identity_id();
+            let preferred = selected_id
+                .and_then(|id| identities.iter().find(|qi| qi.identity.id() == id).cloned())
+                .unwrap_or_else(|| identities[0].clone());
+            self.selected_identity = Some(preferred.clone());
+            self.selected_identity_string = preferred
+                .identity
+                .id()
+                .to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58);
+        }
+
+        // Mark unfetched so the next render dispatches `LoadContactRequests`.
         if self.selected_identity.is_some() {
-            self.load_requests_from_database();
+            self.has_fetched_requests = false;
         }
 
         AppAction::None
@@ -495,6 +316,11 @@ impl ContactRequests {
     fn render_content(&mut self, ui: &mut Ui, show_header: bool) -> AppAction {
         let mut action = AppAction::None;
 
+        // Auto-fetch contact requests on first render or after identity change.
+        if !self.has_fetched_requests && !self.loading && self.selected_identity.is_some() {
+            action |= self.trigger_fetch_requests();
+        }
+
         // Trigger Platform fetches for unresolved profiles
         if !self.pending_profile_fetches.is_empty() {
             let pending: Vec<_> = self.pending_profile_fetches.drain().collect();
@@ -505,15 +331,26 @@ impl ContactRequests {
         if let Some((dialog, request)) = &mut self.accept_confirmation_dialog {
             let response = dialog.show(ui);
             if response.inner.dialog_response == Some(ConfirmationStatus::Confirmed) {
-                if let Some(identity) = &self.selected_identity {
+                if self
+                    .app_context
+                    .contact_request_action_is_in_flight(&request.request_id)
+                {
+                    MessageBanner::set_global(
+                        ui.ctx(),
+                        "This contact request action is already running.",
+                        MessageType::Info,
+                    );
+                } else if let Some(identity) = &self.selected_identity {
                     // Don't mark as accepted yet - wait for backend confirmation
                     self.loading = true;
+                    self.request_in_flight = Some(request.request_id);
 
-                    let task =
-                        BackendTask::DashPayTask(Box::new(DashPayTask::AcceptContactRequest {
-                            identity: identity.clone(),
-                            request_id: request.request_id,
-                        }));
+                    let request_task = DashPayTask::AcceptContactRequest {
+                        identity: identity.clone(),
+                        request_id: request.request_id,
+                    };
+                    self.request_task_in_flight = Some(request_task.clone());
+                    let task = BackendTask::DashPayTask(Box::new(request_task));
 
                     action |= AppAction::BackendTask(task);
                 }
@@ -527,16 +364,28 @@ impl ContactRequests {
         if let Some((dialog, request)) = &mut self.reject_confirmation_dialog {
             let response = dialog.show(ui);
             if response.inner.dialog_response == Some(ConfirmationStatus::Confirmed) {
-                if let Some(identity) = &self.selected_identity {
+                if self
+                    .app_context
+                    .contact_request_action_is_in_flight(&request.request_id)
+                {
+                    MessageBanner::set_global(
+                        ui.ctx(),
+                        "This contact request action is already running.",
+                        MessageType::Info,
+                    );
+                } else if let Some(identity) = &self.selected_identity {
                     self.loading = true;
+                    self.request_in_flight = Some(request.request_id);
 
                     // Don't mark as rejected yet - wait for backend confirmation
 
-                    let task =
-                        BackendTask::DashPayTask(Box::new(DashPayTask::RejectContactRequest {
-                            identity: identity.clone(),
-                            request_id: request.request_id,
-                        }));
+                    let request_task = DashPayTask::RejectContactRequest {
+                        identity: identity.clone(),
+                        request_id: request.request_id,
+                        unreadable: UnreadableContactInfoPolicy::Abort,
+                    };
+                    self.request_task_in_flight = Some(request_task.clone());
+                    let task = BackendTask::DashPayTask(Box::new(request_task));
 
                     action |= AppAction::BackendTask(task);
                 }
@@ -546,10 +395,40 @@ impl ContactRequests {
             }
         }
 
+        if let Some(dialog) = &mut self.overwrite_confirmation_dialog {
+            match dialog.show(ui).inner.dialog_response {
+                Some(ConfirmationStatus::Confirmed) => {
+                    if let Some(DashPayTask::RejectContactRequest {
+                        identity,
+                        request_id,
+                        ..
+                    }) = self.request_task_in_flight.take()
+                    {
+                        let retry = DashPayTask::RejectContactRequest {
+                            identity,
+                            request_id,
+                            unreadable: UnreadableContactInfoPolicy::Overwrite,
+                        };
+                        self.request_task_in_flight = Some(retry.clone());
+                        self.loading = true;
+                        action |= AppAction::BackendTask(BackendTask::DashPayTask(Box::new(retry)));
+                    }
+                    self.overwrite_confirmation_dialog = None;
+                }
+                Some(ConfirmationStatus::Canceled) => {
+                    self.request_in_flight = None;
+                    self.request_task_in_flight = None;
+                    self.loading = false;
+                    self.overwrite_confirmation_dialog = None;
+                }
+                None => {}
+            }
+        }
+
         // Identity selector or no identities message
         let identities = self
             .app_context
-            .load_local_qualified_identities()
+            .load_local_user_identities()
             .unwrap_or_default();
 
         // Header with identity selector on the right (only shown when not embedded)
@@ -559,6 +438,8 @@ impl ContactRequests {
 
                 if !identities.is_empty() {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        // SYNC: write-back via syncing_global on user pick (FR-6: the source list is
+                        // User-only, so a masternode/evonode can never leak to the app-global identity).
                         let response = ui.add(
                             IdentitySelector::new(
                                 "requests_identity_selector",
@@ -568,7 +449,8 @@ impl ContactRequests {
                             .selected_identity(&mut self.selected_identity)
                             .unwrap()
                             .width(300.0)
-                            .other_option(false), // Disable "Other" option
+                            .other_option(false) // Disable "Other" option
+                            .syncing_global(self.app_context.clone()),
                         );
 
                         if response.changed() {
@@ -588,9 +470,7 @@ impl ContactRequests {
                                 self.selected_wallet = None;
                             }
                             self.wallet_open_attempted = false;
-
-                            // Load requests from database for the newly selected identity
-                            self.load_requests_from_database();
+                            // Next render dispatches `LoadContactRequests` via `has_fetched_requests == false`.
                         }
                     });
                 }
@@ -606,13 +486,13 @@ impl ContactRequests {
         // Show structured error with action buttons if any
         let mut dismiss_error = false;
         if let Some(err) = &self.error {
-            let dark_mode = ui.ctx().style().visuals.dark_mode;
+            let dark_mode = ui.style().visuals.dark_mode;
             let error_color = if dark_mode {
                 DashColors::ERROR
             } else {
                 egui::Color32::DARK_RED
             };
-            let error_msg = err.user_message();
+            let error_msg = err.to_string();
             let is_missing_encryption_key = matches!(err, DashPayError::MissingEncryptionKey);
 
             ui.group(|ui| {
@@ -648,7 +528,7 @@ impl ContactRequests {
         }
 
         // Tabs
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
         ui.horizontal(|ui| {
             let incoming_tab = egui::Button::new(RichText::new("Incoming").color(
                 if self.active_tab == RequestTab::Incoming {
@@ -715,7 +595,7 @@ impl ContactRequests {
                 } else {
                     ScrollArea::vertical().id_salt("incoming_requests_scroll").show(ui, |ui| {
                     if self.incoming_requests.is_empty() {
-                        let dark_mode = ui.ctx().style().visuals.dark_mode;
+                        let dark_mode = ui.style().visuals.dark_mode;
                         Frame::group(ui.style())
                             .fill(ui.visuals().extreme_bg_color)
                             .corner_radius(5.0)
@@ -748,7 +628,7 @@ impl ContactRequests {
 
                                     ui.vertical(|ui| {
                                         use dash_sdk::dpp::platform_value::string_encoding::Encoding;
-                                        let dark_mode = ui.ctx().style().visuals.dark_mode;
+                                        let dark_mode = ui.style().visuals.dark_mode;
 
                                         // Display name or username or identity ID
                                         let name = request
@@ -817,8 +697,9 @@ impl ContactRequests {
                                                 // Check wallet lock status before showing buttons
                                                 let wallet_locked = if let Some(wallet) = &self.selected_wallet {
                                                     if !self.wallet_open_attempted {
-                                                        if let Err(e) = try_open_wallet_no_password(wallet) {
-                                                            crate::ui::components::MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                                                        if let Err(e) = try_open_wallet_no_password(&self.app_context, wallet) {
+                                                            crate::ui::components::MessageBanner::set_global(ui.ctx(), &e, MessageType::Error)
+                                                                .disable_auto_dismiss();
                                                         }
                                                         self.wallet_open_attempted = true;
                                                     }
@@ -897,7 +778,7 @@ impl ContactRequests {
                 } else {
                     ScrollArea::vertical().id_salt("outgoing_requests_scroll").show(ui, |ui| {
                     if self.outgoing_requests.is_empty() {
-                        let dark_mode = ui.ctx().style().visuals.dark_mode;
+                        let dark_mode = ui.style().visuals.dark_mode;
                         Frame::group(ui.style())
                             .fill(ui.visuals().extreme_bg_color)
                             .corner_radius(5.0)
@@ -940,7 +821,7 @@ impl ContactRequests {
 
                                     ui.vertical(|ui| {
                                         use dash_sdk::dpp::platform_value::string_encoding::Encoding;
-                                        let dark_mode = ui.ctx().style().visuals.dark_mode;
+                                        let dark_mode = ui.style().visuals.dark_mode;
 
                                         // For outgoing requests, show display name or username or truncated ID
                                         let id_str = request.to_identity.to_string(Encoding::Base58);
@@ -991,7 +872,7 @@ impl ContactRequests {
                                     ui.with_layout(
                                         egui::Layout::right_to_left(egui::Align::Center),
                                         |ui| {
-                                            let dark_mode = ui.ctx().style().visuals.dark_mode;
+                                            let dark_mode = ui.style().visuals.dark_mode;
                                             ui.label(
                                                 RichText::new("Cannot be cancelled once sent")
                                                     .small()
@@ -1016,16 +897,18 @@ impl ContactRequests {
 
 impl ScreenLike for ContactRequests {
     fn refresh_on_arrival(&mut self) {
-        // Load requests from database when screen is shown
+        // Trigger a fresh `LoadContactRequests` dispatch via auto-fetch in `render_content`.
         if self.selected_identity.is_some() {
-            self.load_requests_from_database();
+            self.has_fetched_requests = false;
         }
     }
 
-    fn ui(&mut self, ctx: &egui::Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
         // Create a simple central panel for rendering
         let mut action = AppAction::None;
-        egui::CentralPanel::default().show(ctx, |ui| {
+        egui::CentralPanel::default().show(ui, |ui| {
             action = self.render(ui);
         });
 
@@ -1044,30 +927,98 @@ impl ScreenLike for ContactRequests {
         action
     }
 
-    fn display_message(&mut self, message: &str, message_type: MessageType) {
+    fn display_message(&mut self, _message: &str, _message_type: MessageType) {
         // Banner display is handled globally by AppState; this is only for side-effects.
-        self.loading = false;
+        if self.request_in_flight.is_none() {
+            self.loading = false;
+        }
+    }
 
-        // TODO(RUST-002): String-based error classification — see #660
-        if matches!(message_type, MessageType::Error | MessageType::Warning) {
-            if message.contains("ENCRYPTION key") {
-                self.error = Some(DashPayError::MissingEncryptionKey);
-            } else if message.contains("DECRYPTION key") {
-                self.error = Some(DashPayError::MissingDecryptionKey);
+    fn display_task_error(&mut self, error: &TaskError) -> bool {
+        let matches_request =
+            request_error_id(error).is_some_and(|id| self.request_in_flight.as_ref() == Some(id));
+        if matches_request
+            && is_contact_info_read_error(error)
+            && matches!(
+                self.request_task_in_flight,
+                Some(DashPayTask::RejectContactRequest { .. })
+            )
+        {
+            self.overwrite_confirmation_dialog = Some(
+                ConfirmationDialog::new(
+                    "Replace saved contact details?",
+                    "This contact's saved details cannot be read. Continuing will decline the request and clear the saved nickname, note, and accepted-account settings. You cannot undo this change.",
+                )
+                .confirm_text(Some("Replace saved details"))
+                .danger_mode(true),
+            );
+            return true;
+        }
+        if matches_request {
+            self.request_in_flight = None;
+            self.request_task_in_flight = None;
+            self.loading = false;
+        } else if self.request_in_flight.is_none() {
+            self.loading = false;
+        }
+        match classify_request_error(error) {
+            Some(dashpay_error) => {
+                self.error = Some(dashpay_error);
+                true
             }
+            None => false,
         }
     }
 
     fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
-        self.loading = false;
+        let completed_request = match &result {
+            BackendTaskSuccessResult::DashPayContactRequestAccepted(request_id)
+            | BackendTaskSuccessResult::DashPayContactRequestRejected(request_id) => {
+                self.request_in_flight.as_ref() == Some(request_id)
+            }
+            BackendTaskSuccessResult::DashPayContactAlreadyEstablished { request_id, .. } => {
+                self.request_in_flight.as_ref() == Some(request_id)
+            }
+            _ => false,
+        };
+        if completed_request {
+            self.request_in_flight = None;
+            self.request_task_in_flight = None;
+        }
+        if self.request_in_flight.is_none() {
+            self.loading = false;
+        }
 
         match result {
-            BackendTaskSuccessResult::DashPayContactRequests { incoming, outgoing } => {
+            BackendTaskSuccessResult::DashPayContactRequests {
+                identity,
+                incoming,
+                outgoing,
+            } => {
                 tracing::debug!(
                     "Received DashPayContactRequests result: {} incoming, {} outgoing",
                     incoming.len(),
                     outgoing.len()
                 );
+
+                // Get current identity for saving to database
+                let Some(selected_identity) = self.selected_identity.as_ref() else {
+                    tracing::warn!(
+                        "Contact requests arrived with no selected identity; skipping save"
+                    );
+                    return;
+                };
+                let current_identity_id = selected_identity.identity.id();
+
+                // An identity switch cannot cancel a load already in flight, so
+                // a result for the identity we left must not repopulate the
+                // lists under the identity we are on.
+                if identity != current_identity_id {
+                    tracing::debug!(
+                        "Discarding contact requests for a no-longer-selected identity"
+                    );
+                    return;
+                }
 
                 // Clear existing requests
                 self.incoming_requests.clear();
@@ -1075,9 +1026,6 @@ impl ScreenLike for ContactRequests {
 
                 // Mark as fetched
                 self.has_fetched_requests = true;
-
-                // Get current identity for saving to database
-                let current_identity_id = self.selected_identity.as_ref().unwrap().identity.id();
 
                 // Process incoming requests
                 for (id, doc) in incoming.iter() {
@@ -1107,35 +1055,17 @@ impl ScreenLike for ContactRequests {
                     };
 
                     self.incoming_requests.insert(*id, request.clone());
-
-                    // Save to database as received request
-                    let network_str = self.app_context.network.to_string();
-                    tracing::debug!(
-                        "Saving incoming contact request to database: from={}, to={}, network={}",
-                        from_identity,
-                        current_identity_id,
-                        network_str
-                    );
-                    match self.app_context.db.save_contact_request(
-                        &from_identity,
-                        &current_identity_id,
-                        &network_str,
-                        None, // to_username
-                        request.account_label.as_deref(),
-                        "received",
-                    ) {
-                        Ok(id) => tracing::debug!("Saved incoming contact request with id {}", id),
-                        Err(e) => tracing::error!("Failed to save incoming contact request: {}", e),
-                    }
+                    // Contact-request mirror dropped — upstream
+                    // `incoming_contact_requests` already records this
+                    // request, and `DashpayView::contact_requests`
+                    // derives status from upstream presence + the
+                    // rejected/expiry sidecars.
                 }
 
                 // Process outgoing requests
                 for (id, doc) in outgoing.iter() {
                     let properties = doc.properties();
-                    let to_identity = properties
-                        .get("toUserId")
-                        .and_then(|v| v.to_identifier().ok())
-                        .unwrap_or_default();
+                    let to_identity = contact_request_recipient(doc).unwrap_or_default();
 
                     let account_reference = properties
                         .get("accountReference")
@@ -1160,26 +1090,11 @@ impl ScreenLike for ContactRequests {
                     };
 
                     self.outgoing_requests.insert(*id, request.clone());
-
-                    // Save to database as sent request
-                    let network_str = self.app_context.network.to_string();
-                    tracing::debug!(
-                        "Saving outgoing contact request to database: from={}, to={}, network={}",
-                        current_identity_id,
-                        to_identity,
-                        network_str
-                    );
-                    match self.app_context.db.save_contact_request(
-                        &current_identity_id,
-                        &to_identity,
-                        &network_str,
-                        None, // to_username
-                        request.account_label.as_deref(),
-                        "sent",
-                    ) {
-                        Ok(id) => tracing::debug!("Saved outgoing contact request with id {}", id),
-                        Err(e) => tracing::error!("Failed to save outgoing contact request: {}", e),
-                    }
+                    // Contact-request mirror dropped — upstream
+                    // `sent_contact_requests` already records this
+                    // request, and `DashpayView::contact_requests`
+                    // derives status from upstream presence + the
+                    // rejected/expiry sidecars.
                 }
 
                 // Resolve names from local cache and trigger Platform fetches for unknowns
@@ -1212,21 +1127,102 @@ impl ScreenLike for ContactRequests {
                     MessageType::Success,
                 );
             }
-            BackendTaskSuccessResult::DashPayContactAlreadyEstablished(_) => {
+            BackendTaskSuccessResult::DashPayContactAlreadyEstablished { .. } => {
                 // Message display is handled globally by AppState
-            }
-            BackendTaskSuccessResult::Message(msg) => {
-                // Check if this is an error message about missing keys
-                if msg.contains("ENCRYPTION key") {
-                    self.error = Some(DashPayError::MissingEncryptionKey);
-                } else if msg.contains("DECRYPTION key") {
-                    self.error = Some(DashPayError::MissingDecryptionKey);
-                }
-                // Other messages are handled globally by AppState
             }
             _ => {
                 // Ignore other results
             }
         }
+    }
+}
+
+fn request_error_id(error: &TaskError) -> Option<&Identifier> {
+    match error {
+        TaskError::DashPayContactRequestActionFailed { request_id, .. } => Some(request_id),
+        _ => None,
+    }
+}
+
+fn is_contact_info_read_error(error: &TaskError) -> bool {
+    matches!(
+        error,
+        TaskError::DashPayContactRequestActionFailed { source, .. }
+            if matches!(source.as_ref(), TaskError::DashPayContactInfoRead { .. })
+    )
+}
+
+/// Map a typed accept/reject error onto the screen-local error category that
+/// drives a dedicated affordance (the "Add Encryption Key" button). Returns
+/// `None` when no request-specific UI applies, leaving the global banner to
+/// report the error.
+fn classify_request_error(error: &TaskError) -> Option<DashPayError> {
+    match error {
+        TaskError::DashPayContactRequestActionFailed { source, .. } => {
+            classify_request_error(source)
+        }
+        TaskError::DashPay(DashPayError::MissingEncryptionKey) => {
+            Some(DashPayError::MissingEncryptionKey)
+        }
+        TaskError::DashPay(DashPayError::MissingDecryptionKey) => {
+            Some(DashPayError::MissingDecryptionKey)
+        }
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn classifies_missing_encryption_key() {
+        let mapped =
+            classify_request_error(&TaskError::DashPay(DashPayError::MissingEncryptionKey));
+        assert!(matches!(mapped, Some(DashPayError::MissingEncryptionKey)));
+    }
+
+    #[test]
+    fn classifies_missing_decryption_key() {
+        let mapped =
+            classify_request_error(&TaskError::DashPay(DashPayError::MissingDecryptionKey));
+        assert!(matches!(mapped, Some(DashPayError::MissingDecryptionKey)));
+    }
+
+    #[test]
+    fn classifies_a_missing_key_carried_by_a_request_action_failure() {
+        let mapped = classify_request_error(&TaskError::DashPayContactRequestActionFailed {
+            request_id: Identifier::from([2; 32]),
+            source: Box::new(TaskError::DashPay(DashPayError::MissingEncryptionKey)),
+        });
+        assert!(
+            matches!(mapped, Some(DashPayError::MissingEncryptionKey)),
+            "wrapping an accept failure must not cost the user the Add Encryption Key button"
+        );
+    }
+
+    #[test]
+    fn unrelated_dashpay_error_defers_to_global_banner() {
+        let mapped =
+            classify_request_error(&TaskError::DashPay(DashPayError::MissingAuthenticationKey));
+        assert!(mapped.is_none());
+    }
+
+    #[test]
+    fn unrelated_task_error_defers_to_global_banner() {
+        let mapped = classify_request_error(&TaskError::DocumentNotFound);
+        assert!(mapped.is_none());
+    }
+
+    #[test]
+    fn request_error_id_correlates_only_the_matching_paid_action() {
+        let request_id = Identifier::from([2; 32]);
+        let error = TaskError::DashPayContactRequestActionFailed {
+            request_id,
+            source: Box::new(TaskError::DocumentNotFound),
+        };
+
+        assert_eq!(request_error_id(&error), Some(&request_id));
+        assert_eq!(request_error_id(&TaskError::DocumentNotFound), None);
     }
 }

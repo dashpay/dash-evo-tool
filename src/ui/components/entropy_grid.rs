@@ -62,7 +62,7 @@ impl U256EntropyGrid {
                             // Determine the bit value and colors based on theme
                             let bit_value =
                                 (self.random_number[byte_index] >> bit_in_byte) & 1 == 1;
-                            let dark_mode = ui.ctx().style().visuals.dark_mode;
+                            let dark_mode = ui.style().visuals.dark_mode;
                             let color = if bit_value {
                                 // On squares: Deep Blue in light mode, muted Dash Blue in dark mode
                                 if dark_mode {

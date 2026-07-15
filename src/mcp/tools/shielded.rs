@@ -13,6 +13,7 @@ use crate::mcp::dispatch::dispatch_task;
 use crate::mcp::error::McpToolError;
 use crate::mcp::resolve;
 use crate::mcp::server::DashMcpService;
+use crate::mcp::tools::WalletIdParams;
 
 // ---------------------------------------------------------------------------
 // ShieldedShieldFromCore (Core -> Shielded via asset lock)
@@ -29,8 +30,6 @@ pub struct ShieldFromCoreParams {
     pub amount_duffs: u64,
     /// Expected network (required for destructive operations)
     pub network: String,
-    /// Optional Core address to fund from (restricts UTXO selection to this address)
-    pub source_address: Option<String>,
 }
 
 #[derive(Serialize, schemars::JsonSchema)]
@@ -73,39 +72,17 @@ impl AsyncTool<DashMcpService> for ShieldedShieldFromCore {
         service: &DashMcpService,
         param: ShieldFromCoreParams,
     ) -> Result<ShieldFromCoreOutput, McpToolError> {
-        let ctx = service
-            .ctx()
-            .await
-            .map_err(|e| McpToolError::Internal(e.to_string()))?;
+        let ctx = service.tool_ctx().await?;
         resolve::require_network(&ctx, Some(&param.network))?;
-        resolve::validate_amount(param.amount_duffs)?;
+        resolve::validate_positive_amount(param.amount_duffs, "duffs")?;
 
+        resolve::ensure_wallets_hydrated(&ctx).await?;
         let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
         resolve::ensure_spv_synced(&ctx).await?;
-
-        let source_address = param
-            .source_address
-            .map(|addr_str| {
-                resolve::validate_address(&addr_str)?;
-                addr_str
-                    .parse::<dash_sdk::dashcore_rpc::dashcore::Address<
-                        dash_sdk::dashcore_rpc::dashcore::address::NetworkUnchecked,
-                    >>()
-                    .map_err(|_| McpToolError::InvalidParam {
-                        message: "The source Core address is invalid.".to_owned(),
-                    })?
-                    .require_network(ctx.network())
-                    .map_err(|_| McpToolError::InvalidParam {
-                        message: "The source Core address does not match the active network."
-                            .to_owned(),
-                    })
-            })
-            .transpose()?;
 
         let task = BackendTask::ShieldedTask(ShieldedTask::ShieldFromAssetLock {
             seed_hash,
             amount_duffs: param.amount_duffs,
-            source_address,
         });
 
         let result = dispatch_task(&ctx, task)
@@ -159,8 +136,8 @@ impl ToolBase for ShieldedShieldFromPlatform {
 
     fn description() -> Option<Cow<'static, str>> {
         Some(
-            "Shield credits from a Platform address into the shielded pool. \
-             Auto-selects the highest-balance Platform address. \
+            "Shield credits from the wallet's Platform balance into the shielded pool. \
+             The wallet selects the input addresses. \
              The 'network' parameter is required."
                 .into(),
         )
@@ -182,55 +159,39 @@ impl AsyncTool<DashMcpService> for ShieldedShieldFromPlatform {
         service: &DashMcpService,
         param: ShieldFromPlatformParams,
     ) -> Result<ShieldFromPlatformOutput, McpToolError> {
-        let ctx = service
-            .ctx()
-            .await
-            .map_err(|e| McpToolError::Internal(e.to_string()))?;
+        let ctx = service.tool_ctx().await?;
         resolve::require_network(&ctx, Some(&param.network))?;
-        resolve::validate_credits(param.amount_credits)?;
+        resolve::validate_positive_amount(param.amount_credits, "credits")?;
 
         // INTENTIONAL: no SPV sync needed — this tool only dispatches Platform state transitions,
         // not Core UTXO spends
+        resolve::ensure_wallets_hydrated(&ctx).await?;
         let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
 
-        // Auto-select highest-balance platform address and verify sufficient balance
-        let from_address = {
+        // Pre-flight: verify the wallet's total platform balance can cover the
+        // amount. The upstream coordinator selects the actual input addresses —
+        // DET no longer picks a single `from_address`.
+        {
             let wallet_arc = resolve::wallet_arc(&ctx, seed_hash)?;
             let wallet = wallet_arc.read().unwrap_or_else(|e| e.into_inner());
-            let best = wallet
+            let total: u64 = wallet
                 .platform_address_info
-                .iter()
-                .filter_map(|(addr, info)| {
-                    if info.balance > 0 {
-                        dash_sdk::dpp::address_funds::PlatformAddress::try_from(addr.clone())
-                            .ok()
-                            .map(|pa| (pa, info.balance))
-                    } else {
-                        None
-                    }
-                })
-                .max_by_key(|(_, balance)| *balance)
-                .ok_or_else(|| McpToolError::InvalidParam {
-                    message: "No Platform addresses with balance found".to_owned(),
-                })?;
-
-            if best.1 < param.amount_credits {
+                .values()
+                .map(|info| info.balance)
+                .sum();
+            if total < param.amount_credits {
                 return Err(McpToolError::InvalidParam {
                     message: format!(
-                        "Insufficient platform balance. Highest address has {} credits but {} required.",
-                        best.1, param.amount_credits
+                        "Insufficient platform balance. Total available is {} credits but {} required.",
+                        total, param.amount_credits
                     ),
                 });
             }
+        }
 
-            best.0
-        };
-
-        let task = BackendTask::ShieldedTask(ShieldedTask::ShieldCredits {
+        let task = BackendTask::ShieldedTask(ShieldedTask::ShieldFromBalance {
             seed_hash,
             amount: param.amount_credits,
-            from_address,
-            nonce_override: None,
         });
 
         let result = dispatch_task(&ctx, task)
@@ -307,19 +268,17 @@ impl AsyncTool<DashMcpService> for ShieldedTransferTool {
         service: &DashMcpService,
         param: ShieldedTransferParams,
     ) -> Result<ShieldedTransferOutput, McpToolError> {
-        let ctx = service
-            .ctx()
-            .await
-            .map_err(|e| McpToolError::Internal(e.to_string()))?;
+        let ctx = service.tool_ctx().await?;
         resolve::require_network(&ctx, Some(&param.network))?;
-        resolve::validate_credits(param.amount_credits)?;
+        resolve::validate_positive_amount(param.amount_credits, "credits")?;
         // INTENTIONAL: no SPV sync needed — this tool only dispatches Platform state transitions,
         // not Core UTXO spends
+        resolve::ensure_wallets_hydrated(&ctx).await?;
         let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
 
         let recipient_bytes =
             dash_sdk::dpp::address_funds::OrchardAddress::from_bech32m_string(&param.to_address)
-                .map(|(addr, _)| addr.to_raw_bytes().to_vec())
+                .map(|addr| addr.to_raw_bytes().to_vec())
                 .map_err(|e| McpToolError::InvalidParam {
                     message: format!("Invalid shielded address: {e}"),
                 })?;
@@ -405,17 +364,15 @@ impl AsyncTool<DashMcpService> for ShieldedUnshield {
         service: &DashMcpService,
         param: ShieldedUnshieldParams,
     ) -> Result<ShieldedUnshieldOutput, McpToolError> {
-        let ctx = service
-            .ctx()
-            .await
-            .map_err(|e| McpToolError::Internal(e.to_string()))?;
+        let ctx = service.tool_ctx().await?;
         resolve::require_network(&ctx, Some(&param.network))?;
-        resolve::validate_credits(param.amount_credits)?;
+        resolve::validate_positive_amount(param.amount_credits, "credits")?;
         // INTENTIONAL: no SPV sync needed — this tool only dispatches Platform state transitions,
         // not Core UTXO spends
+        resolve::ensure_wallets_hydrated(&ctx).await?;
         let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
 
-        let (platform_addr, _network) =
+        let platform_addr =
             dash_sdk::dpp::address_funds::PlatformAddress::from_bech32m_string(&param.to_address)
                 .map_err(|e| McpToolError::InvalidParam {
                 message: format!("Invalid Platform address: {e}"),
@@ -504,15 +461,13 @@ impl AsyncTool<DashMcpService> for ShieldedWithdrawTool {
         service: &DashMcpService,
         param: ShieldedWithdrawParams,
     ) -> Result<ShieldedWithdrawOutput, McpToolError> {
-        let ctx = service
-            .ctx()
-            .await
-            .map_err(|e| McpToolError::Internal(e.to_string()))?;
+        let ctx = service.tool_ctx().await?;
         resolve::require_network(&ctx, Some(&param.network))?;
-        resolve::validate_credits(param.amount_credits)?;
+        resolve::validate_positive_amount(param.amount_credits, "credits")?;
         resolve::validate_address(&param.to_address)?;
         // INTENTIONAL: no SPV sync needed — this tool dispatches a Platform state transition
         // (withdrawal is queued on Platform and settles after confirmation)
+        resolve::ensure_wallets_hydrated(&ctx).await?;
         let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
 
         let core_address = param
@@ -549,5 +504,265 @@ impl AsyncTool<DashMcpService> for ShieldedWithdrawTool {
                 "Unexpected task result: {other:?}"
             ))),
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ShieldedInit (warm prover + bind shielded keys)
+// ---------------------------------------------------------------------------
+
+/// Warm the Orchard prover and bind shielded keys for a wallet.
+pub struct ShieldedInit;
+
+#[derive(Serialize, schemars::JsonSchema)]
+pub struct ShieldedInitOutput {
+    /// Whether the Halo2 proving key finished building (ready for spends).
+    prover_ready: bool,
+    /// Whether the wallet's Orchard keys are bound to the shielded coordinator.
+    shielded_bound: bool,
+}
+
+impl ToolBase for ShieldedInit {
+    type Parameter = WalletIdParams;
+    type Output = ShieldedInitOutput;
+    type Error = McpToolError;
+
+    fn name() -> Cow<'static, str> {
+        "shielded_init".into()
+    }
+
+    fn description() -> Option<Cow<'static, str>> {
+        Some(
+            "Prepare a wallet for shielded operations: bind its Orchard keys and \
+             warm the proving key (~30s on first call). Idempotent — safe to call \
+             repeatedly. Run this once before shielding or transferring."
+                .into(),
+        )
+    }
+
+    fn annotations() -> Option<ToolAnnotations> {
+        Some(
+            ToolAnnotations::default()
+                .read_only(false)
+                .destructive(false)
+                .idempotent(true)
+                .open_world(true),
+        )
+    }
+}
+
+impl AsyncTool<DashMcpService> for ShieldedInit {
+    async fn invoke(
+        service: &DashMcpService,
+        param: WalletIdParams,
+    ) -> Result<ShieldedInitOutput, McpToolError> {
+        let ctx = service.tool_ctx().await?;
+        resolve::verify_network(&ctx, param.network.as_deref())?;
+        resolve::ensure_wallets_hydrated(&ctx).await?;
+        let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
+
+        // Hydration wires the backend so the wallet and shielded coordinator
+        // exist. This control tool also waits for SPV before coordinator work.
+        resolve::ensure_spv_synced(&ctx).await?;
+
+        let backend = ctx.wallet_backend().map_err(McpToolError::TaskFailed)?;
+
+        // Bind first (fast), then warm the proving key (~30s). A successful bind
+        // guarantees the wallet is bound; report it directly.
+        backend
+            .ensure_shielded_bound_jit(&seed_hash)
+            .await
+            .map_err(McpToolError::TaskFailed)?;
+        let prover_ready = backend.warm_shielded_prover().await;
+
+        Ok(ShieldedInitOutput {
+            prover_ready,
+            shielded_bound: true,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ShieldedSync (force a coordinator sync, return fresh balance)
+// ---------------------------------------------------------------------------
+
+/// Force an immediate shielded sync and return the post-sync balance.
+pub struct ShieldedSync;
+
+#[derive(Serialize, schemars::JsonSchema)]
+pub struct ShieldedSyncOutput {
+    shielded_credits: u64,
+    shielded_duffs: u64,
+}
+
+impl ToolBase for ShieldedSync {
+    type Parameter = WalletIdParams;
+    type Output = ShieldedSyncOutput;
+    type Error = McpToolError;
+
+    fn name() -> Cow<'static, str> {
+        "shielded_sync".into()
+    }
+
+    fn description() -> Option<Cow<'static, str>> {
+        Some(
+            "Force an immediate shielded sync pass and return the wallet's \
+             post-sync shielded balance (credits and duffs). Use this to verify \
+             a balance change after a shield, transfer, unshield, or withdraw."
+                .into(),
+        )
+    }
+
+    fn annotations() -> Option<ToolAnnotations> {
+        Some(
+            ToolAnnotations::default()
+                .read_only(false)
+                .destructive(false)
+                .idempotent(true)
+                .open_world(true),
+        )
+    }
+}
+
+impl AsyncTool<DashMcpService> for ShieldedSync {
+    async fn invoke(
+        service: &DashMcpService,
+        param: WalletIdParams,
+    ) -> Result<ShieldedSyncOutput, McpToolError> {
+        let ctx = service.tool_ctx().await?;
+        resolve::verify_network(&ctx, param.network.as_deref())?;
+        resolve::ensure_wallets_hydrated(&ctx).await?;
+        let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
+
+        resolve::ensure_spv_synced(&ctx).await?;
+
+        let backend = ctx.wallet_backend().map_err(McpToolError::TaskFailed)?;
+        // `sync_now` fires `on_shielded_sync_completed` synchronously, so the
+        // push snapshot is fresh by the time this returns (Phase E writer).
+        backend.sync_shielded_now(true).await;
+
+        Ok(ShieldedSyncOutput {
+            shielded_credits: ctx.shielded_balance_credits(&seed_hash),
+            shielded_duffs: ctx.shielded_balance_duffs(&seed_hash),
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ShieldedBalanceGet (read the push snapshot, no sync)
+// ---------------------------------------------------------------------------
+
+/// Read the wallet's shielded balance from the push snapshot (no sync).
+pub struct ShieldedBalanceGet;
+
+#[derive(Serialize, schemars::JsonSchema)]
+pub struct ShieldedBalanceGetOutput {
+    shielded_credits: u64,
+    shielded_duffs: u64,
+}
+
+impl ToolBase for ShieldedBalanceGet {
+    type Parameter = WalletIdParams;
+    type Output = ShieldedBalanceGetOutput;
+    type Error = McpToolError;
+
+    fn name() -> Cow<'static, str> {
+        "shielded_balance_get".into()
+    }
+
+    fn description() -> Option<Cow<'static, str>> {
+        Some(
+            "Read the wallet's shielded balance (credits and duffs) from the last \
+             synced snapshot without triggering a sync. Returns zero when the \
+             wallet has never synced. Use shielded_sync to refresh first."
+                .into(),
+        )
+    }
+
+    fn annotations() -> Option<ToolAnnotations> {
+        Some(ToolAnnotations::default().read_only(true).open_world(false))
+    }
+}
+
+impl AsyncTool<DashMcpService> for ShieldedBalanceGet {
+    async fn invoke(
+        service: &DashMcpService,
+        param: WalletIdParams,
+    ) -> Result<ShieldedBalanceGetOutput, McpToolError> {
+        let ctx = service.tool_ctx().await?;
+        resolve::verify_network(&ctx, param.network.as_deref())?;
+        resolve::ensure_wallets_hydrated(&ctx).await?;
+        let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
+
+        // INTENTIONAL: a pure snapshot read — no SPV gate, no sync. The figure
+        // reflects the last completed shielded sync (zero if none).
+        Ok(ShieldedBalanceGetOutput {
+            shielded_credits: ctx.shielded_balance_credits(&seed_hash),
+            shielded_duffs: ctx.shielded_balance_duffs(&seed_hash),
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ShieldedAddressGet (default Orchard receive address)
+// ---------------------------------------------------------------------------
+
+/// Return the wallet's default shielded (Orchard) receive address.
+pub struct ShieldedAddressGet;
+
+#[derive(Serialize, schemars::JsonSchema)]
+pub struct ShieldedAddressGetOutput {
+    /// Bech32m Orchard address (dash1z.../tdash1z...).
+    address: String,
+}
+
+impl ToolBase for ShieldedAddressGet {
+    type Parameter = WalletIdParams;
+    type Output = ShieldedAddressGetOutput;
+    type Error = McpToolError;
+
+    fn name() -> Cow<'static, str> {
+        "shielded_address_get".into()
+    }
+
+    fn description() -> Option<Cow<'static, str>> {
+        Some(
+            "Return the wallet's default shielded (Orchard) receive address as a \
+             bech32m string, usable as the recipient for a shielded transfer. \
+             Run shielded_init first if the wallet is not yet bound."
+                .into(),
+        )
+    }
+
+    fn annotations() -> Option<ToolAnnotations> {
+        Some(ToolAnnotations::default().read_only(true).open_world(false))
+    }
+}
+
+impl AsyncTool<DashMcpService> for ShieldedAddressGet {
+    async fn invoke(
+        service: &DashMcpService,
+        param: WalletIdParams,
+    ) -> Result<ShieldedAddressGetOutput, McpToolError> {
+        let ctx = service.tool_ctx().await?;
+        resolve::verify_network(&ctx, param.network.as_deref())?;
+        resolve::ensure_wallets_hydrated(&ctx).await?;
+        let seed_hash = resolve::wallet(&ctx, &param.wallet_id)?;
+
+        let backend = ctx.wallet_backend().map_err(McpToolError::TaskFailed)?;
+        let raw = backend
+            .shielded_default_address(&seed_hash, 0)
+            .await
+            .map_err(McpToolError::TaskFailed)?
+            .ok_or_else(|| McpToolError::InvalidParam {
+                message: "This wallet has no shielded address yet. \
+                          Run shielded_init first to bind its shielded keys."
+                    .to_owned(),
+            })?;
+
+        let address = crate::model::address::encode_shielded_address(&raw, ctx.network())
+            .map_err(|e| McpToolError::Internal(e.to_string()))?;
+
+        Ok(ShieldedAddressGetOutput { address })
     }
 }

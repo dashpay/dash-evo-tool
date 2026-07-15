@@ -8,11 +8,19 @@ use crate::backend_task::BackendTaskSuccessResult;
 use crate::backend_task::error::TaskError;
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
+use crate::model::request_type::RequestType;
 use dash_sdk::Sdk;
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
 use dash_sdk::platform::Identifier;
 use futures::future::join_all;
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+/// Widest window past a scheduled vote's time that the sweep will still cast it.
+/// Beyond this a due vote is considered stale and left for the user to reschedule
+/// rather than cast late (mirrors the original 2-minute UI-poll grace).
+const SCHEDULED_VOTE_MAX_LATENESS_MS: u64 = 120_000;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ContestedResourceTask {
@@ -20,6 +28,12 @@ pub enum ContestedResourceTask {
     VoteOnDPNSNames(Vec<(String, ResourceVoteChoice)>, Vec<QualifiedIdentity>),
     ScheduleDPNSVotes(Vec<ScheduledDPNSVote>),
     CastScheduledVote(ScheduledDPNSVote, Box<QualifiedIdentity>),
+    /// Sweep the scheduled-vote table and cast every vote that is now due.
+    /// `preserve_eligibility_since_ms` keeps a vote eligible when its normal
+    /// grace window overlapped a migration that deferred the sweep.
+    CastDueScheduledVotes {
+        preserve_eligibility_since_ms: Option<u64>,
+    },
     ClearAllScheduledVotes,
     ClearExecutedScheduledVotes,
     DeleteScheduledVote(Identifier, String),
@@ -34,6 +48,32 @@ pub struct ScheduledDPNSVote {
     pub executed_successfully: bool,
 }
 
+/// Logs a Drive proof-verification failure raised by a contested-resource query.
+///
+/// No-op unless `e` is a [`dash_sdk::Error::Proof`] carrying a GroveDB proof
+/// failure — the shape these read-only queries surface (distinct from the
+/// `DriveProofError` shape handled by `AppContext::log_drive_proof_error`).
+pub(super) fn log_contested_proof_error(e: &dash_sdk::Error, request_type: RequestType) {
+    if let dash_sdk::Error::Proof(dash_sdk::ProofVerifierError::GroveDBError {
+        proof_bytes,
+        height,
+        time_ms,
+        error,
+        ..
+    }) = e
+    {
+        tracing::error!(
+            target: "proof_log",
+            request_type = ?request_type,
+            height = *height,
+            time_ms = *time_ms,
+            proof_bytes_len = proof_bytes.len(),
+            error = %error,
+            "drive proof verification failed during contested-resource query",
+        );
+    }
+}
+
 impl AppContext {
     pub async fn run_contested_resource_task(
         self: &Arc<Self>,
@@ -41,12 +81,13 @@ impl AppContext {
         sdk: &Sdk,
         sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
-        match &task {
+        match task {
             ContestedResourceTask::QueryDPNSContests => self
                 .query_dpns_contested_resources(sdk, sender)
                 .await
                 .map(|_| BackendTaskSuccessResult::None),
             ContestedResourceTask::VoteOnDPNSNames(votes, all_voters) => {
+                let all_voters = &all_voters;
                 let futures = votes
                     .iter()
                     .map(|(name, choice)| {
@@ -73,7 +114,11 @@ impl AppContext {
                                 platform_results
                             }
                             Err(det_err) => {
-                                vec![(name.clone(), *vote_choice, Err(det_err.to_string()))]
+                                vec![(
+                                    name.clone(),
+                                    *vote_choice,
+                                    Err(std::sync::Arc::new(det_err)),
+                                )]
                             }
                             Ok(_) => {
                                 vec![(name.clone(), *vote_choice, Ok(()))]
@@ -85,21 +130,25 @@ impl AppContext {
                 Ok(BackendTaskSuccessResult::DPNSVoteResults(final_results))
             }
             ContestedResourceTask::ScheduleDPNSVotes(scheduled_votes) => {
-                self.insert_scheduled_votes(scheduled_votes)?;
+                self.insert_scheduled_votes(&scheduled_votes)?;
                 Ok(BackendTaskSuccessResult::ScheduledVotes)
             }
             ContestedResourceTask::CastScheduledVote(scheduled_vote, voter) => {
                 self.vote_on_dpns_name(
                     &scheduled_vote.contested_name,
                     scheduled_vote.choice,
-                    &[(**voter).clone()],
+                    &[*voter],
                     sdk,
                     sender,
                 )
                 .await?;
-                Ok(BackendTaskSuccessResult::CastScheduledVote(
-                    scheduled_vote.clone(),
-                ))
+                Ok(BackendTaskSuccessResult::CastScheduledVote(scheduled_vote))
+            }
+            ContestedResourceTask::CastDueScheduledVotes {
+                preserve_eligibility_since_ms,
+            } => {
+                self.cast_due_scheduled_votes(sdk, sender, preserve_eligibility_since_ms)
+                    .await
             }
             ContestedResourceTask::ClearAllScheduledVotes => {
                 self.clear_all_scheduled_votes()?;
@@ -110,9 +159,162 @@ impl AppContext {
                 Ok(BackendTaskSuccessResult::Refresh)
             }
             ContestedResourceTask::DeleteScheduledVote(voter_id, contested_name) => {
-                self.delete_scheduled_vote(voter_id.as_slice(), contested_name)?;
+                self.delete_scheduled_vote(voter_id.as_slice(), &contested_name)?;
                 Ok(BackendTaskSuccessResult::Refresh)
             }
         }
+    }
+
+    /// Cast every scheduled vote that is now due, off the UI thread.
+    ///
+    /// Queries the scheduled-vote table, keeps the votes whose time has arrived
+    /// (and are not already executed or stale beyond
+    /// [`SCHEDULED_VOTE_MAX_LATENESS_MS`]), pairs each with its local voting
+    /// identity, and casts them independently so one failure cannot abort the
+    /// rest. Emits [`ScheduledVotesInProgress`] before casting and a
+    /// [`CastScheduledVote`] per success so the Scheduled Votes screen can
+    /// reflect progress via `display_task_result`.
+    ///
+    /// [`ScheduledVotesInProgress`]: BackendTaskSuccessResult::ScheduledVotesInProgress
+    /// [`CastScheduledVote`]: BackendTaskSuccessResult::CastScheduledVote
+    async fn cast_due_scheduled_votes(
+        self: &Arc<Self>,
+        sdk: &Sdk,
+        sender: crate::utils::egui_mpsc::SenderAsync<TaskResult>,
+        preserve_eligibility_since_ms: Option<u64>,
+    ) -> Result<BackendTaskSuccessResult, TaskError> {
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        let due: Vec<ScheduledDPNSVote> = self
+            .get_scheduled_votes()?
+            .into_iter()
+            .filter(|vote| {
+                scheduled_vote_is_due(
+                    vote.unix_timestamp,
+                    vote.executed_successfully,
+                    now_ms,
+                    preserve_eligibility_since_ms,
+                )
+            })
+            .collect();
+        if due.is_empty() {
+            return Ok(BackendTaskSuccessResult::None);
+        }
+
+        let voters = self.load_local_voting_identities()?;
+        let mut castable: Vec<(ScheduledDPNSVote, QualifiedIdentity)> = Vec::new();
+        for vote in due {
+            match voters.iter().find(|i| i.identity.id() == vote.voter_id) {
+                Some(voter) => castable.push((vote, voter.clone())),
+                None => {
+                    tracing::warn!(
+                        contested_name = %vote.contested_name,
+                        "No local voting identity for a scheduled vote; skipping it"
+                    );
+                }
+            }
+        }
+        if castable.is_empty() {
+            return Ok(BackendTaskSuccessResult::None);
+        }
+
+        // Tell the Scheduled Votes screen which votes are now in flight.
+        let in_progress = castable.iter().map(|(v, _)| v.clone()).collect();
+        let _ = sender
+            .send(TaskResult::unattributed_success(
+                BackendTaskSuccessResult::ScheduledVotesInProgress(in_progress),
+            ))
+            .await;
+
+        for (vote, voter) in castable {
+            match self
+                .vote_on_dpns_name(
+                    &vote.contested_name,
+                    vote.choice,
+                    &[voter],
+                    sdk,
+                    sender.clone(),
+                )
+                .await
+            {
+                Ok(_) => {
+                    let _ = sender
+                        .send(TaskResult::unattributed_success(
+                            BackendTaskSuccessResult::CastScheduledVote(vote),
+                        ))
+                        .await;
+                }
+                Err(e) => {
+                    tracing::error!(
+                        error = %e,
+                        contested_name = %vote.contested_name,
+                        "Failed to cast a due scheduled vote; leaving it for the next sweep"
+                    );
+                }
+            }
+        }
+        Ok(BackendTaskSuccessResult::None)
+    }
+}
+
+fn scheduled_vote_is_due(
+    scheduled_at_ms: u64,
+    executed_successfully: bool,
+    now_ms: u64,
+    preserve_eligibility_since_ms: Option<u64>,
+) -> bool {
+    let eligibility_cutoff_ms = preserve_eligibility_since_ms.unwrap_or(now_ms);
+    !executed_successfully
+        && scheduled_at_ms <= now_ms
+        && scheduled_at_ms.saturating_add(SCHEDULED_VOTE_MAX_LATENESS_MS) >= eligibility_cutoff_ms
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Migration extends only eligibility windows that overlap its wait.
+    #[test]
+    fn migration_wait_preserves_only_overlapping_vote_eligibility() {
+        let migration_started_ms = 1_000_000;
+        let now_ms = migration_started_ms + SCHEDULED_VOTE_MAX_LATENESS_MS * 2;
+
+        assert!(
+            scheduled_vote_is_due(
+                migration_started_ms,
+                false,
+                now_ms,
+                Some(migration_started_ms),
+            ),
+            "a vote due when migration began must remain eligible afterward",
+        );
+        assert!(
+            !scheduled_vote_is_due(
+                migration_started_ms - SCHEDULED_VOTE_MAX_LATENESS_MS - 1,
+                false,
+                now_ms,
+                Some(migration_started_ms),
+            ),
+            "migration must not revive a vote already stale before it began",
+        );
+        assert!(
+            !scheduled_vote_is_due(migration_started_ms, false, now_ms, None),
+            "the normal sweep must retain the ordinary lateness limit",
+        );
+        assert!(
+            !scheduled_vote_is_due(now_ms + 1, false, now_ms, Some(migration_started_ms)),
+            "migration must not cast a vote before its scheduled time",
+        );
+        assert!(
+            !scheduled_vote_is_due(
+                migration_started_ms,
+                true,
+                now_ms,
+                Some(migration_started_ms)
+            ),
+            "migration must not cast an already-executed vote again",
+        );
     }
 }

@@ -2,6 +2,7 @@ use crate::app::AppAction;
 use crate::backend_task::identity::{IdentityInputToLoad, IdentityTask};
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
+use crate::model::identity_discovery::validate_search_index;
 use crate::model::qualified_identity::IdentityType;
 use crate::model::wallet::Wallet;
 use crate::ui::components::info_popup::InfoPopup;
@@ -13,68 +14,49 @@ use crate::ui::components::wallet_unlock_popup::{
     WalletUnlockPopup, WalletUnlockResult, try_open_wallet_no_password, wallet_needs_unlock,
 };
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
+use crate::ui::identities::funding_common::wallet_selection_combo;
 use crate::ui::theme::{ComponentStyles, DashColors};
 use crate::ui::{MessageType, ScreenLike};
-use bip39::rand::{prelude::IteratorRandom, thread_rng};
-use dash_sdk::dashcore_rpc::dashcore::Network;
+use crate::wallet_backend::poison::RwLockRecover;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::Identifier;
-use eframe::egui::Context;
 use egui::{Color32, ComboBox, RichText, Ui};
-use serde::Deserialize;
-use std::fs;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, RwLock};
-
-#[derive(Debug, Clone, Deserialize)]
-struct MasternodeInfo {
-    #[serde(rename = "pro-tx-hash")]
-    pro_tx_hash: String,
-    owner: KeyInfo,
-    voter: KeyInfo,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct HPMasternodeInfo {
-    #[serde(rename = "protx-tx-hash")]
-    protx_tx_hash: String,
-    owner: KeyInfo,
-    voter: KeyInfo,
-    payout: KeyInfo,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct KeyInfo {
-    #[serde(rename = "private_key")]
-    private_key: String,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct TestnetNodes {
-    masternodes: std::collections::HashMap<String, MasternodeInfo>,
-    hp_masternodes: std::collections::HashMap<String, HPMasternodeInfo>,
-}
-
-fn load_testnet_nodes_from_yml(file_path: &str) -> Result<Option<TestnetNodes>, String> {
-    let file_content = match fs::read_to_string(file_path) {
-        Ok(content) => content,
-        Err(_) => return Ok(None),
-    };
-    serde_yaml_ng::from_str::<TestnetNodes>(&file_content)
-        .map(Some)
-        .map_err(|e| {
-            format!(
-                "Failed to parse YAML file '{}': {}. Please check the file format.",
-                file_path, e
-            )
-        })
-}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum LoadIdentityMode {
     IdentityId,
     Wallet,
     DpnsName,
+}
+
+impl LoadIdentityMode {
+    /// Alex-facing tab label per design-spec §B.11, kept short enough for a
+    /// narrow tab chip. See [`Self::description`] for the fuller caption.
+    fn tab_label(self) -> &'static str {
+        match self {
+            LoadIdentityMode::IdentityId => "Identity ID & private key",
+            LoadIdentityMode::Wallet => "From my wallet",
+            LoadIdentityMode::DpnsName => "My username",
+        }
+    }
+
+    /// Full jargon-free sentence shown as a caption under the tab row,
+    /// expanding on the selected tab's intent (design-spec §B.11).
+    fn description(self) -> &'static str {
+        match self {
+            LoadIdentityMode::IdentityId => {
+                "Enter the identity ID and the private key for an identity that already exists on Dash Platform."
+            }
+            LoadIdentityMode::Wallet => {
+                "Look through this wallet for identities you've already registered from it."
+            }
+            LoadIdentityMode::DpnsName => {
+                "Enter a DPNS username to find its identity, then provide the private key."
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -100,7 +82,6 @@ pub struct AddExistingIdentityScreen {
     payout_address_private_key_input: PasswordInput,
     keys_input: Vec<PasswordInput>,
     add_identity_status: AddIdentityStatus,
-    testnet_loaded_nodes: Option<TestnetNodes>,
     selected_wallet: Option<Arc<RwLock<Wallet>>>,
     identity_associated_with_wallet: bool,
     wallet_unlock_popup: WalletUnlockPopup,
@@ -119,18 +100,7 @@ pub struct AddExistingIdentityScreen {
 
 impl AddExistingIdentityScreen {
     pub fn new(app_context: &Arc<AppContext>) -> Self {
-        let selected_wallet = app_context.wallets.read().unwrap().values().next().cloned();
-        let (testnet_loaded_nodes, init_error) = if app_context.network == Network::Testnet {
-            match load_testnet_nodes_from_yml(".testnet_nodes.yml") {
-                Ok(nodes) => (nodes, None),
-                Err(e) => (None, Some(e)),
-            }
-        } else {
-            (None, None)
-        };
-        if let Some(err) = init_error {
-            MessageBanner::set_global(app_context.egui_ctx(), &err, MessageType::Error);
-        }
+        let selected_wallet = app_context.wallets.read_recover().values().next().cloned();
         Self {
             identity_id_input: String::new(),
             identity_type: IdentityType::User,
@@ -146,7 +116,6 @@ impl AddExistingIdentityScreen {
                 .with_monospace(),
             keys_input: vec![],
             add_identity_status: AddIdentityStatus::NotStarted,
-            testnet_loaded_nodes,
             selected_wallet,
             identity_associated_with_wallet: true,
             wallet_unlock_popup: WalletUnlockPopup::new(),
@@ -166,30 +135,13 @@ impl AddExistingIdentityScreen {
     fn render_by_identity(&mut self, ui: &mut Ui) -> AppAction {
         let mut action = AppAction::None;
 
-        // Advanced: Testnet quick-fill buttons
-        if self.show_advanced_options
-            && self.app_context.network == Network::Testnet
-            && self.testnet_loaded_nodes.is_some()
-        {
-            ui.horizontal(|ui| {
-                if ui.button("Fill Random HPMN").clicked() {
-                    self.fill_random_hpmn();
-                }
-                if ui.button("Fill Random Masternode").clicked() {
-                    self.fill_random_masternode();
-                }
-            });
-            ui.add_space(10.0);
-        }
-
         let wallets_snapshot: Vec<(String, Arc<RwLock<Wallet>>)> = {
-            let wallets_guard = self.app_context.wallets.read().unwrap();
+            let wallets_guard = self.app_context.wallets.read_recover();
             wallets_guard
                 .values()
                 .map(|wallet| {
                     let alias = wallet
-                        .read()
-                        .unwrap()
+                        .read_recover()
                         .alias
                         .clone()
                         .unwrap_or_else(|| "Unnamed Wallet".to_string());
@@ -282,8 +234,9 @@ impl AddExistingIdentityScreen {
                             if wallet_still_loaded {
                                 // Try to open wallet without password if it doesn't use one
                                 if !self.wallet_open_attempted {
-                                    if let Err(e) = try_open_wallet_no_password(selected_wallet) {
-                                        MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                                    if let Err(e) = try_open_wallet_no_password(&self.app_context, selected_wallet) {
+                                        MessageBanner::set_global(ui.ctx(), &e, MessageType::Error)
+                                            .disable_auto_dismiss();
                                     }
                                     self.wallet_open_attempted = true;
                                 }
@@ -349,21 +302,20 @@ impl AddExistingIdentityScreen {
 
                 // Advanced: Identity Type selector
                 if self.show_advanced_options {
+                    // This generic screen loads User identities only. Masternode
+                    // and Evonode identities have a dedicated flow on the
+                    // Masternodes tab (`ui/masternodes/load_form.rs`), so the old
+                    // Masternode/Evonode options are removed here to avoid a
+                    // second, competing entry point (§10.2 / TC-FR4-22, FR-6).
                     ui.label("Identity Type:");
                     ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
                         egui::ComboBox::from_id_salt("identity_type_selector")
                             .selected_text(format!("{:?}", self.identity_type))
                             .show_ui(ui, |ui| {
-                                ui.selectable_value(&mut self.identity_type, IdentityType::User, "User");
                                 ui.selectable_value(
                                     &mut self.identity_type,
-                                    IdentityType::Masternode,
-                                    "Masternode",
-                                );
-                                ui.selectable_value(
-                                    &mut self.identity_type,
-                                    IdentityType::Evonode,
-                                    "Evonode",
+                                    IdentityType::User,
+                                    "User",
                                 );
                             });
                     });
@@ -473,7 +425,7 @@ impl AddExistingIdentityScreen {
             .fill(if is_valid_id {
                 DashColors::DASH_BLUE
             } else {
-                ComponentStyles::button_disabled_fill(ui.ctx().style().visuals.dark_mode)
+                ComponentStyles::button_disabled_fill(ui.style().visuals.dark_mode)
             })
             .frame(true)
             .corner_radius(3.0);
@@ -510,47 +462,31 @@ impl AddExistingIdentityScreen {
     fn render_wallet_selection(&mut self, ui: &mut Ui) {
         ui.horizontal(|ui| {
             if self.app_context.has_wallet.load(Ordering::Relaxed) {
-                let wallets = &self.app_context.wallets.read().unwrap();
-                let wallet_aliases: Vec<String> = wallets
-                    .values()
-                    .map(|wallet| {
+                let wallets: Vec<_> = self
+                    .app_context
+                    .wallets
+                    .read()
+                    .map(|guard| guard.values().cloned().collect())
+                    .unwrap_or_default();
+
+                let clicked = wallet_selection_combo(
+                    ui,
+                    "select_existing_wallet",
+                    &wallets,
+                    self.selected_wallet.as_ref(),
+                    |wallet| {
                         wallet
                             .read()
-                            .unwrap()
-                            .alias
-                            .clone()
+                            .ok()
+                            .and_then(|w| w.alias.clone())
                             .unwrap_or_else(|| "Unnamed Wallet".to_string())
-                    })
-                    .collect();
-
-                let selected_wallet_alias = self
-                    .selected_wallet
-                    .as_ref()
-                    .and_then(|wallet| wallet.read().ok()?.alias.clone())
-                    .unwrap_or_else(|| "Select".to_string());
-
-                // Display the ComboBox for wallet selection
-                ComboBox::from_label("")
-                    .selected_text(selected_wallet_alias.clone())
-                    .show_ui(ui, |ui| {
-                        for (idx, wallet) in wallets.values().enumerate() {
-                            let wallet_alias = wallet_aliases[idx].clone();
-
-                            let is_selected = self
-                                .selected_wallet
-                                .as_ref()
-                                .is_some_and(|selected| Arc::ptr_eq(selected, wallet));
-
-                            if ui
-                                .selectable_label(is_selected, wallet_alias.clone())
-                                .clicked()
-                            {
-                                // Update the selected wallet
-                                self.selected_wallet = Some(wallet.clone());
-                                self.wallet_open_attempted = false;
-                            }
-                        }
-                    });
+                    },
+                    |_| true,
+                );
+                if let Some(wallet) = clicked {
+                    self.selected_wallet = Some(wallet);
+                    self.wallet_open_attempted = false;
+                }
 
                 ui.add_space(20.0);
             } else {
@@ -591,12 +527,16 @@ impl AddExistingIdentityScreen {
             return action;
         };
 
-        let wallet = self.selected_wallet.as_ref().unwrap();
+        let wallet = self
+            .selected_wallet
+            .as_ref()
+            .expect("invariant: selected_wallet checked Some above");
 
         // Try to open wallet without password if it doesn't use one
         if !self.wallet_open_attempted {
-            if let Err(e) = try_open_wallet_no_password(wallet) {
-                MessageBanner::set_global(self.app_context.egui_ctx(), &e, MessageType::Error);
+            if let Err(e) = try_open_wallet_no_password(&self.app_context, wallet) {
+                MessageBanner::set_global(self.app_context.egui_ctx(), &e, MessageType::Error)
+                    .disable_auto_dismiss();
             }
             self.wallet_open_attempted = true;
         }
@@ -642,9 +582,7 @@ impl AddExistingIdentityScreen {
 
             let identity_index_label = match self.wallet_search_mode {
                 WalletIdentitySearchMode::SpecificIndex => "Identity index:",
-                WalletIdentitySearchMode::UpToIndex => {
-                    "Highest identity index to search (inclusive, max 29):"
-                }
+                WalletIdentitySearchMode::UpToIndex => "Search depth to start from:",
             };
 
             ui.horizontal(|ui| {
@@ -658,7 +596,7 @@ impl AddExistingIdentityScreen {
                 }
                 WalletIdentitySearchMode::UpToIndex => {
                     ui.label(
-                        "Searches each derivation index starting at 0 up to the provided index (inclusive).",
+                        "Searches from index 0 with a rolling five-index lookahead, going deeper each time an identity is found. The number sets the minimum depth to search.",
                     );
                 }
             }
@@ -696,27 +634,49 @@ impl AddExistingIdentityScreen {
             handle.with_elapsed();
             self.refresh_banner = Some(handle);
 
-            // Parse identity index input
-            if let Ok(identity_index) = self.identity_index_input.trim().parse::<u32>() {
-                let wallet_ref = self.selected_wallet.as_ref().unwrap().clone().into();
-                action = AppAction::BackendTask(BackendTask::IdentityTask(
-                    match self.wallet_search_mode {
-                        WalletIdentitySearchMode::SpecificIndex => {
-                            IdentityTask::SearchIdentityFromWallet(wallet_ref, identity_index)
-                        }
-                        WalletIdentitySearchMode::UpToIndex => {
-                            IdentityTask::SearchIdentitiesUpToIndex(wallet_ref, identity_index)
-                        }
-                    },
-                ));
-            } else {
-                // Handle invalid index input
-                self.add_identity_status = AddIdentityStatus::NotStarted;
-                MessageBanner::set_global(
-                    self.app_context.egui_ctx(),
-                    "Invalid identity index",
-                    MessageType::Error,
-                );
+            // Parse and bound-check the identity index (model validator is the
+            // single source of truth for the sane range).
+            match self
+                .identity_index_input
+                .trim()
+                .parse::<u32>()
+                .ok()
+                .map(validate_search_index)
+            {
+                Some(Ok(identity_index)) => {
+                    let wallet_ref = self
+                        .selected_wallet
+                        .as_ref()
+                        .expect("invariant: selected_wallet checked Some above")
+                        .clone()
+                        .into();
+                    action = AppAction::BackendTask(BackendTask::IdentityTask(
+                        match self.wallet_search_mode {
+                            WalletIdentitySearchMode::SpecificIndex => {
+                                IdentityTask::SearchIdentityFromWallet(wallet_ref, identity_index)
+                            }
+                            WalletIdentitySearchMode::UpToIndex => {
+                                IdentityTask::SearchIdentitiesUpToIndex(wallet_ref, identity_index)
+                            }
+                        },
+                    ));
+                }
+                Some(Err(error)) => {
+                    self.add_identity_status = AddIdentityStatus::NotStarted;
+                    MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
+                        error.to_string(),
+                        MessageType::Error,
+                    );
+                }
+                None => {
+                    self.add_identity_status = AddIdentityStatus::NotStarted;
+                    MessageBanner::set_global(
+                        self.app_context.egui_ctx(),
+                        "Enter a whole number for the identity index, then try again.",
+                        MessageType::Error,
+                    );
+                }
             }
         }
         action
@@ -729,13 +689,12 @@ impl AddExistingIdentityScreen {
         ui.add_space(15.0);
 
         let wallets_snapshot: Vec<(String, Arc<RwLock<Wallet>>)> = {
-            let wallets_guard = self.app_context.wallets.read().unwrap();
+            let wallets_guard = self.app_context.wallets.read_recover();
             wallets_guard
                 .values()
                 .map(|wallet| {
                     let alias = wallet
-                        .read()
-                        .unwrap()
+                        .read_recover()
                         .alias
                         .clone()
                         .unwrap_or_else(|| "Unnamed Wallet".to_string());
@@ -843,7 +802,7 @@ impl AddExistingIdentityScreen {
             .fill(if is_valid {
                 DashColors::DASH_BLUE
             } else {
-                ComponentStyles::button_disabled_fill(ui.ctx().style().visuals.dark_mode)
+                ComponentStyles::button_disabled_fill(ui.style().visuals.dark_mode)
             })
             .frame(true)
             .corner_radius(3.0);
@@ -863,7 +822,7 @@ impl AddExistingIdentityScreen {
             let selected_wallet_seed_hash = if self.identity_associated_with_wallet {
                 self.selected_wallet
                     .as_ref()
-                    .map(|wallet| wallet.read().unwrap().seed_hash())
+                    .map(|wallet| wallet.read_recover().seed_hash())
             } else {
                 None
             };
@@ -888,7 +847,7 @@ impl AddExistingIdentityScreen {
         let selected_wallet_seed_hash = if self.identity_associated_with_wallet {
             self.selected_wallet
                 .as_ref()
-                .map(|wallet| wallet.read().unwrap().seed_hash())
+                .map(|wallet| wallet.read_recover().seed_hash())
         } else {
             None
         };
@@ -907,44 +866,20 @@ impl AddExistingIdentityScreen {
                 .collect(),
             derive_keys_from_wallets: self.identity_associated_with_wallet,
             selected_wallet_seed_hash,
+            // Legacy load screen has no password field; the optional load-time
+            // encryption (FR-8) is exposed on the new Masternodes load form (B4).
+            encryption_password: None,
+            // Legacy User re-load: preserve the historical overwrite/upsert
+            // behaviour (re-loading to add keys is a supported User workflow).
+            load_mode: crate::backend_task::identity::IdentityLoadMode::Overwrite,
+            // This screen gates on nothing: the load opens a record of its own
+            // rather than adopting one another caller is waiting on.
+            load_token: None,
         };
 
         AppAction::BackendTask(BackendTask::IdentityTask(IdentityTask::LoadIdentity(
             identity_input,
         )))
-    }
-    fn fill_random_hpmn(&mut self) {
-        if let Some((name, hpmn)) = self
-            .testnet_loaded_nodes
-            .as_ref()
-            .and_then(|nodes| nodes.hp_masternodes.iter().choose(&mut thread_rng()))
-        {
-            self.identity_id_input = hpmn.protx_tx_hash.clone();
-            self.identity_type = IdentityType::Evonode;
-            self.alias_input = name.clone();
-            self.voting_private_key_input
-                .set_text(hpmn.voter.private_key.clone());
-            self.owner_private_key_input
-                .set_text(hpmn.owner.private_key.clone());
-            self.payout_address_private_key_input
-                .set_text(hpmn.payout.private_key.clone());
-        }
-    }
-
-    fn fill_random_masternode(&mut self) {
-        if let Some((name, masternode)) = self
-            .testnet_loaded_nodes
-            .as_ref()
-            .and_then(|nodes| nodes.masternodes.iter().choose(&mut thread_rng()))
-        {
-            self.identity_id_input = masternode.pro_tx_hash.clone();
-            self.identity_type = IdentityType::Masternode;
-            self.alias_input = name.clone();
-            self.voting_private_key_input
-                .set_text(masternode.voter.private_key.clone());
-            self.owner_private_key_input
-                .set_text(masternode.owner.private_key.clone());
-        }
     }
 
     pub fn show_success(&mut self, ui: &mut Ui) -> AppAction {
@@ -1035,6 +970,15 @@ impl ScreenLike for AddExistingIdentityScreen {
                 self.success_message = Some("Successfully loaded identity.".to_string());
                 self.add_identity_status = AddIdentityStatus::Complete;
             }
+            BackendTaskSuccessResult::IdentitiesLoaded { count } => {
+                self.refresh_banner.take_and_clear();
+                self.success_message = Some(if count == 1 {
+                    "Successfully loaded 1 identity from your wallet.".to_string()
+                } else {
+                    format!("Successfully loaded {count} identities from your wallet.")
+                });
+                self.add_identity_status = AddIdentityStatus::Complete;
+            }
             BackendTaskSuccessResult::Message(msg) => {
                 // Check if this is a final success message or a progress update
                 if msg.starts_with("Successfully loaded") || msg.starts_with("Finished loading") {
@@ -1073,9 +1017,11 @@ impl ScreenLike for AddExistingIdentityScreen {
         self.add_identity_status = AddIdentityStatus::Complete;
     }
 
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
         let mut action = add_top_panel(
-            ctx,
+            ui,
             &self.app_context,
             vec![
                 ("Identities", AppAction::GoToMainScreen),
@@ -1085,12 +1031,12 @@ impl ScreenLike for AddExistingIdentityScreen {
         );
 
         action |= add_left_panel(
-            ctx,
+            ui,
             &self.app_context,
             crate::ui::RootScreenType::RootScreenIdentities,
         );
 
-        action |= island_central_panel(ctx, |ui| {
+        action |= island_central_panel(ui, |ui| {
             let mut inner_action = AppAction::None;
 
             // Error display is handled by the global MessageBanner
@@ -1117,24 +1063,23 @@ impl ScreenLike for AddExistingIdentityScreen {
 
                     let mut mode_changed = false;
                     ui.horizontal(|ui| {
-                        mode_changed |= ui
-                            .selectable_value(
-                                &mut self.mode,
-                                LoadIdentityMode::IdentityId,
-                                "By Identity ID",
-                            )
-                            .changed();
-                        mode_changed |= ui
-                            .selectable_value(&mut self.mode, LoadIdentityMode::Wallet, "By Wallet")
-                            .changed();
-                        mode_changed |= ui
-                            .selectable_value(
-                                &mut self.mode,
-                                LoadIdentityMode::DpnsName,
-                                "By DPNS Name",
-                            )
-                            .changed();
+                        for mode in [
+                            LoadIdentityMode::IdentityId,
+                            LoadIdentityMode::Wallet,
+                            LoadIdentityMode::DpnsName,
+                        ] {
+                            mode_changed |= ui
+                                .selectable_value(&mut self.mode, mode, mode.tab_label())
+                                .changed();
+                        }
                     });
+                    ui.add_space(6.0);
+                    let dark_mode = ui.style().visuals.dark_mode;
+                    ui.label(
+                        RichText::new(self.mode.description())
+                            .small()
+                            .color(DashColors::text_secondary(dark_mode)),
+                    );
                     ui.add_space(15.0);
 
                     if mode_changed {
@@ -1148,7 +1093,7 @@ impl ScreenLike for AddExistingIdentityScreen {
                         }
                         LoadIdentityMode::Wallet => {
                             let wallets_len = {
-                                let wallets = self.app_context.wallets.read().unwrap();
+                                let wallets = self.app_context.wallets.read_recover();
                                 wallets.len()
                             };
                             inner_action |= self.render_by_wallet(ui, wallets_len);
@@ -1168,7 +1113,7 @@ impl ScreenLike for AddExistingIdentityScreen {
         if let Some(show_pop_up_info_text) = self.show_pop_up_info.clone() {
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
-                .show(ctx, |ui| {
+                .show(ui, |ui| {
                     let mut popup =
                         InfoPopup::new("Load Identity Information", &show_pop_up_info_text);
                     if popup.show(ui).inner {
@@ -1190,5 +1135,37 @@ impl ScreenLike for AddExistingIdentityScreen {
         }
 
         action
+    }
+}
+
+#[cfg(test)]
+mod load_identity_mode_tests {
+    use super::LoadIdentityMode;
+
+    const ALL_MODES: [LoadIdentityMode; 3] = [
+        LoadIdentityMode::IdentityId,
+        LoadIdentityMode::Wallet,
+        LoadIdentityMode::DpnsName,
+    ];
+
+    /// Exhaustive over the enum so a new mode forces a copy decision here
+    /// instead of an unlabeled tab.
+    #[test]
+    fn tab_label_and_description_are_jargon_free_for_every_mode() {
+        for mode in ALL_MODES {
+            let label = mode.tab_label();
+            let description = mode.description();
+            assert!(!label.is_empty());
+            assert!(
+                description.ends_with('.'),
+                "description should be a complete sentence: {description}"
+            );
+            for jargon in ["asset lock", "derivation path", "BIP", "SDK"] {
+                assert!(
+                    !description.to_lowercase().contains(&jargon.to_lowercase()),
+                    "description must not leak jargon ({jargon}): {description}"
+                );
+            }
+        }
     }
 }

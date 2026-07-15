@@ -87,7 +87,7 @@ pub async fn try_discover_nodes(
     let provider = TrustedHttpContextProvider::new(
         network,
         devnet_name.map(|s| s.to_string()),
-        NonZeroUsize::new(10).unwrap(),
+        NonZeroUsize::new(10).expect("invariant: 10 is non-zero"),
     )
     .map_err(|source| DapiDiscoveryError::ProviderInit { source })?;
 

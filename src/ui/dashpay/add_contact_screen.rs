@@ -1,6 +1,7 @@
 use crate::app::AppAction;
 use crate::backend_task::dashpay::DashPayTask;
 use crate::backend_task::dashpay::errors::DashPayError;
+use crate::backend_task::error::TaskError;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::model::qualified_identity::QualifiedIdentity;
@@ -21,8 +22,9 @@ use crate::ui::identities::get_selected_wallet;
 use crate::ui::identities::keys::add_key_screen::AddKeyScreen;
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, Screen, ScreenLike};
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::platform::IdentityPublicKey;
-use egui::{Context, RichText, ScrollArea, TextEdit, Ui};
+use egui::{RichText, ScrollArea, TextEdit, Ui};
 use std::sync::{Arc, RwLock};
 
 const CONTACT_REQUEST_INFO_TEXT: &str = "About Contact Requests:\n\n\
@@ -41,7 +43,7 @@ enum ContactRequestStatus {
 
 pub struct AddContactScreen {
     pub app_context: Arc<AppContext>,
-    selected_identity: Option<QualifiedIdentity>,
+    pub selected_identity: Option<QualifiedIdentity>,
     selected_identity_string: String,
     selected_key: Option<IdentityPublicKey>,
     username_or_id: String,
@@ -56,10 +58,25 @@ pub struct AddContactScreen {
 
 impl AddContactScreen {
     pub fn new(app_context: Arc<AppContext>) -> Self {
+        // Seed from the app-scoped selected identity (W3 SYNC); fall back to first.
+        let identities = app_context.load_local_user_identities().unwrap_or_default();
+        let selected_identity = app_context
+            .selected_identity_id()
+            .and_then(|id| identities.iter().find(|qi| qi.identity.id() == id).cloned())
+            .or_else(|| identities.first().cloned());
+        let selected_identity_string = selected_identity
+            .as_ref()
+            .map(|qi| {
+                qi.identity
+                    .id()
+                    .to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58)
+            })
+            .unwrap_or_default();
+
         Self {
             app_context,
-            selected_identity: None,
-            selected_identity_string: String::new(),
+            selected_identity,
+            selected_identity_string,
             selected_key: None,
             username_or_id: String::new(),
             account_label: String::new(),
@@ -73,10 +90,25 @@ impl AddContactScreen {
     }
 
     pub fn new_with_identity_id(app_context: Arc<AppContext>, identity_id: String) -> Self {
+        // Seed from the app-scoped selected identity (W3 SYNC); fall back to first.
+        let identities = app_context.load_local_user_identities().unwrap_or_default();
+        let selected_identity = app_context
+            .selected_identity_id()
+            .and_then(|id| identities.iter().find(|qi| qi.identity.id() == id).cloned())
+            .or_else(|| identities.first().cloned());
+        let selected_identity_string = selected_identity
+            .as_ref()
+            .map(|qi| {
+                qi.identity
+                    .id()
+                    .to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58)
+            })
+            .unwrap_or_default();
+
         Self {
             app_context,
-            selected_identity: None,
-            selected_identity_string: String::new(),
+            selected_identity,
+            selected_identity_string,
             selected_key: None,
             username_or_id: identity_id,
             account_label: String::new(),
@@ -103,9 +135,10 @@ impl AddContactScreen {
             }
 
             // Validate username format if it looks like a username
-            if let Err(input) = crate::model::dpns::validate_dpns_input(&self.username_or_id) {
-                self.status =
-                    ContactRequestStatus::Error(DashPayError::InvalidUsername { username: input });
+            if crate::model::dpns::validate_dpns_input(&self.username_or_id).is_err() {
+                self.status = ContactRequestStatus::Error(DashPayError::InvalidUsername {
+                    username: self.username_or_id.trim().to_string(),
+                });
                 return AppAction::None;
             }
 
@@ -187,10 +220,12 @@ impl ScreenLike for AddContactScreen {
         }
     }
 
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
         // Add top panel with navigation breadcrumbs
         let mut action = add_top_panel(
-            ctx,
+            ui,
             &self.app_context,
             vec![
                 ("DashPay", AppAction::None),
@@ -200,12 +235,12 @@ impl ScreenLike for AddContactScreen {
         );
 
         // Highlight DashPay in the main left panel
-        action |= add_left_panel(ctx, &self.app_context, RootScreenType::RootScreenDashpay);
+        action |= add_left_panel(ui, &self.app_context, RootScreenType::RootScreenDashpay);
         action |=
-            add_dashpay_subscreen_chooser_panel(ctx, &self.app_context, DashPaySubscreen::Contacts);
+            add_dashpay_subscreen_chooser_panel(ui, &self.app_context, DashPaySubscreen::Contacts);
 
         // Main content in island central panel
-        action |= island_central_panel(ctx, |ui| {
+        action |= island_central_panel(ui, |ui| {
             let mut inner_action = AppAction::None;
 
             // Show success screen if request was successful
@@ -232,7 +267,7 @@ impl ScreenLike for AddContactScreen {
             // Identity and Key selector
             let identities = self
                 .app_context
-                .load_local_qualified_identities()
+                .load_local_user_identities()
                 .unwrap_or_default();
 
             if identities.is_empty() {
@@ -241,7 +276,7 @@ impl ScreenLike for AddContactScreen {
             }
 
             ui.group(|ui| {
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                let dark_mode = ui.style().visuals.dark_mode;
                 ui.label(
                     RichText::new("From (Sender)")
                         .strong()
@@ -249,7 +284,8 @@ impl ScreenLike for AddContactScreen {
                 );
                 ui.separator();
 
-                // Identity selector
+                // Identity selector — SYNC: write-back via syncing_global on user pick (FR-6:
+                // User-only source, so no masternode can leak to the app-global identity).
                 let response = ui.add(
                     IdentitySelector::new(
                         "contact_sender_identity_selector",
@@ -260,7 +296,8 @@ impl ScreenLike for AddContactScreen {
                     .unwrap()
                     .width(300.0)
                     .label("Identity:")
-                    .other_option(false),
+                    .other_option(false)
+                    .syncing_global(self.app_context.clone()),
                 );
 
                 // Handle identity change - auto-select key and update wallet
@@ -323,7 +360,7 @@ impl ScreenLike for AddContactScreen {
             // Loading indicator
             if matches!(self.status, ContactRequestStatus::Sending) {
                 ui.horizontal(|ui| {
-                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+                    let dark_mode = ui.style().visuals.dark_mode;
                     ui.add(egui::widgets::Spinner::default().color(DashColors::DASH_BLUE));
                     ui.label(
                         RichText::new("Sending contact request...")
@@ -335,7 +372,7 @@ impl ScreenLike for AddContactScreen {
 
             // Show error if any
             if let ContactRequestStatus::Error(ref err) = self.status {
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                let dark_mode = ui.style().visuals.dark_mode;
                 let error_color = if dark_mode {
                     DashColors::ERROR
                 } else {
@@ -345,7 +382,7 @@ impl ScreenLike for AddContactScreen {
                 ui.group(|ui| {
                 ui.horizontal(|ui| {
                     ui.vertical(|ui| {
-                        ui.label(RichText::new(err.user_message()).color(error_color));
+                        ui.label(RichText::new(err.to_string()).color(error_color));
 
                         // Show retry suggestion for recoverable errors
                         if err.is_recoverable() {
@@ -400,7 +437,7 @@ impl ScreenLike for AddContactScreen {
             // Contact request form
             ScrollArea::vertical().show(ui, |ui| {
                 ui.group(|ui| {
-                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+                    let dark_mode = ui.style().visuals.dark_mode;
                     ui.label(
                         RichText::new("To (Recipient)")
                             .strong()
@@ -443,7 +480,7 @@ impl ScreenLike for AddContactScreen {
                 // Show summary if all required fields are filled
                 if self.selected_identity.is_some() && !self.username_or_id.is_empty() {
                     ui.group(|ui| {
-                        let dark_mode = ui.ctx().style().visuals.dark_mode;
+                        let dark_mode = ui.style().visuals.dark_mode;
                         ui.label(
                             RichText::new("Request Summary")
                                 .strong()
@@ -494,17 +531,18 @@ impl ScreenLike for AddContactScreen {
                 }
 
                 ui.group(|ui| {
-                    let _dark_mode = ui.ctx().style().visuals.dark_mode;
+                    let _dark_mode = ui.style().visuals.dark_mode;
 
                     // Check wallet lock status before showing send button
                     let wallet_locked = if let Some(wallet) = &self.selected_wallet {
                         if !self.wallet_open_attempted {
-                            if let Err(e) = try_open_wallet_no_password(wallet) {
+                            if let Err(e) = try_open_wallet_no_password(&self.app_context, wallet) {
                                 crate::ui::components::MessageBanner::set_global(
                                     ui.ctx(),
                                     &e,
                                     MessageType::Error,
-                                );
+                                )
+                                .disable_auto_dismiss();
                             }
                             self.wallet_open_attempted = true;
                         }
@@ -578,7 +616,7 @@ impl ScreenLike for AddContactScreen {
         if self.show_info_popup {
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
-                .show(ctx, |ui| {
+                .show(ui, |ui| {
                     let mut popup =
                         InfoPopup::new("About Contact Requests", CONTACT_REQUEST_INFO_TEXT);
                     if popup.show(ui).inner {
@@ -602,68 +640,28 @@ impl ScreenLike for AddContactScreen {
         action
     }
 
-    fn display_message(&mut self, message: &str, message_type: MessageType) {
-        // Banner display is handled globally by AppState; this is only for side-effects.
-        if matches!(message_type, MessageType::Error | MessageType::Warning) {
-            let error = DashPayError::Internal {
-                message: message.to_string(),
-            };
-            self.status = ContactRequestStatus::Error(error);
+    fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
+        if let BackendTaskSuccessResult::DashPayContactRequestSent(_recipient) = result {
+            self.status = ContactRequestStatus::Success;
+            self.username_or_id.clear();
+            self.account_label.clear();
+            self.selected_key = None;
         }
     }
 
-    fn display_task_result(&mut self, result: BackendTaskSuccessResult) {
-        match result {
-            BackendTaskSuccessResult::DashPayContactRequestSent(_recipient) => {
-                // Contact request sent successfully - show success screen
-                self.status = ContactRequestStatus::Success;
-                // Clear form for next use
-                self.username_or_id.clear();
-                self.account_label.clear();
-                self.selected_key = None;
+    fn display_task_error(&mut self, error: &TaskError) -> bool {
+        match classify_send_error(error, &self.username_or_id) {
+            Some(dashpay_error) => {
+                self.status = ContactRequestStatus::Error(dashpay_error);
+                true
             }
-            BackendTaskSuccessResult::Message(message) => {
-                // TODO(RUST-002): Replace string-based error matching with structured
-                // error types through the task result system. This is fragile — if
-                // upstream error wording changes, classification silently breaks.
-                // See: https://github.com/dashpay/dash-evo-tool/issues/660
-                if message.contains("Error")
-                    || message.contains("Failed")
-                    || message.contains("does not have")
-                {
-                    // Try to parse structured error, fallback to generic
-                    let error = if message.contains("ENCRYPTION key") {
-                        DashPayError::MissingEncryptionKey
-                    } else if message.contains("DECRYPTION key") {
-                        DashPayError::MissingDecryptionKey
-                    } else if message.contains("not found") && message.contains("username") {
-                        DashPayError::UsernameResolutionFailed {
-                            username: self.username_or_id.clone(),
-                        }
-                    } else if message.contains("Identity not found") {
-                        DashPayError::IdentityNotFound {
-                            identity_id: dash_sdk::platform::Identifier::from_string(
-                                &self.username_or_id,
-                                dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58,
-                            )
-                            .unwrap_or_else(|_| dash_sdk::platform::Identifier::random()),
-                        }
-                    } else if message.contains("Network") || message.contains("connection") {
-                        DashPayError::NetworkError {
-                            reason: message.clone(),
-                        }
-                    } else {
-                        DashPayError::Internal {
-                            message: message.clone(),
-                        }
-                    };
-
-                    self.status = ContactRequestStatus::Error(error);
+            None => {
+                // No dedicated affordance: stop the spinner and let the global
+                // banner report the error.
+                if matches!(self.status, ContactRequestStatus::Sending) {
+                    self.status = ContactRequestStatus::NotStarted;
                 }
-                // Ignore other messages - they're not for this screen
-            }
-            _ => {
-                // Ignore results not meant for this screen
+                false
             }
         }
     }
@@ -676,5 +674,119 @@ impl AddContactScreen {
 
     pub fn refresh_on_arrival(&mut self) {
         self.refresh();
+    }
+}
+
+/// Map a typed send-contact-request error onto the screen-local error category
+/// that drives a dedicated affordance (key-add button, tip, retry). Returns
+/// `None` when no add-contact-specific UI applies, leaving the global banner to
+/// report the error. `username_or_id` is the current recipient input, used to
+/// label an unresolved identity.
+fn classify_send_error(error: &TaskError, username_or_id: &str) -> Option<DashPayError> {
+    match error {
+        TaskError::IdentityNotFound => Some(DashPayError::IdentityNotFound {
+            identity_id: dash_sdk::platform::Identifier::from_string(
+                username_or_id,
+                dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58,
+            )
+            .ok()?,
+        }),
+        TaskError::DashPay(inner) => match inner {
+            DashPayError::MissingEncryptionKey => Some(DashPayError::MissingEncryptionKey),
+            DashPayError::MissingDecryptionKey => Some(DashPayError::MissingDecryptionKey),
+            DashPayError::UsernameResolutionFailed { username } => {
+                Some(DashPayError::UsernameResolutionFailed {
+                    username: username.clone(),
+                })
+            }
+            DashPayError::InvalidUsername { username } => Some(DashPayError::InvalidUsername {
+                username: username.clone(),
+            }),
+            DashPayError::AccountLabelTooLong { length, max } => {
+                Some(DashPayError::AccountLabelTooLong {
+                    length: *length,
+                    max: *max,
+                })
+            }
+            DashPayError::CannotContactSelf => Some(DashPayError::CannotContactSelf),
+            DashPayError::ContactRequestAlreadySent { to } => {
+                Some(DashPayError::ContactRequestAlreadySent { to: to.clone() })
+            }
+            DashPayError::NetworkError => Some(DashPayError::NetworkError),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn classifies_missing_key_errors_for_add_key_affordance() {
+        let enc = classify_send_error(
+            &TaskError::DashPay(DashPayError::MissingEncryptionKey),
+            "alice.dash",
+        );
+        assert!(matches!(enc, Some(DashPayError::MissingEncryptionKey)));
+
+        let dec = classify_send_error(
+            &TaskError::DashPay(DashPayError::MissingDecryptionKey),
+            "alice.dash",
+        );
+        assert!(matches!(dec, Some(DashPayError::MissingDecryptionKey)));
+    }
+
+    #[test]
+    fn classifies_username_resolution_failure_preserving_username() {
+        let mapped = classify_send_error(
+            &TaskError::DashPay(DashPayError::UsernameResolutionFailed {
+                username: "bob.dash".to_string(),
+            }),
+            "bob.dash",
+        );
+        assert!(matches!(
+            mapped,
+            Some(DashPayError::UsernameResolutionFailed { username }) if username == "bob.dash"
+        ));
+    }
+
+    #[test]
+    fn recoverable_errors_map_through_so_retry_is_offered() {
+        let mapped = classify_send_error(
+            &TaskError::DashPay(DashPayError::NetworkError),
+            "alice.dash",
+        );
+        let mapped = mapped.expect("network errors should be classified");
+        assert!(mapped.is_recoverable());
+    }
+
+    #[test]
+    fn identity_not_found_with_valid_base58_maps_to_typed_variant() {
+        let id = dash_sdk::platform::Identifier::random()
+            .to_string(dash_sdk::dpp::platform_value::string_encoding::Encoding::Base58);
+        let mapped = classify_send_error(&TaskError::IdentityNotFound, &id);
+        assert!(matches!(
+            mapped,
+            Some(DashPayError::IdentityNotFound { .. })
+        ));
+    }
+
+    #[test]
+    fn identity_not_found_with_invalid_base58_falls_back_to_global_banner() {
+        let mapped = classify_send_error(&TaskError::IdentityNotFound, "not a valid id");
+        assert!(mapped.is_none());
+    }
+
+    #[test]
+    fn unrelated_errors_defer_to_global_banner() {
+        let mapped = classify_send_error(
+            &TaskError::EncryptionError {
+                detail: "ecdh".to_string(),
+            },
+            "alice.dash",
+        );
+        assert!(mapped.is_none());
     }
 }

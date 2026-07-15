@@ -5,84 +5,72 @@ use crate::ui::components::message_banner::MessageBanner;
 use crate::ui::identities::add_new_identity_screen::{
     AddNewIdentityScreen, FundingMethod, WalletFundedScreenStep,
 };
-use crate::ui::theme::DashColors;
-use egui::{RichText, Ui};
+use crate::ui::identities::funding_common::{
+    FundingAssetLockPicker, actionable_asset_locks, asset_lock_address, asset_lock_status_label,
+};
+use crate::ui::theme::{ComponentStyles, DashColors};
+use egui::{Color32, RichText, Ui};
 
 impl AddNewIdentityScreen {
     fn render_choose_funding_asset_lock(&mut self, ui: &mut egui::Ui) {
-        // Ensure a wallet is selected
-        let Some(selected_wallet) = self.selected_wallet.clone() else {
-            ui.label("No wallet selected.");
-            return;
+        let tracked = match actionable_asset_locks(
+            ui,
+            &mut self.asset_lock_cache,
+            self.selected_wallet.as_ref(),
+        ) {
+            FundingAssetLockPicker::Handled => return,
+            FundingAssetLockPicker::Available(tracked) => tracked,
         };
 
-        // Read the wallet to access unused asset locks
-        let wallet = selected_wallet.read().unwrap();
-
-        if wallet.unused_asset_locks.is_empty() {
-            ui.label("No unused asset locks available.");
-            return;
-        }
-
-        ui.heading("Select an unused asset lock:");
+        ui.heading("Select the unfinished funding to use:");
         ui.add_space(8.0);
 
-        // Track the index of the currently selected asset lock (if any)
-        let selected_index = self.funding_asset_lock.as_ref().and_then(|(_, proof, _)| {
-            wallet
-                .unused_asset_locks
-                .iter()
-                .position(|(_, _, _, _, p)| p.as_ref() == Some(proof))
-        });
-
-        // Display the asset locks in a scrollable area
         egui::ScrollArea::vertical()
             .auto_shrink([false, true])
             .min_scrolled_height(180.0)
             .show(ui, |ui| {
-                for (index, (tx, address, amount, islock, proof)) in
-                    wallet.unused_asset_locks.iter().enumerate()
-                {
+                for lock in &tracked {
+                    let is_selected = self.funding_asset_lock == Some(lock.out_point);
                     ui.group(|ui| {
                         ui.vertical(|ui| {
-                            let tx_id = tx.txid().to_string();
-                            let lock_amount = *amount as f64 * 1e-8; // Convert to DASH
-                            let is_locked = if islock.is_some() { "Yes" } else { "No" };
-
-                            // Display asset lock information with "Selected" if this one is selected
-                            if Some(index) == selected_index {
-                                ui.colored_label(DashColors::SUCCESS, "Selected asset lock");
+                            if is_selected {
+                                ui.colored_label(DashColors::SUCCESS, "Selected");
                             }
 
-                            ui.label(format!("TxID: {}", tx_id));
-                            ui.label(format!("Address: {}", address));
-                            ui.label(format!("Amount: {:.8} DASH", lock_amount));
-                            ui.label(format!("InstantLock: {}", is_locked));
+                            if self.show_advanced_options {
+                                ui.label(format!("TxID: {}", lock.out_point.txid));
+                                ui.label(format!("Vout: {}", lock.out_point.vout));
+                            }
+                            if let Some(address) =
+                                asset_lock_address(lock, self.app_context.network)
+                            {
+                                ui.label(format!("Address: {address}"));
+                            }
+                            ui.label(format!(
+                                "Amount: {:.8} DASH",
+                                lock.amount as f64 * 1e-8
+                            ));
+                            ui.label(format!("Status: {}", asset_lock_status_label(&lock.status)));
 
                             ui.add_space(6.0);
 
-                            if let Some(asset_lock_proof) = proof {
+                            if lock.proof.is_some() {
                                 if ui.button("Select").clicked() {
-                                    self.funding_asset_lock = Some((
-                                        tx.clone(),
-                                        asset_lock_proof.clone(),
-                                        address.clone(),
-                                    ));
-
-                                    let mut step = self.step.write().unwrap();
-                                    *step = WalletFundedScreenStep::ReadyToCreate;
+                                    self.funding_asset_lock = Some(lock.out_point);
+                                    if let Ok(mut step) = self.step.write() {
+                                        *step = WalletFundedScreenStep::ReadyToCreate;
+                                    }
                                 }
                             } else if ui.button("Select").clicked() {
                                 MessageBanner::set_global(
                                     ui.ctx(),
-                                    "Asset lock proof is not yet available — the transaction may not be chain-locked yet. Please try again later.",
+                                    "This funding isn't ready to use yet. Wait for it to be confirmed on the Dash network, then try again.",
                                     MessageType::Warning,
                                 );
                             }
                         });
                     });
-
-                    ui.add_space(6.0); // Add space between each entry
+                    ui.add_space(6.0);
                 }
             });
     }
@@ -93,28 +81,25 @@ impl AddNewIdentityScreen {
         step_number: u32,
     ) -> AppAction {
         let mut action = AppAction::None;
-
-        // Extract the step from the RwLock to minimize borrow scope
-        let step = *self.step.read().unwrap();
+        let step = self
+            .step
+            .read()
+            .map(|s| *s)
+            .unwrap_or(WalletFundedScreenStep::ChooseFundingMethod);
 
         ui.heading(
-            format!(
-                "{}. Choose the unused asset lock that you would like to use.",
-                step_number
-            )
-            .as_str(),
+            format!("{step_number}. Choose the unfinished funding you'd like to use.").as_str(),
         );
         ui.add_space(10.0);
         self.render_choose_funding_asset_lock(ui);
 
-        // Display estimated fee before action button
-        let key_count = self.identity_keys.keys_input.len() + 1; // +1 for master key
+        let key_count = self.identity_keys.others.len() + 1; // +1 for master key
         let estimated_fee = self
             .app_context
             .fee_estimator()
             .estimate_identity_create(key_count);
         ui.add_space(10.0);
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
         egui::Frame::new()
             .fill(DashColors::surface(dark_mode))
             .inner_margin(egui::Margin::symmetric(10, 8))
@@ -134,23 +119,32 @@ impl AddNewIdentityScreen {
             });
         ui.add_space(10.0);
 
-        if ui.button("Create Identity").clicked() {
+        self.render_alias_input(ui, step_number + 1);
+
+        let can_create = self.funding_asset_lock.is_some();
+        let button = egui::Button::new(RichText::new("Create Identity").color(Color32::WHITE))
+            .fill(if can_create {
+                DashColors::DASH_BLUE
+            } else {
+                ComponentStyles::button_disabled_fill(dark_mode)
+            })
+            .frame(true)
+            .corner_radius(3.0);
+        if ui.add_enabled(can_create, button).clicked() {
             action |= self.register_identity_clicked(FundingMethod::UseUnusedAssetLock);
         }
 
         ui.add_space(20.0);
 
-        {
-            ui.vertical_centered(|ui| match step {
-                WalletFundedScreenStep::WaitingForPlatformAcceptance => {
-                    ui.heading("=> Waiting for Platform acknowledgement <=");
-                }
-                WalletFundedScreenStep::Success => {
-                    ui.heading("...Success...");
-                }
-                _ => {}
-            });
-        }
+        ui.vertical_centered(|ui| match step {
+            WalletFundedScreenStep::WaitingForPlatformAcceptance => {
+                ui.heading("=> Waiting for Platform acknowledgement <=");
+            }
+            WalletFundedScreenStep::Success => {
+                ui.heading("...Success...");
+            }
+            _ => {}
+        });
 
         ui.add_space(40.0);
         action

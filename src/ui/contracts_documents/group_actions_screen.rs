@@ -49,7 +49,7 @@ use dash_sdk::dpp::tokens::emergency_action::TokenEmergencyAction;
 use dash_sdk::dpp::tokens::token_event::TokenEvent;
 use dash_sdk::platform::Identifier;
 use dash_sdk::query_types::IndexMap;
-use eframe::egui::{self, Context, RichText};
+use eframe::egui::{self, RichText};
 use egui::{ScrollArea, TextStyle};
 use egui_extras::{Column, TableBuilder};
 use std::collections::BTreeMap;
@@ -78,7 +78,7 @@ pub struct GroupActionsScreen {
     contract_search: String,
     qualified_identities: Vec<QualifiedIdentity>,
     identity_token_balances: IndexMap<IdentityTokenIdentifier, IdentityTokenBalance>,
-    selected_identity: Option<QualifiedIdentity>,
+    pub selected_identity: Option<QualifiedIdentity>,
     selected_identity_str: String,
 
     // Backend task status
@@ -98,7 +98,7 @@ impl GroupActionsScreen {
                 vec![]
             });
 
-        let contracts_with_group_actions = app_context.db.get_contracts(app_context, None, None).unwrap_or_default().into_iter().filter_map(|qualified_contract| {
+        let contracts_with_group_actions = app_context.get_contracts().unwrap_or_default().into_iter().filter_map(|qualified_contract| {
             let tokens = qualified_contract.contract.tokens().clone().into_iter().filter_map(|(pos, token_config)| {
                 let change_control_rules = token_config.all_change_control_rules().into_iter().filter_map(|(name, change_control_rules)| {
                     match change_control_rules.authorized_to_make_change_action_takers() {
@@ -359,47 +359,48 @@ impl GroupActionsScreen {
         match token_event {
             TokenEvent::Mint(amount, _identifier, note_opt) => {
                 let mut mint_screen = MintTokensScreen::new(identity_token_info, &self.app_context);
-                mint_screen.group_action_id = Some(action_id);
-                mint_screen.amount = Some(Amount::from_token(
-                    &mint_screen.identity_token_info,
+                mint_screen.common.group_action_id = Some(action_id);
+                mint_screen.action.amount = Some(Amount::from_token(
+                    &mint_screen.common.identity_token_info,
                     *amount,
                 ));
-                mint_screen.public_note = note_opt.clone();
+                mint_screen.common.public_note = note_opt.clone();
                 *action |= AppAction::AddScreen(Screen::MintTokensScreen(mint_screen));
             }
             TokenEvent::Burn(amount, _burn_from, note_opt) => {
                 let mut burn_screen = BurnTokensScreen::new(identity_token_info, &self.app_context);
-                burn_screen.group_action_id = Some(action_id);
+                burn_screen.common.group_action_id = Some(action_id);
                 // Convert amount to Amount struct using the token configuration
-                burn_screen.amount = Some(Amount::from_token(
-                    &burn_screen.identity_token_info,
+                burn_screen.action.amount = Some(Amount::from_token(
+                    &burn_screen.common.identity_token_info,
                     *amount,
                 ));
-                burn_screen.public_note = note_opt.clone();
+                burn_screen.common.public_note = note_opt.clone();
                 *action |= AppAction::AddScreen(Screen::BurnTokensScreen(burn_screen));
             }
             TokenEvent::Freeze(identifier, note_opt) => {
                 let mut freeze_screen =
                     FreezeTokensScreen::new(identity_token_info, &self.app_context);
-                freeze_screen.group_action_id = Some(action_id);
-                freeze_screen.freeze_identity_id = identifier.to_string(Encoding::Base58);
-                freeze_screen.public_note = note_opt.clone();
+                freeze_screen.common.group_action_id = Some(action_id);
+                freeze_screen.action.freeze_identity_id = identifier.to_string(Encoding::Base58);
+                freeze_screen.common.public_note = note_opt.clone();
                 *action |= AppAction::AddScreen(Screen::FreezeTokensScreen(freeze_screen));
             }
             TokenEvent::Unfreeze(identifier, note_opt) => {
                 let mut unfreeze_screen =
                     UnfreezeTokensScreen::new(identity_token_info, &self.app_context);
-                unfreeze_screen.group_action_id = Some(action_id);
-                unfreeze_screen.unfreeze_identity_id = identifier.to_string(Encoding::Base58);
-                unfreeze_screen.public_note = note_opt.clone();
+                unfreeze_screen.common.group_action_id = Some(action_id);
+                unfreeze_screen.action.unfreeze_identity_id =
+                    identifier.to_string(Encoding::Base58);
+                unfreeze_screen.common.public_note = note_opt.clone();
                 *action |= AppAction::AddScreen(Screen::UnfreezeTokensScreen(unfreeze_screen));
             }
             TokenEvent::DestroyFrozenFunds(identifier, _amount, note_opt) => {
                 let mut destroy_screen =
                     DestroyFrozenFundsScreen::new(identity_token_info, &self.app_context);
-                destroy_screen.group_action_id = Some(action_id);
-                destroy_screen.frozen_identity_id = identifier.to_string(Encoding::Base58);
-                destroy_screen.public_note = note_opt.clone();
+                destroy_screen.common.group_action_id = Some(action_id);
+                destroy_screen.action.frozen_identity_id = identifier.to_string(Encoding::Base58);
+                destroy_screen.common.public_note = note_opt.clone();
                 *action |= AppAction::AddScreen(Screen::DestroyFrozenFundsScreen(destroy_screen));
             }
             TokenEvent::EmergencyAction(emergency_action, note_opt) => {
@@ -408,15 +409,15 @@ impl GroupActionsScreen {
                     TokenEmergencyAction::Pause => {
                         let mut pause_screen =
                             PauseTokensScreen::new(identity_token_info, &self.app_context);
-                        pause_screen.group_action_id = Some(action_id);
-                        pause_screen.public_note = note_opt.clone();
+                        pause_screen.common.group_action_id = Some(action_id);
+                        pause_screen.common.public_note = note_opt.clone();
                         *action |= AppAction::AddScreen(Screen::PauseTokensScreen(pause_screen));
                     }
                     TokenEmergencyAction::Resume => {
                         let mut resume_screen =
                             ResumeTokensScreen::new(identity_token_info, &self.app_context);
-                        resume_screen.group_action_id = Some(action_id);
-                        resume_screen.public_note = note_opt.clone();
+                        resume_screen.common.group_action_id = Some(action_id);
+                        resume_screen.common.public_note = note_opt.clone();
                         *action |= AppAction::AddScreen(Screen::ResumeTokensScreen(resume_screen));
                     }
                 }
@@ -474,9 +475,9 @@ impl ScreenLike for GroupActionsScreen {
         }
     }
 
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
         let mut action = add_top_panel(
-            ctx,
+            ui,
             &self.app_context,
             vec![
                 ("Contracts", AppAction::GoToMainScreen),
@@ -486,12 +487,12 @@ impl ScreenLike for GroupActionsScreen {
         );
 
         action |= add_left_panel(
-            ctx,
+            ui,
             &self.app_context,
             RootScreenType::RootScreenDocumentQuery,
         );
 
-        let central_panel_action = island_central_panel(ctx, |ui| {
+        let central_panel_action = island_central_panel(ui, |ui| {
             ui.heading("Active Group Actions");
 
             ui.add_space(10.0);
@@ -537,6 +538,11 @@ impl ScreenLike for GroupActionsScreen {
 
             ui.add_space(10.0);
 
+            // K3 — SESSION-LOCAL: no `with_app_default` and no `syncing_global`.
+            // GroupActions targets a specific group and contract for one session;
+            // writing the user's pick back to the global selection would incorrectly
+            // re-point "who you are" to a group-member identity that may not be
+            // the user's primary operating identity.
             ui.add(
                 IdentitySelector::new(
                     "group_actions_identity_selector",

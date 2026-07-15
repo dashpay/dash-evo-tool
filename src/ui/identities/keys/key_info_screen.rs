@@ -1,11 +1,15 @@
 use crate::app::AppAction;
+use crate::backend_task::identity::IdentityTask;
+use crate::backend_task::wallet::WalletTask;
+use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
-use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::qualified_identity::encrypted_key_storage::{
     PrivateKeyData, WalletDerivationPath,
 };
+use crate::model::qualified_identity::{PrivateKeyTarget, QualifiedIdentity};
 use crate::model::secret::Secret;
 use crate::model::wallet::Wallet;
+use crate::model::wallet::passphrase::validate_single_key_passphrase;
 use crate::ui::components::MessageBanner;
 use crate::ui::components::component_trait::Component;
 use crate::ui::components::info_popup::InfoPopup;
@@ -18,24 +22,28 @@ use crate::ui::components::wallet_unlock_popup::{
 };
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, ScreenLike};
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD;
+use crate::wallet_backend::IdentityKeyView;
+use crate::wallet_backend::poison::RwLockRecover;
+use crate::wallet_backend::secret_seam::SecretScheme;
 use dash_sdk::dashcore_rpc::dashcore::PrivateKey as RPCPrivateKey;
 use dash_sdk::dpp::dashcore::address::Payload;
 use dash_sdk::dpp::dashcore::hashes::Hash;
 use dash_sdk::dpp::dashcore::secp256k1::{Message, Secp256k1, SecretKey};
-use dash_sdk::dpp::dashcore::sign_message::signed_msg_hash;
+use dash_sdk::dpp::dashcore::sign_message::{MessageSignature, signed_msg_hash};
 use dash_sdk::dpp::dashcore::{Address, PrivateKey, PubkeyHash, ScriptHash};
 use dash_sdk::dpp::identity::KeyType;
 use dash_sdk::dpp::identity::KeyType::BIP13_SCRIPT_HASH;
+use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::identity::hash::IdentityPublicKeyHashMethodsV0;
 use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicKeyGettersV0;
 use dash_sdk::dpp::identity::identity_public_key::contract_bounds::ContractBounds;
+use dash_sdk::dpp::key_wallet::bip32::DerivationPath;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::IdentityPublicKey;
-use eframe::egui::{self, Context};
+use eframe::egui::{self};
 use egui::{Color32, RichText, ScrollArea};
 use std::sync::{Arc, RwLock};
+use zxcvbn::zxcvbn;
 
 pub struct KeyInfoScreen {
     pub identity: QualifiedIdentity,
@@ -54,26 +62,160 @@ pub struct KeyInfoScreen {
     view_private_key_even_if_encrypted_or_in_wallet: bool,
     show_pop_up_info: Option<String>,
     remove_private_key_dialog: Option<ConfirmationDialog>,
+    /// A queued "derive private key for display" request for a wallet-derived
+    /// key. Drained at the end of `ui()` into a `WalletTask::DeriveKeyForDisplay`
+    /// backend task — the seed is fetched just-in-time and only the WIF returns.
+    pending_key_display_request: Option<DerivationPath>,
+    /// `true` once a display derivation has been dispatched, so the same
+    /// request is not re-queued every frame while the result is in flight.
+    key_display_requested: bool,
+    /// A queued "sign message" request for a wallet-derived key. Drained at the
+    /// end of `ui()` into a `WalletTask::SignMessageWithKey` backend task — the
+    /// seed is fetched just-in-time and only the public signature returns.
+    pending_sign_request: Option<DerivationPath>,
+    /// A queued "derive for display" request for a vault-backed (`InVault`)
+    /// identity key. Drained into `WalletTask::DeriveIdentityKeyForDisplay`.
+    pending_identity_key_display: bool,
+    /// A queued "sign message" request for a vault-backed identity key. Drained
+    /// into `WalletTask::SignMessageWithIdentityKey`.
+    pending_identity_sign: bool,
+    /// Identity key password protection: cached at-rest protection status of
+    /// this identity's vault keys. `None` until first probed; invalidated
+    /// after a migration so the status line re-reads the vault.
+    protection_status: Option<IdentityProtectionStatus>,
+    /// Which step of the opt-in / opt-out flow is active.
+    protection_stage: ProtectionStage,
+    /// The danger confirmation dialog gating the active flow.
+    protection_confirm: Option<ConfirmationDialog>,
+    /// Opt-in password entry (new password + confirmation + hint).
+    protection_new_password: PasswordInput,
+    protection_confirm_password: PasswordInput,
+    protection_hint: String,
+    /// Opt-out password entry (verify the current password).
+    protection_verify_password: PasswordInput,
+    /// Inline validation error for the protection password form.
+    protection_form_error: Option<String>,
+    /// True while a Protect/Unprotect task is in flight (disables the
+    /// action button so the same migration is not dispatched twice).
+    protection_in_flight: bool,
+    /// A queued opt-in dispatch (password + hint), drained in `ui()`.
+    pending_protect: Option<(Secret, Option<String>)>,
+    /// A queued opt-out dispatch (current password), drained in `ui()`.
+    pending_unprotect: Option<Secret>,
 }
 
-// /// The prefix for signed messages using Dash's message signing protocol.
-// pub const DASH_SIGNED_MSG_PREFIX: &[u8] = b"\x19Dash Signed Message:\n";
-//
-// pub fn signed_msg_hash(msg: &str) -> sha256d::Hash {
-//     let mut engine = sha256d::Hash::engine();
-//     engine.input(DASH_SIGNED_MSG_PREFIX);
-//     let msg_len = encode::VarInt(msg.len() as u64);
-//     msg_len.consensus_encode(&mut engine).expect("engines don't error");
-//     engine.input(msg.as_bytes());
-//     sha256d::Hash::from_engine(engine)
-// }
+/// At-rest protection posture of an identity's vault-stored keys.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum IdentityProtectionStatus {
+    /// No keys live in the identity vault (e.g. only wallet-derived keys); the
+    /// per-identity protection control does not apply.
+    NoVaultKeys,
+    /// Every vault key is keyless (Tier-1) — signs prompt-free (the default).
+    Unprotected,
+    /// Every vault key is password-protected (Tier-2).
+    Protected,
+    /// A partial state (some protected, some not) — typically a crash mid
+    /// migration. The UI offers "Finish protecting".
+    Mixed,
+}
+
+/// Which step of the Key Protection opt-in / opt-out flow is on screen.
+#[derive(Default, Clone, Copy, PartialEq, Eq)]
+enum ProtectionStage {
+    /// Status line + action button only.
+    #[default]
+    Idle,
+    /// The danger warning before opt-in is showing.
+    ConfirmAdd,
+    /// The new-password form (opt-in) is showing.
+    EnterNewPassword,
+    /// The danger warning before opt-out is showing.
+    ConfirmRemove,
+    /// The verify-password form (opt-out) is showing.
+    EnterVerifyPassword,
+}
 
 impl ScreenLike for KeyInfoScreen {
     fn refresh(&mut self) {}
 
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+    fn display_task_result(&mut self, backend_task_success_result: BackendTaskSuccessResult) {
+        match backend_task_success_result {
+            BackendTaskSuccessResult::WalletKeyForDisplay { wif, .. } => {
+                // The backend derived the key just-in-time; reconstruct the
+                // RPC private key from the WIF only to render WIF + hex. The
+                // seed never crossed into the UI.
+                match RPCPrivateKey::from_wif(wif.expose_secret()) {
+                    Ok(private_key) => self.decrypted_private_key = Some(private_key),
+                    Err(e) => {
+                        self.key_display_requested = false;
+                        let banner = MessageBanner::set_global(
+                            self.app_context.egui_ctx(),
+                            "Could not display the private key. Please retry.",
+                            MessageType::Error,
+                        );
+                        banner.with_details(e);
+                        banner.disable_auto_dismiss();
+                    }
+                }
+            }
+            BackendTaskSuccessResult::WalletMessageSigned { signature, .. } => {
+                self.signed_message = Some(signature);
+            }
+            BackendTaskSuccessResult::IdentityKeyForDisplay { wif, .. } => {
+                match RPCPrivateKey::from_wif(wif.expose_secret()) {
+                    Ok(private_key) => self.decrypted_private_key = Some(private_key),
+                    Err(e) => {
+                        self.key_display_requested = false;
+                        let banner = MessageBanner::set_global(
+                            self.app_context.egui_ctx(),
+                            "Could not display the private key. Please retry.",
+                            MessageType::Error,
+                        );
+                        banner.with_details(e);
+                        banner.disable_auto_dismiss();
+                    }
+                }
+            }
+            BackendTaskSuccessResult::IdentityMessageSigned { signature, .. } => {
+                self.signed_message = Some(signature);
+            }
+            BackendTaskSuccessResult::IdentityKeysProtected { .. } => {
+                self.protection_in_flight = false;
+                self.protection_status = None; // re-probe the vault on next render
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    "This identity's keys are now password-protected. You will be asked for the password each time they sign.",
+                    MessageType::Success,
+                );
+            }
+            BackendTaskSuccessResult::IdentityKeysUnprotected { .. } => {
+                self.protection_in_flight = false;
+                self.protection_status = None; // re-probe the vault on next render
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    "Password protection removed. This identity's keys will now sign automatically.",
+                    MessageType::Success,
+                );
+            }
+            _ => {}
+        }
+    }
+
+    fn display_message(&mut self, _message: &str, message_type: MessageType) {
+        // A migration that failed surfaces as an error banner (set centrally by
+        // AppState); clear the in-flight gate so the user can retry, and
+        // re-probe the vault in case a partial change landed.
+        if self.protection_in_flight && matches!(message_type, MessageType::Error) {
+            self.protection_in_flight = false;
+            self.protection_status = None;
+        }
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
         let mut action = add_top_panel(
-            ctx,
+            ui,
             &self.app_context,
             vec![
                 ("Identities", AppAction::GoToMainScreen),
@@ -83,16 +225,16 @@ impl ScreenLike for KeyInfoScreen {
         );
 
         action |= add_left_panel(
-            ctx,
+            ui,
             &self.app_context,
             crate::ui::RootScreenType::RootScreenIdentities,
         );
 
-        action |= island_central_panel(ctx, |ui| {
+        action |= island_central_panel(ui, |ui| {
             let inner_action = AppAction::None;
 
             ScrollArea::vertical().show(ui, |ui| {
-                let text_primary = DashColors::text_primary(ui.ctx().style().visuals.dark_mode);
+                let text_primary = DashColors::text_primary(ui.style().visuals.dark_mode);
                 ui.heading(RichText::new("Key Information").color(text_primary));
                 ui.add_space(10.0);
 
@@ -316,7 +458,7 @@ impl ScreenLike for KeyInfoScreen {
                                                 .color(ui.visuals().text_color()),
                                         );
                                         let wif = Secret::new(private_key.to_wif());
-                                        // INTENTIONAL(CODE-003): WIF displayed as plaintext label — user-initiated key view.
+                                        // WIF displayed as plaintext label — user-initiated key view.
                                         // Secret wrapper provides zeroize-on-drop for the Rust-side variable.
                                         ui.label(
                                             RichText::new(wif.expose_secret())
@@ -331,7 +473,7 @@ impl ScreenLike for KeyInfoScreen {
                                             .color(ui.visuals().text_color()),
                                     );
                                     let private_key_hex = Secret::new(hex::encode(clear));
-                                    // INTENTIONAL(CODE-003): WIF displayed as plaintext label — user-initiated key view.
+                                    // WIF displayed as plaintext label — user-initiated key view.
                                     // Secret wrapper provides zeroize-on-drop for the Rust-side variable.
                                     ui.label(
                                         RichText::new(private_key_hex.expose_secret())
@@ -365,84 +507,17 @@ impl ScreenLike for KeyInfoScreen {
                                 && self.selected_wallet.is_some()
                             {
                                 if let Some(private_key) = self.decrypted_private_key {
-                                    egui::Grid::new("private_key_grid_wallet")
-                                        .num_columns(2)
-                                        .spacing([10.0, 10.0])
-                                        .show(ui, |ui| {
-                                            ui.label(
-                                                RichText::new("Private Key (WIF):")
-                                                    .strong()
-                                                    .color(ui.visuals().text_color()),
-                                            );
-                                            let wif = Secret::new(private_key.to_wif());
-                                            ui.label(
-                                                RichText::new(wif.expose_secret())
-                                                    .color(ui.visuals().text_color()),
-                                            );
-                                            ui.end_row();
-
-                                            ui.label(
-                                                RichText::new("Private Key (Hex):")
-                                                    .strong()
-                                                    .color(ui.visuals().text_color()),
-                                            );
-                                            let private_key_hex = Secret::new(hex::encode(
-                                                private_key.inner.secret_bytes(),
-                                            ));
-                                            ui.label(
-                                                RichText::new(private_key_hex.expose_secret())
-                                                    .color(ui.visuals().text_color()),
-                                            );
-                                            ui.end_row();
-                                        });
+                                    Self::render_decrypted_key_grid(ui, &private_key);
                                 } else {
-                                    let wallet =
-                                        self.selected_wallet.as_ref().unwrap().read().unwrap();
-                                    match wallet.private_key_at_derivation_path(
+                                    Self::queue_key_display(
+                                        &mut self.pending_key_display_request,
+                                        &mut self.key_display_requested,
                                         &derivation_path.derivation_path,
-                                        self.app_context.network,
-                                    ) {
-                                        Ok(private_key) => {
-                                            egui::Grid::new("private_key_grid_wallet2")
-                                                .num_columns(2)
-                                                .spacing([10.0, 10.0])
-                                                .show(ui, |ui| {
-                                                    ui.label(
-                                                        RichText::new("Private Key (WIF):")
-                                                            .strong()
-                                                            .color(ui.visuals().text_color()),
-                                                    );
-                                                    let wif = Secret::new(private_key.to_wif());
-                                                    ui.label(
-                                                        RichText::new(wif.expose_secret())
-                                                            .color(ui.visuals().text_color()),
-                                                    );
-                                                    ui.end_row();
-
-                                                    ui.label(
-                                                        RichText::new("Private Key (Hex):")
-                                                            .strong()
-                                                            .color(ui.visuals().text_color()),
-                                                    );
-                                                    let private_key_hex = Secret::new(hex::encode(
-                                                        private_key.inner.secret_bytes(),
-                                                    ));
-                                                    ui.label(
-                                                        RichText::new(
-                                                            private_key_hex.expose_secret(),
-                                                        )
-                                                        .color(ui.visuals().text_color()),
-                                                    );
-                                                    ui.end_row();
-                                                });
-
-                                            self.decrypted_private_key = Some(private_key);
-                                        }
-                                        Err(e) => {
-                                            ui.label(format!("Error: {}", e));
-                                            return;
-                                        }
-                                    }
+                                    );
+                                    ui.label(
+                                        RichText::new("Deriving private key…")
+                                            .color(ui.visuals().text_color()),
+                                    );
                                 }
                                 self.render_sign_input(ui);
                             } else if self.wallet_open {
@@ -453,54 +528,18 @@ impl ScreenLike for KeyInfoScreen {
                                     self.view_private_key_even_if_encrypted_or_in_wallet = true;
                                     self.view_wallet_unlock = true;
                                 }
-                                if self.decrypted_private_key.is_none() {
-                                    let wallet =
-                                        self.selected_wallet.as_ref().unwrap().read().unwrap();
-                                    match wallet.private_key_at_derivation_path(
+                                if let Some(private_key) = self.decrypted_private_key {
+                                    Self::render_decrypted_key_grid(ui, &private_key);
+                                } else {
+                                    Self::queue_key_display(
+                                        &mut self.pending_key_display_request,
+                                        &mut self.key_display_requested,
                                         &derivation_path.derivation_path,
-                                        self.app_context.network,
-                                    ) {
-                                        Ok(private_key) => {
-                                            egui::Grid::new("private_key_grid_wallet2")
-                                                .num_columns(2)
-                                                .spacing([10.0, 10.0])
-                                                .show(ui, |ui| {
-                                                    ui.label(
-                                                        RichText::new("Private Key (WIF):")
-                                                            .strong()
-                                                            .color(ui.visuals().text_color()),
-                                                    );
-                                                    let wif = Secret::new(private_key.to_wif());
-                                                    ui.label(
-                                                        RichText::new(wif.expose_secret())
-                                                            .color(ui.visuals().text_color()),
-                                                    );
-                                                    ui.end_row();
-
-                                                    ui.label(
-                                                        RichText::new("Private Key (Hex):")
-                                                            .strong()
-                                                            .color(ui.visuals().text_color()),
-                                                    );
-                                                    let private_key_hex = Secret::new(hex::encode(
-                                                        private_key.inner.secret_bytes(),
-                                                    ));
-                                                    ui.label(
-                                                        RichText::new(
-                                                            private_key_hex.expose_secret(),
-                                                        )
-                                                        .color(ui.visuals().text_color()),
-                                                    );
-                                                    ui.end_row();
-                                                });
-
-                                            self.decrypted_private_key = Some(private_key);
-                                        }
-                                        Err(e) => {
-                                            ui.label(format!("Error: {}", e));
-                                            return;
-                                        }
-                                    }
+                                    );
+                                    ui.label(
+                                        RichText::new("Deriving private key…")
+                                            .color(ui.visuals().text_color()),
+                                    );
                                 }
                                 self.render_sign_input(ui);
                             } else {
@@ -517,6 +556,28 @@ impl ScreenLike for KeyInfoScreen {
                                 }
                             }
                         }
+                        PrivateKeyData::InVault => {
+                            // Vault-backed identity key: the raw bytes are
+                            // fetched just-in-time by a backend task. The UI
+                            // only ever sees the derived WIF for display.
+                            ui.label(
+                                RichText::new(
+                                    "This signing key is stored securely on this device.",
+                                )
+                                .color(text_primary),
+                            );
+                            ui.add_space(10.0);
+                            if let Some(private_key) = self.decrypted_private_key {
+                                Self::render_decrypted_key_grid(ui, &private_key);
+                            } else if ui.button("View Private Key").clicked() {
+                                self.pending_identity_key_display = true;
+                                self.key_display_requested = true;
+                            }
+                            self.render_sign_input(ui);
+                            ui.add_space(10.0);
+                            ui.separator();
+                            self.render_key_protection_section(ui);
+                        }
                     }
                 } else {
                     ui.label(RichText::new("Enter Private Key:").color(text_primary));
@@ -532,8 +593,9 @@ impl ScreenLike for KeyInfoScreen {
                     && let Some(wallet) = &self.selected_wallet
                 {
                     if !self.wallet_open_attempted {
-                        if let Err(e) = try_open_wallet_no_password(wallet) {
-                            MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                        if let Err(e) = try_open_wallet_no_password(&self.app_context, wallet) {
+                            MessageBanner::set_global(ui.ctx(), &e, MessageType::Error)
+                                .disable_auto_dismiss();
                         }
                         self.wallet_open_attempted = true;
                     }
@@ -579,12 +641,91 @@ impl ScreenLike for KeyInfoScreen {
         if let Some(show_pop_up_info_text) = self.show_pop_up_info.clone() {
             egui::CentralPanel::default()
                 .frame(egui::Frame::NONE)
-                .show(ctx, |ui| {
+                .show(ui, |ui| {
                     let mut popup = InfoPopup::new("Sign Message Info", &show_pop_up_info_text);
                     if popup.show(ui).inner {
                         self.show_pop_up_info = None;
                     }
                 });
+        }
+
+        // Drain queued wallet-key requests into backend tasks that fetch the
+        // seed just-in-time and derive/sign off the UI thread. Only the public
+        // result (WIF for display, signature) returns to the UI.
+        if let Some(seed_hash) = self.wallet_seed_hash() {
+            if let Some(derivation_path) = self.pending_key_display_request.take() {
+                action |= AppAction::BackendTask(BackendTask::WalletTask(
+                    WalletTask::DeriveKeyForDisplay {
+                        seed_hash,
+                        derivation_path,
+                    },
+                ));
+            }
+            if let Some(derivation_path) = self.pending_sign_request.take() {
+                action |= AppAction::BackendTask(BackendTask::WalletTask(
+                    WalletTask::SignMessageWithKey {
+                        seed_hash,
+                        derivation_path,
+                        message: self.message_input.clone(),
+                        key_type: self.key.key_type(),
+                    },
+                ));
+            }
+        }
+
+        // Vault-backed (InVault) identity-key requests: the raw key is fetched
+        // JIT in the backend and only the public WIF / signature returns.
+        let identity_id = self.identity.identity.id();
+        let target: PrivateKeyTarget = self.key.purpose().into();
+        let key_id = self.key.id();
+        if std::mem::take(&mut self.pending_identity_key_display) {
+            action |= AppAction::BackendTask(BackendTask::WalletTask(
+                WalletTask::DeriveIdentityKeyForDisplay {
+                    identity_id,
+                    target: target.clone(),
+                    key_id,
+                },
+            ));
+        }
+        if std::mem::take(&mut self.pending_identity_sign) {
+            action |= AppAction::BackendTask(BackendTask::WalletTask(
+                WalletTask::SignMessageWithIdentityKey {
+                    identity_id,
+                    target,
+                    key_id,
+                    message: self.message_input.clone(),
+                    key_type: self.key.key_type(),
+                },
+            ));
+        }
+
+        // Drain a queued identity-key protection opt-in / opt-out.
+        if let Some((password, hint)) = self.pending_protect.take() {
+            MessageBanner::set_global(
+                ctx,
+                "Protecting this identity's keys. Please wait.",
+                MessageType::Info,
+            );
+            action |= AppAction::BackendTask(BackendTask::IdentityTask(
+                IdentityTask::ProtectIdentityKeys {
+                    identity_id,
+                    password,
+                    hint,
+                },
+            ));
+        }
+        if let Some(password) = self.pending_unprotect.take() {
+            MessageBanner::set_global(
+                ctx,
+                "Removing password protection. Please wait.",
+                MessageType::Info,
+            );
+            action |= AppAction::BackendTask(BackendTask::IdentityTask(
+                IdentityTask::UnprotectIdentityKeys {
+                    identity_id,
+                    password,
+                },
+            ));
         }
 
         action
@@ -600,7 +741,7 @@ impl KeyInfoScreen {
     ) -> Self {
         let selected_wallet =
             if let Some((_, Some(wallet_derivation_path))) = private_key_data.as_ref() {
-                let wallets = app_context.wallets.read().unwrap();
+                let wallets = app_context.wallets.read_recover();
                 wallets
                     .get(&wallet_derivation_path.wallet_seed_hash)
                     .cloned()
@@ -626,6 +767,22 @@ impl KeyInfoScreen {
             view_private_key_even_if_encrypted_or_in_wallet: false,
             show_pop_up_info: None,
             remove_private_key_dialog: None,
+            pending_key_display_request: None,
+            key_display_requested: false,
+            pending_sign_request: None,
+            pending_identity_key_display: false,
+            pending_identity_sign: false,
+            protection_status: None,
+            protection_stage: ProtectionStage::Idle,
+            protection_confirm: None,
+            protection_new_password: PasswordInput::new().with_hint_text("New password"),
+            protection_confirm_password: PasswordInput::new().with_hint_text("Confirm password"),
+            protection_hint: String::new(),
+            protection_verify_password: PasswordInput::new().with_hint_text("Current password"),
+            protection_form_error: None,
+            protection_in_flight: false,
+            pending_protect: None,
+            pending_unprotect: None,
         }
     }
 
@@ -633,7 +790,10 @@ impl KeyInfoScreen {
         // Convert the input string to bytes (hex decoding)
         let private_key_bytes = match hex::decode(self.private_key_input.text()) {
             Ok(private_key_bytes_vec) if private_key_bytes_vec.len() == 32 => {
-                private_key_bytes_vec.try_into().unwrap()
+                let bytes: [u8; 32] = private_key_bytes_vec
+                    .try_into()
+                    .expect("invariant: length checked to be 32 in the match guard");
+                bytes
             }
             Ok(_) => {
                 MessageBanner::set_global(
@@ -665,7 +825,7 @@ impl KeyInfoScreen {
                 format!("Issue verifying private key {}", err),
                 MessageType::Error,
             );
-        } else if validation_result.unwrap() {
+        } else if validation_result.expect("invariant: Err handled in the preceding branch") {
             // If valid, store the private key in the context and reset the input field
             self.private_key_data = Some((PrivateKeyData::Clear(private_key_bytes), None));
             self.identity.private_keys.insert_non_encrypted(
@@ -680,7 +840,8 @@ impl KeyInfoScreen {
                     self.app_context.egui_ctx(),
                     format!("Issue saving: {}", e),
                     MessageType::Error,
-                );
+                )
+                .disable_auto_dismiss();
             }
         } else {
             MessageBanner::set_global(
@@ -692,7 +853,7 @@ impl KeyInfoScreen {
     }
 
     fn render_sign_input(&mut self, ui: &mut egui::Ui) {
-        let text_primary = DashColors::text_primary(ui.ctx().style().visuals.dark_mode);
+        let text_primary = DashColors::text_primary(ui.style().visuals.dark_mode);
         ui.add_space(10.0);
         ui.separator();
         ui.add_space(10.0);
@@ -742,60 +903,122 @@ impl KeyInfoScreen {
     }
 
     fn sign_message(&mut self) {
-        // Check that we have a private key
-        if let Some((private_key_data, _)) = &self.private_key_data {
-            let private_key_bytes = match (private_key_data, self.decrypted_private_key.as_ref()) {
-                (PrivateKeyData::Clear(bytes), _) | (PrivateKeyData::AlwaysClear(bytes), _) => {
-                    *bytes
-                }
-                (_, Some(private_key)) => private_key.inner.secret_bytes(),
-                // Other cases may not have the private key directly
-                _ => {
-                    MessageBanner::set_global(
-                        self.app_context.egui_ctx(),
-                        "Private key is not available.",
-                        MessageType::Error,
-                    );
-                    return;
-                }
-            };
-
-            // Use the key type to determine how to sign
-            match self.key.key_type() {
-                KeyType::ECDSA_SECP256K1 | KeyType::ECDSA_HASH160 => {
-                    // Sign the message using ECDSA
-                    let secp = Secp256k1::new();
-
-                    let message_hash = signed_msg_hash(self.message_input.as_str());
-                    let message = Message::from_digest(*message_hash.as_byte_array());
-
-                    let secret_key = SecretKey::from_byte_array(&private_key_bytes).unwrap();
-
-                    let signature = secp.sign_ecdsa(&message, &secret_key);
-
-                    // Serialize the signature
-                    let mut serialized_signature = signature.serialize_compact().to_vec();
-                    serialized_signature.insert(0, 32);
-
-                    // Encode to Base64
-                    let signature_base64 = STANDARD.encode(serialized_signature);
-
-                    self.signed_message = Some(signature_base64);
-                }
-                _ => {
-                    MessageBanner::set_global(
-                        self.app_context.egui_ctx(),
-                        "Unsupported key type for signing.",
-                        MessageType::Error,
-                    );
-                }
-            }
-        } else {
+        let Some((private_key_data, _)) = &self.private_key_data else {
             MessageBanner::set_global(
                 self.app_context.egui_ctx(),
                 "Private key is not available.",
                 MessageType::Error,
             );
+            return;
+        };
+
+        if !matches!(
+            self.key.key_type(),
+            KeyType::ECDSA_SECP256K1 | KeyType::ECDSA_HASH160
+        ) {
+            MessageBanner::set_global(
+                self.app_context.egui_ctx(),
+                "Unsupported key type for signing.",
+                MessageType::Error,
+            );
+            return;
+        }
+
+        match private_key_data {
+            // Keys that carry their own plaintext sign locally — no wallet seed
+            // is involved, so there is nothing to fetch through the chokepoint.
+            PrivateKeyData::Clear(bytes) | PrivateKeyData::AlwaysClear(bytes) => {
+                self.signed_message = Some(Self::sign_ecdsa_local(bytes, &self.message_input));
+            }
+            // Wallet-derived keys sign in the backend: the seed is fetched
+            // just-in-time through the JIT chokepoint and only the public
+            // signature returns. Queue the request; `ui()` dispatches it.
+            PrivateKeyData::AtWalletDerivationPath(wdp) => {
+                self.pending_sign_request = Some(wdp.derivation_path.clone());
+            }
+            PrivateKeyData::Encrypted(_) => {
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    "Private key is not available.",
+                    MessageType::Error,
+                );
+            }
+            // Vault-backed identity key: signs in the backend via the JIT
+            // chokepoint (InVault route). Queue the request; `ui()` dispatches it.
+            PrivateKeyData::InVault => {
+                self.pending_identity_sign = true;
+            }
+        }
+    }
+
+    /// Sign `message` with a locally-held ECDSA secret, returning the
+    /// Base64-encoded Dash signed-message envelope. Used only for keys that
+    /// already carry their plaintext in the UI — never for wallet-derived keys.
+    ///
+    /// The envelope is a recoverable signature: a header byte (`27 + recId`,
+    /// `+4` for a compressed key) followed by the 64-byte signature. These keys
+    /// are compressed by convention, so a verifier can recover the signer's
+    /// public key and address from the signature alone.
+    fn sign_ecdsa_local(private_key_bytes: &[u8; 32], message: &str) -> String {
+        let secp = Secp256k1::new();
+        let message_hash = signed_msg_hash(message);
+        let digest = Message::from_digest(*message_hash.as_byte_array());
+        let secret_key = SecretKey::from_byte_array(private_key_bytes)
+            .expect("clear private key is a valid 32-byte secret");
+        let recoverable = secp.sign_ecdsa_recoverable(&digest, &secret_key);
+        MessageSignature::new(recoverable, true).to_base64()
+    }
+
+    /// Render the WIF + hex of an already-derived private key. The key is
+    /// derived in the backend via `WalletTask::DeriveKeyForDisplay` and the
+    /// reconstructed [`RPCPrivateKey`] passed here only for rendering.
+    fn render_decrypted_key_grid(ui: &mut egui::Ui, private_key: &RPCPrivateKey) {
+        egui::Grid::new("private_key_grid_wallet")
+            .num_columns(2)
+            .spacing([10.0, 10.0])
+            .show(ui, |ui| {
+                ui.label(
+                    RichText::new("Private Key (WIF):")
+                        .strong()
+                        .color(ui.visuals().text_color()),
+                );
+                let wif = Secret::new(private_key.to_wif());
+                ui.label(RichText::new(wif.expose_secret()).color(ui.visuals().text_color()));
+                ui.end_row();
+
+                ui.label(
+                    RichText::new("Private Key (Hex):")
+                        .strong()
+                        .color(ui.visuals().text_color()),
+                );
+                let private_key_hex = Secret::new(hex::encode(private_key.inner.secret_bytes()));
+                ui.label(
+                    RichText::new(private_key_hex.expose_secret()).color(ui.visuals().text_color()),
+                );
+                ui.end_row();
+            });
+    }
+
+    /// Queue a one-shot "derive private key for display" request the first time
+    /// a wallet-derived key needs to be shown. Idempotent within a view session
+    /// via `requested`, so the backend task is dispatched once, not every frame.
+    fn queue_key_display(
+        pending: &mut Option<DerivationPath>,
+        requested: &mut bool,
+        path: &DerivationPath,
+    ) {
+        if !*requested {
+            *pending = Some(path.clone());
+            *requested = true;
+        }
+    }
+
+    /// The HD wallet this key derives from, or `None` for keys that carry their
+    /// own plaintext. Used to scope the JIT chokepoint for display/sign tasks.
+    fn wallet_seed_hash(&self) -> Option<crate::model::wallet::WalletSeedHash> {
+        match self.private_key_data.as_ref()? {
+            (PrivateKeyData::AtWalletDerivationPath(wdp), _) => Some(wdp.wallet_seed_hash),
+            _ => None,
         }
     }
 
@@ -818,10 +1041,329 @@ impl KeyInfoScreen {
                             ui.ctx(),
                             format!("Issue saving: {}", e),
                             MessageType::Error,
-                        );
+                        )
+                        .disable_auto_dismiss();
                     }
                 }
             }
         }
     }
+
+    // --- Identity key password protection (per-identity at-rest key encryption) ---
+
+    /// At-rest protection posture of this identity's vault keys, by probing the
+    /// vault scheme of each key. Cheap (a handful of local vault reads). Cached
+    /// in `protection_status`; invalidated after a migration.
+    fn compute_protection_status(&self) -> IdentityProtectionStatus {
+        let Ok(backend) = self.app_context.wallet_backend() else {
+            return IdentityProtectionStatus::NoVaultKeys;
+        };
+        let id = self.identity.identity.id().to_buffer();
+        let view = IdentityKeyView::new(backend.secret_store(), id);
+        let (mut protected, mut unprotected) = (0usize, 0usize);
+        for (target, key_id) in self.identity.private_keys.keys_set() {
+            match view.scheme(&target, key_id) {
+                Ok(SecretScheme::Protected) => protected += 1,
+                Ok(SecretScheme::Unprotected) => unprotected += 1,
+                // Absent (wallet-derived / resident-plaintext) or a transient
+                // vault error: not a protectable vault key — ignore it.
+                _ => {}
+            }
+        }
+        match (protected, unprotected) {
+            (0, 0) => IdentityProtectionStatus::NoVaultKeys,
+            (_, 0) => IdentityProtectionStatus::Protected,
+            (0, _) => IdentityProtectionStatus::Unprotected,
+            _ => IdentityProtectionStatus::Mixed,
+        }
+    }
+
+    /// Render the collapsible "Key Protection" section (default closed). Hidden
+    /// entirely when the identity has no vault-stored keys.
+    fn render_key_protection_section(&mut self, ui: &mut egui::Ui) {
+        if self.protection_status.is_none() {
+            let status = self.compute_protection_status();
+            self.protection_status = Some(status);
+        }
+        let status = self
+            .protection_status
+            .unwrap_or(IdentityProtectionStatus::NoVaultKeys);
+        if status == IdentityProtectionStatus::NoVaultKeys {
+            return;
+        }
+        let dark_mode = ui.style().visuals.dark_mode;
+
+        egui::CollapsingHeader::new("Key Protection")
+            .default_open(false)
+            .show(ui, |ui| {
+                let status_text = match status {
+                    IdentityProtectionStatus::Unprotected => {
+                        "This identity's keys sign automatically. No password is required."
+                    }
+                    IdentityProtectionStatus::Protected => {
+                        "This identity's keys require a password each time they sign."
+                    }
+                    IdentityProtectionStatus::Mixed => {
+                        "Password protection for this identity's keys is incomplete. Finish protecting them with the same password you set."
+                    }
+                    IdentityProtectionStatus::NoVaultKeys => "",
+                };
+                ui.label(
+                    RichText::new(status_text).color(DashColors::text_secondary(dark_mode)),
+                );
+                ui.add_space(8.0);
+
+                match self.protection_stage {
+                    ProtectionStage::Idle => self.render_protection_idle(ui, status),
+                    ProtectionStage::EnterNewPassword => self.render_new_password_form(ui),
+                    ProtectionStage::EnterVerifyPassword => self.render_verify_password_form(ui),
+                    // The confirm dialogs draw as modals (below), not inline.
+                    ProtectionStage::ConfirmAdd | ProtectionStage::ConfirmRemove => {}
+                }
+            });
+
+        // The danger confirmation dialog (opt-in / opt-out) draws as a modal.
+        self.handle_protection_confirm(ui);
+    }
+
+    /// The idle status row: the action button whose meaning depends on the
+    /// current protection posture.
+    fn render_protection_idle(&mut self, ui: &mut egui::Ui, status: IdentityProtectionStatus) {
+        let (label, is_add) = match status {
+            IdentityProtectionStatus::Protected => ("Remove password protection…", false),
+            IdentityProtectionStatus::Mixed => ("Finish protecting…", true),
+            _ => ("Add password protection…", true),
+        };
+        let resp = ui.add_enabled(!self.protection_in_flight, egui::Button::new(label));
+        if resp.clicked() {
+            if is_add {
+                self.open_add_confirm();
+            } else {
+                self.open_remove_confirm();
+            }
+        }
+        if self.protection_in_flight {
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new("Working…")
+                    .color(DashColors::text_secondary(ui.style().visuals.dark_mode)),
+            );
+        }
+    }
+
+    /// Open the danger warning before opt-in.
+    fn open_add_confirm(&mut self) {
+        self.protection_form_error = None;
+        self.protection_new_password.clear();
+        self.protection_confirm_password.clear();
+        self.protection_hint.clear();
+        self.protection_stage = ProtectionStage::ConfirmAdd;
+        self.protection_confirm = Some(
+            ConfirmationDialog::new(
+                "Protect this identity's keys with a password?",
+                "Adding a password means this identity's keys will ask for the password each time they are used to sign. Keep this in mind:\n\n\
+                 • If you forget the password, these keys cannot be recovered. There is no reset option.\n\n\
+                 • Automatic tools (such as scripts or the command-line interface) will no longer be able to sign with this identity without the password.\n\n\
+                 Are you sure you want to continue?",
+            )
+            .danger_mode(true)
+            .confirm_text(Some("Yes, add protection"))
+            .cancel_text(Some("Cancel"))
+            .open(true),
+        );
+    }
+
+    /// Open the danger warning before opt-out.
+    fn open_remove_confirm(&mut self) {
+        self.protection_form_error = None;
+        self.protection_verify_password.clear();
+        self.protection_stage = ProtectionStage::ConfirmRemove;
+        self.protection_confirm = Some(
+            ConfirmationDialog::new(
+                "Remove password protection?",
+                "Removing the password means this identity's keys will sign automatically without any password. Anyone with access to this device could use them to sign on behalf of this identity.\n\n\
+                 You will need to enter the current password to confirm this change.",
+            )
+            .danger_mode(true)
+            .confirm_text(Some("Yes, remove protection"))
+            .cancel_text(Some("Cancel"))
+            .open(true),
+        );
+    }
+
+    /// Drive the danger confirmation dialog; on confirm, advance to the
+    /// matching password form; on cancel, return to idle.
+    fn handle_protection_confirm(&mut self, ui: &mut egui::Ui) {
+        let Some(dialog) = self.protection_confirm.as_mut() else {
+            return;
+        };
+        let response = dialog.show(ui);
+        if let Some(result) = response.inner.dialog_response {
+            self.protection_confirm = None;
+            match (self.protection_stage, result) {
+                (ProtectionStage::ConfirmAdd, ConfirmationStatus::Confirmed) => {
+                    self.protection_stage = ProtectionStage::EnterNewPassword;
+                }
+                (ProtectionStage::ConfirmRemove, ConfirmationStatus::Confirmed) => {
+                    self.protection_stage = ProtectionStage::EnterVerifyPassword;
+                }
+                _ => self.protection_stage = ProtectionStage::Idle,
+            }
+        }
+    }
+
+    /// The opt-in password form: new password + confirmation + strength + hint.
+    fn render_new_password_form(&mut self, ui: &mut egui::Ui) {
+        let dark_mode = ui.style().visuals.dark_mode;
+        ui.label(
+            RichText::new(format!(
+                "This password protects the signing keys for {}.",
+                self.identity
+            ))
+            .color(DashColors::text_primary(dark_mode)),
+        );
+        ui.add_space(6.0);
+
+        ui.label("New password:");
+        self.protection_new_password.show(ui);
+        ui.add_space(4.0);
+        let pw = self.protection_new_password.text().to_string();
+        render_password_strength(ui, &pw);
+
+        ui.add_space(8.0);
+        ui.label("Confirm password:");
+        self.protection_confirm_password.show(ui);
+
+        ui.add_space(8.0);
+        ui.label(
+            "Password hint (optional — visible in plain text. Do not use the password itself as a hint.):",
+        );
+        ui.add(egui::TextEdit::singleline(&mut self.protection_hint).hint_text("Password hint"));
+
+        if let Some(err) = &self.protection_form_error {
+            ui.add_space(6.0);
+            ui.colored_label(DashColors::ERROR, err);
+        }
+
+        ui.add_space(10.0);
+        ui.horizontal(|ui| {
+            if ui.button("Protect keys").clicked() {
+                self.submit_new_password();
+            }
+            if ui.button("Cancel").clicked() {
+                self.cancel_protection_flow();
+            }
+        });
+    }
+
+    /// The opt-out password form: verify the current password.
+    fn render_verify_password_form(&mut self, ui: &mut egui::Ui) {
+        let dark_mode = ui.style().visuals.dark_mode;
+        ui.label(
+            RichText::new(format!(
+                "Enter the current password for the signing keys for {}.",
+                self.identity
+            ))
+            .color(DashColors::text_primary(dark_mode)),
+        );
+        ui.add_space(6.0);
+        self.protection_verify_password.show(ui);
+
+        if let Some(err) = &self.protection_form_error {
+            ui.add_space(6.0);
+            ui.colored_label(DashColors::ERROR, err);
+        }
+
+        ui.add_space(10.0);
+        ui.horizontal(|ui| {
+            if ui.button("Verify and remove").clicked() {
+                self.submit_verify_password();
+            }
+            if ui.button("Cancel").clicked() {
+                self.cancel_protection_flow();
+            }
+        });
+    }
+
+    /// Validate the opt-in form and queue the `ProtectIdentityKeys` dispatch.
+    fn submit_new_password(&mut self) {
+        let pw = self.protection_new_password.text().to_string();
+        let confirm = self.protection_confirm_password.text().to_string();
+        if let Err(e) = validate_single_key_passphrase(&pw, &confirm) {
+            self.protection_form_error = Some(e.to_string());
+            return;
+        }
+        let hint = {
+            let h = self.protection_hint.trim();
+            if h.is_empty() {
+                None
+            } else {
+                Some(h.to_string())
+            }
+        };
+        self.pending_protect = Some((Secret::new(pw), hint));
+        self.finish_protection_flow();
+    }
+
+    /// Queue the `UnprotectIdentityKeys` dispatch (the backend verifies the
+    /// password — a wrong one returns a typed error, no client-side oracle).
+    fn submit_verify_password(&mut self) {
+        let pw = self.protection_verify_password.text().to_string();
+        if pw.is_empty() {
+            self.protection_form_error =
+                Some("Enter the current password to remove protection.".to_string());
+            return;
+        }
+        self.pending_unprotect = Some(Secret::new(pw));
+        self.finish_protection_flow();
+    }
+
+    /// Mark a migration as dispatched: clear the forms, flip to in-flight, and
+    /// return to the idle status row.
+    fn finish_protection_flow(&mut self) {
+        self.protection_in_flight = true;
+        self.protection_form_error = None;
+        self.protection_new_password.clear();
+        self.protection_confirm_password.clear();
+        self.protection_verify_password.clear();
+        self.protection_hint.clear();
+        self.protection_stage = ProtectionStage::Idle;
+    }
+
+    /// Abandon the active flow with no change.
+    fn cancel_protection_flow(&mut self) {
+        self.protection_form_error = None;
+        self.protection_new_password.clear();
+        self.protection_confirm_password.clear();
+        self.protection_verify_password.clear();
+        self.protection_hint.clear();
+        self.protection_stage = ProtectionStage::Idle;
+    }
+}
+
+/// Render a zxcvbn-backed password-strength bar (0–4 score). Mirrors the
+/// wallet-creation strength UI so the two surfaces feel identical.
+fn render_password_strength(ui: &mut egui::Ui, password: &str) {
+    let score = if password.is_empty() {
+        0u8
+    } else {
+        u8::from(zxcvbn(password, &[]).score())
+    };
+    let fraction = f32::from(score) / 4.0;
+    let (fill, label) = match score {
+        0 => (DashColors::STRENGTH_WEAK, "None"),
+        1 => (DashColors::STRENGTH_WEAK, "Very weak"),
+        2 => (DashColors::STRENGTH_FAIR, "Weak"),
+        3 => (DashColors::STRENGTH_GOOD, "Strong"),
+        _ => (DashColors::STRENGTH_STRONG, "Very strong"),
+    };
+    ui.horizontal(|ui| {
+        ui.label("Password strength:");
+        ui.add(
+            egui::ProgressBar::new(fraction)
+                .desired_width(180.0)
+                .text(label)
+                .fill(fill),
+        );
+    });
 }

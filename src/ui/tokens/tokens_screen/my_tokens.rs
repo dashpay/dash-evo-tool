@@ -2,6 +2,7 @@ use crate::app::AppAction;
 use crate::backend_task::BackendTask;
 use crate::backend_task::tokens::TokenTask;
 use crate::model::amount::Amount;
+use crate::model::user_role::UserRole;
 use crate::ui::components::MessageBanner;
 use crate::ui::helpers::clicked_outside_window;
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
@@ -177,7 +178,7 @@ impl TokensScreen {
             if let Some(token_info) = self.all_known_tokens.get(&token_id).cloned() {
                 let mut is_open = true;
                 let mut close_popup = false;
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                let dark_mode = ui.style().visuals.dark_mode;
 
                 let window_response = egui::Window::new("Token Configuration Details")
                     .resizable(true)
@@ -195,7 +196,7 @@ impl TokensScreen {
                                     self.render_token_info_popup_content(ui, &token_info);
 
                                     ui.separator();
-                                    let dark_mode = ui.ctx().style().visuals.dark_mode;
+                                    let dark_mode = ui.style().visuals.dark_mode;
                                     ui.with_layout(
                                         egui::Layout::right_to_left(egui::Align::Center),
                                         |ui| {
@@ -230,7 +231,7 @@ impl TokensScreen {
     }
     fn render_no_owned_tokens(&mut self, ui: &mut Ui) -> AppAction {
         let mut app_action = AppAction::None;
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
 
         Frame::group(ui.style())
             .fill(ui.visuals().extreme_bg_color)
@@ -331,7 +332,7 @@ impl TokensScreen {
 
         let mut detail_list: Vec<IdentityTokenMaybeBalanceWithActions> = vec![];
 
-        let in_dev_mode = self.app_context.is_developer_mode();
+        let in_dev_mode = self.app_context.user_role().at_least(UserRole::Power);
 
         for (identity_id, identity) in identities {
             let record = if let Some(known_token_balance) =
@@ -379,7 +380,7 @@ impl TokensScreen {
 
         // Space allocation for UI elements is handled by the layout system
 
-        let in_dev_mode = self.app_context.is_developer_mode();
+        let in_dev_mode = self.app_context.user_role().at_least(UserRole::Power);
 
         let shows_estimation_column = in_dev_mode
             || token_info
@@ -623,7 +624,7 @@ impl TokensScreen {
                             }
 
                             ui.separator();
-                            let dark_mode = ui.ctx().style().visuals.dark_mode;
+                            let dark_mode = ui.style().visuals.dark_mode;
                             ui.with_layout(
                                 egui::Layout::right_to_left(egui::Align::Center),
                                 |ui| {
@@ -673,7 +674,7 @@ impl TokensScreen {
         let mut pos = 0;
         let mut action = AppAction::None;
         ui.spacing_mut().item_spacing.x = 5.0;
-        let dark_mode = ui.ctx().style().visuals.dark_mode;
+        let dark_mode = ui.style().visuals.dark_mode;
 
         if range.contains(&pos) {
             if itb.available_actions.can_transfer {

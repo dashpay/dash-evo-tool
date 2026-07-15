@@ -6,6 +6,7 @@ use crate::model::amount::Amount;
 use crate::model::fee_estimation::format_credits_as_dash;
 use crate::model::qualified_identity::encrypted_key_storage::PrivateKeyData;
 use crate::model::qualified_identity::{IdentityType, PrivateKeyTarget, QualifiedIdentity};
+use crate::model::user_role::UserRole;
 use crate::model::wallet::Wallet;
 use crate::ui::components::amount_input::AmountInput;
 use crate::ui::components::confirmation_dialog::{ConfirmationDialog, ConfirmationStatus};
@@ -27,7 +28,7 @@ use dash_sdk::dpp::identity::identity_public_key::accessors::v0::IdentityPublicK
 use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use dash_sdk::platform::IdentityPublicKey;
-use eframe::egui::{self, Context, Frame, Margin, Ui};
+use eframe::egui::{self, Frame, Margin, Ui};
 use egui::{Color32, RichText};
 use std::str::FromStr;
 use std::sync::{Arc, RwLock};
@@ -67,19 +68,43 @@ pub struct WithdrawalScreen {
 impl WithdrawalScreen {
     pub fn new(identity: QualifiedIdentity, app_context: &Arc<AppContext>) -> Self {
         let max_amount = identity.identity.balance();
-        let identity_clone = identity.identity.clone();
-        let selected_key = identity_clone.get_first_public_key_matching(
-            Purpose::TRANSFER,
-            SecurityLevel::full_range().into(),
-            KeyType::all_key_types().into(),
-            false,
-        );
-        let selected_wallet = get_selected_wallet(&identity, None, selected_key)
-            .or_show_error(app_context.egui_ctx())
-            .unwrap_or(None);
+        // Only pre-select a withdrawal key whose private material is held locally
+        // (TRANSFER preferred, OWNER fallback). Pre-selecting an on-chain-only key
+        // the signer cannot use is what surfaced the raw signing error.
+        let selected_key: Option<IdentityPublicKey> = identity
+            .default_withdrawal_key()
+            .map(|qk| qk.identity_public_key.clone())
+            .or_else(|| {
+                // Only the Developer role can actually sign with an on-chain-only
+                // key (the signing override in `state_transition_options` plus the
+                // Developer branch of the `has_keys` gate below). Pre-selecting one
+                // for any lower role gives a key the signer cannot use, so this
+                // fallback matches that Developer gate.
+                app_context
+                    .user_role()
+                    .at_least(UserRole::Developer)
+                    .then(|| {
+                        identity.identity.get_first_public_key_matching(
+                            Purpose::TRANSFER,
+                            SecurityLevel::full_range().into(),
+                            KeyType::all_key_types().into(),
+                            false,
+                        )
+                    })
+                    .flatten()
+                    .cloned()
+            });
+        // With no key there is nothing to resolve a wallet from; skip the call so
+        // get_selected_wallet's "no key provided" Err path stays unreachable here.
+        let selected_wallet = match selected_key.as_ref() {
+            Some(key) => get_selected_wallet(&identity, None, Some(key))
+                .or_show_error(app_context.egui_ctx())
+                .unwrap_or(None),
+            None => None,
+        };
         Self {
             identity,
-            selected_key: selected_key.cloned(),
+            selected_key,
             withdrawal_address: String::new(),
             withdrawal_address_error: None,
             withdrawal_amount: None,
@@ -135,87 +160,86 @@ impl WithdrawalScreen {
         // errors are handled inside AmountInput
     }
 
-    fn render_address_input(&mut self, ui: &mut Ui) {
-        let is_owner_key = self
-            .selected_key
+    /// Whether the selected signing key is an `OWNER` key, which fixes the
+    /// destination to the registered payout address at every role — Platform
+    /// rejects any other output script (see `resolve_withdrawal_output`).
+    fn owner_key_selected(&self) -> bool {
+        self.selected_key
             .as_ref()
-            .map(|key| key.purpose() == Purpose::OWNER)
-            .unwrap_or(false);
-        let can_have_withdrawal_address = !is_owner_key;
+            .is_some_and(|key| key.purpose() == Purpose::OWNER)
+    }
 
-        if can_have_withdrawal_address || self.app_context.is_developer_mode() {
-            ui.horizontal(|ui| {
-                ui.label("Address:");
+    fn render_address_input(&mut self, ui: &mut Ui) {
+        if self.owner_key_selected() {
+            // Drop anything typed under a previously selected key — the submitted
+            // task must never carry a destination the owner key cannot pay. Runs
+            // before the Withdraw button each frame, so a key switch reconciles
+            // before a click on it is handled.
+            self.withdrawal_address.clear();
+            self.withdrawal_address_error = None;
 
-                let hint = if self.app_context.network == Network::Mainnet {
-                    "Enter Core address (X.../7...)"
+            match self
+                .identity
+                .masternode_payout_address(self.app_context.network)
+            {
+                Some(payout_address) => {
+                    ui.label(format!("Masternode payout address: {payout_address}"));
+                    ui.label(
+                        RichText::new(
+                            "Withdrawals signed with the owner key always go to this address.",
+                        )
+                        .italics()
+                        .color(Color32::GRAY),
+                    );
+                }
+                None => {
+                    ui.label("No masternode payout address");
+                }
+            }
+            return;
+        }
+
+        ui.horizontal(|ui| {
+            ui.label("Address:");
+
+            let hint = if self.app_context.network == Network::Mainnet {
+                "Enter Core address (X.../7...)"
+            } else {
+                "Enter Core address (y.../8...)"
+            };
+            let response =
+                ui.add(egui::TextEdit::singleline(&mut self.withdrawal_address).hint_text(hint));
+
+            // Validate address when it changes
+            if response.changed() {
+                if self.withdrawal_address.is_empty() {
+                    self.withdrawal_address_error = None;
                 } else {
-                    "Enter Core address (y.../8...)"
-                };
-                let response = ui.add(
-                    egui::TextEdit::singleline(&mut self.withdrawal_address)
-                        .hint_text(hint),
-                );
-
-                // Validate address when it changes
-                if response.changed() {
-                    if self.withdrawal_address.is_empty() {
-                        self.withdrawal_address_error = None;
+                    let trimmed = self.withdrawal_address.trim();
+                    if crate::ui::helpers::is_platform_address_string(trimmed) {
+                        self.withdrawal_address_error = Some(
+                            "Platform addresses not supported for withdrawal. Use a Core address."
+                                .to_string(),
+                        );
                     } else {
-                        let trimmed = self.withdrawal_address.trim();
-                        if crate::ui::helpers::is_platform_address_string(trimmed) {
-                            self.withdrawal_address_error = Some(
-                                "Platform addresses not supported for withdrawal. Use a Core address."
-                                    .to_string(),
-                            );
-                        } else {
-                            match Address::from_str(trimmed) {
-                                Ok(_) => {
-                                    self.withdrawal_address_error = None;
-                                }
-                                Err(_) => {
-                                    self.withdrawal_address_error =
-                                        Some("Invalid Core address".to_string());
-                                }
+                        match Address::from_str(trimmed) {
+                            Ok(_) => {
+                                self.withdrawal_address_error = None;
+                            }
+                            Err(_) => {
+                                self.withdrawal_address_error =
+                                    Some("Invalid Core address".to_string());
                             }
                         }
                     }
                 }
-
-                // Show error next to input
-                if let Some(error) = &self.withdrawal_address_error {
-                    ui.colored_label(DashColors::ERROR, error);
-                }
-            });
-
-            // In dev mode with OWNER key, show hint about auto-selected payout address
-            if self.app_context.is_developer_mode()
-                && is_owner_key
-                && let Some(payout_address) = self
-                    .identity
-                    .masternode_payout_address(self.app_context.network)
-            {
-                ui.label(
-                    RichText::new(format!(
-                        "Leave empty to use masternode payout address: {}",
-                        payout_address
-                    ))
-                    .italics()
-                    .color(Color32::GRAY),
-                );
             }
-        } else {
-            ui.label(format!(
-                "Masternode payout address: {}",
-                match self
-                    .identity
-                    .masternode_payout_address(self.app_context.network)
-                {
-                    Some(address) => address.to_string(),
-                    None => "No masternode payout address".to_string(),
-                }
-            ));
-        }
+
+            // Show error next to input
+            if let Some(error) = &self.withdrawal_address_error {
+                ui.colored_label(DashColors::ERROR, error);
+            }
+        });
     }
 
     fn show_confirmation_popup(&mut self, ui: &mut Ui) -> AppAction {
@@ -240,7 +264,7 @@ impl WithdrawalScreen {
             .masternode_payout_address(self.app_context.network)
         {
             format!("masternode payout address {}", payout_address)
-        } else if !self.app_context.is_developer_mode() {
+        } else if !self.app_context.user_role().at_least(UserRole::Power) {
             self.withdraw_from_identity_status = WithdrawFromIdentityStatus::Error;
             MessageBanner::set_global(
                 self.app_context.egui_ctx(),
@@ -356,7 +380,8 @@ impl ScreenLike for WithdrawalScreen {
                     self.app_context.egui_ctx(),
                     format!("Failed to load local identities: {e}"),
                     MessageType::Error,
-                );
+                )
+                .disable_auto_dismiss();
                 vec![]
             })
             .into_iter()
@@ -368,9 +393,11 @@ impl ScreenLike for WithdrawalScreen {
     }
 
     /// Renders the UI components for the withdrawal screen
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
+        let ctx = ui.ctx().clone();
+        let ctx = &ctx;
         let mut action = add_top_panel(
-            ctx,
+            ui,
             &self.app_context,
             vec![
                 ("Identities", AppAction::GoToMainScreen),
@@ -380,12 +407,12 @@ impl ScreenLike for WithdrawalScreen {
         );
 
         action |= add_left_panel(
-            ctx,
+            ui,
             &self.app_context,
             crate::ui::RootScreenType::RootScreenIdentities,
         );
 
-        action |= island_central_panel(ctx, |ui| {
+        action |= island_central_panel(ui, |ui| {
             let mut inner_action = AppAction::None;
 
             // Show the success screen if the withdrawal was successful
@@ -403,7 +430,7 @@ impl ScreenLike for WithdrawalScreen {
             });
             ui.add_space(10.0);
 
-            let has_keys = if self.app_context.is_developer_mode() {
+            let has_keys = if self.app_context.user_role().at_least(UserRole::Developer) {
                 !self.identity.identity.public_keys().is_empty()
             } else {
                 !self.identity.available_withdrawal_keys().is_empty()
@@ -503,8 +530,11 @@ impl ScreenLike for WithdrawalScreen {
 
                         if let Some(wallet) = &self.selected_wallet {
                             if !self.wallet_open_attempted {
-                                if let Err(e) = try_open_wallet_no_password(wallet) {
-                                    MessageBanner::set_global(ui.ctx(), &e, MessageType::Error);
+                                if let Err(e) =
+                                    try_open_wallet_no_password(&self.app_context, wallet)
+                                {
+                                    MessageBanner::set_global(ui.ctx(), &e, MessageType::Error)
+                                        .disable_auto_dismiss();
                                 }
                                 self.wallet_open_attempted = true;
                             }
@@ -574,7 +604,7 @@ impl ScreenLike for WithdrawalScreen {
                 let fee_estimator = self.app_context.fee_estimator();
                 let estimated_fee = fee_estimator.estimate_credit_withdrawal();
 
-                let dark_mode = ui.ctx().style().visuals.dark_mode;
+                let dark_mode = ui.style().visuals.dark_mode;
                 Frame::new()
                     .fill(DashColors::surface(dark_mode))
                     .inner_margin(Margin::symmetric(10, 8))

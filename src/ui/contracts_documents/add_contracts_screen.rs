@@ -11,7 +11,7 @@ use crate::ui::{BackendTaskSuccessResult, MessageType, ScreenLike};
 use dash_sdk::dpp::data_contract::accessors::v0::DataContractV0Getters;
 use dash_sdk::dpp::identifier::Identifier;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
-use eframe::egui::{self, Color32, Context, Ui};
+use eframe::egui::{self, Color32, Ui};
 use std::sync::Arc;
 
 const MAX_CONTRACTS: usize = 10;
@@ -143,7 +143,10 @@ impl AddContractsScreen {
                         .collect::<Vec<_>>(),
                 );
             }
-            let alias_inputs = self.alias_inputs.as_mut().unwrap();
+            let alias_inputs = self
+                .alias_inputs
+                .as_mut()
+                .expect("invariant: alias_inputs set to Some immediately above");
 
             // Clone the options to avoid borrowing self.add_contracts_status during the UI closure
             let options = self.maybe_found_contracts.clone();
@@ -305,9 +308,9 @@ impl ScreenLike for AddContractsScreen {
         }
     }
 
-    fn ui(&mut self, ctx: &Context) -> AppAction {
+    fn ui(&mut self, ui: &mut egui::Ui) -> AppAction {
         let mut action = add_top_panel(
-            ctx,
+            ui,
             &self.app_context,
             vec![
                 ("Contracts", AppAction::GoToMainScreen),
@@ -317,12 +320,12 @@ impl ScreenLike for AddContractsScreen {
         );
 
         action |= add_left_panel(
-            ctx,
+            ui,
             &self.app_context,
             crate::ui::RootScreenType::RootScreenDocumentQuery,
         );
 
-        action |= island_central_panel(ctx, |ui| {
+        action |= island_central_panel(ui, |ui| {
             ui.heading("Add Contracts");
             ui.add_space(10.0);
 

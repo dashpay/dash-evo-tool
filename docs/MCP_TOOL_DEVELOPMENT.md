@@ -97,7 +97,7 @@ impl AsyncTool<DashMcpService> for MyNewTool {
 - Skip `verify_network` only for `network_info` and `tool_describe`.
 - For destructive tools (`read_only: false`), the `network` parameter **must be required** (not optional with `#[serde(default)]`). Use `resolve::require_network()` instead of `resolve::verify_network()` to prevent accidental cross-network operations that could spend funds on the wrong network.
 - Skip wallet resolution if the tool doesn't operate on a wallet.
-- **SPV gate rule**: Call `ensure_spv_synced` for **all wallet-facing tools** — both core-chain and platform/DAPI. The SDK verifies DAPI proofs against quorum and masternode list data from the synced SPV chain, so even platform-only queries fail without it. Skip only for metadata tools that make no network calls (`core_wallets_list`, `network_info`, `tool_describe`).
+- **SPV gate rule**: Call `ensure_spv_synced` for **wallet-facing tools that make network calls** — both core-chain and platform/DAPI. The SDK verifies DAPI proofs against quorum and masternode list data from the synced SPV chain, so even platform-only queries fail without it. Skip it for tools that make no network calls: metadata tools (`core_wallets_list`, `network_info`, `tool_describe`), local wallet import (`core_wallet_import`), and pure snapshot reads that read only `AppContext` atomics (`shielded_balance_get`). A tool that touches `wallet_backend()` but makes no network call (e.g. `shielded_address_get`) may also skip the gate, but document the backend-wired prerequisite in its description (run a backend-wiring tool such as `shielded_init` first in standalone mode).
 
 ### 6. Register in `tool_router()`
 

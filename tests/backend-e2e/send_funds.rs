@@ -18,14 +18,11 @@ async fn test_send_and_receive_funds() {
     let (hash_a, wallet_a) = ctx.create_funded_test_wallet(5_000_000).await;
     let (hash_b, wallet_b) = ctx.create_funded_test_wallet(1_000_000).await;
 
-    let initial_b_balance = {
-        let w = wallet_b.read().expect("lock");
-        w.total_balance_duffs()
-    };
+    let initial_b_balance = app_context.snapshot_balance(&hash_b).total;
 
     // Send 2,000,000 duffs from A to B
     let send_amount: u64 = 2_000_000;
-    let b_address = get_receive_address(app_context, &wallet_b);
+    let b_address = get_receive_address(app_context, &wallet_b).await;
 
     // Ensure wallet A has spendable balance before sending
     wait_for_spendable_balance(
@@ -42,8 +39,6 @@ async fn test_send_and_receive_funds() {
             address: b_address.clone(),
             amount_duffs: send_amount,
         }],
-        subtract_fee_from_amount: false,
-        memo: Some("E2E test A->B".to_string()),
         override_fee: None,
     };
 
@@ -92,15 +87,15 @@ async fn test_send_and_receive_funds() {
     .expect("Wallet B funds should become spendable");
 
     // Send funds back from B to A
-    let a_address = get_receive_address(app_context, &wallet_a);
+    let a_address = get_receive_address(app_context, &wallet_a).await;
 
+    // B holds initial_b_balance + send_amount, so it can send back the full
+    // send_amount and still cover the network fee from its surplus.
     let request = WalletPaymentRequest {
         recipients: vec![PaymentRecipient {
             address: a_address.clone(),
             amount_duffs: send_amount,
         }],
-        subtract_fee_from_amount: true,
-        memo: Some("E2E test B->A return".to_string()),
         override_fee: None,
     };
 

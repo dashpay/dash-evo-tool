@@ -352,27 +352,45 @@ mod tests {
 
     #[test]
     fn opening_click_does_not_immediately_dismiss() {
-        // Guards the c0835efd regression: a fresh, still-`armed` ModalOpeningGuard
-        // must not be readable as an already-consumed outside click by callers
-        // that construct `PassphraseModalState` directly (e.g. via
-        // `passphrase_modal_state_exists`/cache-priming helpers elsewhere).
+        // A dialog can render its window the same frame its trigger sets the
+        // "open" flag, so the triggering click's position is technically
+        // outside the just-drawn window rect. `ModalOpeningGuard` must
+        // swallow exactly that first outside-click check and no more: later
+        // checks against the same pending click must resolve normally.
         let ctx = egui::Context::default();
-        let id = egui::Id::new("wallet").with([0x42u8; 32]);
-        ctx.data_mut(|data| {
-            data.insert_temp(
-                modal_state_id(id),
-                PassphraseModalState {
-                    password_input: PasswordInput::new(),
-                    focus_requested: true,
-                    opening_guard: ModalOpeningGuard::armed(),
+        let window_rect =
+            egui::Rect::from_min_size(egui::pos2(100.0, 100.0), egui::vec2(200.0, 100.0));
+        let outside_pos = egui::pos2(0.0, 0.0);
+        let raw = egui::RawInput {
+            events: vec![
+                egui::Event::PointerMoved(outside_pos),
+                egui::Event::PointerButton {
+                    pos: outside_pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
                 },
-            );
+            ],
+            ..Default::default()
+        };
+
+        let mut guard = ModalOpeningGuard::armed();
+        let mut first_check = false;
+        let mut second_check = false;
+        let _ = ctx.run_ui(raw, |ui| {
+            let ctx = ui.ctx();
+            first_check = clicked_outside_window_after_open(ctx, window_rect, &mut guard);
+            second_check = clicked_outside_window_after_open(ctx, window_rect, &mut guard);
         });
 
         assert!(
-            passphrase_modal_state_exists(&ctx, id),
-            "state seeded with a freshly-armed guard must still be present \
-             (i.e. constructing it does not itself count as a dismissal)",
+            !first_check,
+            "the opening click must not be read as an outside-click dismissal",
+        );
+        assert!(
+            second_check,
+            "once the guard is consumed, the same outside click must be detected \
+             — the guard only swallows the opening frame, not genuine dismiss clicks",
         );
     }
 }

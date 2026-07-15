@@ -647,50 +647,21 @@ impl ScreenLike for UpdateDataContractScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::AppState;
-    use std::sync::{Mutex, MutexGuard, OnceLock};
 
-    fn data_dir_lock() -> MutexGuard<'static, ()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-    }
-
-    fn with_isolated_dir<R>(f: impl FnOnce() -> R) -> R {
-        let lock = data_dir_lock();
-        let temp_dir = tempfile::tempdir().expect("create temp data dir");
-        let prior_data_dir = std::env::var("DASH_EVO_DATA_DIR").ok();
-        // Safety: access is serialized by `lock`, and the variable is restored below.
-        unsafe {
-            std::env::set_var("DASH_EVO_DATA_DIR", temp_dir.path());
-        }
-        let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
-        let _guard = runtime.enter();
-
-        let result = f();
-
-        drop(_guard);
-        drop(runtime);
-        // Safety: access remains serialized by `lock` until restoration is complete.
-        unsafe {
-            match prior_data_dir {
-                Some(value) => std::env::set_var("DASH_EVO_DATA_DIR", value),
-                None => std::env::remove_var("DASH_EVO_DATA_DIR"),
-            }
-        }
-        drop(lock);
-        drop(temp_dir);
-        result
-    }
-
+    /// With no wallet backend wired, `get_contracts()` fails and the constructor
+    /// must degrade to an empty known-contracts list instead of panicking.
+    ///
+    /// A real `AppState` wires the backend asynchronously, so whether
+    /// `get_contracts()` returns the pinned system contracts (dpns, dashpay, …)
+    /// would race the constructor — the source of the earlier flakiness. A
+    /// backend-less context makes the degrade path deterministic.
     #[test]
     fn constructor_degrades_when_contracts_cannot_be_loaded() {
-        with_isolated_dir(|| {
-            let app = AppState::new(egui::Context::default()).expect("AppState builds");
-            let screen = UpdateDataContractScreen::new(app.current_app_context());
+        let tmp = tempfile::tempdir().expect("temp data dir");
+        let ctx = crate::context::test_support::test_app_context(tmp.path());
 
-            assert!(screen.known_contracts.is_empty());
-        });
+        let screen = UpdateDataContractScreen::new(&ctx);
+
+        assert!(screen.known_contracts.is_empty());
     }
 }

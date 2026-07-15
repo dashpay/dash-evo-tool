@@ -172,6 +172,164 @@ fn cancellable_passphrase_modal_blocks_clicks_beneath_a_yielding_overlay() {
     );
 }
 
+/// The **transition frame** — the first frame a prompt becomes active — is not
+/// protected by the sink.
+///
+/// egui computes each frame's click interaction at `begin_pass` from the
+/// *previous* frame's widget geometry (`viewport.prev_pass.widgets`, see
+/// `Context::begin_pass`) and the *previous* frame's modal layer
+/// (`Focus::top_modal_layer`, published only in `Focus::end_pass`). On the frame
+/// a prompt first renders, the control beneath still existed last frame with no
+/// sink above it and no modal layer recorded, so egui completes the click on it
+/// *before* `modal_chrome` installs the sink / calls `set_modal_layer` later in
+/// the same frame — mirroring `AppState::update`, where `visible_screen_mut().ui`
+/// runs before `render_secret_prompt`.
+///
+/// The sibling test above primes the sink a full frame before the press (the
+/// modal renders unconditionally every frame), so it only ever exercises frame
+/// N+1 and later. This test presses the underlying button while no prompt
+/// exists, activates the prompt, then releases on the very frame the prompt
+/// first renders — the transition frame the sink cannot cover.
+///
+/// RED repro: fails against the current `visible_screen_mut().ui` →
+/// `render_secret_prompt` ordering. Remove `#[ignore]` once the barrier is
+/// installed before the visible screen renders on the activation frame.
+#[test]
+#[ignore = "known-failing repro: click leaks through the prompt's first frame; un-ignore when the sink is installed before the visible screen renders"]
+fn transition_frame_click_leaks_through_a_newly_activated_prompt() {
+    let counter = Rc::new(Cell::new(0u32));
+    let counter_ui = Rc::clone(&counter);
+    let show_prompt = Rc::new(Cell::new(false));
+    let show_prompt_ui = Rc::clone(&show_prompt);
+
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(640.0, 480.0))
+        .build_ui(move |ui| {
+            if ui.button("Increment").clicked() {
+                counter_ui.set(counter_ui.get() + 1);
+            }
+            if show_prompt_ui.get() {
+                // Same frame order as `AppState::update`: the overlay yields to
+                // the prompt (paints no sink of its own), the prompt renders on top.
+                ProgressOverlay::render_global(ui.ctx(), true);
+                let config = PassphraseModalConfig {
+                    state_id: egui::Id::new("test_transition_prompt_sink"),
+                    window_title: "Unlock to continue",
+                    body: "My Wallet",
+                    hint: None,
+                    error: None,
+                    submit_label: "Unlock",
+                    secondary_action_label: None,
+                    input_placeholder: "Enter passphrase",
+                    remember_label: None,
+                    cancellable: true,
+                };
+                passphrase_modal(ui.ctx(), &config, |_| {});
+            }
+        });
+
+    // Frame N-1: no prompt. Only the button exists; its geometry is recorded.
+    harness.step();
+    let button_center = harness.get_by_label("Increment").rect().center();
+
+    // The pointer presses the button while no prompt exists — the press resolves
+    // to the button (no sink in the prior frame's geometry).
+    harness.hover_at(button_center);
+    harness.event(egui::Event::PointerButton {
+        pos: button_center,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: egui::Modifiers::NONE,
+    });
+    harness.step();
+
+    // The prompt becomes active exactly as the click completes: the release lands
+    // on the transition frame, resolved against the prior (still sink-less) frame.
+    show_prompt.set(true);
+    harness.event(egui::Event::PointerButton {
+        pos: button_center,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: egui::Modifiers::NONE,
+    });
+    harness.step();
+
+    assert_eq!(
+        counter.get(),
+        0,
+        "a control beneath a prompt must not receive a click on the frame the \
+         prompt first becomes active — egui resolves the click against the prior \
+         frame (no sink, no modal layer) before modal_chrome installs its barrier",
+    );
+}
+
+/// Control for `transition_frame_click_leaks_through_a_newly_activated_prompt`:
+/// the identical manual press/release sequence, but the prompt is activated one
+/// frame *earlier* so the sink already existed in the frame before the press.
+/// The click is absorbed (counter stays 0), proving the leak is specific to the
+/// transition frame — not an artifact of the injected pointer events.
+#[test]
+fn primed_prompt_blocks_the_same_injected_click_sequence() {
+    let counter = Rc::new(Cell::new(0u32));
+    let counter_ui = Rc::clone(&counter);
+    let show_prompt = Rc::new(Cell::new(false));
+    let show_prompt_ui = Rc::clone(&show_prompt);
+
+    let mut harness = Harness::builder()
+        .with_size(egui::vec2(640.0, 480.0))
+        .build_ui(move |ui| {
+            if ui.button("Increment").clicked() {
+                counter_ui.set(counter_ui.get() + 1);
+            }
+            if show_prompt_ui.get() {
+                ProgressOverlay::render_global(ui.ctx(), true);
+                let config = PassphraseModalConfig {
+                    state_id: egui::Id::new("test_primed_prompt_sink"),
+                    window_title: "Unlock to continue",
+                    body: "My Wallet",
+                    hint: None,
+                    error: None,
+                    submit_label: "Unlock",
+                    secondary_action_label: None,
+                    input_placeholder: "Enter passphrase",
+                    remember_label: None,
+                    cancellable: true,
+                };
+                passphrase_modal(ui.ctx(), &config, |_| {});
+            }
+        });
+
+    harness.step();
+    let button_center = harness.get_by_label("Increment").rect().center();
+
+    // Prompt is already active a full frame before the press: the sink is in the
+    // prior frame's geometry when the press resolves.
+    show_prompt.set(true);
+    harness.step();
+
+    harness.hover_at(button_center);
+    harness.event(egui::Event::PointerButton {
+        pos: button_center,
+        button: egui::PointerButton::Primary,
+        pressed: true,
+        modifiers: egui::Modifiers::NONE,
+    });
+    harness.step();
+    harness.event(egui::Event::PointerButton {
+        pos: button_center,
+        button: egui::PointerButton::Primary,
+        pressed: false,
+        modifiers: egui::Modifiers::NONE,
+    });
+    harness.step();
+
+    assert_eq!(
+        counter.get(),
+        0,
+        "a control beneath an already-primed prompt must not receive the click",
+    );
+}
+
 /// Owning the interaction surface must not cost the prompt its dismissal: the
 /// pointer sink absorbs clicks for the app beneath, while the modal's own
 /// controls stay live.

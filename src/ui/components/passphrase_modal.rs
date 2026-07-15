@@ -13,12 +13,12 @@
 //!
 //! ## State ownership
 //!
-//! Per-modal mutable state — the [`PasswordInput`] buffer and a focus-once flag
-//! — is stored in egui's data cache keyed by the caller-provided `state_id`.
-//! Callers carry only
-//! domain state (`remember`, `error`). On [`PassphraseModalOutcome::Submit`] the
-//! typed text is extracted into a [`Zeroizing`] string and the cache entry is
-//! cleared; dismissal and secondary actions clear the cache too.
+//! Per-modal mutable state — the [`PasswordInput`] buffer, a focus-once flag,
+//! and the opening-click guard — is stored in egui's data cache keyed by the
+//! caller-provided `state_id`. Callers carry only domain state (`remember`,
+//! `error`). On [`PassphraseModalOutcome::Submit`] the typed text is extracted
+//! into a [`Zeroizing`] string and the cache entry is cleared; dismissal and
+//! secondary actions clear the cache too.
 
 use std::fmt;
 
@@ -27,7 +27,7 @@ use zeroize::Zeroizing;
 
 use crate::ui::components::modal_chrome::{ModalChromeConfig, modal_chrome};
 use crate::ui::components::password_input::PasswordInput;
-use crate::ui::helpers::clicked_outside_window;
+use crate::ui::helpers::{ModalOpeningGuard, clicked_outside_window_after_open};
 use crate::ui::theme::{ComponentStyles, DashColors};
 
 /// The "keep unlocked" checkbox label, shared by every passphrase modal caller.
@@ -110,6 +110,7 @@ pub struct PassphraseModalConfig<'a> {
 struct PassphraseModalState {
     password_input: PasswordInput,
     focus_requested: bool,
+    opening_guard: ModalOpeningGuard,
 }
 
 fn modal_state_id(config_id: egui::Id) -> egui::Id {
@@ -140,6 +141,7 @@ pub fn passphrase_modal(
         .unwrap_or_else(|| PassphraseModalState {
             password_input: PasswordInput::new().with_hint_text(config.input_placeholder),
             focus_requested: false,
+            opening_guard: ModalOpeningGuard::armed(),
         });
 
     let mut should_submit = false;
@@ -244,12 +246,14 @@ pub fn passphrase_modal(
         should_cancel = true;
     }
 
-    // Click outside the window.
+    // Click outside the window. Uses the opening-guard variant so the very
+    // click that opened this modal (still "outside" on the frame the window
+    // first appears) can never be misread as an immediate dismissal.
     if config.cancellable
         && let Some(ref wr) = chrome.window_response
         && !should_submit
         && !should_cancel
-        && clicked_outside_window(ctx, wr.rect)
+        && clicked_outside_window_after_open(ctx, wr.rect, &mut state.opening_guard)
     {
         should_cancel = true;
     }
@@ -328,6 +332,7 @@ mod tests {
                 PassphraseModalState {
                     password_input,
                     focus_requested: true,
+                    opening_guard: ModalOpeningGuard::armed(),
                 },
             );
         });
@@ -342,6 +347,32 @@ mod tests {
             ctx.data(|data| data.get_temp::<PassphraseModalState>(modal_state_id(wallet_a)))
                 .is_none(),
             "closing the prompt must remove its typed buffer",
+        );
+    }
+
+    #[test]
+    fn opening_click_does_not_immediately_dismiss() {
+        // Guards the c0835efd regression: a fresh, still-`armed` ModalOpeningGuard
+        // must not be readable as an already-consumed outside click by callers
+        // that construct `PassphraseModalState` directly (e.g. via
+        // `passphrase_modal_state_exists`/cache-priming helpers elsewhere).
+        let ctx = egui::Context::default();
+        let id = egui::Id::new("wallet").with([0x42u8; 32]);
+        ctx.data_mut(|data| {
+            data.insert_temp(
+                modal_state_id(id),
+                PassphraseModalState {
+                    password_input: PasswordInput::new(),
+                    focus_requested: true,
+                    opening_guard: ModalOpeningGuard::armed(),
+                },
+            );
+        });
+
+        assert!(
+            passphrase_modal_state_exists(&ctx, id),
+            "state seeded with a freshly-armed guard must still be present \
+             (i.e. constructing it does not itself count as a dismissal)",
         );
     }
 }

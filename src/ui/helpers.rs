@@ -4,6 +4,27 @@ use std::sync::Arc;
 // Re-export from the model layer so existing callers don't break.
 pub use crate::model::address::is_platform_address_string;
 
+#[derive(Clone, Default)]
+pub(crate) struct ModalOpeningGuard {
+    skip_outside_click_once: bool,
+}
+
+impl ModalOpeningGuard {
+    pub(crate) fn armed() -> Self {
+        Self {
+            skip_outside_click_once: true,
+        }
+    }
+
+    pub(crate) fn arm(&mut self) {
+        self.skip_outside_click_once = true;
+    }
+
+    fn consume(&mut self) -> bool {
+        std::mem::take(&mut self.skip_outside_click_once)
+    }
+}
+
 /// Returns true if the user left-clicked outside the given window rect this frame.
 /// Use after painting a modal overlay and showing the dialog window.
 pub fn clicked_outside_window(ctx: &egui::Context, window_rect: egui::Rect) -> bool {
@@ -13,6 +34,15 @@ pub fn clicked_outside_window(ctx: &egui::Context, window_rect: egui::Rect) -> b
                 .interact_pos()
                 .is_some_and(|pos| !window_rect.contains(pos))
     })
+}
+
+/// Ignores the opening frame once, then delegates to [`clicked_outside_window`].
+pub(crate) fn clicked_outside_window_after_open(
+    ctx: &egui::Context,
+    window_rect: egui::Rect,
+    opening_guard: &mut ModalOpeningGuard,
+) -> bool {
+    !opening_guard.consume() && clicked_outside_window(ctx, window_rect)
 }
 
 use crate::{

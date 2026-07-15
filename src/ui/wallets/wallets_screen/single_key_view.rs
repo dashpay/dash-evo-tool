@@ -92,7 +92,7 @@ impl WalletsBalancesScreen {
                             self.receive_dialog.core_addresses =
                                 vec![(address.clone(), balance_duffs)];
                             self.receive_dialog.selected_core_index = 0;
-                            self.receive_dialog.is_open = true;
+                            self.receive_dialog.open();
                         }
                     });
                     ui.add_space(15.0);

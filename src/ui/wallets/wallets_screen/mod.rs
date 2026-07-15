@@ -42,7 +42,7 @@ use egui_extras::{Column, TableBuilder};
 use std::sync::{Arc, RwLock};
 
 use crate::backend_task::migration::single_key_restore::PendingProtectedRestore;
-use crate::model::wallet::single_key::SingleKeyWallet;
+use crate::model::wallet::single_key::{SingleKeyHash, SingleKeyWallet};
 use crate::ui::wallets::import_single_key::ImportSingleKeyDialog;
 use crate::ui::wallets::restore_single_key::RestoreSingleKeyDialog;
 use crate::ui::wallets::shielded_tab::ShieldedTabView;
@@ -66,6 +66,18 @@ enum AccountTab {
     /// Consolidated system tab (developer mode only) — shows all non-primary
     /// account categories as collapsible sections.
     System,
+}
+
+enum PendingWalletRemoval {
+    Hd {
+        seed_hash: WalletSeedHash,
+        alias: String,
+    },
+    SingleKey {
+        key_hash: SingleKeyHash,
+        address: String,
+        alias: String,
+    },
 }
 
 impl Default for AccountTab {
@@ -197,8 +209,7 @@ pub struct WalletsBalancesScreen {
     show_sk_unlock_dialog: bool,
     sk_password_input: PasswordInput,
     remove_wallet_dialog: Option<ConfirmationDialog>,
-    pending_wallet_removal: Option<WalletSeedHash>,
-    pending_wallet_removal_alias: Option<String>,
+    pending_wallet_removal: Option<PendingWalletRemoval>,
     receive_dialog: ReceiveDialogState,
     fund_platform_dialog: FundPlatformAddressDialogState,
     private_key_dialog: PrivateKeyDialogState,
@@ -340,7 +351,6 @@ impl WalletsBalancesScreen {
             sk_password_input: PasswordInput::new().with_hint_text("Enter password"),
             remove_wallet_dialog: None,
             pending_wallet_removal: None,
-            pending_wallet_removal_alias: None,
             receive_dialog: ReceiveDialogState::default(),
             fund_platform_dialog: FundPlatformAddressDialogState::default(),
             private_key_dialog: PrivateKeyDialogState::default(),
@@ -746,56 +756,9 @@ impl WalletsBalancesScreen {
 
                     // Buttons for single key wallet
                     if let Some(wallet_arc) = single_key_wallet_opt {
-                        let dark_mode = ui.style().visuals.dark_mode;
-                        let (key_hash, alias) = wallet_arc
-                            .read()
-                            .ok()
-                            .map(|w| (w.key_hash, w.alias.clone()))
-                            .unwrap_or(([0u8; 32], None));
+                        let alias = wallet_arc.read().ok().and_then(|w| w.alias.clone());
 
-                        // Remove button (styled red like HD wallet)
-                        let remove_button = egui::Button::new(
-                            RichText::new("Remove").color(Color32::WHITE).size(14.0),
-                        )
-                        .min_size(egui::vec2(0.0, 28.0))
-                        .fill(DashColors::error_color(!dark_mode))
-                        .stroke(egui::Stroke::NONE)
-                        .corner_radius(4.0);
-
-                        if ui.add(remove_button).clicked() {
-                            // T-W-01b: imported keys live in the upstream
-                            // `SecretStore` vault and the DET k/v sidecar.
-                            // Route through `SingleKeyView::forget` so
-                            // both stay consistent.
-                            let address = wallet_arc.read().ok().map(|w| w.address.to_string());
-                            let outcome = match self.app_context.wallet_backend() {
-                                Ok(backend) => match address {
-                                    Some(addr) => backend.single_key().forget(&addr).err(),
-                                    None => None,
-                                },
-                                Err(e) => Some(e),
-                            };
-                            if let Some(e) = outcome {
-                                MessageBanner::set_global(
-                                    ui.ctx(),
-                                    "Failed to remove the imported key.",
-                                    MessageType::Error,
-                                )
-                                .with_details(e);
-                            } else {
-                                if let Ok(mut wallets) = self.app_context.single_key_wallets.write()
-                                {
-                                    wallets.remove(&key_hash);
-                                }
-                                self.selected_single_key_wallet = None;
-                                self.persist_selected_single_key_hash(None);
-                                MessageBanner::set_global(
-                                    ui.ctx(),
-                                    "Wallet removed",
-                                    MessageType::Success,
-                                );
-                            }
-                        }
+                        self.render_remove_wallet_button(ui);
 
                         ui.add_space(8.0);
 
@@ -860,7 +823,7 @@ impl WalletsBalancesScreen {
     fn render_remove_wallet_button(&mut self, ui: &mut Ui) {
         let dark_mode = ui.style().visuals.dark_mode;
 
-        if let Some(selected_wallet) = &self.selected_wallet {
+        if self.selected_wallet.is_some() || self.selected_single_key_wallet.is_some() {
             let remove_button =
                 egui::Button::new(RichText::new("Remove").color(Color32::WHITE).size(14.0))
                     .min_size(egui::vec2(0.0, 28.0))
@@ -869,28 +832,7 @@ impl WalletsBalancesScreen {
                     .corner_radius(4.0);
 
             if ui.add(remove_button).clicked() {
-                let wallet = selected_wallet.read_recover();
-                let alias = wallet
-                    .alias
-                    .clone()
-                    .unwrap_or_else(|| "Unnamed Wallet".to_string());
-                let seed_hash = wallet.seed_hash();
-                drop(wallet);
-
-                self.pending_wallet_removal = Some(seed_hash);
-                self.pending_wallet_removal_alias = Some(alias.clone());
-
-                let message = format!(
-                    "Removing wallet \"{}\" will delete its local data, including addresses, balances, and asset locks stored on this device. Identities linked to it will remain but the keys derived from this wallet will no longer work unless the wallet is re-imported. Continue?",
-                    alias
-                );
-
-                self.remove_wallet_dialog = Some(
-                    ConfirmationDialog::new("Remove Wallet", message)
-                        .confirm_text(Some("Remove"))
-                        .cancel_text(Some("Cancel"))
-                        .danger_mode(true),
-                );
+                self.request_selected_wallet_removal();
             }
         }
 
@@ -900,24 +842,108 @@ impl WalletsBalancesScreen {
                 match status {
                     ConfirmationStatus::Confirmed => {
                         self.remove_wallet_dialog = None;
-                        if let Some(seed_hash) = self.pending_wallet_removal.take() {
-                            let alias = self
-                                .pending_wallet_removal_alias
-                                .take()
-                                .unwrap_or_else(|| "Unnamed Wallet".to_string());
-                            self.handle_wallet_removal(seed_hash, alias);
-                        } else {
-                            self.pending_wallet_removal_alias = None;
+                        match self.pending_wallet_removal.take() {
+                            Some(PendingWalletRemoval::Hd { seed_hash, alias }) => {
+                                self.handle_wallet_removal(seed_hash, alias);
+                            }
+                            Some(PendingWalletRemoval::SingleKey {
+                                key_hash,
+                                address,
+                                alias,
+                            }) => {
+                                self.handle_single_key_wallet_removal(key_hash, address, alias);
+                            }
+                            None => {}
                         }
                     }
                     ConfirmationStatus::Canceled => {
                         self.remove_wallet_dialog = None;
                         self.pending_wallet_removal = None;
-                        self.pending_wallet_removal_alias = None;
                     }
                 }
             }
         }
+    }
+
+    fn request_selected_wallet_removal(&mut self) {
+        let (pending, message) = if let Some(wallet) = &self.selected_wallet {
+            let wallet = wallet.read_recover();
+            let alias = wallet
+                .alias
+                .clone()
+                .unwrap_or_else(|| "Unnamed Wallet".to_string());
+            let message = format!(
+                "Removing wallet \"{}\" will delete its local data, including addresses, balances, and asset locks stored on this device. Identities linked to it will remain but the keys derived from this wallet will no longer work unless the wallet is re-imported. Continue?",
+                alias
+            );
+            (
+                PendingWalletRemoval::Hd {
+                    seed_hash: wallet.seed_hash(),
+                    alias,
+                },
+                message,
+            )
+        } else if let Some(wallet) = &self.selected_single_key_wallet {
+            let wallet = wallet.read_recover();
+            let alias = wallet
+                .alias
+                .clone()
+                .unwrap_or_else(|| "Unnamed Wallet".to_string());
+            let message = format!(
+                "Removing wallet \"{}\" will delete its imported private key and local wallet data from this device. Make sure you have a backup of the private key before continuing. Continue?",
+                alias
+            );
+            (
+                PendingWalletRemoval::SingleKey {
+                    key_hash: wallet.key_hash,
+                    address: wallet.address.to_string(),
+                    alias,
+                },
+                message,
+            )
+        } else {
+            return;
+        };
+
+        self.pending_wallet_removal = Some(pending);
+        self.remove_wallet_dialog = Some(
+            ConfirmationDialog::new("Remove Wallet", message)
+                .confirm_text(Some("Remove"))
+                .cancel_text(Some("Cancel"))
+                .danger_mode(true),
+        );
+    }
+
+    fn handle_single_key_wallet_removal(
+        &mut self,
+        key_hash: SingleKeyHash,
+        address: String,
+        alias: String,
+    ) {
+        let outcome = match self.app_context.wallet_backend() {
+            Ok(backend) => backend.single_key().forget(&address).err(),
+            Err(error) => Some(error),
+        };
+        if let Some(error) = outcome {
+            MessageBanner::set_global(
+                self.app_context.egui_ctx(),
+                "Failed to remove the imported key. Try again.",
+                MessageType::Error,
+            )
+            .with_details(error);
+            return;
+        }
+
+        if let Ok(mut wallets) = self.app_context.single_key_wallets.write() {
+            wallets.remove(&key_hash);
+        }
+        self.selected_single_key_wallet = None;
+        self.persist_selected_single_key_hash(None);
+        MessageBanner::set_global(
+            self.app_context.egui_ctx(),
+            format!("Removed wallet \"{}\" successfully.", alias),
+            MessageType::Success,
+        );
     }
 
     fn handle_wallet_removal(&mut self, seed_hash: WalletSeedHash, alias: String) {
@@ -3169,6 +3195,15 @@ impl ScreenLike for WalletsBalancesScreen {
         // visible (task results are dispatched to the visible screen, so ours would
         // have been silently discarded).
         self.refreshing = false;
+        // Asset-lock mutations happen on pushed screens. Returning to this root
+        // screen must re-fetch instead of reusing a terminal Loaded(empty) entry.
+        if let Some(seed_hash) = self
+            .selected_wallet
+            .as_ref()
+            .map(|wallet| wallet.read_recover().seed_hash())
+        {
+            self.asset_lock_cache.invalidate_one(&seed_hash);
+        }
 
         // Check if there's a pending wallet selection (e.g., from wallet creation/import)
         let pending_seed_hash = self
@@ -3223,9 +3258,6 @@ impl ScreenLike for WalletsBalancesScreen {
 
     fn refresh(&mut self) {
         self.refreshing = false;
-        // Re-fetch tracked asset locks on an explicit refresh (e.g. after
-        // creating an asset lock) so the Asset Locks tab reflects new state.
-        self.asset_lock_cache.invalidate();
         // Re-scan for protected single-key rows still awaiting restore so a
         // post-migration refresh surfaces (or clears) the restore banner.
         self.pending_restores_scanned = false;
@@ -3605,6 +3637,54 @@ mod tests {
                 .unwrap()
                 .insert(hash, arc.clone());
             (hash, arc)
+        }
+
+        #[test]
+        fn removing_a_single_key_wallet_requires_confirmation() {
+            let tmp = tempfile::tempdir().unwrap();
+            let ctx = test_app_context(tmp.path());
+            let (key_hash, wallet) = seed_sk(&ctx, 7);
+            let mut screen = WalletsBalancesScreen::create_with_selection(&ctx, None, Some(wallet));
+
+            screen.request_selected_wallet_removal();
+
+            assert!(
+                screen.remove_wallet_dialog.is_some(),
+                "a single-key removal request opens the confirmation dialog"
+            );
+            assert!(
+                ctx.single_key_wallets
+                    .read()
+                    .unwrap()
+                    .contains_key(&key_hash),
+                "requesting removal must not delete the key before confirmation"
+            );
+        }
+
+        #[test]
+        fn returning_to_wallets_rearms_asset_lock_fetch() {
+            let tmp = tempfile::tempdir().unwrap();
+            let ctx = test_app_context(tmp.path());
+            let (seed_hash, wallet) = seed_hd(&ctx, 7);
+            ctx.set_selected_hd_wallet(Some(seed_hash));
+            let mut screen = WalletsBalancesScreen::create_with_selection(&ctx, Some(wallet), None);
+            screen.asset_lock_cache.store(seed_hash, Vec::new());
+            assert!(
+                screen
+                    .asset_lock_cache
+                    .ensure_requested(seed_hash)
+                    .is_none()
+            );
+
+            screen.refresh_on_arrival();
+
+            assert!(
+                screen
+                    .asset_lock_cache
+                    .ensure_requested(seed_hash)
+                    .is_some(),
+                "returning to the wallets root must re-fetch asset locks"
+            );
         }
 
         /// TC-WALLETLINK-07 (the dual-hash trap, highest-risk case). (a) A

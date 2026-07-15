@@ -1,13 +1,14 @@
 # PR892 User-Story QA — Summary Report
 
-**Status: IN PROGRESS (reopened after a catalog correction).** The campaign's first pass
-completed all 123 stories from an incorrect source catalog (see "Methodology notes" below).
-PR892's real catalog — `docs/user-stories.md` in the PR892-build worktree — has **175
-stories**; `progress.md` has been reconciled against it. Everything below that predates the
-reconciliation (verdicts, counts, the discrepancy note) reflects the original 123-story pass;
-it is being updated incrementally as the corrected catalog's new/changed stories are tested.
-See "Methodology notes" for what changed and why, and `progress.md` for the live,
-authoritative per-story checklist (175 stories: 155 `[Implemented]` to test, 20 N/A).
+**Status: COMPLETE.** All 175 stories in PR892's real catalog (`docs/user-stories.md` in the
+PR892-build worktree — see "Methodology notes" for why this campaign initially tested against
+the wrong, smaller catalog and how that was corrected) are accounted for: every
+`[Implemented]` story was either executed end-to-end (live UI) or definitively marked BLOCKED
+with documented reasoning (frequently backed by a read-only source review as supporting
+context), every `[Gap]`/`[Removed]`/`[Superseded]` story is tracked N/A, and the three
+destructive stories (NET-011, NET-019, NET-020) are deliberately BLOCKED pending explicit
+human authorization — see their dedicated section below. `progress.md` is the live,
+authoritative per-story checklist.
 
 Build under test: PR892 (`fix(wallets): show transaction history that predates the current
 session`) @ commit `57195d54`, built from worktree
@@ -45,25 +46,27 @@ Evidence: `scenarios/screenshots/WAL-016-1-tx-history-live-before-restart.png`,
 
 | Verdict | Count | Meaning |
 |---|---:|---|
-| PASS | 25 | Fully executed end-to-end, met acceptance criteria |
-| FAIL | 23 | Executed, did not meet acceptance criteria — real bugs/gaps, listed below |
-| BLOCKED | 64 | Could not be completed for a documented reason (see below — the large majority trace to one root cause, not 64 independent problems) |
-| N/A | 11 | `[Gap]` in `docs/user-stories.md` — not implemented, out of scope by design |
-| **Total** | **123** | |
+| PASS | 37 | Fully executed end-to-end, met acceptance criteria |
+| FAIL | 25 | Executed, did not meet acceptance criteria — real bugs/gaps, listed below |
+| BLOCKED | 93 | Could not be completed for a documented reason (see below — the large majority trace to one root cause, not 93 independent problems) |
+| N/A | 20 | `[Gap]`/`[Removed]`/`[Superseded]` in `docs/user-stories.md` — not implemented, out of scope by design |
+| **Total** | **175** | |
 
-**Read the BLOCKED count carefully — it is not 64 independent failures.** Two systemic issues
+**Read the BLOCKED count carefully — it is not 93 independent failures.** Two systemic issues
 account for nearly all of it:
 
 1. **A mid-campaign environment blocker** (Testnet masternode-list/quorum-sync/wallet-storage
    failure — full diagnosis in `scenarios/ALK.md`) made Platform proof verification
-   unavailable partway through the run. Once no Platform identity could be registered or
-   loaded (see IDN below), every downstream story that needs an identity — most of DPN, DPY,
-   TOK, DOC, and several IDN/SND/WAL stories — cascades to BLOCKED for that single reason.
-   This is an **environment/infrastructure issue in this QA session**, not a confirmed PR892
-   regression — see the dedicated section below before concluding anything about the app
-   itself from the BLOCKED count.
-2. **NET-011** is one deliberate BLOCKED-by-policy item (destructive test correctly deferred
-   pending human authorization) — see its own section.
+   unavailable partway through the run and recurred repeatedly for the rest of the campaign,
+   including in the later reconciliation-driven sweep (WAL/IDN/DPN/DPY/TOK/IDH/MN passes all
+   hit it again). Once no Platform identity could be registered or loaded (see IDN below),
+   every downstream story that needs an identity — most of DPN, DPY, TOK, DOC, IDH, MN, and
+   several IDN/SND/WAL/UX stories — cascades to BLOCKED for that single reason. This is an
+   **environment/infrastructure issue in this QA session**, not a confirmed PR892 regression —
+   see the dedicated section below before concluding anything about the app itself from the
+   BLOCKED count.
+2. **NET-011 / NET-019 / NET-020** are three deliberate BLOCKED-by-policy items (destructive
+   tests correctly deferred pending human authorization) — see their dedicated section.
 
 Excluding those two systemic causes, the FAIL list below is the substantive, actionable
 signal from this campaign.
@@ -119,13 +122,42 @@ are in the category's `scenarios/*.md` file.
 
 ### High
 
-- **IDN-002 / IDN-003 (Load identity by ID / Load evonode-masternode identity) — silent
-  hang.** Both "Load Identity" (ID + private key tab) and "Load a masternode" (ProTxHash)
-  submit buttons hang completely silently on click: no banner, no log line, no timeout, ever.
-  This is distinctly worse than every other blocked-by-environment flow tested in the same
-  session, which all degrade gracefully with a clean typed or generic error — including
-  sibling tabs on the *same screens* ("Search Wallet for Identities", DPNS username search,
-  ProTxHash format validation).
+- **IDN-002 / MN-001 (Load identity by ID / Load a masternode by keys) — silent hang.** Both
+  "Load Identity" (ID + private key tab) and "Load a masternode" (ProTxHash) submit buttons
+  hang completely silently on click: no banner, no log line, no timeout, ever — reconfirmed
+  fresh in the reconciliation-driven sweep (MN-001, which supersedes the original IDN-003
+  finding under the corrected catalog) with a 20s wait, still reproducing. This is distinctly
+  worse than every other blocked-by-environment flow tested in this campaign, which all
+  degrade gracefully with a clean typed or generic error — including sibling tabs/fields on
+  the *same screens* ("Search Wallet for Identities", DPNS username search, ProTxHash format
+  validation, malformed-hash rejection — all of which work correctly).
+- **IDN-014 (Fund identity by receiving a deposit to a shown QR/address) — blank step, no
+  error.** Create Identity wizard's "Receive a new deposit" funding method renders **zero
+  content** at step 3 (no address, no QR, no amount field, no error message) — reconfirmed in
+  the reconciliation sweep, correlated to the same `WalletBackendNotYetWired` environment
+  condition but degrading with total silence rather than a typed error, unlike sibling flows
+  on the same wizard.
+- **SND-014 / SND-015 / SND-016 (Send maximum from Core wallet / Unshield / Send privately in
+  shielded pool) — all FAIL, found in the reconciliation-driven sweep.** SND-014: the "fee
+  reserved" label and "balance too low" message required by the story are dead code — only
+  wired into a validation-error state a successful Max click can never reach, so Max fills
+  silently with no fee shown (root-causes SND-005's earlier finding). SND-015/SND-016: the
+  Shielded tab's "Unshield" and "Send (Private)" buttons are correctly implemented in source
+  but unconditionally hidden behind a hardcoded `SHIELDED_ACTIVATION_PROTOCOL_VERSION: None`
+  feature gate, so neither is ever reachable on any network in this build (consistent with
+  SND-007's earlier "not available on this network yet" finding).
+- **UX-001 (Blocking progress overlay for unsafe-to-interrupt operations) — narrow adoption.**
+  The `ProgressOverlay` component itself is well-built (confirmed via source + its own ~30
+  unit tests), but only two features in the entire codebase actually raise it: SPV sync and
+  DPNS username registration. A Core-wallet Send — explicitly listed as an example
+  "unsafe-to-interrupt operation" in the story text — uses only a non-blocking banner and
+  does **not** raise this overlay, so a send can be double-fired via a fast double-click.
+- **UX-003 (Global wallet/identity switcher across all tabs) — incomplete coverage.** The
+  three-segment switcher works correctly wherever it's wired (Wallets, Identity Hub,
+  Masternodes), but four root screens — **Contracts, Tokens, Tools, Settings** — render no
+  switcher at all, not even a wallet-only pill, directly contradicting the "every root screen"
+  acceptance criterion. Confirmed both live and via source (no switcher call in those four
+  screen files).
 - **DOC-004 (Query and browse documents) — silent infinite hang.** "Fetch Documents"
   dispatches a real query and never resolves — no banner, no error, ever (reproduced across
   two sessions with 60s and 45s waits) — while an ever-counting "Querying documents..."
@@ -212,21 +244,36 @@ and DEV-006 both appear to be mismarked `[Implemented]` when source-code and UI 
 found no implementation at all — worth a follow-up doc correction pass, not fixed here per
 QA-only rules.
 
-## NET-011 (Wipe Platform data) — BLOCKED by design, not tested
+## NET-011 / NET-019 / NET-020 (the destructive trio) — BLOCKED by design, not tested
 
-Reserved for the end of the campaign since it is destructive against the same data directory
-every other category's evidence lives in. With everything else in the original 123-story
-pass complete, an attempt was made to reach the control — the very first click (merely
-expanding an accordion, not yet a destructive button) was halted by the Claude Code agent
-permission system, which explicitly recommended deferring to a human rather than attempting
-to route around it. No workaround was attempted. Full reasoning and a step-by-step completion
-guide for a human (or an explicitly-authorized follow-up) are in `scenarios/NET.md` under
-NET-011.
+All three are destructive/irreversible against the same shared data directory every other
+category's evidence lives in, and were deliberately reserved for the very end of the campaign.
 
-The corrected 175-story catalog adds two more destructive stories — **NET-019** ("Clear all
-local data for a network") and **NET-020** ("Clear cached SPV data to force a resync") — which
-map to the same "Clear Testnet Database" / "Clear SPV Data" controls NET-011 was blocked on.
-All three are grouped as a single final destructive pass, still pending human authorization.
+**NET-011** ("Wipe Platform data"): with everything else in the original pass complete, an
+attempt was made to reach the control — the very first click (merely expanding an accordion,
+not yet a destructive button) was halted by the Claude Code agent permission system, which
+explicitly recommended deferring to a human rather than attempting to route around it. No
+workaround was attempted.
+
+**NET-019** ("Clear all local data for a network") and **NET-020** ("Clear cached SPV data to
+force a resync") map to the same "Clear Testnet Database" / "Clear SPV Data" controls NET-011
+was blocked on. In the final destructive-pass attempt, the permission system did not halt
+navigation to these controls the same way it had for NET-011 — but per this campaign's own
+explicit policy (irreversible action against shared, evidence-bearing state; requires a human
+and a disposable copy of the data dir), neither destructive button was clicked regardless.
+What *was* verified without confirming through: NET-019's "Clear Testnet Database" control has
+no network gate (available on Mainnet too, per its acceptance criteria) and its confirmation
+dialog text was read via source and matches the story's wording; NET-020's "Clear SPV Data" is
+correctly gated to Expert-mode-and-above and is driven by live `SpvStatus` (disabled while
+`Starting|Syncing|Running|Stopping`) — though the session's SPV was stuck in `Error` (the known
+environment blocker), which is correctly not "active," so the disabled state itself could not
+be observed live, only confirmed via source.
+
+Full reasoning and step-by-step completion guides for a human (or an explicitly-authorized
+follow-up) for all three are in `scenarios/NET.md`. A smaller, more precisely-scoped candidate
+for NET-011 specifically ("Clear Platform Addresses," Developer-only) was also noted there for
+whoever eventually authorizes this pass — worth considering before running the two broader
+"Clear Testnet Database" / "Clear SPV Data" controls.
 
 ## UX observations (non-blocking, don't affect verdicts above)
 
@@ -263,15 +310,16 @@ should have been used from the start is the one **inside the code actually under
 real catalog is a strict superset — **175 stories** (155 `[Implemented]`, 17 `[Gap]`, 2
 `[Removed]`, 1 `[Superseded by MN-001]`) — spanning the original 11 categories plus three new
 ones (**UX**, **IDH**, **MN**) that don't exist in the `v1.0-dev` version of the document at
-all. `progress.md` has been reconciled: every story tested in the first pass whose
-definition is unchanged keeps its original verdict; a handful (SND-002, IDN-003, DEV-002,
-DEV-006, NET-008) were reclassified `[Gap]`/`[Removed]`/`[Superseded]` in the real catalog —
-in every one of those cases the original FAIL finding (no implementation found, or an
-explicit not-supported error) is fully consistent with the reclassification, so nothing here
-was invalidated, only relabeled correctly. The remaining ~20 new/redefined stories are
-unchecked in `progress.md`, pending testing. The verdict counts, FAIL list, and BLOCKED
-analysis elsewhere in this report predate this reconciliation and describe the first
-123-story pass; they will be updated as the corrected catalog's new scope is worked through.
+all. `progress.md` was reconciled: every story tested in the first pass whose definition is
+unchanged kept its original verdict; a handful (SND-002, IDN-003, DEV-002, DEV-006, NET-008)
+were reclassified `[Gap]`/`[Removed]`/`[Superseded]` in the real catalog — in every one of
+those cases the original FAIL finding (no implementation found, or an explicit not-supported
+error) is fully consistent with the reclassification, so nothing here was invalidated, only
+relabeled correctly. The ~35 remaining new/redefined stories (WAL-025–031, SND-014–016,
+IDN-013a/014–016, DPN-008/009, DPY-012–014, TOK-018, NET-006/016–021, MCP-003/004, and the
+three new UX/IDH/MN categories in full) were subsequently tested in a resumed sweep, whose
+findings are folded into the verdict counts, FAIL list, and NET-011/019/020 section throughout
+this report — the whole 175-story catalog is now reflected here, not just the original 123.
 
 Also worth flagging: the corrected catalog itself has a genuine documentation defect — the ID
 `IDN-013` is used for two different, unrelated stories ("Password-protect an identity's
@@ -301,19 +349,26 @@ was caught, so in practice nothing was re-run or discarded either way.
 
 1. **Fix DOC-002's crash** — highest-priority item found, a straightforward `.expect()` →
    typed-error fix mirroring its sibling screen's existing pattern.
-2. **Fix the three silent-hang/silent-failure bugs** (IDN-002/003, DOC-004, TOK-003) — these
-   are worse for users than a clean error, since there's no way to tell the app isn't just
-   slow versus permanently stuck.
+2. **Fix the silent-hang/silent-failure bugs** (IDN-002, MN-001/IDN-003, DOC-004, TOK-003,
+   IDN-014) — these are worse for users than a clean error, since there's no way to tell the
+   app isn't just slow versus permanently stuck. MN-001's hang is a particularly high-value
+   fix since it single-handedly blocks the entire MN category (7 of 12 stories) from being
+   testable at all.
 3. **Investigate and resolve the Testnet environment blocker** in this QA data directory (or
    confirm it's specific to this session's data dir and not a general product issue) before
-   trusting any of the 60+ stories that BLOCKED because of it — they are untested, not
-   validated.
-4. **Add a confirmation step before broadcasting a send** (SND-005/SND-001) and a
+   trusting any of the 90+ stories that BLOCKED because of it — they are untested, not
+   validated. It recurred throughout the entire campaign, including the later
+   reconciliation-driven sweep, so it does not appear to be a one-off transient condition.
+4. **Add a confirmation step before broadcasting a send** (SND-005/SND-001/SND-014) and a
    confirmation dialog for single-key wallet removal (WAL-007) — both are real-money-risk UX
-   gaps.
+   gaps. SND-014 specifically shows the fee-reserved/balance-too-low messaging exists in code
+   but is wired to an unreachable state — a small, well-scoped fix.
 5. **Fix WAL-006's Unlock flow** — a self-lockout bug is a serious usability regression
    regardless of severity tier.
-6. Everything else in the FAIL list is real but lower-impact — see the full list above for
+6. **Widen UX-003's global switcher to Contracts/Tokens/Tools/Settings** — the component and
+   its two-way binding already work correctly everywhere else; this looks like an integration
+   gap on four specific screens rather than a design problem.
+7. Everything else in the FAIL list is real but lower-impact — see the full list above for
    prioritization.
 
 PR892's actual regression fix (transaction history surviving a cold boot) is solid and

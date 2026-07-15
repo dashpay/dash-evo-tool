@@ -838,9 +838,8 @@ mod tests {
         );
     }
 
-    /// The blanket release is scoped to refusals that prove nothing is running.
-    /// Any other failure keeps its guard: an unrelated error must not re-enable a
-    /// row whose paid action may still be in flight.
+    /// Only a typed contact-action failure carries the request ID needed to
+    /// release a guard. Every unrelated failure leaves all guards intact.
     #[test]
     fn an_unrelated_error_preserves_the_request_guards() {
         let mut state = ContactsState::default();
@@ -850,7 +849,7 @@ mod tests {
 
         assert!(
             state.is_in_flight(&id(1)),
-            "only the request's own typed failure, or a pre-dispatch refusal, releases a guard",
+            "only the request's own typed failure with its request ID releases a guard",
         );
     }
 

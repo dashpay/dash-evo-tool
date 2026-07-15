@@ -1,8 +1,8 @@
 //! Kittest coverage for the just-in-time secret prompt modal.
 //!
-//! Drives the shared [`passphrase_modal`] chrome directly (the same body
-//! `EguiSecretPromptHost` renders) to assert the GUI surface the
-//! remember-policy mapping depends on:
+//! Drives both the real `AppState::update` loop and the shared
+//! [`passphrase_modal`] chrome directly to assert the activation wiring and the
+//! GUI surface the remember-policy mapping depends on:
 //!
 //! - the scope body label, hint, and inline retry error render;
 //! - the "Keep this wallet unlocked until I close the app." checkbox renders
@@ -23,6 +23,17 @@ use dash_evo_tool::ui::components::passphrase_modal::{
 };
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
+
+#[cfg(feature = "testing")]
+use dash_evo_tool::context::migration_status::MigrationState;
+#[cfg(feature = "testing")]
+use dash_evo_tool::model::secret::Secret;
+#[cfg(feature = "testing")]
+use dash_evo_tool::model::wallet::Wallet;
+#[cfg(feature = "testing")]
+use dash_evo_tool::model::wallet::birth_height::WalletOrigin;
+#[cfg(feature = "testing")]
+use dash_sdk::dpp::dashcore::Network;
 
 /// The modal renders the scope body, the hint, the retry error, and the
 /// remember checkbox.
@@ -347,6 +358,128 @@ fn transition_frame_click_leaks_through_a_newly_activated_migration_prompt() {
         "a control beneath the migration password prompt must not receive a click \
          on the frame the prompt first becomes active",
     );
+}
+
+/// The real `AppState::update` rising-edge wiring drops a click completed on
+/// the frame a just-in-time passphrase prompt first becomes active.
+#[cfg(feature = "testing")]
+#[test]
+fn appstate_jit_prompt_activation_drops_transition_frame_click() {
+    crate::support::with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let mut harness = Harness::builder().with_max_steps(100).build_eframe(|ctx| {
+            dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
+                .expect("Failed to create AppState")
+                .with_animations(false)
+        });
+        harness.set_size(egui::vec2(1024.0, 768.0));
+        harness.run_steps(5);
+
+        let card_center = harness.get_by_label("Just Explore").rect().center();
+        harness.hover_at(card_center);
+        harness.event(egui::Event::PointerButton {
+            pos: card_center,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::NONE,
+        });
+        harness.step();
+
+        harness.state_mut().test_set_secret_prompt_active(true);
+        harness.event(egui::Event::PointerButton {
+            pos: card_center,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        harness.step();
+
+        assert!(
+            harness.state().show_welcome_screen,
+            "the real update loop must drop the onboarding click completed on the JIT prompt's activation frame",
+        );
+        assert!(
+            harness.query_by_label_contains("Test prompt").is_some(),
+            "the JIT prompt must render on the transition frame",
+        );
+    });
+}
+
+/// The same real `AppState::update` rising edge covers the migration wallet
+/// password path, which activates from `MigrationStatus` rather than the JIT host.
+#[cfg(feature = "testing")]
+#[test]
+fn appstate_migration_prompt_activation_drops_transition_frame_click() {
+    crate::support::with_isolated_data_dir(|| {
+        let rt = tokio::runtime::Runtime::new().expect("Failed to create tokio runtime");
+        let _guard = rt.enter();
+
+        let seed_hash = Rc::new(Cell::new([0; 32]));
+        let seed_hash_for_app = Rc::clone(&seed_hash);
+        let mut harness = Harness::builder()
+            .with_max_steps(100)
+            .build_eframe(move |ctx| {
+                let app = dash_evo_tool::app::AppState::new(ctx.egui_ctx.clone())
+                    .expect("Failed to create AppState")
+                    .with_animations(false);
+
+                let password = Secret::new("correct password");
+                let seed = [0xA7; 64];
+                let wallet = Wallet::new_from_seed(
+                    seed,
+                    Network::Testnet,
+                    Some("Savings".to_string()),
+                    Some(&password),
+                )
+                .expect("build protected wallet");
+                let (seed_hash, wallet) = app
+                    .current_app_context()
+                    .register_wallet(wallet, &seed, WalletOrigin::Imported)
+                    .expect("register protected wallet fixture");
+                wallet.write().expect("wallet lock").wallet_seed.close();
+                seed_hash_for_app.set(seed_hash);
+                app
+            });
+        harness.set_size(egui::vec2(1024.0, 768.0));
+        let app_context = crate::support::wait_for_wallet_backend(&mut harness);
+        harness.run_steps(5);
+
+        let card_center = harness.get_by_label("Just Explore").rect().center();
+        harness.hover_at(card_center);
+        harness.event(egui::Event::PointerButton {
+            pos: card_center,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::NONE,
+        });
+        harness.step();
+
+        app_context
+            .migration_status()
+            .set_state(MigrationState::AwaitingWalletPasswords {
+                wallets: vec![seed_hash.get()],
+            });
+        harness.event(egui::Event::PointerButton {
+            pos: card_center,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        harness.step();
+
+        assert!(
+            harness.state().show_welcome_screen,
+            "the real update loop must drop the onboarding click completed on the migration prompt's activation frame",
+        );
+        assert!(
+            harness
+                .query_by_label("Enter the password for \"Savings\" to update this wallet now.")
+                .is_some(),
+            "the migration password prompt must render on the transition frame",
+        );
+    });
 }
 
 /// Control for `transition_frame_click_leaks_through_a_newly_activated_prompt`:

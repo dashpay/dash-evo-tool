@@ -281,6 +281,14 @@ impl AppContext {
                             rec.to_identity
                         };
 
+                        // Resolve the counterparty against saved DashPay contacts
+                        // only. A payment recipient who is not a mutual contact
+                        // (e.g. paid by DPNS username via the Pay screen) is not in
+                        // this list, so it falls back to "Unknown (<base58 prefix>)".
+                        // TODO(NEW-004): resolve non-contact counterparties to their
+                        // DPNS username. That needs a DPNS lookup by identity id
+                        // (network) or persisting the name resolved at send time —
+                        // deeper plumbing than this cached-read path, so deferred.
                         let contact_name = contacts
                             .iter()
                             .find(|c| {

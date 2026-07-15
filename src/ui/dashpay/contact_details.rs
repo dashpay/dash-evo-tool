@@ -5,6 +5,7 @@ use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
 use crate::context::AppContext;
 use crate::context::feature_gate::FeatureGate;
 use crate::model::dashpay::{AcceptedAccounts, ContactInfoField, ContactInfoUpdate};
+use crate::model::fee_estimation::format_duffs_as_dash;
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::ui::components::MessageBanner;
 use crate::ui::components::component_trait::Component;
@@ -32,6 +33,9 @@ const PRIVATE_CONTACT_INFO_TEXT: &str = "About Private Contact Information:\n\n\
 #[derive(Debug, Clone)]
 pub struct Payment {
     pub tx_id: String,
+    /// Payment amount in **duffs** (1 DASH = 100,000,000 duffs), as provided by
+    /// `DashPayPaymentHistory`. Despite the `Credits` alias this is a duff value,
+    /// so render it with `format_duffs_as_dash`.
     pub amount: Credits,
     pub timestamp: u64,
     pub is_incoming: bool,
@@ -447,8 +451,8 @@ impl ContactDetailsScreen {
 
                                 ui.vertical(|ui| {
                                     ui.horizontal(|ui| {
-                                        // Amount
-                                        let amount_str = format!("{} Dash", payment.amount);
+                                        // Amount (payment.amount is in duffs)
+                                        let amount_str = format_duffs_as_dash(payment.amount);
                                         if payment.is_incoming {
                                             ui.label(
                                                 RichText::new(format!("+{}", amount_str))

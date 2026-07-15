@@ -164,6 +164,10 @@ jobs:
             echo "Tag $TAG already exists (force re-cut) — reusing."
             exit 0
           fi
+          # Annotated tags need a committer identity; the runner's checkout
+          # has none configured by default. Standard github-actions[bot] identity.
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           # See the SECURITY NOTE at the top of this file: GITHUB_TOKEN only.
           git tag -a "$TAG" -m "Weekly draft pre-release $TAG" "$GITHUB_SHA"
           git push origin "refs/tags/$TAG"

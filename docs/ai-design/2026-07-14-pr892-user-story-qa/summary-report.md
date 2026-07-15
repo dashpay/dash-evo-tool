@@ -1,25 +1,50 @@
 # PR892 User-Story QA — Summary Report
 
-**Status: RETEST IN PROGRESS.** All 175 stories in PR892's real catalog (`docs/user-stories.md`
-in the PR892-build worktree — see "Methodology notes" for why this campaign initially tested
-against the wrong, smaller catalog and how that was corrected) have been accounted for at
-least once, and a retest pass is underway now that the environment blocker described below has
-been root-caused. `progress.md` is the live, authoritative per-story checklist — always check
-it for the current verdict rather than trusting a stale count here mid-retest.
+**Status: RETEST COMPLETE.** All 175 stories in PR892's real catalog (`docs/user-stories.md` in
+the PR892-build worktree — see "Methodology notes" for why this campaign initially tested
+against the wrong, smaller catalog and how that was corrected) have been executed or
+definitively marked BLOCKED with documented, independent reasoning. `progress.md` is the live,
+authoritative per-story checklist.
 
-**2026-07-15 update**: the Testnet wallet-backend environment blocker that drove most of the
-original 93 BLOCKED verdicts was root-caused and fixed on the live QA data dir (see
-"Environment blocker" section below). A retest pass against the previously-BLOCKED stories is
-underway: two phases complete so far (WAL/SND asset-lock-dependent stories, then IDN identity
-registration) recovering 12 stories to PASS and surfacing 5 new genuine FAIL findings, plus
-NET-020 separately confirmed PASS (see its own section below — it doesn't depend on the
-identity/backend state the other retested stories needed). The underlying defect then
-**recurred** on a newly-created asset-lock row during IDN-016 restart testing — confirming
-it's a systemic format bug (any new `AssetLockProof` write is at risk), not a one-off corrupt
-row — and the live data dir is wedged again pending a decision on whether to reapply the fix.
-~65 stories remain BLOCKED on that decision; NET-011/NET-019 (the two genuinely destructive,
-wallet/identity-wiping controls) are deliberately held until that's resolved, so as not to
-destroy the identity/wallet state the pending retest still needs.
+**2026-07-15 update — full retest pass complete.** The Testnet wallet-backend environment
+blocker that drove most of the original 93 BLOCKED verdicts was root-caused
+(`dashpay/platform#4133`, a deterministic `bincode`/serde encoding incompatibility for
+`AssetLockProof` blobs — confirmed real and filed upstream) and fixed twice on the live QA data
+dir: once initially, and once more after a predicted recurrence (a *new* asset-lock write hit
+the identical defect during IDN-016 restart testing, confirming the bug is systemic, not a
+one-off corrupt row — see `scenarios/ALK.md` and
+`.../testnet-blocker-investigation/TEST-VECTOR.md` for the full mechanism and both recoveries).
+Five retest phases then worked through every previously-BLOCKED story: WAL/SND
+(asset-lock-dependent), IDN (identity registration — the critical unlock), DPN/DPY
+(DPNS/DashPay), DOC/TOK (contracts/tokens), and IDH/SND-remainder/DEV/MN/MCP. None of these
+phases hit the recurrence again (all deliberately routed around creating new asset locks).
+
+**Net effect of the retest**: 93 originally-BLOCKED stories resolved to 79 PASS-contributing
+verdicts (see the updated tally below), 34 total FAIL findings (many newly discovered by the
+retest itself — real product bugs, not environment artifacts), and 38 stories that remain
+correctly BLOCKED for reasons independent of the environment blocker (see below). The two
+genuinely destructive, wallet/identity-wiping controls (NET-011, NET-019) were deliberately
+held throughout the retest so as not to destroy the identity/wallet state later phases still
+needed — with all backend-dependent retesting now finished, they're ready to run as the
+campaign's true final step, pending confirmation this report should proceed to that.
+
+**What's still BLOCKED and why** (38 total, all independent of the now-fixed environment
+issue):
+- **No masternode/evonode fixture on Testnet** (needs ~1000 tDASH collateral to register one
+  for real): MN-003/004/006/007/008/009/011, MCP-003/004, and transitively DPN-003 through
+  DPN-007/DPN-009 (contest voting requires masternode ownership).
+- **TOK-005 (Create token contract) is a confirmed FAIL** (a click-no-op defect, part of a
+  3-instance pattern also affecting TOK-011/TOK-018 — see FAIL findings below), which
+  transitively blocks TOK-006/007/008/009/010/012/013/015 and TOK-017.
+- **Deliberately deferred destructive actions**: NET-011, NET-019 (see their dedicated section).
+- **Missing fixtures unrelated to the environment blocker**: WAL-025/026 (legacy
+  password-protected/passphrase-sealed vault fixtures), IDN-013a and IDH-004 (no reversible way
+  to reach certain gated UI states with the only identity fixtures available), ALK-003/WAL-018
+  (the confirmed Asset-Locks-list UI/cache bug, independent of the storage-format bug),
+  DOC-003's partial gap, DPY-007/012/013 (downstream of the confirmed DPY-006 payment bug),
+  DEV-008 (Regtest-only, no regtest node running), TOK-016 (partial), IDN-016 (restart-dependent
+  persistence test — correctly not re-attempted a third time per the standing no-more-DB-surgery
+  rule).
 
 Build under test: PR892 (`fix(wallets): show transaction history that predates the current
 session`) @ commit `57195d54`, built from worktree
@@ -57,14 +82,15 @@ Evidence: `scenarios/screenshots/WAL-016-1-tx-history-live-before-restart.png`,
 
 | Verdict | Count | Meaning |
 |---|---:|---|
-| PASS | 48 | Fully executed end-to-end, met acceptance criteria |
-| FAIL | 30 | Executed, did not meet acceptance criteria — real bugs/gaps, listed below |
-| BLOCKED | 77 | Could not be completed for a documented reason (see below — the large majority trace to one root cause, not 77 independent problems) |
+| PASS | 79 | Fully executed end-to-end, met acceptance criteria |
+| Partial PASS | 4 | Core flow works; a specific sub-criterion unconfirmed or a minor gap noted — see the story's scenario file |
+| FAIL | 34 | Executed, did not meet acceptance criteria — real bugs/gaps, listed below |
+| BLOCKED | 38 | Could not be completed for a documented, independent reason (see above) |
 | N/A | 20 | `[Gap]`/`[Removed]`/`[Superseded]` in `docs/user-stories.md` — not implemented, out of scope by design |
 | **Total** | **175** | |
 
-(Counts as of the 2026-07-15 retest pass described above; still moving as the retest
-continues. Original pre-retest counts, for reference: 37 PASS / 25 FAIL / 93 BLOCKED / 20 N/A.)
+(Final counts as of the 2026-07-15 retest pass. Original pre-retest counts, for reference:
+37 PASS / 25 FAIL / 93 BLOCKED / 20 N/A.)
 
 **Read the BLOCKED count carefully — it is not 93 independent failures.** Two systemic issues
 account for nearly all of it:

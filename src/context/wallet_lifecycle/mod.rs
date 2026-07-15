@@ -23,7 +23,7 @@ use crate::model::wallet::single_key::SingleKeyWallet;
 use crate::model::wallet::{Wallet, WalletSeedHash};
 use crate::wallet_backend::poison::RwLockRecover;
 use crate::wallet_backend::{
-    DetScope, WalletBackend, WalletMetaView, WalletSeedView, network_prefix,
+    ClearAllOutcome, DetScope, WalletBackend, WalletMetaView, WalletSeedView, network_prefix,
 };
 use dash_sdk::dpp::dashcore::Network;
 use std::path::{Path, PathBuf};

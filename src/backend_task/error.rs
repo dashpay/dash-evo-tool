@@ -102,6 +102,18 @@ pub enum TaskError {
     )]
     WalletDataClearUnavailable,
 
+    /// Clearing saved wallet data ran to completion, but at least one
+    /// secret-bearing delete failed, so some data may still be on disk.
+    #[error(
+        "Some of your saved wallet data could not be deleted. Restart the application, then try clearing your data again."
+    )]
+    WalletDataClearIncomplete {
+        /// Number of individual deletes that failed during the clear.
+        failed: usize,
+        #[source]
+        first_error: Box<TaskError>,
+    },
+
     /// A wallet operation was requested before its wallet had finished loading
     /// into the wallet backend. Distinct from
     /// [`Self::WalletBackendNotYetWired`]: the backend is ready, but this
@@ -2788,6 +2800,27 @@ mod tests {
             wrapped.to_string(),
             cause.to_string(),
             "the request ID is for the screen; the user must still read why the action failed"
+        );
+    }
+
+    #[test]
+    fn an_incomplete_clear_reports_a_partial_wipe_and_preserves_the_first_failure() {
+        let error = TaskError::WalletDataClearIncomplete {
+            failed: 3,
+            first_error: Box::new(TaskError::WalletBackendNotYetWired),
+        };
+
+        assert_eq!(
+            error.to_string(),
+            "Some of your saved wallet data could not be deleted. Restart the application, then try clearing your data again.",
+            "the user must be told the wipe was incomplete and what to do, with no raw count or jargon"
+        );
+
+        let source = std::error::Error::source(&error).expect("a preserved first-failure source");
+        assert_eq!(
+            source.to_string(),
+            TaskError::WalletBackendNotYetWired.to_string(),
+            "the first underlying failure must remain reachable for diagnostics"
         );
     }
 

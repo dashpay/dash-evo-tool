@@ -316,6 +316,15 @@ pub struct WalletBackend {
     inner: Arc<Inner>,
 }
 
+/// Outcome of the [`WalletBackend::forget_all_wallets_local`] "delete all local
+/// data" sweep: the upstream wallet ids whose watch-only persistor rows still
+/// need async removal, plus every delete failure so the caller reports a
+/// partial wipe instead of a false success.
+pub(crate) struct ClearAllOutcome {
+    pub(crate) upstream_ids: Vec<WalletId>,
+    pub(crate) failures: Vec<TaskError>,
+}
+
 impl std::fmt::Debug for WalletBackend {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("WalletBackend")
@@ -1052,12 +1061,16 @@ impl WalletBackend {
     /// state is removed before the in-memory handle, so a mid-failure crash
     /// never leaves a recoverable seed behind a forgotten in-memory entry.
     /// Resilient to partial failure: each step is logged and the rest still
-    /// run. Idempotent — forgetting an unknown wallet is a no-op success.
+    /// run. Idempotent — forgetting an unknown wallet is a no-op success. If any
+    /// delete fails, the first failure is returned so the caller never reports a
+    /// clean wipe when a recoverable secret may survive on disk.
     pub(crate) fn forget_wallet_local_state(
         &self,
         seed_hash: &WalletSeedHash,
         wallet_id: Option<WalletId>,
     ) -> Result<(), TaskError> {
+        let mut first_error: Option<TaskError> = None;
+
         // Seed vault — delete BOTH the raw `seed.raw.v1` (the current form) and
         // the legacy `envelope.v1`. Idempotent on both; a wallet may be in
         // either form (raw post-migration, legacy pre-migration), so removal
@@ -1068,6 +1081,7 @@ impl WalletBackend {
                 error = ?e,
                 "Failed to delete raw seed from vault"
             );
+            first_error.get_or_insert(e);
         }
         if let Err(e) = self.wallet_seeds().delete(seed_hash) {
             tracing::warn!(
@@ -1075,6 +1089,7 @@ impl WalletBackend {
                 error = ?e,
                 "Failed to delete seed envelope from vault"
             );
+            first_error.get_or_insert(e);
         }
 
         // Session secret cache (any remembered plaintext seed).
@@ -1087,6 +1102,7 @@ impl WalletBackend {
                 error = ?e,
                 "Failed to delete wallet-meta sidecar"
             );
+            first_error.get_or_insert(e);
         }
 
         // Plaintext Orchard state (notes + nullifier cursor) now lives in the
@@ -1103,6 +1119,7 @@ impl WalletBackend {
                 error = ?e,
                 "Failed to clear avatar cache during wallet removal"
             );
+            first_error.get_or_insert(e);
         }
 
         // In-memory maps + snapshot registration.
@@ -1112,7 +1129,10 @@ impl WalletBackend {
             self.inner.snapshots.forget_wallet(seed_hash, &wallet_id);
         }
 
-        Ok(())
+        match first_error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
     }
 
     /// The upstream `WalletId` DET has registered for `seed_hash`, if any.
@@ -1163,27 +1183,27 @@ impl WalletBackend {
     ///
     /// Synchronous: it wipes the secret-bearing state (seed-envelope vault,
     /// single-key vault, sidecars, shielded notes, session cache, in-memory
-    /// maps) with no runtime. Returns the upstream `WalletId`s whose watch-only
-    /// persistor rows still need the async [`Self::remove_upstream_wallet`]
-    /// removal — the caller drives those off-thread. Resilient to partial
-    /// failure.
-    pub(crate) fn forget_all_wallets_local(&self) -> Vec<WalletId> {
+    /// maps) with no runtime. Returns a [`ClearAllOutcome`] carrying the
+    /// upstream `WalletId`s whose watch-only persistor rows still need the async
+    /// [`Self::remove_upstream_wallet`] removal — the caller drives those
+    /// off-thread — plus every delete failure. Resilient to partial failure:
+    /// every wallet is attempted even after one fails.
+    pub(crate) fn forget_all_wallets_local(&self) -> ClearAllOutcome {
         let network = self.inner.network;
 
         // HD wallets: enumerate from the persisted wallet-meta sidecar so a
         // never-loaded wallet is still wiped.
         let mut upstream_ids = Vec::new();
+        let mut failures: Vec<TaskError> = Vec::new();
         for (seed_hash, _meta) in self.wallet_meta().list(network) {
             let wallet_id = self.registered_wallet_id(&seed_hash);
             if let Some(id) = wallet_id {
                 upstream_ids.push(id);
             }
+            // `forget_wallet_local_state` logs each failed step; keep only the
+            // returned first failure so the caller can report a partial wipe.
             if let Err(e) = self.forget_wallet_local_state(&seed_hash, wallet_id) {
-                tracing::warn!(
-                    wallet = %hex::encode(seed_hash),
-                    error = ?e,
-                    "Failed to wipe local HD wallet state during clear-all"
-                );
+                failures.push(e);
             }
         }
 
@@ -1197,6 +1217,7 @@ impl WalletBackend {
                     error = ?e,
                     "Failed to forget single-key wallet during clear-all"
                 );
+                failures.push(e);
             }
         }
 
@@ -1204,7 +1225,10 @@ impl WalletBackend {
         // (single-key forget does not clear the session cache).
         self.forget_all_secrets();
 
-        upstream_ids
+        ClearAllOutcome {
+            upstream_ids,
+            failures,
+        }
     }
 
     /// Start chain sync and the periodic upstream coordinators.

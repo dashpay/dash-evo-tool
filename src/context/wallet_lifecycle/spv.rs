@@ -34,7 +34,10 @@ impl AppContext {
         // pre-update database remains a read-only recovery artifact. The
         // upstream (watch-only) persistor rows have no seed and are removed
         // asynchronously off the main thread.
-        let upstream_ids = backend.forget_all_wallets_local();
+        let ClearAllOutcome {
+            upstream_ids,
+            mut failures,
+        } = backend.forget_all_wallets_local();
         for wallet_id in upstream_ids {
             let backend = Arc::clone(&backend);
             self.subtasks
@@ -82,6 +85,7 @@ impl AppContext {
                             owner = %owner,
                             "Identity private-key wipe failed during clear: {e:?}"
                         );
+                        failures.push(e);
                     }
                 }
             }
@@ -114,6 +118,18 @@ impl AppContext {
         }
 
         self.has_wallet.store(false, Ordering::Relaxed);
+
+        // Any secret-bearing delete that failed above means data may survive on
+        // disk, so never report a clean wipe. The in-memory maps are still
+        // cleared; the typed error tells the user to restart and retry.
+        if !failures.is_empty() {
+            let failed = failures.len();
+            let first_error = Box::new(failures.into_iter().next().expect("failures is non-empty"));
+            return Err(TaskError::WalletDataClearIncomplete {
+                failed,
+                first_error,
+            });
+        }
 
         Ok(())
     }

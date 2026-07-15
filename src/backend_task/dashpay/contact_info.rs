@@ -912,6 +912,10 @@ mod tests {
     fn unreadable_private_data_aborts_the_write() {
         let existing = stored_contact_info(vec![0, 4, 9], &OTHER_KEY);
 
+        // A wrong-key AES-CBC decrypt is unauthenticated: PKCS7 unpadding usually
+        // rejects it (DecryptFailed), but ~1/256 the random IV yields valid
+        // padding and the garbage plaintext fails to parse (DeserializeFailed).
+        // Both are the "present but unreadable" abort this test asserts.
         assert!(
             matches!(
                 apply_contact_info_update(
@@ -920,7 +924,8 @@ mod tests {
                     &KEY,
                 ),
                 Err(TaskError::DashPayContactInfoRead {
-                    source: ContactInfoReadError::DecryptFailed,
+                    source: ContactInfoReadError::DecryptFailed
+                        | ContactInfoReadError::DeserializeFailed,
                 })
             ),
             "an undecryptable present payload must abort before it can be overwritten"
@@ -934,10 +939,13 @@ mod tests {
         let existing = stored_contact_info(vec![0, 4, 9], &OTHER_KEY);
         let update = ContactInfoUpdate::visibility(false);
 
+        // Wrong-key decrypt aborts as either DecryptFailed or (≈1/256, on a
+        // random IV that passes PKCS7 unpadding) DeserializeFailed.
         assert!(matches!(
             apply_contact_info_update(update.clone(), Some(&existing), &KEY),
             Err(TaskError::DashPayContactInfoRead {
-                source: ContactInfoReadError::DecryptFailed,
+                source: ContactInfoReadError::DecryptFailed
+                    | ContactInfoReadError::DeserializeFailed,
             })
         ));
 

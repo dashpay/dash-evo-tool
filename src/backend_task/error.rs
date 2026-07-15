@@ -706,6 +706,11 @@ pub enum TaskError {
         source: Box<TaskError>,
     },
 
+    /// A second UI surface dispatched the same paid request action while its
+    /// first backend execution still owns the app-scoped claim.
+    #[error("This contact request action is already running. Wait for it to finish.")]
+    DashPayContactRequestActionInProgress,
+
     /// Chain sync could not be started.
     #[error(
         "Could not start wallet sync. Please check your connection and restart the application."

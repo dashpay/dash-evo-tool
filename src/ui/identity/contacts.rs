@@ -147,10 +147,17 @@ fn request_row(
 fn request_rows<'a>(
     entries: &'a [ContactRequestEntry],
     state: &ContactsState,
+    app_context: &Arc<AppContext>,
 ) -> Vec<(&'a ContactRequestEntry, bool)> {
     entries
         .iter()
-        .map(|entry| (entry, state.is_in_flight(&entry.request_id)))
+        .map(|entry| {
+            (
+                entry,
+                state.is_in_flight(&entry.request_id)
+                    || app_context.contact_request_action_is_in_flight(&entry.request_id),
+            )
+        })
         .collect()
 }
 
@@ -176,6 +183,20 @@ fn dispatch_request(
         identity.clone(),
         request_id,
     ))))
+}
+
+fn dispatch_request_shared(
+    app_context: &Arc<AppContext>,
+    state: &mut ContactsState,
+    identity: &QualifiedIdentity,
+    clicked: Option<(Identifier, RequestAction)>,
+) -> AppAction {
+    if clicked
+        .is_some_and(|(request_id, _)| app_context.contact_request_action_is_in_flight(&request_id))
+    {
+        return AppAction::None;
+    }
+    dispatch_request(state, identity, clicked)
 }
 
 /// One-shot hydration of the tab: the contact list and the request lists.
@@ -367,9 +388,9 @@ fn render_populated(
 
     action |= header_row(ui, app_context, dark_mode);
 
-    action |= received_section(ui, identity, state, dark_mode);
+    action |= received_section(ui, app_context, identity, state, dark_mode);
     action |= active_section(ui, app_context, identity, state, dark_mode);
-    action |= sent_section(ui, identity, state, dark_mode);
+    action |= sent_section(ui, app_context, identity, state, dark_mode);
 
     // Fire LoadContacts + LoadContactRequests once per tab entry. The hub
     // resets the guard in `refresh_on_arrival()` so a tab switch or explicit
@@ -390,13 +411,14 @@ fn render_populated(
 /// and Decline wired to their backend tasks.
 fn received_section(
     ui: &mut Ui,
+    app_context: &Arc<AppContext>,
     identity: &QualifiedIdentity,
     state: &mut ContactsState,
     dark_mode: bool,
 ) -> AppAction {
     ui.add_space(12.0);
 
-    let rows = request_rows(state.incoming(), state);
+    let rows = request_rows(state.incoming(), state, app_context);
     let heading = if rows.is_empty() {
         RECEIVED_HEADING.to_string()
     } else {
@@ -423,7 +445,7 @@ fn received_section(
         }
     });
 
-    dispatch_request(state, identity, clicked)
+    dispatch_request_shared(app_context, state, identity, clicked)
 }
 
 /// Active contacts — searchable list of established contacts, each row offering
@@ -578,13 +600,14 @@ fn hidden_section(
 /// Cancel wired to [`DashPayTask::CancelContactRequest`].
 fn sent_section(
     ui: &mut Ui,
+    app_context: &Arc<AppContext>,
     identity: &QualifiedIdentity,
     state: &mut ContactsState,
     dark_mode: bool,
 ) -> AppAction {
     ui.add_space(12.0);
 
-    let rows = request_rows(state.outgoing(), state);
+    let rows = request_rows(state.outgoing(), state, app_context);
     let heading = if rows.is_empty() {
         SENT_HEADING.to_string()
     } else {
@@ -612,7 +635,7 @@ fn sent_section(
         }
     });
 
-    dispatch_request(state, identity, clicked)
+    dispatch_request_shared(app_context, state, identity, clicked)
 }
 
 /// Header row: title on the left, three action buttons right-aligned.

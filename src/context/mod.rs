@@ -47,7 +47,7 @@ use dash_sdk::platform::Identifier;
 use egui::Context;
 use migration_status::MigrationStatus;
 use platform_wallet_storage::secrets::SecretStore;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::PathBuf;
 use std::str::FromStr as _;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
@@ -63,6 +63,20 @@ const ANIMATION_REFRESH_TIME: std::time::Duration = std::time::Duration::from_mi
 /// This guard holds a write lock on the cached settings, preventing reads
 /// until the k/v update is complete and the cache is properly invalidated.
 pub(crate) type SettingsCacheGuard<'a> = RwLockWriteGuard<'a, Option<AppSettings>>;
+
+pub(crate) struct ContactRequestActionClaim<'a> {
+    registry: &'a Mutex<HashSet<Identifier>>,
+    request_id: Identifier,
+}
+
+impl Drop for ContactRequestActionClaim<'_> {
+    fn drop(&mut self) {
+        self.registry
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.request_id);
+    }
+}
 
 #[derive(Debug)]
 pub struct AppContext {
@@ -140,6 +154,9 @@ pub struct AppContext {
     /// wallet; a follower waits here and returns the leader's terminal result
     /// without rerunning the update.
     pub(crate) migration_run: tokio::sync::Mutex<()>,
+    /// Process-local claim shared by every UI surface before a paid DashPay
+    /// request action enters its backend flow.
+    contact_request_actions_in_flight: Mutex<HashSet<Identifier>>,
     /// Pending wallet selection - set after creating/importing a wallet
     /// so the wallet screen can auto-select the new wallet
     pub(crate) pending_wallet_selection: Mutex<Option<WalletSeedHash>>,
@@ -251,6 +268,30 @@ impl std::fmt::Debug for SecretPromptSlot {
 }
 
 impl AppContext {
+    pub(crate) fn try_claim_contact_request_action(
+        &self,
+        request_id: Identifier,
+    ) -> Option<ContactRequestActionClaim<'_>> {
+        let mut in_flight = self
+            .contact_request_actions_in_flight
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !in_flight.insert(request_id) {
+            return None;
+        }
+        Some(ContactRequestActionClaim {
+            registry: &self.contact_request_actions_in_flight,
+            request_id,
+        })
+    }
+
+    pub(crate) fn contact_request_action_is_in_flight(&self, request_id: &Identifier) -> bool {
+        self.contact_request_actions_in_flight
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(request_id)
+    }
+
     // The constructor takes the app's foundational dependencies — the shared
     // db, k/v store, and seed vault all have to be opened once and threaded in
     // so every per-network context reuses the same handle (the vault's
@@ -392,6 +433,7 @@ impl AppContext {
             connection_status,
             migration_status: Arc::new(MigrationStatus::new_idle()),
             migration_run: tokio::sync::Mutex::new(()),
+            contact_request_actions_in_flight: Mutex::new(HashSet::new()),
             pending_wallet_selection: Mutex::new(None),
             selected_wallet_hash: Mutex::new(selected_wallet_hash),
             selected_single_key_hash: Mutex::new(selected_single_key_hash),

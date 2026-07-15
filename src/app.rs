@@ -41,6 +41,7 @@ use crate::utils::egui_mpsc::{self, EguiMpscAsync};
 use crate::utils::tasks::TaskManager;
 use crate::wallet_backend::DetScope;
 use dash_sdk::dpp::dashcore::Network;
+use dash_sdk::platform::Identifier;
 use derive_more::From;
 use eframe::{App, egui};
 use platform_wallet_storage::secrets::SecretStore;
@@ -119,6 +120,10 @@ pub const SPV_CONTINUE_BACKGROUND_ACTION: &str = "spv:sync:continue_background";
 /// locks that invariant.
 pub(crate) const FALLBACK_ROOT_SCREEN: RootScreenType = RootScreenType::RootScreenIdentityHub;
 
+fn identity_hub_is_visible(selected: RootScreenType, screen_stack_is_empty: bool) -> bool {
+    selected == RootScreenType::RootScreenIdentityHub && screen_stack_is_empty
+}
+
 /// Plain, jargon-free descriptions for the SPV-sync block (Everyday-User rule:
 /// no "SPV"/"headers"/"masternodes"/raw heights/percentages — the jargon-free
 /// "Step N of 5" counter carries the granularity). Complete sentences (NFR-2).
@@ -155,7 +160,7 @@ mod backend_task_join_tests {
         let sender = SenderAsync::new(tx, egui::Context::default());
         let join_handle = tokio::task::spawn_blocking(|| panic!("backend task panic"));
 
-        forward_backend_task_join_error(join_handle, sender).await;
+        forward_backend_task_join_error(join_handle, sender, None).await;
 
         let result = tokio::time::timeout(Duration::from_secs(1), rx.recv())
             .await
@@ -168,6 +173,29 @@ mod backend_task_join_tests {
             !format!("{error:?}").contains("backend task panic"),
             "panic payload must be redacted from diagnostics"
         );
+    }
+
+    #[tokio::test]
+    async fn panicking_paid_contact_action_keeps_its_request_correlation() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let sender = SenderAsync::new(tx, egui::Context::default());
+        let request_id = Identifier::from([0x44; 32]);
+        let join_handle = tokio::task::spawn_blocking(|| panic!("backend task panic"));
+
+        forward_backend_task_join_error(join_handle, sender, Some(request_id)).await;
+
+        let result = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("join failure must be reported promptly")
+            .expect("join failure result must be sent");
+        assert!(matches!(
+            result,
+            TaskResult::Error(TaskError::DashPayContactRequestActionFailed {
+                request_id: correlated,
+                source,
+            }) if correlated == request_id
+                && matches!(source.as_ref(), TaskError::BackendTaskFailed { .. })
+        ));
     }
 }
 
@@ -331,15 +359,22 @@ impl From<Result<BackendTaskSuccessResult, TaskError>> for TaskResult {
 async fn forward_backend_task_join_error(
     join_handle: tokio::task::JoinHandle<()>,
     sender: egui_mpsc::SenderAsync<TaskResult>,
+    request_id: Option<Identifier>,
 ) {
-    if let Err(source) = join_handle.await
-        && let Err(error) = sender
-            .send(TaskResult::Error(TaskError::BackendTaskFailed {
-                source: source.into(),
-            }))
-            .await
-    {
-        tracing::error!(%error, "Failed to report a stopped backend task");
+    if let Err(source) = join_handle.await {
+        let stopped = TaskError::BackendTaskFailed {
+            source: source.into(),
+        };
+        let error = match request_id {
+            Some(request_id) => TaskError::DashPayContactRequestActionFailed {
+                request_id,
+                source: Box::new(stopped),
+            },
+            None => stopped,
+        };
+        if let Err(error) = sender.send(TaskResult::Error(error)).await {
+            tracing::error!(%error, "Failed to report a stopped backend task");
+        }
     }
 }
 
@@ -1201,6 +1236,7 @@ impl AppState {
     // Uses spawn_blocking + block_on to avoid Send bound issues with platform
     // SDK types (DataContract/Sdk references across await points).
     fn handle_backend_task(&mut self, task: BackendTask) {
+        let request_id = crate::backend_task::dashpay_request_id(&task);
         let sender = self.task_result_sender.clone();
         let watcher_sender = sender.clone();
         let app_context = self.current_app_context().clone();
@@ -1215,7 +1251,7 @@ impl AppState {
         });
         self.subtasks.spawn_sync(
             "backend_task_join_watcher",
-            forward_backend_task_join_error(join_handle, watcher_sender),
+            forward_backend_task_join_error(join_handle, watcher_sender, request_id),
         );
     }
 
@@ -1250,7 +1286,7 @@ impl AppState {
         });
         self.subtasks.spawn_sync(
             "backend_tasks_join_watcher",
-            forward_backend_task_join_error(join_handle, watcher_sender),
+            forward_backend_task_join_error(join_handle, watcher_sender, None),
         );
     }
 
@@ -1470,6 +1506,30 @@ impl AppState {
         }
     }
 
+    fn route_contact_request_result_to_hidden_hub(&mut self, result: &BackendTaskSuccessResult) {
+        if identity_hub_is_visible(self.selected_main_screen, self.screen_stack.is_empty()) {
+            return;
+        }
+        if let Some(Screen::IdentityHubScreen(hub)) = self
+            .main_screens
+            .get_mut(&RootScreenType::RootScreenIdentityHub)
+        {
+            hub.handle_contact_request_result(result);
+        }
+    }
+
+    fn route_contact_request_error_to_hidden_hub(&mut self, error: &TaskError) {
+        if identity_hub_is_visible(self.selected_main_screen, self.screen_stack.is_empty()) {
+            return;
+        }
+        if let Some(Screen::IdentityHubScreen(hub)) = self
+            .main_screens
+            .get_mut(&RootScreenType::RootScreenIdentityHub)
+        {
+            hub.handle_contact_request_error(error);
+        }
+    }
+
     /// Promote at most one queued passphrase request before overlay handling.
     fn activate_secret_prompt(&mut self, ctx: &egui::Context) {
         if self.active_secret_prompt.is_none()
@@ -1609,6 +1669,7 @@ impl App for AppState {
             match task_result {
                 TaskResult::Success(message) => {
                     let unboxed_message = *message;
+                    self.route_contact_request_result_to_hidden_hub(&unboxed_message);
                     match unboxed_message {
                         BackendTaskSuccessResult::None => {}
                         BackendTaskSuccessResult::Refresh => {
@@ -1771,6 +1832,7 @@ impl App for AppState {
                     // error banner here so the user sees one banner, not two.
                 }
                 TaskResult::Error(err) => {
+                    self.route_contact_request_error_to_hidden_hub(&err);
                     // Let the screen handle specific error types first.
                     // If handled, skip the generic error banner.
                     let handled = self.visible_screen_mut().display_task_error(&err);
@@ -2263,6 +2325,27 @@ mod migration_banner_tests {
             cold_start_backend_wait_timed_out(Some(timeout * 4), timeout),
             "a wait well past the timeout must fire",
         );
+    }
+}
+
+#[cfg(test)]
+mod contact_request_routing_tests {
+    use super::*;
+
+    #[test]
+    fn hidden_hub_needs_authoritative_contact_result_forwarding() {
+        assert!(!identity_hub_is_visible(
+            RootScreenType::RootScreenWalletsBalances,
+            true
+        ));
+        assert!(!identity_hub_is_visible(
+            RootScreenType::RootScreenIdentityHub,
+            false
+        ));
+        assert!(identity_hub_is_visible(
+            RootScreenType::RootScreenIdentityHub,
+            true
+        ));
     }
 }
 

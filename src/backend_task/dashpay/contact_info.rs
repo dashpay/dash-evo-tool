@@ -21,7 +21,9 @@ use dash_sdk::dpp::identity::{KeyType, Purpose, SecurityLevel};
 use dash_sdk::dpp::platform_value::{Bytes32, Value};
 use dash_sdk::drive::query::{WhereClause, WhereOperator};
 use dash_sdk::platform::documents::transitions::DocumentCreateTransitionBuilder;
+use dash_sdk::platform::proto::get_documents_request::get_documents_request_v0::Start;
 use dash_sdk::platform::{Document, DocumentQuery, FetchMany, Identifier};
+use dash_sdk::query_types::Documents;
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 use zeroize::Zeroizing;
@@ -366,6 +368,121 @@ fn encrypt_private_data(data: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, String> 
     Ok(result)
 }
 
+struct ExistingContactInfo {
+    document: Document,
+    derivation_index: u32,
+    enc_user_id_key: Zeroizing<[u8; 32]>,
+    private_data_key: Zeroizing<[u8; 32]>,
+}
+
+struct ContactInfoLookup {
+    existing: Option<ExistingContactInfo>,
+    next_derivation_index: u32,
+}
+
+const CONTACT_INFO_PAGE_SIZE: usize = 100;
+
+fn next_contact_info_page(docs: &Documents) -> Option<Start> {
+    (docs.len() == CONTACT_INFO_PAGE_SIZE)
+        .then(|| docs.keys().last())
+        .flatten()
+        .map(|last_id| Start::StartAfter(last_id.to_buffer().to_vec()))
+}
+
+async fn lookup_contact_info(
+    app_context: &Arc<AppContext>,
+    sdk: &Sdk,
+    identity: &QualifiedIdentity,
+    contact_user_id: Identifier,
+) -> Result<ContactInfoLookup, TaskError> {
+    let dashpay_contract = app_context.dashpay_contract.clone();
+    let identity_id = identity.identity.id();
+    let mut query = DocumentQuery::new(dashpay_contract, "contactInfo").map_err(|e| {
+        DashPayError::QueryCreation {
+            query_target: "DashPay contactInfo",
+            source: Box::new(e),
+        }
+    })?;
+    query = query.with_where(WhereClause {
+        field: "$ownerId".to_string(),
+        operator: WhereOperator::Equal,
+        value: Value::Identifier(identity_id.to_buffer()),
+    });
+    query.limit = CONTACT_INFO_PAGE_SIZE as u32;
+    let mut next_derivation_index = 0u32;
+
+    loop {
+        let existing_docs = Document::fetch_many(sdk, query.clone()).await?;
+        let next_page = next_contact_info_page(&existing_docs);
+
+        for doc in existing_docs.into_values().flatten() {
+            let props = doc.properties();
+            let Some(derivation_index) = props
+                .get("derivationEncryptionKeyIndex")
+                .and_then(|value| value.to_integer::<u32>().ok())
+            else {
+                continue;
+            };
+            next_derivation_index = next_derivation_index.max(derivation_index.saturating_add(1));
+            if props
+                .get("rootEncryptionKeyIndex")
+                .and_then(|value| value.to_integer::<u32>().ok())
+                .is_none()
+            {
+                continue;
+            }
+
+            let (enc_user_id_key, private_data_key) =
+                derive_contact_info_keys(app_context, identity, derivation_index).await?;
+            let Some(Value::Bytes(enc_user_id)) = props.get("encToUserId") else {
+                continue;
+            };
+            if decrypt_to_user_id(enc_user_id, &enc_user_id_key).ok()
+                == Some(contact_user_id.to_buffer())
+            {
+                return Ok(ContactInfoLookup {
+                    existing: Some(ExistingContactInfo {
+                        document: doc,
+                        derivation_index,
+                        enc_user_id_key,
+                        private_data_key,
+                    }),
+                    next_derivation_index,
+                });
+            }
+        }
+
+        match next_page {
+            Some(start) => query.start = Some(start),
+            None => break,
+        }
+    }
+
+    Ok(ContactInfoLookup {
+        existing: None,
+        next_derivation_index,
+    })
+}
+
+pub(super) async fn contact_info_is_hidden(
+    app_context: &Arc<AppContext>,
+    sdk: &Sdk,
+    identity: &QualifiedIdentity,
+    contact_user_id: Identifier,
+    unreadable: UnreadableContactInfoPolicy,
+) -> Result<bool, TaskError> {
+    let lookup = lookup_contact_info(app_context, sdk, identity, contact_user_id).await?;
+    let Some(existing) = lookup.existing else {
+        return Ok(false);
+    };
+    Ok(read_contact_info_private_data(
+        Some(&existing.document),
+        &existing.private_data_key,
+        unreadable,
+    )?
+    .display_hidden)
+}
+
 /// Write the `contactInfo` document for `contact_user_id`, creating it when the
 /// identity has none yet and replacing it otherwise.
 ///
@@ -388,83 +505,22 @@ pub async fn create_or_update_contact_info(
 ) -> Result<BackendTaskSuccessResult, TaskError> {
     let dashpay_contract = app_context.dashpay_contract.clone();
     let identity_id = identity.identity.id();
-
-    // Query for existing contactInfo document
-    let mut query = DocumentQuery::new(dashpay_contract.clone(), "contactInfo").map_err(|e| {
-        DashPayError::QueryCreation {
-            query_target: "DashPay contactInfo",
-            source: Box::new(e),
-        }
-    })?;
-
-    query = query.with_where(WhereClause {
-        field: "$ownerId".to_string(),
-        operator: WhereOperator::Equal,
-        value: Value::Identifier(identity_id.to_buffer()),
-    });
-    query.limit = 100; // Get all contact info documents
-
-    let existing_docs = Document::fetch_many(sdk, query).await?;
-
-    // Check if we already have a contactInfo for this contact
-    let mut found_existing_doc = None;
-    let mut next_derivation_index = 0u32;
-
-    // Try to find existing contactInfo for this contact
-    for (_doc_id, doc) in existing_docs.iter() {
-        if let Some(doc) = doc {
-            let props = doc.properties();
-
-            // Get the derivation index used for this document
-            if let Some(deriv_idx) = props
-                .get("derivationEncryptionKeyIndex")
-                .and_then(|value| value.to_integer::<u32>().ok())
-            {
-                // Track the highest derivation index
-                if deriv_idx >= next_derivation_index {
-                    next_derivation_index = deriv_idx + 1;
-                }
-
-                // Get the root key index to derive keys
-                if let Some(_root_idx) = props
-                    .get("rootEncryptionKeyIndex")
-                    .and_then(|value| value.to_integer::<u32>().ok())
-                {
-                    // Derive keys for this document
-                    let (enc_user_id_key, _) =
-                        derive_contact_info_keys(app_context, &identity, deriv_idx).await?;
-
-                    // Decrypt encToUserId to check if it matches
-                    if let Some(Value::Bytes(enc_user_id)) = props.get("encToUserId") {
-                        match decrypt_to_user_id(enc_user_id, &enc_user_id_key) {
-                            Ok(decrypted_id) if decrypted_id == contact_user_id.to_buffer() => {
-                                // Found existing contactInfo for this contact
-                                found_existing_doc = Some(doc.clone());
-                                break;
-                            }
-                            _ => {}
-                        }
-                    }
-                }
+    let lookup = lookup_contact_info(app_context, sdk, &identity, contact_user_id).await?;
+    let (found_existing_doc, derivation_index, enc_user_id_key, private_data_key) =
+        match lookup.existing {
+            Some(existing) => (
+                Some(existing.document),
+                existing.derivation_index,
+                existing.enc_user_id_key,
+                existing.private_data_key,
+            ),
+            None => {
+                let derivation_index = lookup.next_derivation_index;
+                let (enc_user_id_key, private_data_key) =
+                    derive_contact_info_keys(app_context, &identity, derivation_index).await?;
+                (None, derivation_index, enc_user_id_key, private_data_key)
             }
-        }
-    }
-
-    // Use the found derivation index or the next available one
-    let derivation_index = if found_existing_doc.is_some() {
-        // Use the same derivation index for updates
-        found_existing_doc
-            .as_ref()
-            .and_then(|doc| doc.properties().get("derivationEncryptionKeyIndex"))
-            .and_then(|value| value.to_integer::<u32>().ok())
-            .unwrap_or(0)
-    } else {
-        next_derivation_index
-    };
-
-    // Derive encryption keys
-    let (enc_user_id_key, private_data_key) =
-        derive_contact_info_keys(app_context, &identity, derivation_index).await?;
+        };
 
     // Encrypt toUserId
     let encrypted_user_id = encrypt_to_user_id(&contact_user_id.to_buffer(), &enc_user_id_key)
@@ -639,6 +695,21 @@ mod tests {
 
     fn id(byte: u8) -> Identifier {
         Identifier::from_bytes(&[byte; 32]).expect("32-byte identifier")
+    }
+
+    #[test]
+    fn a_full_contact_info_page_produces_a_cursor_for_reconciliation() {
+        let mut docs = Documents::new();
+        for byte in 0..CONTACT_INFO_PAGE_SIZE as u8 {
+            docs.insert(id(byte), None);
+        }
+
+        assert_eq!(
+            next_contact_info_page(&docs),
+            Some(Start::StartAfter(id(99).to_buffer().to_vec()))
+        );
+        docs.shift_remove(&id(99));
+        assert_eq!(next_contact_info_page(&docs), None);
     }
 
     /// A stored `contactInfo` document whose `privateData` holds `accounts`,

@@ -132,7 +132,7 @@ fn is_wallet_touching(task: &BackendTask) -> bool {
 /// [`TaskError::DashPayContactRequestActionFailed`] so the Hub releases only that
 /// request's in-flight guard; every other task names no request and keeps the
 /// bare [`TaskError::WalletStorageNotReady`].
-fn dashpay_request_id(task: &BackendTask) -> Option<Identifier> {
+pub(crate) fn dashpay_request_id(task: &BackendTask) -> Option<Identifier> {
     let BackendTask::DashPayTask(task) = task else {
         return None;
     };
@@ -643,6 +643,19 @@ impl AppContext {
         {
             return Err(TaskError::ShieldedOperationsUnavailable);
         }
+
+        let _contact_request_claim = match dashpay_request_id(&task) {
+            Some(request_id) => match self.try_claim_contact_request_action(request_id) {
+                Some(claim) => Some(claim),
+                None => {
+                    return Err(TaskError::DashPayContactRequestActionFailed {
+                        request_id,
+                        source: Box::new(TaskError::DashPayContactRequestActionInProgress),
+                    });
+                }
+            },
+            None => None,
+        };
 
         // A dispatched identity load is recorded `Submitted` before this task
         // exists, and only the load's own claim closes that record out. Both gates
@@ -1218,6 +1231,28 @@ mod tests {
             None,
             "a non-DashPay task names no request"
         );
+    }
+
+    #[test]
+    fn app_context_allows_only_one_backend_execution_per_contact_request() {
+        use crate::context::test_support::test_app_context;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(tmp.path());
+        let request_id = Identifier::from([0x33; 32]);
+        let first = ctx
+            .try_claim_contact_request_action(request_id)
+            .expect("first execution claims the request");
+
+        assert!(ctx.contact_request_action_is_in_flight(&request_id));
+        assert!(
+            ctx.try_claim_contact_request_action(request_id).is_none(),
+            "another UI surface must not start the same paid request action"
+        );
+
+        drop(first);
+        assert!(!ctx.contact_request_action_is_in_flight(&request_id));
+        assert!(ctx.try_claim_contact_request_action(request_id).is_some());
     }
 
     /// End-to-end: the migration gate wraps a rejected DashPay contact action in

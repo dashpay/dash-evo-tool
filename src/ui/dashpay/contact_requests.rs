@@ -331,7 +331,16 @@ impl ContactRequests {
         if let Some((dialog, request)) = &mut self.accept_confirmation_dialog {
             let response = dialog.show(ui);
             if response.inner.dialog_response == Some(ConfirmationStatus::Confirmed) {
-                if let Some(identity) = &self.selected_identity {
+                if self
+                    .app_context
+                    .contact_request_action_is_in_flight(&request.request_id)
+                {
+                    MessageBanner::set_global(
+                        ui.ctx(),
+                        "This contact request action is already running.",
+                        MessageType::Info,
+                    );
+                } else if let Some(identity) = &self.selected_identity {
                     // Don't mark as accepted yet - wait for backend confirmation
                     self.loading = true;
                     self.request_in_flight = Some(request.request_id);
@@ -355,7 +364,16 @@ impl ContactRequests {
         if let Some((dialog, request)) = &mut self.reject_confirmation_dialog {
             let response = dialog.show(ui);
             if response.inner.dialog_response == Some(ConfirmationStatus::Confirmed) {
-                if let Some(identity) = &self.selected_identity {
+                if self
+                    .app_context
+                    .contact_request_action_is_in_flight(&request.request_id)
+                {
+                    MessageBanner::set_global(
+                        ui.ctx(),
+                        "This contact request action is already running.",
+                        MessageType::Info,
+                    );
+                } else if let Some(identity) = &self.selected_identity {
                     self.loading = true;
                     self.request_in_flight = Some(request.request_id);
 

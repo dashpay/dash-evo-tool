@@ -153,10 +153,9 @@ impl IdentityHubScreen {
         }
     }
 
-    /// Reset all identity-scoped state after the owning application context
-    /// changes (for example, on a network switch). Unlike [`ScreenLike::refresh`]
-    /// this also drops the paid-action guards and pending confirmations, which
-    /// belong to the identities of the context being left.
+    /// Reset identity-scoped view data after the owning application context
+    /// changes (for example, on a network switch). Paid-action guards survive
+    /// because only the correlated backend outcome can prove the task stopped.
     pub(crate) fn reset_for_context_change(&mut self) {
         self.reset_contacts_for_identity_change();
         self.profile_cache.reset();
@@ -226,6 +225,54 @@ impl IdentityHubScreen {
             confirmation,
             MessageType::Success,
         );
+    }
+
+    pub(crate) fn handle_contact_request_result(
+        &mut self,
+        result: &BackendTaskSuccessResult,
+    ) -> bool {
+        match result {
+            BackendTaskSuccessResult::DashPayContactRequestAccepted(request_id) => {
+                self.resolve_request(request_id, "Contact request accepted.");
+            }
+            BackendTaskSuccessResult::DashPayContactRequestRejected(request_id) => {
+                self.resolve_request(request_id, "Contact request declined.");
+            }
+            BackendTaskSuccessResult::DashPayContactRequestCancelled(request_id) => {
+                self.resolve_request(request_id, "Contact request cancelled.");
+            }
+            BackendTaskSuccessResult::DashPayContactAlreadyEstablished { request_id, .. } => {
+                self.pending_contact_info_tasks
+                    .remove(&ContactInfoTaskKey::Request(*request_id));
+                self.contacts_state.remove_request(request_id);
+                self.contacts_state.invalidate();
+                MessageBanner::set_global(
+                    self.app_context.egui_ctx(),
+                    "You are already contacts with this person.",
+                    MessageType::Info,
+                );
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    pub(crate) fn handle_contact_request_error(&mut self, error: &TaskError) -> bool {
+        if !matches!(error, TaskError::DashPayContactRequestActionFailed { .. }) {
+            return false;
+        }
+        if let Some(key) = contact_info_read_error_key(error)
+            && self.pending_contact_info_tasks.contains_key(&key)
+        {
+            self.contacts_state.invalidate();
+            self.queue_contact_info_confirmation(key);
+            return true;
+        }
+        if let Some(key) = contact_info_error_key(error) {
+            self.pending_contact_info_tasks.remove(&key);
+        }
+        release_request_guard_for_error(&mut self.contacts_state, error);
+        true
     }
 
     /// Apply a breadcrumb-switcher effect: wallet / identity switches mutate the
@@ -460,6 +507,10 @@ impl ScreenLike for IdentityHubScreen {
         // Feed an async DashPay profile load back into the cache the tabs read.
         self.profile_cache.record_result(&result);
 
+        if self.handle_contact_request_result(&result) {
+            return;
+        }
+
         match &result {
             // A confirmed profile-save success: commit the edit baseline on the
             // Settings tab so the Save button re-enables only after the next
@@ -494,18 +545,6 @@ impl ScreenLike for IdentityHubScreen {
                     self.contacts_state.record_contacts(contacts.clone());
                 }
             }
-            // A resolved request: drop the row now so the list reflects the
-            // action immediately, then re-arm the load so the authoritative
-            // lists (including the new contact, on accept) replace it.
-            BackendTaskSuccessResult::DashPayContactRequestAccepted(request_id) => {
-                self.resolve_request(request_id, "Contact request accepted.");
-            }
-            BackendTaskSuccessResult::DashPayContactRequestRejected(request_id) => {
-                self.resolve_request(request_id, "Contact request declined.");
-            }
-            BackendTaskSuccessResult::DashPayContactRequestCancelled(request_id) => {
-                self.resolve_request(request_id, "Contact request cancelled.");
-            }
             // A confirmed contactInfo write — on this tab that is an unhide.
             // Re-arm the load so the restored contact comes back from the
             // authoritative list, not just the optimistic local move.
@@ -526,24 +565,17 @@ impl ScreenLike for IdentityHubScreen {
                     );
                 }
             }
-            // The counterpart answered while the row was on screen. Retire the
-            // exact request guard and reload the authoritative lists.
-            BackendTaskSuccessResult::DashPayContactAlreadyEstablished { request_id, .. } => {
-                self.pending_contact_info_tasks
-                    .remove(&ContactInfoTaskKey::Request(*request_id));
-                self.contacts_state.remove_request(request_id);
-                self.contacts_state.invalidate();
-                MessageBanner::set_global(
-                    self.app_context.egui_ctx(),
-                    "You are already contacts with this person.",
-                    MessageType::Info,
-                );
-            }
             _ => {}
         }
     }
 
     fn display_task_error(&mut self, error: &TaskError) -> bool {
+        if self.handle_contact_request_error(error) {
+            return matches!(
+                contact_info_read_error_key(error),
+                Some(key) if self.pending_contact_info_tasks.contains_key(&key)
+            );
+        }
         if let Some(key) = contact_info_read_error_key(error)
             && self.pending_contact_info_tasks.contains_key(&key)
         {

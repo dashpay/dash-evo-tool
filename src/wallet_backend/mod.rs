@@ -71,7 +71,10 @@ pub mod wallet_seed_store;
 pub(crate) mod wallet_seed_store;
 
 pub use dashpay::DashpayView;
-pub(crate) use dashpay::{derive_contact_info_encryption_keys, derive_contact_xpub_material};
+pub(crate) use dashpay::{
+    ContactRequestActionKind, ContactRequestActionPhase, derive_contact_info_encryption_keys,
+    derive_contact_xpub_material,
+};
 
 pub(crate) use det_platform_signer::{DetPlatformSigner, PlatformPathIndex};
 pub(crate) use det_signer::{DetSigner, DetSignerError};
@@ -243,6 +246,10 @@ struct Inner {
     /// that joins an active flight awaits the same success or typed error.
     registration_flights:
         std::sync::Mutex<std::collections::BTreeMap<WalletSeedHash, Arc<RegistrationFlight>>>,
+    /// Request-wide async locks for paid DashPay actions. The Hub and legacy
+    /// DashPay screens have separate UI state, so backend serialization is the
+    /// final guard against two callers paying for the same request concurrently.
+    dashpay_request_action_locks: dashpay::ContactRequestActionLocks,
     /// Cache of `Arc<PlatformWallet>` keyed by `WalletId`, populated at
     /// registration. Lets sync code reach an upstream wallet handle without an
     /// async hop (e.g. DashPay address-pool scanning).
@@ -409,6 +416,7 @@ impl WalletBackend {
                 #[cfg(test)]
                 registration_test_failure: std::sync::atomic::AtomicBool::new(false),
                 registration_flights: std::sync::Mutex::new(std::collections::BTreeMap::new()),
+                dashpay_request_action_locks: dashpay::ContactRequestActionLocks::default(),
                 wallets: std::sync::RwLock::new(std::collections::BTreeMap::new()),
                 peer,
                 network,

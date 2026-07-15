@@ -15,12 +15,8 @@ use dash_sdk::platform::{Document, Identifier};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-/// Backstop for a guard whose task result never arrives. Results are delivered
-/// only to the screen that is visible when they land, so an action resolved
-/// while the user is on another screen leaves its guard behind; without an
-/// expiry that request's buttons would stay disabled for the rest of the
-/// session. It is far longer than any state transition takes, so it never
-/// re-enables an action that is genuinely still running.
+/// Threshold for surfacing an unusually long-running request without releasing
+/// its paid-action guard.
 const REQUEST_IN_FLIGHT_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
 /// A single cached contact-request entry, derived from a raw
@@ -41,8 +37,7 @@ pub struct ContactRequestEntry {
 /// Contacts-tab state owned by the hub screen.
 ///
 /// The load guard debounces the backend fetch to one dispatch per tab entry.
-/// Routine resets retain paid-action guards; identity/network changes clear
-/// them via [`ContactsState::reset_for_identity_change`].
+/// Every view reset retains paid-action guards until a correlated result lands.
 #[derive(Debug, Default, Clone)]
 pub struct ContactsState {
     /// `true` once the populated shell has dispatched its loads for this tab
@@ -67,7 +62,7 @@ pub struct ContactsState {
     /// request ID and stamped with the dispatch time. Each of those actions is a
     /// signed, paid-for state transition, so a row keeps its buttons disabled
     /// until its result lands — a second click would buy a second transition.
-    /// Only that result, an identity change, or [`REQUEST_IN_FLIGHT_TIMEOUT`]
+    /// Only a correlated terminal result or explicit confirmation cancellation
     /// releases the guard.
     in_flight: HashMap<Identifier, Instant>,
 }
@@ -94,10 +89,9 @@ impl ContactsState {
         self.search.clear();
     }
 
-    /// Reset identity-scoped data, including guards that belong to the old identity.
+    /// Reset identity-scoped view data while retaining paid work still running.
     pub fn reset_for_identity_change(&mut self) {
         self.reset();
-        self.in_flight.clear();
     }
 
     /// Re-arm the load without clearing what is already on screen. Used after a
@@ -237,8 +231,13 @@ impl ContactsState {
     /// Whether an action for this request is already running. Drives the row's
     /// disabled state, so the user sees why the buttons do not respond.
     pub fn is_in_flight(&self, request_id: &Identifier) -> bool {
+        self.in_flight.contains_key(request_id)
+    }
+
+    /// Whether an authoritative result has taken unusually long to arrive.
+    pub fn is_taking_long(&self, request_id: &Identifier) -> bool {
         self.in_flight.get(request_id).is_some_and(|started| {
-            Instant::now().saturating_duration_since(*started) < REQUEST_IN_FLIGHT_TIMEOUT
+            Instant::now().saturating_duration_since(*started) >= REQUEST_IN_FLIGHT_TIMEOUT
         })
     }
 
@@ -646,17 +645,18 @@ mod tests {
     }
 
     #[test]
-    fn a_guard_whose_result_never_arrived_expires_instead_of_stranding_the_request() {
+    fn a_guard_older_than_five_minutes_still_blocks_dispatch() {
         let mut state = ContactsState::default();
         state.in_flight.insert(
             id(2),
             Instant::now() - REQUEST_IN_FLIGHT_TIMEOUT - Duration::from_secs(1),
         );
 
-        assert!(!state.is_in_flight(&id(2)));
+        assert!(state.is_in_flight(&id(2)));
+        assert!(state.is_taking_long(&id(2)));
         assert!(
-            state.begin_request(id(2)),
-            "a result delivered to another screen must not disable the request forever"
+            !state.begin_request(id(2)),
+            "elapsed time must not permit a second paid action"
         );
     }
 
@@ -678,13 +678,14 @@ mod tests {
     }
 
     #[test]
-    fn identity_change_reset_clears_the_in_flight_guards() {
+    fn identity_change_reset_preserves_the_in_flight_guards() {
         let mut state = ContactsState::default();
         assert!(state.begin_request(id(2)));
 
         state.reset_for_identity_change();
 
-        assert!(!state.is_in_flight(&id(2)));
+        assert!(state.is_in_flight(&id(2)));
+        assert!(!state.begin_request(id(2)));
     }
 
     #[test]

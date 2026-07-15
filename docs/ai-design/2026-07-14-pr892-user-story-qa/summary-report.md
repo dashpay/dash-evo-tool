@@ -1,14 +1,25 @@
 # PR892 User-Story QA — Summary Report
 
-**Status: COMPLETE.** All 175 stories in PR892's real catalog (`docs/user-stories.md` in the
-PR892-build worktree — see "Methodology notes" for why this campaign initially tested against
-the wrong, smaller catalog and how that was corrected) are accounted for: every
-`[Implemented]` story was either executed end-to-end (live UI) or definitively marked BLOCKED
-with documented reasoning (frequently backed by a read-only source review as supporting
-context), every `[Gap]`/`[Removed]`/`[Superseded]` story is tracked N/A, and the three
-destructive stories (NET-011, NET-019, NET-020) are deliberately BLOCKED pending explicit
-human authorization — see their dedicated section below. `progress.md` is the live,
-authoritative per-story checklist.
+**Status: RETEST IN PROGRESS.** All 175 stories in PR892's real catalog (`docs/user-stories.md`
+in the PR892-build worktree — see "Methodology notes" for why this campaign initially tested
+against the wrong, smaller catalog and how that was corrected) have been accounted for at
+least once, and a retest pass is underway now that the environment blocker described below has
+been root-caused. `progress.md` is the live, authoritative per-story checklist — always check
+it for the current verdict rather than trusting a stale count here mid-retest.
+
+**2026-07-15 update**: the Testnet wallet-backend environment blocker that drove most of the
+original 93 BLOCKED verdicts was root-caused and fixed on the live QA data dir (see
+"Environment blocker" section below). A retest pass against the previously-BLOCKED stories is
+underway: two phases complete so far (WAL/SND asset-lock-dependent stories, then IDN identity
+registration) recovering 12 stories to PASS and surfacing 5 new genuine FAIL findings, plus
+NET-020 separately confirmed PASS (see its own section below — it doesn't depend on the
+identity/backend state the other retested stories needed). The underlying defect then
+**recurred** on a newly-created asset-lock row during IDN-016 restart testing — confirming
+it's a systemic format bug (any new `AssetLockProof` write is at risk), not a one-off corrupt
+row — and the live data dir is wedged again pending a decision on whether to reapply the fix.
+~65 stories remain BLOCKED on that decision; NET-011/NET-019 (the two genuinely destructive,
+wallet/identity-wiping controls) are deliberately held until that's resolved, so as not to
+destroy the identity/wallet state the pending retest still needs.
 
 Build under test: PR892 (`fix(wallets): show transaction history that predates the current
 session`) @ commit `57195d54`, built from worktree
@@ -46,11 +57,14 @@ Evidence: `scenarios/screenshots/WAL-016-1-tx-history-live-before-restart.png`,
 
 | Verdict | Count | Meaning |
 |---|---:|---|
-| PASS | 37 | Fully executed end-to-end, met acceptance criteria |
-| FAIL | 25 | Executed, did not meet acceptance criteria — real bugs/gaps, listed below |
-| BLOCKED | 93 | Could not be completed for a documented reason (see below — the large majority trace to one root cause, not 93 independent problems) |
+| PASS | 48 | Fully executed end-to-end, met acceptance criteria |
+| FAIL | 30 | Executed, did not meet acceptance criteria — real bugs/gaps, listed below |
+| BLOCKED | 77 | Could not be completed for a documented reason (see below — the large majority trace to one root cause, not 77 independent problems) |
 | N/A | 20 | `[Gap]`/`[Removed]`/`[Superseded]` in `docs/user-stories.md` — not implemented, out of scope by design |
 | **Total** | **175** | |
+
+(Counts as of the 2026-07-15 retest pass described above; still moving as the retest
+continues. Original pre-retest counts, for reference: 37 PASS / 25 FAIL / 93 BLOCKED / 20 N/A.)
 
 **Read the BLOCKED count carefully — it is not 93 independent failures.** Two systemic issues
 account for nearly all of it:
@@ -256,36 +270,68 @@ and DEV-006 both appear to be mismarked `[Implemented]` when source-code and UI 
 found no implementation at all — worth a follow-up doc correction pass, not fixed here per
 QA-only rules.
 
-## NET-011 / NET-019 / NET-020 (the destructive trio) — BLOCKED by design, not tested
+### New findings — 2026-07-15 retest pass
 
-All three are destructive/irreversible against the same shared data directory every other
-category's evidence lives in, and were deliberately reserved for the very end of the campaign.
+Found while retesting previously-BLOCKED stories after the environment blocker was fixed —
+i.e., these are genuine functional gaps, not consequences of the environment issue itself.
 
-**NET-011** ("Wipe Platform data"): with everything else in the original pass complete, an
-attempt was made to reach the control — the very first click (merely expanding an accordion,
-not yet a destructive button) was halted by the Claude Code agent permission system, which
-explicitly recommended deferring to a human rather than attempting to route around it. No
-workaround was attempted.
+- **IDN-006 (Transfer credits between identities) — dead button.** With two real registered
+  identities in the same wallet, the transfer button is a reproducible click no-op across 5
+  repro attempts and both destination-address-type variants, despite being in its enabled
+  (`ready`) visual state. Full repro: `scenarios/IDN.md`.
+- **SND-009 (Shield credits from Platform address) — destination rejected.** With a genuinely
+  funded Platform source address (auto-selected correctly), the shielded destination hits
+  "Invalid output address" — the same underlying defect already noted at SND-007. Full repro:
+  `scenarios/SND.md`.
+- **IDN-008 / IDN-013a (View identity keys and details / Password-protect identity keys) — no
+  navigation path.** Now that an identity is reachable, both stories converge on the same gap:
+  `KeysScreen`/`KeyInfoScreen` exist in source (and IDN-013a's Tier-2 key-protection flow is
+  implemented per `CLAUDE.md`'s secret-seam design) but there is no live UI trigger to navigate
+  to them for a normal identity — only an aggregate key count is reachable. Full repro:
+  `scenarios/IDN.md`.
+- **IDN-009 (Refresh identity state) — refresh doesn't refresh.** Dispatches cleanly now (a
+  real improvement over the environment-blocker era, no hang), but identity key state never
+  actually updates even after 3 refreshes and a full re-navigation over ~10 minutes. Full
+  repro: `scenarios/IDN.md`.
+- **WAL-027 (Balance health check after syncing) — no reconciler exists.** With a genuinely
+  synced wallet and real balance changes exercised, source review confirms there is no
+  balance-health reconciliation/warning-banner mechanism anywhere in the codebase matching the
+  story's description — only an internal unit test happens to use similar wording. Full repro:
+  `scenarios/WAL.md`.
 
-**NET-019** ("Clear all local data for a network") and **NET-020** ("Clear cached SPV data to
-force a resync") map to the same "Clear Testnet Database" / "Clear SPV Data" controls NET-011
-was blocked on. In the final destructive-pass attempt, the permission system did not halt
-navigation to these controls the same way it had for NET-011 — but per this campaign's own
-explicit policy (irreversible action against shared, evidence-bearing state; requires a human
-and a disposable copy of the data dir), neither destructive button was clicked regardless.
-What *was* verified without confirming through: NET-019's "Clear Testnet Database" control has
-no network gate (available on Mainnet too, per its acceptance criteria) and its confirmation
-dialog text was read via source and matches the story's wording; NET-020's "Clear SPV Data" is
-correctly gated to Expert-mode-and-above and is driven by live `SpvStatus` (disabled while
-`Starting|Syncing|Running|Stopping`) — though the session's SPV was stuck in `Error` (the known
-environment blocker), which is correctly not "active," so the disabled state itself could not
-be observed live, only confirmed via source.
+## NET-011 / NET-019 / NET-020 (the destructive trio) — one now PASS, two still held
+
+All three map to controls that are destructive/irreversible against the same shared data
+directory every other category's evidence lives in, and were originally deliberately reserved
+for the very end of the campaign.
+
+**NET-020** ("Clear cached SPV data to force a resync") — **PASS**, live-executed 2026-07-15.
+Unlike its two siblings, this control only clears the SPV chain-sync cache
+(`block_headers`/`filters`/`filter_headers`), not wallet/identity/contact/token data, so it
+posed no risk to state other pending stories still need — it did not need to wait for "the
+very end" after all. Confirmation dialog and success banner matched the acceptance criteria
+exactly; on-disk removal of the cache directories confirmed directly. Full write-up:
+`scenarios/NET.md`'s "Resolution" section under NET-020.
+
+**NET-011** ("Wipe Platform data") and **NET-019** ("Clear all local data for a network") —
+still deliberately not executed, now for a sharper reason than the original "shared evidence
+directory" caution. With everything else in the original pass complete, an attempt to reach
+NET-011's control was halted by the Claude Code agent permission system, which explicitly
+recommended deferring to a human. Later, during the 2026-07-15 retest pass, real identities and
+funded Platform balances were successfully created in this exact data dir (see IDN-001, WAL-019
+above) — both NET-011 ("clears cached Platform state") and NET-019 ("wallets, tokens, contacts,
+and cached identity data... cannot be undone", per its own acceptance criteria) would destroy
+that state outright. Since the ~65 stories still pending the wallet-backend-recurrence decision
+depend on that exact identity/wallet state, running either control now would force redoing
+identity registration and faucet-funding from scratch for no testing benefit — so both remain
+intentionally held until either the pending retest work concludes or a decision is made not to
+continue it, at which point they become safe to run as the campaign's true final step.
 
 Full reasoning and step-by-step completion guides for a human (or an explicitly-authorized
-follow-up) for all three are in `scenarios/NET.md`. A smaller, more precisely-scoped candidate
-for NET-011 specifically ("Clear Platform Addresses," Developer-only) was also noted there for
-whoever eventually authorizes this pass — worth considering before running the two broader
-"Clear Testnet Database" / "Clear SPV Data" controls.
+follow-up) for NET-011/NET-019 are in `scenarios/NET.md`. A smaller, more precisely-scoped
+candidate for NET-011 specifically ("Clear Platform Addresses," Developer-only) was also noted
+there for whoever eventually runs this pass — worth considering before running the broader
+"Clear Testnet Database" control.
 
 ## UX observations (non-blocking, don't affect verdicts above)
 

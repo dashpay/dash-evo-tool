@@ -917,7 +917,9 @@ impl AppContext {
 
         // Estimate the top-up fee with the active network fee multiplier
         // (context estimator) so the figure shown to the user is accurate.
-        let estimated_fee = self.fee_estimator().estimate_identity_topup();
+        let estimated_fee = self
+            .fee_estimator()
+            .estimate_identity_topup_from_addresses(inputs.len());
 
         tracing::info!(
             "top_up_identity_from_platform_addresses: identity={}, inputs={:?}",

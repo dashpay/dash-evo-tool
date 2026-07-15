@@ -762,13 +762,18 @@ pub fn format_credits(credits: u64) -> String {
 /// Calculate the estimated fee for a platform address funds transfer.
 ///
 /// Uses [`PlatformFeeEstimator`] for base costs (input/output fees) plus storage fees.
-pub(crate) fn estimate_platform_fee(estimator: &PlatformFeeEstimator, input_count: usize) -> u64 {
+pub(crate) fn estimate_platform_fee(
+    estimator: &PlatformFeeEstimator,
+    input_count: usize,
+    output_count: usize,
+) -> u64 {
     let inputs = input_count.max(1);
+    let outputs = output_count.max(1);
 
     // Base fee from Platform's min fee structure
     // - 500,000 credits per input (address_funds_transfer_input_cost)
     // - 6,000,000 credits per output (address_funds_transfer_output_cost)
-    let base_fee = estimator.estimate_address_funds_transfer(inputs, 1);
+    let base_fee = estimator.estimate_address_funds_transfer(inputs, outputs);
 
     // Add storage fees for serialized input bytes only
     // (outputs don't add significant serialization overhead)
@@ -973,7 +978,7 @@ pub(crate) fn allocate_platform_addresses(
 
     allocate_platform_addresses_with_fee(addresses, amount_credits, destination, |_| {
         // Keep the legacy behavior: use a worst-case fee based on max possible inputs.
-        estimate_platform_fee(estimator, max_inputs.max(1))
+        estimate_platform_fee(estimator, max_inputs.max(1), 1)
     })
 }
 
@@ -1069,6 +1074,33 @@ pub fn shielded_fee_for_actions(
 ) -> Result<u64, Box<dash_sdk::dpp::ProtocolError>> {
     use dash_sdk::dpp::shielded::compute_minimum_shielded_fee;
     compute_minimum_shielded_fee(num_actions, platform_version).map_err(Box::new)
+}
+
+/// Shielded route whose protocol-specific fee should be estimated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShieldedFeeRoute {
+    Transfer,
+    Unshield,
+    Withdrawal,
+}
+
+/// Compute the protocol fee for a shielded route and Orchard action count.
+pub fn shielded_route_fee_for_actions(
+    route: ShieldedFeeRoute,
+    num_actions: usize,
+    platform_version: &PlatformVersion,
+) -> Result<u64, Box<dash_sdk::dpp::ProtocolError>> {
+    use dash_sdk::dpp::shielded::{compute_shielded_unshield_fee, compute_shielded_withdrawal_fee};
+
+    match route {
+        ShieldedFeeRoute::Transfer => shielded_fee_for_actions(num_actions, platform_version),
+        ShieldedFeeRoute::Unshield => {
+            compute_shielded_unshield_fee(num_actions, platform_version).map_err(Box::new)
+        }
+        ShieldedFeeRoute::Withdrawal => {
+            compute_shielded_withdrawal_fee(num_actions, platform_version).map_err(Box::new)
+        }
+    }
 }
 
 /// Fee headroom (credits) to reserve from the platform balance when shielding
@@ -1552,9 +1584,21 @@ mod tests {
         let addresses = addrs(&[(1, 10_000_000_000)]);
         let result = allocate_platform_addresses(&estimator, &addresses, 1_000_000, None);
 
-        assert_eq!(result.estimated_fee, estimate_platform_fee(&estimator, 1));
+        assert_eq!(
+            result.estimated_fee,
+            estimate_platform_fee(&estimator, 1, 1)
+        );
         assert_eq!(result.shortfall, 0);
         assert_eq!(result.fee_payer_index, 0);
         assert_eq!(result.inputs.get(&pa(1)).copied(), Some(1_000_000));
+    }
+
+    #[test]
+    fn platform_fee_accounts_for_every_output() {
+        let estimator = PlatformFeeEstimator::new();
+        let one_output = estimate_platform_fee(&estimator, 1, 1);
+        let two_outputs = estimate_platform_fee(&estimator, 1, 2);
+
+        assert!(two_outputs > one_output);
     }
 }

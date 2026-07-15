@@ -8,11 +8,12 @@ use crate::context::feature_gate::FeatureGate;
 use crate::model::address::{AddressKind, ValidatedAddress};
 use crate::model::amount::{Amount, DASH_DECIMAL_PLACES};
 use crate::model::fee_estimation::{
-    MAX_PLATFORM_INPUTS, PlatformFeeEstimator, allocate_platform_addresses,
-    allocate_platform_addresses_with_fee, core_max_send_amount_duffs, core_max_send_reserve_duffs,
-    estimate_address_funding_fee_from_transition, estimate_platform_fee,
+    AddressAllocationResult, MAX_PLATFORM_INPUTS, PlatformFeeEstimator, ShieldedFeeRoute,
+    allocate_platform_addresses, allocate_platform_addresses_with_fee, core_max_send_amount_duffs,
+    core_max_send_reserve_duffs, estimate_address_funding_fee_from_transition,
+    estimate_core_l1_send_fee_duffs, estimate_platform_fee,
     estimate_withdrawal_fee_from_transition, format_credits_as_dash, format_duffs_as_dash,
-    shield_from_balance_fee_headroom,
+    shield_from_balance_fee_headroom, shielded_route_fee_for_actions,
 };
 use crate::model::qualified_identity::QualifiedIdentity;
 use crate::model::user_role::UserRole;
@@ -198,6 +199,24 @@ pub struct AdvancedOutput {
     pub amount: String,
 }
 
+fn render_estimated_fee(ui: &mut Ui, estimated_fee: Option<u64>) {
+    let Some(estimated_fee) = estimated_fee.filter(|fee| *fee > 0) else {
+        return;
+    };
+    let dark_mode = ui.style().visuals.dark_mode;
+    ui.horizontal(|ui| {
+        ui.label(
+            RichText::new("Estimated fee:")
+                .color(DashColors::text_secondary(dark_mode))
+                .strong(),
+        );
+        ui.label(
+            RichText::new(format_credits_as_dash(estimated_fee))
+                .color(DashColors::text_primary(dark_mode)),
+        );
+    });
+}
+
 pub struct WalletSendScreen {
     pub app_context: Arc<AppContext>,
     pub selected_wallet: Option<Arc<RwLock<Wallet>>>,
@@ -299,7 +318,7 @@ impl WalletSendScreen {
 
         let usable_count = sorted_addresses.len().min(MAX_PLATFORM_INPUTS);
         if usable_count == 0 {
-            return estimate_platform_fee(fee_estimator, 1);
+            return estimate_platform_fee(fee_estimator, 1, 1);
         }
 
         let dest_kind = self.validated_destination.as_ref().map(|v| v.kind());
@@ -323,7 +342,214 @@ impl WalletSendScreen {
             }
         }
 
-        estimate_platform_fee(fee_estimator, usable_count)
+        estimate_platform_fee(fee_estimator, usable_count, 1)
+    }
+
+    fn estimated_simple_fee_credits(&self) -> Option<u64> {
+        let destination_kind = self.destination_kind()?;
+        let fee_estimator = self.app_context.fee_estimator();
+
+        match (&self.selected_source, destination_kind) {
+            (Some(SourceSelection::CoreWallet), AddressKind::Core) => {
+                let seed_hash = self.selected_wallet_seed_hash?;
+                let input_count = self.app_context.snapshot_utxo_count(&seed_hash);
+                Some(
+                    estimate_core_l1_send_fee_duffs(input_count, 1)
+                        .saturating_mul(CREDITS_PER_DUFF),
+                )
+            }
+            (Some(SourceSelection::CoreWallet), AddressKind::Platform) => {
+                let destination = self.validated_destination.as_ref()?.as_platform()?;
+                Some(estimate_address_funding_fee_from_transition(
+                    self.app_context.platform_version(),
+                    destination,
+                ))
+            }
+            (Some(SourceSelection::CoreWallet), AddressKind::Shielded) => {
+                let (platform_fee, core_fee) = fee_estimator.estimate_shield_from_core_fees_duffs();
+                Some(
+                    platform_fee
+                        .saturating_add(core_fee)
+                        .saturating_mul(CREDITS_PER_DUFF),
+                )
+            }
+            (Some(SourceSelection::CoreWallet), AddressKind::Identity) => {
+                Some(fee_estimator.estimate_identity_topup())
+            }
+            (Some(SourceSelection::PlatformAddresses(_)), AddressKind::Shielded) => {
+                Some(shield_from_balance_fee_headroom(
+                    self.app_context.platform_version(),
+                    self.app_context.fee_multiplier_permille(),
+                ))
+            }
+            (Some(SourceSelection::PlatformAddresses(addresses)), AddressKind::Platform) => {
+                let amount = self.amount.as_ref()?.value();
+                let destination = self.validated_destination.as_ref()?.as_platform()?;
+                Some(
+                    allocate_platform_addresses(
+                        &fee_estimator,
+                        addresses,
+                        amount,
+                        Some(destination),
+                    )
+                    .estimated_fee,
+                )
+            }
+            (Some(SourceSelection::PlatformAddresses(addresses)), AddressKind::Core) => {
+                let amount = self.amount.as_ref()?.value();
+                let destination = self.validated_destination.as_ref()?.as_core()?;
+                let output_script = CoreScript::new(destination.script_pubkey());
+                Some(
+                    allocate_platform_addresses_with_fee(addresses, amount, None, |inputs| {
+                        estimate_withdrawal_fee_from_transition(
+                            self.app_context.platform_version(),
+                            inputs,
+                            &output_script,
+                        )
+                    })
+                    .estimated_fee,
+                )
+            }
+            (Some(SourceSelection::PlatformAddresses(addresses)), AddressKind::Identity) => {
+                let amount = self.amount.as_ref()?.value();
+                Some(
+                    self.allocate_platform_identity_topup(addresses, amount)
+                        .estimated_fee,
+                )
+            }
+            (Some(SourceSelection::Identity(_)), AddressKind::Core) => {
+                Some(fee_estimator.estimate_credit_withdrawal())
+            }
+            (Some(SourceSelection::Identity(_)), AddressKind::Platform) => {
+                Some(fee_estimator.estimate_credit_transfer_to_addresses(1))
+            }
+            (Some(SourceSelection::Identity(_)), AddressKind::Identity) => {
+                Some(fee_estimator.estimate_credit_transfer())
+            }
+            (Some(SourceSelection::Shielded(..)), AddressKind::Shielded) => {
+                self.minimum_shielded_route_fee(ShieldedFeeRoute::Transfer)
+            }
+            (Some(SourceSelection::Shielded(..)), AddressKind::Platform) => {
+                self.minimum_shielded_route_fee(ShieldedFeeRoute::Unshield)
+            }
+            (Some(SourceSelection::Shielded(..)), AddressKind::Core) => {
+                self.minimum_shielded_route_fee(ShieldedFeeRoute::Withdrawal)
+            }
+            _ => None,
+        }
+    }
+
+    fn allocate_platform_identity_topup(
+        &self,
+        addresses: &[(PlatformAddress, Address, u64)],
+        amount: u64,
+    ) -> AddressAllocationResult {
+        let estimator = self.app_context.fee_estimator();
+        allocate_platform_addresses_with_fee(addresses, amount, None, |inputs| {
+            estimator.estimate_identity_topup_from_addresses(inputs.len())
+        })
+    }
+
+    fn minimum_shielded_route_fee(&self, route: ShieldedFeeRoute) -> Option<u64> {
+        shielded_route_fee_for_actions(route, 2, self.app_context.platform_version()).ok()
+    }
+
+    fn estimated_advanced_fee_credits(&self) -> Option<u64> {
+        let output_kind = self
+            .advanced_outputs
+            .iter()
+            .find_map(|output| self.detect_address_kind(&output.address))?;
+
+        match (self.advanced_source_type, output_kind) {
+            (AdvancedSourceType::Core, AddressKind::Core) => {
+                let seed_hash = self.selected_wallet_seed_hash?;
+                let input_count = self.app_context.snapshot_utxo_count(&seed_hash);
+                let output_count = self
+                    .advanced_outputs
+                    .iter()
+                    .filter(|output| {
+                        self.detect_address_kind(&output.address) == Some(AddressKind::Core)
+                            && Self::parse_amount_to_duffs(&output.amount)
+                                .is_ok_and(|amount| amount > 0)
+                    })
+                    .count();
+                (output_count > 0).then(|| {
+                    estimate_core_l1_send_fee_duffs(input_count, output_count)
+                        .saturating_mul(CREDITS_PER_DUFF)
+                })
+            }
+            (AdvancedSourceType::Core, AddressKind::Platform) => {
+                let destination = self.advanced_outputs.iter().find_map(|output| {
+                    PlatformAddress::from_bech32m_string(output.address.trim()).ok()
+                })?;
+                Some(estimate_address_funding_fee_from_transition(
+                    self.app_context.platform_version(),
+                    &destination,
+                ))
+            }
+            (AdvancedSourceType::Platform, AddressKind::Platform) => {
+                let input_count = self
+                    .platform_inputs
+                    .iter()
+                    .filter(|input| {
+                        Self::parse_amount_to_credits(&input.amount).is_ok_and(|amount| amount > 0)
+                    })
+                    .count();
+                let output_count = self
+                    .advanced_outputs
+                    .iter()
+                    .filter_map(|output| {
+                        Self::parse_amount_to_credits(&output.amount)
+                            .ok()
+                            .filter(|amount| *amount > 0)
+                            .and_then(|_| {
+                                PlatformAddress::from_bech32m_string(output.address.trim()).ok()
+                            })
+                    })
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len();
+                (input_count > 0 && output_count > 0).then(|| {
+                    estimate_platform_fee(
+                        &self.app_context.fee_estimator(),
+                        input_count,
+                        output_count,
+                    )
+                })
+            }
+            (AdvancedSourceType::Platform, AddressKind::Core) => {
+                let inputs: BTreeMap<PlatformAddress, Credits> = self
+                    .platform_inputs
+                    .iter()
+                    .filter_map(|input| {
+                        Self::parse_amount_to_credits(&input.amount)
+                            .ok()
+                            .filter(|amount| *amount > 0)
+                            .map(|amount| (input.platform_address, amount))
+                    })
+                    .collect();
+                if inputs.is_empty() {
+                    return None;
+                }
+                let destination = self
+                    .advanced_outputs
+                    .iter()
+                    .find_map(|output| {
+                        output
+                            .address
+                            .trim()
+                            .parse::<Address<NetworkUnchecked>>()
+                            .ok()
+                    })?
+                    .require_network(self.app_context.network)
+                    .ok()?;
+                Some(estimate_withdrawal_fee_from_transition(
+                    self.app_context.platform_version(),
+                    &inputs,
+                    &CoreScript::new(destination.script_pubkey()),
+                ))
+            }
+            _ => None,
+        }
     }
 
     /// Clear the AddressInput widget so it picks up the new network on next frame.
@@ -1174,6 +1400,7 @@ impl WalletSendScreen {
 
         // Amount
         self.render_amount_input(ui);
+        render_estimated_fee(ui, self.estimated_simple_fee_credits());
 
         ui.add_space(10.0);
 
@@ -1338,6 +1565,7 @@ impl WalletSendScreen {
         }
 
         self.render_amount_input(ui);
+        render_estimated_fee(ui, self.estimated_simple_fee_credits());
 
         ui.add_space(10.0);
         ui.separator();
@@ -1611,9 +1839,7 @@ impl WalletSendScreen {
                 "No identity found with this ID. Please check the ID and try again.".to_string()
             })?;
 
-        let fee_estimator = self.app_context.fee_estimator();
-        let allocation =
-            allocate_platform_addresses(&fee_estimator, &addresses, amount_credits, None);
+        let allocation = self.allocate_platform_identity_topup(&addresses, amount_credits);
         if allocation.shortfall > 0 {
             return Err(format!(
                 "Insufficient platform balance. Need {} (including estimated fee of {}) but short by {}",
@@ -2349,11 +2575,17 @@ impl WalletSendScreen {
                     .take(MAX_PLATFORM_INPUTS)
                     .map(|(_, _, balance)| *balance)
                     .sum();
-                let max_fee = self.estimate_max_fee_for_platform_send(
-                    &fee_estimator,
-                    &sorted_addresses,
-                    destination.as_ref(),
-                );
+                let max_fee = if self.destination_kind() == Some(AddressKind::Identity) {
+                    fee_estimator.estimate_identity_topup_from_addresses(
+                        sorted_addresses.len().min(MAX_PLATFORM_INPUTS),
+                    )
+                } else {
+                    self.estimate_max_fee_for_platform_send(
+                        &fee_estimator,
+                        &sorted_addresses,
+                        destination.as_ref(),
+                    )
+                };
 
                 // Build hint explaining the limit
                 let hint = if sorted_addresses.len() > MAX_PLATFORM_INPUTS {
@@ -2367,12 +2599,23 @@ impl WalletSendScreen {
                 };
                 (Some(total.saturating_sub(max_fee)), Some(hint))
             }
-            Some(SourceSelection::Shielded(_, balance)) => {
-                (Some(*balance), Some("Shielded pool balance".to_string()))
-            }
+            Some(SourceSelection::Shielded(..)) => (
+                None,
+                Some(
+                    "Max is unavailable because the exact fee depends on the notes selected."
+                        .to_string(),
+                ),
+            ),
             Some(SourceSelection::Identity(qi)) => {
                 let balance = qi.identity.balance();
-                let estimated_fee = fee_estimator.estimate_credit_transfer();
+                let estimated_fee = match self.destination_kind() {
+                    Some(AddressKind::Core) => fee_estimator.estimate_credit_withdrawal(),
+                    Some(AddressKind::Platform) => {
+                        fee_estimator.estimate_credit_transfer_to_addresses(1)
+                    }
+                    Some(AddressKind::Identity) => fee_estimator.estimate_credit_transfer(),
+                    _ => fee_estimator.estimate_credit_transfer(),
+                };
                 let available = balance.saturating_sub(estimated_fee);
                 (
                     Some(available),
@@ -2755,6 +2998,9 @@ impl WalletSendScreen {
             ui.separator();
             ui.add_space(10.0);
         }
+
+        render_estimated_fee(ui, self.estimated_advanced_fee_credits());
+        ui.add_space(10.0);
 
         // ========== SEND BUTTON ==========
         action |= self.render_advanced_send_button(ui);
@@ -3709,6 +3955,33 @@ impl ScreenLike for WalletSendScreen {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use egui_kittest::Harness;
+    use egui_kittest::kittest::Queryable;
+
+    #[test]
+    fn fee_estimate_is_rendered_as_a_labeled_amount() {
+        let fee = 220 * CREDITS_PER_DUFF;
+        let expected_amount = format_credits_as_dash(fee);
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(500.0, 200.0))
+            .build_ui(move |ui| render_estimated_fee(ui, Some(fee)));
+
+        harness.run();
+
+        assert!(harness.query_by_label("Estimated fee:").is_some());
+        assert!(harness.query_by_label(&expected_amount).is_some());
+    }
+
+    #[test]
+    fn unavailable_zero_fee_is_not_presented_as_free() {
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(500.0, 200.0))
+            .build_ui(|ui| render_estimated_fee(ui, Some(0)));
+
+        harness.run();
+
+        assert!(harness.query_by_label("Estimated fee:").is_none());
+    }
 
     #[test]
     fn general_flow_is_not_a_preset() {

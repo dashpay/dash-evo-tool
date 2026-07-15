@@ -17,10 +17,14 @@ pub enum DashPayError {
     )]
     MissingEncryptionKey,
 
+    /// The **recipient** identity has no DashPay DECRYPTION key, so it cannot
+    /// receive contact requests yet. Raised from the send path when
+    /// `to_identity` lacks the key — attributed to the recipient, never the
+    /// sender (whose own keys are fine).
     #[error(
-        "Your identity is missing a decryption key required for contacts. Please add a compatible decryption key."
+        "This person is not set up to receive contact requests yet. Ask them to finish setting up their Dash profile, then try again."
     )]
-    MissingDecryptionKey,
+    RecipientMissingDecryptionKey,
 
     // Document/Platform Errors
     #[error("The received data has an unexpected format. Please retry or update the application.")]
@@ -148,7 +152,6 @@ impl DashPayError {
                 | DashPayError::InvalidUsername { .. }
                 | DashPayError::MissingField { .. }
                 | DashPayError::MissingEncryptionKey
-                | DashPayError::MissingDecryptionKey
                 | DashPayError::ContactInfoValidationFailed { .. }
                 | DashPayError::CannotContactSelf
         )

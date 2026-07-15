@@ -413,18 +413,11 @@ impl ScreenLike for AddContactScreen {
                                             ));
                                         }
                                 }
-                                DashPayError::MissingDecryptionKey => {
-                                    ui.add_space(5.0);
-                                    if let Some(identity) = &self.selected_identity
-                                        && ui.button("Add Decryption Key").clicked() {
-                                            inner_action = AppAction::AddScreen(Screen::AddKeyScreen(
-                                                AddKeyScreen::new_for_dashpay_decryption(
-                                                    identity.clone(),
-                                                    &self.app_context,
-                                                ),
-                                            ));
-                                        }
-                                }
+                                // Note: `RecipientMissingDecryptionKey` is a
+                                // recipient-side problem — the sender cannot fix it
+                                // by adding a key to their own identity, so no
+                                // self-remedy button is offered. The error message
+                                // already tells the user what to do.
                                 _ => {}
                             }
                         }
@@ -693,7 +686,9 @@ fn classify_send_error(error: &TaskError, username_or_id: &str) -> Option<DashPa
         }),
         TaskError::DashPay(inner) => match inner {
             DashPayError::MissingEncryptionKey => Some(DashPayError::MissingEncryptionKey),
-            DashPayError::MissingDecryptionKey => Some(DashPayError::MissingDecryptionKey),
+            DashPayError::RecipientMissingDecryptionKey => {
+                Some(DashPayError::RecipientMissingDecryptionKey)
+            }
             DashPayError::UsernameResolutionFailed { username } => {
                 Some(DashPayError::UsernameResolutionFailed {
                     username: username.clone(),
@@ -731,11 +726,21 @@ mod tests {
         );
         assert!(matches!(enc, Some(DashPayError::MissingEncryptionKey)));
 
+        // A recipient-side missing decryption key is classified so its
+        // (recipient-attributed) message renders in-screen — but it carries no
+        // sender self-remedy button, since the sender cannot fix it.
         let dec = classify_send_error(
-            &TaskError::DashPay(DashPayError::MissingDecryptionKey),
+            &TaskError::DashPay(DashPayError::RecipientMissingDecryptionKey),
             "alice.dash",
         );
-        assert!(matches!(dec, Some(DashPayError::MissingDecryptionKey)));
+        assert!(matches!(
+            dec,
+            Some(DashPayError::RecipientMissingDecryptionKey)
+        ));
+        assert!(
+            !DashPayError::RecipientMissingDecryptionKey.requires_user_action(),
+            "the sender has no self-remedy for a recipient-side missing key"
+        );
     }
 
     #[test]

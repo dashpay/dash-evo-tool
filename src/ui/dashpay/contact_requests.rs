@@ -1164,8 +1164,8 @@ fn classify_request_error(error: &TaskError) -> Option<DashPayError> {
         TaskError::DashPay(DashPayError::MissingEncryptionKey) => {
             Some(DashPayError::MissingEncryptionKey)
         }
-        TaskError::DashPay(DashPayError::MissingDecryptionKey) => {
-            Some(DashPayError::MissingDecryptionKey)
+        TaskError::DashPay(DashPayError::RecipientMissingDecryptionKey) => {
+            Some(DashPayError::RecipientMissingDecryptionKey)
         }
         _ => None,
     }
@@ -1183,10 +1183,14 @@ mod tests {
     }
 
     #[test]
-    fn classifies_missing_decryption_key() {
-        let mapped =
-            classify_request_error(&TaskError::DashPay(DashPayError::MissingDecryptionKey));
-        assert!(matches!(mapped, Some(DashPayError::MissingDecryptionKey)));
+    fn classifies_recipient_missing_decryption_key() {
+        let mapped = classify_request_error(&TaskError::DashPay(
+            DashPayError::RecipientMissingDecryptionKey,
+        ));
+        assert!(matches!(
+            mapped,
+            Some(DashPayError::RecipientMissingDecryptionKey)
+        ));
     }
 
     #[test]

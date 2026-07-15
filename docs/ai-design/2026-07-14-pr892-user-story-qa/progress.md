@@ -331,14 +331,24 @@ needed).
 
 ## IDH
 
-- [ ] IDH-001: First-time identity setup
-- [ ] IDH-002: Identity home at a glance
-- [ ] IDH-003: Multi-identity switching
-- [ ] IDH-004: Opt in to DashPay social profile
+- [x] IDH-001: First-time identity setup — PASS (onboarding empty state matches every criterion;
+      dev-mode footer confirmed present at Expert/Developer views, absent at Default, though
+      currently non-interactive placeholder text pending a T6 wiring follow-up)
+- [x] IDH-002: Identity home at a glance — BLOCKED (no identity reachable, see scenarios/IDN.md;
+      source review confirms IdentityHeroCard/OnboardingChecklist/HomeOutcome are wired)
+- [x] IDH-003: Multi-identity switching — BLOCKED (multiple identities unreachable; source review
+      confirms BreadcrumbPill/IdentityPill/IdentityPickerCard exist; see UX-003 for switcher
+      rollout gaps)
+- [x] IDH-004: Opt in to DashPay social profile — BLOCKED (no identity reachable; source review
+      confirms SocialProfileGateCard and the Home/Settings surfaces are wired)
 - [x] IDH-005: Bulk identity creation — N/A (Gap, not implemented)
 - [x] IDH-006: Unified activity timeline — N/A (Gap, not implemented)
-- [ ] IDH-007: Manage contacts from the Identities hub
-- [ ] IDH-008: Name an identity on this device
+- [x] IDH-007: Manage contacts from the Identities hub — BLOCKED (no identity/contacts reachable;
+      source review confirms Accept/Decline/Cancel/search+Pay/hidden-by-default are wired; see
+      DPY-014)
+- [x] IDH-008: Name an identity on this device — BLOCKED (no identity reachable; source review
+      confirms this is the same set_identity_alias mechanism DPN-008 already found wired, exposed
+      via a second Settings-tab UI surface)
 
 ## MN
 

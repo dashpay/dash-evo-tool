@@ -571,19 +571,15 @@ impl ScreenLike for IdentityHubScreen {
     }
 }
 
-/// Release the request-card guards a failure proves are stale. Unmatched guards
-/// remain protected until their own typed terminal outcome arrives.
+/// Release the request-card guard a failed contact action names. Both a task-level
+/// failure and a migration-gate refusal arrive as
+/// [`TaskError::DashPayContactRequestActionFailed`], carrying the request ID, so
+/// only that request's guard is released; every other guard stays protected until
+/// its own typed outcome arrives — a paid action still in flight must never have
+/// its row re-enabled by an unrelated failure.
 fn release_request_guard_for_error(state: &mut super::contacts::ContactsState, error: &TaskError) {
-    match error {
-        TaskError::DashPayContactRequestActionFailed { request_id, .. } => {
-            state.release_request(request_id);
-        }
-        // Refused by the storage-update gate before the task reached the DashPay
-        // handler, so no request_id was ever attached to it. Nothing is running:
-        // every claimed guard is stale, and holding them would leave the rows
-        // dead until they time out.
-        TaskError::WalletStorageNotReady => state.clear_in_flight(),
-        _ => {}
+    if let TaskError::DashPayContactRequestActionFailed { request_id, .. } = error {
+        state.release_request(request_id);
     }
 }
 
@@ -795,13 +791,13 @@ mod tests {
         assert!(!applies_to_selected_identity(None, &id(1)));
     }
 
-    /// A task refused *before* dispatch — the storage-update gate rejects every
-    /// wallet-touching task, `DashPayTask` included — never reaches the DashPay
-    /// handler, the only place that names a failure's `request_id`. Nothing ran,
-    /// so every claimed guard is stale: releasing them all is exactly right, and
-    /// leaving them set strands the row's buttons for the full in-flight timeout.
+    /// A bare `WalletStorageNotReady` names no request, so it releases no guard.
+    /// The migration gate now wraps a rejected DashPay contact action in
+    /// `DashPayContactRequestActionFailed`, so a bare variant only reaches here
+    /// for tasks that never claimed a guard. A blanket clear would re-enable a row
+    /// whose paid action is genuinely still in flight.
     #[test]
-    fn a_refusal_that_names_no_request_releases_every_guard() {
+    fn a_bare_storage_not_ready_releases_no_guard() {
         let mut state = ContactsState::default();
         assert!(state.begin_request(id(1)));
         assert!(state.begin_request(id(2)));
@@ -809,8 +805,36 @@ mod tests {
         release_request_guard_for_error(&mut state, &TaskError::WalletStorageNotReady);
 
         assert!(
-            !state.is_in_flight(&id(1)) && !state.is_in_flight(&id(2)),
-            "a pre-dispatch refusal leaves nothing running, so no guard may survive it",
+            state.is_in_flight(&id(1)) && state.is_in_flight(&id(2)),
+            "a bare storage-not-ready names no request and must leave every guard intact",
+        );
+    }
+
+    /// The migration gate rejects a DashPay contact action with its request ID
+    /// wrapped in `DashPayContactRequestActionFailed`, so the Hub releases only
+    /// that request's guard. A different action genuinely in flight keeps its
+    /// guard — the race the old blanket clear lost.
+    #[test]
+    fn a_gate_rejected_contact_action_releases_only_its_own_guard() {
+        let mut state = ContactsState::default();
+        assert!(state.begin_request(id(1))); // genuinely executing
+        assert!(state.begin_request(id(2))); // about to be gate-rejected
+
+        release_request_guard_for_error(
+            &mut state,
+            &TaskError::DashPayContactRequestActionFailed {
+                request_id: id(2),
+                source: Box::new(TaskError::WalletStorageNotReady),
+            },
+        );
+
+        assert!(
+            !state.is_in_flight(&id(2)),
+            "the gate-rejected request's guard is released so its row un-sticks",
+        );
+        assert!(
+            state.is_in_flight(&id(1)),
+            "a different action still in flight must keep its guard through the gate rejection",
         );
     }
 

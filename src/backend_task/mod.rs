@@ -10,6 +10,7 @@ use crate::backend_task::platform_info::{PlatformInfoTaskRequestType, PlatformIn
 use crate::backend_task::system_task::SystemTask;
 use crate::backend_task::wallet::WalletTask;
 use crate::context::AppContext;
+use crate::context::feature_gate::FeatureGate;
 use crate::context::identity_load_registry::IdentityLoadToken;
 use crate::model::masternode_input::decode_identity_id;
 use dash_sdk::dpp::address_funds::PlatformAddress;
@@ -80,6 +81,25 @@ fn is_wallet_touching(task: &BackendTask) -> bool {
             | BackendTask::DashPayTask(_)
             | BackendTask::ShieldedTask(_)
     )
+}
+
+/// The contact-request ID a wallet-touching `DashPayTask` acts on, if it is one
+/// of the three paid contact actions the Identity Hub guards while in flight.
+///
+/// The migration gate uses this to reject such an action with
+/// [`TaskError::DashPayContactRequestActionFailed`] so the Hub releases only that
+/// request's in-flight guard; every other task names no request and keeps the
+/// bare [`TaskError::WalletStorageNotReady`].
+fn dashpay_request_id(task: &BackendTask) -> Option<Identifier> {
+    let BackendTask::DashPayTask(task) = task else {
+        return None;
+    };
+    match task.as_ref() {
+        DashPayTask::AcceptContactRequest { request_id, .. }
+        | DashPayTask::RejectContactRequest { request_id, .. }
+        | DashPayTask::CancelContactRequest { request_id, .. } => Some(*request_id),
+        _ => None,
+    }
 }
 
 /// The identity-load record `task` was dispatched under, when its caller marked
@@ -568,6 +588,20 @@ impl AppContext {
         task: BackendTask,
         sender: SenderAsync<TaskResult>,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
+        // Refuse a shielded fund movement while shielded operations are
+        // unavailable BEFORE `ensure_wallet_backend` runs. That bootstrap does
+        // real work for any wallet-touching task — building the backend and, for
+        // every loaded wallet, materializing the HD seed, registering upstream,
+        // and binding Orchard — none of which should happen for an op the app
+        // will refuse anyway. `is_available` is side-effect-free (config read, no
+        // lock/await/secret), so it is safe to call before backend init. The
+        // in-handler gate in `run_shielded_task` stays as the authoritative check.
+        if let BackendTask::ShieldedTask(_) = &task
+            && !FeatureGate::ShieldedOperations.is_available(self)
+        {
+            return Err(TaskError::ShieldedOperationsUnavailable);
+        }
+
         // A dispatched identity load is recorded `Submitted` before this task
         // exists, and only the load's own claim closes that record out. Both gates
         // below return before the load ever reaches `load_identity`, so without a
@@ -610,7 +644,18 @@ impl AppContext {
                 task = ?task,
                 "Short-circuiting wallet-touching task — migration in progress",
             );
-            return Err(TaskError::WalletStorageNotReady);
+            // A guarded DashPay contact action carries its request ID so the
+            // Identity Hub releases only that request's in-flight guard, not every
+            // contact action's. Every other wallet-touching task names none and
+            // keeps the bare variant. Both surface the same user-facing banner —
+            // `DashPayContactRequestActionFailed` forwards its source's `Display`.
+            return match dashpay_request_id(&task) {
+                Some(request_id) => Err(TaskError::DashPayContactRequestActionFailed {
+                    request_id,
+                    source: Box::new(TaskError::WalletStorageNotReady),
+                }),
+                None => Err(TaskError::WalletStorageNotReady),
+            };
         }
 
         match task {
@@ -1006,22 +1051,27 @@ mod tests {
         }
     }
 
-    /// The shielded family is gated by the same storage-update short-circuit as
-    /// every other wallet-touching task, and is refused before it can reach
-    /// `run_shielded_task`'s own feature gate.
+    /// The shielded pre-check runs before the migration gate, so an *unavailable*
+    /// shielded write is refused with `ShieldedOperationsUnavailable` even while a
+    /// storage update collects wallet passwords — the accurate, actionable message
+    /// ("shielded is not available") rather than the misleading "wait for the
+    /// update", since waiting will never make shielded available.
     ///
-    /// Sibling of [`wallet_task_is_rejected_while_migration_awaits_password`]:
-    /// that one pins `WalletTask`, this one pins that `ShieldedTask` is still a
-    /// member of `is_wallet_touching`. Nothing but this test fails if a future
-    /// refactor gives shielded dispatch its own path and drops that membership.
+    /// The migration gate for shielded still applies once shielded operations
+    /// ship (the pre-check passes, then the gate short-circuits); its
+    /// `is_wallet_touching` membership is pinned by
+    /// [`wallet_touching_matrix_is_stable`]. Sibling of
+    /// [`wallet_task_is_rejected_while_migration_awaits_password`], which pins the
+    /// migration gate for a task with no pre-check.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn shielded_task_is_rejected_while_migration_awaits_password() {
+    async fn unavailable_shielded_write_is_refused_before_the_migration_gate() {
         use crate::backend_task::shielded::ShieldedTask;
         use crate::context::migration_status::MigrationState;
         use crate::context::test_support::test_app_context;
 
         let tmp = tempfile::tempdir().expect("tempdir");
         let ctx = test_app_context(tmp.path());
+        assert!(!FeatureGate::ShieldedOperations.is_available(&ctx));
         let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
         let sender = SenderAsync::new(tx, ctx.egui_ctx().clone());
         let seed_hash = [0x5a; 32];
@@ -1041,8 +1091,143 @@ mod tests {
             )
             .await;
         assert!(
-            matches!(result, Err(TaskError::WalletStorageNotReady)),
-            "a shielded write must stay gated during password collection, got {result:?}",
+            matches!(result, Err(TaskError::ShieldedOperationsUnavailable)),
+            "the shielded pre-check must refuse an unavailable write before the migration gate, got {result:?}",
+        );
+
+        if let Ok(backend) = ctx.wallet_backend() {
+            backend.shutdown().await;
+        }
+    }
+
+    fn qualified_identity(byte: u8) -> crate::model::qualified_identity::QualifiedIdentity {
+        use crate::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
+        use dash_sdk::dpp::dashcore::Network;
+        use dash_sdk::dpp::identity::Identity;
+        use dash_sdk::dpp::version::PlatformVersion;
+        use std::collections::BTreeMap;
+
+        let identity = Identity::create_basic_identity(
+            Identifier::from([byte; 32]),
+            PlatformVersion::latest(),
+        )
+        .expect("basic identity");
+        QualifiedIdentity {
+            identity,
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::User,
+            alias: None,
+            private_keys: Default::default(),
+            dpns_names: vec![],
+            associated_wallets: BTreeMap::new(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: Default::default(),
+            status: IdentityStatus::Active,
+            network: Network::Testnet,
+        }
+    }
+
+    /// `dashpay_request_id` names a request only for the three guarded contact
+    /// actions; every other DashPay task — and every non-DashPay task — names
+    /// none, so the migration gate keeps its bare variant for them.
+    #[test]
+    fn dashpay_request_id_extracts_only_the_three_contact_actions() {
+        use crate::backend_task::dashpay::DashPayTask;
+        use crate::model::dashpay::UnreadableContactInfoPolicy;
+
+        let request_id = Identifier::from([0x11; 32]);
+        let dashpay = |t: DashPayTask| BackendTask::DashPayTask(Box::new(t));
+
+        assert_eq!(
+            dashpay_request_id(&dashpay(DashPayTask::AcceptContactRequest {
+                identity: qualified_identity(1),
+                request_id,
+            })),
+            Some(request_id)
+        );
+        assert_eq!(
+            dashpay_request_id(&dashpay(DashPayTask::RejectContactRequest {
+                identity: qualified_identity(1),
+                request_id,
+                unreadable: UnreadableContactInfoPolicy::Abort,
+            })),
+            Some(request_id)
+        );
+        assert_eq!(
+            dashpay_request_id(&dashpay(DashPayTask::CancelContactRequest {
+                identity: qualified_identity(1),
+                request_id,
+                unreadable: UnreadableContactInfoPolicy::Abort,
+            })),
+            Some(request_id)
+        );
+        assert_eq!(
+            dashpay_request_id(&dashpay(DashPayTask::SearchProfiles {
+                search_query: String::new(),
+            })),
+            None,
+            "a non-contact-action DashPay task names no request"
+        );
+        assert_eq!(
+            dashpay_request_id(&BackendTask::ReinitCoreClientAndSdk),
+            None,
+            "a non-DashPay task names no request"
+        );
+    }
+
+    /// End-to-end: the migration gate wraps a rejected DashPay contact action in
+    /// `DashPayContactRequestActionFailed` carrying its request ID (so the Hub
+    /// un-sticks only that row), while a non-contact wallet-touching task keeps
+    /// the bare `WalletStorageNotReady`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn gate_rejection_wraps_a_contact_action_but_not_other_tasks() {
+        use crate::backend_task::dashpay::DashPayTask;
+        use crate::context::migration_status::{MigrationState, MigrationStep};
+        use crate::context::test_support::test_app_context;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let ctx = test_app_context(tmp.path());
+        ctx.migration_status().set_state(MigrationState::Running {
+            step: MigrationStep::Identities,
+        });
+
+        let request_id = Identifier::from([0x22; 32]);
+
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let contact_result = ctx
+            .run_backend_task(
+                BackendTask::DashPayTask(Box::new(DashPayTask::AcceptContactRequest {
+                    identity: qualified_identity(9),
+                    request_id,
+                })),
+                SenderAsync::new(tx, ctx.egui_ctx().clone()),
+            )
+            .await;
+        assert!(
+            matches!(
+                &contact_result,
+                Err(TaskError::DashPayContactRequestActionFailed { request_id: r, source })
+                    if *r == request_id
+                        && matches!(source.as_ref(), TaskError::WalletStorageNotReady)
+            ),
+            "a gate-rejected contact action must name its request: {contact_result:?}"
+        );
+
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let search_result = ctx
+            .run_backend_task(
+                BackendTask::DashPayTask(Box::new(DashPayTask::SearchProfiles {
+                    search_query: String::new(),
+                })),
+                SenderAsync::new(tx, ctx.egui_ctx().clone()),
+            )
+            .await;
+        assert!(
+            matches!(&search_result, Err(TaskError::WalletStorageNotReady)),
+            "a non-contact wallet-touching task stays bare: {search_result:?}"
         );
 
         if let Ok(backend) = ctx.wallet_backend() {

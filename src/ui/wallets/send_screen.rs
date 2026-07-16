@@ -1,5 +1,6 @@
 use crate::app::AppAction;
 use crate::backend_task::core::{CoreTask, PaymentRecipient, WalletPaymentRequest};
+use crate::backend_task::error::TaskError;
 use crate::backend_task::identity::{IdentityTask, IdentityTopUpInfo, TopUpIdentityFundingMethod};
 use crate::backend_task::wallet::WalletTask;
 use crate::backend_task::{BackendTask, BackendTaskSuccessResult};
@@ -29,6 +30,7 @@ use crate::ui::components::wallet_unlock_popup::{
 use crate::ui::components::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::theme::DashColors;
 use crate::ui::{MessageType, RootScreenType, ScreenLike};
+use dash_sdk::Error as SdkError;
 use dash_sdk::dashcore_rpc::dashcore::Address;
 use dash_sdk::dashcore_rpc::dashcore::address::NetworkUnchecked;
 use dash_sdk::dpp::address_funds::PlatformAddress;
@@ -2891,17 +2893,42 @@ impl WalletSendScreen {
 
     fn normalize_advanced_platform_outputs(
         advanced_outputs: &[AdvancedOutput],
-    ) -> Result<BTreeMap<PlatformAddress, Credits>, String> {
-        let mut outputs = BTreeMap::new();
+    ) -> Result<BTreeMap<PlatformAddress, Credits>, TaskError> {
+        let mut outputs: BTreeMap<PlatformAddress, Credits> = BTreeMap::new();
         for output in advanced_outputs {
-            let destination = PlatformAddress::from_bech32m_string(output.address.trim())
-                .map_err(|e| format!("Invalid platform address: {}", e))?;
-            let credits = Self::parse_amount_to_credits(&output.amount)?;
+            let destination =
+                PlatformAddress::from_bech32m_string(output.address.trim()).map_err(|source| {
+                    TaskError::AdvancedPlatformOutputAddressInvalid {
+                        source_error: Box::new(SdkError::Protocol(source)),
+                    }
+                })?;
+            let credits = Self::parse_amount_to_credits(&output.amount)
+                .map_err(|_| TaskError::AdvancedPlatformAmountInvalid)?;
             if credits > 0 {
-                *outputs.entry(destination).or_insert(0) += credits;
+                let total = outputs.entry(destination).or_insert(0);
+                *total = total
+                    .checked_add(credits)
+                    .ok_or(TaskError::AdvancedPlatformOutputsOverflow)?;
             }
         }
         Ok(outputs)
+    }
+
+    fn normalize_advanced_platform_inputs(
+        advanced_inputs: &[PlatformAddressInput],
+    ) -> Result<BTreeMap<PlatformAddress, Credits>, TaskError> {
+        let mut inputs: BTreeMap<PlatformAddress, Credits> = BTreeMap::new();
+        for input in advanced_inputs {
+            let credits = Self::parse_amount_to_credits(&input.amount)
+                .map_err(|_| TaskError::AdvancedPlatformAmountInvalid)?;
+            if credits > 0 {
+                let total = inputs.entry(input.platform_address).or_insert(0);
+                *total = total
+                    .checked_add(credits)
+                    .ok_or(TaskError::AdvancedPlatformInputsOverflow)?;
+            }
+        }
+        Ok(inputs)
     }
 
     /// Render the estimated-fee line shown above the advanced-mode Send button.
@@ -3782,20 +3809,15 @@ impl WalletSendScreen {
         &mut self,
         seed_hash: WalletSeedHash,
     ) -> Result<AppAction, String> {
-        // Build inputs map from platform_inputs
-        let mut inputs: BTreeMap<PlatformAddress, Credits> = BTreeMap::new();
-        for input in &self.platform_inputs {
-            let credits = Self::parse_amount_to_credits(&input.amount)?;
-            if credits > 0 {
-                *inputs.entry(input.platform_address).or_insert(0) += credits;
-            }
-        }
+        let inputs = Self::normalize_advanced_platform_inputs(&self.platform_inputs)
+            .map_err(|error| error.to_string())?;
 
         if inputs.is_empty() {
             return Err("No valid Platform inputs specified".to_string());
         }
 
-        let outputs = Self::normalize_advanced_platform_outputs(&self.advanced_outputs)?;
+        let outputs = Self::normalize_advanced_platform_outputs(&self.advanced_outputs)
+            .map_err(|error| error.to_string())?;
 
         if outputs.is_empty() {
             return Err("No valid Platform outputs specified".to_string());
@@ -3834,14 +3856,8 @@ impl WalletSendScreen {
             return Err("Withdrawal currently only supports a single Core destination".to_string());
         }
 
-        // Build inputs map from platform_inputs
-        let mut inputs: BTreeMap<PlatformAddress, Credits> = BTreeMap::new();
-        for input in &self.platform_inputs {
-            let credits = Self::parse_amount_to_credits(&input.amount)?;
-            if credits > 0 {
-                *inputs.entry(input.platform_address).or_insert(0) += credits;
-            }
-        }
+        let inputs = Self::normalize_advanced_platform_inputs(&self.platform_inputs)
+            .map_err(|error| error.to_string())?;
 
         if inputs.is_empty() {
             return Err("No valid Platform inputs specified".to_string());
@@ -4321,6 +4337,77 @@ mod tests {
             + WalletSendScreen::parse_amount_to_credits("2").expect("valid amount");
         assert_eq!(normalized.len(), 1);
         assert_eq!(normalized.get(&first), Some(&expected));
+    }
+
+    #[test]
+    fn advanced_platform_output_duplicates_reject_aggregate_overflow() {
+        let address = PlatformAddress::try_from(testnet_core_address(6))
+            .expect("core address converts to platform address")
+            .to_bech32m_string(Network::Testnet);
+        let outputs = vec![
+            AdvancedOutput {
+                address: address.clone(),
+                amount: "100000000".to_string(),
+            },
+            AdvancedOutput {
+                address,
+                amount: "100000000".to_string(),
+            },
+        ];
+
+        let error = WalletSendScreen::normalize_advanced_platform_outputs(&outputs)
+            .expect_err("overflowing duplicate outputs must be rejected");
+        assert!(matches!(&error, TaskError::AdvancedPlatformOutputsOverflow));
+        assert_eq!(
+            error.to_string(),
+            "The combined outputs to one Platform address exceed the maximum amount this app can process. Reduce the amounts or remove duplicate output rows, then try again."
+        );
+    }
+
+    #[test]
+    fn advanced_platform_input_duplicates_coalesce_without_overflow() {
+        let address = PlatformAddress::try_from(testnet_core_address(7))
+            .expect("core address converts to platform address");
+        let inputs = vec![
+            PlatformAddressInput {
+                platform_address: address,
+                amount: "1".to_string(),
+            },
+            PlatformAddressInput {
+                platform_address: address,
+                amount: "2".to_string(),
+            },
+        ];
+
+        let normalized =
+            WalletSendScreen::normalize_advanced_platform_inputs(&inputs).expect("valid inputs");
+        let expected = WalletSendScreen::parse_amount_to_credits("1").expect("valid amount")
+            + WalletSendScreen::parse_amount_to_credits("2").expect("valid amount");
+        assert_eq!(normalized, BTreeMap::from([(address, expected)]));
+    }
+
+    #[test]
+    fn advanced_platform_input_duplicates_reject_aggregate_overflow() {
+        let address = PlatformAddress::try_from(testnet_core_address(8))
+            .expect("core address converts to platform address");
+        let inputs = vec![
+            PlatformAddressInput {
+                platform_address: address,
+                amount: "100000000".to_string(),
+            },
+            PlatformAddressInput {
+                platform_address: address,
+                amount: "100000000".to_string(),
+            },
+        ];
+
+        let error = WalletSendScreen::normalize_advanced_platform_inputs(&inputs)
+            .expect_err("overflowing duplicate inputs must be rejected");
+        assert!(matches!(&error, TaskError::AdvancedPlatformInputsOverflow));
+        assert_eq!(
+            error.to_string(),
+            "The combined inputs from one Platform address exceed the maximum amount this app can process. Reduce the amounts or remove duplicate input rows, then try again."
+        );
     }
 
     #[test]

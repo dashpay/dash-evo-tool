@@ -13,11 +13,11 @@ use eframe::egui::{self, ComboBox, RichText};
 
 use crate::app::AppAction;
 use crate::backend_task::BackendTask;
-use crate::backend_task::contested_names::{ContestedResourceTask, ScheduledDPNSVote};
+use crate::backend_task::contested_names::ContestedResourceTask;
 use crate::context::AppContext;
 use crate::model::contested_name::ContestedName;
 use crate::model::dpns_voting::{
-    DpnsCurrentVoteState, DpnsVoteOperation, DpnsVoteOperationId, DpnsVoteTarget,
+    DpnsCurrentVoteState, DpnsVoteOperation, DpnsVoteOperationId, DpnsVoteOutcome, DpnsVoteTarget,
     DpnsVoteTargetKey, DpnsVoteTargetStatus, VoteTiming,
 };
 use crate::model::qualified_identity::PrivateKeyTarget;
@@ -41,6 +41,7 @@ pub struct DpnsVotingCenter {
     submitted_operation: Option<DpnsVoteOperationId>,
     vote_state_refresh_dispatched: bool,
     editing_scheduled_key: Option<DpnsVoteTargetKey>,
+    editing_scheduled_original: Option<DpnsVoteTarget>,
     focus_step_heading: bool,
 }
 
@@ -92,32 +93,31 @@ impl DpnsVotingCenter {
             submitted_operation: None,
             vote_state_refresh_dispatched: false,
             editing_scheduled_key: None,
+            editing_scheduled_original: None,
             focus_step_heading: true,
         }
     }
 
-    pub fn for_scheduled_edit(app_context: &Arc<AppContext>, vote: &ScheduledDPNSVote) -> Self {
+    pub fn for_scheduled_edit(app_context: &Arc<AppContext>, outcome: &DpnsVoteOutcome) -> Self {
+        let vote = &outcome.target;
         let mut center = Self::new(
             app_context,
-            Some(vote.voter_id),
+            Some(vote.key.voter_id),
             vec![vote.contested_name.clone()],
         );
         center
             .workspace
             .contest_choices
-            .insert(vote.contested_name.clone(), vote.choice);
-        center.workspace.node_timing.insert(
-            vote.voter_id,
-            scheduled_offset_from_now(vote.unix_timestamp),
-        );
-        center.editing_scheduled_key = app_context
-            .dpns_vote_poll_id(&vote.contested_name)
-            .ok()
-            .map(|vote_poll_id| DpnsVoteTargetKey {
-                network: app_context.network(),
-                voter_id: vote.voter_id,
-                vote_poll_id,
-            });
+            .insert(vote.contested_name.clone(), vote.requested_choice);
+        let VoteTiming::Scheduled(timestamp) = vote.timing else {
+            return center;
+        };
+        center
+            .workspace
+            .node_timing
+            .insert(vote.key.voter_id, scheduled_offset_from_now(timestamp));
+        center.editing_scheduled_key = Some(vote.key.clone());
+        center.editing_scheduled_original = Some(vote.clone());
         center
     }
 
@@ -410,7 +410,17 @@ impl DpnsVotingCenter {
                         Some(outcome.target.requested_choice)
                     )
                 ));
-                ui.label(format_timing(outcome.target.timing));
+                if self.editing_scheduled_key.as_ref() == Some(&outcome.target.key) {
+                    if let Some(original) = &self.editing_scheduled_original {
+                        ui.label(scheduled_replacement_summary(
+                            original,
+                            &outcome.target,
+                            |name, choice| self.choice_label(name, choice),
+                        ));
+                    }
+                } else {
+                    ui.label(format_timing(outcome.target.timing));
+                }
                 if outcome.target.current_choice.is_some() {
                     ui.label(
                         RichText::new(
@@ -611,6 +621,7 @@ impl DpnsVotingCenter {
             BackendTask::ContestedResourceTask(ContestedResourceTask::SubmitDpnsVoteOperation(
                 operation,
                 self.selected_voters(),
+                self.editing_scheduled_key.clone(),
             )),
         )))
     }
@@ -740,8 +751,12 @@ impl DpnsVotingCenter {
                         continue;
                     }
                 };
-                let replacing_schedule = existing_status == Some(DpnsVoteTargetStatus::Scheduled)
-                    && matches!(timing, VoteTiming::Scheduled(_));
+                let replacing_schedule = is_explicit_schedule_replacement(
+                    self.editing_scheduled_key.as_ref(),
+                    &key,
+                    existing_status,
+                    timing,
+                );
                 if existing_status.is_some() && !replacing_schedule {
                     exclusions.push(ReviewExclusion {
                         voter: self.voter_label(voter_id),
@@ -980,6 +995,35 @@ fn format_timing(timing: VoteTiming) -> String {
     }
 }
 
+fn scheduled_replacement_summary(
+    original: &DpnsVoteTarget,
+    replacement: &DpnsVoteTarget,
+    choice_label: impl Fn(&str, Option<ResourceVoteChoice>) -> String,
+) -> String {
+    format!(
+        "Replacing scheduled vote: {} at {} → {} at {}.",
+        choice_label(&original.contested_name, Some(original.requested_choice)),
+        scheduled_time_label(original.timing),
+        choice_label(
+            &replacement.contested_name,
+            Some(replacement.requested_choice)
+        ),
+        scheduled_time_label(replacement.timing),
+    )
+}
+
+fn scheduled_time_label(timing: VoteTiming) -> String {
+    match timing {
+        VoteTiming::Now => "now".to_owned(),
+        VoteTiming::Scheduled(timestamp) => match Utc.timestamp_millis_opt(timestamp as i64) {
+            LocalResult::Single(date_time) => {
+                format!("{} UTC", date_time.format("%Y-%m-%d %H:%M"))
+            }
+            _ => "an unavailable time".to_owned(),
+        },
+    }
+}
+
 fn scheduled_offset_from_now(timestamp: u64) -> DraftVoteTiming {
     let remaining_minutes = timestamp.saturating_sub(Utc::now().timestamp_millis() as u64) / 60_000;
     DraftVoteTiming::Scheduled {
@@ -987,6 +1031,17 @@ fn scheduled_offset_from_now(timestamp: u64) -> DraftVoteTiming {
         hours: ((remaining_minutes / 60) % 24) as u32,
         minutes: (remaining_minutes % 60) as u32,
     }
+}
+
+fn is_explicit_schedule_replacement(
+    editing_key: Option<&DpnsVoteTargetKey>,
+    target_key: &DpnsVoteTargetKey,
+    existing_status: Option<DpnsVoteTargetStatus>,
+    replacement_timing: VoteTiming,
+) -> bool {
+    editing_key == Some(target_key)
+        && existing_status == Some(DpnsVoteTargetStatus::Scheduled)
+        && matches!(replacement_timing, VoteTiming::Scheduled(_))
 }
 
 fn has_loaded_voting_key(voter: &QualifiedIdentity) -> bool {
@@ -1097,5 +1152,63 @@ mod tests {
 
         assert!(label.starts_with("When: 20"));
         assert!(label.contains(" UTC ("));
+    }
+
+    #[test]
+    fn only_the_exact_scheduled_edit_target_can_be_replaced() {
+        let edited = DpnsVoteTargetKey {
+            network: dash_sdk::dpp::dashcore::Network::Testnet,
+            voter_id: Identifier::from([1; 32]),
+            vote_poll_id: Identifier::from([2; 32]),
+        };
+        let other = DpnsVoteTargetKey {
+            vote_poll_id: Identifier::from([3; 32]),
+            ..edited.clone()
+        };
+
+        assert!(is_explicit_schedule_replacement(
+            Some(&edited),
+            &edited,
+            Some(DpnsVoteTargetStatus::Scheduled),
+            VoteTiming::Scheduled(10),
+        ));
+        assert!(!is_explicit_schedule_replacement(
+            None,
+            &edited,
+            Some(DpnsVoteTargetStatus::Scheduled),
+            VoteTiming::Scheduled(10),
+        ));
+        assert!(!is_explicit_schedule_replacement(
+            Some(&edited),
+            &other,
+            Some(DpnsVoteTargetStatus::Scheduled),
+            VoteTiming::Scheduled(10),
+        ));
+    }
+
+    #[test]
+    fn scheduled_edit_review_names_the_old_and_new_schedule() {
+        let original = DpnsVoteTarget {
+            key: DpnsVoteTargetKey {
+                network: dash_sdk::dpp::dashcore::Network::Testnet,
+                voter_id: Identifier::from([1; 32]),
+                vote_poll_id: Identifier::from([2; 32]),
+            },
+            voter_alias: Some("Eve".to_owned()),
+            contested_name: "dominguez".to_owned(),
+            requested_choice: ResourceVoteChoice::Lock,
+            current_choice: None,
+            timing: VoteTiming::Scheduled(1_700_000_000_000),
+        };
+        let mut replacement = original.clone();
+        replacement.requested_choice = ResourceVoteChoice::Abstain;
+        replacement.timing = VoteTiming::Scheduled(1_700_003_600_000);
+
+        let summary = scheduled_replacement_summary(&original, &replacement, |_, choice| {
+            choice_label(choice, &[])
+        });
+
+        assert!(summary.contains("Lock at "));
+        assert!(summary.contains("→ Abstain at "));
     }
 }

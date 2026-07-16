@@ -68,6 +68,16 @@ pub struct MasternodeContestSummary {
     pub has_scheduled_vote: bool,
 }
 
+impl MasternodeContestSummary {
+    /// Represent a failed summary read without implying that no contests exist.
+    pub fn unavailable() -> Self {
+        Self {
+            vote_state: MasternodeVoteStateSummary::Unavailable,
+            ..Self::default()
+        }
+    }
+}
+
 #[derive(Debug, Encode, Decode, Clone)]
 pub struct Contestant {
     pub id: Identifier,

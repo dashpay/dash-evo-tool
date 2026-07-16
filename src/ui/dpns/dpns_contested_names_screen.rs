@@ -1769,7 +1769,7 @@ impl DPNSScreen {
             VoteHandlingStatus::SchedulingVotes
         };
         AppAction::BackendTask(BackendTask::ContestedResourceTask(
-            ContestedResourceTask::SubmitDpnsVoteOperation(operation, selected_voters),
+            ContestedResourceTask::SubmitDpnsVoteOperation(operation, selected_voters, None),
         ))
     }
 

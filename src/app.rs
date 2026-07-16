@@ -16,7 +16,7 @@ use crate::context::connection_status::{ConnectionStatus, OverallConnectionState
 use crate::context::feature_gate::FeatureGate;
 use crate::context::migration_status::{MigrationState, MigrationStep};
 use crate::database::Database;
-use crate::model::dpns_voting::DpnsVoteTargetStatus;
+use crate::model::dpns_voting::{DpnsVoteOperation, DpnsVoteTargetStatus};
 use crate::model::settings::AppSettings;
 use crate::ui::components::passphrase_modal;
 use crate::ui::components::secret_prompt_host::{ActivePrompt, EguiSecretPromptHost, QueuedPrompt};
@@ -129,6 +129,57 @@ fn clear_confirmed_vote_recovery_cutoff(
     } else {
         false
     }
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct DpnsVoteFeedbackCounts {
+    confirmed: usize,
+    scheduled: usize,
+    unconfirmed: usize,
+    rejected: usize,
+    failed_before_submission: usize,
+    not_applied: usize,
+    in_progress: usize,
+}
+
+fn dpns_vote_feedback(operation: &DpnsVoteOperation) -> (String, MessageType, bool) {
+    let mut counts = DpnsVoteFeedbackCounts::default();
+    for outcome in &operation.targets {
+        match outcome.status {
+            DpnsVoteTargetStatus::Confirmed => counts.confirmed += 1,
+            DpnsVoteTargetStatus::Scheduled => counts.scheduled += 1,
+            DpnsVoteTargetStatus::Unconfirmed => counts.unconfirmed += 1,
+            DpnsVoteTargetStatus::Rejected => counts.rejected += 1,
+            DpnsVoteTargetStatus::FailedBeforeSubmission => {
+                counts.failed_before_submission += 1;
+            }
+            DpnsVoteTargetStatus::NotApplied => counts.not_applied += 1,
+            DpnsVoteTargetStatus::Queued
+            | DpnsVoteTargetStatus::Submitting
+            | DpnsVoteTargetStatus::Confirming => counts.in_progress += 1,
+        }
+    }
+    let message = format!(
+        "Voting results: {} confirmed, {} scheduled, {} unconfirmed, {} rejected, {} failed before submission, {} not applied, and {} still in progress. Open Voting activity to review each target.",
+        counts.confirmed,
+        counts.scheduled,
+        counts.unconfirmed,
+        counts.rejected,
+        counts.failed_before_submission,
+        counts.not_applied,
+        counts.in_progress,
+    );
+    let needs_attention =
+        counts.unconfirmed + counts.rejected + counts.failed_before_submission + counts.not_applied
+            > 0;
+    let message_type = if needs_attention {
+        MessageType::Warning
+    } else if counts.in_progress > 0 {
+        MessageType::Info
+    } else {
+        MessageType::Success
+    };
+    (message, message_type, counts.unconfirmed > 0)
 }
 
 /// Action id for the SPV-sync block's "Continue in the background" escape button.
@@ -2037,93 +2088,17 @@ impl App for AppState {
                         BackendTaskSuccessResult::DpnsVoteOperationUpdated(operation_id) => {
                             match active_context.dpns_vote_operation(operation_id) {
                                 Ok(Some(operation)) => {
-                                    let total = operation.targets.len();
-                                    let confirmed = operation
-                                        .targets
-                                        .iter()
-                                        .filter(|outcome| {
-                                            outcome.status == DpnsVoteTargetStatus::Confirmed
-                                        })
-                                        .count();
-                                    let scheduled = operation
-                                        .targets
-                                        .iter()
-                                        .filter(|outcome| {
-                                            outcome.status == DpnsVoteTargetStatus::Scheduled
-                                        })
-                                        .count();
-                                    let unconfirmed = operation
-                                        .targets
-                                        .iter()
-                                        .filter(|outcome| {
-                                            outcome.status == DpnsVoteTargetStatus::Unconfirmed
-                                        })
-                                        .count();
-                                    let rejected = operation
-                                        .targets
-                                        .iter()
-                                        .filter(|outcome| {
-                                            matches!(
-                                                outcome.status,
-                                                DpnsVoteTargetStatus::Rejected
-                                                    | DpnsVoteTargetStatus::FailedBeforeSubmission
-                                            )
-                                        })
-                                        .count();
                                     let diagnostics = active_context
                                         .dpns_vote_operation_diagnostics(operation_id);
-                                    if unconfirmed > 0 {
-                                        let handle = MessageBanner::set_global(
-                                            ctx,
-                                            "The vote was submitted, but DET could not confirm the result yet. DET will keep checking. Do not submit it again.",
-                                            MessageType::Warning,
-                                        );
-                                        if !diagnostics.is_empty() {
-                                            handle.with_details(&diagnostics);
-                                        }
+                                    let (message, message_type, keep_visible) =
+                                        dpns_vote_feedback(&operation);
+                                    let handle =
+                                        MessageBanner::set_global(ctx, message, message_type);
+                                    if !diagnostics.is_empty() {
+                                        handle.with_details(&diagnostics);
+                                    }
+                                    if keep_visible {
                                         handle.disable_auto_dismiss();
-                                    } else if rejected > 0 {
-                                        let handle = MessageBanner::set_global(
-                                            ctx,
-                                            format!(
-                                                "{confirmed} of {total} votes were confirmed. Review the remaining {}.",
-                                                total.saturating_sub(confirmed)
-                                            ),
-                                            MessageType::Warning,
-                                        );
-                                        if !diagnostics.is_empty() {
-                                            handle.with_details(&diagnostics);
-                                        }
-                                        handle.disable_auto_dismiss();
-                                    } else if scheduled == total && total > 0 {
-                                        MessageBanner::set_global(
-                                            ctx,
-                                            format!("{scheduled} votes were scheduled."),
-                                            MessageType::Success,
-                                        );
-                                    } else if confirmed + scheduled == total
-                                        && confirmed > 0
-                                        && scheduled > 0
-                                    {
-                                        MessageBanner::set_global(
-                                            ctx,
-                                            format!(
-                                                "{confirmed} votes were cast and {scheduled} votes were scheduled."
-                                            ),
-                                            MessageType::Success,
-                                        );
-                                    } else if confirmed == total && total == 1 {
-                                        MessageBanner::set_global(
-                                            ctx,
-                                            "Vote cast successfully.",
-                                            MessageType::Success,
-                                        );
-                                    } else if confirmed == total && total > 1 {
-                                        MessageBanner::set_global(
-                                            ctx,
-                                            format!("{confirmed} votes were cast successfully."),
-                                            MessageType::Success,
-                                        );
                                     }
                                 }
                                 Ok(None) => {
@@ -2546,6 +2521,64 @@ impl App for AppState {
 #[cfg(test)]
 mod migration_banner_tests {
     use super::*;
+    use crate::model::dpns_voting::{DpnsVoteTarget, DpnsVoteTargetKey, VoteTiming};
+    use dash_sdk::dpp::voting::vote_choices::resource_vote_choice::ResourceVoteChoice;
+
+    fn feedback_operation(statuses: &[DpnsVoteTargetStatus]) -> DpnsVoteOperation {
+        let mut operation = DpnsVoteOperation::new(
+            statuses
+                .iter()
+                .enumerate()
+                .map(|(index, _)| DpnsVoteTarget {
+                    key: DpnsVoteTargetKey {
+                        network: Network::Testnet,
+                        voter_id: Identifier::from([1; 32]),
+                        vote_poll_id: Identifier::from([index as u8; 32]),
+                    },
+                    voter_alias: Some("Eve".to_owned()),
+                    contested_name: format!("contest-{index}"),
+                    requested_choice: ResourceVoteChoice::Lock,
+                    current_choice: None,
+                    timing: VoteTiming::Now,
+                })
+                .collect(),
+        );
+        for (outcome, status) in operation.targets.iter_mut().zip(statuses) {
+            outcome.status = *status;
+        }
+        operation
+    }
+
+    #[test]
+    fn mixed_vote_feedback_counts_every_terminal_category_and_guides_to_details() {
+        let operation = feedback_operation(&[
+            DpnsVoteTargetStatus::Confirmed,
+            DpnsVoteTargetStatus::Scheduled,
+            DpnsVoteTargetStatus::Unconfirmed,
+            DpnsVoteTargetStatus::Rejected,
+            DpnsVoteTargetStatus::FailedBeforeSubmission,
+            DpnsVoteTargetStatus::NotApplied,
+        ]);
+
+        let (message, message_type, keep_visible) = dpns_vote_feedback(&operation);
+
+        assert_eq!(message_type, MessageType::Warning);
+        assert!(keep_visible);
+        for phrase in [
+            "1 confirmed",
+            "1 scheduled",
+            "1 unconfirmed",
+            "1 rejected",
+            "1 failed before submission",
+            "1 not applied",
+            "Open Voting activity",
+        ] {
+            assert!(
+                message.contains(phrase),
+                "missing `{phrase}` in `{message}`"
+            );
+        }
+    }
 
     /// A frame owns one migration snapshot even if the task publishes mid-frame.
     #[test]

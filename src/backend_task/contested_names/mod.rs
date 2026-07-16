@@ -34,7 +34,11 @@ const SCHEDULED_VOTE_MAX_LATENESS_MS: u64 = 120_000;
 #[derive(Debug, Clone, PartialEq)]
 pub enum ContestedResourceTask {
     QueryDPNSContests,
-    SubmitDpnsVoteOperation(DpnsVoteOperation, Vec<QualifiedIdentity>),
+    SubmitDpnsVoteOperation(
+        DpnsVoteOperation,
+        Vec<QualifiedIdentity>,
+        Option<DpnsVoteTargetKey>,
+    ),
     ReconcileDpnsVoteOperation(DpnsVoteOperationId),
     CastScheduledVote(ScheduledDPNSVote, Box<QualifiedIdentity>),
     /// Sweep the scheduled-vote table and cast every vote that is now due.
@@ -46,6 +50,11 @@ pub enum ContestedResourceTask {
     ClearAllScheduledVotes,
     ClearExecutedScheduledVotes,
     DeleteScheduledVote(Identifier, String),
+    CancelScheduledDpnsVote {
+        operation_id: DpnsVoteOperationId,
+        key: DpnsVoteTargetKey,
+        contested_name: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -131,8 +140,12 @@ impl AppContext {
                 .query_dpns_contested_resources(sdk, sender)
                 .await
                 .map(|_| BackendTaskSuccessResult::None),
-            ContestedResourceTask::SubmitDpnsVoteOperation(operation, voters) => {
-                self.execute_dpns_vote_operation(operation, voters, sdk)
+            ContestedResourceTask::SubmitDpnsVoteOperation(
+                operation,
+                voters,
+                replacing_scheduled_key,
+            ) => {
+                self.execute_dpns_vote_operation(operation, voters, replacing_scheduled_key, sdk)
                     .await
             }
             ContestedResourceTask::ReconcileDpnsVoteOperation(operation_id) => {
@@ -140,7 +153,7 @@ impl AppContext {
             }
             ContestedResourceTask::CastScheduledVote(scheduled_vote, voter) => {
                 let operation = self.operation_for_scheduled_vote(&scheduled_vote, &voter)?;
-                self.execute_dpns_vote_operation(operation, vec![*voter], sdk)
+                self.execute_dpns_vote_operation(operation, vec![*voter], None, sdk)
                     .await
             }
             ContestedResourceTask::CastDueScheduledVotes {
@@ -153,8 +166,13 @@ impl AppContext {
                     source: Box::new(source),
                 }),
             ContestedResourceTask::ClearAllScheduledVotes => {
-                self.clear_all_scheduled_votes()?;
                 self.cancel_all_scheduled_dpns_vote_targets()?;
+                if let Err(error) = self.clear_all_scheduled_votes() {
+                    tracing::warn!(
+                        ?error,
+                        "Scheduled DPNS votes were cancelled but the legacy mirror could not be cleared"
+                    );
+                }
                 Ok(BackendTaskSuccessResult::Refresh)
             }
             ContestedResourceTask::ClearExecutedScheduledVotes => {
@@ -163,7 +181,25 @@ impl AppContext {
             }
             ContestedResourceTask::DeleteScheduledVote(voter_id, contested_name) => {
                 self.delete_scheduled_vote(voter_id.as_slice(), &contested_name)?;
-                self.cancel_scheduled_dpns_vote_target(voter_id, &contested_name)?;
+                Ok(BackendTaskSuccessResult::Refresh)
+            }
+            ContestedResourceTask::CancelScheduledDpnsVote {
+                operation_id,
+                key,
+                contested_name,
+            } => {
+                self.cancel_scheduled_dpns_vote_target(operation_id, &key)?;
+                if let Err(error) =
+                    self.delete_scheduled_vote(key.voter_id.as_slice(), &contested_name)
+                {
+                    tracing::warn!(
+                        ?error,
+                        operation_id = %operation_id,
+                        voter_id = %key.voter_id,
+                        contested_name,
+                        "Scheduled DPNS vote was cancelled but the legacy mirror could not be cleared"
+                    );
+                }
                 Ok(BackendTaskSuccessResult::Refresh)
             }
         }
@@ -188,7 +224,7 @@ impl AppContext {
         if !queued.is_empty() {
             let voters = self.load_local_voting_identities()?;
             for operation in queued {
-                self.execute_dpns_vote_operation(operation, voters.clone(), sdk)
+                self.execute_dpns_vote_operation(operation, voters.clone(), None, sdk)
                     .await?;
             }
         }
@@ -294,6 +330,7 @@ impl AppContext {
         self: &Arc<Self>,
         mut operation: DpnsVoteOperation,
         voters: Vec<QualifiedIdentity>,
+        replacing_scheduled_key: Option<DpnsVoteTargetKey>,
         sdk: &Sdk,
     ) -> Result<BackendTaskSuccessResult, TaskError> {
         if operation.targets.is_empty() {
@@ -363,7 +400,7 @@ impl AppContext {
                     VoteTiming::Now => None,
                 })
                 .collect::<Vec<_>>();
-            self.insert_dpns_vote_operation(&operation)?;
+            self.insert_dpns_vote_operation(&operation, replacing_scheduled_key.as_ref())?;
             if !scheduled_votes.is_empty()
                 && let Err(error) = self.insert_scheduled_votes(&scheduled_votes)
             {
@@ -697,7 +734,7 @@ impl AppContext {
                 let operation_id = operation.id;
                 async move {
                     let result = app_context
-                        .execute_dpns_vote_operation(operation, voters, &sdk)
+                        .execute_dpns_vote_operation(operation, voters, None, &sdk)
                         .await
                         .map(|_| ());
                     (operation_id, result)

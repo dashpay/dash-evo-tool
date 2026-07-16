@@ -331,6 +331,7 @@ impl From<&BackendTask> for BackendTaskContext {
             BackendTask::ContestedResourceTask(ContestedResourceTask::SubmitDpnsVoteOperation(
                 operation,
                 _,
+                _,
             )) => Self::DpnsVoteOperation(operation.id),
             BackendTask::ContestedResourceTask(
                 ContestedResourceTask::ReconcileDpnsVoteOperation(operation_id),

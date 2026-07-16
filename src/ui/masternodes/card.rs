@@ -58,15 +58,19 @@ pub fn voter_readiness_label(voting_present: bool) -> &'static str {
 /// DPNS status line with count-first precedence (§10.1): open contests first
 /// (actionable), then a pending scheduled vote, then none.
 pub fn dpns_status_line(summary: MasternodeContestSummary) -> String {
-    if summary.open_contest_count > 0 {
+    if summary.vote_state == MasternodeVoteStateSummary::Unavailable {
+        if summary.open_contest_count == 0 {
+            "DPNS voting status unavailable".to_owned()
+        } else {
+            format!(
+                "Vote state unavailable for {} active contests",
+                summary.open_contest_count
+            )
+        }
+    } else if summary.open_contest_count > 0 {
         if summary.vote_state == MasternodeVoteStateSummary::Checking {
             format!(
                 "Checking votes for {} active contests",
-                summary.open_contest_count
-            )
-        } else if summary.vote_state == MasternodeVoteStateSummary::Unavailable {
-            format!(
-                "Vote state unavailable for {} active contests",
                 summary.open_contest_count
             )
         } else if summary.needs_vote_count == 0 {
@@ -459,6 +463,14 @@ mod tests {
         assert_eq!(
             dpns_status_line(summary),
             "Vote state unavailable for 2 active contests"
+        );
+    }
+
+    #[test]
+    fn dpns_status_reports_unavailable_when_the_summary_read_failed() {
+        assert_eq!(
+            dpns_status_line(MasternodeContestSummary::unavailable()),
+            "DPNS voting status unavailable"
         );
     }
 

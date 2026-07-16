@@ -15,12 +15,14 @@ use eframe::egui::{self, RichText};
 
 use crate::app::{AppAction, BackendTasksExecutionMode};
 use crate::backend_task::BackendTask;
-use crate::backend_task::contested_names::{ContestedResourceTask, ScheduledDPNSVote};
+use crate::backend_task::contested_names::ContestedResourceTask;
 use crate::backend_task::identity::IdentityTask;
 use crate::context::identity_load_registry::{IdentityLoadPhase, IdentityLoadToken};
 use crate::context::{AppContext, DpnsOperatorRoute};
 use crate::model::contested_name::MasternodeContestSummary;
-use crate::model::dpns_voting::DpnsVoteTargetStatus;
+use crate::model::dpns_voting::{
+    DpnsVoteOperation, DpnsVoteOperationId, DpnsVoteOutcome, DpnsVoteTargetStatus, VoteTiming,
+};
 use crate::model::masternode_input::decode_identity_id;
 use crate::model::qualified_identity::{IdentityStatus, IdentityType, MasternodeKeyPresence};
 use crate::model::user_role::UserRole;
@@ -82,6 +84,12 @@ struct PendingLoad {
     token: IdentityLoadToken,
 }
 
+#[derive(Clone)]
+struct ScheduledJournalTarget {
+    operation_id: DpnsVoteOperationId,
+    outcome: DpnsVoteOutcome,
+}
+
 /// Root screen for the Masternodes section.
 pub struct MasternodesScreen {
     pub app_context: Arc<AppContext>,
@@ -110,7 +118,7 @@ pub struct MasternodesScreen {
     /// [`TaskError::IdentityLoadInProgress`](crate::backend_task::error::TaskError::IdentityLoadInProgress)
     /// instead of racing.
     pending_load: Option<PendingLoad>,
-    pending_schedule_cancellation: Option<(ScheduledDPNSVote, ConfirmationDialog)>,
+    pending_schedule_cancellation: Option<(ScheduledJournalTarget, ConfirmationDialog)>,
 }
 
 #[cfg(test)]
@@ -162,7 +170,7 @@ impl MasternodesScreen {
                 let contest_summary = self
                     .app_context
                     .masternode_contest_summary(voter_id)
-                    .unwrap_or_default();
+                    .unwrap_or_else(|_| MasternodeContestSummary::unavailable());
                 NodeCardData {
                     node_id,
                     node_id_short,
@@ -564,52 +572,51 @@ impl MasternodesScreen {
         ui.label(
             "Upcoming and unresolved targets use the same operation locks as immediate votes.",
         );
-        let votes = self.app_context.get_scheduled_votes().unwrap_or_default();
-        if votes.is_empty() {
+        let scheduled_targets = match self.app_context.dpns_vote_operations() {
+            Ok(operations) => scheduled_journal_targets(operations),
+            Err(error) => {
+                ui.label("Scheduled votes are unavailable. Refresh this page to try again.");
+                tracing::warn!(?error, "Could not load journaled DPNS schedules");
+                return action;
+            }
+        };
+        if scheduled_targets.is_empty() {
             ui.label("No scheduled votes.");
             return action;
         }
-        for vote in votes {
-            let status = self
-                .app_context
-                .dpns_vote_poll_id(&vote.contested_name)
-                .ok()
-                .and_then(|vote_poll_id| {
-                    self.app_context
-                        .dpns_vote_target_status(&crate::model::dpns_voting::DpnsVoteTargetKey {
-                            network: self.app_context.network(),
-                            voter_id: vote.voter_id,
-                            vote_poll_id,
-                        })
-                        .ok()
-                        .flatten()
-                });
+        for scheduled in scheduled_targets {
+            let target = &scheduled.outcome.target;
+            let status = scheduled.outcome.status;
+            let voter = target
+                .voter_alias
+                .clone()
+                .unwrap_or_else(|| shorten_id(&target.key.voter_id.to_string(Encoding::Base58)));
+            let VoteTiming::Scheduled(scheduled_at) = target.timing else {
+                continue;
+            };
             ui.group(|ui| {
                 ui.label(
-                    RichText::new(format!(
-                        "{}.dash / {}",
-                        vote.contested_name,
-                        vote.voter_id.to_string(Encoding::Base58)
-                    ))
-                    .strong(),
+                    RichText::new(format!("{}.dash / {}", target.contested_name, voter)).strong(),
                 );
                 ui.label(format!(
                     "Choice: {}",
-                    vote_choice_summary(Some(vote.choice))
+                    vote_choice_summary(Some(target.requested_choice))
                 ));
-                ui.label(format_scheduled_time(vote.unix_timestamp));
+                ui.label(format_scheduled_time(scheduled_at));
                 ui.label(match status {
-                    Some(DpnsVoteTargetStatus::Unconfirmed) => "Status: Checking result",
-                    Some(
-                        DpnsVoteTargetStatus::Queued
-                        | DpnsVoteTargetStatus::Submitting
-                        | DpnsVoteTargetStatus::Confirming,
-                    ) => "Status: Submitting",
-                    Some(DpnsVoteTargetStatus::Scheduled) => "Status: Scheduled",
-                    _ if vote.executed_successfully => "Status: Completed",
-                    _ => "Status: Needs attention",
+                    DpnsVoteTargetStatus::Unconfirmed => "Status: Checking result",
+                    DpnsVoteTargetStatus::Queued
+                    | DpnsVoteTargetStatus::Submitting
+                    | DpnsVoteTargetStatus::Confirming => "Status: Submitting",
+                    DpnsVoteTargetStatus::Scheduled => "Status: Scheduled",
+                    DpnsVoteTargetStatus::Confirmed => "Status: Completed",
+                    DpnsVoteTargetStatus::Rejected => "Status: Rejected",
+                    DpnsVoteTargetStatus::FailedBeforeSubmission => {
+                        "Status: Failed before submission"
+                    }
+                    DpnsVoteTargetStatus::NotApplied => "Status: Cancelled",
                 });
-                let editable = status == Some(DpnsVoteTargetStatus::Scheduled);
+                let editable = status == DpnsVoteTargetStatus::Scheduled;
                 let disabled_reason =
                     "This scheduled vote cannot be changed after submission has started.";
                 if ui
@@ -621,7 +628,7 @@ impl MasternodesScreen {
                     .clicked()
                 {
                     self.view = MasternodesView::Voting(Box::new(
-                        DpnsVotingCenter::for_scheduled_edit(&self.app_context, &vote),
+                        DpnsVotingCenter::for_scheduled_edit(&self.app_context, &scheduled.outcome),
                     ));
                 }
                 if ui
@@ -632,46 +639,35 @@ impl MasternodesScreen {
                     .disabled_tooltip(disabled_reason)
                     .clicked()
                 {
-                    let message = format!(
-                        "Cancel the scheduled vote for {}.dash? This removes it before submission.",
-                        vote.contested_name
-                    );
+                    let message = scheduled_cancel_confirmation(&scheduled.outcome);
                     self.pending_schedule_cancellation = Some((
-                        vote.clone(),
+                        scheduled.clone(),
                         ConfirmationDialog::new("Cancel scheduled vote", message)
                             .danger_mode(true)
                             .confirm_text(Some("Cancel scheduled vote")),
                     ));
                 }
-                if status == Some(DpnsVoteTargetStatus::Unconfirmed)
+                if status == DpnsVoteTargetStatus::Unconfirmed
                     && ComponentStyles::add_secondary_button(ui, "Check again", dark_mode).clicked()
-                    && let Ok(Some(operation)) =
-                        self.app_context.dpns_vote_operations().map(|operations| {
-                            operations.into_iter().find(|operation| {
-                                operation.targets.iter().any(|outcome| {
-                                    outcome.target.key.voter_id == vote.voter_id
-                                        && outcome.target.contested_name == vote.contested_name
-                                })
-                            })
-                        })
                 {
                     action = AppAction::BackendTask(BackendTask::ContestedResourceTask(
-                        ContestedResourceTask::ReconcileDpnsVoteOperation(operation.id),
+                        ContestedResourceTask::ReconcileDpnsVoteOperation(scheduled.operation_id),
                     ));
                 }
             });
         }
-        if let Some((vote, dialog)) = self.pending_schedule_cancellation.as_mut() {
+        if let Some((scheduled, dialog)) = self.pending_schedule_cancellation.as_mut() {
             let result = dialog.show(ui).inner.dialog_response;
             if let Some(result) = result {
-                let vote = vote.clone();
+                let scheduled = scheduled.clone();
                 self.pending_schedule_cancellation = None;
                 if result == ConfirmationStatus::Confirmed {
                     action = AppAction::BackendTask(BackendTask::ContestedResourceTask(
-                        ContestedResourceTask::DeleteScheduledVote(
-                            vote.voter_id,
-                            vote.contested_name,
-                        ),
+                        ContestedResourceTask::CancelScheduledDpnsVote {
+                            operation_id: scheduled.operation_id,
+                            key: scheduled.outcome.target.key,
+                            contested_name: scheduled.outcome.target.contested_name,
+                        },
                     ));
                 }
             }
@@ -795,6 +791,47 @@ impl MasternodesScreen {
             }
         }
     }
+}
+
+fn scheduled_journal_targets(operations: Vec<DpnsVoteOperation>) -> Vec<ScheduledJournalTarget> {
+    let mut targets = operations
+        .into_iter()
+        .flat_map(|operation| {
+            operation.targets.into_iter().filter_map(move |outcome| {
+                matches!(outcome.target.timing, VoteTiming::Scheduled(_)).then_some(
+                    ScheduledJournalTarget {
+                        operation_id: operation.id,
+                        outcome,
+                    },
+                )
+            })
+        })
+        .collect::<Vec<_>>();
+    targets.sort_by_key(|scheduled| match scheduled.outcome.target.timing {
+        VoteTiming::Scheduled(timestamp) => timestamp,
+        VoteTiming::Now => u64::MAX,
+    });
+    targets
+}
+
+fn scheduled_cancel_confirmation(outcome: &DpnsVoteOutcome) -> String {
+    let target = &outcome.target;
+    let voter = target
+        .voter_alias
+        .clone()
+        .unwrap_or_else(|| shorten_id(&target.key.voter_id.to_string(Encoding::Base58)));
+    let time = match target.timing {
+        VoteTiming::Scheduled(timestamp) => format_scheduled_time(timestamp)
+            .strip_prefix("Scheduled time: ")
+            .unwrap_or("Unavailable")
+            .to_owned(),
+        VoteTiming::Now => "Immediately".to_owned(),
+    };
+    format!(
+        "Cancel {voter}'s scheduled vote for {}.dash? Choice: {}. Scheduled time: {time}.",
+        target.contested_name,
+        vote_choice_summary(Some(target.requested_choice)),
+    )
 }
 
 fn vote_choice_summary(choice: Option<ResourceVoteChoice>) -> String {
@@ -925,6 +962,7 @@ mod tests {
     use crate::backend_task::identity::IdentityInputToLoad;
     use crate::context::connection_status::ConnectionStatus;
     use crate::database::test_helpers::create_database_at_path;
+    use crate::model::dpns_voting::DpnsVoteTargetKey;
     use crate::model::qualified_identity::QualifiedIdentity;
     use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
     use crate::utils::egui_mpsc::SenderAsync;
@@ -934,6 +972,72 @@ mod tests {
     use dash_sdk::dpp::version::PlatformVersion;
     use dash_sdk::platform::Identifier;
     use std::collections::BTreeMap;
+
+    fn scheduled_operation(
+        voter: u8,
+        poll: u8,
+        status: DpnsVoteTargetStatus,
+        alias: Option<&str>,
+    ) -> DpnsVoteOperation {
+        let mut operation =
+            DpnsVoteOperation::new(vec![crate::model::dpns_voting::DpnsVoteTarget {
+                key: DpnsVoteTargetKey {
+                    network: Network::Testnet,
+                    voter_id: Identifier::from([voter; 32]),
+                    vote_poll_id: Identifier::from([poll; 32]),
+                },
+                voter_alias: alias.map(str::to_owned),
+                contested_name: "dominguez".to_owned(),
+                requested_choice: ResourceVoteChoice::Lock,
+                current_choice: None,
+                timing: VoteTiming::Scheduled(1_700_000_000_000),
+            }]);
+        operation.targets[0].status = status;
+        operation
+    }
+
+    #[test]
+    fn scheduled_view_items_keep_the_exact_journal_operation_id() {
+        let historical =
+            scheduled_operation(1, 2, DpnsVoteTargetStatus::Confirmed, Some("Old Eve"));
+        let unresolved = scheduled_operation(1, 2, DpnsVoteTargetStatus::Unconfirmed, Some("Eve"));
+
+        let items = scheduled_journal_targets(vec![historical.clone(), unresolved.clone()]);
+
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].operation_id, historical.id);
+        assert_eq!(items[1].operation_id, unresolved.id);
+        assert_eq!(items[1].outcome.status, DpnsVoteTargetStatus::Unconfirmed);
+    }
+
+    #[test]
+    fn scheduled_cancel_confirmation_identifies_the_complete_target() {
+        let operation = scheduled_operation(1, 2, DpnsVoteTargetStatus::Scheduled, Some("Eve"));
+
+        let message = scheduled_cancel_confirmation(&operation.targets[0]);
+
+        for phrase in ["Eve", "dominguez.dash", "Lock", "UTC"] {
+            assert!(
+                message.contains(phrase),
+                "missing `{phrase}` in `{message}`"
+            );
+        }
+    }
+
+    #[test]
+    fn scheduled_cancel_confirmation_uses_a_short_id_without_an_alias() {
+        let operation = scheduled_operation(1, 2, DpnsVoteTargetStatus::Scheduled, None);
+        let full_id = operation.targets[0]
+            .target
+            .key
+            .voter_id
+            .to_string(Encoding::Base58);
+
+        let message = scheduled_cancel_confirmation(&operation.targets[0]);
+
+        assert!(!message.contains(&full_id));
+        assert!(message.contains('…'));
+    }
 
     /// Build an offline, wallet-backend-wired `AppContext` (no network I/O).
     async fn offline_ctx() -> (Arc<AppContext>, tempfile::TempDir) {

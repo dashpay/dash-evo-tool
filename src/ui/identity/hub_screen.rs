@@ -217,7 +217,11 @@ impl IdentityHubScreen {
     /// Whether an identity-scoped backend result still belongs to the identity
     /// on screen. See [`applies_to_selected_identity`].
     fn result_is_for_selected_identity(&self, result_identity: &Identifier) -> bool {
-        applies_to_selected_identity(self.app_context.selected_identity_id(), result_identity)
+        let selected = self
+            .app_context
+            .resolve_selected_identity()
+            .map(|identity| identity.identity.id());
+        applies_to_selected_identity(selected, result_identity)
     }
 
     /// Retire a request row the backend just resolved (accepted, declined, or
@@ -777,15 +781,19 @@ fn applies_to_selected_identity(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::TaskResult;
+    use crate::model::qualified_identity::encrypted_key_storage::KeyStorage;
+    use crate::model::qualified_identity::{IdentityStatus, IdentityType, QualifiedIdentity};
     use crate::ui::state::contacts_view::ContactsState;
+    use crate::utils::egui_mpsc::SenderAsync;
+    use dash_sdk::dpp::dashcore::Network;
+    use dash_sdk::dpp::identity::Identity;
+    use dash_sdk::dpp::version::PlatformVersion;
+    use std::collections::BTreeMap;
 
-    // Unit tests for the screen's pure state manipulation. Rendering is
-    // covered by the kittest integration tests under
-    // `tests/kittest/identity_hub.rs`, which mount a real `AppContext`.
-    //
-    // These tests avoid constructing an `AppContext` so they stay fast and
-    // deterministic — we directly manipulate the small amount of state we
-    // own (`selected_tab`, `last_good_landing`).
+    // Most tests exercise pure screen state. The identity-result regression
+    // uses a throwaway AppContext because selection fallback is the behavior
+    // under test. Rendering stays covered by the kittest identity-hub tests.
 
     #[test]
     fn default_state_machine() {
@@ -823,6 +831,73 @@ mod tests {
 
     fn id(byte: u8) -> Identifier {
         Identifier::from_bytes(&[byte; 32]).expect("32-byte identifier")
+    }
+
+    async fn wired_test_context() -> (tempfile::TempDir, Arc<AppContext>) {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let context = crate::context::test_support::test_app_context(temp_dir.path());
+        let (tx, _rx) = tokio::sync::mpsc::channel::<TaskResult>(32);
+        let sender = SenderAsync::new(tx, context.egui_ctx().clone());
+        context
+            .ensure_wallet_backend(sender)
+            .await
+            .expect("wire wallet backend");
+        (temp_dir, context)
+    }
+
+    fn seed_user_identity(context: &AppContext, byte: u8) -> Identifier {
+        let identity =
+            Identity::create_basic_identity(id(byte), PlatformVersion::latest()).expect("identity");
+        let identity_id = identity.id();
+        let qualified_identity = QualifiedIdentity {
+            identity,
+            associated_voter_identity: None,
+            associated_operator_identity: None,
+            associated_owner_key_id: None,
+            identity_type: IdentityType::User,
+            alias: None,
+            private_keys: KeyStorage::default(),
+            dpns_names: vec![],
+            associated_wallets: BTreeMap::new(),
+            secret_access: None,
+            wallet_index: None,
+            top_ups: BTreeMap::new(),
+            status: IdentityStatus::PendingCreation,
+            network: Network::Testnet,
+        };
+        context
+            .insert_local_qualified_identity(&qualified_identity, &None)
+            .expect("seed identity");
+        identity_id
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn contact_results_follow_fallback_and_explicit_identity_selection() {
+        let (_temp_dir, context) = wired_test_context().await;
+        let fallback_identity = seed_user_identity(&context, 1);
+        let screen = IdentityHubScreen::new(&context);
+
+        assert_eq!(
+            context.selected_identity_id(),
+            None,
+            "the single-identity path must not require an explicit picker selection"
+        );
+        assert!(
+            screen.result_is_for_selected_identity(&fallback_identity),
+            "a contact result for the fallback-resolved identity must populate the Contacts tab"
+        );
+
+        let explicitly_selected = seed_user_identity(&context, 2);
+        context.set_selected_identity(Some(explicitly_selected));
+
+        assert!(
+            !screen.result_is_for_selected_identity(&fallback_identity),
+            "a late result for the previous fallback identity must be rejected after a switch"
+        );
+        assert!(
+            screen.result_is_for_selected_identity(&explicitly_selected),
+            "a result for the explicitly selected identity must apply after a switch"
+        );
     }
 
     #[test]

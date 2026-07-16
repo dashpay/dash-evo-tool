@@ -58,10 +58,11 @@ jobs:
 
       - name: Decide
         id: decide
+        env:
+          FORCE: ${{ inputs.force || false }}
+          MANUAL_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          FORCE="${{ inputs.force || false }}"
-          MANUAL_VERSION="${{ inputs.version }}"
 
           # CI-red is a HARD block — never overridable by force or version
           # (it's a safety net, not a convenience toggle). Treated as "latest
@@ -166,7 +167,11 @@ jobs:
         run: |
           set -euo pipefail
           if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
-            echo "Tag $TAG already exists (force re-cut) — reusing."
+            echo "Tag $TAG already exists — force re-cut: moving it to the current commit."
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag -f -a "$TAG" -m "Weekly draft pre-release $TAG" HEAD
+            git push --force origin "refs/tags/$TAG"
             exit 0
           fi
           # Annotated tags need a committer identity; the runner's checkout
@@ -264,7 +269,7 @@ jobs:
 
   notify:
     name: Slack notification
-    needs: [gate, release, flatpak, finalize]
+    needs: [gate, tag, release, flatpak, finalize, cleanup]
     if: always() && (needs.gate.outputs.should_release == 'true' || needs.gate.outputs.ci_red == 'true')
     runs-on: ubuntu-24.04
     permissions:
@@ -280,6 +285,8 @@ jobs:
           FINALIZE_RESULT: ${{ needs.finalize.result }}
           RELEASE_RESULT: ${{ needs.release.result }}
           FLATPAK_RESULT: ${{ needs.flatpak.result }}
+          TAG_RESULT: ${{ needs.tag.result }}
+          CLEANUP_RESULT: ${{ needs.cleanup.result }}
         run: |
           set -euo pipefail
 
@@ -295,8 +302,12 @@ jobs:
             TEXT=":warning: *I, Claudius the Magnificent, decline to bless a broken week.* CI on \`v1.0-dev\` is red — no weekly draft was cut. Mend the pipeline: <${RUN_URL}|the run>."
           elif [ "$SHOULD_RELEASE" = "true" ] && [ "$FINALIZE_RESULT" = "success" ]; then
             TEXT=":sparkles: *I, Claudius the Magnificent, have sealed another weekly draft for \`${REPO}\`.* Version \`${VERSION}\` awaits your royal assent — undraft it here: <${RELEASE_URL}|the release page>."
-          elif [ "$SHOULD_RELEASE" = "true" ]; then
+          elif [ "$SHOULD_RELEASE" = "true" ] && [ "$TAG_RESULT" = "success" ] && [ "$CLEANUP_RESULT" = "success" ]; then
             TEXT=":rotating_light: <!channel> *Even I, Claudius the Magnificent, cannot forge a release from a broken build.* Version \`${VERSION}\` for \`${REPO}\` was tagged, yet the platform build faltered — I have swept the orphaned tag away so next week begins unblemished. Inspect the wreckage: <${RUN_URL}|the run>."
+          elif [ "$SHOULD_RELEASE" = "true" ] && [ "$TAG_RESULT" = "success" ]; then
+            TEXT=":rotating_light: <!channel> *Even I, Claudius the Magnificent, cannot forge a release from a broken build, and I could not clean up after myself either.* Version \`${VERSION}\` for \`${REPO}\` was tagged, the platform build faltered, and automatic cleanup did not finish — a stray tag or draft release may remain. Manual sweep required: <${RUN_URL}|the run>."
+          elif [ "$SHOULD_RELEASE" = "true" ]; then
+            TEXT=":rotating_light: <!channel> *Even I, Claudius the Magnificent, could not even lay down this week's tag.* Something broke for \`${REPO}\` before any build began. Inspect: <${RUN_URL}|the run>."
           else
             echo "Nothing to notify."
             exit 0

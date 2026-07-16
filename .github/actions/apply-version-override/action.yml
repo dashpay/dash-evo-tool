@@ -9,15 +9,18 @@ description: >-
 inputs:
   version:
     description: "Version string to bake in (e.g. 1.0.0-weekly.20260715+abc1234def). Empty = no-op."
-    required: true
+    required: false
+    default: ""
 
 runs:
   using: composite
   steps:
     - shell: bash
+      env:
+        VERSION_OVERRIDE: ${{ inputs.version }}
       run: |
         set -euo pipefail
-        v="${{ inputs.version }}"
+        v="$VERSION_OVERRIDE"
         if [ -z "$v" ]; then
           echo "No version override supplied — leaving Cargo.toml/Cargo.lock untouched."
           exit 0

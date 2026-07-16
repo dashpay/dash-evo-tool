@@ -21,6 +21,8 @@ on:
       version_override:
         description: "Override the Cargo.toml package version for this build only (never committed)"
         required: false
+        type: string
+        default: ""
   workflow_call:
     inputs:
       tag:
@@ -68,6 +70,14 @@ jobs:
     steps:
       - name: Check out code
         uses: actions/checkout@v4
+        with:
+          # Only pin to inputs.tag for the workflow_call path (weekly-build.yml,
+          # the only caller — it always passes an already-pushed tag). Direct
+          # workflow_dispatch's `tag` input is a NEW tag name softprops/action-gh-release
+          # creates at the end of this job, not an existing ref — checking it
+          # out here would fail with "ref not found" for that path, so it must
+          # keep falling back to github.ref (the dispatch-selected branch).
+          ref: ${{ (github.event_name == 'workflow_call' && inputs.tag) || github.ref }}
 
       - name: Apply version override
         uses: ./.github/actions/apply-version-override
@@ -193,6 +203,14 @@ jobs:
     steps:
       - name: Check out code
         uses: actions/checkout@v4
+        with:
+          # Only pin to inputs.tag for the workflow_call path (weekly-build.yml,
+          # the only caller — it always passes an already-pushed tag). Direct
+          # workflow_dispatch's `tag` input is a NEW tag name softprops/action-gh-release
+          # creates at the end of this job, not an existing ref — checking it
+          # out here would fail with "ref not found" for that path, so it must
+          # keep falling back to github.ref (the dispatch-selected branch).
+          ref: ${{ (github.event_name == 'workflow_call' && inputs.tag) || github.ref }}
 
       - name: Apply version override
         uses: ./.github/actions/apply-version-override
@@ -514,6 +532,14 @@ jobs:
     steps:
       - name: Check out code
         uses: actions/checkout@v4
+        with:
+          # Only pin to inputs.tag for the workflow_call path (weekly-build.yml,
+          # the only caller — it always passes an already-pushed tag). Direct
+          # workflow_dispatch's `tag` input is a NEW tag name softprops/action-gh-release
+          # creates at the end of this job, not an existing ref — checking it
+          # out here would fail with "ref not found" for that path, so it must
+          # keep falling back to github.ref (the dispatch-selected branch).
+          ref: ${{ (github.event_name == 'workflow_call' && inputs.tag) || github.ref }}
 
       - name: Apply version override
         uses: ./.github/actions/apply-version-override

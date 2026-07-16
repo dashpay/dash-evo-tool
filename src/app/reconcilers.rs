@@ -17,7 +17,8 @@ use std::time::Instant;
 use dash_sdk::dpp::dashcore::Network;
 use eframe::egui;
 
-use crate::backend_task::migration::MigrationTask;
+use crate::backend_task::error::TaskError;
+use crate::backend_task::migration::{MigrationTask, migration_task_error};
 use crate::backend_task::{BackendTask, platform_info};
 use crate::context::AppContext;
 use crate::context::connection_status::{
@@ -464,8 +465,8 @@ impl MigrationReconciler {
     }
 
     /// Update the migration banner to reflect the current [`MigrationState`].
-    /// Each step / outcome surfaces a single i18n-ready sentence; `Failed` gets
-    /// a "Retry now" action button.
+    /// Each step / outcome surfaces a single i18n-ready sentence. Retryable
+    /// failures get a "Retry now" action button.
     pub(super) fn update_banner(
         &mut self,
         ctx: &egui::Context,
@@ -595,16 +596,21 @@ impl MigrationReconciler {
                     self.last_state = Some(MigrationState::Idle);
                     return;
                 }
-                let handle = MessageBanner::set_global(
-                    ctx,
-                    "Storage update could not complete. Your data is safe.",
-                    MessageType::Error,
-                );
+                let task_error = migration_task_error(Arc::clone(&error));
+                let retryable = matches!(&task_error, TaskError::MigrationFailed { .. });
+                let message = if retryable {
+                    "Storage update could not complete. Your data is safe.".to_string()
+                } else {
+                    task_error.to_string()
+                };
+                let handle = MessageBanner::set_global(ctx, message, MessageType::Error);
                 handle.disable_auto_dismiss();
                 // The collapsed details panel + log line get the full typed
                 // `MigrationError` chain rather than a lossy `to_string()`.
                 handle.with_details(error.as_ref());
-                handle.with_action("Retry now", MIGRATION_RETRY_ACTION_ID);
+                if retryable {
+                    handle.with_action("Retry now", MIGRATION_RETRY_ACTION_ID);
+                }
                 self.banner_handle = Some(handle);
             }
         }
@@ -809,6 +815,31 @@ mod tests {
         harness.run();
 
         reconciler.drain_actions(&harness.ctx, app_context.network)
+    }
+
+    #[test]
+    fn too_old_data_banner_shows_step_upgrade_without_retry() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let app_context = test_app_context(tmp.path());
+        let mut reconciler = MigrationReconciler::new();
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(700.0, 260.0))
+            .build_ui(MessageBanner::show_global);
+        let message = "This saved data was created by a much older version of Dash Evo Tool and can't be upgraded directly. Please install Dash Evo Tool 0.9.3 first and open your data with it once, then upgrade to this version.";
+        let state = MigrationState::Failed {
+            error: Arc::new(
+                crate::backend_task::migration::MigrationError::LegacyDataTooOld {
+                    found: 10,
+                    minimum_supported: 11,
+                },
+            ),
+        };
+
+        reconciler.update_banner(&harness.ctx, &app_context, &state);
+        harness.run();
+
+        assert!(harness.query_by_label(message).is_some());
+        assert!(harness.query_by_label("Retry now").is_none());
     }
 
     /// The unreadable-identity warning is acknowledgeable. It used to render as a

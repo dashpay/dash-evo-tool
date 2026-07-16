@@ -13,7 +13,7 @@ use crate::ui::components::contract_chooser_panel::{
 use crate::ui::components::left_panel::add_left_panel;
 use crate::ui::components::message_banner::{BannerHandle, MessageBanner, OptionBannerExt};
 use crate::ui::components::top_panel::add_top_panel;
-use crate::ui::helpers::clicked_outside_window;
+use crate::ui::helpers::{ModalOpeningGuard, clicked_outside_window_after_open};
 use crate::ui::theme::{ComponentStyles, DashColors, Shadow, Shape};
 use crate::ui::{BackendTaskSuccessResult, MessageType, RootScreenType, ScreenLike, ScreenType};
 use crate::utils::parsers::{DocumentQueryTextInputParser, TextInputParser};
@@ -53,6 +53,7 @@ pub struct DocumentQueryScreen {
     document_display_mode: DocumentDisplayMode,
     document_fields_selection: HashMap<String, bool>,
     show_fields_dropdown: bool,
+    fields_dropdown_opening_guard: ModalOpeningGuard,
     selected_data_contract: QualifiedContract,
     selected_document_type: DocumentType,
     selected_index: Option<Index>,
@@ -134,6 +135,7 @@ impl DocumentQueryScreen {
             document_display_mode: DocumentDisplayMode::Yaml,
             document_fields_selection,
             show_fields_dropdown: false,
+            fields_dropdown_opening_guard: ModalOpeningGuard::default(),
             selected_data_contract: dpns_contract,
             selected_document_type,
             selected_index: None,
@@ -248,6 +250,9 @@ impl DocumentQueryScreen {
 
                 if ui.button("Select Properties").clicked() {
                     self.show_fields_dropdown = !self.show_fields_dropdown;
+                    if self.show_fields_dropdown {
+                        self.fields_dropdown_opening_guard.arm();
+                    }
                 }
 
                 // Display mode toggle
@@ -319,7 +324,11 @@ impl DocumentQueryScreen {
                     });
 
                 if let Some(ref wr) = window_response
-                    && clicked_outside_window(ui.ctx(), wr.response.rect)
+                    && clicked_outside_window_after_open(
+                        ui.ctx(),
+                        wr.response.rect,
+                        &mut self.fields_dropdown_opening_guard,
+                    )
                 {
                     self.show_fields_dropdown = false;
                 }

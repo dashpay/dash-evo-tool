@@ -1951,13 +1951,15 @@ impl App for AppState {
                         .disable_auto_dismiss();
                 }
                 TaskResult::Error {
-                    error: TaskError::MigrationFailed { .. },
+                    error:
+                        TaskError::MigrationFailed { .. }
+                        | TaskError::SavedDataTooOld { .. }
+                        | TaskError::SavedDataTooNew { .. },
                     ..
                 } => {
-                    // The migration task already published `MigrationState::Failed`,
-                    // which the migration reconciler surfaces with the typed
-                    // details and a "Retry now" action. Suppress the generic
-                    // error banner here so the user sees one banner, not two.
+                    // The migration task already published `MigrationState::Failed`.
+                    // Its reconciler supplies the typed details and applicable
+                    // recovery path, so suppress the duplicate generic banner.
                 }
                 TaskResult::Error {
                     context,

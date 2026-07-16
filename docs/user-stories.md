@@ -351,7 +351,7 @@ As an everyday user, I want to send Dash to someone by entering their DPNS usern
 
 As a user, I want to see the estimated transaction fee and total amount to be deducted before confirming a send so that I know exactly what I am paying.
 
-- Fee estimate shown in confirmation dialog.
+- Fee estimate shown inline above the Send button on the Send Dash screen (simple and advanced modes), before the send is dispatched; single-key wallets also show it in the confirmation dialog.
 - Total deduction (amount + fee) displayed clearly.
 - Single-key wallets: `estimate_fee()` with transaction size details (inputs, bytes).
 - HD wallets: fee displayed before confirmation with Platform address handling.

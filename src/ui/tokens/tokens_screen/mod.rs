@@ -1156,6 +1156,8 @@ pub struct TokensScreen {
     show_json_popup: bool,
     json_popup_text: String,
     json_popup_opening_guard: ModalOpeningGuard,
+    token_info_popup_opening_guard: ModalOpeningGuard,
+    explanation_popup_opening_guard: ModalOpeningGuard,
     allow_transfers_to_frozen_identities: bool,
 
     // Action Rules
@@ -1518,6 +1520,8 @@ impl TokensScreen {
             show_json_popup: false,
             json_popup_text: String::new(),
             json_popup_opening_guard: ModalOpeningGuard::default(),
+            token_info_popup_opening_guard: ModalOpeningGuard::default(),
+            explanation_popup_opening_guard: ModalOpeningGuard::default(),
 
             // Action rules
             allow_transfers_to_frozen_identities: true,

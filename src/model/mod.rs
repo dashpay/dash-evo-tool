@@ -3,6 +3,7 @@ pub mod amount;
 pub mod contested_name;
 pub mod dashpay;
 pub mod dashpay_derivation;
+pub(crate) mod data_migration;
 pub mod dpns;
 pub mod fee_estimation;
 pub mod grovestark_prover;

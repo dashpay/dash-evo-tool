@@ -1,5 +1,5 @@
 use crate::ui::components::modal_chrome::{ModalChromeConfig, modal_chrome};
-use crate::ui::helpers::clicked_outside_window;
+use crate::ui::helpers::clicked_outside_window_after_open_by_id;
 use crate::ui::theme::{ComponentStyles, DashColors};
 use egui::{InnerResponse, Ui, WidgetText};
 use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
@@ -139,10 +139,17 @@ impl InfoPopup {
             was_closed = true;
         }
 
-        // Handle click outside window
+        // Handle click outside window. InfoPopup is value-constructed every
+        // frame, so the opening-frame skip is tracked in egui memory rather than
+        // a persistent guard field — otherwise the click that opened the popup
+        // would dismiss it on the same frame, before it is ever visible.
         if let Some(ref wr) = chrome.window_response
             && !was_closed
-            && clicked_outside_window(ui.ctx(), wr.rect)
+            && clicked_outside_window_after_open_by_id(
+                ui.ctx(),
+                wr.rect,
+                egui::Id::new("info_popup_overlay").with("outside_click_pass"),
+            )
         {
             was_closed = true;
         }

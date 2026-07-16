@@ -2022,6 +2022,25 @@ pub enum TaskError {
     #[error("The storage update is still running. Please wait a moment and try again.")]
     WalletStorageNotReady,
 
+    /// The legacy database is older than the direct storage update supports.
+    /// Version diagnostics stay in the typed source and out of the banner text.
+    #[error(
+        "This saved data was created by a much older version of Dash Evo Tool and can't be upgraded directly. Please install Dash Evo Tool 0.9.3 first and open your data with it once, then upgrade to this version."
+    )]
+    SavedDataTooOld {
+        #[source]
+        source: std::sync::Arc<crate::backend_task::migration::MigrationError>,
+    },
+
+    /// The legacy database was written by a newer build than this one.
+    #[error(
+        "Your saved data was created by a newer version of Dash Evo Tool. Update to the latest version to open it."
+    )]
+    SavedDataTooNew {
+        #[source]
+        source: std::sync::Arc<crate::backend_task::migration::MigrationError>,
+    },
+
     /// The post-unwire data migration failed. The user is asked to
     /// restart so the migration can re-attempt cleanly — legacy
     /// `data.db` rows are left intact.

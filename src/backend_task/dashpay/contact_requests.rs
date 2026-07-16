@@ -320,7 +320,9 @@ pub async fn send_contact_request_with_proof(
         .ok_or_else(|| TaskError::DashPay(DashPayError::MissingEncryptionKey))?;
 
     // Find a recipient DECRYPTION key that supports ECDH (must be ECDSA_SECP256K1)
-    // Platform enforces MEDIUM security level for ENCRYPTION/DECRYPTION keys
+    // Platform enforces MEDIUM security level for ENCRYPTION/DECRYPTION keys.
+    // This key belongs to the RECIPIENT (`to_identity`); its absence means the
+    // recipient is not set up for DashPay contacts — not a sender-side fault.
     let recipient_key = to_identity
         .get_first_public_key_matching(
             Purpose::DECRYPTION,
@@ -328,7 +330,7 @@ pub async fn send_contact_request_with_proof(
             HashSet::from([KeyType::ECDSA_SECP256K1]),
             false,
         )
-        .ok_or_else(|| TaskError::DashPay(DashPayError::MissingDecryptionKey))?;
+        .ok_or_else(|| TaskError::DashPay(DashPayError::RecipientMissingDecryptionKey))?;
 
     // Step 4: Generate ECDH shared key and encrypt data.
     // Resolve the ENCRYPTION private key through the JIT chokepoint — no

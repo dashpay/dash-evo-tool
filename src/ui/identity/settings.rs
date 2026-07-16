@@ -28,9 +28,7 @@ use crate::app::AppAction;
 use crate::backend_task::BackendTask;
 use crate::backend_task::dashpay::DashPayTask;
 use crate::backend_task::identity::IdentityTask;
-use crate::backend_task::system_task::SystemTask;
 use crate::context::AppContext;
-use crate::context::feature_gate::FeatureGate;
 use crate::model::qualified_identity::{IdentityType, QualifiedIdentity};
 use crate::ui::MessageType;
 use crate::ui::components::component_trait::Component;
@@ -39,7 +37,6 @@ use crate::ui::components::message_banner::MessageBanner;
 use crate::ui::identities::register_dpns_name_screen::RegisterDpnsNameSource;
 use crate::ui::theme::{ComponentStyles, DashColors, ResponseExt};
 use crate::ui::{RootScreenType, ScreenType};
-use dash_sdk::dpp::dashcore::Network;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::dpp::platform_value::string_encoding::Encoding;
 use eframe::egui::{Id, Margin, RichText, TextEdit, Ui};
@@ -141,8 +138,6 @@ pub struct SettingsTab {
     confirm_delete_profile: Option<ConfirmationDialog>,
     /// Confirmation dialog for the (gated) "Unload this identity" action.
     confirm_unload: Option<ConfirmationDialog>,
-    /// Confirmation dialog for the developer-only Platform data wipe.
-    confirm_wipe_platform_data: Option<ConfirmationDialog>,
     /// Track whether we have loaded the cached profile for the current
     /// identity. Reset on identity change.
     profile_loaded: bool,
@@ -739,33 +734,6 @@ impl SettingsTab {
                         .danger_mode(true),
                     );
                 }
-
-                if wipe_platform_data_available(
-                    FeatureGate::DeveloperTools.is_available(app_context),
-                    app_context.network,
-                ) {
-                    ui.add_space(8.0);
-                    let wipe = ui
-                        .add(ComponentStyles::danger_button("Wipe Platform Data"))
-                        .clickable_tooltip(
-                            "Permanently remove identities, keys, tokens, and custom data stored by this app for your development network.",
-                        );
-                    if wipe.clicked() {
-                        self.confirm_wipe_platform_data = Some(
-                            ConfirmationDialog::new(
-                                "Wipe Platform Data?",
-                                "This permanently removes every identity and its locally stored keys, along with tokens and custom Platform data, from this app's development network. Make sure you can recover any identity you still need. You cannot undo this action.",
-                            )
-                            .confirm_text(Some("Wipe Platform Data"))
-                            .cancel_text(Some("Keep Data"))
-                            .danger_mode(true)
-                            .require_confirmation_text(
-                                "WIPE",
-                                "Type WIPE to confirm this action.",
-                            ),
-                        );
-                    }
-                }
             });
 
         action
@@ -776,8 +744,6 @@ impl SettingsTab {
     // -----------------------------------------------------------------
 
     fn show_gated_dialogs(&mut self, ui: &mut Ui) -> AppAction {
-        let mut action = AppAction::None;
-
         if let Some(dialog) = self.confirm_delete_profile.as_mut() {
             match dialog.show(ui).inner.dialog_response {
                 Some(ConfirmationStatus::Confirmed) | Some(ConfirmationStatus::Canceled) => {
@@ -796,20 +762,7 @@ impl SettingsTab {
             }
         }
 
-        if let Some(dialog) = self.confirm_wipe_platform_data.as_mut() {
-            match dialog.show(ui).inner.dialog_response {
-                Some(ConfirmationStatus::Confirmed) => {
-                    self.confirm_wipe_platform_data = None;
-                    action = wipe_platform_data_action();
-                }
-                Some(ConfirmationStatus::Canceled) => {
-                    self.confirm_wipe_platform_data = None;
-                }
-                None => {}
-            }
-        }
-
-        action
+        AppAction::None
     }
 
     // -----------------------------------------------------------------
@@ -977,14 +930,6 @@ fn usernames_screen_action() -> AppAction {
     AppAction::SetMainScreenThenGoToMainScreen(RootScreenType::RootScreenDPNSOwnedNames)
 }
 
-fn wipe_platform_data_available(developer_tools_available: bool, network: Network) -> bool {
-    developer_tools_available && network == Network::Devnet
-}
-
-fn wipe_platform_data_action() -> AppAction {
-    AppAction::BackendTask(BackendTask::SystemTask(SystemTask::WipePlatformData))
-}
-
 // ---------------------------------------------------------------------------
 // Small layout helpers
 // ---------------------------------------------------------------------------
@@ -1113,24 +1058,6 @@ mod tests {
         assert!(matches!(
             usernames_screen_action(),
             AppAction::SetMainScreenThenGoToMainScreen(RootScreenType::RootScreenDPNSOwnedNames)
-        ));
-    }
-
-    #[test]
-    fn wipe_platform_data_is_available_only_to_developers_on_devnet() {
-        assert!(!wipe_platform_data_available(false, Network::Devnet));
-        assert!(!wipe_platform_data_available(true, Network::Testnet));
-        assert!(!wipe_platform_data_available(true, Network::Mainnet));
-        assert!(wipe_platform_data_available(true, Network::Devnet));
-    }
-
-    #[test]
-    fn wipe_platform_data_dispatches_the_existing_system_task() {
-        assert!(matches!(
-            wipe_platform_data_action(),
-            AppAction::BackendTask(BackendTask::SystemTask(
-                crate::backend_task::system_task::SystemTask::WipePlatformData
-            ))
         ));
     }
 

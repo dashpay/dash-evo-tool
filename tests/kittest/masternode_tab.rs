@@ -288,13 +288,21 @@ fn voting_navigation_routes_to_shared_workspaces() {
                 .query_by_label("Step 1 of 3: Nodes and timing")
                 .is_some()
         );
-        harness.get_by_label("Next: Choose votes").click();
-        harness.run_steps(2);
         assert!(
             harness
-                .query_by_label("Step 1 of 3: Nodes and timing")
+                .query_by_label("No voting nodes are available")
                 .is_some(),
-            "an unfiltered bulk draft must not select every node by default"
+            "an empty voting workspace must explain why voting cannot start"
+        );
+        assert!(
+            harness.query_by_label("Go to Nodes").is_some(),
+            "an empty voting workspace must offer a direct recovery action"
+        );
+        harness.get_by_label("Go to Nodes").click();
+        harness.run_steps(2);
+        assert!(
+            harness.query_by_label("No masternodes loaded").is_some(),
+            "the empty-workspace recovery action must return to the Nodes tab"
         );
     });
 }

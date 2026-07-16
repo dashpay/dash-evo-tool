@@ -225,6 +225,22 @@ impl DpnsVotingCenter {
         let dark_mode = ui.style().visuals.dark_mode;
         self.step_heading(ui, "Step 1 of 3: Nodes and timing");
         ui.label("Choose which nodes will vote and when each node should submit.");
+        if self.voters.is_empty() {
+            ui.separator();
+            let go_to_nodes = ui
+                .vertical_centered(|ui| {
+                    ui.heading("No voting nodes are available");
+                    ui.label("Load a masternode on the Nodes tab before creating a vote.");
+                    ui.add_space(8.0);
+                    ComponentStyles::add_primary_button_enabled(ui, true, "Go to Nodes").clicked()
+                })
+                .inner;
+            return if go_to_nodes {
+                VotingCenterOutcome::BackToNodes
+            } else {
+                VotingCenterOutcome::None
+            };
+        }
         ui.horizontal_wrapped(|ui| {
             ui.label("Set all:");
             timing_combo(

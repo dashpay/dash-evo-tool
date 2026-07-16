@@ -51,11 +51,18 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-cargo-registry-
 
+      # No `toolchain` input: the action installs what rust-toolchain.toml pins,
+      # so this job runs the same compiler the project builds with. Naming a
+      # version here (or setting a rustup override) would take precedence over
+      # that file and silently test a different toolchain than the pinned one.
       - name: Install Rust toolchain
-        uses: actions-rs/toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          toolchain: stable
-          override: true
+          # This action defaults RUSTFLAGS to "-D warnings"; the test job has
+          # never denied warnings and Clippy owns that gate, so keep it unset.
+          rustflags: ""
+          # Cargo caching is handled by the actions/cache step above.
+          cache: false
 
       - name: Install system dependencies
         run: |

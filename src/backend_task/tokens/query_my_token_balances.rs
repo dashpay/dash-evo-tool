@@ -18,19 +18,40 @@ use dash_sdk::Sdk;
 use dash_sdk::dpp::identity::accessors::IdentityGettersV0;
 use dash_sdk::platform::Identifier;
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
+use tokio_util::sync::CancellationToken;
 
 use crate::app::TaskResult;
 
-struct TokenBalanceRefreshGuard {
+const TOKEN_BALANCE_REFRESH_MAX_LIFETIME: Duration = NETWORK_REQUEST_TIMEOUT.saturating_mul(2);
+
+struct TokenBalanceRefreshLease {
     context: Arc<AppContext>,
+    released: AtomicBool,
+    released_signal: CancellationToken,
+}
+
+impl TokenBalanceRefreshLease {
+    fn release(&self) -> bool {
+        if self.released.swap(true, Ordering::AcqRel) {
+            return false;
+        }
+        self.context
+            .token_balance_refresh_in_flight
+            .store(false, Ordering::Release);
+        self.released_signal.cancel();
+        true
+    }
+}
+
+struct TokenBalanceRefreshGuard {
+    lease: Arc<TokenBalanceRefreshLease>,
 }
 
 impl Drop for TokenBalanceRefreshGuard {
     fn drop(&mut self) {
-        self.context
-            .token_balance_refresh_in_flight
-            .store(false, Ordering::Release);
+        self.lease.release();
     }
 }
 
@@ -162,12 +183,40 @@ impl AppContext {
     fn begin_token_balance_refresh(
         self: &Arc<Self>,
     ) -> Result<TokenBalanceRefreshGuard, TaskError> {
+        self.begin_token_balance_refresh_with_timeout(TOKEN_BALANCE_REFRESH_MAX_LIFETIME)
+    }
+
+    fn begin_token_balance_refresh_with_timeout(
+        self: &Arc<Self>,
+        max_lifetime: Duration,
+    ) -> Result<TokenBalanceRefreshGuard, TaskError> {
         self.token_balance_refresh_in_flight
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .map_err(|_| TaskError::TokenBalanceRefreshInProgress)?;
-        Ok(TokenBalanceRefreshGuard {
+
+        let lease = Arc::new(TokenBalanceRefreshLease {
             context: Arc::clone(self),
-        })
+            released: AtomicBool::new(false),
+            released_signal: CancellationToken::new(),
+        });
+        let timeout_lease = Arc::clone(&lease);
+        let released_signal = lease.released_signal.clone();
+        let deadline = tokio::time::Instant::now() + max_lifetime;
+        tokio::spawn(async move {
+            tokio::select! {
+                _ = tokio::time::sleep_until(deadline) => {
+                    if timeout_lease.release() {
+                        tracing::debug!(
+                            timeout_ms = max_lifetime.as_millis() as u64,
+                            "Released a token balance refresh guard after its maximum lifetime"
+                        );
+                    }
+                }
+                _ = released_signal.cancelled() => {}
+            }
+        });
+
+        Ok(TokenBalanceRefreshGuard { lease })
     }
 
     /// Register each identity's watch set with upstream, force an immediate
@@ -303,11 +352,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unbounded_refresh_hang_gives_honest_restart_guidance() {
+    async fn unbounded_refresh_hang_eventually_releases_single_flight_guard() {
         let f = fixture().await;
         let refresh_guard = f
             .ctx
-            .begin_token_balance_refresh()
+            .begin_token_balance_refresh_with_timeout(std::time::Duration::from_millis(10))
             .expect("hung refresh must acquire the single-flight guard");
 
         let result = await_managed_network_request_with_timeout(
@@ -325,17 +374,21 @@ mod tests {
             result,
             Err(TaskError::TokenBalanceRefreshTimeout { .. })
         ));
-        tokio::task::yield_now().await;
 
-        let error = match f.ctx.begin_token_balance_refresh() {
-            Err(error) => error,
-            Ok(_) => panic!("the truly hung refresh must still own its guard"),
-        };
-        assert!(matches!(error, TaskError::TokenBalanceRefreshInProgress));
-        assert_eq!(
-            error.to_string(),
-            "Token balances are still refreshing. Try again in a moment. If this continues, restart the app and try again.",
-        );
+        let reacquired_guard = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                match f.ctx.begin_token_balance_refresh() {
+                    Ok(guard) => break guard,
+                    Err(TaskError::TokenBalanceRefreshInProgress) => {
+                        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                    }
+                    Err(error) => panic!("unexpected refresh error: {error:?}"),
+                }
+            }
+        })
+        .await
+        .expect("the hung refresh must release its single-flight guard");
+        drop(reacquired_guard);
     }
 
     /// Dismissing a balance must survive "Refresh My Tokens": the pair stays
